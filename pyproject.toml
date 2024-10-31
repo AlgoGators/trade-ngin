@@ -1,0 +1,15 @@
+[tool.poetry]
+name = "trade-ngin"
+version = "0.1.0"
+description = ""
+authors = ["Cole Rottenberg <cole.rottenberg@gmail.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = ">=3.11,<3.13"
+pandas = "^2.2.3"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
