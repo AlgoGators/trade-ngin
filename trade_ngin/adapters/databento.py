@@ -35,3 +35,22 @@ def request_continuous_daily_data(symbols: list[str], dataset: db.Dataset, start
     ref_as_df = ref.to_df()
     
     # Turn the non-daily expirations in reference data to daily
+    
+    
+def request_all_continuous_daily_data(symbols: list[str], dataset: db.Dataset, client: db.Historical = db.Historical()) -> pd.DataFrame:
+    """A simple wrapper to request continuous daily data for specified symbols over entire available history.
+
+    Args:
+        symbols (list[str]): List of each symbol to request data for | e.g. ["ES.c.0", "NQ.c.0"] signifies ES and NQ continuous rolled based on the calendar expiration and the 0th contract.
+        dataset (db.Dataset): The dataset to request data from.
+        client (db.Historical, optional): The Databento client. Defaults to db.Historical().
+
+    Returns:
+        pd.DataFrame: A DataFrame with the requested data including OHLCV, contract ID, symbol, and daily expirations.
+    """
+    range = client.metadata.get_dataset_range(dataset=dataset)
+    start = pd.Timestamp(range["start"])
+    end = pd.Timestamp(range["end"]) - pd.Timedelta(days=1) # Account for the fact that the end date includes live data we cannont access from a historical client
+    return request_continuous_daily_data(symbols, dataset, start, end, client)
+    
+    
