@@ -1,80 +1,82 @@
 #pragma once
-#include "dataframe.hpp"
 #include <vector>
+#include <numeric>
 #include <cmath>
+#include <algorithm>
 
 class PnL {
 public:
-    PnL(const DataFrame& positions, const DataFrame& prices, double capital, const DataFrame& multipliers)
-        : positions_(positions), prices_(prices), initial_capital_(capital), multipliers_(multipliers) {
+    struct PerformanceMetrics {
+        double total_return;
+        double annualized_return;
+        double sharpe_ratio;
+        double sortino_ratio;
+        double max_drawdown;
+        double win_rate;
+        double profit_factor;
+        double avg_win;
+        double avg_loss;
+        double calmar_ratio;
+    };
+
+    PnL(const DataFrame& positions, const DataFrame& prices, 
+        double capital, const DataFrame& multipliers)
+        : initial_capital_(capital), positions_(positions), 
+          prices_(prices), multipliers_(multipliers) {
         calculate();
     }
 
-    // Calculate daily PnL
     void calculate() {
-        // Calculate position value at each point
-        auto position_values = multiply_dataframes(positions_, prices_);
-        position_values = position_values.mul_row(multipliers_);
-
-        // Calculate daily changes
-        daily_pnl_.resize(position_values.rows() - 1);
-        cumulative_pnl_.resize(position_values.rows() - 1);
+        profits_.clear();
+        daily_returns_.clear();
         
-        double running_pnl = 0.0;
-        for (size_t i = 1; i < position_values.rows(); ++i) {
-            daily_pnl_[i-1] = calculate_daily_pnl(position_values, i);
-            running_pnl += daily_pnl_[i-1];
-            cumulative_pnl_[i-1] = running_pnl;
+        double running_capital = initial_capital_;
+        
+        for (size_t i = 1; i < prices_.rows(); ++i) {
+            auto pos = positions_.get_row(i-1);
+            auto price_diff = prices_.get_row(i) - prices_.get_row(i-1);
+            auto mult = multipliers_.get_row(i);
+            
+            double pnl = calculate_daily_pnl(pos, price_diff, mult);
+            profits_.push_back(pnl);
+            
+            double daily_return = pnl / running_capital;
+            daily_returns_.push_back(daily_return);
+            
+            running_capital += pnl;
+            updateDrawdown(running_capital);
         }
     }
 
-    // Return metrics
-    double cumulativeProfit() const {
-        return cumulative_pnl_.empty() ? 0.0 : cumulative_pnl_.back();
+    PerformanceMetrics getMetrics() const {
+        PerformanceMetrics metrics;
+        metrics.total_return = calculateTotalReturn();
+        metrics.annualized_return = calculateAnnualizedReturn();
+        metrics.sharpe_ratio = calculateSharpeRatio();
+        metrics.sortino_ratio = calculateSortinoRatio();
+        metrics.max_drawdown = max_drawdown_;
+        metrics.win_rate = calculateWinRate();
+        metrics.profit_factor = calculateProfitFactor();
+        metrics.calmar_ratio = metrics.annualized_return / metrics.max_drawdown;
+        return metrics;
     }
-
-    double sharpeRatio() const {
-        if (daily_pnl_.empty()) return 0.0;
-        
-        // Calculate mean daily return
-        double mean = 0.0;
-        for (double pnl : daily_pnl_) {
-            mean += pnl;
-        }
-        mean /= daily_pnl_.size();
-
-        // Calculate standard deviation
-        double variance = 0.0;
-        for (double pnl : daily_pnl_) {
-            double diff = pnl - mean;
-            variance += diff * diff;
-        }
-        variance /= (daily_pnl_.size() - 1);
-        
-        double daily_std = std::sqrt(variance);
-        if (daily_std == 0.0) return 0.0;
-
-        // Annualize Sharpe Ratio (assuming 252 trading days)
-        return (mean / daily_std) * std::sqrt(252.0);
-    }
-
-    // Getters
-    const std::vector<double>& getDailyPnL() const { return daily_pnl_; }
-    const std::vector<double>& getCumulativePnL() const { return cumulative_pnl_; }
-    double getInitialCapital() const { return initial_capital_; }
 
 private:
-    double calculate_daily_pnl(const DataFrame& position_values, size_t i) const {
-        // Calculate P&L from position changes and price changes
-        double prev_value = position_values.get_value(i-1);
-        double curr_value = position_values.get_value(i);
-        return curr_value - prev_value;
-    }
-
+    double initial_capital_;
     DataFrame positions_;
     DataFrame prices_;
     DataFrame multipliers_;
-    double initial_capital_;
-    std::vector<double> daily_pnl_;
-    std::vector<double> cumulative_pnl_;
+    std::vector<double> profits_;
+    std::vector<double> daily_returns_;
+    double max_drawdown_ = 0.0;
+    double peak_capital_ = 0.0;
+
+    // Implementation of calculation methods...
+    double calculateTotalReturn() const;
+    double calculateAnnualizedReturn() const;
+    double calculateSharpeRatio() const;
+    double calculateSortinoRatio() const;
+    double calculateWinRate() const;
+    double calculateProfitFactor() const;
+    void updateDrawdown(double current_capital);
 }; 

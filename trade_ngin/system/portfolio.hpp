@@ -9,6 +9,9 @@
 #include "risk_measure.hpp"
 #include "pnl.hpp"
 #include "risk_engine.hpp"
+#include "execution_engine.hpp"
+#include "market_impact.hpp"
+#include "transaction_costs.hpp"
 
 class Portfolio {
 public:
@@ -58,6 +61,8 @@ public:
     void onOrderFill(const Order& order);
     void onMarketData(const MarketData& data);
 
+    void executeOrders(const DataFrame& trades_needed);
+
 private:
     PortfolioConfig config_;
     std::vector<std::shared_ptr<Instrument>> instruments_;
@@ -76,4 +81,8 @@ private:
     void applyPositionLimits();
     void applyRiskLimits();
     void updateCache();
+
+    std::shared_ptr<ExecutionEngine> execution_engine_;
+    MarketImpact market_impact_;
+    TransactionCosts transaction_costs_;
 };

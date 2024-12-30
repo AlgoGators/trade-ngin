@@ -73,3 +73,30 @@ void Portfolio::updateCache() {
     positions_.reset();
     exposure_.reset();
 }
+
+void Portfolio::executeOrders(const DataFrame& trades_needed) {
+    if (!execution_engine_) {
+        throw std::runtime_error("Execution engine not set");
+    }
+
+    for (const auto& [symbol, quantities] : trades_needed.to_map()) {
+        auto instrument = findInstrument(symbol);
+        if (!instrument) continue;
+
+        // Create and submit order
+        auto order = std::make_shared<Order>(
+            instrument->symbol(),
+            quantities.back(),
+            OrderType::MARKET
+        );
+        
+        // Calculate transaction costs before submission
+        auto costs = transaction_costs_.estimateCosts(*order, 
+            instrument->getLatestTick().price);
+        
+        // Apply market impact model
+        adjustOrderForMarketImpact(order, *instrument);
+        
+        execution_engine_->submitOrder(order);
+    }
+}

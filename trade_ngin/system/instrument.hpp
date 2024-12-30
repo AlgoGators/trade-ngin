@@ -37,6 +37,21 @@ public:
     Asset getAsset() const { return asset_; }
     double multiplier() const { return multiplier_; }
 
+    // Enhanced market data access
+    virtual MarketData getLatestTick() const { return market_data_.getLatestRow(); }
+    virtual std::vector<double> getFeature(const std::string& name) const {
+        return market_data_.get_column(name);
+    }
+    
+    // Risk metrics access
+    virtual double getCurrentVolatility() const { return derived_data_.get_value("volatility"); }
+    virtual double getAverageVolume() const { return derived_data_.get_value("avg_volume"); }
+    
+    // Signal access for strategies
+    virtual const std::vector<double>& getSignals(const std::string& signal_name) const {
+        return signal_values_[signal_name];
+    }
+
 protected:
     std::string symbol_;
     Dataset dataset_;
@@ -51,6 +66,8 @@ protected:
     std::vector<std::shared_ptr<MarketDataHandler>> data_handlers_;
     std::vector<std::shared_ptr<SignalProcessor>> signal_processors_;
     std::vector<std::shared_ptr<RiskCalculator>> risk_calculators_;
+
+    std::unordered_map<std::string, std::vector<double>> signal_values_;
 };
 
 class Future : public Instrument {

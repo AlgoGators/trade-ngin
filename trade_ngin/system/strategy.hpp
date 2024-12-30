@@ -5,6 +5,7 @@
 #include "dataframe.hpp"
 #include "signals.hpp"
 #include "risk_engine.hpp"
+#include "instrument.hpp"
 
 class Strategy {
 public:
@@ -45,11 +46,31 @@ public:
     double getCapital() const { return config_.capital_allocation; }
     const StrategyConfig& getConfig() const { return config_; }
 
+    // Add methods to access instrument data
+    void processInstrumentUpdate(const Instrument& instrument) {
+        auto market_data = instrument.getMarketData();
+        auto volatility = instrument.getCurrentVolatility();
+        auto signals = instrument.getSignals("trend");
+        
+        // Update position sizing based on volatility
+        double position_size = calculatePositionSize(volatility);
+        
+        // Update signals
+        signal_processor_.processSignals(market_data);
+        
+        // Update positions based on signals and risk
+        updatePositions(signals, position_size);
+    }
+
 protected:
     std::string name_;
     StrategyConfig config_;
     DataFrame current_positions_;
     signals::SignalProcessor signal_processor_;
+
+    virtual double calculatePositionSize(double volatility) {
+        return config_.capital_allocation * (config_.risk_limit / volatility);
+    }
 };
 
 // Trend Following Strategy Implementation
