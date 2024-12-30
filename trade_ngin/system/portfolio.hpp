@@ -7,34 +7,73 @@
 #include "instrument.hpp"
 #include "strategy.hpp"
 #include "risk_measure.hpp"
+#include "pnl.hpp"
+#include "risk_engine.hpp"
 
 class Portfolio {
 public:
-    Portfolio();
+    struct PortfolioConfig {
+        double initial_capital;
+        double max_leverage;
+        double margin_requirement;
+        std::unordered_map<std::string, double> position_limits;
+        std::unordered_map<std::string, double> risk_limits;
+    };
 
-    void set_instruments(std::vector<Instrument*>* instruments);
-    void set_weighted_strategies(const std::vector<std::pair<double, Strategy*>>& ws);
-    void set_capital(double c);
-    void set_risk_object(RiskMeasure* r);
-    void add_portfolio_rule(std::function<DataFrame(const Portfolio&)> rule);
+    Portfolio(PortfolioConfig config);
 
-    DataFrame multipliers();
-    DataFrame prices();
-    DataFrame positions();
-    DataFrame exposure();
-    PnL getPnL();
+    // Setup methods
+    void addInstrument(std::shared_ptr<Instrument> instrument);
+    void addStrategy(std::shared_ptr<Strategy> strategy, double weight);
+    void setRiskEngine(std::shared_ptr<RiskEngine> risk_engine);
+    void addPortfolioRule(std::function<void(Portfolio&)> rule);
+
+    // Core portfolio methods
+    void update();  // Update portfolio state
+    void rebalance();  // Rebalance positions
+    void executeOrders();  // Execute pending orders
+    
+    // Risk management
+    void checkRiskLimits();
+    void applyStressTests();
+    void adjustPositions();
+    
+    // Position and exposure calculations
+    DataFrame getMultipliers() const;
+    DataFrame getPrices() const;
+    DataFrame getPositions() const;
+    DataFrame getExposure() const;
+    
+    // Risk and PnL
+    PnL getPnL() const;
+    RiskEngine::RiskMetrics getRiskMetrics() const;
+    double getCapitalUtilization() const;
+
+    // Portfolio metrics
+    double getTotalValue() const;
+    double getMarginUsage() const;
+    std::vector<double> getStrategyWeights() const;
+    
+    // Event handlers
+    void onOrderFill(const Order& order);
+    void onMarketData(const MarketData& data);
 
 private:
-    std::vector<Instrument*>* instruments_;
-    std::vector<std::pair<double, Strategy*>> weighted_strategies_;
-    double capital_;
-    RiskMeasure* risk_object_;
-    std::vector<std::function<DataFrame(const Portfolio&)>> portfolio_rules_;
-
-    std::optional<DataFrame> multipliers_;
-    std::optional<DataFrame> prices_;
-    std::optional<DataFrame> positions_;
-
-    DataFrame multiply_df_by_row(const DataFrame& df, const DataFrame& row);
-    DataFrame multiply_dataframes(const DataFrame& a, const DataFrame& b);
+    PortfolioConfig config_;
+    std::vector<std::shared_ptr<Instrument>> instruments_;
+    std::vector<std::pair<double, std::shared_ptr<Strategy>>> weighted_strategies_;
+    std::shared_ptr<RiskEngine> risk_engine_;
+    std::vector<std::function<void(Portfolio&)>> portfolio_rules_;
+    
+    // Cache
+    mutable std::optional<DataFrame> multipliers_;
+    mutable std::optional<DataFrame> prices_;
+    mutable std::optional<DataFrame> positions_;
+    mutable std::optional<DataFrame> exposure_;
+    
+    // Helper methods
+    void validateWeights() const;
+    void applyPositionLimits();
+    void applyRiskLimits();
+    void updateCache();
 };
