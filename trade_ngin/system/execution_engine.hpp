@@ -20,11 +20,9 @@ public:
     ExecutionMetrics getMetrics() const;
 
 private:
-    void smartOrderRouter();
-    void darkPoolRouter();
-    void twapAlgo();
-    void vwapAlgo();
-    void adaptiveAlgo();
+    void executeViaAlgo(std::shared_ptr<Order> order, const std::string& algo);
+    void executeViaSmartRouter(std::shared_ptr<Order> order);
+    void executeViaDarkPool(std::shared_ptr<Order> order);
 
     std::shared_ptr<OrderManager> order_manager_;
     std::atomic<bool> running_{true};

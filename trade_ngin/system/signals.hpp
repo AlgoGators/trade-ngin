@@ -1,11 +1,12 @@
 #pragma once
+#include "dataframe.hpp"
 #include <vector>
 #include <memory>
 #include <unordered_map>
-#include "dataframe.hpp"
 
 namespace signals {
 
+// Base Signal interface
 class Signal {
 public:
     virtual ~Signal() = default;
@@ -13,6 +14,15 @@ public:
     virtual void configure(const std::unordered_map<std::string, double>& params) {}
 };
 
+// Technical Analysis Functions (moved from signals.h)
+double calculateEMA(double price, double prevEMA, double alpha);
+std::vector<double> calculateEMAC(const std::vector<double>& prices, int shortSpan, int longSpan);
+void calculateShortAndDynamicLongStdDev(const std::vector<double>& prices, 
+                                      size_t shortWindow, 
+                                      size_t longWindow,
+                                      std::vector<double>& combinedStdDev);
+
+// Signal Combiner interface
 class SignalCombiner {
 public:
     virtual ~SignalCombiner() = default;
@@ -22,6 +32,7 @@ public:
     ) = 0;
 };
 
+// Signal Processor
 class SignalProcessor {
 public:
     void addSignal(std::shared_ptr<Signal> signal, double weight) {
