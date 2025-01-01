@@ -103,9 +103,11 @@
             std::cout << "Positions:" << std::endl;
             int index = 0;
             for (const auto& position : positions) {
+                    if(!std::isnan(position)){
                     index += 1;
                     std::cout << "  Index: " << index
                             << " | " << position << std::endl;
+                    }
             }
         }
 
