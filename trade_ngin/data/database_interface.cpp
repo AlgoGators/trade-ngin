@@ -22,17 +22,34 @@ DatabaseInterface::~DatabaseInterface() {
     }
 }
 
-// Retrieve OHLCV data
-std::vector<OHLCV> DatabaseInterface::getOHLCVData(
+// Retrieve OHLCV data as an Apache Arrow Table
+std::shared_ptr<arrow::Table> DatabaseInterface::getOHLCVArrowTable(
     const std::string& start_date,
     const std::string& end_date,
     const std::vector<std::string>& symbols
 ) {
-    std::vector<OHLCV> result;
+    // Define the schema for the Arrow Table
+    auto schema = arrow::schema({
+        arrow::field("time", arrow::utf8()),
+        arrow::field("open", arrow::float64()),
+        arrow::field("high", arrow::float64()),
+        arrow::field("low", arrow::float64()),
+        arrow::field("close", arrow::float64()),
+        arrow::field("volume", arrow::float64()),
+        arrow::field("symbol", arrow::utf8())
+    });
+
+    // Create column builders
+    arrow::StringBuilder time_builder;
+    arrow::DoubleBuilder open_builder, high_builder, low_builder, close_builder, volume_builder;
+    arrow::StringBuilder symbol_builder;
+
     try {
         pqxx::work txn(*db_connection);
+
+        // Build the SQL query
         std::string query = "SELECT time, open, high, low, close, volume, symbol "
-                            "FROM futures_data.ohlcv_1d WHERE time BETWEEN '" + start_date + 
+                            "FROM futures_data.ohlcv_1d WHERE time BETWEEN '" + start_date +
                             "' AND '" + end_date + "'";
         if (!symbols.empty()) {
             query += " AND symbol IN (";
@@ -44,39 +61,58 @@ std::vector<OHLCV> DatabaseInterface::getOHLCVData(
         }
         query += " ORDER BY symbol, time";
 
+        // Execute the query and fetch results
         pqxx::result res = txn.exec(query);
+
         for (const auto& row : res) {
-            OHLCV record {
-                row["time"].as<std::string>(),
-                row["open"].as<double>(),
-                row["high"].as<double>(),
-                row["low"].as<double>(),
-                row["close"].as<double>(),
-                row["volume"].as<double>(),
-                row["symbol"].as<std::string>()
-            };
-            result.push_back(record);
+            // Append each column to its builder
+            time_builder.Append(row["time"].c_str());
+            open_builder.Append(row["open"].as<double>());
+            high_builder.Append(row["high"].as<double>());
+            low_builder.Append(row["low"].as<double>());
+            close_builder.Append(row["close"].as<double>());
+            volume_builder.Append(row["volume"].as<double>());
+            symbol_builder.Append(row["symbol"].c_str());
         }
+
+        // Create Arrow Arrays
+        std::shared_ptr<arrow::Array> time_array, open_array, high_array, low_array, close_array, volume_array, symbol_array;
+        time_builder.Finish(&time_array);
+        open_builder.Finish(&open_array);
+        high_builder.Finish(&high_array);
+        low_builder.Finish(&low_array);
+        close_builder.Finish(&close_array);
+        volume_builder.Finish(&volume_array);
+        symbol_builder.Finish(&symbol_array);
+
+        // Create and return the Arrow Table
+        return arrow::Table::Make(schema, {time_array, open_array, high_array, low_array, close_array, volume_array, symbol_array});
+
     } catch (const std::exception& e) {
         throw std::runtime_error(std::string("Query error: ") + e.what());
     }
-    return result;
 }
 
-// Retrieve all unique symbols
-std::vector<std::string> DatabaseInterface::getSymbols() {
-    std::vector<std::string> symbols;
+// Retrieve all unique symbols as an Arrow Table
+std::shared_ptr<arrow::Table> DatabaseInterface::getSymbolsAsArrowTable() {
+    auto schema = arrow::schema({arrow::field("symbol", arrow::utf8())});
+    arrow::StringBuilder symbol_builder;
+
     try {
         pqxx::work txn(*db_connection);
         pqxx::result res = txn.exec("SELECT DISTINCT symbol FROM futures_data.ohlcv_1d");
 
         for (const auto& row : res) {
-            symbols.push_back(row[0].as<std::string>());
+            symbol_builder.Append(row[0].c_str());
         }
+
+        std::shared_ptr<arrow::Array> symbol_array;
+        symbol_builder.Finish(&symbol_array);
+
+        return arrow::Table::Make(schema, {symbol_array});
     } catch (const std::exception& e) {
         throw std::runtime_error(std::string("Query error: ") + e.what());
     }
-    return symbols;
 }
 
 // Get the earliest date in the database
@@ -86,7 +122,7 @@ std::string DatabaseInterface::getEarliestDate() {
         pqxx::result res = txn.exec("SELECT MIN(time) FROM futures_data.ohlcv_1d");
 
         if (!res.empty() && !res[0][0].is_null()) {
-            return res[0][0].as<std::string>();
+            return res[0][0].c_str();
         }
     } catch (const std::exception& e) {
         throw std::runtime_error(std::string("Query error: ") + e.what());
@@ -101,7 +137,7 @@ std::string DatabaseInterface::getLatestDate() {
         pqxx::result res = txn.exec("SELECT MAX(time) FROM futures_data.ohlcv_1d");
 
         if (!res.empty() && !res[0][0].is_null()) {
-            return res[0][0].as<std::string>();
+            return res[0][0].c_str();
         }
     } catch (const std::exception& e) {
         throw std::runtime_error(std::string("Query error: ") + e.what());
@@ -109,28 +145,52 @@ std::string DatabaseInterface::getLatestDate() {
     return "";
 }
 
-// Retrieve the latest OHLCV data for a specific symbol
-OHLCV DatabaseInterface::getLatestData(const std::string& symbol) {
+// Retrieve the latest OHLCV data as an Arrow Table
+std::shared_ptr<arrow::Table> DatabaseInterface::getLatestDataAsArrowTable(const std::string& symbol) {
+    auto schema = arrow::schema({
+        arrow::field("time", arrow::utf8()),
+        arrow::field("open", arrow::float64()),
+        arrow::field("high", arrow::float64()),
+        arrow::field("low", arrow::float64()),
+        arrow::field("close", arrow::float64()),
+        arrow::field("volume", arrow::float64()),
+        arrow::field("symbol", arrow::utf8())
+    });
+
+    arrow::StringBuilder time_builder, symbol_builder;
+    arrow::DoubleBuilder open_builder, high_builder, low_builder, close_builder, volume_builder;
+
     try {
         pqxx::work txn(*db_connection);
         std::string query = "SELECT time, open, high, low, close, volume, symbol "
-                            "FROM futures_data.ohlcv_1d WHERE symbol = '" + txn.esc(symbol) + 
+                            "FROM futures_data.ohlcv_1d WHERE symbol = '" + txn.esc(symbol) +
                             "' ORDER BY time DESC LIMIT 1";
         pqxx::result res = txn.exec(query);
 
         if (!res.empty()) {
-            return {
-                res[0]["time"].as<std::string>(),
-                res[0]["open"].as<double>(),
-                res[0]["high"].as<double>(),
-                res[0]["low"].as<double>(),
-                res[0]["close"].as<double>(),
-                res[0]["volume"].as<double>(),
-                res[0]["symbol"].as<std::string>()
-            };
+            const auto& row = res[0];
+            time_builder.Append(row["time"].c_str());
+            open_builder.Append(row["open"].as<double>());
+            high_builder.Append(row["high"].as<double>());
+            low_builder.Append(row["low"].as<double>());
+            close_builder.Append(row["close"].as<double>());
+            volume_builder.Append(row["volume"].as<double>());
+            symbol_builder.Append(row["symbol"].c_str());
         }
+
+        // Create and return the Arrow Table
+        std::shared_ptr<arrow::Array> time_array, open_array, high_array, low_array, close_array, volume_array, symbol_array;
+        time_builder.Finish(&time_array);
+        open_builder.Finish(&open_array);
+        high_builder.Finish(&high_array);
+        low_builder.Finish(&low_array);
+        close_builder.Finish(&close_array);
+        volume_builder.Finish(&volume_array);
+        symbol_builder.Finish(&symbol_array);
+
+        return arrow::Table::Make(schema, {time_array, open_array, high_array, low_array, close_array, volume_array, symbol_array});
+
     } catch (const std::exception& e) {
         throw std::runtime_error(std::string("Query error: ") + e.what());
     }
-    throw std::runtime_error("No data found for symbol: " + symbol);
 }
