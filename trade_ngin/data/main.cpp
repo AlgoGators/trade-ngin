@@ -6,7 +6,7 @@
 int main() {
     try {
         // Replace with your actual PostgreSQL connection string
-        const std::string connection_string = "dbname=algo_data user=postgres password=algogators hostaddr=3.140.200.228 port=5432";
+        const std::string connection_string = "dbname= user= password= hostaddr= port=";
 
         // Instantiate the DatabaseInterface
         DatabaseInterface dbInterface(connection_string);
