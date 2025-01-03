@@ -4,17 +4,7 @@
 #include <string>
 #include <vector>
 #include <pqxx/pqxx>
-
-// Struct representing a single row of OHLCV data
-struct OHLCV {
-    std::string time;   // ISO format date-time as a string
-    double open;
-    double high;
-    double low;
-    double close;
-    double volume;
-    std::string symbol; // Instrument identifier
-};
+#include <arrow/api.h>
 
 class DatabaseInterface {
 public:
@@ -24,17 +14,17 @@ public:
     // Destructor
     ~DatabaseInterface();
 
-    // Methods to query the database
-    std::vector<OHLCV> getOHLCVData(
+    // Methods to query the database and return Arrow Tables
+    std::shared_ptr<arrow::Table> getOHLCVArrowTable(
         const std::string& start_date,
         const std::string& end_date,
         const std::vector<std::string>& symbols = {}
     );
 
-    std::vector<std::string> getSymbols();
+    std::shared_ptr<arrow::Table> getSymbolsAsArrowTable();
     std::string getEarliestDate();
     std::string getLatestDate();
-    OHLCV getLatestData(const std::string& symbol);
+    std::shared_ptr<arrow::Table> getLatestDataAsArrowTable(const std::string& symbol);
 
 private:
     pqxx::connection* db_connection;  // Pointer to the database connection

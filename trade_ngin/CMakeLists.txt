@@ -6,19 +6,28 @@ project(TradeEngine)
 # Set C++ standard
 set(CMAKE_CXX_STANDARD 17)
 
+# Set vcpkg toolchain file
+set(CMAKE_TOOLCHAIN_FILE "C:/Users/kbott/vcpkg/scripts/buildsystems/vcpkg.cmake" CACHE STRING "")
+
 # Add include directories
 include_directories(
     ${CMAKE_SOURCE_DIR}/data                          # Project headers
     "C:/Users/kbott/libpqxx-master/include"           # Path to libpqxx headers
     "C:/Users/kbott/libpqxx-master/build/include"     # Path to libpqxx headers
     "C:/Program Files/PostgreSQL/16/include"          # Path to PostgreSQL headers
+    "C:/Users/kbott/vcpkg/installed/x64-windows/include" # Path to vcpkg headers
 )
 
 # Add library directories
 link_directories(
     "C:/Users/kbott/libpqxx-master/build/src/Release" # Path to libpqxx library
     "C:/Program Files/PostgreSQL/16/lib"              # Path to PostgreSQL library
+    "C:/Users/kbott/vcpkg/installed/x64-windows/lib"  # Path to vcpkg libraries
 )
+
+# Find Apache Arrow via vcpkg
+set(arrow_DIR "C:/Users/kbott/vcpkg/installed/x64-windows/share/arrow")
+find_package(arrow REQUIRED)
 
 # Add source files
 add_executable(database_test
@@ -31,5 +40,10 @@ add_executable(database_test
     data/main.cpp
 )
 
-# Link libpqxx and libpq libraries
-target_link_libraries(database_test pqxx libpq ws2_32)
+# Link libraries: libpqxx, libpq, ws2_32 (Windows networking), and Arrow
+target_link_libraries(database_test
+    pqxx
+    libpq
+    ws2_32
+    arrow
+)
