@@ -6,6 +6,8 @@ project(TradeEngine)
 # Set C++ standard
 set(CMAKE_CXX_STANDARD 17)
 
+set(CMAKE_PREFIX_PATH "C:/Users/kbott/vcpkg/installed/x64-windows")
+
 # Set vcpkg toolchain file
 set(CMAKE_TOOLCHAIN_FILE "C:/Users/kbott/vcpkg/scripts/buildsystems/vcpkg.cmake" CACHE STRING "")
 
@@ -25,9 +27,16 @@ link_directories(
     "C:/Users/kbott/vcpkg/installed/x64-windows/lib"  # Path to vcpkg libraries
 )
 
+
 # Find Apache Arrow via vcpkg
 set(arrow_DIR "C:/Users/kbott/vcpkg/installed/x64-windows/share/arrow")
 find_package(arrow REQUIRED)
+set(libcurl_DIR "C:/Users/kbott/vcpkg/installed/x64-windows/share/curl")
+find_package(CURL REQUIRED)
+set(nlohmann-json_DIR "C:/Users/kbott/vcpkg/installed/x64-windows/share/nlohmann-json")
+find_package(nlohmann_json REQUIRED)
+find_package(ZLIB REQUIRED)
+
 
 # Add source files
 add_executable(database_test
@@ -35,7 +44,8 @@ add_executable(database_test
     # data/data_client.cpp   # if you have this
     # data/dataframe.cpp     # if you have this
     # data/enums.cpp         # if needed
-    data/database_interface.cpp
+    data/data_interface.cpp
+    data/api_client.cpp
     # system/instrument.cpp
     data/main.cpp
 )
@@ -46,4 +56,7 @@ target_link_libraries(database_test
     libpq
     ws2_32
     arrow
+    CURL::libcurl
+    nlohmann_json
+    zlib
 )
