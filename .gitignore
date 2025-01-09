@@ -1,0 +1,12 @@
+# Ignore .env
+.env
+
+# Ignore build and temp files
+build/
+*.o
+*.out
+*.log
+
+# Ignore Python cache
+__pycache__/
+*.pyc
