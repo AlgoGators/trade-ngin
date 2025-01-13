@@ -96,7 +96,7 @@ std::shared_ptr<arrow::Table> DataInterface::getSymbols() {
 // Insert data using JSON or Apache Arrow
 bool DataInterface::insertData(const std::string& schema, const std::string& table, const std::string& format, const nlohmann::json& payload_json, const std::shared_ptr<arrow::Table>& payload_arrow) {
     // Construct the endpoint with the format query parameter
-    std::string endpoint = "/data/" + schema + "/" + table + "?format=" + format;
+    std::string endpoint = "/data/" + schema + "/" + table + "?format=json";
 
     try {
         if (format == "json") {
@@ -114,52 +114,50 @@ bool DataInterface::insertData(const std::string& schema, const std::string& tab
             return true;
 
         } else if (format == "arrow") {
-            // Ensure Arrow payload is valid
             if (!payload_arrow) {
                 throw std::invalid_argument("Arrow payload is null for insertion.");
             }
 
-            // Serialize the Arrow table to an IPC stream
-            std::shared_ptr<arrow::io::BufferOutputStream> stream;
-            auto stream_result = arrow::io::BufferOutputStream::Create();
-            if (!stream_result.ok()) {
-                throw std::runtime_error("Failed to create Arrow BufferOutputStream: " + stream_result.status().ToString());
-            }
-            stream = stream_result.ValueOrDie();
-            auto writer_result = arrow::ipc::MakeFileWriter(stream.get(), payload_arrow->schema());
-            if (!writer_result.ok()) {
-                throw std::runtime_error("Failed to create Arrow IPC writer: " + writer_result.status().ToString());
-            }
-            auto writer = writer_result.ValueOrDie();
+            // Convert Arrow table to JSON
+            nlohmann::json json_payload = nlohmann::json::array();
 
-            // Write the Arrow table to the IPC stream
-            auto write_status = writer->WriteTable(*payload_arrow);
-            if (!write_status.ok()) {
-                throw std::runtime_error("Failed to write Arrow table to IPC stream: " + write_status.ToString());
+            for (int64_t i = 0; i < payload_arrow->num_rows(); ++i) {
+                nlohmann::json row = nlohmann::json::object();
+                for (int j = 0; j < payload_arrow->num_columns(); ++j) {
+                    auto column = payload_arrow->column(j);
+                    auto array = column->chunk(0);
+
+                    // Handle different Arrow data types
+                    if (array->type_id() == arrow::Type::STRING) {
+                        auto str_array = std::static_pointer_cast<arrow::StringArray>(array);
+                        row[payload_arrow->schema()->field(j)->name()] = str_array->GetString(i);
+                    } else if (array->type_id() == arrow::Type::DOUBLE) {
+                        auto dbl_array = std::static_pointer_cast<arrow::DoubleArray>(array);
+                        row[payload_arrow->schema()->field(j)->name()] = dbl_array->Value(i);
+                    } else if (array->type_id() == arrow::Type::INT64) {
+                        auto int_array = std::static_pointer_cast<arrow::Int64Array>(array);
+                        row[payload_arrow->schema()->field(j)->name()] = int_array->Value(i);
+                    } else {
+                        throw std::runtime_error("Unsupported Arrow data type: " + array->type()->ToString());
+                    }
+                }
+                json_payload.push_back(row);
             }
 
-            // Close the writer
-            auto close_status = writer->Close();
-            if (!close_status.ok()) {
-                throw std::runtime_error("Failed to close Arrow IPC writer: " + close_status.ToString());
-            }
+            // Construct the endpoint
+            std::string endpoint = "/data/" + schema + "/" + table + "?format=json";
 
-            // Finish the stream and get the buffer
-            auto buffer_result = stream->Finish();
-            if (!buffer_result.ok()) {
-                throw std::runtime_error("Failed to finish Arrow IPC stream: " + buffer_result.status().ToString());
-            }
-            auto buffer = buffer_result.ValueOrDie();
-
-            // Send the Arrow payload as a binary HTTP POST
-            client->addHeader("Content-Type: application/octet-stream");
-            auto response = client->httpPost(endpoint, std::string(reinterpret_cast<const char*>(buffer->data()), buffer->size()));
+            // Send the JSON payload via HTTP POST
+            client->addHeader("Content-Type: application/json");
+            auto response = client->httpPost(endpoint, json_payload.dump());
             client->clearHeaders();
-            // Optionally, handle the response or log it
-            std::cout << "Response: " << response << std::endl;
-            return true;
 
-        } else {
+            // Optionally log the response
+            std::cout << "Response: " << response << std::endl;
+
+            return true;
+        }
+        else {
             throw std::invalid_argument("Unsupported format: " + format);
         }
     } catch (const std::exception& e) {
@@ -174,21 +172,82 @@ TO ADD CLIENT HEADERS
 */
 
 
-// Update data
-bool DataInterface::updateData(const std::string& table, const nlohmann::json& filters, const nlohmann::json& updates) {
-    std::string endpoint = "/data/" + table;
-    nlohmann::json payload = {{"filters", filters}, {"updates", updates}};
-    auto response = client->httpPut(endpoint, payload.dump());
-    return true;
+bool DataInterface::updateData(
+    const std::string& schema,
+    const std::string& table,
+    const nlohmann::json& filters,
+    const nlohmann::json& updates
+) {
+    if (filters.empty()) {
+        throw std::invalid_argument("Filters cannot be empty for update.");
+    }
+
+    if (updates.empty()) {
+        throw std::invalid_argument("Updates cannot be empty for update.");
+    }
+
+    // Construct the endpoint
+    std::string endpoint = "/data/" + schema + "/" + table;
+
+    // Construct the payload
+    nlohmann::json payload = {
+        {"filters", filters},
+        {"updates", updates}
+    };
+
+    try {
+        // Add headers
+        client->addHeader("Content-Type: application/json");
+
+        // Perform the HTTP PUT request
+        auto response = client->httpPut(endpoint, payload.dump());
+        client->clearHeaders();
+
+        // Log the response
+        std::cout << "Update response: " << response << std::endl;
+
+        return true;
+    } catch (const std::exception& e) {
+        std::cerr << "Error updating data: " << e.what() << std::endl;
+        return false;
+    }
 }
 
+
 // Delete data
-bool DataInterface::deleteData(const std::string& table, const nlohmann::json& filters) {
-    std::string endpoint = "/data/" + table;
+bool DataInterface::deleteData(
+    const std::string& schema,
+    const std::string& table,
+    const nlohmann::json& filters
+) {
+    if (filters.empty()) {
+        throw std::invalid_argument("Filters cannot be empty for deletion.");
+    }
+
+    // Construct the endpoint
+    std::string endpoint = "/data/" + schema + "/" + table;
+
+    // Construct the payload
     nlohmann::json payload = {{"filters", filters}};
-    auto response = client->httpDelete(endpoint, payload.dump());
-    return true;
+
+    try {
+        // Add headers
+        client->addHeader("Content-Type: application/json");
+
+        // Perform the HTTP DELETE request
+        auto response = client->httpDelete(endpoint, payload.dump());
+        client->clearHeaders();
+
+        // Log the response
+        std::cout << "Delete response: " << response << std::endl;
+
+        return true;
+    } catch (const std::exception& e) {
+        std::cerr << "Error deleting data: " << e.what() << std::endl;
+        return false;
+    }
 }
+
 
 // Retrieve earliest date
 std::string DataInterface::getEarliestDate() {
