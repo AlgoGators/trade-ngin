@@ -16,9 +16,7 @@ int main() {
         // Instantiate the DataInterface
         DataInterface data_interface(api_client);
 
-        /*
-
-        // 1. Fetch OHLCV data as an Apache Arrow Table
+        // Fetch OHLCV data as an Apache Arrow Table
         std::cout << "Fetching OHLCV data...\n";
         auto ohlcv_table = data_interface.getOHLCV("2023-01-01", "2023-12-31", {"MES.c.0"});
 
@@ -35,7 +33,7 @@ int main() {
                       << "\n";
         }
 
-        // 2. Fetch all unique symbols
+        // Fetch all unique symbols
         std::cout << "\nFetching unique symbols...\n";
         auto symbols_table = data_interface.getSymbols();
         auto symbol_array = std::static_pointer_cast<arrow::StringArray>(symbols_table->column(0)->chunk(0));
@@ -44,8 +42,7 @@ int main() {
             std::cout << symbol_array->GetString(i) << "\n";
         }
     
-
-        // 3. Fetch the earliest and latest dates
+        // Fetch the earliest and latest dates
         std::cout << "\nFetching earliest and latest dates...\n";
         std::string earliest_date = data_interface.getEarliestDate();
         std::string latest_date = data_interface.getLatestDate();
@@ -53,15 +50,16 @@ int main() {
         std::cout << "Latest Date: " << latest_date << "\n";
         
 
-        // 4. Insert new data
-        std::cout << "\nInserting new data...\n";
+        // Insert new data using JSON
+        std::cout << "\nInserting new data using JSON...\n";
         nlohmann::json new_data = {
             {{"time", "2015-01-01T00:00:00Z"}, {"symbol", "bop"}, {"open", 100.0}, {"high", 105.0}, {"low", 95.0}, {"close", 102.0}, {"volume", 10000.0}}
         };
         bool insert_success = data_interface.insertData("strategies", "test", "json", new_data, nullptr);
         std::cout << "Insert Success: " << (insert_success ? "Yes" : "No") << "\n";
-        */
-
+    
+        // Insert new data using Arrow
+        std::cout << "\nInserting new data using Arrow...\n";
         // Define Arrow schema
         auto schema = arrow::schema({
             arrow::field("time", arrow::utf8()),
@@ -106,19 +104,28 @@ int main() {
             std::cout << "Arrow data inserted successfully." << std::endl;
         }
 
-        /*
-        // 5. Update existing data
+        // Update existing data
         std::cout << "\nUpdating data...\n";
-        nlohmann::json filters = {{"symbol", "MES.c.0"}, {"time", "2025-01-01T00:00:00Z"}};
-        nlohmann::json updates = {{"close", 103.0}, {"volume", 11000.0}};
-        bool update_success = data_interface.updateData("futures_data/ohlcv_1d", filters, updates);
-        std::cout << "Update Success: " << (update_success ? "Yes" : "No") << "\n";
+        // Define filters and updates
+        nlohmann::json filters = {{"symbol", "darn"}, {"time", "2025-01-01T00:00:00Z"}};
+        nlohmann::json updates = {{"open", 101.0}, {"close", 103.0}};
 
-        // 6. Delete data
+        // Perform the update
+        bool success = data_interface.updateData("strategies", "test", filters, updates);
+        if (success) {
+            std::cout << "Update successful." << std::endl;
+        }
+
+        // Delete data
         std::cout << "\nDeleting data...\n";
-        bool delete_success = data_interface.deleteData("futures_data/ohlcv_1d", filters);
-        std::cout << "Delete Success: " << (delete_success ? "Yes" : "No") << "\n";
-        */
+        // Define filters for deletion
+        nlohmann::json filters = {{"symbol", "darn"}, {"time", "2025-01-01T00:00:00Z"}};
+
+        // Perform the deletion
+        bool success = data_interface.deleteData("strategies", "test", filters);
+        if (success) {
+            std::cout << "Deletion successful." << std::endl;
+        }
 
     } catch (const std::exception& e) {
         // Handle any exceptions that occur
