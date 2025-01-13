@@ -18,8 +18,8 @@ public:
     std::string getEarliestDate();
     std::string getLatestDate();
     bool insertData(const std::string& schema, const std::string& table, const std::string& format, const nlohmann::json& payload_json, const std::shared_ptr<arrow::Table>& payload_arrow);
-    bool updateData(const std::string& table, const nlohmann::json& filters, const nlohmann::json& updates);
-    bool deleteData(const std::string& table, const nlohmann::json& filters);
+    bool updateData(const std::string& schema, const std::string& table, const nlohmann::json& filters, const nlohmann::json& updates);
+    bool deleteData(const std::string& schema, const std::string& table, const nlohmann::json& filters);
 
 private:
     std::shared_ptr<ApiClient> client;
