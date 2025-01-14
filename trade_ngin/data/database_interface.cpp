@@ -120,14 +120,13 @@ std::string DatabaseInterface::getEarliestDate() {
     try {
         pqxx::work txn(*db_connection);
         pqxx::result res = txn.exec("SELECT MIN(time) FROM futures_data.ohlcv_1d");
-
-        if (!res.empty() && !res[0][0].is_null()) {
-            return res[0][0].c_str();
+        if (res.empty() || res[0][0].is_null()) {
+            throw std::runtime_error("No data found in the database");
         }
+        return res[0][0].as<std::string>();
     } catch (const std::exception& e) {
-        throw std::runtime_error(std::string("Query error: ") + e.what());
+        throw std::runtime_error("Error getting earliest date: " + std::string(e.what()));
     }
-    return "";
 }
 
 // Get the latest date in the database
@@ -193,4 +192,21 @@ std::shared_ptr<arrow::Table> DatabaseInterface::getLatestDataAsArrowTable(const
     } catch (const std::exception& e) {
         throw std::runtime_error(std::string("Query error: ") + e.what());
     }
+}
+
+std::vector<std::string> DatabaseInterface::getAllSymbols() {
+    std::vector<std::string> symbols;
+    try {
+        pqxx::work txn(*db_connection);
+        pqxx::result result = txn.exec("SELECT DISTINCT symbol FROM futures_data.ohlcv_1d ORDER BY symbol");
+        
+        for (const auto& row : result) {
+            symbols.push_back(row[0].as<std::string>());
+        }
+        
+        txn.commit();
+    } catch (const std::exception& e) {
+        std::cerr << "Error getting symbols: " << e.what() << std::endl;
+    }
+    return symbols;
 }

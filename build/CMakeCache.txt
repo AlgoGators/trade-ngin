@@ -246,6 +246,9 @@ PostgreSQL_LIBRARY_RELEASE:FILEPATH=/usr/local/lib/postgresql@14/libpq.dylib
 // /usr/local/include/PostgreSQL/8.4 or C:/Program Files/PostgreSQL/8.4/include
 PostgreSQL_TYPE_INCLUDE_DIR:PATH=/usr/local/include/postgresql@14/server
 
+//The directory containing a CMake configuration file for libpqxx.
+libpqxx_DIR:PATH=libpqxx_DIR-NOTFOUND
+
 //Path to a library.
 pkgcfg_lib_PQXX_pqxx:FILEPATH=/usr/local/Cellar/libpqxx/7.10.0/lib/libpqxx.dylib
 
