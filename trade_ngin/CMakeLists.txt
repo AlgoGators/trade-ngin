@@ -1,10 +1,11 @@
 set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 
 cmake_minimum_required(VERSION 3.10)
-project(TradeEngine)
+project(trade_ngin)
 
 # Set C++ standard
 set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 set(CMAKE_PREFIX_PATH "C:/Users/kbott/vcpkg/installed/x64-windows")
 
@@ -27,7 +28,6 @@ link_directories(
     "C:/Users/kbott/vcpkg/installed/x64-windows/lib"  # Path to vcpkg libraries
 )
 
-
 # Find Apache Arrow via vcpkg
 set(arrow_DIR "C:/Users/kbott/vcpkg/installed/x64-windows/share/arrow")
 find_package(arrow REQUIRED)
@@ -37,26 +37,16 @@ set(nlohmann-json_DIR "C:/Users/kbott/vcpkg/installed/x64-windows/share/nlohmann
 find_package(nlohmann_json REQUIRED)
 find_package(ZLIB REQUIRED)
 
-
-# Add source files
-add_executable(database_test
-    # data/contract.cpp
-    # data/data_client.cpp   # if you have this
-    # data/dataframe.cpp     # if you have this
-    # data/enums.cpp         # if needed
-    data/data_interface.cpp
-    data/api_client.cpp
-    # system/instrument.cpp
-    data/main.cpp
+# Add executable
+add_executable(test_db
+    trade_ngin/data/test_trend_strategy.cpp
+    trade_ngin/data/database_interface.cpp
+    trade_ngin/data/portfolio.cpp
 )
 
-# Link libraries: libpqxx, libpq, ws2_32 (Windows networking), and Arrow
-target_link_libraries(database_test
-    pqxx
-    libpq
-    ws2_32
+# Link libraries
+target_link_libraries(test_db
     arrow
-    CURL::libcurl
-    nlohmann_json
-    zlib
+    pq
+    pqxx
 )
