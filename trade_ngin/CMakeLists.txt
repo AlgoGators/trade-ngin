@@ -4,10 +4,11 @@ cmake_minimum_required(VERSION 3.10)
 project(TradeEngine)
 
 # Set C++ standard
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Set vcpkg toolchain file
-set(CMAKE_TOOLCHAIN_FILE "C:/Users/kbott/vcpkg/scripts/buildsystems/vcpkg.cmake" CACHE STRING "")
+set(CMAKE_TOOLCHAIN_FILE "C:/Users/kbott/vcpkg/scripts/buildsystems/vcpkg.cmake" CACHE STRING "Vcpkg toolchain file")
 
 # Add include directories
 include_directories(
@@ -29,20 +30,25 @@ link_directories(
 set(arrow_DIR "C:/Users/kbott/vcpkg/installed/x64-windows/share/arrow")
 find_package(arrow REQUIRED)
 
+# Find libpqxx and link libraries
+set(libpqxx_DIR "C:/Users/kbott/vcpkg/installed/x64-windows/share/libpqxx")
+find_package(libpqxx CONFIG REQUIRED)
+
 # Add source files
 add_executable(database_test
     # data/contract.cpp
     # data/data_client.cpp   # if you have this
     # data/dataframe.cpp     # if you have this
     # data/enums.cpp         # if needed
-    data/database_interface.cpp
+    data/database_client.cpp
+    data/ohlcv_data_handler.cpp
     # system/instrument.cpp
     data/main.cpp
 )
 
 # Link libraries: libpqxx, libpq, ws2_32 (Windows networking), and Arrow
 target_link_libraries(database_test
-    pqxx
+    PRIVATE libpqxx::pqxx
     libpq
     ws2_32
     arrow
