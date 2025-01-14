@@ -129,12 +129,26 @@ test_db/fast:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_db.dir/build.make CMakeFiles/test_db.dir/build
 .PHONY : test_db/fast
 
+#=============================================================================
+# Target rules for targets named mock_trading
+
+# Build rule for target.
+mock_trading: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 mock_trading
+.PHONY : mock_trading
+
+# fast build rule for target.
+mock_trading/fast:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/mock_trading.dir/build.make CMakeFiles/mock_trading.dir/build
+.PHONY : mock_trading/fast
+
 trade_ngin/data/database_interface.o: trade_ngin/data/database_interface.cpp.o
 .PHONY : trade_ngin/data/database_interface.o
 
 # target to build an object file
 trade_ngin/data/database_interface.cpp.o:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_db.dir/build.make CMakeFiles/test_db.dir/trade_ngin/data/database_interface.cpp.o
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/mock_trading.dir/build.make CMakeFiles/mock_trading.dir/trade_ngin/data/database_interface.cpp.o
 .PHONY : trade_ngin/data/database_interface.cpp.o
 
 trade_ngin/data/database_interface.i: trade_ngin/data/database_interface.cpp.i
@@ -143,6 +157,7 @@ trade_ngin/data/database_interface.i: trade_ngin/data/database_interface.cpp.i
 # target to preprocess a source file
 trade_ngin/data/database_interface.cpp.i:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_db.dir/build.make CMakeFiles/test_db.dir/trade_ngin/data/database_interface.cpp.i
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/mock_trading.dir/build.make CMakeFiles/mock_trading.dir/trade_ngin/data/database_interface.cpp.i
 .PHONY : trade_ngin/data/database_interface.cpp.i
 
 trade_ngin/data/database_interface.s: trade_ngin/data/database_interface.cpp.s
@@ -151,6 +166,7 @@ trade_ngin/data/database_interface.s: trade_ngin/data/database_interface.cpp.s
 # target to generate assembly for a file
 trade_ngin/data/database_interface.cpp.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_db.dir/build.make CMakeFiles/test_db.dir/trade_ngin/data/database_interface.cpp.s
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/mock_trading.dir/build.make CMakeFiles/mock_trading.dir/trade_ngin/data/database_interface.cpp.s
 .PHONY : trade_ngin/data/database_interface.cpp.s
 
 trade_ngin/data/market_data.o: trade_ngin/data/market_data.cpp.o
@@ -159,6 +175,7 @@ trade_ngin/data/market_data.o: trade_ngin/data/market_data.cpp.o
 # target to build an object file
 trade_ngin/data/market_data.cpp.o:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_db.dir/build.make CMakeFiles/test_db.dir/trade_ngin/data/market_data.cpp.o
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/mock_trading.dir/build.make CMakeFiles/mock_trading.dir/trade_ngin/data/market_data.cpp.o
 .PHONY : trade_ngin/data/market_data.cpp.o
 
 trade_ngin/data/market_data.i: trade_ngin/data/market_data.cpp.i
@@ -167,6 +184,7 @@ trade_ngin/data/market_data.i: trade_ngin/data/market_data.cpp.i
 # target to preprocess a source file
 trade_ngin/data/market_data.cpp.i:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_db.dir/build.make CMakeFiles/test_db.dir/trade_ngin/data/market_data.cpp.i
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/mock_trading.dir/build.make CMakeFiles/mock_trading.dir/trade_ngin/data/market_data.cpp.i
 .PHONY : trade_ngin/data/market_data.cpp.i
 
 trade_ngin/data/market_data.s: trade_ngin/data/market_data.cpp.s
@@ -175,31 +193,32 @@ trade_ngin/data/market_data.s: trade_ngin/data/market_data.cpp.s
 # target to generate assembly for a file
 trade_ngin/data/market_data.cpp.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_db.dir/build.make CMakeFiles/test_db.dir/trade_ngin/data/market_data.cpp.s
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/mock_trading.dir/build.make CMakeFiles/mock_trading.dir/trade_ngin/data/market_data.cpp.s
 .PHONY : trade_ngin/data/market_data.cpp.s
 
-trade_ngin/data/portfolio.o: trade_ngin/data/portfolio.cpp.o
-.PHONY : trade_ngin/data/portfolio.o
+trade_ngin/data/run_mock_trading.o: trade_ngin/data/run_mock_trading.cpp.o
+.PHONY : trade_ngin/data/run_mock_trading.o
 
 # target to build an object file
-trade_ngin/data/portfolio.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_db.dir/build.make CMakeFiles/test_db.dir/trade_ngin/data/portfolio.cpp.o
-.PHONY : trade_ngin/data/portfolio.cpp.o
+trade_ngin/data/run_mock_trading.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/mock_trading.dir/build.make CMakeFiles/mock_trading.dir/trade_ngin/data/run_mock_trading.cpp.o
+.PHONY : trade_ngin/data/run_mock_trading.cpp.o
 
-trade_ngin/data/portfolio.i: trade_ngin/data/portfolio.cpp.i
-.PHONY : trade_ngin/data/portfolio.i
+trade_ngin/data/run_mock_trading.i: trade_ngin/data/run_mock_trading.cpp.i
+.PHONY : trade_ngin/data/run_mock_trading.i
 
 # target to preprocess a source file
-trade_ngin/data/portfolio.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_db.dir/build.make CMakeFiles/test_db.dir/trade_ngin/data/portfolio.cpp.i
-.PHONY : trade_ngin/data/portfolio.cpp.i
+trade_ngin/data/run_mock_trading.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/mock_trading.dir/build.make CMakeFiles/mock_trading.dir/trade_ngin/data/run_mock_trading.cpp.i
+.PHONY : trade_ngin/data/run_mock_trading.cpp.i
 
-trade_ngin/data/portfolio.s: trade_ngin/data/portfolio.cpp.s
-.PHONY : trade_ngin/data/portfolio.s
+trade_ngin/data/run_mock_trading.s: trade_ngin/data/run_mock_trading.cpp.s
+.PHONY : trade_ngin/data/run_mock_trading.s
 
 # target to generate assembly for a file
-trade_ngin/data/portfolio.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_db.dir/build.make CMakeFiles/test_db.dir/trade_ngin/data/portfolio.cpp.s
-.PHONY : trade_ngin/data/portfolio.cpp.s
+trade_ngin/data/run_mock_trading.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/mock_trading.dir/build.make CMakeFiles/mock_trading.dir/trade_ngin/data/run_mock_trading.cpp.s
+.PHONY : trade_ngin/data/run_mock_trading.cpp.s
 
 trade_ngin/data/test_trend_strategy.o: trade_ngin/data/test_trend_strategy.cpp.o
 .PHONY : trade_ngin/data/test_trend_strategy.o
@@ -233,6 +252,7 @@ help:
 	@echo "... depend"
 	@echo "... edit_cache"
 	@echo "... rebuild_cache"
+	@echo "... mock_trading"
 	@echo "... test_db"
 	@echo "... trade_ngin/data/database_interface.o"
 	@echo "... trade_ngin/data/database_interface.i"
@@ -240,9 +260,9 @@ help:
 	@echo "... trade_ngin/data/market_data.o"
 	@echo "... trade_ngin/data/market_data.i"
 	@echo "... trade_ngin/data/market_data.s"
-	@echo "... trade_ngin/data/portfolio.o"
-	@echo "... trade_ngin/data/portfolio.i"
-	@echo "... trade_ngin/data/portfolio.s"
+	@echo "... trade_ngin/data/run_mock_trading.o"
+	@echo "... trade_ngin/data/run_mock_trading.i"
+	@echo "... trade_ngin/data/run_mock_trading.s"
 	@echo "... trade_ngin/data/test_trend_strategy.o"
 	@echo "... trade_ngin/data/test_trend_strategy.i"
 	@echo "... trade_ngin/data/test_trend_strategy.s"

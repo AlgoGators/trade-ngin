@@ -21,13 +21,23 @@ public:
         const std::vector<std::string>& symbols = {}
     );
 
+    // Get all available symbols
+    std::vector<std::string> getAllSymbols();
+
+    // Get symbols as Arrow Table
     std::shared_ptr<arrow::Table> getSymbolsAsArrowTable();
+
+    // Get the earliest date in the database
     std::string getEarliestDate();
+
+    // Get the latest date in the database
     std::string getLatestDate();
+
+    // Get latest data for a symbol
     std::shared_ptr<arrow::Table> getLatestDataAsArrowTable(const std::string& symbol);
 
 private:
-    pqxx::connection* db_connection;  // Pointer to the database connection
+    pqxx::connection* db_connection;
 };
 
 #endif // DATABASE_INTERFACE_HPP

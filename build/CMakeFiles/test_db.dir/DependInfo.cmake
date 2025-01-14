@@ -10,7 +10,6 @@ set(CMAKE_DEPENDS_LANGUAGES
 set(CMAKE_DEPENDS_DEPENDENCY_FILES
   "/Users/ryanmathieu/Documents/GitHub/trade-ngin/trade_ngin/data/database_interface.cpp" "CMakeFiles/test_db.dir/trade_ngin/data/database_interface.cpp.o" "gcc" "CMakeFiles/test_db.dir/trade_ngin/data/database_interface.cpp.o.d"
   "/Users/ryanmathieu/Documents/GitHub/trade-ngin/trade_ngin/data/market_data.cpp" "CMakeFiles/test_db.dir/trade_ngin/data/market_data.cpp.o" "gcc" "CMakeFiles/test_db.dir/trade_ngin/data/market_data.cpp.o.d"
-  "/Users/ryanmathieu/Documents/GitHub/trade-ngin/trade_ngin/data/portfolio.cpp" "CMakeFiles/test_db.dir/trade_ngin/data/portfolio.cpp.o" "gcc" "CMakeFiles/test_db.dir/trade_ngin/data/portfolio.cpp.o.d"
   "/Users/ryanmathieu/Documents/GitHub/trade-ngin/trade_ngin/data/test_trend_strategy.cpp" "CMakeFiles/test_db.dir/trade_ngin/data/test_trend_strategy.cpp.o" "gcc" "CMakeFiles/test_db.dir/trade_ngin/data/test_trend_strategy.cpp.o.d"
   )
 

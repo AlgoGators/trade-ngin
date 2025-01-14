@@ -12,7 +12,55 @@ struct SymbolPosition {
     double capital_weight = 0.0;
     double avg_price = 0.0;
     double unrealized_pnl = 0.0;
-    std::vector<std::tuple<std::string, double, double, double>> history;  // time, position, weight, price
+    double realized_pnl = 0.0;
+    int trades = 0;
+    int winning_trades = 0;
+    
+    void updateTrade(double trade_size, double price, bool is_buy) {
+        double old_position = position;
+        double old_avg_price = avg_price;
+        
+        // Update position and average price
+        if (is_buy) {
+            if (position <= 0) {
+                // Opening new long or flipping from short
+                avg_price = price;
+                if (position < 0) {
+                    // Realized P&L from closing short
+                    double closed_pnl = -position * (price - avg_price);
+                    realized_pnl += closed_pnl;
+                    if (closed_pnl > 0) winning_trades++;
+                    trades++;
+                }
+            } else {
+                // Adding to long
+                avg_price = (position * avg_price + trade_size * price) / (position + trade_size);
+            }
+            position += trade_size;
+        } else {
+            if (position >= 0) {
+                // Opening new short or flipping from long
+                avg_price = price;
+                if (position > 0) {
+                    // Realized P&L from closing long
+                    double closed_pnl = position * (price - avg_price);
+                    realized_pnl += closed_pnl;
+                    if (closed_pnl > 0) winning_trades++;
+                    trades++;
+                }
+            } else {
+                // Adding to short
+                avg_price = (position * avg_price + trade_size * price) / (position + trade_size);
+            }
+            position += trade_size;
+        }
+        
+        // Update unrealized P&L
+        unrealized_pnl = position * (price - avg_price);
+        
+        // Update capital weight (using fixed initial capital of 500000.0)
+        capital_weight = (position * price) / 500000.0;
+    }
 };
 
 int main() {
@@ -39,7 +87,6 @@ int main() {
 
         // Initialize portfolio tracking
         double initial_capital = 500000.0;  // $500k initial capital
-        double current_capital = initial_capital;
         std::map<std::string, SymbolPosition> positions;
         
         // Initialize strategy
@@ -99,36 +146,20 @@ int main() {
             for (size_t i = 1; i < market_data.size(); ++i) {
                 double signal = signals[i];
                 double price = market_data[i].close;
-                double prev_price = market_data[i-1].close;
                 
                 // Calculate target position
-                double capital_per_symbol = current_capital / all_symbols.size();
+                double capital_per_symbol = initial_capital / all_symbols.size();
                 double target_position = signal * capital_per_symbol / price;
                 double position_change = target_position - positions[symbol].position;
                 
                 // Execute mock trade if position change
                 if (std::abs(position_change) > 0) {
                     // Mock execution
-                    ib.placeOrder(symbol, position_change, price);
+                    ib.placeOrder(symbol, position_change, price, position_change > 0);
                     
                     // Update position tracking
-                    positions[symbol].position = target_position;
-                    positions[symbol].avg_price = price;
-                    positions[symbol].capital_weight = (target_position * price) / current_capital;
-                    
-                    // Record in history
-                    positions[symbol].history.push_back(std::make_tuple(
-                        market_data[i].timestamp,
-                        target_position,
-                        positions[symbol].capital_weight,
-                        price
-                    ));
+                    positions[symbol].updateTrade(position_change, price, position_change > 0);
                 }
-                
-                // Update P&L
-                double pnl = positions[symbol].position * (price - prev_price);
-                current_capital += pnl;
-                positions[symbol].unrealized_pnl += pnl;
             }
         }
 
@@ -136,19 +167,42 @@ int main() {
         std::cout << "\nFinal Portfolio Report:" << std::endl;
         std::cout << "======================" << std::endl;
         std::cout << "Initial Capital: $" << std::fixed << std::setprecision(2) << initial_capital << std::endl;
-        std::cout << "Final Capital: $" << current_capital << std::endl;
+        
+        // Calculate total P&L and statistics
+        double total_realized_pnl = 0.0;
+        double total_unrealized_pnl = 0.0;
+        int total_trades = 0;
+        int total_winning_trades = 0;
+        
+        for (const auto& [symbol, pos] : positions) {
+            total_realized_pnl += pos.realized_pnl;
+            total_unrealized_pnl += pos.unrealized_pnl;
+            total_trades += pos.trades;
+            total_winning_trades += pos.winning_trades;
+        }
+        
+        double current_capital = initial_capital + total_realized_pnl + total_unrealized_pnl;
+        double win_rate = total_trades > 0 ? (total_winning_trades * 100.0 / total_trades) : 0.0;
+        
+        std::cout << "Current Capital: $" << current_capital << std::endl;
         std::cout << "Total Return: " << ((current_capital / initial_capital - 1.0) * 100.0) << "%" << std::endl;
+        std::cout << "\nOverall Statistics:" << std::endl;
+        std::cout << "Total Trades: " << total_trades << std::endl;
+        std::cout << "Win Rate: " << std::fixed << std::setprecision(2) << win_rate << "%" << std::endl;
+        std::cout << "Realized P&L: $" << total_realized_pnl << std::endl;
+        std::cout << "Unrealized P&L: $" << total_unrealized_pnl << std::endl;
         
         std::cout << "\nPosition Summary:" << std::endl;
-        std::cout << "Symbol     Position    Weight     Avg Price    Unrealized P&L" << std::endl;
-        std::cout << "------------------------------------------------------------" << std::endl;
+        std::cout << "Symbol     Position    Weight     Avg Price    Unrealized P&L    Realized P&L" << std::endl;
+        std::cout << "------------------------------------------------------------------------" << std::endl;
         
         for (const auto& [symbol, pos] : positions) {
             std::cout << std::left << std::setw(10) << symbol 
                       << std::right << std::setw(10) << std::fixed << std::setprecision(0) << pos.position 
                       << std::setw(10) << std::fixed << std::setprecision(2) << (pos.capital_weight * 100.0) << "%"
                       << std::setw(12) << std::fixed << std::setprecision(2) << pos.avg_price
-                      << std::setw(15) << std::fixed << std::setprecision(2) << pos.unrealized_pnl << std::endl;
+                      << std::setw(15) << std::fixed << std::setprecision(2) << pos.unrealized_pnl
+                      << std::setw(15) << std::fixed << std::setprecision(2) << pos.realized_pnl << std::endl;
         }
 
     } catch (const std::exception& e) {
