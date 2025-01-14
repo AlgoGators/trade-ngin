@@ -1,0 +1,4 @@
+/Users/ryanmathieu/Documents/GitHub/trade-ngin/trade_ngin/CMakeFiles/test_db.dir
+/Users/ryanmathieu/Documents/GitHub/trade-ngin/trade_ngin/CMakeFiles/mock_trading.dir
+/Users/ryanmathieu/Documents/GitHub/trade-ngin/trade_ngin/CMakeFiles/edit_cache.dir
+/Users/ryanmathieu/Documents/GitHub/trade-ngin/trade_ngin/CMakeFiles/rebuild_cache.dir

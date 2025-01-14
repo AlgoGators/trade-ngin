@@ -4,10 +4,8 @@ project(trade_ngin)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Find Arrow package
+# Find required packages
 find_package(Arrow REQUIRED)
-
-# Find libpqxx package
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(PQXX REQUIRED libpqxx)
 
@@ -21,16 +19,15 @@ include_directories(
 # Link directories
 link_directories(${PQXX_LIBRARY_DIRS})
 
-# Add database test executable
-add_executable(test_db 
-    trade_ngin/data/test_trend_strategy.cpp
-    trade_ngin/data/market_data.cpp
-    trade_ngin/data/database_interface.cpp
-    trade_ngin/data/portfolio.cpp
-)
+# Add executables
+add_executable(test_db trade_ngin/data/test_trend_strategy.cpp 
+                      trade_ngin/data/market_data.cpp 
+                      trade_ngin/data/database_interface.cpp)
 
-# Link against Arrow and libpqxx
-target_link_libraries(test_db PRIVATE 
-    Arrow::arrow_shared
-    ${PQXX_LIBRARIES}
-)
+add_executable(mock_trading trade_ngin/data/run_mock_trading.cpp
+                           trade_ngin/data/market_data.cpp
+                           trade_ngin/data/database_interface.cpp)
+
+# Link libraries
+target_link_libraries(test_db PRIVATE Arrow::arrow_shared ${PQXX_LIBRARIES})
+target_link_libraries(mock_trading PRIVATE Arrow::arrow_shared ${PQXX_LIBRARIES})

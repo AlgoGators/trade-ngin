@@ -999,4 +999,5 @@ CMakeFiles/test_db.dir/trade_ngin/data/test_trend_strategy.cpp.o: \
   /Users/ryanmathieu/anaconda3/envs/eel4930/include/arrow/tensor.h \
   /Users/ryanmathieu/anaconda3/envs/eel4930/include/arrow/util/key_value_metadata.h \
   /Users/ryanmathieu/anaconda3/envs/eel4930/include/arrow/visit_array_inline.h \
-  /Users/ryanmathieu/anaconda3/envs/eel4930/include/arrow/visit_scalar_inline.h
+  /Users/ryanmathieu/anaconda3/envs/eel4930/include/arrow/visit_scalar_inline.h \
+  /Users/ryanmathieu/Documents/GitHub/trade-ngin/trade_ngin/data/mock_ib_interface.hpp
