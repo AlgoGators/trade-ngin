@@ -20,8 +20,8 @@ include_directories(
 link_directories(${PQXX_LIBRARY_DIRS})
 
 # Add executables
-add_executable(test_db trade_ngin/data/test_trend_strategy.cpp 
-                      trade_ngin/data/market_data.cpp 
+add_executable(test_db trade_ngin/data/test_trend_strategy.cpp
+                      trade_ngin/data/market_data.cpp
                       trade_ngin/data/database_interface.cpp)
 
 add_executable(mock_trading trade_ngin/data/run_mock_trading.cpp
