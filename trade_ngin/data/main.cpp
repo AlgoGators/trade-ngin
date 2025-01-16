@@ -81,16 +81,3 @@ int main() {
         std::cout << "\nColumns in ohlcv_1d:\n";
         for (const auto& [column_name, data_type] : columns) {
             std::cout << column_name << " (" << data_type << ")\n";
-        }
-        std::cout << std::endl;
-
-        // Disconnect database client
-        database_client.disconnect();
-
-    } catch (const std::exception& e) {
-        std::cerr << "Error: " << e.what() << "\n";
-        return EXIT_FAILURE;
-    }
-
-    return EXIT_SUCCESS;
-}
