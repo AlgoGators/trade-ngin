@@ -6,6 +6,7 @@
 #include <cmath>
 #include <algorithm>
 #include <iostream>
+#include <limits>
 
 struct MarketData {
     std::string timestamp;
@@ -19,173 +20,248 @@ struct MarketData {
 
 class TrendStrategy {
 public:
-    TrendStrategy() = default;
-
-    void configureSignals(
-        const std::unordered_map<std::string, double>& ma_params,
-        const std::unordered_map<std::string, double>& vol_params,
-        const std::unordered_map<std::string, double>& regime_params,
-        const std::unordered_map<std::string, double>& momentum_params,
-        const std::unordered_map<std::string, double>& weight_params
-    ) {
-        ma_params_      = ma_params;
-        vol_params_     = vol_params;
-        regime_params_  = regime_params;
-        momentum_params_= momentum_params;
-        weight_params_  = weight_params;
-    }
+    TrendStrategy(double capital = 500000.0, double contract_size = 1.0, 
+                 double risk_target = 0.2, double FX = 1.0, double idm = 2.5)
+        : capital_(capital), multiplier_(contract_size), 
+          risk_target_(risk_target), FX_(FX), idm_(idm) {}
 
     // Main signal generator
     std::vector<double> generateSignals(const std::vector<MarketData>& data) {
         if (data.empty()) return {};
 
-        // Collect closing prices
+        // Extract prices
         std::vector<double> prices;
         prices.reserve(data.size());
         for (const auto& bar : data) {
             prices.push_back(bar.close);
         }
 
-        // Calculate daily log returns
-        auto returns = calculateReturns(prices);
+        // Initialize EMA window pairs
+        auto emaWindows = initializeEMAWindows();
 
-        // Calculate rolling volatility
-        auto volatility = calculateVolatility(returns, static_cast<int>(vol_params_["window"]));
+        // Compute standard deviations once
+        std::vector<double> blendedStdDev;
+        calculateShortAndDynamicLongStdDev(prices, 32, 2520, blendedStdDev);
 
-        // Short-term EMAs (70% weight)
-        // windows: short_window_1..short_window_6
-        std::vector<std::vector<double>> short_emas;
-        for (int i = 1; i <= 6; ++i) {
-            std::string key = "short_window_" + std::to_string(i);
-            auto ema = calculateEMA(prices, static_cast<int>(ma_params_[key]));
-            short_emas.push_back(ema);
-        }
+        // Calculate EMACs for all window pairs
+        auto emaCrossovers = computeEMACrossovers(prices, emaWindows);
 
-        // Long-term EMAs (30% weight)
-        // windows: long_window_1..long_window_3
-        std::vector<std::vector<double>> long_emas;
-        for (int i = 1; i <= 3; ++i) {
-            std::string key = "long_window_" + std::to_string(i);
-            auto ema = calculateEMA(prices, static_cast<int>(ma_params_[key]));
-            long_emas.push_back(ema);
-        }
+        // Compute raw forecasts
+        auto rawForecasts = computeRawForecasts(prices, emaWindows, emaCrossovers, blendedStdDev);
 
-        // The largest window sets the earliest day we can produce a signal
-        int max_window = static_cast<int>(ma_params_["long_window_3"]);
-        std::vector<double> signals(data.size(), 0.0);
+        // Normalize raw forecasts and cap values between -20 and 20
+        normalizeAndCapForecasts(rawForecasts);
 
-        for (size_t i = max_window; i < data.size(); ++i) {
-            // short-term signal contribution
-            double short_term_signal = 0.0;
-            for (auto& ema_vec : short_emas) {
-                double trend_val = std::log(prices[i] / ema_vec[i]);
-                short_term_signal += trend_val * weight_params_["short_weight"];
-            }
-            
-            // long-term signal contribution
-            double long_term_signal = 0.0;
-            for (auto& ema_vec : long_emas) {
-                double trend_val = std::log(prices[i] / ema_vec[i]);
-                long_term_signal += trend_val * weight_params_["long_weight"];
-            }
-            
-            // combine
-            double combined_signal = short_term_signal + long_term_signal;
+        // Combine forecasts into a single vector with 1.26 scaling
+        auto combinedForecast = combineForecasts(prices.size(), rawForecasts);
 
-            // regime filter
-            double vol_today = volatility[i];
-            double regime_strength = std::abs(combined_signal) / (vol_today * std::sqrt(252.0));
-            double threshold = regime_params_["threshold"];
-            if (regime_strength < threshold) {
-                combined_signal *= 0.5; // cut signal in half if regime not strong
-            }
+        // Calculate positions with buffer zones
+        std::vector<double> lowerBuffer, upperBuffer;
+        auto rawPositions = calculatePositionsFromForecast(combinedForecast, prices, blendedStdDev, 
+                                                         lowerBuffer, upperBuffer);
 
-            // volatility scaling
-            double annual_vol = vol_today * std::sqrt(252.0);
-            double target_vol = vol_params_["target_vol"];
-            double vol_scale  = target_vol / (annual_vol + 1e-10);
-
-            // high-vol regime
-            if (annual_vol > vol_params_["high_vol_threshold"]) {
-                vol_scale *= 0.5; 
-            }
-            else if (annual_vol < vol_params_["low_vol_threshold"]) {
-                vol_scale = std::min(2.0, vol_scale);
-            }
-
-            double scaled_signal = combined_signal * vol_scale;
-
-            // momentum overlay: if sign of momentum mismatches sign of signal, reduce
-            double mom_lookback = momentum_params_["lookback"];
-            double momentum_val  = calculateMomentum(returns, i, (int)mom_lookback);
-            if ((momentum_val * scaled_signal) < 0) {
-                scaled_signal *= 0.5;
-            }
-
-            // enforce a minimum position if there is any signal
-            if (std::abs(scaled_signal) > 0.1) {
-                scaled_signal = std::copysign(std::max(0.1, std::abs(scaled_signal)), scaled_signal);
-            }
-
-            // clamp to [-1, 1]
-            scaled_signal = std::max(-1.0, std::min(1.0, scaled_signal));
-
-            signals[i] = scaled_signal;
-        }
-
-        return signals;
+        // Apply buffering to reduce trading frequency
+        return bufferPositions(rawPositions, lowerBuffer, upperBuffer);
     }
 
 private:
-    // Calculate EMA
+    double capital_;
+    double multiplier_;
+    double risk_target_;
+    double FX_;
+    double idm_;
+
+    std::vector<std::pair<int, int>> initializeEMAWindows() {
+        return {{2, 8}, {4, 16}, {8, 32}, {16, 64}, {32, 128}, {64, 256}};
+    }
+
+    void calculateShortAndDynamicLongStdDev(const std::vector<double>& prices, 
+                                          int shortWindow, int longWindow,
+                                          std::vector<double>& blendedStdDev) {
+        blendedStdDev.resize(prices.size(), 0.0);
+        
+        // Calculate returns
+        std::vector<double> returns(prices.size());
+        for (size_t i = 1; i < prices.size(); ++i) {
+            returns[i] = std::log(prices[i] / prices[i-1]);
+        }
+
+        // Calculate rolling standard deviations
+        for (size_t i = shortWindow; i < prices.size(); ++i) {
+            // Short-term volatility
+            double shortVar = 0.0;
+            for (int j = 0; j < shortWindow; ++j) {
+                shortVar += returns[i-j] * returns[i-j];
+            }
+            shortVar /= (shortWindow - 1);
+
+            // Long-term volatility
+            double longVar = 0.0;
+            int effectiveLongWindow = std::min(longWindow, static_cast<int>(i));
+            for (int j = 0; j < effectiveLongWindow; ++j) {
+                longVar += returns[i-j] * returns[i-j];
+            }
+            longVar /= (effectiveLongWindow - 1);
+
+            // Blend volatilities
+            blendedStdDev[i] = std::sqrt((shortVar + longVar) / 2.0 * 252.0);
+        }
+    }
+
+    std::vector<std::vector<double>> computeEMACrossovers(
+        const std::vector<double>& prices,
+        const std::vector<std::pair<int, int>>& emaWindows) {
+        
+        std::vector<std::vector<double>> emaCrossovers;
+        for (const auto& [shortWindow, longWindow] : emaWindows) {
+            std::vector<double> shortEMA = calculateEMA(prices, shortWindow);
+            std::vector<double> longEMA = calculateEMA(prices, longWindow);
+            
+            std::vector<double> crossover(prices.size());
+            for (size_t i = 0; i < prices.size(); ++i) {
+                crossover[i] = shortEMA[i] - longEMA[i];
+            }
+            emaCrossovers.push_back(crossover);
+        }
+        return emaCrossovers;
+    }
+
+    std::vector<std::vector<double>> computeRawForecasts(
+        const std::vector<double>& prices,
+        const std::vector<std::pair<int, int>>& emaWindows,
+        const std::vector<std::vector<double>>& emaCrossovers,
+        const std::vector<double>& blendedStdDev) {
+        
+        std::vector<std::vector<double>> rawForecasts;
+        for (size_t i = 0; i < emaWindows.size(); ++i) {
+            const auto& emac = emaCrossovers[i];
+            std::vector<double> forecast(emac.size(), std::numeric_limits<double>::quiet_NaN());
+            
+            for (size_t j = 0; j < emac.size(); ++j) {
+                if (!std::isnan(blendedStdDev[j]) && !std::isnan(emac[j]) && blendedStdDev[j] != 0.0) {
+                    // Scale by price volatility as per strategy.h
+                    double sigmaP = prices[j] * blendedStdDev[j] / 16.0;
+                    forecast[j] = emac[j] / sigmaP;
+                }
+            }
+            rawForecasts.push_back(forecast);
+        }
+        return rawForecasts;
+    }
+
+    void normalizeAndCapForecasts(std::vector<std::vector<double>>& rawForecasts) {
+        for (auto& forecast : rawForecasts) {
+            double sumAbs = 0.0;
+            int count = 0;
+            
+            for (double value : forecast) {
+                if (!std::isnan(value)) {
+                    sumAbs += std::abs(value);
+                    ++count;
+                }
+            }
+            
+            double absAverage = (count > 0) ? (sumAbs / count) : 1.0;
+            double scalingFactor = 10.0 / absAverage;
+            
+            for (double& value : forecast) {
+                if (!std::isnan(value)) {
+                    value *= scalingFactor;
+                    value = std::max(-20.0, std::min(20.0, value));
+                }
+            }
+        }
+    }
+
+    std::vector<double> combineForecasts(size_t size, 
+                                       const std::vector<std::vector<double>>& rawForecasts) {
+        std::vector<double> combined(size, std::numeric_limits<double>::quiet_NaN());
+        
+        for (size_t i = 255; i < size; ++i) {
+            double sum = 0.0;
+            int count = 0;
+            
+            for (const auto& forecast : rawForecasts) {
+                if (!std::isnan(forecast[i])) {
+                    sum += forecast[i];
+                    ++count;
+                }
+            }
+            
+            if (count > 0) {
+                double value = (sum / count) * 1.26;
+                combined[i] = std::max(-20.0, std::min(20.0, value));
+            }
+        }
+        return combined;
+    }
+
+    std::vector<double> calculatePositionsFromForecast(
+        const std::vector<double>& forecast,
+        const std::vector<double>& prices,
+        const std::vector<double>& blendedStdDev,
+        std::vector<double>& lowerBuffer,
+        std::vector<double>& upperBuffer) {
+        
+        std::vector<double> positions(prices.size(), std::numeric_limits<double>::quiet_NaN());
+        lowerBuffer.resize(prices.size(), std::numeric_limits<double>::quiet_NaN());
+        upperBuffer.resize(prices.size(), std::numeric_limits<double>::quiet_NaN());
+        
+        for (size_t i = 255; i < prices.size(); ++i) {
+            if (!std::isnan(forecast[i]) && !std::isnan(prices[i])) {
+                positions[i] = (forecast[i] * capital_ * idm_ * risk_target_) /
+                             (10.0 * multiplier_ * prices[i] * FX_ * blendedStdDev[i]);
+                
+                // Calculate buffer width
+                double Bw = (0.1 * capital_ * idm_ * risk_target_) /
+                          (multiplier_ * prices[i] * FX_ * blendedStdDev[i]);
+                
+                lowerBuffer[i] = std::round(positions[i] - Bw);
+                upperBuffer[i] = std::round(positions[i] + Bw);
+            }
+        }
+        return positions;
+    }
+
+    std::vector<double> bufferPositions(
+        const std::vector<double>& rawPositions,
+        const std::vector<double>& lowerBuffer,
+        const std::vector<double>& upperBuffer) {
+        
+        std::vector<double> buffered(rawPositions.size(), std::numeric_limits<double>::quiet_NaN());
+        
+        size_t startIndex = 255;
+        if (startIndex < rawPositions.size() && !std::isnan(rawPositions[startIndex])) {
+            buffered[startIndex] = std::round(rawPositions[startIndex]);
+            
+            for (size_t i = startIndex + 1; i < rawPositions.size(); ++i) {
+                if (std::isnan(rawPositions[i]) || std::isnan(lowerBuffer[i]) || 
+                    std::isnan(upperBuffer[i])) {
+                    buffered[i] = std::numeric_limits<double>::quiet_NaN();
+                } else {
+                    double currentPosition = buffered[i - 1];
+                    
+                    if (currentPosition < lowerBuffer[i]) {
+                        buffered[i] = lowerBuffer[i];
+                    } else if (currentPosition > upperBuffer[i]) {
+                        buffered[i] = upperBuffer[i];
+                    } else {
+                        buffered[i] = currentPosition;
+                    }
+                }
+            }
+        }
+        return buffered;
+    }
+
     std::vector<double> calculateEMA(const std::vector<double>& data, int window) {
         std::vector<double> ema(data.size());
-        if (data.empty()) return ema;
         double alpha = 2.0 / (window + 1.0);
-
+        
         ema[0] = data[0];
         for (size_t i = 1; i < data.size(); ++i) {
             ema[i] = alpha * data[i] + (1.0 - alpha) * ema[i - 1];
         }
         return ema;
     }
-
-    // Calculate daily log returns
-    std::vector<double> calculateReturns(const std::vector<double>& prices) {
-        std::vector<double> rets(prices.size(), 0.0);
-        for (size_t i = 1; i < prices.size(); ++i) {
-            rets[i] = std::log(prices[i] / prices[i - 1]);
-        }
-        return rets;
-    }
-
-    // Rolling std dev (annualized) of log returns
-    std::vector<double> calculateVolatility(const std::vector<double>& returns, int window) {
-        std::vector<double> vol(returns.size(), 0.0);
-        double sum_sq = 0.0;
-        for (size_t i = 0; i < returns.size(); ++i) {
-            sum_sq += returns[i] * returns[i];
-            if (i >= (size_t)window) {
-                sum_sq -= returns[i - window] * returns[i - window];
-            }
-            int divisor = (i < (size_t)window) ? (int)i + 1 : window;
-            vol[i] = std::sqrt(sum_sq / (divisor + 1e-10));
-        }
-        return vol;
-    }
-
-    double calculateMomentum(const std::vector<double>& returns, size_t idx, int lookback) {
-        if (idx < (size_t)lookback) return 0.0;
-        double sum = 0.0;
-        for (int i = 0; i < lookback; ++i) {
-            sum += returns[idx - i];
-        }
-        return sum;
-    }
-
-    std::unordered_map<std::string, double> ma_params_;
-    std::unordered_map<std::string, double> vol_params_;
-    std::unordered_map<std::string, double> regime_params_;
-    std::unordered_map<std::string, double> momentum_params_;
-    std::unordered_map<std::string, double> weight_params_;
-}; 
+};
