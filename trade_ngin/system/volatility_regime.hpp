@@ -2,120 +2,72 @@
 #include <vector>
 #include <cmath>
 #include <algorithm>
+#include <numeric>
 
 class VolatilityRegime {
 public:
-    enum class Regime {
-        LOW_VOLATILITY,
-        NORMAL_VOLATILITY,
-        HIGH_VOLATILITY
-    };
-
     struct RegimeConfig {
-        int fast_window = 20;      // Fast volatility window
-        int slow_window = 60;      // Slow volatility window
-        double high_threshold = 1.5;// High vol threshold multiplier
-        double low_threshold = 0.5; // Low vol threshold multiplier
-        bool use_relative = true;  // Use relative or absolute thresholds
+        int ewma_span = 10;     // EWMA span for smoothing
+        double scalar_low = 2.0; // Scalar for low volatility (Q = 0.0)
+        double scalar_high = 0.5;// Scalar for high volatility (Q = 1.0)
     };
 
     VolatilityRegime(const RegimeConfig& config = RegimeConfig()) 
         : config_(config) {}
 
-    // Detect regime using fast/slow volatility comparison
-    Regime detectRegime(const std::vector<double>& returns) {
-        if (returns.size() < std::max(config_.fast_window, config_.slow_window)) {
-            return Regime::NORMAL_VOLATILITY;
-        }
-
-        // Calculate fast and slow volatility
-        double fast_vol = calculateVolatility(returns, config_.fast_window);
-        double slow_vol = calculateVolatility(returns, config_.slow_window);
-
-        if (config_.use_relative) {
-            // Relative regime detection (fast vol compared to slow vol)
-            if (fast_vol > slow_vol * config_.high_threshold) {
-                return Regime::HIGH_VOLATILITY;
-            } else if (fast_vol < slow_vol * config_.low_threshold) {
-                return Regime::LOW_VOLATILITY;
-            }
-        } else {
-            // Absolute regime detection (compared to historical average)
-            double avg_vol = calculateAverageVolatility(returns, config_.slow_window);
-            if (fast_vol > avg_vol * config_.high_threshold) {
-                return Regime::HIGH_VOLATILITY;
-            } else if (fast_vol < avg_vol * config_.low_threshold) {
-                return Regime::LOW_VOLATILITY;
-            }
-        }
-
-        return Regime::NORMAL_VOLATILITY;
+    // Calculate the quantile point Q for a given volatility value
+    double calculateQuantilePoint(double current_vol, const std::vector<double>& historical_vol) {
+        if (historical_vol.empty()) return 0.5;  // Default to median if no history
+        
+        // Count how many historical values are less than current
+        int count = std::count_if(historical_vol.begin(), historical_vol.end(),
+                                [current_vol](double v) { return v < current_vol; });
+        
+        return static_cast<double>(count) / historical_vol.size();
     }
 
-    // Get regime scaling factor for position sizing
-    double getRegimeScalar(const std::vector<double>& returns) {
-        Regime regime = detectRegime(returns);
-        switch (regime) {
-            case Regime::HIGH_VOLATILITY:
-                return 0.7;  // Reduce position size in high vol
-            case Regime::LOW_VOLATILITY:
-                return 1.3;  // Increase position size in low vol
-            default:
-                return 1.0;  // Normal position size
+    // Calculate EWMA with specified span
+    double calculateEWMA(const std::vector<double>& values, int span) {
+        if (values.empty()) return 0.0;
+        
+        double alpha = 2.0 / (span + 1.0);
+        double ewma = values[0];
+        
+        for (size_t i = 1; i < values.size(); ++i) {
+            ewma = alpha * values[i] + (1.0 - alpha) * ewma;
         }
+        
+        return ewma;
     }
 
-    // Calculate rolling volatility
-    std::vector<double> calculateRollingVol(const std::vector<double>& returns, int window) {
-        std::vector<double> vol(returns.size());
-        for (size_t i = window - 1; i < returns.size(); ++i) {
-            vol[i] = calculateVolatility(
-                std::vector<double>(returns.begin() + (i - window + 1), returns.begin() + i + 1),
-                window
-            );
-        }
-        return vol;
+    // Calculate volatility multiplier M as per the book
+    double calculateVolMultiplier(double current_vol, const std::vector<double>& historical_vol) {
+        // Calculate quantile point
+        double Q = calculateQuantilePoint(current_vol, historical_vol);
+        
+        // Calculate raw multiplier: M = 2 - 1.5 × Q
+        double raw_multiplier = 2.0 - 1.5 * Q;
+        
+        // Apply EWMA smoothing with 10-day span
+        std::vector<double> multiplier_series = {raw_multiplier};
+        return calculateEWMA(multiplier_series, config_.ewma_span);
+    }
+
+    // Adjust trend forecast
+    double adjustTrendForecast(double raw_forecast, double multiplier) {
+        return raw_forecast * multiplier;
+    }
+
+    // Adjust carry forecast (with reduced scalar)
+    double adjustCarryForecast(double smoothed_carry_forecast, double multiplier) {
+        return smoothed_carry_forecast * multiplier;
+    }
+
+    // Get forecast scalar based on type (trend vs carry)
+    double getForecastScalar(bool is_carry) {
+        return is_carry ? 23.0 : 30.0;  // As mentioned in the book
     }
 
 private:
     RegimeConfig config_;
-
-    // Calculate volatility for a window of returns
-    double calculateVolatility(const std::vector<double>& returns, int window) {
-        if (returns.size() < window) return 0.0;
-
-        // Use the last 'window' returns
-        auto start = returns.end() - window;
-        auto end = returns.end();
-
-        double sum = 0.0;
-        double sum_sq = 0.0;
-        
-        for (auto it = start; it != end; ++it) {
-            sum += *it;
-            sum_sq += (*it) * (*it);
-        }
-
-        double mean = sum / window;
-        double variance = (sum_sq / window) - (mean * mean);
-        
-        return std::sqrt(variance * 252.0); // Annualized
-    }
-
-    // Calculate average volatility over a period
-    double calculateAverageVolatility(const std::vector<double>& returns, int window) {
-        auto vol = calculateRollingVol(returns, window);
-        
-        // Average the non-zero volatilities
-        double sum = 0.0;
-        int count = 0;
-        for (double v : vol) {
-            if (v > 0) {
-                sum += v;
-                count++;
-            }
-        }
-        
-        return count > 0 ? sum / count : 0.0;
-    }
 }; 
