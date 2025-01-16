@@ -1,88 +1,132 @@
 #pragma once
+
+#include <string>
 #include <vector>
-#include <memory>
-#include <functional>
-#include <optional>
-#include "dataframe.hpp"
-#include "instrument.hpp"
-#include "strategy.hpp"
-#include "risk_measure.hpp"
-#include "pnl.hpp"
-#include "risk_engine.hpp"
-#include "execution_engine.hpp"
-#include "market_impact.hpp"
-#include "transaction_costs.hpp"
+#include <unordered_map>
+#include <cmath>
+#include "market_data.hpp"
 
 class Portfolio {
 public:
-    struct PortfolioConfig {
-        double initial_capital;
-        double max_leverage;
-        double margin_requirement;
-        std::unordered_map<std::string, double> position_limits;
-        std::unordered_map<std::string, double> risk_limits;
-    };
+    Portfolio(double initial_capital) 
+        : initial_capital_(initial_capital)
+        , current_capital_(initial_capital)
+        , current_position_(0)
+        , total_trades_(0)
+        , winning_trades_(0)
+        , total_profit_(0.0)
+        , total_loss_(0.0)
+        , max_drawdown_(0.0)
+        , peak_capital_(initial_capital)
+        , returns_()
+        , daily_returns_()
+    {}
 
-    Portfolio(PortfolioConfig config);
+    void processSignal(const MarketData& data, double signal) {
+        // Calculate P&L from previous position
+        if (current_position_ != 0) {
+            double pnl = current_position_ * (data.close - prev_close_);
+            current_capital_ += pnl;
+            
+            // Update trade statistics
+            if (pnl > 0) {
+                total_profit_ += pnl;
+                winning_trades_++;
+            } else if (pnl < 0) {
+                total_loss_ -= pnl;  // Convert to positive for calculations
+            }
+            if (pnl != 0) total_trades_++;
+            
+            // Update drawdown
+            if (current_capital_ > peak_capital_) {
+                peak_capital_ = current_capital_;
+            } else {
+                double drawdown = (peak_capital_ - current_capital_) / peak_capital_;
+                max_drawdown_ = std::max(max_drawdown_, drawdown);
+            }
+            
+            // Store daily return
+            double daily_return = pnl / current_capital_;
+            daily_returns_.push_back(daily_return);
+            returns_.push_back(daily_return);
+        }
+        
+        // Update position based on signal
+        current_position_ = signal * current_capital_ / data.close;
+        prev_close_ = data.close;
+    }
 
-    // Setup methods
-    void addInstrument(std::shared_ptr<Instrument> instrument);
-    void addStrategy(std::shared_ptr<Strategy> strategy, double weight);
-    void setRiskEngine(std::shared_ptr<RiskEngine> risk_engine);
-    void addPortfolioRule(std::function<void(Portfolio&)> rule);
+    void updateMetrics(const MarketData& data) {
+        // Update time-based metrics here if needed
+    }
 
-    // Core portfolio methods
-    void update();  // Update portfolio state
-    void rebalance();  // Rebalance positions
-    void executeOrders();  // Execute pending orders
-    
-    // Risk management
-    void checkRiskLimits();
-    void applyStressTests();
-    void adjustPositions();
-    
-    // Position and exposure calculations
-    DataFrame getMultipliers() const;
-    DataFrame getPrices() const;
-    DataFrame getPositions() const;
-    DataFrame getExposure() const;
-    
-    // Risk and PnL
-    PnL getPnL() const;
-    RiskEngine::RiskMetrics getRiskMetrics() const;
-    double getCapitalUtilization() const;
+    // Performance metrics
+    double getTotalReturn() const {
+        return (current_capital_ - initial_capital_) / initial_capital_;
+    }
 
-    // Portfolio metrics
-    double getTotalValue() const;
-    double getMarginUsage() const;
-    std::vector<double> getStrategyWeights() const;
-    
-    // Event handlers
-    void onOrderFill(const Order& order);
-    void onMarketData(const MarketData& data);
+    double getAnnualizedReturn() const {
+        if (returns_.empty()) return 0.0;
+        double total_return = getTotalReturn();
+        double years = returns_.size() / 252.0;  // Assuming 252 trading days per year
+        return std::pow(1.0 + total_return, 1.0 / years) - 1.0;
+    }
 
-    void executeOrders(const DataFrame& trades_needed);
+    double getSharpeRatio() const {
+        if (daily_returns_.empty()) return 0.0;
+        
+        // Calculate mean return
+        double sum = 0.0;
+        for (double ret : daily_returns_) {
+            sum += ret;
+        }
+        double mean = sum / daily_returns_.size();
+        
+        // Calculate standard deviation
+        double sum_sq = 0.0;
+        for (double ret : daily_returns_) {
+            double diff = ret - mean;
+            sum_sq += diff * diff;
+        }
+        double std_dev = std::sqrt(sum_sq / (daily_returns_.size() - 1));
+        
+        // Annualize
+        return std::sqrt(252.0) * mean / std_dev;
+    }
+
+    double getWinRate() const {
+        return total_trades_ > 0 ? static_cast<double>(winning_trades_) / total_trades_ : 0.0;
+    }
+
+    double getProfitFactor() const {
+        return total_loss_ > 0 ? total_profit_ / total_loss_ : total_profit_ > 0 ? 1.0 : 0.0;
+    }
+
+    double getMaxDrawdown() const {
+        return max_drawdown_;
+    }
+
+    // New accessor methods
+    double getCurrentCapital() const { return current_capital_; }
+    double getCurrentPosition() const { return current_position_; }
+    int getTotalTrades() const { return total_trades_; }
+    int getWinningTrades() const { return winning_trades_; }
 
 private:
-    PortfolioConfig config_;
-    std::vector<std::shared_ptr<Instrument>> instruments_;
-    std::vector<std::pair<double, std::shared_ptr<Strategy>>> weighted_strategies_;
-    std::shared_ptr<RiskEngine> risk_engine_;
-    std::vector<std::function<void(Portfolio&)>> portfolio_rules_;
+    double initial_capital_;
+    double current_capital_;
+    double current_position_;
+    double prev_close_;
     
-    // Cache
-    mutable std::optional<DataFrame> multipliers_;
-    mutable std::optional<DataFrame> prices_;
-    mutable std::optional<DataFrame> positions_;
-    mutable std::optional<DataFrame> exposure_;
+    // Trade statistics
+    int total_trades_;
+    int winning_trades_;
+    double total_profit_;
+    double total_loss_;
+    double max_drawdown_;
+    double peak_capital_;
     
-    // Helper methods
-    void validateWeights() const;
-    void applyPositionLimits();
-    void applyRiskLimits();
-    void updateCache();
-
-    std::shared_ptr<ExecutionEngine> execution_engine_;
-    MarketImpact market_impact_;
-    TransactionCosts transaction_costs_;
-};
+    // Performance tracking
+    std::vector<double> returns_;
+    std::vector<double> daily_returns_;
+}; 
