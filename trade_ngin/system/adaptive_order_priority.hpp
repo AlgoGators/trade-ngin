@@ -8,6 +8,12 @@
 #include <functional>
 #include <unordered_map>
 #include <mutex>
+#include "api_handler.hpp"
+#include "contract.hpp"
+
+// Forward declarations
+class Contract;
+class ApiHandler;
 
 // Mock configuration of mocking into IB
 static const char* LOCALHOST = "127.0.0.1";
@@ -21,6 +27,17 @@ enum class AdaptiveOrderPriority {
     SLOW,     // Cost-sensitive execution
     PASSIVE   // Liquidity providing
 };
+
+// Convert enum to string
+inline std::string to_string(AdaptiveOrderPriority priority) {
+    switch (priority) {
+        case AdaptiveOrderPriority::URGENT: return "URGENT";
+        case AdaptiveOrderPriority::NORMAL: return "NORMAL";
+        case AdaptiveOrderPriority::SLOW: return "SLOW";
+        case AdaptiveOrderPriority::PASSIVE: return "PASSIVE";
+        default: return "UNKNOWN";
+    }
+}
 
 // Order side
 enum class OrderSide {
