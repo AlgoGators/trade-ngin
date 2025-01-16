@@ -4,56 +4,52 @@
 #include "risk_engine.hpp"
 #include "execution_engine.hpp"
 #include "data_client.hpp"
+#include "database_interface.hpp"
 
 class TradingSystem {
 public:
-    TradingSystem(double initial_capital, std::shared_ptr<DataClient> data_client)
+    TradingSystem(double initial_capital, 
+                  const std::string& databento_api_key)
         : portfolio_(Portfolio::PortfolioConfig{
               .initial_capital = initial_capital,
               .max_leverage = 2.0,
               .margin_requirement = 0.5
           }),
-          data_client_(data_client),
+          data_client_(std::make_shared<DatabentoClient>(databento_api_key)),
+          db_(std::make_unique<DatabaseInterface>()),
           risk_engine_(std::make_shared<RiskEngine>()),
           execution_engine_(std::make_shared<ExecutionEngine>(
               std::make_shared<OrderManager>()
           )) {
         portfolio_.setRiskEngine(risk_engine_);
+        portfolio_.setDataClient(data_client_);
     }
 
-    void addInstrument(std::unique_ptr<Instrument> instrument) {
-        portfolio_.addInstrument(std::move(instrument));
-    }
-
-    void addStrategy(std::unique_ptr<Strategy> strategy, double weight) {
-        portfolio_.addStrategy(std::move(strategy), weight);
-    }
-
-    void update() {
-        // Update market data
-        portfolio_.update();
-        
-        // Check risk limits before executing
-        auto risk_metrics = risk_engine_->calculateRisk(portfolio_);
-        if (risk_metrics.leverage > portfolio_.getConfig().max_leverage ||
-            risk_metrics.var > portfolio_.getConfig().risk_limits["VAR"]) {
-            portfolio_.adjustPositions(risk_metrics);
+    void initialize() {
+        // Load available symbols from database
+        auto symbols_table = db_->getSymbolsAsArrowTable();
+        for (const auto& symbol : extractSymbols(symbols_table)) {
+            auto instrument = std::make_unique<Future>(
+                symbol, Dataset::CME, 50.0  // Example multiplier
+            );
+            portfolio_.addInstrument(std::move(instrument));
         }
-        
-        // Execute trades if within limits
-        portfolio_.rebalance();
     }
 
-    void execute() {
-        portfolio_.rebalance();
+    void run() {
+        while (running_) {
+            update();
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        }
     }
-
-    const Portfolio& getPortfolio() const { return portfolio_; }
-    PnL getPnL() const { return portfolio_.getPnL(); }
 
 private:
     Portfolio portfolio_;
     std::shared_ptr<DataClient> data_client_;
+    std::unique_ptr<DatabaseInterface> db_;
     std::shared_ptr<RiskEngine> risk_engine_;
     std::shared_ptr<ExecutionEngine> execution_engine_;
+    bool running_ = true;
+    
+    std::vector<std::string> extractSymbols(std::shared_ptr<arrow::Table> table);
 }; 

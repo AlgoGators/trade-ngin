@@ -1,7 +1,7 @@
 set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 
 cmake_minimum_required(VERSION 3.10)
-project(TradeEngine)
+project(trade_ngin)
 
 # Set C++ standard
 set(CMAKE_CXX_STANDARD 20)
@@ -51,5 +51,8 @@ target_link_libraries(database_test
     PRIVATE libpqxx::pqxx
     libpq
     ws2_32
+
     arrow
+    pq
+    pqxx
 )
