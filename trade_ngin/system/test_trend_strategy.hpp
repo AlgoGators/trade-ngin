@@ -7,69 +7,24 @@
 #include <algorithm>
 #include <iostream>
 #include <limits>
-
-struct MarketData {
-    std::string timestamp;
-    std::string symbol;
-    double open;
-    double high;
-    double low;
-    double close;
-    double volume;
-};
+#include "market_data.hpp"
+#include <numeric>
 
 class TrendStrategy {
 public:
-    TrendStrategy(double capital = 500000.0, double contract_size = 1.0, 
-                 double risk_target = 0.2, double FX = 1.0, double idm = 2.5)
-        : capital_(capital), multiplier_(contract_size), 
-          risk_target_(risk_target), FX_(FX), idm_(idm) {}
+    TrendStrategy(double initial_capital, double vol_target, double min_vol, double max_vol, double max_leverage)
+        : initial_capital_(initial_capital), vol_target_(vol_target), min_vol_(min_vol), max_vol_(max_vol), max_leverage_(max_leverage) {}
 
     // Main signal generator
-    std::vector<double> generateSignals(const std::vector<MarketData>& data) {
-        if (data.empty()) return {};
-
-        // Extract prices
-        std::vector<double> prices;
-        prices.reserve(data.size());
-        for (const auto& bar : data) {
-            prices.push_back(bar.close);
-        }
-
-        // Initialize EMA window pairs
-        auto emaWindows = initializeEMAWindows();
-
-        // Compute standard deviations once
-        std::vector<double> blendedStdDev;
-        calculateShortAndDynamicLongStdDev(prices, 32, 2520, blendedStdDev);
-
-        // Calculate EMACs for all window pairs
-        auto emaCrossovers = computeEMACrossovers(prices, emaWindows);
-
-        // Compute raw forecasts
-        auto rawForecasts = computeRawForecasts(prices, emaWindows, emaCrossovers, blendedStdDev);
-
-        // Normalize raw forecasts and cap values between -20 and 20
-        normalizeAndCapForecasts(rawForecasts);
-
-        // Combine forecasts into a single vector with 1.26 scaling
-        auto combinedForecast = combineForecasts(prices.size(), rawForecasts);
-
-        // Calculate positions with buffer zones
-        std::vector<double> lowerBuffer, upperBuffer;
-        auto rawPositions = calculatePositionsFromForecast(combinedForecast, prices, blendedStdDev, 
-                                                         lowerBuffer, upperBuffer);
-
-        // Apply buffering to reduce trading frequency
-        return bufferPositions(rawPositions, lowerBuffer, upperBuffer);
-    }
+    std::vector<double> generateSignals(const std::vector<MarketData>& data);
+    void runBacktest(const std::string& connection_string);
 
 private:
-    double capital_;
-    double multiplier_;
-    double risk_target_;
-    double FX_;
-    double idm_;
+    double initial_capital_;
+    double vol_target_;
+    double min_vol_;
+    double max_vol_;
+    double max_leverage_;
 
     std::vector<std::pair<int, int>> initializeEMAWindows() {
         return {{2, 8}, {4, 16}, {8, 32}, {16, 64}, {32, 128}, {64, 256}};
@@ -209,12 +164,12 @@ private:
         
         for (size_t i = 255; i < prices.size(); ++i) {
             if (!std::isnan(forecast[i]) && !std::isnan(prices[i])) {
-                positions[i] = (forecast[i] * capital_ * idm_ * risk_target_) /
-                             (10.0 * multiplier_ * prices[i] * FX_ * blendedStdDev[i]);
+                positions[i] = (forecast[i] * initial_capital_ * vol_target_) /
+                             (10.0 * prices[i] * blendedStdDev[i]);
                 
                 // Calculate buffer width
-                double Bw = (0.1 * capital_ * idm_ * risk_target_) /
-                          (multiplier_ * prices[i] * FX_ * blendedStdDev[i]);
+                double Bw = (0.1 * initial_capital_ * vol_target_) /
+                          (prices[i] * blendedStdDev[i]);
                 
                 lowerBuffer[i] = std::round(positions[i] - Bw);
                 upperBuffer[i] = std::round(positions[i] + Bw);

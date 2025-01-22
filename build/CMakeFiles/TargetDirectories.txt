@@ -1,0 +1,12 @@
+/Users/ryanmathieu/Documents/GitHub/trade-ngin/build/CMakeFiles/test_db.dir
+/Users/ryanmathieu/Documents/GitHub/trade-ngin/build/CMakeFiles/mock_trading.dir
+/Users/ryanmathieu/Documents/GitHub/trade-ngin/build/CMakeFiles/test_vol_regime.dir
+/Users/ryanmathieu/Documents/GitHub/trade-ngin/build/CMakeFiles/test.dir
+/Users/ryanmathieu/Documents/GitHub/trade-ngin/build/CMakeFiles/edit_cache.dir
+/Users/ryanmathieu/Documents/GitHub/trade-ngin/build/CMakeFiles/rebuild_cache.dir
+/Users/ryanmathieu/Documents/GitHub/trade-ngin/build/tests/CMakeFiles/test_strategy.dir
+/Users/ryanmathieu/Documents/GitHub/trade-ngin/build/tests/CMakeFiles/test_portfolio.dir
+/Users/ryanmathieu/Documents/GitHub/trade-ngin/build/tests/CMakeFiles/test_integration.dir
+/Users/ryanmathieu/Documents/GitHub/trade-ngin/build/tests/CMakeFiles/test.dir
+/Users/ryanmathieu/Documents/GitHub/trade-ngin/build/tests/CMakeFiles/edit_cache.dir
+/Users/ryanmathieu/Documents/GitHub/trade-ngin/build/tests/CMakeFiles/rebuild_cache.dir

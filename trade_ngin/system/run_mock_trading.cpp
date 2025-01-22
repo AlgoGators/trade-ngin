@@ -1,5 +1,6 @@
 #include "test_trend_strategy.hpp"
-#include "database_interface.hpp"
+#include "../data/data_interface.hpp"
+#include "../data/ohlcv_data_handler.hpp"
 #include "mock_ib_interface.hpp"
 #include <memory>
 #include <iostream>
@@ -9,26 +10,33 @@
 #include <unordered_map>
 #include <chrono>
 #include <thread>
+#include <string>
+#include <vector>
 
 struct SymbolPosition {
+    std::string symbol;
     double position = 0.0;
     double signal = 0.0;
     double avg_price = 0.0;
     double unrealized_pnl = 0.0;
     double realized_pnl = 0.0;
-    double capital_weight = 0.0;
-    int total_trades = 0;
+    double pnl = 0.0;
     int trades = 0;
     int winning_trades = 0;
-    double max_profit_trade = 0.0;
-    double max_loss_trade = 0.0;
+    int total_trades = 0;
+    double capital_weight = 0.0;
     double avg_win = 0.0;
     double avg_loss = 0.0;
+    double max_profit_trade = 0.0;
+    double max_loss_trade = 0.0;
     double avg_hold_time_wins = 0.0;
     double avg_hold_time_losses = 0.0;
     std::string last_trade_time;
-    std::vector<std::tuple<std::string, double, double>> history;
     bool in_position = false;
+    std::vector<std::tuple<std::string, double, double>> history;
+
+    SymbolPosition() = default;
+    SymbolPosition(const std::string& s) : symbol(s) {}
 };
 
 // Global map to store positions for each symbol
@@ -262,120 +270,109 @@ void updatePosition(const std::string& symbol, double new_signal, double price, 
     pos.unrealized_pnl = (price - pos.avg_price) * pos.position * multiplier;
 }
 
-int main() {
+int main(int argc, char* argv[]) {
     try {
-        // Initialize database connection
-        DatabaseInterface db("postgresql://postgres:algogators@3.140.200.228:5432/algo_data");
-        
-        // Initialize mock IB interface
-        MockIBInterface ib;
-        
-        // Get data range
-        std::string start_date = db.getEarliestDate();
-        std::string end_date = db.getLatestDate();
-        std::cout << "Database connection successful!" << std::endl;
-        std::cout << "Data range: " << start_date << " to " << end_date << std::endl;
-
-        // Get all available symbols
-        std::vector<std::string> all_symbols = db.getAllSymbols();  // Get all symbols from database
-        std::cout << "\nTrading " << all_symbols.size() << " symbols:" << std::endl;
-        for (const auto& symbol : all_symbols) {
-            std::cout << symbol << " ";
+        if (argc != 2) {
+            std::cerr << "Usage: " << argv[0] << " <connection_string>\n";
+            return 1;
         }
-        std::cout << std::endl;
 
-        // Initialize portfolio tracking
-        double current_capital = initial_capital;
-        
-        // Initialize strategy with successful configuration
-        auto strategy = std::make_unique<TrendStrategy>();
-        
-        // Configure strategy parameters
-        strategy->configureSignals(ma_params, vol_params, regime_params, momentum_params, weight_params);
+        // Initialize data handler
+        OHLCVDataHandler data_handler(argv[1]);
+
+        // Create strategy with default parameters
+        auto strategy = std::make_shared<TrendStrategy>(1000000.0, 0.15, 0.05, 0.30, 2.0);
+
+        // Get list of symbols to trade
+        auto symbols_table = data_handler.getSymbolsAsArrowTable();
+        if (!symbols_table || symbols_table->num_rows() == 0) {
+            throw std::runtime_error("No symbols found in database");
+        }
+
+        // Extract symbols from Arrow table
+        auto symbols_array = std::static_pointer_cast<arrow::ChunkedArray>(symbols_table->column(0));
+        std::vector<std::string> symbols;
+        for (int chunk_idx = 0; chunk_idx < symbols_array->num_chunks(); ++chunk_idx) {
+            auto chunk = std::static_pointer_cast<arrow::StringArray>(symbols_array->chunk(chunk_idx));
+            for (int i = 0; i < chunk->length(); ++i) {
+                symbols.push_back(chunk->GetString(i));
+            }
+        }
+
+        // Initialize positions for each symbol
+        std::vector<SymbolPosition> positions;
+        positions.reserve(symbols.size());
+        for (const auto& symbol : symbols) {
+            positions.emplace_back(symbol);
+        }
+
+        // Get date range
+        std::string start_date = data_handler.getEarliestDate();
+        std::string end_date = data_handler.getLatestDate();
 
         // Process each symbol
-        for (const auto& symbol : all_symbols) {
-            // Get market data for symbol
-            auto data_table = db.getOHLCVArrowTable(start_date, end_date, {symbol});
+        for (auto& pos : positions) {
+            // Get OHLCV data
+            auto data_table = data_handler.getOHLCVArrowTable(start_date, end_date, {pos.symbol});
+            if (!data_table || data_table->num_rows() == 0) {
+                continue;
+            }
+
+            // Convert Arrow table to vector of MarketData
             std::vector<MarketData> market_data;
-            
-            for (int64_t i = 0; i < data_table->num_rows(); ++i) {
+            auto timestamp_array = std::static_pointer_cast<arrow::ChunkedArray>(data_table->GetColumnByName("timestamp"));
+            auto open_array = std::static_pointer_cast<arrow::ChunkedArray>(data_table->GetColumnByName("open"));
+            auto high_array = std::static_pointer_cast<arrow::ChunkedArray>(data_table->GetColumnByName("high"));
+            auto low_array = std::static_pointer_cast<arrow::ChunkedArray>(data_table->GetColumnByName("low"));
+            auto close_array = std::static_pointer_cast<arrow::ChunkedArray>(data_table->GetColumnByName("close"));
+            auto volume_array = std::static_pointer_cast<arrow::ChunkedArray>(data_table->GetColumnByName("volume"));
+
+            size_t num_rows = data_table->num_rows();
+            market_data.reserve(num_rows);
+
+            for (int64_t i = 0; i < num_rows; ++i) {
                 MarketData bar;
-                bar.timestamp = std::static_pointer_cast<arrow::StringArray>(data_table->column(0)->chunk(0))->GetString(i);
-                bar.open      = std::static_pointer_cast<arrow::DoubleArray>(data_table->column(1)->chunk(0))->Value(i);
-                bar.high      = std::static_pointer_cast<arrow::DoubleArray>(data_table->column(2)->chunk(0))->Value(i);
-                bar.low       = std::static_pointer_cast<arrow::DoubleArray>(data_table->column(3)->chunk(0))->Value(i);
-                bar.close     = std::static_pointer_cast<arrow::DoubleArray>(data_table->column(4)->chunk(0))->Value(i);
-                bar.volume    = std::static_pointer_cast<arrow::DoubleArray>(data_table->column(5)->chunk(0))->Value(i);
-                bar.symbol    = symbol;
+                bar.symbol = pos.symbol;
+                bar.timestamp = std::static_pointer_cast<arrow::StringArray>(timestamp_array->chunk(0))->GetString(i);
+                bar.open = std::static_pointer_cast<arrow::DoubleArray>(open_array->chunk(0))->Value(i);
+                bar.high = std::static_pointer_cast<arrow::DoubleArray>(high_array->chunk(0))->Value(i);
+                bar.low = std::static_pointer_cast<arrow::DoubleArray>(low_array->chunk(0))->Value(i);
+                bar.close = std::static_pointer_cast<arrow::DoubleArray>(close_array->chunk(0))->Value(i);
+                bar.volume = std::static_pointer_cast<arrow::DoubleArray>(volume_array->chunk(0))->Value(i);
                 market_data.push_back(bar);
             }
 
-            // Generate signals for this symbol
+            // Generate signals
             auto signals = strategy->generateSignals(market_data);
 
-            // Track positions and execute mock trades
-            for (size_t i = 1; i < market_data.size(); ++i) {
-                double signal = signals[i];
-                double price = market_data[i].close;
-                double prev_price = market_data[i-1].close;
-                
-                // Calculate volatility-scaled position size
-                double daily_return = (price / prev_price) - 1.0;
-                double vol_scalar = 0.20 / (std::abs(daily_return) * std::sqrt(252.0) + 1e-10);  // Target 20% vol
-                
-                // Contract-specific position limits
-                double max_position_multiplier = 1.0;
-                if (symbol.substr(0, 2) == "6J" || symbol.substr(0, 2) == "6E" || 
-                    symbol.substr(0, 2) == "6B" || symbol.substr(0, 2) == "6C") {
-                    max_position_multiplier = 0.3;  // Reduce currency futures position sizes by 70%
-                    vol_scalar *= 0.7;  // Less aggressive volatility scaling for currencies
-                } else if (symbol.substr(0, 2) == "CL") {
-                    max_position_multiplier = 1.5;  // Allow 50% larger positions for CL
-                }
-                
-                // Scale position by volatility and apply reasonable contract size limits
-                double capital_per_symbol = current_capital / all_symbols.size();
-                double notional_position = signal * capital_per_symbol * vol_scalar;
-                double max_contracts = capital_per_symbol * 0.1 * max_position_multiplier / price;
-                double target_position = std::max(std::min(notional_position / price, max_contracts), -max_contracts);
-                double position_change = target_position - positions[symbol].position;
-                
-                // Execute mock trade if position change is significant
-                if (std::abs(position_change) > 0.01) {  // Minimum 0.01 contract size change
-                    // Update position and check for exits first
-                    updatePosition(symbol, signal, price, market_data[i].timestamp);
-                    
-                    // Mock execution for logging only
-                    if (std::abs(position_change) > 0.01) {
-                        ib.placeOrder(symbol, position_change, price, position_change > 0);
+            // Process signals and update metrics
+            for (size_t i = 1; i < signals.size(); ++i) {
+                if (signals[i] != signals[i-1]) {
+                    // Update position metrics
+                    if (pos.position != 0) {
+                        double trade_pnl = pos.position * (market_data[i].close - pos.avg_price);
+                        pos.pnl += trade_pnl;
+                        pos.trades++;
+                        if (trade_pnl > 0) {
+                            pos.winning_trades++;
+                        }
                     }
+                    pos.position = signals[i];
+                    pos.avg_price = market_data[i].close;
                 }
-                
-                // Update unrealized P&L
-                positions[symbol].unrealized_pnl = positions[symbol].position * (price - positions[symbol].avg_price);
             }
 
-            // Print interim report after each symbol
-            // Convert unordered_map to map for printing
-            std::map<std::string, SymbolPosition> ordered_positions(positions.begin(), positions.end());
-            printPortfolioReport(ordered_positions, initial_capital);
-            
-            // Sleep briefly to simulate real-time trading
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            // Print results for this symbol
+            std::cout << "Symbol: " << pos.symbol << "\n";
+            std::cout << "Final P&L: " << pos.pnl << "\n";
+            std::cout << "Total Trades: " << pos.trades << "\n";
+            std::cout << "Win Rate: " << (pos.trades > 0 ? (double)pos.winning_trades / pos.trades : 0.0) << "\n";
+            std::cout << "-------------------\n";
         }
 
-        // Print final portfolio report
-        std::cout << "\nFinal Portfolio Report:" << std::endl;
-        std::cout << "======================" << std::endl;
-        // Convert unordered_map to map for printing
-        std::map<std::string, SymbolPosition> ordered_positions(positions.begin(), positions.end());
-        printPortfolioReport(ordered_positions, initial_capital);
-
+        return 0;
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << "\n";
-        return EXIT_FAILURE;
+        return 1;
     }
-
-    return EXIT_SUCCESS;
 } 
