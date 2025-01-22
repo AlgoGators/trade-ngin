@@ -1,6 +1,0 @@
-test_strategy 4 0.0778946
-test_portfolio 0 0
-test_integration 0 0
----
-test_portfolio
-test_integration

@@ -1,3 +1,0 @@
-C:/Users/kbott/OneDrive/Desktop/School/UF Algo Fund/trade-ngin-1/trade_ngin/build/CMakeFiles/database_test.dir
-C:/Users/kbott/OneDrive/Desktop/School/UF Algo Fund/trade-ngin-1/trade_ngin/build/CMakeFiles/ALL_BUILD.dir
-C:/Users/kbott/OneDrive/Desktop/School/UF Algo Fund/trade-ngin-1/trade_ngin/build/CMakeFiles/ZERO_CHECK.dir
