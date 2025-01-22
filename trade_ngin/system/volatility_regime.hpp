@@ -7,9 +7,11 @@
 class VolatilityRegime {
 public:
     struct RegimeConfig {
-        int ewma_span = 10;     // EWMA span for smoothing
-        double scalar_low = 2.0; // Scalar for low volatility (Q = 0.0)
-        double scalar_high = 0.5;// Scalar for high volatility (Q = 1.0)
+        int ewma_span;     // EWMA span for smoothing
+        double scalar_low; // Scalar for low volatility (Q = 0.0)
+        double scalar_high;// Scalar for high volatility (Q = 1.0)
+        
+        RegimeConfig() : ewma_span(10), scalar_low(2.0), scalar_high(0.5) {}
     };
 
     VolatilityRegime(const RegimeConfig& config = RegimeConfig()) 

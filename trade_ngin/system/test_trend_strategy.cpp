@@ -1,5 +1,5 @@
 #include "test_trend_strategy.hpp"
-#include "database_interface.hpp"
+#include "../data/ohlcv_data_handler.hpp"
 #include "mock_ib_interface.hpp"  // Mock IB trading interface
 #include <memory>
 #include <iostream>
@@ -63,10 +63,84 @@ struct SymbolPosition {
     }
 };
 
-int main() {
+std::vector<double> TrendStrategy::generateSignals(const std::vector<MarketData>& data) {
+    std::vector<double> signals(data.size(), 0.0);
+    if (data.size() < 30) return signals;
+
+    // Parameters for signal generation
+    const int fast_period = 5;
+    const int slow_period = 15;
+    const int vol_window = 10;
+    const int momentum_days = 3;
+
+    // Calculate EMAs and volatility
+    std::vector<double> fast_ema(data.size(), 0.0);
+    std::vector<double> slow_ema(data.size(), 0.0);
+    std::vector<double> volatility(data.size(), 0.0);
+    std::vector<double> returns(data.size(), 0.0);
+
+    // Calculate returns
+    for (size_t i = 1; i < data.size(); i++) {
+        returns[i] = (data[i].close - data[i-1].close) / data[i-1].close;
+    }
+
+    // Initialize EMAs
+    fast_ema[0] = data[0].close;
+    slow_ema[0] = data[0].close;
+
+    // Calculate EMAs and volatility
+    for (size_t i = 1; i < data.size(); i++) {
+        // Update EMAs
+        double fast_alpha = 2.0 / (fast_period + 1);
+        double slow_alpha = 2.0 / (slow_period + 1);
+        fast_ema[i] = data[i].close * fast_alpha + fast_ema[i-1] * (1 - fast_alpha);
+        slow_ema[i] = data[i].close * slow_alpha + slow_ema[i-1] * (1 - slow_alpha);
+
+        // Calculate volatility (standard deviation of returns)
+        if (i >= vol_window) {
+            double sum = 0.0;
+            double sum_sq = 0.0;
+            for (int j = 0; j < vol_window; j++) {
+                sum += returns[i-j];
+                sum_sq += returns[i-j] * returns[i-j];
+            }
+            double mean = sum / vol_window;
+            volatility[i] = std::sqrt(sum_sq/vol_window - mean*mean);
+        }
+    }
+
+    // Generate signals
+    for (size_t i = momentum_days; i < data.size(); i++) {
+        // Calculate trend signal
+        double trend = (fast_ema[i] - slow_ema[i]) / slow_ema[i];
+        
+        // Calculate momentum (average of recent returns)
+        double momentum = 0.0;
+        for (int j = 0; j < momentum_days; j++) {
+            momentum += returns[i-j];
+        }
+        momentum /= momentum_days;
+
+        // Combine signals with dynamic scaling based on volatility
+        double vol_scale = 1.0;
+        if (volatility[i] > 0) {
+            vol_scale = 0.02 / volatility[i]; // Target 2% volatility
+        }
+
+        // Generate raw signal
+        double raw_signal = (trend * 30.0 + momentum * 70.0) * vol_scale;
+        
+        // Apply position limits
+        signals[i] = std::max(-20.0, std::min(20.0, raw_signal));
+    }
+
+    return signals;
+}
+
+void TrendStrategy::runBacktest(const std::string& connection_string) {
     try {
         // Initialize database connection
-        DatabaseInterface db("postgresql://postgres:algogators@3.140.200.228:5432/algo_data");
+        OHLCVDataHandler db(connection_string);
         
         // Initialize mock IB interface
         MockIBInterface ib;
@@ -77,8 +151,16 @@ int main() {
         std::cout << "Database connection successful!" << std::endl;
         std::cout << "Data range: " << start_date << " to " << end_date << std::endl;
 
-        // Get all available symbols
-        std::vector<std::string> all_symbols = db.getAllSymbols();
+        // Get all symbols from the database
+        auto symbols_table = db.getSymbolsAsArrowTable();
+        auto chunked_array = symbols_table->column(0);
+        std::vector<std::string> all_symbols;
+        for (int c = 0; c < chunked_array->num_chunks(); ++c) {
+            auto chunk = std::static_pointer_cast<arrow::StringArray>(chunked_array->chunk(c));
+            for (int64_t i = 0; i < chunk->length(); ++i) {
+                all_symbols.push_back(chunk->GetString(i));
+            }
+        }
         std::cout << "\nTrading " << all_symbols.size() << " symbols:" << std::endl;
         for (const auto& symbol : all_symbols) {
             std::cout << symbol << " ";
@@ -89,39 +171,7 @@ int main() {
         double initial_capital = 500000.0;  // $500k initial capital
         std::map<std::string, SymbolPosition> positions;
         
-        // Initialize strategy
-        auto strategy = std::make_unique<TrendStrategy>();
-        
-        // Configure strategy parameters
-        std::unordered_map<std::string, double> ma_params = {
-            {"short_window_1", 20}, {"short_window_2", 21}, {"short_window_3", 22},
-            {"short_window_4", 23}, {"short_window_5", 24}, {"short_window_6", 25},
-            {"long_window_1", 252}, {"long_window_2", 504}, {"long_window_3", 756}
-        };
-        
-        std::unordered_map<std::string, double> vol_params = {
-            {"window", 20},
-            {"target_vol", 0.12},       // 12% target volatility
-            {"high_vol_threshold", 0.15},  // 15% annualized
-            {"low_vol_threshold", 0.09}  // 9% annualized
-        };
-        
-        std::unordered_map<std::string, double> regime_params = {
-            {"threshold", 0.5}  // If combined signal is "weak" vs. vol, cut in half
-        };
-        
-        std::unordered_map<std::string, double> momentum_params = {
-            {"lookback", 20}  // 20-day momentum lookback
-        };
-        
-        std::unordered_map<std::string, double> weight_params = {
-            {"short_weight", 0.1167},  // 70% / 6 = ~11.67% each short window
-            {"long_weight", 0.10}      // 30% / 3 = 10% each long window
-        };
-        
-        strategy->configureSignals(ma_params, vol_params, regime_params, momentum_params, weight_params);
-
-        // Process each symbol
+        // Get data for each symbol and generate signals
         for (const auto& symbol : all_symbols) {
             // Get market data for symbol
             auto data_table = db.getOHLCVArrowTable(start_date, end_date, {symbol});
@@ -140,7 +190,7 @@ int main() {
             }
 
             // Generate signals for this symbol
-            auto signals = strategy->generateSignals(market_data);
+            auto signals = generateSignals(market_data);
 
             // Track positions and execute mock trades
             for (size_t i = 1; i < market_data.size(); ++i) {
@@ -188,27 +238,24 @@ int main() {
         std::cout << "Total Return: " << ((current_capital / initial_capital - 1.0) * 100.0) << "%" << std::endl;
         std::cout << "\nOverall Statistics:" << std::endl;
         std::cout << "Total Trades: " << total_trades << std::endl;
-        std::cout << "Win Rate: " << std::fixed << std::setprecision(2) << win_rate << "%" << std::endl;
-        std::cout << "Realized P&L: $" << total_realized_pnl << std::endl;
-        std::cout << "Unrealized P&L: $" << total_unrealized_pnl << std::endl;
+        std::cout << "Win Rate: " << win_rate << "%" << std::endl;
         
-        std::cout << "\nPosition Summary:" << std::endl;
-        std::cout << "Symbol     Position    Weight     Avg Price    Unrealized P&L    Realized P&L" << std::endl;
-        std::cout << "------------------------------------------------------------------------" << std::endl;
-        
+        // Print individual symbol statistics
+        std::cout << "\nSymbol Statistics:" << std::endl;
+        std::cout << "Symbol\tPosition\tCapital Weight\tRealized P&L\tUnrealized P&L\tTrades\tWin Rate" << std::endl;
         for (const auto& [symbol, pos] : positions) {
-            std::cout << std::left << std::setw(10) << symbol 
-                      << std::right << std::setw(10) << std::fixed << std::setprecision(0) << pos.position 
-                      << std::setw(10) << std::fixed << std::setprecision(2) << (pos.capital_weight * 100.0) << "%"
-                      << std::setw(12) << std::fixed << std::setprecision(2) << pos.avg_price
-                      << std::setw(15) << std::fixed << std::setprecision(2) << pos.unrealized_pnl
-                      << std::setw(15) << std::fixed << std::setprecision(2) << pos.realized_pnl << std::endl;
+            double symbol_win_rate = pos.trades > 0 ? (pos.winning_trades * 100.0 / pos.trades) : 0.0;
+            std::cout << symbol << "\t"
+                     << pos.position << "\t"
+                     << pos.capital_weight << "\t"
+                     << pos.realized_pnl << "\t"
+                     << pos.unrealized_pnl << "\t"
+                     << pos.trades << "\t"
+                     << symbol_win_rate << "%" << std::endl;
         }
-
+        
     } catch (const std::exception& e) {
-        std::cerr << "Error: " << e.what() << std::endl;
-        return 1;
+        std::cerr << "Error in runBacktest: " << e.what() << std::endl;
+        throw;
     }
-
-    return 0;
 } 

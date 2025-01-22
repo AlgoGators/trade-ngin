@@ -1,4 +1,4 @@
-#include "../system/mean_reversion_strategy.hpp"
+#include "mean_reversion_strategy.hpp"
 #include "database_interface.hpp"
 #include <arrow/api.h>
 #include <iostream>

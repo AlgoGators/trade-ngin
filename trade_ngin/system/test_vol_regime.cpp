@@ -1,15 +1,17 @@
-#include "../system/volatility_regime.hpp"
-#include "database_interface.hpp"
+#include "volatility_regime.hpp"
+#include "../data/data_interface.hpp"
 #include <arrow/api.h>
 #include <iostream>
 #include <iomanip>
+#include <numeric>
+#include <algorithm>
 
 void printVolatilityRegimes(const std::string& symbol,
                            const std::vector<double>& prices,
                            const std::vector<double>& returns,
                            const std::vector<double>& fast_vol,
                            const std::vector<double>& slow_vol,
-                           const std::vector<VolatilityRegime::Regime>& regimes) {
+                           const std::vector<double>& multipliers) {
     
     std::cout << "\n=== Volatility Regime Analysis for " << symbol << " ===\n";
     
@@ -19,7 +21,7 @@ void printVolatilityRegimes(const std::string& symbol,
               << std::setw(15) << "Return"
               << std::setw(15) << "Fast Vol"
               << std::setw(15) << "Slow Vol"
-              << std::setw(15) << "Regime"
+              << std::setw(15) << "Multiplier"
               << "\n";
               
     // Print data for visualization
@@ -27,73 +29,37 @@ void printVolatilityRegimes(const std::string& symbol,
     size_t start = std::max(0, static_cast<int>(prices.size()) - window);
     
     for (size_t i = start; i < prices.size(); ++i) {
-        std::string regime_str;
-        if (i >= window) {
-            switch (regimes[i]) {
-                case VolatilityRegime::Regime::HIGH_VOLATILITY:
-                    regime_str = "HIGH";
-                    break;
-                case VolatilityRegime::Regime::LOW_VOLATILITY:
-                    regime_str = "LOW";
-                    break;
-                default:
-                    regime_str = "NORMAL";
-            }
-        } else {
-            regime_str = "N/A";
-        }
-        
         std::cout << std::fixed << std::setprecision(2)
                   << std::setw(10) << i
                   << std::setw(15) << prices[i]
                   << std::setw(15) << (i > 0 ? returns[i-1] * 100 : 0)
                   << std::setw(15) << fast_vol[i] * 100
                   << std::setw(15) << slow_vol[i] * 100
-                  << std::setw(15) << regime_str
+                  << std::setw(15) << multipliers[i]
                   << "\n";
     }
     
-    // Calculate regime statistics
-    int high_vol_count = 0;
-    int low_vol_count = 0;
-    int normal_vol_count = 0;
-    
-    for (const auto& regime : regimes) {
-        switch (regime) {
-            case VolatilityRegime::Regime::HIGH_VOLATILITY:
-                high_vol_count++;
-                break;
-            case VolatilityRegime::Regime::LOW_VOLATILITY:
-                low_vol_count++;
-                break;
-            case VolatilityRegime::Regime::NORMAL_VOLATILITY:
-                normal_vol_count++;
-                break;
-        }
-    }
+    // Calculate multiplier statistics
+    double avg_multiplier = std::accumulate(multipliers.begin(), multipliers.end(), 0.0) / multipliers.size();
+    double min_multiplier = *std::min_element(multipliers.begin(), multipliers.end());
+    double max_multiplier = *std::max_element(multipliers.begin(), multipliers.end());
     
     // Print summary statistics
-    std::cout << "\nRegime Summary:\n";
-    std::cout << "High Volatility Days: " << high_vol_count << " ("
-              << (high_vol_count * 100.0 / regimes.size()) << "%)\n";
-    std::cout << "Low Volatility Days: " << low_vol_count << " ("
-              << (low_vol_count * 100.0 / regimes.size()) << "%)\n";
-    std::cout << "Normal Volatility Days: " << normal_vol_count << " ("
-              << (normal_vol_count * 100.0 / regimes.size()) << "%)\n";
+    std::cout << "\nMultiplier Summary:\n";
+    std::cout << "Average Multiplier: " << avg_multiplier << "\n";
+    std::cout << "Minimum Multiplier: " << min_multiplier << "\n";
+    std::cout << "Maximum Multiplier: " << max_multiplier << "\n";
 }
 
 int main() {
     try {
-        // Initialize database interface
-        DatabaseInterface db("postgresql://localhost:5432/trade_ngin");
+        // Initialize database interface with a shared pointer to DatabaseClient
+        auto db_client = std::make_shared<DatabaseClient>("postgresql://localhost:5432/trade_ngin");
+        DataInterface db(db_client);
         
         // Configure volatility regime detection
         VolatilityRegime::RegimeConfig config;
-        config.fast_window = 20;     // 20-day fast volatility
-        config.slow_window = 60;     // 60-day slow volatility
-        config.high_threshold = 1.5;  // 50% above baseline for high vol
-        config.low_threshold = 0.5;   // 50% below baseline for low vol
-        config.use_relative = true;   // Use relative vol comparison
+        // Using default values from constructor
         
         VolatilityRegime vol_regime(config);
         
@@ -102,7 +68,7 @@ int main() {
         
         for (const auto& symbol : test_symbols) {
             // Fetch data
-            auto arrow_table = db.getOHLCVArrowTable("2023-01-01", "2023-12-31", {symbol});
+            auto arrow_table = db.getOHLCV(symbol, "2023-01-01", "2023-12-31");
             
             // Extract close prices
             auto close_col = std::static_pointer_cast<arrow::DoubleArray>(arrow_table->column(5)->chunk(0));
@@ -118,21 +84,34 @@ int main() {
                 returns.push_back((prices[i] / prices[i-1]) - 1.0);
             }
             
-            // Calculate rolling volatilities
-            auto fast_vol = vol_regime.calculateRollingVol(returns, config.fast_window);
-            auto slow_vol = vol_regime.calculateRollingVol(returns, config.slow_window);
+            // Calculate volatility and multipliers
+            std::vector<double> historical_vol;
+            std::vector<double> multipliers;
             
-            // Detect regimes
-            std::vector<VolatilityRegime::Regime> regimes;
-            for (size_t i = 0; i < returns.size(); ++i) {
-                auto regime = vol_regime.detectRegime(
-                    std::vector<double>(returns.begin(), returns.begin() + i + 1)
-                );
-                regimes.push_back(regime);
+            // Use a rolling window to calculate historical volatility
+            const int vol_window = 20;  // 20-day volatility
+            for (size_t i = vol_window; i < returns.size(); ++i) {
+                // Calculate volatility for this window
+                double sum_squared = 0.0;
+                for (size_t j = i - vol_window; j < i; ++j) {
+                    sum_squared += returns[j] * returns[j];
+                }
+                double vol = std::sqrt(sum_squared / vol_window) * std::sqrt(252.0);  // Annualize
+                historical_vol.push_back(vol);
+                
+                // Calculate multiplier based on current vol and history
+                double multiplier = vol_regime.calculateVolMultiplier(vol, historical_vol);
+                multipliers.push_back(multiplier);
+            }
+            
+            // Pad the beginning with the first calculated values
+            if (!historical_vol.empty()) {
+                historical_vol.insert(historical_vol.begin(), vol_window, historical_vol.front());
+                multipliers.insert(multipliers.begin(), vol_window, multipliers.front());
             }
             
             // Print analysis
-            printVolatilityRegimes(symbol, prices, returns, fast_vol, slow_vol, regimes);
+            printVolatilityRegimes(symbol, prices, returns, historical_vol, historical_vol, multipliers);
         }
         
     } catch (const std::exception& e) {

@@ -1,0 +1,234 @@
+Start testing: Jan 22 01:47 EST
+----------------------------------------------------------
+1/3 Testing: test_strategy
+1/3 Test: test_strategy
+Command: "/Users/ryanmathieu/Documents/GitHub/trade-ngin/build/bin/test_strategy"
+Directory: /Users/ryanmathieu/Documents/GitHub/trade-ngin/build/tests
+"test_strategy" start time: Jan 22 01:47 EST
+Output:
+----------------------------------------------------------
+[==========] Running 3 tests from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 3 tests from StrategyTest
+[ RUN      ] StrategyTest.TestSignalGeneration
+[       OK ] StrategyTest.TestSignalGeneration (0 ms)
+[ RUN      ] StrategyTest.TestPositionSizing
+
+Signal values:
+Day 0: Price=1000, Signal=0
+Day 10: Price=1337.23, Signal=11.1149
+Day 20: Price=2037.22, Signal=5.96562
+Day 30: Price=1961.35, Signal=-1.10007
+Day 40: Price=1225.64, Signal=-7.8621
+Day 50: Price=946.751, Signal=-9.51835
+Day 60: Price=1265.38, Signal=4.02784
+Day 70: Price=1924.77, Signal=3.84016
+Day 80: Price=1848.56, Signal=-1.22788
+Day 90: Price=1152.76, Signal=-6.40564
+Direction change at day 28: 1.44751 -> -0.0127083
+Direction change at day 54: -0.389242 -> 0.361667
+Direction change at day 78: 0.913229 -> -0.407988
+Total direction changes: 3
+[       OK ] StrategyTest.TestPositionSizing (0 ms)
+[ RUN      ] StrategyTest.TestForecastNormalization
+[       OK ] StrategyTest.TestForecastNormalization (0 ms)
+[----------] 3 tests from StrategyTest (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 3 tests from 1 test suite ran. (0 ms total)
+[  PASSED  ] 3 tests.
+<end of output>
+Test time =   0.31 sec
+----------------------------------------------------------
+Test Passed.
+"test_strategy" end time: Jan 22 01:47 EST
+"test_strategy" time elapsed: 00:00:00
+----------------------------------------------------------
+
+2/3 Testing: test_portfolio
+2/3 Test: test_portfolio
+Command: "/Users/ryanmathieu/Documents/GitHub/trade-ngin/build/bin/test_portfolio"
+Directory: /Users/ryanmathieu/Documents/GitHub/trade-ngin/build/tests
+"test_portfolio" start time: Jan 22 01:47 EST
+Output:
+----------------------------------------------------------
+[==========] Running 6 tests from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 6 tests from PortfolioTest
+[ RUN      ] PortfolioTest.TestInitialization
+[       OK ] PortfolioTest.TestInitialization (0 ms)
+[ RUN      ] PortfolioTest.TestSignalProcessing
+[       OK ] PortfolioTest.TestSignalProcessing (0 ms)
+[ RUN      ] PortfolioTest.TestPerformanceMetrics
+/Users/ryanmathieu/Documents/GitHub/trade-ngin/tests/test_portfolio.cpp:57: Failure
+Expected: (portfolio->getWinRate()) > (0.0), actual: 0 vs 0
+
+/Users/ryanmathieu/Documents/GitHub/trade-ngin/tests/test_portfolio.cpp:58: Failure
+Expected: (portfolio->getProfitFactor()) > (1.0), actual: 0 vs 1
+
+/Users/ryanmathieu/Documents/GitHub/trade-ngin/tests/test_portfolio.cpp:60: Failure
+Expected: (portfolio->getSharpeRatio()) != (0.0), actual: 0 vs 0
+
+/Users/ryanmathieu/Documents/GitHub/trade-ngin/tests/test_portfolio.cpp:62: Failure
+Expected: (portfolio->getTotalTrades()) > (0), actual: 0 vs 0
+
+/Users/ryanmathieu/Documents/GitHub/trade-ngin/tests/test_portfolio.cpp:63: Failure
+Expected: (portfolio->getWinningTrades()) > (0), actual: 0 vs 0
+
+[  FAILED  ] PortfolioTest.TestPerformanceMetrics (0 ms)
+[ RUN      ] PortfolioTest.TestPositionTracking
+[       OK ] PortfolioTest.TestPositionTracking (0 ms)
+[ RUN      ] PortfolioTest.TestRiskManagement
+/Users/ryanmathieu/Documents/GitHub/trade-ngin/tests/test_portfolio.cpp:101: Failure
+Expected: portfolio->updatePosition("GC.c.0", 1.5, 1700.0) throws an exception of type std::runtime_error.
+  Actual: it throws nothing.
+
+[  FAILED  ] PortfolioTest.TestRiskManagement (0 ms)
+[ RUN      ] PortfolioTest.TestTradeStats
+/Users/ryanmathieu/Documents/GitHub/trade-ngin/tests/test_portfolio.cpp:114: Failure
+Expected equality of these values:
+  stats.total_trades
+    Which is: 2
+  4
+
+/Users/ryanmathieu/Documents/GitHub/trade-ngin/tests/test_portfolio.cpp:116: Failure
+The difference between stats.win_rate and 1.0 is 1, which exceeds 0.001, where
+stats.win_rate evaluates to 0,
+1.0 evaluates to 1, and
+0.001 evaluates to 0.001.
+
+/Users/ryanmathieu/Documents/GitHub/trade-ngin/tests/test_portfolio.cpp:118: Failure
+Expected: (stats.sharpe_ratio) > (0.0), actual: 0 vs 0
+
+[  FAILED  ] PortfolioTest.TestTradeStats (0 ms)
+[----------] 6 tests from PortfolioTest (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 6 tests from 1 test suite ran. (0 ms total)
+[  PASSED  ] 3 tests.
+[  FAILED  ] 3 tests, listed below:
+[  FAILED  ] PortfolioTest.TestPerformanceMetrics
+[  FAILED  ] PortfolioTest.TestRiskManagement
+[  FAILED  ] PortfolioTest.TestTradeStats
+
+ 3 FAILED TESTS
+<end of output>
+Test time =   0.64 sec
+----------------------------------------------------------
+Test Failed.
+"test_portfolio" end time: Jan 22 01:47 EST
+"test_portfolio" time elapsed: 00:00:00
+----------------------------------------------------------
+
+3/3 Testing: test_integration
+3/3 Test: test_integration
+Command: "/Users/ryanmathieu/Documents/GitHub/trade-ngin/build/bin/test_integration"
+Directory: /Users/ryanmathieu/Documents/GitHub/trade-ngin/build/tests
+"test_integration" start time: Jan 22 01:47 EST
+Output:
+----------------------------------------------------------
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from IntegrationTest
+[ RUN      ] IntegrationTest.TestFullTradingCycle
+
+Day 1:
+
+Day 2:
+
+Day 3:
+
+Day 4:
+
+Day 5:
+
+Day 6:
+
+Day 7:
+
+Day 8:
+
+Day 9:
+
+Day 10:
+
+Day 11:
+
+Day 12:
+
+Day 13:
+
+Day 14:
+
+Day 15:
+
+Day 16:
+
+Day 17:
+
+Day 18:
+
+Day 19:
+
+Day 20:
+
+Day 21:
+
+Day 22:
+
+Day 23:
+
+Day 24:
+
+Day 25:
+
+Day 26:
+
+Day 27:
+
+Day 28:
+
+Day 29:
+
+Day 30:
+Mock IB Order: SELL 2 CL.c.0 @ $70.63
+Trade executed for CL.c.0: SELL 2 @ 70.63
+Mock IB Order: BUY 0.117538 ZW.c.0 @ $652.223
+Trade executed for ZW.c.0: BUY 0.117538 @ 652.223
+
+Trading Summary:
+Initial Capital: 100000
+Final Capital: 98970.5
+Total Return: -1.02955%
+Annualized Return: -8.06845%
+Sharpe Ratio: -2.81429
+Win Rate: 0%
+Total Trades: 2
+Winning Trades: 0
+Profit Factor: 0
+Max Drawdown: 1.16319%
+/Users/ryanmathieu/Documents/GitHub/trade-ngin/tests/test_integration.cpp:148: Failure
+Expected: (portfolio->getWinRate()) > (0.0), actual: 0 vs 0
+
+/Users/ryanmathieu/Documents/GitHub/trade-ngin/tests/test_integration.cpp:149: Failure
+Expected: (portfolio->getProfitFactor()) > (0.0), actual: 0 vs 0
+
+[  FAILED  ] IntegrationTest.TestFullTradingCycle (1 ms)
+[----------] 1 test from IntegrationTest (1 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (1 ms total)
+[  PASSED  ] 0 tests.
+[  FAILED  ] 1 test, listed below:
+[  FAILED  ] IntegrationTest.TestFullTradingCycle
+
+ 1 FAILED TEST
+<end of output>
+Test time =   0.64 sec
+----------------------------------------------------------
+Test Failed.
+"test_integration" end time: Jan 22 01:47 EST
+"test_integration" time elapsed: 00:00:00
+----------------------------------------------------------
+
+End testing: Jan 22 01:47 EST
