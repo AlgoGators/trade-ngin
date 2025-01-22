@@ -1,0 +1,591 @@
+// src/data/postgres_database.cpp
+
+#include "trade_ngin/data/postgres_database.hpp"
+#include <sstream>
+#include <iomanip>
+
+namespace trade_ngin {
+
+PostgresDatabase::PostgresDatabase(std::string connection_string)
+    : connection_string_(std::move(connection_string)),
+      connection_(nullptr) {}
+
+PostgresDatabase::~PostgresDatabase() {
+    disconnect();
+}
+
+Result<void> PostgresDatabase::connect() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    
+    try {
+        connection_ = std::make_unique<pqxx::connection>(connection_string_);
+        if (!connection_->is_open()) {
+            return make_error<void>(
+                ErrorCode::DATABASE_ERROR,
+                "Failed to open database connection",
+                "PostgresDatabase"
+            );
+        }
+        INFO("Successfully connected to PostgreSQL database");
+        return Result<void>({});
+    } catch (const std::exception& e) {
+        return make_error<void>(
+            ErrorCode::DATABASE_ERROR,
+            "Database connection error: " + std::string(e.what()),
+            "PostgresDatabase"
+        );
+    }
+}
+
+void PostgresDatabase::disconnect() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (connection_ && connection_->is_open()) {
+        connection_->close();
+        connection_.reset();
+        INFO("Disconnected from PostgreSQL database");
+    }
+}
+
+bool PostgresDatabase::is_connected() const {
+    return connection_ && connection_->is_open();
+}
+
+Result<std::shared_ptr<arrow::Table>> PostgresDatabase::get_market_data(
+    const std::vector<std::string>& symbols,
+    const Timestamp& start_date,
+    const Timestamp& end_date,
+    AssetClass asset_class,
+    DataFrequency freq,
+    const std::string& data_type) {
+    
+    auto validation = validate_connection();
+    if (validation.is_error()) {
+        return make_error<std::shared_ptr<arrow::Table>>(
+            validation.error()->code(),
+            validation.error()->what()
+        );
+    }
+
+    try {
+        std::string query = build_market_data_query(
+            symbols, start_date, end_date, asset_class, freq, data_type);
+
+        pqxx::work txn(*connection_);
+        auto result = txn.exec(query);
+        txn.commit();
+
+        return convert_to_arrow_table(result);
+    } catch (const std::exception& e) {
+        return make_error<std::shared_ptr<arrow::Table>>(
+            ErrorCode::DATABASE_ERROR,
+            "Failed to fetch market data: " + std::string(e.what()),
+            "PostgresDatabase"
+        );
+    }
+}
+
+Result<void> PostgresDatabase::store_executions(
+    const std::vector<ExecutionReport>& executions,
+    const std::string& table_name) {
+    
+    auto validation = validate_connection();
+    if (validation.is_error()) return validation;
+
+    try {
+        pqxx::work txn(*connection_);
+        
+        for (const auto& exec : executions) {
+            txn.exec_params(
+                "INSERT INTO " + table_name + 
+                " (order_id, exec_id, symbol, side, quantity, price, "
+                "execution_time, commission, is_partial) VALUES "
+                "($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+                exec.order_id,
+                exec.exec_id,
+                exec.symbol,
+                side_to_string(exec.side),
+                exec.filled_quantity,
+                exec.fill_price,
+                format_timestamp(exec.fill_time),
+                exec.commission,
+                exec.is_partial
+            );
+        }
+
+        txn.commit();
+        return Result<void>({});
+    } catch (const std::exception& e) {
+        return make_error<void>(
+            ErrorCode::DATABASE_ERROR,
+            "Failed to store executions: " + std::string(e.what()),
+            "PostgresDatabase"
+        );
+    }
+}
+
+std::string PostgresDatabase::format_timestamp(const Timestamp& ts) const {
+    auto time_t = std::chrono::system_clock::to_time_t(ts);
+    std::stringstream ss;
+    ss << std::put_time(std::gmtime(&time_t), "%Y-%m-%d %H:%M:%S");
+    return ss.str();
+}
+
+Result<void> PostgresDatabase::validate_connection() const {
+    if (!is_connected()) {
+        return make_error<void>(
+            ErrorCode::DATABASE_ERROR,
+            "Not connected to database",
+            "PostgresDatabase"
+        );
+    }
+    return Result<void>({});
+}
+
+Result<void> PostgresDatabase::store_positions(
+    const std::vector<Position>& positions,
+    const std::string& table_name) {
+    
+    auto validation = validate_connection();
+    if (validation.is_error()) return validation;
+
+    try {
+        pqxx::work txn(*connection_);
+        
+        // Begin transaction
+        txn.exec("BEGIN");
+        
+        // Clear existing positions
+        txn.exec("DELETE FROM " + table_name);
+        
+        // Insert new positions
+        for (const auto& pos : positions) {
+            txn.exec_params(
+                "INSERT INTO " + table_name + 
+                " (symbol, quantity, average_price, unrealized_pnl, "
+                "realized_pnl, last_update) VALUES "
+                "($1, $2, $3, $4, $5, $6)",
+                pos.symbol,
+                pos.quantity,
+                pos.average_price,
+                pos.unrealized_pnl,
+                pos.realized_pnl,
+                format_timestamp(pos.last_update)
+            );
+        }
+
+        txn.commit();
+        INFO("Successfully updated " + std::to_string(positions.size()) + " positions");
+        return Result<void>({});
+
+    } catch (const std::exception& e) {
+        return make_error<void>(
+            ErrorCode::DATABASE_ERROR,
+            "Failed to store positions: " + std::string(e.what()),
+            "PostgresDatabase"
+        );
+    }
+}
+
+Result<void> PostgresDatabase::store_signals(
+    const std::unordered_map<std::string, double>& signals,
+    const std::string& strategy_id,
+    const Timestamp& timestamp,
+    const std::string& table_name) {
+    
+    auto validation = validate_connection();
+    if (validation.is_error()) return validation;
+
+    try {
+        pqxx::work txn(*connection_);
+        
+        for (const auto& [symbol, signal] : signals) {
+            txn.exec_params(
+                "INSERT INTO " + table_name + 
+                " (strategy_id, symbol, signal_value, timestamp) VALUES "
+                "($1, $2, $3, $4) "
+                "ON CONFLICT (strategy_id, symbol, timestamp) "
+                "DO UPDATE SET signal_value = EXCLUDED.signal_value",
+                strategy_id,
+                symbol,
+                signal,
+                format_timestamp(timestamp)
+            );
+        }
+
+        txn.commit();
+        INFO("Successfully stored signals for strategy: " + strategy_id);
+        return Result<void>({});
+
+    } catch (const std::exception& e) {
+        return make_error<void>(
+            ErrorCode::DATABASE_ERROR,
+            "Failed to store signals: " + std::string(e.what()),
+            "PostgresDatabase"
+        );
+    }
+}
+
+Result<std::vector<std::string>> PostgresDatabase::get_symbols(
+    AssetClass asset_class,
+    DataFrequency freq,
+    const std::string& data_type) {
+    
+    auto validation = validate_connection();
+    if (validation.is_error()) {
+        return make_error<std::vector<std::string>>(
+            validation.error()->code(),
+            validation.error()->what()
+        );
+    }
+
+    try {
+        std::string full_table_name = build_table_name(asset_class, data_type, freq);
+        pqxx::work txn(*connection_);
+        
+        auto result = txn.exec(
+            "WITH latest_data AS ("
+            "   SELECT DISTINCT ON (symbol) symbol, time "
+            "   FROM " + full_table_name + " "
+            "   ORDER BY symbol, time DESC"
+            ") "
+            "SELECT symbol "
+            "FROM latest_data "
+            "ORDER BY symbol"
+        );
+        
+        std::vector<std::string> symbols;
+        symbols.reserve(result.size());
+        
+        for (const auto& row : result) {
+            symbols.push_back(row[0].as<std::string>());
+        }
+
+        txn.commit();
+        DEBUG("Retrieved " + std::to_string(symbols.size()) + " symbols from " + full_table_name);
+        return Result<std::vector<std::string>>(symbols);
+
+    } catch (const std::exception& e) {
+        return make_error<std::vector<std::string>>(
+            ErrorCode::DATABASE_ERROR,
+            "Failed to get symbols: " + std::string(e.what()),
+            "PostgresDatabase"
+        );
+    }
+}
+
+Result<std::shared_ptr<arrow::Table>> PostgresDatabase::execute_query(
+    const std::string& query) {
+    
+    auto validation = validate_connection();
+    if (validation.is_error()) {
+        return make_error<std::shared_ptr<arrow::Table>>(
+            validation.error()->code(),
+            validation.error()->what()
+        );
+    }
+
+    try {
+        pqxx::work txn(*connection_);
+        auto result = txn.exec(query);
+        txn.commit();
+        return convert_to_arrow_table(result);
+
+    } catch (const std::exception& e) {
+        return make_error<std::shared_ptr<arrow::Table>>(
+            ErrorCode::DATABASE_ERROR,
+            "Failed to execute query: " + std::string(e.what()),
+            "PostgresDatabase"
+        );
+    }
+}
+
+std::string PostgresDatabase::build_market_data_query(
+    const std::vector<std::string>& symbols,
+    const Timestamp& start_date,
+    const Timestamp& end_date,
+    AssetClass asset_class,
+    DataFrequency freq,
+    const std::string& data_type) const {
+    
+    std::string full_table_name = build_table_name(asset_class, data_type, freq);
+    
+    std::ostringstream query;
+    query << "SELECT time, symbol, open, high, low, close, volume "
+          << "FROM " << full_table_name
+          << " WHERE time BETWEEN '" << format_timestamp(start_date)
+          << "' AND '" << format_timestamp(end_date) << "'";
+
+    if (!symbols.empty()) {
+        query << " AND symbol IN (";
+        for (size_t i = 0; i < symbols.size(); ++i) {
+            if (i > 0) query << ",";
+            query << "'" << pqxx::to_string(symbols[i]) << "'";
+        }
+        query << ")";
+    }
+
+    query << " ORDER BY symbol, time";
+    return query.str();
+}
+
+Result<std::shared_ptr<arrow::Table>> PostgresDatabase::convert_to_arrow_table(
+    const pqxx::result& result) const {
+    
+    if (result.empty()) {
+        // Return empty table with schema
+        auto schema = arrow::schema({
+            arrow::field("time", arrow::timestamp(arrow::TimeUnit::SECOND)),
+            arrow::field("symbol", arrow::utf8()),
+            arrow::field("open", arrow::float64()),
+            arrow::field("high", arrow::float64()),
+            arrow::field("low", arrow::float64()),
+            arrow::field("close", arrow::float64()),
+            arrow::field("volume", arrow::float64())
+        });
+
+        std::vector<std::shared_ptr<arrow::Array>> empty_arrays(7);
+        auto empty_table = arrow::Table::Make(schema, empty_arrays);
+
+        return Result<std::shared_ptr<arrow::Table>>(empty_table);    
+        }
+
+    // Create builders for each column
+    arrow::MemoryPool* pool = arrow::default_memory_pool();
+    
+    arrow::TimestampBuilder timestamp_builder(arrow::timestamp(arrow::TimeUnit::SECOND), pool);
+    arrow::StringBuilder symbol_builder(pool);
+    arrow::DoubleBuilder open_builder(pool);
+    arrow::DoubleBuilder high_builder(pool);
+    arrow::DoubleBuilder low_builder(pool);
+    arrow::DoubleBuilder close_builder(pool);
+    arrow::DoubleBuilder volume_builder(pool);
+
+    // Helpers for error handling
+    auto handle_builder_error = [](const std::string& operation) {
+        return make_error<std::shared_ptr<arrow::Table>>(
+            ErrorCode::CONVERSION_ERROR, 
+            "Arrow builder error during " + operation
+        );
+    };
+
+    
+    // Reserve space
+    try {
+        if (timestamp_builder.Reserve(result.size()) != arrow::Status::OK() ||
+            symbol_builder.Reserve(result.size()) != arrow::Status::OK() ||
+            open_builder.Reserve(result.size()) != arrow::Status::OK() ||
+            high_builder.Reserve(result.size()) != arrow::Status::OK() ||
+            low_builder.Reserve(result.size()) != arrow::Status::OK() ||
+            close_builder.Reserve(result.size()) != arrow::Status::OK() ||
+            volume_builder.Reserve(result.size()) != arrow::Status::OK()) {
+            return handle_builder_error("reserve");
+        }
+
+        // Populate builders
+        for (const auto& row : result) {
+            // Convert string timestamp to epoch seconds
+            std::tm tm = {};
+            std::stringstream ss(row["time"].as<std::string>());
+            ss >> std::get_time(&tm, "%Y-%m-%d %H:%M:%S");
+            auto tp = std::chrono::system_clock::from_time_t(std::mktime(&tm));
+            
+            auto timestamp = std::chrono::duration_cast<std::chrono::seconds>(
+                tp.time_since_epoch()).count();
+
+            // Append values, checking status for each
+            if (timestamp_builder.Append(timestamp) != arrow::Status::OK() ||
+                symbol_builder.Append(row["symbol"].as<std::string>()) != arrow::Status::OK() ||
+                open_builder.Append(row["open"].as<double>()) != arrow::Status::OK() ||
+                high_builder.Append(row["high"].as<double>()) != arrow::Status::OK() ||
+                low_builder.Append(row["low"].as<double>()) != arrow::Status::OK() ||
+                close_builder.Append(row["close"].as<double>()) != arrow::Status::OK() ||
+                volume_builder.Append(row["volume"].as<double>()) != arrow::Status::OK()) {
+                return handle_builder_error("append");
+            }
+        }
+
+        // Finish arrays
+        std::shared_ptr<arrow::Array> timestamp_array, symbol_array, 
+            open_array, high_array, low_array, close_array, volume_array;
+
+        if (timestamp_builder.Finish(&timestamp_array) != arrow::Status::OK() ||
+            symbol_builder.Finish(&symbol_array) != arrow::Status::OK() ||
+            open_builder.Finish(&open_array) != arrow::Status::OK() ||
+            high_builder.Finish(&high_array) != arrow::Status::OK() ||
+            low_builder.Finish(&low_array) != arrow::Status::OK() ||
+            close_builder.Finish(&close_array) != arrow::Status::OK() ||
+            volume_builder.Finish(&volume_array) != arrow::Status::OK()) {
+            return handle_builder_error("finish");
+        }
+
+        // Create schema
+        auto schema = arrow::schema({
+            arrow::field("time", arrow::timestamp(arrow::TimeUnit::SECOND)),
+            arrow::field("symbol", arrow::utf8()),
+            arrow::field("open", arrow::float64()),
+            arrow::field("high", arrow::float64()),
+            arrow::field("low", arrow::float64()),
+            arrow::field("close", arrow::float64()),
+            arrow::field("volume", arrow::float64())
+        });
+
+        // Create and return table
+        auto table = arrow::Table::Make(schema, {
+            timestamp_array,
+            symbol_array,
+            open_array,
+            high_array,
+            low_array,
+            close_array,
+            volume_array
+        });
+
+        return Result<std::shared_ptr<arrow::Table>>(table);
+
+    } catch (const std::exception& e) {
+        return make_error<std::shared_ptr<arrow::Table>>(
+            ErrorCode::CONVERSION_ERROR,
+            "Exception during Arrow table conversion: " + std::string(e.what())
+        );
+    }
+}
+
+std::string PostgresDatabase::side_to_string(Side side) const {
+    switch (side) {
+        case Side::BUY:
+            return "BUY";
+        case Side::SELL:
+            return "SELL";
+        default:
+            return "NONE";
+    }
+}
+
+Result<Timestamp> PostgresDatabase::get_latest_data_time(
+    AssetClass asset_class,
+    DataFrequency freq,
+    const std::string& data_type) const {
+    
+    auto validation = validate_connection();
+    if (validation.is_error()) {
+        return make_error<Timestamp>(
+            validation.error()->code(),
+            validation.error()->what()
+        );
+    }
+
+    try {
+        std::string full_table_name = build_table_name(asset_class, data_type, freq);
+        pqxx::work txn(*connection_);
+        
+        auto result = txn.exec1(
+            "SELECT MAX(time) FROM " + full_table_name
+        );
+        
+        if (result[0].is_null()) {
+            return make_error<Timestamp>(
+                ErrorCode::DATA_NOT_FOUND,
+                "No data found in " + full_table_name
+            );
+        }
+
+        std::tm tm = {};
+        std::stringstream ss(result[0].as<std::string>());
+        ss >> std::get_time(&tm, "%Y-%m-%d %H:%M:%S");
+        auto tp = std::chrono::system_clock::from_time_t(std::mktime(&tm));
+        
+        return Result<Timestamp>(tp);
+
+    } catch (const std::exception& e) {
+        return make_error<Timestamp>(
+            ErrorCode::DATABASE_ERROR,
+            "Failed to get latest data time: " + std::string(e.what()),
+            "PostgresDatabase"
+        );
+    }
+}
+
+Result<std::pair<Timestamp, Timestamp>> PostgresDatabase::get_data_time_range(
+    AssetClass asset_class,
+    DataFrequency freq,
+    const std::string& data_type) const {
+    
+    auto validation = validate_connection();
+    if (validation.is_error()) {
+        return make_error<std::pair<Timestamp, Timestamp>>(
+            validation.error()->code(),
+            validation.error()->what()
+        );
+    }
+
+    try {
+        std::string full_table_name = build_table_name(asset_class, data_type, freq);
+        pqxx::work txn(*connection_);
+        
+        auto result = txn.exec1(
+            "SELECT MIN(time), MAX(time) FROM " + full_table_name
+        );
+        
+        if (result[0].is_null() || result[1].is_null()) {
+            return make_error<std::pair<Timestamp, Timestamp>>(
+                ErrorCode::DATA_NOT_FOUND,
+                "No data found in " + full_table_name
+            );
+        }
+
+        auto parse_timestamp = [](const std::string& ts_str) {
+            std::tm tm = {};
+            std::stringstream ss(ts_str);
+            ss >> std::get_time(&tm, "%Y-%m-%d %H:%M:%S");
+            return std::chrono::system_clock::from_time_t(std::mktime(&tm));
+        };
+
+        Timestamp start_time = parse_timestamp(result[0].as<std::string>());
+        Timestamp end_time = parse_timestamp(result[1].as<std::string>());
+        
+        return Result<std::pair<Timestamp, Timestamp>>({start_time, end_time});
+
+    } catch (const std::exception& e) {
+        return make_error<std::pair<Timestamp, Timestamp>>(
+            ErrorCode::DATABASE_ERROR,
+            "Failed to get data time range: " + std::string(e.what()),
+            "PostgresDatabase"
+        );
+    }
+}
+
+Result<size_t> PostgresDatabase::get_data_count(
+    AssetClass asset_class,
+    DataFrequency freq,
+    const std::string& symbol,
+    const std::string& data_type) const {
+    
+    auto validation = validate_connection();
+    if (validation.is_error()) {
+        return make_error<size_t>(
+            validation.error()->code(),
+            validation.error()->what()
+        );
+    }
+
+    try {
+        std::string full_table_name = build_table_name(asset_class, data_type, freq);
+        pqxx::work txn(*connection_);
+        
+        auto result = txn.exec1(
+            "SELECT COUNT(*) FROM " + full_table_name +
+            " WHERE symbol = " + txn.quote(symbol)
+        );
+        
+        return Result<size_t>(result[0].as<size_t>());
+
+    } catch (const std::exception& e) {
+        return make_error<size_t>(
+            ErrorCode::DATABASE_ERROR,
+            "Failed to get data count: " + std::string(e.what()),
+            "PostgresDatabase"
+        );
+    }
+}
+
+} // namespace trade_ngin

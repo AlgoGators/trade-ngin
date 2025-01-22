@@ -1,0 +1,162 @@
+// src/core/logger.cpp
+
+#include "trade_ngin/core/logger.hpp"
+#include "trade_ngin/core/error.hpp"
+#include <iostream>
+#include <iomanip>
+
+namespace trade_ngin {
+
+void Logger::initialize(const LoggerConfig& config) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    
+    if (initialized_) {
+        throw TradeError(
+            ErrorCode::INVALID_ARGUMENT,
+            "Logger already initialized",
+            "Logger"
+        );
+    }
+
+    config_ = config;
+
+    if (config_.destination == LogDestination::FILE || 
+        config_.destination == LogDestination::BOTH) {
+        // Create log directory if it doesn't exist
+        std::filesystem::create_directories(config_.log_directory);
+
+        // Open log file
+        std::string filename = config_.log_directory + "/" + 
+                             config_.filename_prefix + "_" + 
+                             std::to_string(std::chrono::system_clock::now().time_since_epoch().count()) + 
+                             ".log";
+        log_file_.open(filename, std::ios::app);
+        
+        if (!log_file_.is_open()) {
+            throw TradeError(
+                ErrorCode::UNKNOWN_ERROR,
+                "Failed to open log file: " + filename,
+                "Logger"
+            );
+        }
+    }
+
+    initialized_ = true;
+    log(LogLevel::INFO, "Logger initialized");
+}
+
+Logger::~Logger() {
+    if (log_file_.is_open()) {
+        log_file_.close();
+    }
+}
+
+void Logger::log(LogLevel level, const std::string& message) {
+    if (!initialized_) {
+        throw TradeError(
+            ErrorCode::NOT_INITIALIZED,
+            "Logger not initialized",
+            "Logger"
+        );
+    }
+
+    if (level < config_.min_level) {
+        return;
+    }
+
+    std::string formatted_message = format_message(level, message);
+
+    if (config_.destination == LogDestination::CONSOLE || 
+        config_.destination == LogDestination::BOTH) {
+        write_to_console(formatted_message);
+    }
+
+    if (config_.destination == LogDestination::FILE || 
+        config_.destination == LogDestination::BOTH) {
+        write_to_file(formatted_message);
+    }
+}
+
+std::string Logger::format_message(LogLevel level, const std::string& message) {
+    std::ostringstream ss;
+
+    if (config_.include_timestamp) {
+        auto now = std::chrono::system_clock::now();
+        auto now_c = std::chrono::system_clock::to_time_t(now);
+        ss << std::put_time(std::localtime(&now_c), "%Y-%m-%d %H:%M:%S") << " ";
+    }
+
+    if (config_.include_level) {
+        ss << "[" << level_to_string(level) << "] ";
+    }
+
+    ss << message;
+    return ss.str();
+}
+
+void Logger::write_to_console(const std::string& message) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::cout << message << std::endl;
+}
+
+void Logger::write_to_file(const std::string& message) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    
+    if (log_file_.is_open()) {
+        log_file_ << message << std::endl;
+        log_file_.flush();
+
+        // Check file size and rotate if necessary
+        if (log_file_.tellp() >= static_cast<std::streampos>(config_.max_file_size)) {
+            rotate_log_files();
+        }
+    }
+}
+
+void Logger::rotate_log_files() {
+    log_file_.close();
+
+    // Get list of existing log files
+    std::vector<std::filesystem::path> log_files;
+    for (const auto& entry : std::filesystem::directory_iterator(config_.log_directory)) {
+        if (entry.path().string().find(config_.filename_prefix) != std::string::npos) {
+            log_files.push_back(entry.path());
+        }
+    }
+
+    // Sort by modification time
+    std::sort(log_files.begin(), log_files.end(), 
+              [](const auto& a, const auto& b) {
+                  return std::filesystem::last_write_time(a) < 
+                         std::filesystem::last_write_time(b);
+              });
+
+    // Remove oldest files if we have too many
+    while (log_files.size() >= config_.max_files) {
+        std::filesystem::remove(log_files.front());
+        log_files.erase(log_files.begin());
+    }
+
+    // Create new log file
+    std::string new_filename = config_.log_directory + "/" + 
+                             config_.filename_prefix + "_" + 
+                             std::to_string(std::chrono::system_clock::now().time_since_epoch().count()) + 
+                             ".log";
+    log_file_.open(new_filename, std::ios::app);
+}
+
+std::string Logger::level_to_string(LogLevel level) {
+    static const std::unordered_map<LogLevel, std::string> level_strings = {
+        {LogLevel::TRACE, "TRACE"},
+        {LogLevel::DEBUG, "DEBUG"},
+        {LogLevel::INFO, "INFO"},
+        {LogLevel::WARNING, "WARNING"},
+        {LogLevel::ERROR, "ERROR"},
+        {LogLevel::FATAL, "FATAL"}
+    };
+
+    auto it = level_strings.find(level);
+    return it != level_strings.end() ? it->second : "UNKNOWN";
+}
+
+} // namespace trade_ngin
