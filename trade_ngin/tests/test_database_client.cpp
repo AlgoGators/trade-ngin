@@ -1,17 +1,33 @@
-#include "trade_ngin/data/database_interface.hpp"
-#include "trade_ngin/data/market_data.hpp"
+#include "../data/database_client.hpp"
+#include "../data/data_interface.hpp"
 #include <iostream>
 #include <iomanip>
+#include <memory>
+#include <chrono>
+#include <ctime>
+#include <arrow/api.h>
 
 int main() {
-    DatabaseInterface db("postgresql://localhost:5432/trade_ngin");
+    auto client = std::make_shared<DatabaseClient>("postgresql://localhost:5432/trade_ngin");
+    DataInterface data_interface(client);
     
     // Test database connection and data retrieval
     std::cout << "Testing database connection and data retrieval...\n\n";
     
+    // Get current date and date 30 days ago
+    auto now = std::chrono::system_clock::now();
+    auto end_date = std::chrono::system_clock::to_time_t(now);
+    auto start_date = std::chrono::system_clock::to_time_t(now - std::chrono::hours(24 * 30));
+    
+    // Convert dates to string format YYYY-MM-DD
+    char start_date_str[11];
+    char end_date_str[11];
+    std::strftime(start_date_str, sizeof(start_date_str), "%Y-%m-%d", std::localtime(&start_date));
+    std::strftime(end_date_str, sizeof(end_date_str), "%Y-%m-%d", std::localtime(&end_date));
+    
     // Fetch OHLCV data for a symbol
     std::string symbol = "ZW.c.0";
-    auto data = db.fetchOHLCVData(symbol);
+    auto data = data_interface.getOHLCV(symbol, start_date_str, end_date_str);
     
     // Print first 10 rows of data with rolling windows
     std::cout << "First 10 rows of OHLCV data for " << symbol << ":\n";
@@ -34,9 +50,10 @@ int main() {
     std::vector<double> long_ma;
     std::vector<double> volatility;
     
-    // Extract close prices
-    for (const auto& row : data) {
-        closes.push_back(row["close"].as<double>());
+    // Extract close prices from Arrow table
+    auto close_array = std::static_pointer_cast<arrow::DoubleArray>(data->GetColumnByName("close")->chunk(0));
+    for (int64_t i = 0; i < close_array->length(); ++i) {
+        closes.push_back(close_array->Value(i));
     }
     
     // Calculate indicators
@@ -76,15 +93,22 @@ int main() {
         }
     }
     
+    // Get timestamp and OHLCV arrays
+    auto timestamp_array = std::static_pointer_cast<arrow::StringArray>(data->GetColumnByName("timestamp")->chunk(0));
+    auto open_array = std::static_pointer_cast<arrow::DoubleArray>(data->GetColumnByName("open")->chunk(0));
+    auto high_array = std::static_pointer_cast<arrow::DoubleArray>(data->GetColumnByName("high")->chunk(0));
+    auto low_array = std::static_pointer_cast<arrow::DoubleArray>(data->GetColumnByName("low")->chunk(0));
+    auto volume_array = std::static_pointer_cast<arrow::DoubleArray>(data->GetColumnByName("volume")->chunk(0));
+    
     // Print first 10 rows with indicators
-    for (size_t i = 0; i < std::min(size_t(10), data.size()); ++i) {
-        std::cout << std::setw(20) << data[i]["timestamp"].as<std::string>()
+    for (int64_t i = 0; i < std::min(int64_t(10), data->num_rows()); ++i) {
+        std::cout << std::setw(20) << timestamp_array->GetString(i)
                   << std::fixed << std::setprecision(2)
-                  << std::setw(10) << data[i]["open"].as<double>()
-                  << std::setw(10) << data[i]["high"].as<double>()
-                  << std::setw(10) << data[i]["low"].as<double>()
-                  << std::setw(10) << data[i]["close"].as<double>()
-                  << std::setw(10) << data[i]["volume"].as<double>()
+                  << std::setw(10) << open_array->Value(i)
+                  << std::setw(10) << high_array->Value(i)
+                  << std::setw(10) << low_array->Value(i)
+                  << std::setw(10) << close_array->Value(i)
+                  << std::setw(10) << volume_array->Value(i)
                   << std::setw(15) << short_ma[i]
                   << std::setw(15) << long_ma[i]
                   << std::setw(15) << volatility[i]

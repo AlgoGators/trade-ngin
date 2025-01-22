@@ -1,7 +1,18 @@
 #pragma once
 #include <memory>
 #include <chrono>
+#include <string>
 #include "dataframe.hpp"
+
+struct MarketData {
+    std::string timestamp;
+    std::string symbol;
+    double open;
+    double high;
+    double low;
+    double close;
+    double volume;
+};
 
 class MarketDataHandler {
 public:

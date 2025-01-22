@@ -6,23 +6,21 @@
 #include <memory>
 #include <arrow/api.h>
 #include <nlohmann/json.hpp>
-#include "api_client.hpp"
+#include "database_client.hpp"
 
 class DataInterface {
 public:
-    explicit DataInterface(std::shared_ptr<ApiClient> client);
+    explicit DataInterface(std::shared_ptr<DatabaseClient> client);
 
     // Data operations
-    std::shared_ptr<arrow::Table> getOHLCV(const std::string& start_date, const std::string& end_date, const std::vector<std::string>& symbols = {});
+    std::shared_ptr<arrow::Table> getOHLCV(const std::string& symbol, const std::string& start_date, const std::string& end_date);
     std::shared_ptr<arrow::Table> getSymbols();
-    std::string getEarliestDate();
-    std::string getLatestDate();
-    bool insertData(const std::string& schema, const std::string& table, const std::string& format, const nlohmann::json& payload_json, const std::shared_ptr<arrow::Table>& payload_arrow);
-    bool updateData(const std::string& schema, const std::string& table, const nlohmann::json& filters, const nlohmann::json& updates);
-    bool deleteData(const std::string& schema, const std::string& table, const nlohmann::json& filters);
+    bool insertData(const std::string& symbol, const std::vector<std::map<std::string, std::string>>& data);
+    bool updateData(const std::string& symbol, const std::string& date, const std::map<std::string, std::string>& updates);
+    bool deleteData(const std::string& symbol, const std::string& start_date, const std::string& end_date);
 
 private:
-    std::shared_ptr<ApiClient> client;
+    std::shared_ptr<DatabaseClient> client;
 };
 
 #endif // DATA_INTERFACE_HPP
