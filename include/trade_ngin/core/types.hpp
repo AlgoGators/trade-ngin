@@ -288,4 +288,15 @@ inline std::string build_table_name(
            get_table_suffix(freq);
 }
 
-} // namespace trade_ngin
+} 
+
+
+namespace std {
+    template <>
+    struct less<trade_ngin::Timestamp> {
+        bool operator()(const trade_ngin::Timestamp& lhs, 
+                        const trade_ngin::Timestamp& rhs) const {
+            return lhs < rhs;
+        }
+    };
+}  // namespace std
