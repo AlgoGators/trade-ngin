@@ -2,6 +2,8 @@
 
 #include "trade_ngin/strategy/base_strategy.hpp"
 #include "trade_ngin/core/logger.hpp"
+#include "trade_ngin/core/state_manager.hpp"
+#include "trade_ngin/data/market_data_bus.hpp"
 #include <sstream>
 
 
@@ -47,8 +49,75 @@ Result<void> BaseStrategy::initialize() {
         );
     }
 
+    // Register with state manager
+    ComponentInfo info{
+        ComponentType::STRATEGY,
+        ComponentState::INITIALIZED,
+        id_,
+        "",
+        std::chrono::system_clock::now(),
+        {
+            {"capital_allocation", config_.capital_allocation},
+            {"max_leverage", config_.max_leverage}
+        }
+    };
+
+    auto register_result = StateManager::instance().register_component(info);
+    if (register_result.is_error()) {
+        return register_result;
+    }
+
+    // Subscribe to market data
+    MarketDataCallback callback = [this](const MarketDataEvent& event) {
+        if (event.type == MarketDataEventType::BAR) {
+            try {
+                Bar bar;
+                bar.timestamp = event.timestamp;
+                bar.symbol = event.symbol;
+                bar.open = event.numeric_fields.at("open");
+                bar.high = event.numeric_fields.at("high");
+                bar.low = event.numeric_fields.at("low");
+                bar.close = event.numeric_fields.at("close");
+                bar.volume = event.numeric_fields.at("volume");
+
+                std::vector<Bar> bars{bar};
+                auto result = this->on_data(bars);
+                if (result.is_error()) {
+                    ERROR("Error processing bar data: " + std::string(result.error()->what()));
+                }
+            } catch (const std::exception& e) {
+                ERROR("Error in market data callback: " + std::string(e.what()));
+            }
+        }
+    };
+
+    SubscriberInfo sub_info{
+        id_,
+        {MarketDataEventType::BAR},
+        {},  // Empty means subscribe to all symbols
+        callback
+    };
+
+    auto subscribe_result = MarketDataBus::instance().subscribe(sub_info);
+    if (subscribe_result.is_error()) {
+        return subscribe_result;
+    }
+
     INFO("Initialized strategy " + id_);
     return Result<void>({});
+}
+
+Result<void> BaseStrategy::start() {
+    auto result = StateManager::instance().update_state(
+        id_,
+        ComponentState::RUNNING
+    );
+
+    if (result.is_ok()) {
+        state_ = StrategyState::RUNNING;
+    }
+
+    return result;
 }
 
 Result<void> BaseStrategy::start() {

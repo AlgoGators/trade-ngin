@@ -1,6 +1,8 @@
 // src/data/postgres_database.cpp
 
 #include "trade_ngin/data/postgres_database.hpp"
+#include "trade_ngin/core/state_manager.hpp"
+#include "trade_ngin/data/market_data_bus.hpp"
 #include <sstream>
 #include <iomanip>
 
@@ -26,8 +28,26 @@ Result<void> PostgresDatabase::connect() {
                 "PostgresDatabase"
             );
         }
+
+        // Register with state manager
+        ComponentInfo info{
+            ComponentType::MARKET_DATA,
+            ComponentState::INITIALIZED,
+            "POSTGRES_DB",
+            "",
+            std::chrono::system_clock::now(),
+            {}
+        };
+
+        auto register_result = StateManager::instance().register_component(info);
+        if (register_result.is_error()) {
+            return register_result;
+        }
+
+        StateManager::instance().update_state("POSTGRES_DB", ComponentState::RUNNING);
         INFO("Successfully connected to PostgreSQL database");
         return Result<void>({});
+
     } catch (const std::exception& e) {
         return make_error<void>(
             ErrorCode::DATABASE_ERROR,
@@ -74,7 +94,36 @@ Result<std::shared_ptr<arrow::Table>> PostgresDatabase::get_market_data(
         auto result = txn.exec(query);
         txn.commit();
 
-        return convert_to_arrow_table(result);
+        // Convert to Arrow table
+        auto table_result = convert_to_arrow_table(result);
+        if (table_result.is_error()) {
+            return table_result;
+        }
+
+        // Publish market data events
+        for (const auto& row : result) {
+            MarketDataEvent event;
+            event.type = MarketDataEventType::BAR;
+            event.symbol = row["symbol"].as<std::string>();
+            
+            // Parse timestamp
+            std::tm tm = {};
+            std::stringstream ss(row["time"].as<std::string>());
+            ss >> std::get_time(&tm, "%Y-%m-%d %H:%M:%S");
+            event.timestamp = std::chrono::system_clock::from_time_t(std::mktime(&tm));
+
+            // Add numeric fields
+            event.numeric_fields["open"] = row["open"].as<double>();
+            event.numeric_fields["high"] = row["high"].as<double>();
+            event.numeric_fields["low"] = row["low"].as<double>();
+            event.numeric_fields["close"] = row["close"].as<double>();
+            event.numeric_fields["volume"] = row["volume"].as<double>();
+
+            MarketDataBus::instance().publish(event);
+        }
+
+        return table_result;
+
     } catch (const std::exception& e) {
         return make_error<std::shared_ptr<arrow::Table>>(
             ErrorCode::DATABASE_ERROR,
