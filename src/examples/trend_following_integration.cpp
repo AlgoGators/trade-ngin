@@ -4,8 +4,12 @@
 #include "trade_ngin/optimization/dynamic_optimizer.hpp"
 #include "trade_ngin/risk/risk_manager.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
+#include "trade_ngin/data/conversion_utils.hpp"
 #include <memory>
 #include <string>
+#include <iostream>
+
+namespace trade_ngin{
 
 int main() {
     try {
@@ -146,3 +150,4 @@ int main() {
         return 1;
     }
 }
+} // namespace trade_ngin
