@@ -2,6 +2,7 @@
 #pragma once
 
 #include "trade_ngin/strategy/base_strategy.hpp"
+#include "trade_ngin/strategy/forecast_scaler.hpp"
 #include "trade_ngin/core/types.hpp"
 #include "trade_ngin/core/error.hpp"
 #include <vector>
@@ -23,6 +24,15 @@ struct TrendFollowingConfig {
     };
     int vol_lookback_short{22};    // Short lookback for volatility calculation
     int vol_lookback_long{2520};   // Long lookback for volatility calculation
+
+    // Forecast scaling configuration
+    ForecastScalerConfig forecast_config{
+        252,    // volatility_lookback
+        10.0,   // ewma_decay
+        30.0,   // base_scalar_trend
+        23.0,   // base_scalar_carry
+        20.0    // forecast_cap
+    };
 };
 
 /**
@@ -63,6 +73,9 @@ private:
     // Price and signal storage
     std::unordered_map<std::string, std::vector<double>> price_history_;
     std::unordered_map<std::string, std::vector<double>> volatility_history_;
+
+    // Forecast scaler for volatility-based position sizing
+    ForecastScaler forecast_scaler_;
     
     /**
      * @brief Calculate EMA crossover signals
