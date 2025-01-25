@@ -112,7 +112,7 @@ public:
      * @param error The error that occurred
      */
     Result(std::unique_ptr<TradeError> error) 
-        : value_(), error_(std::move(error)) {}
+        : error_(std::move(error)) {}
 
     /**
      * @brief Check if result represents success
@@ -144,6 +144,27 @@ public:
 
 private:
     T value_;
+    std::unique_ptr<TradeError> error_;
+};
+
+// Specialization for void
+template<>
+class Result<void> {
+public:
+    Result() : error_(nullptr) {}
+    Result(std::unique_ptr<TradeError> error) 
+        : error_(std::move(error)) {}
+
+    bool is_ok() const { return error_ == nullptr; }
+    bool is_error() const { return error_ != nullptr; }
+
+    void value() const {
+        if (error_) throw *error_;
+    }
+
+    const TradeError* error() const { return error_.get(); }
+
+private:
     std::unique_ptr<TradeError> error_;
 };
 

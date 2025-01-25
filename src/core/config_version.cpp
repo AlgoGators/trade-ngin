@@ -1,9 +1,11 @@
 // src/core/config_version.cpp
 #include "trade_ngin/core/config_version.hpp"
 #include "trade_ngin/core/logger.hpp"
+#include "trade_ngin/core/error.hpp"
 #include <sstream>
 #include <regex>
 #include <queue>
+#include <set>
 
 namespace trade_ngin {
 
@@ -279,7 +281,6 @@ Result<ConfigVersion> ConfigVersionManager::get_config_version(
     }
 }
 
-/*
 Result<void> ConfigVersionManager::validate_migration_step(
     const MigrationStep& step) const {
     
@@ -303,6 +304,18 @@ Result<void> ConfigVersionManager::validate_migration_step(
         return make_error<void>(
             ErrorCode::INVALID_ARGUMENT,
             "Migration description cannot be empty",
-*/
+            "ConfigVersionManager"
+        );
+    }
 
-}  // namespace trade_ngin
+    return Result<void>({});
+}
+
+std::string ConfigVersionManager::make_version_key(
+    const ConfigVersion& from_version,
+    const ConfigVersion& to_version) {
+    
+    return from_version.to_string() + "_" + to_version.to_string();
+}
+
+} // namespace trade_ngin

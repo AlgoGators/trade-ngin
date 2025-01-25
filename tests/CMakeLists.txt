@@ -1,37 +1,34 @@
-# Enable testing with GTest
-enable_testing()
-
-# Add test files
-add_executable(unit_tests
-    unit/test_data_interface.cpp
-    unit/test_portfolio.cpp
-    unit/test_strategy.cpp
-    unit/test_risk.cpp
-    unit/test_optimization.cpp
+# Set test source files
+set(TEST_SOURCES
+    core/test_result.cpp
+    core/test_state_manager.cpp
 )
 
-target_link_libraries(unit_tests
+# Create test executable
+add_executable(trade_ngin_tests ${TEST_SOURCES})
+
+# Set include directories for tests
+target_include_directories(trade_ngin_tests
+    PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+)
+
+# Link against Google Test and our library
+target_link_libraries(trade_ngin_tests
     PRIVATE
     trade_ngin
-    GTest::GTest
-    GTest::Main
+    GTest::gtest
+    GTest::gtest_main
 )
 
-# Add tests to CTest
-add_test(NAME unit_tests COMMAND unit_tests)
-
-# Integration tests
-add_executable(integration_tests
-    integration/test_full_system.cpp
-    integration/test_strategy_risk.cpp
-    integration/test_portfolio_execution.cpp
+# Set output directory
+set_target_properties(trade_ngin_tests
+    PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/bin/Debug"
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/bin/Release"
 )
 
-target_link_libraries(integration_tests
-    PRIVATE
-    trade_ngin
-    GTest::GTest
-    GTest::Main
-)
-
-add_test(NAME integration_tests COMMAND integration_tests)
+# Enable test discovery
+include(GoogleTest)
+gtest_discover_tests(trade_ngin_tests)

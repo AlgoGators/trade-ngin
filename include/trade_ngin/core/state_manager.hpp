@@ -4,7 +4,10 @@
 #include "trade_ngin/core/types.hpp"
 #include "trade_ngin/core/error.hpp"
 #include <memory>
+#include <mutex>
 #include <unordered_map>
+#include <chrono>
+#include <string>
 
 namespace trade_ngin {
 
