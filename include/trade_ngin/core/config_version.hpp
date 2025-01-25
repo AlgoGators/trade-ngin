@@ -2,6 +2,7 @@
 
 #include "trade_ngin/core/types.hpp"
 #include "trade_ngin/core/error.hpp"
+#include "trade_ngin/core/config_manager.hpp"
 #include <nlohmann/json.hpp>
 #include <functional>
 #include <memory>
@@ -22,6 +23,9 @@ struct ConfigVersion {
     static ConfigVersion from_string(const std::string& version_str);
     bool operator<(const ConfigVersion& other) const;
     bool operator==(const ConfigVersion& other) const;
+    bool operator<=(const ConfigVersion& other) const {
+        return *this < other || *this == other;
+    }
 };
 
 /**
