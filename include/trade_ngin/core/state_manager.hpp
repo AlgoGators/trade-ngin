@@ -51,6 +51,15 @@ struct ComponentInfo {
  */
 class StateManager {
 public:
+    // Make constructor public for testing
+    StateManager() = default;
+
+    // Disable copy and move
+    StateManager(const StateManager&) = delete;
+    StateManager& operator=(const StateManager&) = delete;
+    StateManager(StateManager&&) = delete;
+    StateManager& operator=(StateManager&&) = delete;
+
     /**
      * @brief Update component state
      * @param component_id Component identifier
@@ -101,9 +110,7 @@ public:
         return instance;
     }
 
-private:
-    StateManager() = default;
-    
+private:    
     std::unordered_map<std::string, ComponentInfo> components_;
     mutable std::mutex mutex_;
 
