@@ -43,7 +43,7 @@ Result<void> StateManager::update_state(
         ERROR("Component " + component_id + " error: " + error_message);
     }
 
-    return Result<void>({});
+    return Result<void>();  // Success case for void
 }
 
 Result<ComponentInfo> StateManager::get_state(
@@ -86,7 +86,7 @@ Result<void> StateManager::register_component(const ComponentInfo& info) {
     INFO("Registered component " + info.id + " of type " +
          std::to_string(static_cast<int>(info.type)));
 
-    return Result<void>({});
+    return Result<void>();  // Success case for void
 }
 
 Result<void> StateManager::update_metrics(
@@ -108,7 +108,7 @@ Result<void> StateManager::update_metrics(
     it->second.metrics = metrics;
     it->second.last_update = std::chrono::system_clock::now();
 
-    return Result<void>({});
+    return Result<void>();  // Success case for void
 }
 
 bool StateManager::is_healthy() const {
@@ -169,7 +169,7 @@ Result<void> StateManager::validate_transition(
         );
     }
 
-    return Result<void>({});
+    return Result<void>();  // Success case for void
 }
 
 } // namespace trade_ngin

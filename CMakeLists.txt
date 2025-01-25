@@ -12,75 +12,40 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Output directories
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
-set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
-set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/bin/Debug")
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/bin/Release")
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/bin/Debug")
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/bin/Release")
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/bin/Debug")
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/bin/Release")
 
-# Add compile options
-add_compile_options(
-    -Wall
-    -Wextra
-    -Wpedantic
-    -Werror
-    -O3
+# Find packages
+find_package(GTest CONFIG REQUIRED)
+
+# Add source files for the library
+set(TRADE_NGIN_SOURCES
+    src/core/state_manager.cpp
+    src/core/logger.cpp
 )
-
-# Find required packages
-find_package(Arrow REQUIRED)
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(PQXX REQUIRED libpqxx)
-find_package(nlohmann_json 3.2.0 REQUIRED)
-find_package(GTest REQUIRED)
-find_package(Threads REQUIRED)
-
-# Add include directories
-include_directories(
-    ${CMAKE_SOURCE_DIR}/include
-    ${Arrow_INCLUDE_DIRS}
-    ${PQXX_INCLUDE_DIRS}
-)
-
-# Link directories
-link_directories(${PQXX_LIBRARY_DIRS})
 
 # Add library target
-add_library(trade_ngin SHARED
-    src/core/types.cpp
-    src/data/db_interface.cpp
-    src/instruments/base.cpp
-    src/instruments/futures.cpp
-    src/strategy/base.cpp
-    src/portfolio/manager.cpp
-    src/risk/engine.cpp
-    src/optimization/dynamic.cpp
-    src/execution/gateway.cpp
-)
+add_library(trade_ngin SHARED ${TRADE_NGIN_SOURCES})
 
-# Link libraries
-target_link_libraries(trade_ngin
-    PRIVATE
-    Arrow::arrow_shared
-    ${PQXX_LIBRARIES}
-    nlohmann_json::nlohmann_json
-    Threads::Threads
-)
-
-# Install rules
-install(TARGETS trade_ngin
-    LIBRARY DESTINATION lib
-    ARCHIVE DESTINATION lib
-    RUNTIME DESTINATION bin
-)
-
-install(DIRECTORY include/trade_ngin
-    DESTINATION include
-)
-
-# Testing
-if(CMAKE_PROJECT_NAME STREQUAL PROJECT_NAME)
-    enable_testing()
-    add_subdirectory(tests)
+# Windows-specific settings
+if(WIN32)
+    set_target_properties(trade_ngin PROPERTIES
+        WINDOWS_EXPORT_ALL_SYMBOLS ON
+    )
 endif()
 
-# Examples
-add_subdirectory(examples)
+# Set up include directories for the library
+target_include_directories(trade_ngin
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+# Enable testing
+enable_testing()
+
+# Add tests subdirectory
+add_subdirectory(tests)
