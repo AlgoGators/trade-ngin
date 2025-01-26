@@ -18,7 +18,7 @@ enum class ComponentState {
     INITIALIZED,
     RUNNING,
     PAUSED,
-    ERROR,
+    ERR_STATE,
     STOPPED
 };
 
@@ -51,6 +51,11 @@ struct ComponentInfo {
  */
 class StateManager {
 public:
+    void reset_for_tests() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        components_.clear();
+    }
+
     // Make constructor public for testing
     StateManager() = default;
 

@@ -13,6 +13,8 @@ target_include_directories(trade_ngin_tests
         ${CMAKE_SOURCE_DIR}/include
 )
 
+target_compile_definitions(trade_ngin_tests PRIVATE RUNNING_TESTS)
+
 # Link against Google Test and our library
 target_link_libraries(trade_ngin_tests
     PRIVATE
