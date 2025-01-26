@@ -323,7 +323,7 @@ Result<void> ConfigManager::initialize(
             }
         }
 
-        return Result<void>({});
+        return Result<void>();
 
     } catch (const std::exception& e) {
         return make_error<void>(
@@ -349,7 +349,7 @@ Result<void> ConfigManager::load_config_files() {
         std::ifstream base_file(base_config);
         config_ = nlohmann::json::parse(base_file);
 
-        return Result<void>({});
+        return Result<void>();
 
     } catch (const std::exception& e) {
         return make_error<void>(
@@ -364,7 +364,7 @@ Result<void> ConfigManager::apply_environment_overrides() {
     try {
         // Skip for development environment (uses base config)
         if (current_env_ == Environment::DEVELOPMENT) {
-            return Result<void>({});
+            return Result<void>();
         }
 
         // Load environment-specific config
@@ -387,7 +387,7 @@ Result<void> ConfigManager::apply_environment_overrides() {
             }
         }
 
-        return Result<void>({});
+        return Result<void>();
 
     } catch (const std::exception& e) {
         return make_error<void>(
@@ -415,7 +415,7 @@ Result<void> ConfigManager::update_config(
         std::string component = get_component_name(component_type);
         config_[component] = config;
 
-        return Result<void>({});
+        return Result<void>();
 
     } catch (const std::exception& e) {
         return make_error<void>(
@@ -454,7 +454,7 @@ Result<void> ConfigManager::validate_config(
         );
     }
 
-    return Result<void>({});
+    return Result<void>();
 }
 
 std::string ConfigManager::get_component_name(ConfigType type) {
