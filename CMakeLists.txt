@@ -21,15 +21,23 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/bin/Release")
 
 # Find packages
 find_package(GTest CONFIG REQUIRED)
+find_package(nlohmann_json CONFIG REQUIRED)
 
 # Add source files for the library
 set(TRADE_NGIN_SOURCES
     src/core/state_manager.cpp
     src/core/logger.cpp
+    src/core/config_manager.cpp
 )
 
 # Add library target
 add_library(trade_ngin SHARED ${TRADE_NGIN_SOURCES})
+
+# Link against nlohmann_json
+target_link_libraries(trade_ngin
+    PUBLIC
+        nlohmann_json::nlohmann_json
+)
 
 # Windows-specific settings
 if(WIN32)

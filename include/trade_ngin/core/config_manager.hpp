@@ -7,6 +7,7 @@
 #include <memory>
 #include <filesystem>
 #include <unordered_map>
+#include <mutex>
 
 namespace trade_ngin {
 

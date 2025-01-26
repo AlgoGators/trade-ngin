@@ -71,6 +71,8 @@ C:/Program Files/CMake/share/cmake-3.31/Modules/Compiler/XL-CXX-DetermineCompile
 C:/Program Files/CMake/share/cmake-3.31/Modules/Compiler/XLClang-CXX-DetermineCompiler.cmake
 C:/Program Files/CMake/share/cmake-3.31/Modules/Compiler/zOS-CXX-DetermineCompiler.cmake
 C:/Program Files/CMake/share/cmake-3.31/Modules/CompilerId/VS-10.vcxproj.in
+C:/Program Files/CMake/share/cmake-3.31/Modules/FindPackageHandleStandardArgs.cmake
+C:/Program Files/CMake/share/cmake-3.31/Modules/FindPackageMessage.cmake
 C:/Program Files/CMake/share/cmake-3.31/Modules/Internal/CMakeCXXLinkerInformation.cmake
 C:/Program Files/CMake/share/cmake-3.31/Modules/Internal/CMakeCommonLinkerInformation.cmake
 C:/Program Files/CMake/share/cmake-3.31/Modules/Internal/CMakeDetermineLinkerId.cmake
@@ -92,4 +94,7 @@ C:/Users/kbott/vcpkg/installed/x64-windows/share/gtest/GTestConfigVersion.cmake
 C:/Users/kbott/vcpkg/installed/x64-windows/share/gtest/GTestTargets-debug.cmake
 C:/Users/kbott/vcpkg/installed/x64-windows/share/gtest/GTestTargets-release.cmake
 C:/Users/kbott/vcpkg/installed/x64-windows/share/gtest/GTestTargets.cmake
+C:/Users/kbott/vcpkg/installed/x64-windows/share/nlohmann_json/nlohmann_jsonConfig.cmake
+C:/Users/kbott/vcpkg/installed/x64-windows/share/nlohmann_json/nlohmann_jsonConfigVersion.cmake
+C:/Users/kbott/vcpkg/installed/x64-windows/share/nlohmann_json/nlohmann_jsonTargets.cmake
 C:/Users/kbott/vcpkg/scripts/buildsystems/vcpkg.cmake
