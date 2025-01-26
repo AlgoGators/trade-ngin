@@ -22,7 +22,7 @@ enum class LogLevel {
     DEBUG,    // General debug information
     INFO,     // General information
     WARNING,  // Warnings that don't affect operation
-    ERROR,    // Errors that affect operation but don't stop system
+    ERR,    // Errors that affect operation but don't stop system
     FATAL     // Critical errors that require system shutdown
 };
 
@@ -68,6 +68,17 @@ public:
      * @param config Logger configuration
      */
     void initialize(const LoggerConfig& config);
+
+    /**
+     * @brief Reset the logger for testing
+     */
+    static void reset_for_tests() {
+        std::lock_guard<std::mutex> lock(instance().mutex_);
+        instance().initialized_ = false;
+        if (instance().log_file_.is_open()) {
+            instance().log_file_.close();
+        }
+    }
 
     /**
      * @brief Log a message with specified level

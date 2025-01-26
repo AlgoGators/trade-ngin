@@ -1,6 +1,7 @@
 // src/core/state_manager.cpp
 #include "trade_ngin/core/state_manager.hpp"
 #include "trade_ngin/core/logger.hpp"
+#include <iostream>
 
 namespace trade_ngin {
 
@@ -30,17 +31,20 @@ Result<void> StateManager::update_state(
     ComponentState old_state = it->second.state;
     it->second.state = new_state;
     it->second.last_update = std::chrono::system_clock::now();
-    
-    if (!error_message.empty()) {
-        it->second.error_message = error_message;
+
+    if (new_state != ComponentState::ERR_STATE) {
+        it->second.error_message.clear(); // Clear error message when leaving ERROR
     }
 
     INFO("Component " + component_id + " state changed from " +
          std::to_string(static_cast<int>(old_state)) + " to " +
          std::to_string(static_cast<int>(new_state)));
 
-    if (new_state == ComponentState::ERROR) {
-        ERROR("Component " + component_id + " error: " + error_message);
+    if (new_state == ComponentState::ERR_STATE) {
+        it->second.error_message = error_message;
+    } else {
+        // Clear error message when transitioning out of ERROR state
+        it->second.error_message.clear();
     }
 
     return Result<void>();  // Success case for void
@@ -70,6 +74,16 @@ Result<void> StateManager::register_component(const ComponentInfo& info) {
         return make_error<void>(
             ErrorCode::INVALID_ARGUMENT,
             "Component ID cannot be empty",
+            "StateManager"
+        );
+    }
+
+    // Add validation for component type
+    if (static_cast<int>(info.type) < 0 || 
+        static_cast<int>(info.type) >= static_cast<int>(ComponentType::ORDER_MANAGER)) {
+        return make_error<void>(
+            ErrorCode::INVALID_ARGUMENT,
+            "Invalid component type",
             "StateManager"
         );
     }
@@ -113,16 +127,22 @@ Result<void> StateManager::update_metrics(
 
 bool StateManager::is_healthy() const {
     std::lock_guard<std::mutex> lock(mutex_);
+    
+    // Explicit empty system = unhealthy
+    if (components_.empty()) {
+        std::cerr << "Health Check: No components registered!\n";
+        return false;
+    }
 
-    // System is healthy if all components are either INITIALIZED or RUNNING
     for (const auto& [id, info] : components_) {
+        std::cerr << "Component " << id << " state: " 
+                  << static_cast<int>(info.state) << "\n";
         if (info.state != ComponentState::INITIALIZED &&
             info.state != ComponentState::RUNNING) {
             return false;
         }
     }
-
-    return !components_.empty();
+    return true;
 }
 
 Result<void> StateManager::validate_transition(
@@ -134,22 +154,22 @@ Result<void> StateManager::validate_transition(
     switch (current_state) {
         case ComponentState::INITIALIZED:
             valid = (new_state == ComponentState::RUNNING ||
-                    new_state == ComponentState::ERROR);
+                    new_state == ComponentState::ERR_STATE);
             break;
 
         case ComponentState::RUNNING:
             valid = (new_state == ComponentState::PAUSED ||
                     new_state == ComponentState::STOPPED ||
-                    new_state == ComponentState::ERROR);
+                    new_state == ComponentState::ERR_STATE);
             break;
 
         case ComponentState::PAUSED:
             valid = (new_state == ComponentState::RUNNING ||
                     new_state == ComponentState::STOPPED ||
-                    new_state == ComponentState::ERROR);
+                    new_state == ComponentState::ERR_STATE);
             break;
 
-        case ComponentState::ERROR:
+        case ComponentState::ERR_STATE:
             valid = (new_state == ComponentState::INITIALIZED ||
                     new_state == ComponentState::STOPPED);
             break;
