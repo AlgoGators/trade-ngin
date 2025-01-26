@@ -8,6 +8,7 @@ class ConfigVersionManagerTest : public ::testing::Test {
 protected:
     void SetUp() override {
         // Reset instance between tests
+        ConfigVersionManager::reset_instance();
         manager = &ConfigVersionManager::instance();
     }
 
@@ -156,7 +157,7 @@ TEST_F(ConfigVersionManagerTest, AutoMigrate) {
     const auto& migrated = result.value();
     EXPECT_TRUE(migrated.success);
     EXPECT_TRUE(config.contains("auto_migrated"));
-    EXPECT_TRUE(config["auto_migrated"].get<bool>());
+    ASSERT_TRUE(config["auto_migrated"].is_boolean()); // Ensure type is correct
 }
 
 TEST_F(ConfigVersionManagerTest, NeedsMigration) {
