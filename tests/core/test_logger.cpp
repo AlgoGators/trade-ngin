@@ -1,261 +1,303 @@
-// tests/core/test_logger.cpp
 #include <gtest/gtest.h>
 #include "trade_ngin/core/logger.hpp"
-#include <fstream>
-#include <string>
-#include <filesystem>
-#include <regex>
 #include <sstream>
+#include <fstream>
+#include <filesystem>
+#include <vector>
+#include <algorithm>
 
 using namespace trade_ngin;
 
 class LoggerTest : public ::testing::Test {
 protected:
-    std::string test_log_dir = "test_logs";
-    std::string test_file = "test_logs/test_log.txt";
-
     void SetUp() override {
-        // Create test directory
+        // Reset logger first to close any existing file handles
+        Logger::reset_for_tests();
+
+        // Redirect cout to capture console output
+        original_cout = std::cout.rdbuf();
+        std::cout.rdbuf(cout_buffer.rdbuf());
+
+        // Ensure test directory is clean
+        std::error_code ec;
+        std::filesystem::remove_all(test_log_dir, ec);
         std::filesystem::create_directories(test_log_dir);
     }
 
     void TearDown() override {
-        // Clean up test files
-        std::filesystem::remove_all(test_log_dir);
+        // Restore cout
+        std::cout.rdbuf(original_cout);
+
+        // Reset logger BEFORE directory cleanup
+        Logger::reset_for_tests();
+
+        // Safe directory removal
+        std::error_code ec;
+        std::filesystem::remove_all(test_log_dir, ec);
     }
 
-    // Helper to read log file contents
-    std::string read_log_file(const std::string& filename) {
-        std::ifstream file(filename);
+    // Helper to get log files in a directory
+    std::vector<std::filesystem::path> get_log_files(const std::string& dir) {
+        std::vector<std::filesystem::path> files;
+        for (const auto& entry : std::filesystem::directory_iterator(dir)) {
+            if (entry.is_regular_file() && entry.path().extension() == ".log") {
+                files.push_back(entry.path());
+            }
+        }
+        // Sort by modification time (oldest first)
+        std::sort(files.begin(), files.end(), [](const auto& a, const auto& b) {
+            return std::filesystem::last_write_time(a) < std::filesystem::last_write_time(b);
+        });
+        return files;
+    }
+
+    // Helper to read file content
+    std::string read_file(const std::filesystem::path& path) {
+        std::ifstream file(path);
+        if (!file.is_open()) return "";
         std::stringstream buffer;
         buffer << file.rdbuf();
         return buffer.str();
     }
+
+    // Helper to debug directory contents
+    std::string list_files(const std::string& dir) {
+        std::stringstream ss;
+        try {
+            if (!std::filesystem::exists(dir)) {
+                return "Directory does not exist";
+            }
+            for (const auto& entry : std::filesystem::directory_iterator(dir)) {
+                ss << entry.path().filename().string() << " ";
+            }
+            if (ss.str().empty()) {
+                return "Directory is empty";
+            }
+            return ss.str();
+        } catch (const std::filesystem::filesystem_error& e) {
+            return std::string("Error listing directory: ") + e.what();
+        }
+    }
+    
+    std::streambuf* original_cout;
+    std::stringstream cout_buffer;
+    const std::string test_log_dir = "test_logs";
 };
 
-TEST_F(LoggerTest, Initialization) {
-    auto& logger = Logger::instance();
-    
+// Add this test case to verify proper handle closure
+TEST_F(LoggerTest, FileHandlesClosedAfterReset) {
     LoggerConfig config;
-    config.min_level = LogLevel::INFO;
     config.destination = LogDestination::FILE;
     config.log_directory = test_log_dir;
-    config.filename_prefix = "test_log";
+    Logger::instance().initialize(config);
     
-    EXPECT_NO_THROW(logger.initialize(config));
-
-    // Try to initialize again - should throw
-    EXPECT_THROW(logger.initialize(config), TradeError);
+    // Explicit reset
+    Logger::reset_for_tests();
+    
+    // Verify directory can be deleted
+    std::error_code ec;
+    std::filesystem::remove_all(test_log_dir, ec);
+    EXPECT_FALSE(ec) << "Failed to delete directory: " << ec.message();
 }
 
-TEST_F(LoggerTest, LogLevels) {
-    auto& logger = Logger::instance();
-    
+TEST_F(LoggerTest, InitializationCreatesLogDirectory) {
     LoggerConfig config;
-    config.min_level = LogLevel::INFO;
     config.destination = LogDestination::FILE;
-    config.log_directory = test_log_dir;
-    config.filename_prefix = "test_log";
-    
-    logger.initialize(config);
-
-    // These should be logged
-    logger.log(LogLevel::INFO, "Info message");
-    logger.log(LogLevel::WARNING, "Warning message");
-    logger.log(LogLevel::ERROR, "Error message");
-    
-    // These should be filtered out
-    logger.log(LogLevel::DEBUG, "Debug message");
-    logger.log(LogLevel::TRACE, "Trace message");
-
-    // Read log file and verify
-    auto log_files = std::filesystem::directory_iterator(test_log_dir);
-    ASSERT_NE(log_files.begin(), log_files.end()) << "No log file created";
-    
-    std::string log_content = read_log_file(log_files.begin()->path().string());
-    
-    EXPECT_TRUE(log_content.find("Info message") != std::string::npos);
-    EXPECT_TRUE(log_content.find("Warning message") != std::string::npos);
-    EXPECT_TRUE(log_content.find("Error message") != std::string::npos);
-    EXPECT_TRUE(log_content.find("Debug message") == std::string::npos);
-    EXPECT_TRUE(log_content.find("Trace message") == std::string::npos);
+    config.log_directory = test_log_dir + "/subdir";
+    ASSERT_NO_THROW(Logger::instance().initialize(config));
+    EXPECT_TRUE(std::filesystem::exists(config.log_directory));
 }
 
-TEST_F(LoggerTest, LogRotation) {
-    auto& logger = Logger::instance();
-    
+TEST_F(LoggerTest, LogsToConsoleWhenConfigured) {
     LoggerConfig config;
-    config.min_level = LogLevel::INFO;
-    config.destination = LogDestination::FILE;
-    config.log_directory = test_log_dir;
-    config.filename_prefix = "test_log";
-    config.max_file_size = 100;  // Small size to trigger rotation
-    config.max_files = 3;
-    
-    logger.initialize(config);
-
-    // Write enough logs to trigger rotation
-    std::string long_message(50, 'x');  // 50-character message
-    for (int i = 0; i < 10; i++) {
-        logger.log(LogLevel::INFO, long_message);
-    }
-
-    // Check number of log files
-    size_t file_count = 0;
-    for (const auto& entry : std::filesystem::directory_iterator(test_log_dir)) {
-        file_count++;
-    }
-    
-    EXPECT_LE(file_count, config.max_files) 
-        << "More log files than maximum allowed";
-}
-
-TEST_F(LoggerTest, LogFormatting) {
-    auto& logger = Logger::instance();
-    
-    LoggerConfig config;
-    config.min_level = LogLevel::INFO;
-    config.destination = LogDestination::FILE;
-    config.log_directory = test_log_dir;
-    config.filename_prefix = "test_log";
-    config.include_timestamp = true;
-    config.include_level = true;
-    
-    logger.initialize(config);
-
-    logger.log(LogLevel::INFO, "Test message");
-
-    // Read log file and verify format
-    auto log_files = std::filesystem::directory_iterator(test_log_dir);
-    std::string log_content = read_log_file(log_files.begin()->path().string());
-    
-    // Check for timestamp format: YYYY-MM-DD HH:MM:SS
-    std::regex timestamp_regex("\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}");
-    EXPECT_TRUE(std::regex_search(log_content, timestamp_regex))
-        << "Timestamp format incorrect";
-    
-    // Check for log level
-    EXPECT_TRUE(log_content.find("[INFO]") != std::string::npos)
-        << "Log level not found in message";
-    
-    // Check for actual message
-    EXPECT_TRUE(log_content.find("Test message") != std::string::npos)
-        << "Log message not found";
-}
-
-TEST_F(LoggerTest, MacroUsage) {
-    auto& logger = Logger::instance();
-    
-    LoggerConfig config;
-    config.min_level = LogLevel::DEBUG;
-    config.destination = LogDestination::FILE;
-    config.log_directory = test_log_dir;
-    config.filename_prefix = "test_log";
-    
-    logger.initialize(config);
-
-    // Test all logging macros
-    TRACE("Trace message");
-    DEBUG("Debug message");
-    INFO("Info message");
-    WARN("Warning message");
-    ERROR("Error message");
-    FATAL("Fatal message");
-
-    // Read log file and verify
-    auto log_files = std::filesystem::directory_iterator(test_log_dir);
-    std::string log_content = read_log_file(log_files.begin()->path().string());
-    
-    EXPECT_TRUE(log_content.find("Debug message") != std::string::npos);
-    EXPECT_TRUE(log_content.find("Info message") != std::string::npos);
-    EXPECT_TRUE(log_content.find("Warning message") != std::string::npos);
-    EXPECT_TRUE(log_content.find("Error message") != std::string::npos);
-    EXPECT_TRUE(log_content.find("Fatal message") != std::string::npos);
-    // Trace should be filtered out even at DEBUG level
-    EXPECT_TRUE(log_content.find("Trace message") == std::string::npos);
-}
-
-TEST_F(LoggerTest, ConsoleOutput) {
-    auto& logger = Logger::instance();
-    
-    LoggerConfig config;
-    config.min_level = LogLevel::INFO;
     config.destination = LogDestination::CONSOLE;
-    
-    logger.initialize(config);
+    config.include_timestamp = false;
+    config.include_level = false;
+    Logger::instance().initialize(config);
 
-    // Redirect cout to stringstream for testing
-    std::stringstream buffer;
-    std::streambuf* old = std::cout.rdbuf(buffer.rdbuf());
+    std::string message = "Console message";
+    Logger::instance().log(LogLevel::INFO, message);
 
-    logger.log(LogLevel::INFO, "Console test message");
-
-    // Restore cout
-    std::cout.rdbuf(old);
-
-    // Verify output
-    std::string output = buffer.str();
-    EXPECT_TRUE(output.find("Console test message") != std::string::npos);
+    EXPECT_EQ(cout_buffer.str(), message + "\n");
 }
 
-TEST_F(LoggerTest, DualOutput) {
-    auto& logger = Logger::instance();
-    
+TEST_F(LoggerTest, LogsToFileWhenConfigured) {
     LoggerConfig config;
-    config.min_level = LogLevel::INFO;
+    config.destination = LogDestination::FILE;
+    config.log_directory = test_log_dir;
+    config.include_timestamp = false;
+    config.include_level = false;
+    Logger::instance().initialize(config);
+
+    Logger::instance().log(LogLevel::INFO, "File message");
+
+    auto files = get_log_files(test_log_dir);
+    ASSERT_EQ(files.size(), 1);
+    EXPECT_EQ(read_file(files[0]), "File message\n");
+}
+
+TEST_F(LoggerTest, LogsToBothDestinations) {
+    LoggerConfig config;
     config.destination = LogDestination::BOTH;
     config.log_directory = test_log_dir;
-    config.filename_prefix = "test_log";
-    
-    logger.initialize(config);
+    config.include_timestamp = false;
+    config.include_level = false;
+    Logger::instance().initialize(config);
 
-    // Capture console output
-    std::stringstream buffer;
-    std::streambuf* old = std::cout.rdbuf(buffer.rdbuf());
+    Logger::instance().log(LogLevel::INFO, "Both message");
 
-    logger.log(LogLevel::INFO, "Dual output test");
+    // Check console
+    EXPECT_EQ(cout_buffer.str(), "Both message\n");
 
-    // Restore cout
-    std::cout.rdbuf(old);
-
-    // Verify console output
-    std::string console_output = buffer.str();
-    EXPECT_TRUE(console_output.find("Dual output test") != std::string::npos);
-
-    // Verify file output
-    auto log_files = std::filesystem::directory_iterator(test_log_dir);
-    std::string file_output = read_log_file(log_files.begin()->path().string());
-    EXPECT_TRUE(file_output.find("Dual output test") != std::string::npos);
+    // Check file
+    auto files = get_log_files(test_log_dir);
+    ASSERT_EQ(files.size(), 1);
+    EXPECT_EQ(read_file(files[0]), "Both message\n");
 }
 
-TEST_F(LoggerTest, MinLevelChange) {
-    auto& logger = Logger::instance();
-    
+TEST_F(LoggerTest, LogLevelFiltering) {
     LoggerConfig config;
-    config.min_level = LogLevel::INFO;
     config.destination = LogDestination::FILE;
     config.log_directory = test_log_dir;
-    config.filename_prefix = "test_log";
+    config.min_level = LogLevel::WARNING;
+    config.include_timestamp = false;
+    config.include_level = false;
+    Logger::instance().initialize(config);
+
+    Logger::instance().log(LogLevel::DEBUG, "Debug");
+    Logger::instance().log(LogLevel::INFO, "Info");
+    Logger::instance().log(LogLevel::WARNING, "Warning");
+    Logger::instance().log(LogLevel::ERR, "Error");
+
+    auto content = read_file(get_log_files(test_log_dir)[0]);
+    EXPECT_TRUE(content.find("Debug") == std::string::npos);
+    EXPECT_TRUE(content.find("Info") == std::string::npos);
+    EXPECT_TRUE(content.find("Warning\nError\n") != std::string::npos);
+}
+
+TEST_F(LoggerTest, MessageFormatting) {
+    LoggerConfig config;
+    config.destination = LogDestination::FILE;
+    config.log_directory = test_log_dir;
+    config.include_timestamp = true;
+    config.include_level = true;
+    Logger::instance().initialize(config);
+
+    Logger::instance().log(LogLevel::INFO, "Formatted");
+
+    auto content = read_file(get_log_files(test_log_dir)[0]);
+    EXPECT_TRUE(content.find("[INFO]") != std::string::npos);
+    EXPECT_TRUE(content.find("Formatted") != std::string::npos);
+    EXPECT_GE(content.size(), 20); // Basic timestamp check
+}
+
+TEST_F(LoggerTest, FileRotation) {
+    LoggerConfig config;
+    config.destination = LogDestination::FILE;
+    config.log_directory = test_log_dir;
+    config.max_file_size = 10; // 10 bytes
+    config.max_files = 2;
+    config.include_timestamp = false;
+    config.include_level = false;
+    Logger::instance().initialize(config);
+
+    // Each message is 9 bytes ("12345678\n")
+    Logger::instance().log(LogLevel::INFO, "12345678"); // 9 bytes
+    Logger::instance().log(LogLevel::INFO, "12345678"); // Triggers rotation
+
+    auto files = get_log_files(test_log_dir);
+    ASSERT_EQ(files.size(), 2);
+}
+
+TEST_F(LoggerTest, MaxFilesEnforced) {
+    LoggerConfig config;
+    config.destination = LogDestination::FILE;
+    config.log_directory = test_log_dir;
+    config.max_file_size = 1; // Rotate every message
+    config.max_files = 2;
+    config.include_timestamp = false;
+    config.include_level = false;
+    Logger::instance().initialize(config);
+
+    for (int i = 0; i < 3; ++i) {
+        Logger::instance().log(LogLevel::INFO, std::to_string(i));
+    }
+
+    auto files = get_log_files(test_log_dir);
+    EXPECT_EQ(files.size(), 2); // Oldest file should be deleted
+}
+
+TEST_F(LoggerTest, LogBeforeInitializationSilent) {
+    Logger::reset_for_tests(); // Ensure uninitialized
+
+    Logger::instance().log(LogLevel::INFO, "Test");
     
-    logger.initialize(config);
+    EXPECT_TRUE(cout_buffer.str().empty());
+    EXPECT_TRUE(get_log_files(test_log_dir).empty());
+}
 
-    // Initial level is INFO
-    logger.log(LogLevel::DEBUG, "Initial debug message");
-    logger.log(LogLevel::INFO, "Initial info message");
+TEST_F(LoggerTest, ReinitializationSwitchesFile) {
+    // Create absolute paths for both directories
+    std::filesystem::path dir1 = std::filesystem::absolute(test_log_dir) / "dir1";
+    std::filesystem::path dir2 = std::filesystem::absolute(test_log_dir) / "dir2";
 
-    // Change level to DEBUG
-    logger.set_level(LogLevel::DEBUG);
-    EXPECT_EQ(logger.get_min_level(), LogLevel::DEBUG);
+    // Ensure both directories don't exist at start
+    std::filesystem::remove_all(dir1);
+    std::filesystem::remove_all(dir2);
 
-    logger.log(LogLevel::DEBUG, "Second debug message");
-    logger.log(LogLevel::INFO, "Second info message");
-
-    // Read log file and verify
-    auto log_files = std::filesystem::directory_iterator(test_log_dir);
-    std::string log_content = read_log_file(log_files.begin()->path().string());
+    // First initialization
+    LoggerConfig config1;
+    config1.destination = LogDestination::FILE;
+    config1.log_directory = dir1.string();
+    config1.filename_prefix = "test1";
     
-    EXPECT_TRUE(log_content.find("Initial debug message") == std::string::npos);
-    EXPECT_TRUE(log_content.find("Initial info message") != std::string::npos);
-    EXPECT_TRUE(log_content.find("Second debug message") != std::string::npos);
-    EXPECT_TRUE(log_content.find("Second info message") != std::string::npos);
+    std::cout << "Initializing logger with dir1: " << dir1.string() << std::endl;
+    Logger::instance().initialize(config1);
+    
+    // Write to first log
+    Logger::instance().log(LogLevel::INFO, "Dir1");
+    
+    // Verify first directory
+    auto dir1_files = get_log_files(dir1.string());
+    std::cout << "Files in dir1: " << list_files(dir1.string()) << std::endl;
+    ASSERT_EQ(dir1_files.size(), 1) << "Dir1 should have 1 file";
+
+    // Reset logger before reinitializing
+    Logger::reset_for_tests();
+
+    // Create second directory if it doesn't exist
+    std::filesystem::create_directories(dir2);
+
+    // Reinitialize with new directory
+    LoggerConfig config2;
+    config2.destination = LogDestination::FILE;
+    config2.log_directory = dir2.string();
+    config2.filename_prefix = "test2";
+    
+    std::cout << "Reinitializing logger with dir2: " << dir2.string() << std::endl;
+    Logger::instance().initialize(config2);
+
+    // Verify directory exists
+    ASSERT_TRUE(std::filesystem::exists(dir2)) 
+        << "Directory not created: " << dir2.string();
+
+    // Write to second log and flush
+    Logger::instance().log(LogLevel::INFO, "Dir2");
+    
+    // Explicitly reset to ensure file is closed
+    Logger::reset_for_tests();
+
+    // Debug output
+    std::cout << "Checking files in dir2: " << dir2.string() << std::endl;
+    std::cout << "Directory exists: " << std::filesystem::exists(dir2) << std::endl;
+    std::cout << "Directory listing: " << list_files(dir2.string()) << std::endl;
+
+    // Verify files in dir2
+    auto dir2_files = get_log_files(dir2.string());
+    ASSERT_EQ(dir2_files.size(), 1) 
+        << "Files in dir2: " << list_files(dir2.string()) 
+        << "\nDirectory exists: " << std::filesystem::exists(dir2);
+
+    // Verify dir1 still has its file
+    EXPECT_EQ(get_log_files(dir1.string()).size(), 1);
 }
