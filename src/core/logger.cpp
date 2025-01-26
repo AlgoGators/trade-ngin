@@ -11,11 +11,8 @@ void Logger::initialize(const LoggerConfig& config) {
     std::lock_guard<std::mutex> lock(mutex_);
     
     if (initialized_) {
-        throw TradeError(
-            ErrorCode::INVALID_ARGUMENT,
-            "Logger already initialized",
-            "Logger"
-        );
+        // Close existing file handles before reinitializing
+        reset_for_tests();
     }
 
     config_ = config;
@@ -42,7 +39,6 @@ void Logger::initialize(const LoggerConfig& config) {
     }
 
     initialized_ = true;
-    log(LogLevel::INFO, "Logger initialized");
 }
 
 Logger::~Logger() {
@@ -53,11 +49,7 @@ Logger::~Logger() {
 
 void Logger::log(LogLevel level, const std::string& message) {
     if (!initialized_) {
-        throw TradeError(
-            ErrorCode::NOT_INITIALIZED,
-            "Logger not initialized",
-            "Logger"
-        );
+        return;
     }
 
     if (level < config_.min_level) {
@@ -151,7 +143,7 @@ std::string Logger::level_to_string(LogLevel level) {
         {LogLevel::DEBUG, "DEBUG"},
         {LogLevel::INFO, "INFO"},
         {LogLevel::WARNING, "WARNING"},
-        {LogLevel::ERROR, "ERROR"},
+        {LogLevel::ERR, "ERROR"},
         {LogLevel::FATAL, "FATAL"}
     };
 
