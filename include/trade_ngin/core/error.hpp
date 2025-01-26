@@ -103,9 +103,11 @@ class Result {
 public:
     /**
      * @brief Constructor for success case
-     * @param value The successful result value
+     * @param value The successful result
+     * @tparam U The type of the successful result
      */
-    Result(const T& value) : value_(value), error_(nullptr) {}
+    template<typename U = T>
+    Result(U&& value) : value_(std::forward<U>(value)), error_(nullptr) {}
 
     /**
      * @brief Constructor for error case
@@ -113,6 +115,37 @@ public:
      */
     Result(std::unique_ptr<TradeError> error) 
         : error_(std::move(error)) {}
+
+    /**
+     * @brief Move constructor
+     * @param other The Result to move
+     */
+    Result(Result&& other) noexcept
+        : value_(std::move(other.value_))
+        , error_(std::move(other.error_)) {}
+
+    /**
+     * @brief Move assignment operator
+     * @param other The Result to move
+     * @return Reference to this Result
+     */
+    Result& operator=(Result&& other) noexcept {
+        if (this != &other) {
+            value_ = std::move(other.value_);
+            error_ = std::move(other.error_);
+        }
+        return *this;
+    }
+
+    /**
+     * @brief Copy constructor (deleted)
+     */
+    Result(const Result&) = delete;
+
+    /**
+     * @brief Copy assignment operator (deleted)
+     */
+    Result& operator=(const Result&) = delete;
 
     /**
      * @brief Check if result represents success
