@@ -7,6 +7,9 @@
     <ClCompile Include="C:\Users\kbott\OneDrive\Desktop\School\UF Algo Fund\trade-ngin-rebuild\trade-ngin\tests\core\test_state_manager.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="C:\Users\kbott\OneDrive\Desktop\School\UF Algo Fund\trade-ngin-rebuild\trade-ngin\tests\core\test_logger.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <CustomBuild Include="C:\Users\kbott\OneDrive\Desktop\School\UF Algo Fund\trade-ngin-rebuild\trade-ngin\tests\CMakeLists.txt" />

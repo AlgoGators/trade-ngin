@@ -2,6 +2,7 @@
 set(TEST_SOURCES
     core/test_result.cpp
     core/test_state_manager.cpp
+    core/test_logger.cpp
 )
 
 # Create test executable
