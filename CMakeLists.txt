@@ -28,6 +28,7 @@ set(TRADE_NGIN_SOURCES
     src/core/state_manager.cpp
     src/core/logger.cpp
     src/core/config_manager.cpp
+    src/core/config_version.cpp 
 )
 
 # Add library target

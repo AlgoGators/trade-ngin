@@ -137,6 +137,14 @@ public:
         nlohmann::json& config,
         ConfigType component_type) const;
 
+    /**
+     * @brief Reset the manager's state (for testing)
+     */
+    static void reset_instance() {
+        instance().migrations_.clear();
+        instance().latest_versions_.clear();
+    }
+
 private:
     ConfigVersionManager() = default;
     

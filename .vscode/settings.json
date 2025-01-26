@@ -88,6 +88,7 @@
         "condition_variable": "cpp",
         "cwctype": "cpp",
         "regex": "cpp",
-        "set": "cpp"
+        "set": "cpp",
+        "future": "cpp"
     }
 }
