@@ -4,6 +4,7 @@ set(TEST_SOURCES
     core/test_state_manager.cpp
     core/test_logger.cpp
     core/test_config_manager.cpp
+    core/test_config_version.cpp
 )
 
 # Create test executable

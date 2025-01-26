@@ -72,7 +72,7 @@ Result<void> ConfigVersionManager::register_migration(
             latest = to_version;
         }
 
-        return Result<void>({});
+        return Result<void>();
 
     } catch (const std::exception& e) {
         return make_error<void>(
@@ -308,7 +308,7 @@ Result<void> ConfigVersionManager::validate_migration_step(
         );
     }
 
-    return Result<void>({});
+    return Result<void>();
 }
 
 std::string ConfigVersionManager::make_version_key(
