@@ -1,2 +1,3 @@
 C:/Users/kbott/OneDrive/Desktop/School/UF Algo Fund/trade-ngin-rebuild/trade-ngin/build/trade_ngin.dir/RelWithDebInfo/state_manager.obj
 C:/Users/kbott/OneDrive/Desktop/School/UF Algo Fund/trade-ngin-rebuild/trade-ngin/build/trade_ngin.dir/RelWithDebInfo/logger.obj
+C:/Users/kbott/OneDrive/Desktop/School/UF Algo Fund/trade-ngin-rebuild/trade-ngin/build/trade_ngin.dir/RelWithDebInfo/config_manager.obj
