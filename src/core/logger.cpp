@@ -11,29 +11,36 @@ void Logger::initialize(const LoggerConfig& config) {
     std::lock_guard<std::mutex> lock(mutex_);
     
     if (initialized_) {
-        // Close existing file handles before reinitializing
-        reset_for_tests();
+        // Close existing file handles
+        if (log_file_.is_open()) {
+            log_file_.close();
+        }
+        initialized_ = false;
     }
 
     config_ = config;
 
     if (config_.destination == LogDestination::FILE || 
         config_.destination == LogDestination::BOTH) {
-        // Create log directory if it doesn't exist
-        std::filesystem::create_directories(config_.log_directory);
+        // Create full path if it doesn't exist
+        std::filesystem::path log_dir = std::filesystem::absolute(config_.log_directory);
+        std::filesystem::create_directories(log_dir);
 
+        // Build log filename
+        auto now = std::chrono::system_clock::now().time_since_epoch();
+        std::string timestamp = std::to_string(
+            std::chrono::duration_cast<std::chrono::seconds>(now).count()
+        );
+        
+        std::filesystem::path log_path = log_dir / 
+            (config_.filename_prefix + "_" + timestamp + ".log");
+        
         // Open log file
-        std::string filename = config_.log_directory + "/" + 
-                             config_.filename_prefix + "_" + 
-                             std::to_string(std::chrono::system_clock::now().time_since_epoch().count()) + 
-                             ".log";
-        log_file_.open(filename, std::ios::app);
+        log_file_.open(log_path, std::ios::app);
         
         if (!log_file_.is_open()) {
-            throw TradeError(
-                ErrorCode::UNKNOWN_ERROR,
-                "Failed to open log file: " + filename,
-                "Logger"
+            throw std::runtime_error(
+                "Failed to open log file: " + log_path.string()
             );
         }
     }
@@ -106,34 +113,34 @@ void Logger::write_to_file(const std::string& message) {
 }
 
 void Logger::rotate_log_files() {
-    log_file_.close();
+    log_file_.close(); // Explicitly close before handling files
 
-    // Get list of existing log files
+    std::filesystem::path log_dir = std::filesystem::absolute(config_.log_directory);
+    
     std::vector<std::filesystem::path> log_files;
-    for (const auto& entry : std::filesystem::directory_iterator(config_.log_directory)) {
-        if (entry.path().string().find(config_.filename_prefix) != std::string::npos) {
+    for (const auto& entry : std::filesystem::directory_iterator(log_dir)) {
+        if (entry.path().filename().string().find(config_.filename_prefix) != std::string::npos) {
             log_files.push_back(entry.path());
         }
     }
 
-    // Sort by modification time
     std::sort(log_files.begin(), log_files.end(), 
               [](const auto& a, const auto& b) {
                   return std::filesystem::last_write_time(a) < 
                          std::filesystem::last_write_time(b);
               });
 
-    // Remove oldest files if we have too many
     while (log_files.size() >= config_.max_files) {
         std::filesystem::remove(log_files.front());
         log_files.erase(log_files.begin());
     }
 
-    // Create new log file
-    std::string new_filename = config_.log_directory + "/" + 
-                             config_.filename_prefix + "_" + 
-                             std::to_string(std::chrono::system_clock::now().time_since_epoch().count()) + 
-                             ".log";
+    // Use absolute path for the new file
+    std::filesystem::path new_filename = log_dir / 
+        (config_.filename_prefix + "_" + 
+         std::to_string(std::chrono::system_clock::now().time_since_epoch().count()) + 
+         ".log");
+    
     log_file_.open(new_filename, std::ios::app);
 }
 
