@@ -46,7 +46,7 @@ Result<void> PostgresDatabase::connect() {
 
         StateManager::instance().update_state("POSTGRES_DB", ComponentState::RUNNING);
         INFO("Successfully connected to PostgreSQL database");
-        return Result<void>({});
+        return Result<void>();
 
     } catch (const std::exception& e) {
         return make_error<void>(
@@ -77,60 +77,66 @@ Result<std::shared_ptr<arrow::Table>> PostgresDatabase::get_market_data(
     AssetClass asset_class,
     DataFrequency freq,
     const std::string& data_type) {
+        if (start_date > end_date) {
+            return make_error<std::shared_ptr<arrow::Table>>(
+                ErrorCode::INVALID_ARGUMENT,
+                "Start date must be before end date"
+            );
+        }
     
-    auto validation = validate_connection();
-    if (validation.is_error()) {
-        return make_error<std::shared_ptr<arrow::Table>>(
-            validation.error()->code(),
-            validation.error()->what()
-        );
-    }
+        auto validation = validate_connection();
+        if (validation.is_error()) {
+            return make_error<std::shared_ptr<arrow::Table>>(
+                validation.error()->code(),
+                validation.error()->what()
+            );
+        }
 
-    try {
-        std::string query = build_market_data_query(
-            symbols, start_date, end_date, asset_class, freq, data_type);
+        try {
+            std::string query = build_market_data_query(
+                symbols, start_date, end_date, asset_class, freq, data_type);
 
-        pqxx::work txn(*connection_);
-        auto result = txn.exec(query);
-        txn.commit();
+            pqxx::work txn(*connection_);
+            auto result = txn.exec(query);
+            txn.commit();
 
-        // Convert to Arrow table
-        auto table_result = convert_to_arrow_table(result);
-        if (table_result.is_error()) {
+            // Convert to Arrow table
+            auto table_result = convert_to_arrow_table(result);
+            if (table_result.is_error()) {
+                return table_result;
+            }
+
+            // Publish market data events
+            for (const auto& row : result) {
+                MarketDataEvent event;
+                event.type = MarketDataEventType::BAR;
+                event.symbol = row["symbol"].as<std::string>();
+                
+                // Parse timestamp
+                std::tm tm = {};
+                std::stringstream ss(row["time"].as<std::string>());
+                ss >> std::get_time(&tm, "%Y-%m-%d %H:%M:%S");
+                event.timestamp = std::chrono::system_clock::from_time_t(std::mktime(&tm));
+
+                // Add numeric fields
+                event.numeric_fields["open"] = row["open"].as<double>();
+                event.numeric_fields["high"] = row["high"].as<double>();
+                event.numeric_fields["low"] = row["low"].as<double>();
+                event.numeric_fields["close"] = row["close"].as<double>();
+                event.numeric_fields["volume"] = row["volume"].as<double>();
+
+                MarketDataBus::instance().publish(event);
+            }
+
             return table_result;
+
+        } catch (const std::exception& e) {
+            return make_error<std::shared_ptr<arrow::Table>>(
+                ErrorCode::DATABASE_ERROR,
+                "Failed to fetch market data: " + std::string(e.what()),
+                "PostgresDatabase"
+            );
         }
-
-        // Publish market data events
-        for (const auto& row : result) {
-            MarketDataEvent event;
-            event.type = MarketDataEventType::BAR;
-            event.symbol = row["symbol"].as<std::string>();
-            
-            // Parse timestamp
-            std::tm tm = {};
-            std::stringstream ss(row["time"].as<std::string>());
-            ss >> std::get_time(&tm, "%Y-%m-%d %H:%M:%S");
-            event.timestamp = std::chrono::system_clock::from_time_t(std::mktime(&tm));
-
-            // Add numeric fields
-            event.numeric_fields["open"] = row["open"].as<double>();
-            event.numeric_fields["high"] = row["high"].as<double>();
-            event.numeric_fields["low"] = row["low"].as<double>();
-            event.numeric_fields["close"] = row["close"].as<double>();
-            event.numeric_fields["volume"] = row["volume"].as<double>();
-
-            MarketDataBus::instance().publish(event);
-        }
-
-        return table_result;
-
-    } catch (const std::exception& e) {
-        return make_error<std::shared_ptr<arrow::Table>>(
-            ErrorCode::DATABASE_ERROR,
-            "Failed to fetch market data: " + std::string(e.what()),
-            "PostgresDatabase"
-        );
-    }
 }
 
 Result<void> PostgresDatabase::store_executions(
@@ -162,7 +168,7 @@ Result<void> PostgresDatabase::store_executions(
         }
 
         txn.commit();
-        return Result<void>({});
+        return Result<void>();
     } catch (const std::exception& e) {
         return make_error<void>(
             ErrorCode::DATABASE_ERROR,
@@ -187,7 +193,7 @@ Result<void> PostgresDatabase::validate_connection() const {
             "PostgresDatabase"
         );
     }
-    return Result<void>({});
+    return Result<void>();
 }
 
 Result<void> PostgresDatabase::store_positions(
@@ -224,7 +230,7 @@ Result<void> PostgresDatabase::store_positions(
 
         txn.commit();
         INFO("Successfully updated " + std::to_string(positions.size()) + " positions");
-        return Result<void>({});
+        return Result<void>();
 
     } catch (const std::exception& e) {
         return make_error<void>(
@@ -263,7 +269,7 @@ Result<void> PostgresDatabase::store_signals(
 
         txn.commit();
         INFO("Successfully stored signals for strategy: " + strategy_id);
-        return Result<void>({});
+        return Result<void>();
 
     } catch (const std::exception& e) {
         return make_error<void>(
