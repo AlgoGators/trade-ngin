@@ -146,6 +146,15 @@ struct Position {
     double unrealized_pnl;
     double realized_pnl;
     Timestamp last_update;
+
+    // Constructors
+    Position(std::string sym, Quantity qty, Price avg_price, double unreal_pnl, double real_pnl, Timestamp ts)
+        : symbol(std::move(sym)), 
+        quantity(qty), 
+        average_price(avg_price), 
+        unrealized_pnl(unreal_pnl), 
+        realized_pnl(real_pnl), 
+        last_update(ts) {}
     
     Position() : quantity(0), average_price(0), unrealized_pnl(0), realized_pnl(0) {}
     

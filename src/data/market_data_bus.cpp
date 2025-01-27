@@ -46,7 +46,7 @@ Result<void> MarketDataBus::subscribe(const SubscriberInfo& subscriber_info) {
          std::to_string(subscriber_info.event_types.size()) + " event types and " +
          std::to_string(subscriber_info.symbols.size()) + " symbols");
 
-    return Result<void>({});
+    return Result<void>();
 }
 
 Result<void> MarketDataBus::unsubscribe(const std::string& subscriber_id) {
@@ -64,7 +64,7 @@ Result<void> MarketDataBus::unsubscribe(const std::string& subscriber_id) {
     it->second.active = false;
     INFO("Deactivated subscription for " + subscriber_id);
 
-    return Result<void>({});
+    return Result<void>();
 }
 
 void MarketDataBus::publish(const MarketDataEvent& event) {

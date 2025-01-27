@@ -5,6 +5,8 @@ set(TEST_SOURCES
     core/test_logger.cpp
     core/test_config_manager.cpp
     core/test_config_version.cpp
+    data/test_postgres_database.cpp
+    data/test_db_utils.cpp
 )
 
 # Create test executable
