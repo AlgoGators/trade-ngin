@@ -150,7 +150,7 @@ private:
 #define DEBUG(message) LOG(LogLevel::DEBUG, message)
 #define INFO(message)  LOG(LogLevel::INFO, message)
 #define WARN(message)  LOG(LogLevel::WARNING, message)
-#define ERROR(message) LOG(LogLevel::ERROR, message)
+#define ERROR(message) LOG(LogLevel::ERR, message)
 #define FATAL(message) LOG(LogLevel::FATAL, message)
 
 } // namespace trade_ngin

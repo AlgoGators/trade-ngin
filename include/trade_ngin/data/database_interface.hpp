@@ -128,7 +128,7 @@ protected:
                 "DatabaseInterface"
             );
         }
-        return Result<void>({});
+        return Result<void>();
     }
 };
 

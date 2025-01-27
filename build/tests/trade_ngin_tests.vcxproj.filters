@@ -16,6 +16,12 @@
     <ClCompile Include="C:\Users\kbott\OneDrive\Desktop\School\UF Algo Fund\trade-ngin-rebuild\trade-ngin\tests\core\test_config_version.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="C:\Users\kbott\OneDrive\Desktop\School\UF Algo Fund\trade-ngin-rebuild\trade-ngin\tests\data\test_postgres_database.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\kbott\OneDrive\Desktop\School\UF Algo Fund\trade-ngin-rebuild\trade-ngin\tests\data\test_db_utils.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <CustomBuild Include="C:\Users\kbott\OneDrive\Desktop\School\UF Algo Fund\trade-ngin-rebuild\trade-ngin\tests\CMakeLists.txt" />

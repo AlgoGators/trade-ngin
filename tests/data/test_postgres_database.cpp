@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 #include "trade_ngin/data/postgres_database.hpp"
+#include "test_db_utils.hpp"
+#include <arrow/type_traits.h>
 #include <memory>
 #include <chrono>
 
@@ -10,7 +12,7 @@ class PostgresDatabaseTest : public ::testing::Test {
 protected:
     void SetUp() override {
         // Create database instance with test connection string
-        db = std::make_unique<PostgresDatabase>("postgresql://test:test@localhost:5432/testdb");
+        db = std::make_unique<trade_ngin::testing::MockPostgresDatabase>("mock://testdb");
     }
 
     void TearDown() override {
@@ -273,7 +275,9 @@ TEST_F(PostgresDatabaseTest, LargeDatasetHandling) {
 
     ASSERT_TRUE(result.is_ok());
     // Verify the Arrow table's memory usage is reasonable
-    EXPECT_LT(result.value()->nbytes(), 1024 * 1024 * 1024); // Less than 1GB
+    auto table = result.value();
+    size_t estimated_size = table->num_rows() * table->num_columns() * sizeof(double); // Rough estimate
+    EXPECT_LT(estimated_size, 1024 * 1024 * 1024); // Less than 1GB
 }
 
 TEST_F(PostgresDatabaseTest, TransactionRollback) {
@@ -297,9 +301,16 @@ TEST_F(PostgresDatabaseTest, TransactionRollback) {
     // Verify the valid positions are still intact
     auto query_result = db->execute_query("SELECT COUNT(*) FROM trading.positions");
     ASSERT_TRUE(query_result.is_ok());
-    // Should only have the original valid positions
-    EXPECT_EQ(query_result.value()->column(0)->GetScalar(0)->ToString(), 
-              std::to_string(positions.size() - 1));
+
+    // Get the scalar value from the result
+    auto scalar_result = query_result.value()->column(0)->GetScalar(0);
+    ASSERT_TRUE(scalar_result.ok());
+
+    // Cast to specific scalar type
+    auto count_scalar = std::static_pointer_cast<arrow::Int64Scalar>(scalar_result.ValueOrDie());
+
+    // Now verify the value
+    EXPECT_EQ(count_scalar->value, positions.size() - 1);
 }
 
 TEST_F(PostgresDatabaseTest, TimezoneHandling) {

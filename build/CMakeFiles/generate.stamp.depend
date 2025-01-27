@@ -73,6 +73,7 @@ C:/Program Files/CMake/share/cmake-3.31/Modules/Compiler/zOS-CXX-DetermineCompil
 C:/Program Files/CMake/share/cmake-3.31/Modules/CompilerId/VS-10.vcxproj.in
 C:/Program Files/CMake/share/cmake-3.31/Modules/FindPackageHandleStandardArgs.cmake
 C:/Program Files/CMake/share/cmake-3.31/Modules/FindPackageMessage.cmake
+C:/Program Files/CMake/share/cmake-3.31/Modules/FindPostgreSQL.cmake
 C:/Program Files/CMake/share/cmake-3.31/Modules/Internal/CMakeCXXLinkerInformation.cmake
 C:/Program Files/CMake/share/cmake-3.31/Modules/Internal/CMakeCommonLinkerInformation.cmake
 C:/Program Files/CMake/share/cmake-3.31/Modules/Internal/CMakeDetermineLinkerId.cmake
@@ -85,16 +86,29 @@ C:/Program Files/CMake/share/cmake-3.31/Modules/Platform/Windows-MSVC-CXX.cmake
 C:/Program Files/CMake/share/cmake-3.31/Modules/Platform/Windows-MSVC.cmake
 C:/Program Files/CMake/share/cmake-3.31/Modules/Platform/Windows.cmake
 C:/Program Files/CMake/share/cmake-3.31/Modules/Platform/WindowsPaths.cmake
+C:/Program Files/CMake/share/cmake-3.31/Modules/SelectLibraryConfigurations.cmake
 C:/Users/kbott/OneDrive/Desktop/School/UF Algo Fund/trade-ngin-rebuild/trade-ngin/CMakeLists.txt
 C:/Users/kbott/OneDrive/Desktop/School/UF Algo Fund/trade-ngin-rebuild/trade-ngin/build/CMakeFiles/3.31.3/CMakeCXXCompiler.cmake
 C:/Users/kbott/OneDrive/Desktop/School/UF Algo Fund/trade-ngin-rebuild/trade-ngin/build/CMakeFiles/3.31.3/CMakeRCCompiler.cmake
 C:/Users/kbott/OneDrive/Desktop/School/UF Algo Fund/trade-ngin-rebuild/trade-ngin/build/CMakeFiles/3.31.3/CMakeSystem.cmake
+C:/Users/kbott/vcpkg/installed/x64-windows/share/arrow/ArrowConfig.cmake
+C:/Users/kbott/vcpkg/installed/x64-windows/share/arrow/ArrowConfigVersion.cmake
+C:/Users/kbott/vcpkg/installed/x64-windows/share/arrow/ArrowOptions.cmake
+C:/Users/kbott/vcpkg/installed/x64-windows/share/arrow/ArrowTargets-debug.cmake
+C:/Users/kbott/vcpkg/installed/x64-windows/share/arrow/ArrowTargets-release.cmake
+C:/Users/kbott/vcpkg/installed/x64-windows/share/arrow/ArrowTargets.cmake
 C:/Users/kbott/vcpkg/installed/x64-windows/share/gtest/GTestConfig.cmake
 C:/Users/kbott/vcpkg/installed/x64-windows/share/gtest/GTestConfigVersion.cmake
 C:/Users/kbott/vcpkg/installed/x64-windows/share/gtest/GTestTargets-debug.cmake
 C:/Users/kbott/vcpkg/installed/x64-windows/share/gtest/GTestTargets-release.cmake
 C:/Users/kbott/vcpkg/installed/x64-windows/share/gtest/GTestTargets.cmake
+C:/Users/kbott/vcpkg/installed/x64-windows/share/libpqxx/libpqxx-config-version.cmake
+C:/Users/kbott/vcpkg/installed/x64-windows/share/libpqxx/libpqxx-config.cmake
+C:/Users/kbott/vcpkg/installed/x64-windows/share/libpqxx/libpqxx-targets-debug.cmake
+C:/Users/kbott/vcpkg/installed/x64-windows/share/libpqxx/libpqxx-targets-release.cmake
+C:/Users/kbott/vcpkg/installed/x64-windows/share/libpqxx/libpqxx-targets.cmake
 C:/Users/kbott/vcpkg/installed/x64-windows/share/nlohmann_json/nlohmann_jsonConfig.cmake
 C:/Users/kbott/vcpkg/installed/x64-windows/share/nlohmann_json/nlohmann_jsonConfigVersion.cmake
 C:/Users/kbott/vcpkg/installed/x64-windows/share/nlohmann_json/nlohmann_jsonTargets.cmake
+C:/Users/kbott/vcpkg/installed/x64-windows/share/postgresql/vcpkg-cmake-wrapper.cmake
 C:/Users/kbott/vcpkg/scripts/buildsystems/vcpkg.cmake

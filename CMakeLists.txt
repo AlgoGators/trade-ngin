@@ -22,6 +22,8 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/bin/Release")
 # Find packages
 find_package(GTest CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
+find_package(Arrow REQUIRED)
+find_package(libpqxx CONFIG REQUIRED)
 
 # Add source files for the library
 set(TRADE_NGIN_SOURCES
@@ -29,15 +31,19 @@ set(TRADE_NGIN_SOURCES
     src/core/logger.cpp
     src/core/config_manager.cpp
     src/core/config_version.cpp 
+    src/data/postgres_database.cpp
+    src/data/market_data_bus.cpp
 )
 
 # Add library target
 add_library(trade_ngin SHARED ${TRADE_NGIN_SOURCES})
 
-# Link against nlohmann_json
+# Link against dependencies
 target_link_libraries(trade_ngin
     PUBLIC
         nlohmann_json::nlohmann_json
+        libpqxx::pqxx
+        Arrow::arrow_shared
 )
 
 # Windows-specific settings
@@ -51,6 +57,7 @@ endif()
 target_include_directories(trade_ngin
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${Arrow_INCLUDE_DIRS}
 )
 
 # Enable testing

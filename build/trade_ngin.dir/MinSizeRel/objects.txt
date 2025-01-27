@@ -2,3 +2,5 @@ C:/Users/kbott/OneDrive/Desktop/School/UF Algo Fund/trade-ngin-rebuild/trade-ngi
 C:/Users/kbott/OneDrive/Desktop/School/UF Algo Fund/trade-ngin-rebuild/trade-ngin/build/trade_ngin.dir/MinSizeRel/logger.obj
 C:/Users/kbott/OneDrive/Desktop/School/UF Algo Fund/trade-ngin-rebuild/trade-ngin/build/trade_ngin.dir/MinSizeRel/config_manager.obj
 C:/Users/kbott/OneDrive/Desktop/School/UF Algo Fund/trade-ngin-rebuild/trade-ngin/build/trade_ngin.dir/MinSizeRel/config_version.obj
+C:/Users/kbott/OneDrive/Desktop/School/UF Algo Fund/trade-ngin-rebuild/trade-ngin/build/trade_ngin.dir/MinSizeRel/postgres_database.obj
+C:/Users/kbott/OneDrive/Desktop/School/UF Algo Fund/trade-ngin-rebuild/trade-ngin/build/trade_ngin.dir/MinSizeRel/market_data_bus.obj
