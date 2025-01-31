@@ -46,7 +46,7 @@ Result<void> DynamicOptimizer::validate_inputs(
         }
     }
 
-    return Result<void>({});
+    return Result<void>();
 }
 
 Result<OptimizationResult> DynamicOptimizer::optimize_single_period(
@@ -77,7 +77,12 @@ Result<OptimizationResult> DynamicOptimizer::optimize_single_period(
         size_t num_assets = current_positions.size();
         std::vector<double> proposed_positions = current_positions;
         std::vector<double> best_positions = current_positions;
-        double best_tracking_error = std::numeric_limits<double>::max();
+
+        // Calculate initial tracking error
+        double initial_cost = calculate_cost_penalty(current_positions, proposed_positions, costs);
+        double initial_error = calculate_tracking_error(target_positions, proposed_positions, covariance, initial_cost);
+
+        double best_tracking_error = initial_error;
         double current_tracking_error;
         int iteration = 0;
         bool converged = false;
@@ -109,7 +114,7 @@ Result<OptimizationResult> DynamicOptimizer::optimize_single_period(
                     );
 
                     // Update if improvement found
-                    if (current_tracking_error < best_tracking_error) {
+                    if (current_tracking_error < best_tracking_error - config_.convergence_threshold) {
                         best_tracking_error = current_tracking_error;
                         best_positions = temp_positions;
                         improved = true;
@@ -118,8 +123,7 @@ Result<OptimizationResult> DynamicOptimizer::optimize_single_period(
             }
 
             // Check convergence
-            if (!improved || 
-                std::abs(best_tracking_error - current_tracking_error) < config_.convergence_threshold) {
+            if (!improved) {
                 converged = true;
                 break;
             }
@@ -232,7 +236,7 @@ Result<void> DynamicOptimizer::update_config(const DynamicOptConfig& config) {
     }
 
     config_ = config;
-    return Result<void>({});
+    return Result<void>();
 }
 
 } // namespace trade_ngin

@@ -35,6 +35,7 @@ set(TRADE_NGIN_SOURCES
     src/data/market_data_bus.cpp
     src/order/order_manager.cpp
     src/risk/risk_manager.cpp
+    src/optimization/dynamic_optimizer.cpp
 )
 
 # Add library target
