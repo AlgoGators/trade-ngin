@@ -7,6 +7,7 @@ set(TEST_SOURCES
     core/test_config_version.cpp
     data/test_postgres_database.cpp
     data/test_db_utils.cpp
+    data/test_database_pooling.cpp
     order/test_order_manager.cpp
     order/test_utils.cpp
 )
