@@ -15,36 +15,35 @@ namespace trade_ngin {
  * Defines all possible error conditions that can occur
  */
 enum class ErrorCode {
-    // General errors
     NONE = 0,
-    UNKNOWN_ERROR,
-    INVALID_ARGUMENT,
-    NOT_INITIALIZED,
+    UNKNOWN_ERROR = 1,
+    INVALID_ARGUMENT = 2,
+    NOT_INITIALIZED = 3,  // This should be the code returned for disconnected operations
     
     // Data errors
-    DATABASE_ERROR,
-    DATA_NOT_FOUND,
-    INVALID_DATA,
-    CONVERSION_ERROR,
+    DATABASE_ERROR = 4,
+    DATA_NOT_FOUND = 5,
+    INVALID_DATA = 6,
+    CONVERSION_ERROR = 7,
     
     // Trading errors
-    ORDER_REJECTED,
-    INSUFFICIENT_FUNDS,
-    POSITION_LIMIT_EXCEEDED,
-    INVALID_ORDER,
+    ORDER_REJECTED = 8,
+    INSUFFICIENT_FUNDS = 9,
+    POSITION_LIMIT_EXCEEDED = 10,
+    INVALID_ORDER = 11,
     
     // Strategy errors
-    STRATEGY_ERROR,
-    INVALID_SIGNAL,
+    STRATEGY_ERROR = 12,
+    INVALID_SIGNAL = 13,
     
     // Risk errors
-    RISK_LIMIT_EXCEEDED,
-    INVALID_RISK_CALCULATION,
+    RISK_LIMIT_EXCEEDED = 14,
+    INVALID_RISK_CALCULATION = 15,
     
     // System errors
-    CONNECTION_ERROR,
-    TIMEOUT_ERROR,
-    API_ERROR,
+    CONNECTION_ERROR = 16,
+    TIMEOUT_ERROR = 17,
+    API_ERROR = 18,
     
     // Custom error range
     CUSTOM_ERROR_START = 1000

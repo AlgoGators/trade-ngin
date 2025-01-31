@@ -7,6 +7,8 @@ set(TEST_SOURCES
     core/test_config_version.cpp
     data/test_postgres_database.cpp
     data/test_db_utils.cpp
+    order/test_order_manager.cpp
+    order/test_utils.cpp
 )
 
 # Create test executable
@@ -18,7 +20,7 @@ target_include_directories(trade_ngin_tests
         ${CMAKE_SOURCE_DIR}/include
 )
 
-target_compile_definitions(trade_ngin_tests PRIVATE RUNNING_TESTS)
+target_compile_definitions(trade_ngin_tests PRIVATE TESTING)
 
 # Link against Google Test and our library
 target_link_libraries(trade_ngin_tests

@@ -146,6 +146,9 @@ TEST_F(PostgresDatabaseTest, ExecuteCustomQuery) {
 }
 
 TEST_F(PostgresDatabaseTest, DisconnectedOperations) {
+    // Ensure database is not connected
+    ASSERT_FALSE(db->is_connected());
+
     // Don't connect, try operations
     auto result1 = db->get_market_data(
         {"AAPL"},
@@ -157,9 +160,17 @@ TEST_F(PostgresDatabaseTest, DisconnectedOperations) {
     EXPECT_TRUE(result1.is_error());
     EXPECT_EQ(result1.error()->code(), ErrorCode::DATABASE_ERROR);
 
-    auto result2 = db->store_executions({}, "trading.executions");
+    // Store executions
+    ExecutionReport exec; 
+    auto result2 = db->store_executions({exec}, "trading.executions");
     EXPECT_TRUE(result2.is_error());
-    EXPECT_EQ(result2.error()->code(), ErrorCode::DATABASE_ERROR);
+    EXPECT_EQ(result2.error()->code(), ErrorCode::DATABASE_ERROR);  
+
+    // Execute query
+    auto result3 = db->execute_query("SELECT 1");
+    EXPECT_TRUE(result3.is_error()) << "Query should fail without connection";
+    EXPECT_EQ(result3.error()->code(), ErrorCode::DATABASE_ERROR);
+
 }
 
 TEST_F(PostgresDatabaseTest, InvalidTableNames) {

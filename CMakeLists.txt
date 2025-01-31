@@ -33,6 +33,7 @@ set(TRADE_NGIN_SOURCES
     src/core/config_version.cpp 
     src/data/postgres_database.cpp
     src/data/market_data_bus.cpp
+    src/order/order_manager.cpp
 )
 
 # Add library target
