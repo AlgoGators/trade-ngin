@@ -44,6 +44,9 @@ enum class ErrorCode {
     CONNECTION_ERROR = 16,
     TIMEOUT_ERROR = 17,
     API_ERROR = 18,
+
+    // Market data errors
+    MARKET_DATA_ERROR = 19,
     
     // Custom error range
     CUSTOM_ERROR_START = 1000
