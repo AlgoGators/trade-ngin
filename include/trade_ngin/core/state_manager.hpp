@@ -1,4 +1,4 @@
-// include/trade_ngin/core/state_manager.hpp
+//===== state_manager.hpp =====
 #pragma once
 
 #include "trade_ngin/core/types.hpp"
@@ -8,12 +8,10 @@
 #include <unordered_map>
 #include <chrono>
 #include <string>
+#include <condition_variable>
 
 namespace trade_ngin {
 
-/**
- * @brief System component states
- */
 enum class ComponentState {
     INITIALIZED,
     RUNNING,
@@ -22,21 +20,16 @@ enum class ComponentState {
     STOPPED
 };
 
-/**
- * @brief System component types
- */
 enum class ComponentType {
     STRATEGY,
     OPTIMIZER,
     RISK_MANAGER,
     PORTFOLIO_MANAGER,
     MARKET_DATA,
-    ORDER_MANAGER
+    ORDER_MANAGER,
+    DATABASE
 };
 
-/**
- * @brief Component state info
- */
 struct ComponentInfo {
     ComponentType type;
     ComponentState state;
@@ -46,88 +39,43 @@ struct ComponentInfo {
     std::unordered_map<std::string, double> metrics;
 };
 
-/**
- * @brief Manager for system state and transitions
- */
 class StateManager {
 public:
-    void reset_for_tests() {
-        std::lock_guard<std::mutex> lock(mutex_);
-        components_.clear();
-    }
-
-    // Make constructor public for testing
-    StateManager() = default;
-
-    // Disable copy and move
-    StateManager(const StateManager&) = delete;
-    StateManager& operator=(const StateManager&) = delete;
-    StateManager(StateManager&&) = delete;
-    StateManager& operator=(StateManager&&) = delete;
-
-    /**
-     * @brief Update component state
-     * @param component_id Component identifier
-     * @param new_state New state for component
-     * @param error_message Optional error message
-     * @return Result indicating success or failure
-     */
-    Result<void> update_state(
-        const std::string& component_id,
-        ComponentState new_state,
-        const std::string& error_message = "");
-
-    /**
-     * @brief Get component state
-     * @param component_id Component identifier
-     * @return Current state info
-     */
-    Result<ComponentInfo> get_state(const std::string& component_id) const;
-
-    /**
-     * @brief Register new component
-     * @param info Component information
-     * @return Result indicating success or failure
-     */
-    Result<void> register_component(const ComponentInfo& info);
-
-    /**
-     * @brief Update component metrics
-     * @param component_id Component identifier
-     * @param metrics Map of metric names to values
-     * @return Result indicating success or failure
-     */
-    Result<void> update_metrics(
-        const std::string& component_id,
-        const std::unordered_map<std::string, double>& metrics);
-
-    /**
-     * @brief Check if system is in healthy state
-     * @return True if all components are running normally
-     */
-    bool is_healthy() const;
-
-    /**
-     * @brief Get singleton instance
-     */
     static StateManager& instance() {
         static StateManager instance;
         return instance;
     }
 
-private:    
+    Result<ComponentInfo> get_state(const std::string& component_id) const;
+    Result<void> update_metrics(const std::string& component_id,
+                              const std::unordered_map<std::string, double>& metrics);
+    Result<void> register_component(const ComponentInfo& info);
+    Result<void> update_state(const std::string& component_id,
+                            ComponentState new_state,
+                            const std::string& error_message = "");
+    bool is_healthy() const;
+    std::vector<std::string> get_all_components() const;
+
+    static void reset_instance() {
+        auto& inst = instance();
+        std::unique_lock<std::recursive_mutex> lock(inst.mutex_);
+        inst.components_.clear();
+        inst.cv_.notify_all();
+        inst.cv_.wait_for(lock, std::chrono::milliseconds(100));
+    }
+
+private:
+    StateManager() = default;
+    StateManager(const StateManager&) = delete;
+    StateManager& operator=(const StateManager&) = delete;
+
+    Result<void> validate_transition(ComponentState current_state, 
+                                   ComponentState new_state) const;
+
     std::unordered_map<std::string, ComponentInfo> components_;
-    mutable std::mutex mutex_;
+    mutable std::recursive_mutex mutex_;
+    std::condition_variable_any cv_;
 
-    /**
-     * @brief Validate state transition
-     * @param current_state Current component state
-     * @param new_state Requested new state
-     * @return Result indicating if transition is valid
-     */
-    Result<void> validate_transition(
-        ComponentState current_state,
-        ComponentState new_state) const;
+    std::chrono::steady_clock::time_point last_reset_;
 };
-
 } // namespace trade_ngin
