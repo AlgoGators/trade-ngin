@@ -10,6 +10,7 @@ set(TEST_SOURCES
     data/test_database_pooling.cpp
     order/test_order_manager.cpp
     order/test_utils.cpp
+    risk/test_risk_manager.cpp
 )
 
 # Create test executable
