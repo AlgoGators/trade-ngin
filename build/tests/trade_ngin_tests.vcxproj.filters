@@ -22,6 +22,9 @@
     <ClCompile Include="C:\Users\kbott\OneDrive\Desktop\School\UF Algo Fund\trade-ngin-rebuild\trade-ngin\tests\data\test_db_utils.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="C:\Users\kbott\OneDrive\Desktop\School\UF Algo Fund\trade-ngin-rebuild\trade-ngin\tests\data\test_database_pooling.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="C:\Users\kbott\OneDrive\Desktop\School\UF Algo Fund\trade-ngin-rebuild\trade-ngin\tests\order\test_order_manager.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
