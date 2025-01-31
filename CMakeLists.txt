@@ -34,6 +34,7 @@ set(TRADE_NGIN_SOURCES
     src/data/postgres_database.cpp
     src/data/market_data_bus.cpp
     src/order/order_manager.cpp
+    src/risk/risk_manager.cpp
 )
 
 # Add library target
