@@ -11,6 +11,7 @@ set(TEST_SOURCES
     order/test_order_manager.cpp
     order/test_utils.cpp
     risk/test_risk_manager.cpp
+    optimization/test_dynamic_optimizer.cpp
 )
 
 # Create test executable

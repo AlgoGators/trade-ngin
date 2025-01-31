@@ -26,7 +26,7 @@ events:
       Microsoft (R) Build Engine version 16.11.2+f32259642 for .NET Framework
       Copyright (C) Microsoft Corporation. All rights reserved.
       
-      Build started 1/31/2025 6:03:48 PM.
+      Build started 1/31/2025 6:51:31 PM.
       Project "C:\\Users\\kbott\\OneDrive\\Desktop\\School\\UF Algo Fund\\trade-ngin-rebuild\\trade-ngin\\build\\CMakeFiles\\3.31.3\\CompilerIdCXX\\CompilerIdCXX.vcxproj" on node 1 (default targets).
       PrepareForBuild:
         Creating directory "Debug\\".
@@ -61,7 +61,7 @@ events:
           0 Warning(s)
           0 Error(s)
       
-      Time Elapsed 00:00:01.75
+      Time Elapsed 00:00:01.79
       
       
       Compilation of the CXX compiler identification source "CMakeCXXCompilerId.cpp" produced "CompilerIdCXX.exe"
@@ -80,8 +80,8 @@ events:
     checks:
       - "Detecting CXX compiler ABI info"
     directories:
-      source: "C:/Users/kbott/OneDrive/Desktop/School/UF Algo Fund/trade-ngin-rebuild/trade-ngin/build/CMakeFiles/CMakeScratch/TryCompile-rgctxo"
-      binary: "C:/Users/kbott/OneDrive/Desktop/School/UF Algo Fund/trade-ngin-rebuild/trade-ngin/build/CMakeFiles/CMakeScratch/TryCompile-rgctxo"
+      source: "C:/Users/kbott/OneDrive/Desktop/School/UF Algo Fund/trade-ngin-rebuild/trade-ngin/build/CMakeFiles/CMakeScratch/TryCompile-s93dxm"
+      binary: "C:/Users/kbott/OneDrive/Desktop/School/UF Algo Fund/trade-ngin-rebuild/trade-ngin/build/CMakeFiles/CMakeScratch/TryCompile-s93dxm"
     cmakeVariables:
       CMAKE_CXX_FLAGS: "/DWIN32 /D_WINDOWS /W3 /GR /EHsc"
       CMAKE_CXX_FLAGS_DEBUG: "/MDd /Zi /Ob0 /Od /RTC1"
@@ -95,33 +95,33 @@ events:
       variable: "CMAKE_CXX_ABI_COMPILED"
       cached: true
       stdout: |
-        Change Dir: 'C:/Users/kbott/OneDrive/Desktop/School/UF Algo Fund/trade-ngin-rebuild/trade-ngin/build/CMakeFiles/CMakeScratch/TryCompile-rgctxo'
+        Change Dir: 'C:/Users/kbott/OneDrive/Desktop/School/UF Algo Fund/trade-ngin-rebuild/trade-ngin/build/CMakeFiles/CMakeScratch/TryCompile-s93dxm'
         
-        Run Build Command(s): "C:/Program Files (x86)/Microsoft Visual Studio/2019/BuildTools/MSBuild/Current/Bin/MSBuild.exe" cmTC_921d0.vcxproj /p:Configuration=Debug /p:Platform=x64 /p:VisualStudioVersion=16.0 /v:n
+        Run Build Command(s): "C:/Program Files (x86)/Microsoft Visual Studio/2019/BuildTools/MSBuild/Current/Bin/MSBuild.exe" cmTC_37358.vcxproj /p:Configuration=Debug /p:Platform=x64 /p:VisualStudioVersion=16.0 /v:n
         Microsoft (R) Build Engine version 16.11.2+f32259642 for .NET Framework
         Copyright (C) Microsoft Corporation. All rights reserved.
         
-        Build started 1/31/2025 6:03:50 PM.
-        Project "C:\\Users\\kbott\\OneDrive\\Desktop\\School\\UF Algo Fund\\trade-ngin-rebuild\\trade-ngin\\build\\CMakeFiles\\CMakeScratch\\TryCompile-rgctxo\\cmTC_921d0.vcxproj" on node 1 (default targets).
+        Build started 1/31/2025 6:51:33 PM.
+        Project "C:\\Users\\kbott\\OneDrive\\Desktop\\School\\UF Algo Fund\\trade-ngin-rebuild\\trade-ngin\\build\\CMakeFiles\\CMakeScratch\\TryCompile-s93dxm\\cmTC_37358.vcxproj" on node 1 (default targets).
         PrepareForBuild:
-          Creating directory "cmTC_921d0.dir\\Debug\\".
-          Creating directory "C:\\Users\\kbott\\OneDrive\\Desktop\\School\\UF Algo Fund\\trade-ngin-rebuild\\trade-ngin\\build\\CMakeFiles\\CMakeScratch\\TryCompile-rgctxo\\Debug\\".
-          Creating directory "cmTC_921d0.dir\\Debug\\cmTC_921d0.tlog\\".
+          Creating directory "cmTC_37358.dir\\Debug\\".
+          Creating directory "C:\\Users\\kbott\\OneDrive\\Desktop\\School\\UF Algo Fund\\trade-ngin-rebuild\\trade-ngin\\build\\CMakeFiles\\CMakeScratch\\TryCompile-s93dxm\\Debug\\".
+          Creating directory "cmTC_37358.dir\\Debug\\cmTC_37358.tlog\\".
         InitializeBuildStatus:
-          Creating "cmTC_921d0.dir\\Debug\\cmTC_921d0.tlog\\unsuccessfulbuild" because "AlwaysCreate" was specified.
+          Creating "cmTC_37358.dir\\Debug\\cmTC_37358.tlog\\unsuccessfulbuild" because "AlwaysCreate" was specified.
         ClCompile:
-          C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\BuildTools\\VC\\Tools\\MSVC\\14.29.30133\\bin\\HostX64\\x64\\CL.exe /c /Zi /W3 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D "CMAKE_INTDIR=\\"Debug\\"" /EHsc /RTC1 /MDd /GS /fp:precise /Zc:wchar_t /Zc:forScope /Zc:inline /GR /Fo"cmTC_921d0.dir\\Debug\\\\" /Fd"cmTC_921d0.dir\\Debug\\vc142.pdb" /external:W3 /Gd /TP /errorReport:queue "C:\\Program Files\\CMake\\share\\cmake-3.31\\Modules\\CMakeCXXCompilerABI.cpp"
+          C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\BuildTools\\VC\\Tools\\MSVC\\14.29.30133\\bin\\HostX64\\x64\\CL.exe /c /Zi /W3 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D "CMAKE_INTDIR=\\"Debug\\"" /EHsc /RTC1 /MDd /GS /fp:precise /Zc:wchar_t /Zc:forScope /Zc:inline /GR /Fo"cmTC_37358.dir\\Debug\\\\" /Fd"cmTC_37358.dir\\Debug\\vc142.pdb" /external:W3 /Gd /TP /errorReport:queue "C:\\Program Files\\CMake\\share\\cmake-3.31\\Modules\\CMakeCXXCompilerABI.cpp"
           Microsoft (R) C/C++ Optimizing Compiler Version 19.29.30157 for x64
           Copyright (C) Microsoft Corporation.  All rights reserved.
           CMakeCXXCompilerABI.cpp
-          cl /c /Zi /W3 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D "CMAKE_INTDIR=\\"Debug\\"" /EHsc /RTC1 /MDd /GS /fp:precise /Zc:wchar_t /Zc:forScope /Zc:inline /GR /Fo"cmTC_921d0.dir\\Debug\\\\" /Fd"cmTC_921d0.dir\\Debug\\vc142.pdb" /external:W3 /Gd /TP /errorReport:queue "C:\\Program Files\\CMake\\share\\cmake-3.31\\Modules\\CMakeCXXCompilerABI.cpp"
+          cl /c /Zi /W3 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D "CMAKE_INTDIR=\\"Debug\\"" /EHsc /RTC1 /MDd /GS /fp:precise /Zc:wchar_t /Zc:forScope /Zc:inline /GR /Fo"cmTC_37358.dir\\Debug\\\\" /Fd"cmTC_37358.dir\\Debug\\vc142.pdb" /external:W3 /Gd /TP /errorReport:queue "C:\\Program Files\\CMake\\share\\cmake-3.31\\Modules\\CMakeCXXCompilerABI.cpp"
         Link:
-          C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\BuildTools\\VC\\Tools\\MSVC\\14.29.30133\\bin\\HostX64\\x64\\link.exe /ERRORREPORT:QUEUE /OUT:"C:\\Users\\kbott\\OneDrive\\Desktop\\School\\UF Algo Fund\\trade-ngin-rebuild\\trade-ngin\\build\\CMakeFiles\\CMakeScratch\\TryCompile-rgctxo\\Debug\\cmTC_921d0.exe" /INCREMENTAL /ILK:"cmTC_921d0.dir\\Debug\\cmTC_921d0.ilk" /NOLOGO kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib /MANIFEST /MANIFESTUAC:"level='asInvoker' uiAccess='false'" /manifest:embed /DEBUG /PDB:"C:/Users/kbott/OneDrive/Desktop/School/UF Algo Fund/trade-ngin-rebuild/trade-ngin/build/CMakeFiles/CMakeScratch/TryCompile-rgctxo/Debug/cmTC_921d0.pdb" /SUBSYSTEM:CONSOLE /TLBID:1 /DYNAMICBASE /NXCOMPAT /IMPLIB:"C:/Users/kbott/OneDrive/Desktop/School/UF Algo Fund/trade-ngin-rebuild/trade-ngin/build/CMakeFiles/CMakeScratch/TryCompile-rgctxo/Debug/cmTC_921d0.lib" /MACHINE:X64  /machine:x64 cmTC_921d0.dir\\Debug\\CMakeCXXCompilerABI.obj
-          cmTC_921d0.vcxproj -> C:\\Users\\kbott\\OneDrive\\Desktop\\School\\UF Algo Fund\\trade-ngin-rebuild\\trade-ngin\\build\\CMakeFiles\\CMakeScratch\\TryCompile-rgctxo\\Debug\\cmTC_921d0.exe
+          C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\BuildTools\\VC\\Tools\\MSVC\\14.29.30133\\bin\\HostX64\\x64\\link.exe /ERRORREPORT:QUEUE /OUT:"C:\\Users\\kbott\\OneDrive\\Desktop\\School\\UF Algo Fund\\trade-ngin-rebuild\\trade-ngin\\build\\CMakeFiles\\CMakeScratch\\TryCompile-s93dxm\\Debug\\cmTC_37358.exe" /INCREMENTAL /ILK:"cmTC_37358.dir\\Debug\\cmTC_37358.ilk" /NOLOGO kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib /MANIFEST /MANIFESTUAC:"level='asInvoker' uiAccess='false'" /manifest:embed /DEBUG /PDB:"C:/Users/kbott/OneDrive/Desktop/School/UF Algo Fund/trade-ngin-rebuild/trade-ngin/build/CMakeFiles/CMakeScratch/TryCompile-s93dxm/Debug/cmTC_37358.pdb" /SUBSYSTEM:CONSOLE /TLBID:1 /DYNAMICBASE /NXCOMPAT /IMPLIB:"C:/Users/kbott/OneDrive/Desktop/School/UF Algo Fund/trade-ngin-rebuild/trade-ngin/build/CMakeFiles/CMakeScratch/TryCompile-s93dxm/Debug/cmTC_37358.lib" /MACHINE:X64  /machine:x64 cmTC_37358.dir\\Debug\\CMakeCXXCompilerABI.obj
+          cmTC_37358.vcxproj -> C:\\Users\\kbott\\OneDrive\\Desktop\\School\\UF Algo Fund\\trade-ngin-rebuild\\trade-ngin\\build\\CMakeFiles\\CMakeScratch\\TryCompile-s93dxm\\Debug\\cmTC_37358.exe
         FinalizeBuildStatus:
-          Deleting file "cmTC_921d0.dir\\Debug\\cmTC_921d0.tlog\\unsuccessfulbuild".
-          Touching "cmTC_921d0.dir\\Debug\\cmTC_921d0.tlog\\cmTC_921d0.lastbuildstate".
-        Done Building Project "C:\\Users\\kbott\\OneDrive\\Desktop\\School\\UF Algo Fund\\trade-ngin-rebuild\\trade-ngin\\build\\CMakeFiles\\CMakeScratch\\TryCompile-rgctxo\\cmTC_921d0.vcxproj" (default targets).
+          Deleting file "cmTC_37358.dir\\Debug\\cmTC_37358.tlog\\unsuccessfulbuild".
+          Touching "cmTC_37358.dir\\Debug\\cmTC_37358.tlog\\cmTC_37358.lastbuildstate".
+        Done Building Project "C:\\Users\\kbott\\OneDrive\\Desktop\\School\\UF Algo Fund\\trade-ngin-rebuild\\trade-ngin\\build\\CMakeFiles\\CMakeScratch\\TryCompile-s93dxm\\cmTC_37358.vcxproj" (default targets).
         
         Build succeeded.
             0 Warning(s)
