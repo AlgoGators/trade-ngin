@@ -89,6 +89,8 @@
         "cwctype": "cpp",
         "regex": "cpp",
         "set": "cpp",
-        "future": "cpp"
+        "future": "cpp",
+        "coroutine": "cpp",
+        "resumable": "cpp"
     }
 }

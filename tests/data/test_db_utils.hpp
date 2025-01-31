@@ -55,8 +55,8 @@ private:
 // ================= Mock Postgres Database =================
 class MockPostgresDatabase : public PostgresDatabase {
 public:
-    explicit MockPostgresDatabase(const std::string& connection_string)
-        : PostgresDatabase(connection_string), connected_(false) {}
+    explicit MockPostgresDatabase(std::string connection_string) 
+        : PostgresDatabase(std::move(connection_string)), connected_(false) {}
 
     // Connection management
     Result<void> connect() override {
@@ -171,6 +171,14 @@ public:
     // Query execution
     Result<std::shared_ptr<arrow::Table>> execute_query(
         const std::string& query) override {
+            // Check connection state first
+            if (!connected_) {
+                return make_error<std::shared_ptr<arrow::Table>>(
+                    ErrorCode::DATABASE_ERROR,
+                    "Not connected to database"
+                );
+            }
+            
             if (query.find("COUNT(*)") != std::string::npos) {
                 // Simulate COUNT(*) result
                 arrow::Int64Builder count_builder;

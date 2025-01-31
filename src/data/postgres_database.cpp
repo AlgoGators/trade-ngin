@@ -79,7 +79,7 @@ Result<std::shared_ptr<arrow::Table>> PostgresDatabase::get_market_data(
     const std::string& data_type) {
         if (start_date > end_date) {
             return make_error<std::shared_ptr<arrow::Table>>(
-                ErrorCode::INVALID_ARGUMENT,
+                ErrorCode::DATABASE_ERROR,
                 "Start date must be before end date"
             );
         }
@@ -186,13 +186,13 @@ std::string PostgresDatabase::format_timestamp(const Timestamp& ts) const {
 }
 
 Result<void> PostgresDatabase::validate_connection() const {
-    if (!is_connected()) {
-        return make_error<void>(
-            ErrorCode::DATABASE_ERROR,
-            "Not connected to database",
-            "PostgresDatabase"
-        );
-    }
+    if (!is_connected() || !connection_ || !connection_->is_open()) {
+            return make_error<void>(
+                ErrorCode::DATABASE_ERROR,  
+                "Not connected to database",
+                "PostgresDatabase"
+            );
+        }
     return Result<void>();
 }
 
