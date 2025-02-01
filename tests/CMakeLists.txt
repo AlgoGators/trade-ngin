@@ -13,8 +13,8 @@ set(TEST_SOURCES
     risk/test_risk_manager.cpp
     optimization/test_dynamic_optimizer.cpp
     backtesting/test_transaction_cost_analysis.cpp
-    # data/test_market_data_bus.cpp
-    # execution/test_execution_engine.cpp
+    data/test_market_data_bus.cpp
+    execution/test_execution_engine.cpp
     # portfolio/test_portfolio_manager.cpp
 )
 
