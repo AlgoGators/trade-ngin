@@ -97,6 +97,7 @@ EXPORTS
 	??$?5DU?$char_traits@D@std@@D@std@@YAAEAV?$basic_istream@DU?$char_traits@D@std@@@0@AEAV10@AEBU?$_Timeobj@DPEAUtm@@@0@@Z
 	??$?6DU?$char_traits@D@std@@D@std@@YAAEAV?$basic_ostream@DU?$char_traits@D@std@@@0@AEAV10@AEBU?$_Timeobj@DPEBUtm@@@0@@Z
 	??$?6DU?$char_traits@D@std@@V?$allocator@D@1@@std@@YAAEAV?$basic_ostream@DU?$char_traits@D@std@@@0@AEAV10@AEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@0@@Z
+	??$?6DU?$char_traits@D@std@@_J@std@@YAAEAV?$basic_ostream@DU?$char_traits@D@std@@@0@AEAV10@AEBU?$_Smanip@_J@0@@Z
 	??$?6U?$char_traits@D@std@@@std@@YAAEAV?$basic_ostream@DU?$char_traits@D@std@@@0@AEAV10@PEBD@Z
 	??$?8VTradeError@trade_ngin@@U?$default_delete@VTradeError@trade_ngin@@@std@@@std@@YA_NAEBV?$unique_ptr@VTradeError@trade_ngin@@U?$default_delete@VTradeError@trade_ngin@@@std@@@0@$$T@Z
 	??$?9U_Dir_enum_impl@filesystem@std@@U012@@std@@YA_NAEBV?$shared_ptr@U_Dir_enum_impl@filesystem@std@@@0@0@Z
@@ -337,9 +338,11 @@ EXPORTS
 	??$make_error@UOptimizationResult@trade_ngin@@@trade_ngin@@YA?AV?$Result@UOptimizationResult@trade_ngin@@@0@W4ErrorCode@0@AEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@1@Z
 	??$make_error@UOrderBookEntry@trade_ngin@@@trade_ngin@@YA?AV?$Result@UOrderBookEntry@trade_ngin@@@0@W4ErrorCode@0@AEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@1@Z
 	??$make_error@URiskResult@trade_ngin@@@trade_ngin@@YA?AV?$Result@URiskResult@trade_ngin@@@0@W4ErrorCode@0@AEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@1@Z
+	??$make_error@UTransactionCostMetrics@backtest@trade_ngin@@@trade_ngin@@YA?AV?$Result@UTransactionCostMetrics@backtest@trade_ngin@@@0@W4ErrorCode@0@AEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@1@Z
 	??$make_error@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@trade_ngin@@YA?AV?$Result@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@0@W4ErrorCode@0@AEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@1@Z
 	??$make_error@V?$shared_ptr@VTable@arrow@@@std@@@trade_ngin@@YA?AV?$Result@V?$shared_ptr@VTable@arrow@@@std@@@0@W4ErrorCode@0@AEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@1@Z
 	??$make_error@V?$time_point@Usystem_clock@chrono@std@@V?$duration@_JU?$ratio@$00$0JIJGIA@@std@@@23@@chrono@std@@@trade_ngin@@YA?AV?$Result@V?$time_point@Usystem_clock@chrono@std@@V?$duration@_JU?$ratio@$00$0JIJGIA@@std@@@23@@chrono@std@@@0@W4ErrorCode@0@AEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@1@Z
+	??$make_error@V?$unordered_map@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@NU?$hash@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@2@U?$equal_to@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@2@V?$allocator@U?$pair@$$CBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@N@std@@@2@@std@@@trade_ngin@@YA?AV?$Result@V?$unordered_map@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@NU?$hash@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@2@U?$equal_to@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@2@V?$allocator@U?$pair@$$CBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@N@std@@@2@@std@@@0@W4ErrorCode@0@AEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@1@Z
 	??$make_error@V?$vector@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@V?$allocator@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@2@@std@@@trade_ngin@@YA?AV?$Result@V?$vector@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@V?$allocator@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@2@@std@@@0@W4ErrorCode@0@AEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@1@Z
 	??$make_error@X@trade_ngin@@YA?AV?$Result@X@0@W4ErrorCode@0@AEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@1@Z
 	??$make_error@_K@trade_ngin@@YA?AV?$Result@_K@0@W4ErrorCode@0@AEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@1@Z
@@ -421,6 +424,7 @@ EXPORTS
 	??0RiskManager@trade_ngin@@QEAA@URiskConfig@1@@Z
 	??0StateManager@trade_ngin@@AEAA@XZ
 	??0TradeError@trade_ngin@@QEAA@AEBV01@@Z
+	??0TransactionCostAnalyzer@backtest@trade_ngin@@QEAA@UTCAConfig@12@@Z
 	??0_Dir_enum_impl@filesystem@std@@QEAA@$$QEAU_Creator@012@W4directory_options@12@@Z
 	??0_System_error@std@@IEAA@Verror_code@1@AEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@1@@Z
 	??0_System_error@std@@QEAA@AEBV01@@Z
@@ -452,6 +456,7 @@ EXPORTS
 	??1?$NumericBuilder@VTimestampType@arrow@@@arrow@@UEAA@XZ
 	??1?$Result@UConfigVersion@trade_ngin@@@trade_ngin@@QEAA@XZ
 	??1?$Result@UMigrationPlan@trade_ngin@@@trade_ngin@@QEAA@XZ
+	??1?$Result@UTransactionCostMetrics@backtest@trade_ngin@@@trade_ngin@@QEAA@XZ
 	??1?$Result@V?$basic_json@Vmap@std@@Vvector@2@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@2@_N_J_KNVallocator@2@Uadl_serializer@json_abi_v3_11_3@nlohmann@@V?$vector@EV?$allocator@E@std@@@2@X@json_abi_v3_11_3@nlohmann@@@trade_ngin@@QEAA@XZ
 	??1?$Result@V?$shared_ptr@VBuffer@arrow@@@std@@@arrow@@QEAA@XZ
 	??1?$Result@V?$shared_ptr@VTable@arrow@@@std@@@trade_ngin@@QEAA@XZ
@@ -919,6 +924,7 @@ EXPORTS
 	?_Reallocate_exactly@?$vector@V?$basic_json@Vmap@std@@Vvector@2@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@2@_N_J_KNVallocator@2@Uadl_serializer@json_abi_v3_11_3@nlohmann@@V?$vector@EV?$allocator@E@std@@@2@X@json_abi_v3_11_3@nlohmann@@V?$allocator@V?$basic_json@Vmap@std@@Vvector@2@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@2@_N_J_KNVallocator@2@Uadl_serializer@json_abi_v3_11_3@nlohmann@@V?$vector@EV?$allocator@E@std@@@2@X@json_abi_v3_11_3@nlohmann@@@std@@@std@@AEAAX_K@Z
 	?_Reallocate_exactly@?$vector@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@V?$allocator@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@2@@std@@AEAAX_K@Z
 	?_Refresh@_Dir_enum_impl@filesystem@std@@QEAAXAEBU__std_fs_find_data@@@Z
+	?_Rehash_for_1@?$_Hash@V?$_Umap_traits@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@NV?$_Uhash_compare@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@U?$hash@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@2@U?$equal_to@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@2@@2@V?$allocator@U?$pair@$$CBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@N@std@@@2@$0A@@std@@@std@@IEAAXXZ
 	?_Reset_back@?$basic_filebuf@DU?$char_traits@D@std@@@std@@AEAAXXZ
 	?_Reset_move@?$_Func_class@V?$Result@V?$basic_json@Vmap@std@@Vvector@2@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@2@_N_J_KNVallocator@2@Uadl_serializer@json_abi_v3_11_3@nlohmann@@V?$vector@EV?$allocator@E@std@@@2@X@json_abi_v3_11_3@nlohmann@@@trade_ngin@@AEBV?$basic_json@Vmap@std@@Vvector@2@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@2@_N_J_KNVallocator@2@Uadl_serializer@json_abi_v3_11_3@nlohmann@@V?$vector@EV?$allocator@E@std@@@2@X@json_abi_v3_11_3@nlohmann@@@std@@IEAAX$$QEAV12@@Z
 	?_Resize@?$match_results@V?$_String_const_iterator@V?$_String_val@U?$_Simple_types@D@std@@@std@@@std@@V?$allocator@V?$sub_match@V?$_String_const_iterator@V?$_String_val@U?$_Simple_types@D@std@@@std@@@std@@@std@@@2@@std@@QEAAXI@Z
@@ -995,6 +1001,9 @@ EXPORTS
 	?allocate@?$allocator@V?$vector@NV?$allocator@N@std@@@std@@@std@@QEAAPEAV?$vector@NV?$allocator@N@std@@@2@_K@Z
 	?allocate@?$allocator@V?$vector@UMigrationStep@trade_ngin@@V?$allocator@UMigrationStep@trade_ngin@@@std@@@std@@@std@@QEAAPEAV?$vector@UMigrationStep@trade_ngin@@V?$allocator@UMigrationStep@trade_ngin@@@std@@@2@_K@Z
 	?allocate@?$allocator@_W@std@@QEAAPEA_W_K@Z
+	?analyze_benchmark_performance@TransactionCostAnalyzer@backtest@trade_ngin@@QEBA?AV?$Result@V?$unordered_map@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@NU?$hash@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@2@U?$equal_to@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@2@V?$allocator@U?$pair@$$CBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@N@std@@@2@@std@@@3@AEBV?$vector@UExecutionReport@trade_ngin@@V?$allocator@UExecutionReport@trade_ngin@@@std@@@std@@AEBV?$vector@UBar@trade_ngin@@V?$allocator@UBar@trade_ngin@@@std@@@6@@Z
+	?analyze_trade@TransactionCostAnalyzer@backtest@trade_ngin@@QEBA?AV?$Result@UTransactionCostMetrics@backtest@trade_ngin@@@3@AEBUExecutionReport@3@AEBV?$vector@UBar@trade_ngin@@V?$allocator@UBar@trade_ngin@@@std@@@std@@@Z
+	?analyze_trade_sequence@TransactionCostAnalyzer@backtest@trade_ngin@@QEBA?AV?$Result@UTransactionCostMetrics@backtest@trade_ngin@@@3@AEBV?$vector@UExecutionReport@trade_ngin@@V?$allocator@UExecutionReport@trade_ngin@@@std@@@std@@AEBV?$vector@UBar@trade_ngin@@V?$allocator@UBar@trade_ngin@@@std@@@6@@Z
 	?append@?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@QEAAAEAV12@QEBD_K@Z
 	?append@?$basic_string@_WU?$char_traits@_W@std@@V?$allocator@_W@2@@std@@QEAAAEAV12@QEB_W_K@Z
 	?append@?$basic_string@_WU?$char_traits@_W@std@@V?$allocator@_W@2@@std@@QEAAAEAV12@_K_W@Z
@@ -1011,10 +1020,15 @@ EXPORTS
 	?calculate_correlation_multiplier@RiskManager@trade_ngin@@AEBANAEBV?$vector@NV?$allocator@N@std@@@std@@AEAURiskResult@2@@Z
 	?calculate_cost_penalty@DynamicOptimizer@trade_ngin@@AEBANAEBV?$vector@NV?$allocator@N@std@@@std@@00@Z
 	?calculate_covariance@RiskManager@trade_ngin@@AEBA?AV?$vector@V?$vector@NV?$allocator@N@std@@@std@@V?$allocator@V?$vector@NV?$allocator@N@std@@@std@@@2@@std@@AEBV34@@Z
+	?calculate_implementation_shortfall@TransactionCostAnalyzer@backtest@trade_ngin@@QEBA?AV?$Result@UTransactionCostMetrics@backtest@trade_ngin@@@3@AEBUPosition@3@AEBV?$vector@UExecutionReport@trade_ngin@@V?$allocator@UExecutionReport@trade_ngin@@@std@@@std@@AEBV?$vector@UBar@trade_ngin@@V?$allocator@UBar@trade_ngin@@@std@@@7@@Z
 	?calculate_jump_multiplier@RiskManager@trade_ngin@@AEBANAEBV?$vector@NV?$allocator@N@std@@@std@@AEAURiskResult@2@@Z
 	?calculate_leverage_multiplier@RiskManager@trade_ngin@@AEBANAEBV?$vector@NV?$allocator@N@std@@@std@@NAEAURiskResult@2@@Z
+	?calculate_market_impact@TransactionCostAnalyzer@backtest@trade_ngin@@AEBANAEBUExecutionReport@3@AEBV?$vector@UBar@trade_ngin@@V?$allocator@UBar@trade_ngin@@@std@@@std@@@Z
+	?calculate_opportunity_cost@TransactionCostAnalyzer@backtest@trade_ngin@@AEBANAEBUPosition@3@AEBV?$vector@UExecutionReport@trade_ngin@@V?$allocator@UExecutionReport@trade_ngin@@@std@@@std@@AEBV?$vector@UBar@trade_ngin@@V?$allocator@UBar@trade_ngin@@@std@@@6@@Z
 	?calculate_portfolio_multiplier@RiskManager@trade_ngin@@AEBANAEBV?$vector@NV?$allocator@N@std@@@std@@AEAURiskResult@2@@Z
 	?calculate_returns@RiskManager@trade_ngin@@AEBA?AV?$vector@V?$vector@NV?$allocator@N@std@@@std@@V?$allocator@V?$vector@NV?$allocator@N@std@@@std@@@2@@std@@AEBV?$vector@UBar@trade_ngin@@V?$allocator@UBar@trade_ngin@@@std@@@4@@Z
+	?calculate_spread_cost@TransactionCostAnalyzer@backtest@trade_ngin@@AEBANAEBUExecutionReport@3@AEBV?$vector@UBar@trade_ngin@@V?$allocator@UBar@trade_ngin@@@std@@@std@@@Z
+	?calculate_timing_cost@TransactionCostAnalyzer@backtest@trade_ngin@@AEBANAEBUExecutionReport@3@AEBV?$vector@UBar@trade_ngin@@V?$allocator@UBar@trade_ngin@@@std@@@std@@@Z
 	?calculate_tracking_error@DynamicOptimizer@trade_ngin@@AEBANAEBV?$vector@NV?$allocator@N@std@@@std@@0AEBV?$vector@V?$vector@NV?$allocator@N@std@@@std@@V?$allocator@V?$vector@NV?$allocator@N@std@@@std@@@2@@4@N@Z
 	?calculate_var@RiskManager@trade_ngin@@AEBANAEBV?$unordered_map@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@UPosition@trade_ngin@@U?$hash@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@2@U?$equal_to@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@2@V?$allocator@U?$pair@$$CBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@UPosition@trade_ngin@@@std@@@2@@std@@AEBV?$vector@V?$vector@NV?$allocator@N@std@@@std@@V?$allocator@V?$vector@NV?$allocator@N@std@@@std@@@2@@4@@Z
 	?calculate_weights@RiskManager@trade_ngin@@AEBA?AV?$vector@NV?$allocator@N@std@@@std@@AEBV?$unordered_map@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@UPosition@trade_ngin@@U?$hash@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@2@U?$equal_to@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@2@V?$allocator@U?$pair@$$CBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@UPosition@trade_ngin@@@std@@@2@@4@@Z
@@ -1060,10 +1074,12 @@ EXPORTS
 	?execute_migration@ConfigVersionManager@trade_ngin@@QEBA?AV?$Result@UMigrationResult@trade_ngin@@@2@AEAV?$basic_json@Vmap@std@@Vvector@2@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@2@_N_J_KNVallocator@2@Uadl_serializer@json_abi_v3_11_3@nlohmann@@V?$vector@EV?$allocator@E@std@@@2@X@json_abi_v3_11_3@nlohmann@@AEBUMigrationPlan@2@@Z
 	?execute_query@PostgresDatabase@trade_ngin@@UEAA?AV?$Result@V?$shared_ptr@VTable@arrow@@@std@@@2@AEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@Z
 	?find@?$_Tree@V?$_Tmap_traits@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@V?$basic_json@Vmap@std@@Vvector@2@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@2@_N_J_KNVallocator@2@Uadl_serializer@json_abi_v3_11_3@nlohmann@@V?$vector@EV?$allocator@E@std@@@2@X@json_abi_v3_11_3@nlohmann@@U?$less@X@2@V?$allocator@U?$pair@$$CBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@V?$basic_json@Vmap@std@@Vvector@2@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@2@_N_J_KNVallocator@2@Uadl_serializer@json_abi_v3_11_3@nlohmann@@V?$vector@EV?$allocator@E@std@@@2@X@json_abi_v3_11_3@nlohmann@@@std@@@2@$0A@@std@@@std@@QEAA?AV?$_Tree_iterator@V?$_Tree_val@U?$_Tree_simple_types@U?$pair@$$CBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@V?$basic_json@Vmap@std@@Vvector@2@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@2@_N_J_KNVallocator@2@Uadl_serializer@json_abi_v3_11_3@nlohmann@@V?$vector@EV?$allocator@E@std@@@2@X@json_abi_v3_11_3@nlohmann@@@std@@@std@@@std@@@2@AEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@2@@Z
+	?fixed@std@@YAAEAVios_base@1@AEAV21@@Z
 	?format_message@Logger@trade_ngin@@AEAA?AV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@W4LogLevel@2@AEBV34@@Z
 	?format_timestamp@PostgresDatabase@trade_ngin@@AEBA?AV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@AEBV?$time_point@Usystem_clock@chrono@std@@V?$duration@_JU?$ratio@$00$0JIJGIA@@std@@@23@@chrono@4@@Z
 	?from_string@ConfigVersion@trade_ngin@@SA?AU12@AEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@Z
 	?generate_order_id@OrderManager@trade_ngin@@AEBA?AV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@XZ
+	?generate_report@TransactionCostAnalyzer@backtest@trade_ngin@@QEBA?AV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@AEBUTransactionCostMetrics@23@_N@Z
 	?get@?$lexer@V?$basic_json@Vmap@std@@Vvector@2@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@2@_N_J_KNVallocator@2@Uadl_serializer@json_abi_v3_11_3@nlohmann@@V?$vector@EV?$allocator@E@std@@@2@X@json_abi_v3_11_3@nlohmann@@Vinput_stream_adapter@detail@23@@detail@json_abi_v3_11_3@nlohmann@@AEAAHXZ
 	?get_active_orders@OrderManager@trade_ngin@@QEBA?AV?$Result@V?$vector@UOrderBookEntry@trade_ngin@@V?$allocator@UOrderBookEntry@trade_ngin@@@std@@@std@@@2@XZ
 	?get_all_components@StateManager@trade_ngin@@QEBA?AV?$vector@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@V?$allocator@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@2@@std@@XZ

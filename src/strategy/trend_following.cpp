@@ -48,7 +48,7 @@ Result<void> TrendFollowingStrategy::validate_config() const {
         );
     }
     
-    return Result<void>({});
+    return Result<void>();
 }
 
 Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
@@ -108,7 +108,7 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
             }
         }
         
-        return Result<void>({});
+        return Result<void>();
         
     } catch (const std::exception& e) {
         return make_error<void>(

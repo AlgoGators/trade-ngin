@@ -105,7 +105,7 @@ Result<TransactionCostMetrics> TransactionCostAnalyzer::analyze_trade_sequence(
         }
 
         // Set execution statistics
-        aggregate_metrics.num_child_orders = executions.size();
+        aggregate_metrics.num_child_orders = static_cast<int>(executions.size());
         if (!executions.empty()) {
             aggregate_metrics.execution_time = 
                 std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -293,49 +293,61 @@ double TransactionCostAnalyzer::calculate_spread_cost(
             return bar.timestamp < ts;
         });
 
-    if (it != market_data.end() && it != market_data.begin()) {
-        // Estimate spread from high-low range
-        double spread_estimate = (it->high - it->low) / it->close;
-        
-        // Half spread is the cost of crossing
-        return spread_estimate * 0.5 * execution.fill_price * 
-               std::abs(execution.filled_quantity);
+    if (it == market_data.begin()) {
+        return 0.0; // No bars before execution
     }
 
-    return 0.0;
+    if (it == market_data.end()) {
+        // Use the last bar if all bars are before execution
+        --it;
+    } else {
+        // Use the previous bar
+        --it;
+    }
+
+    double spread_estimate = (it->high - it->low) / it->close;
+    return spread_estimate * 0.5 * execution.fill_price * 
+           std::abs(execution.filled_quantity);
 }
 
 double TransactionCostAnalyzer::calculate_market_impact(
     const ExecutionReport& execution,
     const std::vector<Bar>& market_data) const {
     
-    // Find bars around execution
+    // Find the bar immediately before execution
     auto it = std::lower_bound(
-        market_data.begin(),
-        market_data.end(),
-        execution.fill_time,
-        [](const Bar& bar, const Timestamp& ts) {
-            return bar.timestamp < ts;
-        });
+        market_data.begin(), market_data.end(), execution.fill_time,
+        [](const Bar& bar, const Timestamp& ts) { return bar.timestamp < ts; });
 
-    if (it != market_data.end() && it != market_data.begin()) {
-        // Calculate price change from pre-trade to execution
-        double pre_price = std::prev(it)->close;
-        
-        // Adjust for market movement
-        double market_move = (it->close - pre_price) / pre_price;
-        
-        // Calculate impact as difference between execution price and pre-price,
-        // adjusted for market movement
-        double price_impact = (execution.fill_price - pre_price) / pre_price - 
-                            market_move;
-        
-        // Scale by trade value
-        return price_impact * execution.fill_price * 
-               std::abs(execution.filled_quantity);
+    if (it == market_data.begin() || it == market_data.end()) {
+        return 0.0; // Insufficient data
+    }
+    --it; // Move to the last bar before execution
+
+    double pre_price = it->close;
+    double market_move = 0.0;
+
+    // Get the next bar to determine natural market movement
+    auto next_it = it + 1;
+    if (next_it != market_data.end()) {
+        market_move = (next_it->close - pre_price) / pre_price;
     }
 
-    return 0.0;
+    // Calculate market-adjusted price (price without the trade's impact)
+    double market_adjusted_price = pre_price * (1 + market_move);
+    
+    // Compute price impact relative to market-adjusted price
+    double price_impact = (execution.fill_price - market_adjusted_price) / pre_price;
+
+    // For BUY orders: Adverse impact if execution price > market-adjusted price
+    // For SELL orders: Adverse impact if execution price < market-adjusted price
+    if (execution.side == Side::BUY) {
+        price_impact = std::max(price_impact, 0.0); // Only positive impacts
+    } else {
+        price_impact = std::max(-price_impact, 0.0); // Convert negative impacts to positive
+    }
+
+    return price_impact * execution.fill_price * std::abs(execution.filled_quantity);
 }
 
 double TransactionCostAnalyzer::calculate_timing_cost(

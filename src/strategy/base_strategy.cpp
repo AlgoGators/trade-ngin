@@ -104,7 +104,7 @@ Result<void> BaseStrategy::initialize() {
     }
 
     INFO("Initialized strategy " + id_);
-    return Result<void>({});
+    return Result<void>();
 }
 
 Result<void> BaseStrategy::start() {
@@ -170,7 +170,7 @@ Result<void> BaseStrategy::on_data(const std::vector<Bar>& data) {
         return risk_check;
     }
 
-    return Result<void>({});
+    return Result<void>();
 }
 
 Result<void> BaseStrategy::on_execution(const ExecutionReport& report) {
@@ -254,7 +254,7 @@ Result<void> BaseStrategy::on_execution(const ExecutionReport& report) {
             }
         }
         
-        return Result<void>({});
+        return Result<void>();
         
     } catch (const std::exception& e) {
         return make_error<void>(
@@ -284,7 +284,7 @@ Result<void> BaseStrategy::on_signal(const std::string& symbol, double signal) {
         return save_signals({{symbol, signal}});
     }
     
-    return Result<void>({});
+    return Result<void>();
 }
 
 StrategyState BaseStrategy::get_state() const {
@@ -329,7 +329,7 @@ Result<void> BaseStrategy::update_position(const std::string& symbol,
         return save_positions();
     }
     
-    return Result<void>({});
+    return Result<void>();
 }
 
 Result<void> BaseStrategy::update_risk_limits(const RiskLimits& limits) {
@@ -365,7 +365,7 @@ Result<void> BaseStrategy::check_risk_limits() {
         );
     }
     
-    return Result<void>({});
+    return Result<void>();
 }
 
 Result<void> BaseStrategy::validate_config() const {
@@ -385,7 +385,7 @@ Result<void> BaseStrategy::validate_config() const {
         );
     }
     
-    return Result<void>({});
+    return Result<void>();
 }
 
 Result<void> BaseStrategy::save_executions(const ExecutionReport& exec) {
@@ -393,7 +393,7 @@ Result<void> BaseStrategy::save_executions(const ExecutionReport& exec) {
         if (db_) {
             return db_->store_executions({exec}, "trading.executions");
         }
-        return Result<void>({});
+        return Result<void>();
     } catch (const std::exception& e) {
         return make_error<void>(
             ErrorCode::DATABASE_ERROR,
@@ -413,7 +413,7 @@ Result<void> BaseStrategy::save_positions() {
             }
             return db_->store_positions(pos_vec, "trading.positions");
         }
-        return Result<void>({});
+        return Result<void>();
     } catch (const std::exception& e) {
         return make_error<void>(
             ErrorCode::DATABASE_ERROR,
@@ -428,7 +428,7 @@ Result<void> BaseStrategy::save_signals(const std::unordered_map<std::string, do
         if (db_) {
             return db_->store_signals(signals, id_, std::chrono::system_clock::now(), "trading.signals");
         }
-        return Result<void>({});
+        return Result<void>();
     } catch (const std::exception& e) {
         return make_error<void>(
             ErrorCode::DATABASE_ERROR,
@@ -454,7 +454,7 @@ Result<void> BaseStrategy::update_metrics() {
             (metrics_.total_pnl / std::abs(metrics_.total_trades)) : 0.0;
     }
     
-    return Result<void>({});
+    return Result<void>();
 }
 
 Result<void> BaseStrategy::transition_state(StrategyState new_state) {
@@ -472,7 +472,7 @@ Result<void> BaseStrategy::transition_state(StrategyState new_state) {
          std::to_string(static_cast<int>(old_state)) + " -> " +
          std::to_string(static_cast<int>(new_state)));
     
-    return Result<void>({});
+    return Result<void>();
 }
 
 Result<void> BaseStrategy::validate_state_transition(StrategyState new_state) const {
@@ -524,7 +524,7 @@ Result<void> BaseStrategy::validate_state_transition(StrategyState new_state) co
             );
     }
     
-    return Result<void>({});
+    return Result<void>();
 }
 
 } // namespace trade_ngin
