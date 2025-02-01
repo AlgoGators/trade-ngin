@@ -36,6 +36,9 @@ set(TRADE_NGIN_SOURCES
     src/order/order_manager.cpp
     src/risk/risk_manager.cpp
     src/optimization/dynamic_optimizer.cpp
+    # src/execution/execution_engine.cpp
+    # src/portfolio/portfolio_manager.cpp
+    src/backtest/transaction_cost_analysis.cpp
 )
 
 # Add library target

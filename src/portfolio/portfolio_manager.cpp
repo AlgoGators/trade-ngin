@@ -149,7 +149,7 @@ Result<void> PortfolioManager::add_strategy(
     INFO("Added strategy " + metadata.id + " with allocation " + 
          std::to_string(initial_allocation));
     
-    return Result<void>({});
+    return Result<void>();
 }
 
 Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data) {
@@ -189,7 +189,7 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data)
             }
         }
         
-        return Result<void>({});
+        return Result<void>();
         
     } catch (const std::exception& e) {
         return make_error<void>(
@@ -220,7 +220,7 @@ Result<void> PortfolioManager::optimize_positions() {
     }
     
     if (symbols.empty()) {
-        return Result<void>({});  // Nothing to optimize
+        return Result<void>();  // Nothing to optimize
     }
     
     // Second pass: collect positions and costs for each symbol
@@ -278,12 +278,12 @@ Result<void> PortfolioManager::optimize_positions() {
         }
     }
     
-    return Result<void>({});
+    return Result<void>();
 }
 
 Result<void> PortfolioManager::apply_risk_management() {
     if (!risk_manager_) {
-        return Result<void>({});  // Risk management not enabled
+        return Result<void>();  // Risk management not enabled
     }
     
     // Collect all positions for portfolio-wide risk calculation
@@ -292,7 +292,11 @@ Result<void> PortfolioManager::apply_risk_management() {
     // Apply risk management
     auto result = risk_manager_->process_positions(portfolio_positions);
     if (result.is_error()) {
-        return result;
+        return make_error<void>(
+            result.error()->code(),
+            "Risk management failed: " + std::string(result.error()->what()),
+            "PortfolioManager"
+        );
     }
     
     // If risk limits exceeded, scale down positions proportionally
@@ -308,7 +312,7 @@ Result<void> PortfolioManager::apply_risk_management() {
         }
     }
     
-    return Result<void>({});
+    return Result<void>();
 }
 
 Result<void> PortfolioManager::update_allocations(
@@ -334,7 +338,7 @@ Result<void> PortfolioManager::update_allocations(
         }
     }
     
-    return Result<void>({});
+    return Result<void>();
 }
 
 std::unordered_map<std::string, Position> PortfolioManager::get_portfolio_positions() const {
@@ -407,7 +411,7 @@ Result<void> PortfolioManager::validate_allocations(
         );
     }
     
-    return Result<void>({});
+    return Result<void>();
 }
 
 } // namespace trade_ngin
