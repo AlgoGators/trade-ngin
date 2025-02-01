@@ -72,7 +72,7 @@ Result<void> ExecutionEngine::initialize() {
         }
 
         INFO("Execution Engine initialized successfully");
-        return Result<void>({});
+        return Result<void>();
 
     } catch (const std::exception& e) {
         return make_error<void>(
@@ -120,7 +120,7 @@ Result<std::string> ExecutionEngine::submit_execution(
         active_jobs_[job_id] = job;
 
         // Start execution based on algorithm
-        Result<void> exec_result = Result<void>({});
+        Result<void> exec_result = Result<void>();
         switch (algo) {
             case ExecutionAlgo::TWAP:
                 exec_result = execute_twap(job);
@@ -216,7 +216,7 @@ Result<void> ExecutionEngine::cancel_execution(const std::string& job_id) {
     it->second.error_message = "Cancelled by user";
 
     INFO("Cancelled execution job " + job_id);
-    return Result<void>({});
+    return Result<void>();
 }
 
 Result<ExecutionMetrics> ExecutionEngine::get_metrics(
@@ -255,7 +255,7 @@ Result<void> ExecutionEngine::register_custom_algo(
     
     std::lock_guard<std::mutex> lock(mutex_);
     custom_algos_[name] = std::move(algo);
-    return Result<void>({});
+    return Result<void>();
 }
 
 Result<void> ExecutionEngine::execute_twap(const ExecutionJob& job) {
@@ -263,7 +263,11 @@ Result<void> ExecutionEngine::execute_twap(const ExecutionJob& job) {
         // Get order details
         auto order_result = order_manager_->get_order_status(job.parent_order_id);
         if (order_result.is_error()) {
-            return order_result.error();
+            return make_error<void>(
+                order_result.error()->code(),
+                order_result.error()->what(),
+                "ExecutionEngine"
+            );
         }
 
         const auto& parent_order = order_result.value().order;
@@ -277,7 +281,11 @@ Result<void> ExecutionEngine::execute_twap(const ExecutionJob& job) {
         // Generate child orders
         auto child_orders_result = generate_child_orders(job, num_slices);
         if (child_orders_result.is_error()) {
-            return child_orders_result.error();
+            return make_error<void>(
+                child_orders_result.error()->code(),
+                child_orders_result.error()->what(),
+                "ExecutionEngine"
+            );
         }
 
         auto child_orders = child_orders_result.value();
@@ -295,11 +303,15 @@ Result<void> ExecutionEngine::execute_twap(const ExecutionJob& job) {
             );
             
             if (order_result.is_error()) {
-                return order_result.error();
+                return make_error<void>(
+                    order_result.error()->code(),
+                    order_result.error()->what(),
+                    "ExecutionEngine"
+                );
             }
         }
 
-        return Result<void>({});
+        return Result<void>();
 
     } catch (const std::exception& e) {
         return make_error<void>(
@@ -315,7 +327,11 @@ Result<void> ExecutionEngine::execute_vwap(const ExecutionJob& job) {
         // Get order details
         auto order_result = order_manager_->get_order_status(job.parent_order_id);
         if (order_result.is_error()) {
-            return order_result.error();
+            return make_error<void>(
+                order_result.error()->code(),
+                order_result.error()->what(),
+                "ExecutionEngine"
+            );
         }
 
         const auto& parent_order = order_result.value().order;
@@ -329,7 +345,11 @@ Result<void> ExecutionEngine::execute_vwap(const ExecutionJob& job) {
 
         auto child_orders_result = generate_child_orders(job, num_slices);
         if (child_orders_result.is_error()) {
-            return child_orders_result.error();
+            return make_error<void>(
+                child_orders_result.error()->code(),
+                child_orders_result.error()->what(),
+                "ExecutionEngine"
+            );
         }
 
         auto child_orders = child_orders_result.value();
@@ -347,11 +367,15 @@ Result<void> ExecutionEngine::execute_vwap(const ExecutionJob& job) {
             );
             
             if (order_result.is_error()) {
-                return order_result.error();
+                return make_error<void>(
+                    order_result.error()->code(),
+                    order_result.error()->what(),
+                    "ExecutionEngine"
+                );
             }
         }
 
-        return Result<void>({});
+        return Result<void>();
 
     } catch (const std::exception& e) {
         return make_error<void>(
@@ -367,7 +391,11 @@ Result<void> ExecutionEngine::execute_pov(const ExecutionJob& job) {
         // Get order details
         auto order_result = order_manager_->get_order_status(job.parent_order_id);
         if (order_result.is_error()) {
-            return order_result.error();
+            return make_error<void>(
+                order_result.error()->code(),
+                order_result.error()->what(),
+                "ExecutionEngine"
+            );
         }
 
         const auto& parent_order = order_result.value().order;
@@ -386,11 +414,15 @@ Result<void> ExecutionEngine::execute_pov(const ExecutionJob& job) {
         );
 
         if (order_result.is_error()) {
-            return order_result.error();
+            return make_error<void>(
+                order_result.error()->code(),
+                order_result.error()->what(),
+                "ExecutionEngine"
+            );
         }
 
         // Rest of the tracking and adjustments will be done in market data callback
-        return Result<void>({});
+        return Result<void>();
 
     } catch (const std::exception& e) {
         return make_error<void>(
@@ -406,7 +438,11 @@ Result<void> ExecutionEngine::execute_adaptive_limit(const ExecutionJob& job) {
         // Get order details
         auto order_result = order_manager_->get_order_status(job.parent_order_id);
         if (order_result.is_error()) {
-            return order_result.error();
+            return make_error<void>(
+                order_result.error()->code(),
+                order_result.error()->what(),
+                "ExecutionEngine"
+            );
         }
 
         const auto& parent_order = order_result.value().order;
@@ -531,12 +567,16 @@ Result<void> ExecutionEngine::execute_adaptive_limit(const ExecutionJob& job) {
         );
 
         if (order_result.is_error()) {
-            return order_result;
+            return make_error<void>(
+                order_result.error()->code(),
+                order_result.error()->what(),
+                "ExecutionEngine"
+            );
         }
 
         // Update the job's child order IDs in active_jobs_
         active_jobs_[job.job_id].child_order_ids.emplace_back(order_result.value());
-        return Result<void>({});
+        return Result<void>();
 
     } catch (const std::exception& e) {
         return make_error<void>(
@@ -552,7 +592,11 @@ Result<void> ExecutionEngine::execute_is(const ExecutionJob& job) {
         // Get order details
         auto order_result = order_manager_->get_order_status(job.parent_order_id);
         if (order_result.is_error()) {
-            return order_result.error();
+            return make_error<void>(
+                order_result.error()->code(),
+                order_result.error()->what(),
+                "ExecutionEngine"
+            );
         }
 
         const auto& parent_order = order_result.value().order;
@@ -572,11 +616,15 @@ Result<void> ExecutionEngine::execute_is(const ExecutionJob& job) {
         );
 
         if (order_result.is_error()) {
-            return order_result.error();
+            return make_error<void>(
+                order_result.error()->code(),
+                order_result.error()->what(),
+                "ExecutionEngine"
+            );
         }
 
         // Rest of the execution will be managed through market impact analysis
-        return Result<void>({});
+        return Result<void>();
 
     } catch (const std::exception& e) {
         return make_error<void>(
@@ -694,7 +742,7 @@ Result<void> ExecutionEngine::update_metrics(
             std::chrono::system_clock::now() - it->second.start_time
         );
 
-        return Result<void>({});
+        return Result<void>();
 
     } catch (const std::exception& e) {
         return make_error<void>(

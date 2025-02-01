@@ -49,7 +49,7 @@ Result<void> RegimeDetector::initialize() {
         }
 
         INFO("Regime Detector initialized successfully");
-        return Result<void>({});
+        return Result<void>();
 
     } catch (const std::exception& e) {
         return make_error<void>(
@@ -122,7 +122,7 @@ Result<void> RegimeDetector::update(const std::vector<Bar>& data) {
                 calculate_change_probability(features, current_result.current_regime);
         }
 
-        return Result<void>({});
+        return Result<void>();
 
     } catch (const std::exception& e) {
         return make_error<void>(
