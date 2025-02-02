@@ -59,6 +59,8 @@ enum class TimeInForce {
     IOC,     // Immediate or Cancel
     FOK,     // Fill or Kill
     GTD,     // Good Till Date
+    MOC,     // Market on Close
+    MOO,     // Market on Open
     NONE
 };
 

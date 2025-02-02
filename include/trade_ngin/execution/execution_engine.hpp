@@ -15,14 +15,13 @@ namespace trade_ngin {
  * @brief Execution algorithm types
  */
 enum class ExecutionAlgo {
-    MARKET,           // Simple market orders
+    MARKET,          // Simple market orders
     TWAP,            // Time-weighted average price
     VWAP,            // Volume-weighted average price
     IS,              // Implementation shortfall
     POV,             // Percentage of volume
     DARK_POOL,       // Dark pool liquidity seeking
-    CLOSE,           // Market on close
-    ADAPTIVE_LIMIT,   // Adaptive limit order algorithm
+    ADAPTIVE_LIMIT,  // Adaptive limit order algorithm
     CUSTOM           // Custom algorithm
 };
 
@@ -143,6 +142,13 @@ private:
     mutable std::mutex mutex_;
 
     /**
+     * @brief Execute market order algorithm
+     * @param job Execution job
+     * @return Result indicating success or failure
+     */
+    Result<void> execute_market(const ExecutionJob& job);
+
+    /**
      * @brief Execute TWAP algorithm
      * @param job Execution job
      * @return Result indicating success or failure
@@ -176,6 +182,13 @@ private:
      * @return Result indicating success or failure
      */
     Result<void> execute_is(const ExecutionJob& job);
+
+    /**
+     * @brief Execute dark pool algorithm
+     * @param job Execution job
+     * @return Result indicating success or failure
+     */
+    Result<void> execute_dark_pool(const ExecutionJob& job);
 
     /**
      * @brief Generate child orders for a job

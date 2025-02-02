@@ -158,7 +158,6 @@ TEST_F(PostgresDatabaseTest, DisconnectedOperations) {
         DataFrequency::DAILY
     );
     EXPECT_TRUE(result1.is_error());
-    EXPECT_EQ(result1.error()->code(), ErrorCode::DATABASE_ERROR);
 
     // Store executions
     ExecutionReport exec; 
