@@ -35,6 +35,23 @@ Result<void> StateManager::register_component(const ComponentInfo& info) {
     return Result<void>();
 }
 
+Result<void> StateManager::unregister_component(const std::string& component_id) {
+    std::unique_lock<std::recursive_mutex> lock(mutex_);
+
+    auto it = components_.find(component_id);
+    if (it == components_.end()) {
+        return make_error<void>(
+            ErrorCode::INVALID_ARGUMENT,
+            "Component not found: " + component_id,
+            "StateManager"
+        );
+    }
+
+    components_.erase(it);
+    cv_.notify_all();
+    return Result<void>();
+}
+
 Result<ComponentInfo> StateManager::get_state(const std::string& component_id) const {
     std::unique_lock<std::recursive_mutex> lock(mutex_);
 

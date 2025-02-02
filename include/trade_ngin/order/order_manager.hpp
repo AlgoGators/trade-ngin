@@ -9,6 +9,7 @@
 #include <unordered_map>
 #include <queue>
 #include <mutex>
+#include <iostream>
 
 namespace trade_ngin {
 
@@ -63,6 +64,7 @@ public:
     Result<OrderBookEntry> get_order_status(const std::string& order_id) const;
     Result<std::vector<OrderBookEntry>> get_strategy_orders(const std::string& strategy_id) const;
     Result<std::vector<OrderBookEntry>> get_active_orders() const;
+    OrderManagerConfig get_config() const { return config_; }
     Result<void> process_execution(const ExecutionReport& report);
 
 private:

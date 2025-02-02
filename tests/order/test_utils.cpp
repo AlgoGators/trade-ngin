@@ -60,7 +60,7 @@ OrderManagerConfig create_test_config() {
     config.max_orders_per_second = 100;
     config.max_pending_orders = 1000;
     config.max_order_size = 100000.0;
-    config.max_notional_value = 1000000.0;
+    config.max_notional_value = 2000000.0;
     config.simulate_fills = true;
     config.retry_attempts = 3;
     config.retry_delay_ms = 100.0;

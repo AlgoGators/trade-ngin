@@ -27,7 +27,8 @@ enum class ComponentType {
     PORTFOLIO_MANAGER,
     MARKET_DATA,
     ORDER_MANAGER,
-    DATABASE
+    DATABASE,
+    EXECUTION_ENGINE
 };
 
 struct ComponentInfo {
@@ -50,6 +51,7 @@ public:
     Result<void> update_metrics(const std::string& component_id,
                               const std::unordered_map<std::string, double>& metrics);
     Result<void> register_component(const ComponentInfo& info);
+    Result<void> unregister_component(const std::string& component_id);
     Result<void> update_state(const std::string& component_id,
                             ComponentState new_state,
                             const std::string& error_message = "");
