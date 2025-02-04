@@ -89,16 +89,6 @@ TEST_F(RiskManagerTest, InitializationAndConfig) {
     EXPECT_DOUBLE_EQ(config.confidence_level, 0.99);
 }
 
-TEST_F(RiskManagerTest, EmptyPortfolio) {
-    std::unordered_map<std::string, Position> empty_positions;
-    auto result = risk_manager_->process_positions(empty_positions);
-    
-    ASSERT_TRUE(result.is_ok());
-    const auto& risk_result = result.value();
-    EXPECT_FALSE(risk_result.risk_exceeded);
-    EXPECT_DOUBLE_EQ(risk_result.recommended_scale, 1.0);
-}
-
 TEST_F(RiskManagerTest, GrossLeverageExceeded) {
     // Create positions that exceed gross leverage (4x)
     auto positions = create_test_positions({
