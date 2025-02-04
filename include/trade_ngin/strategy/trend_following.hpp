@@ -24,6 +24,7 @@ struct TrendFollowingConfig {
     };
     int vol_lookback_short{22};    // Short lookback for volatility calculation
     int vol_lookback_long{2520};   // Long lookback for volatility calculation
+    double forecast_scalar{1.0};  // Add this line before forecast_config
 
     // Forecast scaling configuration
     ForecastScalerConfig forecast_config{
@@ -60,6 +61,12 @@ public:
      */
     Result<void> on_data(const std::vector<Bar>& data) override;
 
+    /**
+     * @brief Initialize strategy
+     * @return Result indicating success or failure
+     */
+    Result<void> initialize() override;
+
 protected:
     /**
      * @brief Validate strategy configuration
@@ -69,14 +76,12 @@ protected:
 
 private:
     TrendFollowingConfig trend_config_;
+    ForecastScaler forecast_scaler_;
     
     // Price and signal storage
     std::unordered_map<std::string, std::vector<double>> price_history_;
     std::unordered_map<std::string, std::vector<double>> volatility_history_;
 
-    // Forecast scaler for volatility-based position sizing
-    ForecastScaler forecast_scaler_;
-    
     /**
      * @brief Calculate EMA crossover signals
      * @param prices Price history for a symbol

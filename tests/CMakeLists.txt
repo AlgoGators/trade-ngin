@@ -15,7 +15,7 @@ set(TEST_SOURCES
     backtesting/test_transaction_cost_analysis.cpp
     data/test_market_data_bus.cpp
     execution/test_execution_engine.cpp
-    # portfolio/test_portfolio_manager.cpp
+    portfolio/test_portfolio_manager.cpp
 )
 
 # Create test executable

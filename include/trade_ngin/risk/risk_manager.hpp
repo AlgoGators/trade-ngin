@@ -6,6 +6,7 @@
 #include <memory>
 #include <unordered_map>
 #include <map>
+#include <iostream>
 
 namespace trade_ngin {
 

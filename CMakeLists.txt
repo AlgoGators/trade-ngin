@@ -37,8 +37,11 @@ set(TRADE_NGIN_SOURCES
     src/risk/risk_manager.cpp
     src/optimization/dynamic_optimizer.cpp
     src/execution/execution_engine.cpp
-    # src/portfolio/portfolio_manager.cpp
+    src/portfolio/portfolio_manager.cpp
     src/backtest/transaction_cost_analysis.cpp
+    src/strategy/trend_following.cpp
+    src/strategy/forecast_scaler.cpp
+    src/strategy/base_strategy.cpp
 )
 
 # Add library target

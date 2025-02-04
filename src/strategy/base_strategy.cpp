@@ -108,19 +108,6 @@ Result<void> BaseStrategy::initialize() {
 }
 
 Result<void> BaseStrategy::start() {
-    auto result = StateManager::instance().update_state(
-        id_,
-        ComponentState::RUNNING
-    );
-
-    if (result.is_ok()) {
-        state_ = StrategyState::RUNNING;
-    }
-
-    return result;
-}
-
-Result<void> BaseStrategy::start() {
     return transition_state(StrategyState::RUNNING);
 }
 
