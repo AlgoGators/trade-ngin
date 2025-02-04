@@ -11,40 +11,47 @@ RiskManager::RiskManager(RiskConfig config)
     : config_(std::move(config)) {}
 
 Result<RiskResult> RiskManager::process_positions(
-    const std::unordered_map<std::string, Position>& positions) 
-{
-    try {
-        RiskResult result;
-        double total_value = 0.0;
-        for (const auto& [symbol, pos] : positions) {
-            total_value += std::abs(pos.quantity * pos.average_price);
+    const std::unordered_map<std::string, Position>& positions) {        
+        try {
+            RiskResult result;
+
+            if (positions.empty()) {
+                return make_error<RiskResult>(
+                    ErrorCode::INVALID_ARGUMENT,
+                    "No positions provided"
+                );
+            }
+
+            double total_value = 0.0;
+            for (const auto& [symbol, pos] : positions) {
+                total_value += std::abs(pos.quantity * pos.average_price);
+            }
+            const auto weights = calculate_weights(positions);
+            
+            // Calculate all risk multipliers and store metrics
+            result.portfolio_multiplier = calculate_portfolio_multiplier(weights, result);
+            result.jump_multiplier = calculate_jump_multiplier(weights, result);
+            result.correlation_multiplier = calculate_correlation_multiplier(weights, result);
+            result.leverage_multiplier = calculate_leverage_multiplier(weights, total_value, result);
+            
+            // Overall scale is minimum of all multipliers
+            result.recommended_scale = std::min({
+                result.portfolio_multiplier,
+                result.jump_multiplier,
+                result.correlation_multiplier,
+                result.leverage_multiplier
+            });
+            
+            result.risk_exceeded = result.recommended_scale < 1.0;
+            return Result<RiskResult>(result);
+            
+        } catch(const std::exception& e) {
+            return make_error<RiskResult>(
+                ErrorCode::INVALID_RISK_CALCULATION,
+                std::string("Risk calculation failed: ") + e.what()
+            );
         }
-        const auto weights = calculate_weights(positions);
-        
-        // Calculate all risk multipliers and store metrics
-        result.portfolio_multiplier = calculate_portfolio_multiplier(weights, result);
-        result.jump_multiplier = calculate_jump_multiplier(weights, result);
-        result.correlation_multiplier = calculate_correlation_multiplier(weights, result);
-        result.leverage_multiplier = calculate_leverage_multiplier(weights, total_value, result);
-        
-        // Overall scale is minimum of all multipliers
-        result.recommended_scale = std::min({
-            result.portfolio_multiplier,
-            result.jump_multiplier,
-            result.correlation_multiplier,
-            result.leverage_multiplier
-        });
-        
-        result.risk_exceeded = result.recommended_scale < 1.0;
-        return Result<RiskResult>(result);
-        
-    } catch(const std::exception& e) {
-        return make_error<RiskResult>(
-            ErrorCode::INVALID_RISK_CALCULATION,
-            std::string("Risk calculation failed: ") + e.what()
-        );
     }
-}
 
 std::vector<double> RiskManager::calculate_weights(
     const std::unordered_map<std::string, Position>& positions) const 

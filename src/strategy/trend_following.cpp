@@ -3,6 +3,7 @@
 #include <cmath>
 #include <numeric>
 #include <algorithm>
+#include <iostream>
 
 namespace trade_ngin {
 
@@ -12,7 +13,8 @@ TrendFollowingStrategy::TrendFollowingStrategy(
     TrendFollowingConfig trend_config,
     std::shared_ptr<DatabaseInterface> db)
     : BaseStrategy(std::move(id), std::move(config), std::move(db))
-    , trend_config_(std::move(trend_config)) {
+    , forecast_scaler_(trend_config.forecast_config)  // Initialize forecast_scaler_ first
+    , trend_config_(std::move(trend_config)) {  // Move trend_config after using its config
     
     // Initialize metadata
     metadata_.name = "Trend Following Strategy";
@@ -49,6 +51,41 @@ Result<void> TrendFollowingStrategy::validate_config() const {
     }
     
     return Result<void>();
+}
+
+Result<void> TrendFollowingStrategy::initialize() {
+    // Call base class initialization first
+    auto base_result = BaseStrategy::initialize();
+    if (base_result.is_error()) {
+        return base_result;
+    }
+
+    try {
+        // Initialize price history containers for each symbol
+        for (const auto& config_pair : config_.trading_params) {
+            const auto& symbol = config_pair.first;
+            price_history_[symbol] = std::vector<double>();
+            volatility_history_[symbol] = std::vector<double>();
+        }
+
+        // Validate trend-specific configuration
+        auto validate_result = validate_config();
+        if (validate_result.is_error()) {
+            return validate_result;
+        }
+
+        // Initialize forecast scaler if needed
+        forecast_scaler_ = ForecastScaler(trend_config_.forecast_config);
+
+        return Result<void>();
+
+    } catch (const std::exception& e) {
+        return make_error<void>(
+            ErrorCode::STRATEGY_ERROR,
+            std::string("Failed to initialize trend following strategy: ") + e.what(),
+            "TrendFollowingStrategy"
+        );
+    }
 }
 
 Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
@@ -104,7 +141,7 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
                 auto pos_result = update_position(bar.symbol, pos);
                 if (pos_result.is_error()) {
                     return pos_result;
-                }
+                } 
             }
         }
         
