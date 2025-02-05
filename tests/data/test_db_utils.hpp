@@ -114,7 +114,7 @@ public:
                 }
                 
             return Result<void>();
-            }
+    }
 
     // Position storage
     Result<void> store_positions(

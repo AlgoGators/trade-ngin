@@ -4,6 +4,9 @@
 #include "trade_ngin/strategy/strategy_interface.hpp"
 #include "trade_ngin/strategy/types.hpp"
 #include "trade_ngin/data/database_interface.hpp"
+#include "trade_ngin/core/error.hpp"
+#include "trade_ngin/data/market_data_bus.hpp"
+#include "trade_ngin/core/logger.hpp"
 #include <atomic>
 #include <mutex>
 
@@ -40,13 +43,17 @@ public:
     Result<void> update_risk_limits(const RiskLimits& limits) override;
     Result<void> check_risk_limits() override;
 
+    virtual Result<void> update_metrics();
+    Result<void> transition_state(StrategyState new_state);
+
+
+
 protected:
     // Protected methods for derived classes
     virtual Result<void> validate_config() const;
     virtual Result<void> save_signals(const std::unordered_map<std::string, double>& signals);
     virtual Result<void> save_positions();
     virtual Result<void> save_executions(const ExecutionReport& exec);
-    virtual Result<void> update_metrics();
     
     // Data members
     std::string id_;
@@ -63,8 +70,9 @@ protected:
     mutable std::mutex mutex_;
 
 private:
-    Result<void> transition_state(StrategyState new_state);
     Result<void> validate_state_transition(StrategyState new_state) const;
+    bool is_initialized_{false};
+    std::atomic<bool> running_{false};
 };
 
 } // namespace trade_ngin

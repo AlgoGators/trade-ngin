@@ -16,6 +16,7 @@ set(TEST_SOURCES
     data/test_market_data_bus.cpp
     execution/test_execution_engine.cpp
     portfolio/test_portfolio_manager.cpp
+    strategy/test_base_strategy.cpp
 )
 
 # Create test executable
