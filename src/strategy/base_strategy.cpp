@@ -40,86 +40,122 @@ Result<void> BaseStrategy::initialize() {
         return validation;
     }
 
-    // Initialize database connection if needed
-    if (!db_) {
-        return make_error<void>(
-            ErrorCode::NOT_INITIALIZED,
-            "Database interface not initialized",
-            "BaseStrategy"
-        );
-    }
-
-    // Register with state manager
-    ComponentInfo info{
-        ComponentType::STRATEGY,
-        ComponentState::INITIALIZED,
-        id_,
-        "",
-        std::chrono::system_clock::now(),
-        {
-            {"capital_allocation", config_.capital_allocation},
-            {"max_leverage", config_.max_leverage}
+    try {
+        // Initialize database connection if needed
+        if (!db_) {
+            return make_error<void>(
+                ErrorCode::NOT_INITIALIZED,
+                "Database interface not initialized",
+                "BaseStrategy"
+            );
         }
-    };
 
-    auto register_result = StateManager::instance().register_component(info);
-    if (register_result.is_error()) {
-        return register_result;
-    }
+        // Register with state manager with proper error handling
+        ComponentInfo info{
+            ComponentType::STRATEGY,
+            ComponentState::INITIALIZED,
+            id_,
+            "",
+            std::chrono::system_clock::now(),
+            {
+                {"capital_allocation", config_.capital_allocation},
+                {"max_leverage", config_.max_leverage}
+            }
+        };
 
-    // Subscribe to market data
-    MarketDataCallback callback = [this](const MarketDataEvent& event) {
-        if (event.type == MarketDataEventType::BAR) {
+        // Before registering, ensure any previous registration is cleared
+        StateManager::reset_instance();
+
+        auto register_result = StateManager::instance().register_component(info);
+        if (register_result.is_error()) {
+            return make_error<void>(
+                register_result.error()->code(),
+                "Failed to register with StateManager: " + 
+                std::string(register_result.error()->what()),
+                "BaseStrategy"
+            );
+        }
+
+        // Subscribe to market data with proper error handling
+        MarketDataCallback callback = [this](const MarketDataEvent& event) {
             try {
-                Bar bar;
-                bar.timestamp = event.timestamp;
-                bar.symbol = event.symbol;
-                bar.open = event.numeric_fields.at("open");
-                bar.high = event.numeric_fields.at("high");
-                bar.low = event.numeric_fields.at("low");
-                bar.close = event.numeric_fields.at("close");
-                bar.volume = event.numeric_fields.at("volume");
+                if (event.type == MarketDataEventType::BAR) {
+                    Bar bar;
+                    bar.timestamp = event.timestamp;
+                    bar.symbol = event.symbol;
+                    bar.open = event.numeric_fields.at("open");
+                    bar.high = event.numeric_fields.at("high");
+                    bar.low = event.numeric_fields.at("low");
+                    bar.close = event.numeric_fields.at("close");
+                    bar.volume = event.numeric_fields.at("volume");
 
-                std::vector<Bar> bars{bar};
-                auto result = this->on_data(bars);
-                if (result.is_error()) {
-                    ERROR("Error processing bar data: " + std::string(result.error()->what()));
+                    std::vector<Bar> bars{bar};
+                    auto result = this->on_data(bars);
+                    if (result.is_error()) {
+                        ERROR("Error processing bar data: " + 
+                            std::string(result.error()->what()));
+                    }
                 }
             } catch (const std::exception& e) {
                 ERROR("Error in market data callback: " + std::string(e.what()));
             }
+        };
+
+        SubscriberInfo sub_info{
+            id_,
+            {MarketDataEventType::BAR},
+            {},  // Empty means subscribe to all symbols
+            callback
+        };
+
+        auto subscribe_result = MarketDataBus::instance().subscribe(sub_info);
+        if (subscribe_result.is_error()) {
+            return subscribe_result;
         }
-    };
 
-    SubscriberInfo sub_info{
-        id_,
-        {MarketDataEventType::BAR},
-        {},  // Empty means subscribe to all symbols
-        callback
-    };
+        is_initialized_ = true;
+        
+        INFO("Initialized strategy " + id_);
+        return Result<void>();
 
-    auto subscribe_result = MarketDataBus::instance().subscribe(sub_info);
-    if (subscribe_result.is_error()) {
-        return subscribe_result;
+    } catch (const std::exception& e) {
+        return make_error<void>(
+            ErrorCode::NOT_INITIALIZED,
+            std::string("Initialization failed: ") + e.what(),
+            "BaseStrategy"
+        );
     }
-
-    INFO("Initialized strategy " + id_);
-    return Result<void>();
 }
 
 Result<void> BaseStrategy::start() {
-    return transition_state(StrategyState::RUNNING);
+    auto result = transition_state(StrategyState::RUNNING);
+
+    if (!is_initialized_) {  // Add this member variable to track initialization
+        return make_error<void>(
+            ErrorCode::NOT_INITIALIZED,
+            "Strategy must be initialized before starting",
+            "BaseStrategy"
+        );
+    }
+
+    if (result.is_ok()) {
+        running_ = true;
+    }
+
+    return result;
 }
 
 Result<void> BaseStrategy::stop() {
-    auto result = transition_state(StrategyState::STOPPED);
-    if (result.is_ok()) {
-        // Save final positions and signals
-        if (config_.save_positions) {
-            save_positions();
+    if (config_.save_positions) {
+        auto save_result = save_positions();
+        if (save_result.is_error()) {
+            WARN("Error saving positions on stop: " + save_result.error()->to_string());
         }
     }
-    return result;
+
+    running_ = false;
+
+    return transition_state(StrategyState::STOPPED);
 }
 
 Result<void> BaseStrategy::pause() {
@@ -138,6 +174,10 @@ Result<void> BaseStrategy::resume() {
 }
 
 Result<void> BaseStrategy::on_data(const std::vector<Bar>& data) {
+    if (data.empty()) {
+        return Result<void>();
+    }
+
     std::lock_guard<std::mutex> lock(mutex_);
     
     if (state_ != StrategyState::RUNNING) {
@@ -148,17 +188,51 @@ Result<void> BaseStrategy::on_data(const std::vector<Bar>& data) {
         );
     }
 
-    // Update metrics based on new data
-    update_metrics();
+    try {
+        // Validate data before processing
+        for (const auto& bar : data) {
+            if (bar.symbol.empty()) {
+                return make_error<void>(
+                    ErrorCode::INVALID_DATA,
+                    "Bar has empty symbol",
+                    "BaseStrategy"
+                );
+            }
+            if (bar.timestamp == Timestamp{}) {
+                return make_error<void>(
+                    ErrorCode::INVALID_DATA,
+                    "Bar has invalid timestamp",
+                    "BaseStrategy"
+                );
+            }
+        }
 
-    // Check risk limits
-    auto risk_check = check_risk_limits();
-    if (risk_check.is_error()) {
-        return risk_check;
+        // Update positions based on latest prices
+        for (const auto& bar : data) {
+            if (positions_.count(bar.symbol)) {
+                auto& pos = positions_[bar.symbol];
+                pos.unrealized_pnl = (bar.close - pos.average_price) * pos.quantity;
+            }
+        }
+
+        // Update metrics
+        auto update_result = update_metrics();
+        if (update_result.is_error()) {
+            return update_result;
+        }
+
+        // Check risk limits
+        return check_risk_limits();
     }
-
-    return Result<void>();
+    catch (const std::exception& e) {
+        return make_error<void>(
+            ErrorCode::UNKNOWN_ERROR,
+            std::string("Error processing data: ") + e.what(),
+            "BaseStrategy"
+        );
+    }
 }
+
 
 Result<void> BaseStrategy::on_execution(const ExecutionReport& report) {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -168,8 +242,7 @@ Result<void> BaseStrategy::on_execution(const ExecutionReport& report) {
         if (config_.save_executions) {
             auto save_result = save_executions(report);
             if (save_result.is_error()) {
-                ERROR("Failed to save execution: " + save_result.error()->to_string());
-                // Continue with position update even if save fails
+                return save_result; // Return early if save fails
             }
         }
 
@@ -179,7 +252,6 @@ Result<void> BaseStrategy::on_execution(const ExecutionReport& report) {
         // Calculate realized PnL if closing position
         if ((pos.quantity > 0 && report.side == Side::SELL) ||
             (pos.quantity < 0 && report.side == Side::BUY)) {
-            
             double realized_pnl = 0.0;
             if (report.side == Side::SELL) {
                 realized_pnl = (report.fill_price - pos.average_price) * 
@@ -266,9 +338,11 @@ Result<void> BaseStrategy::on_signal(const std::string& symbol, double signal) {
     // Store signal
     last_signals_[symbol] = signal;
     
-    // Save to database if configured
+    // Only save to database if configured
     if (config_.save_signals) {
-        return save_signals({{symbol, signal}});
+        std::unordered_map<std::string, double> signals;
+        signals[symbol] = signal;
+        return save_signals(signals);
     }
     
     return Result<void>();
@@ -377,8 +451,16 @@ Result<void> BaseStrategy::validate_config() const {
 
 Result<void> BaseStrategy::save_executions(const ExecutionReport& exec) {
     try {
-        if (db_) {
-            return db_->store_executions({exec}, "trading.executions");
+        if (!db_) {
+            return Result<void>();
+        }
+        auto result = db_->store_executions({exec}, "trading.executions");
+        if (result.is_error()) {
+            return make_error<void>(
+                ErrorCode::DATABASE_ERROR,
+                "Failed to save execution: " + std::string(result.error()->what()),
+                "BaseStrategy"
+            );
         }
         return Result<void>();
     } catch (const std::exception& e) {
@@ -392,15 +474,21 @@ Result<void> BaseStrategy::save_executions(const ExecutionReport& exec) {
 
 Result<void> BaseStrategy::save_positions() {
     try {
-        if (db_) {
-            std::vector<Position> pos_vec;
-            pos_vec.reserve(positions_.size());
-            for (const auto& [symbol, pos] : positions_) {
-                pos_vec.push_back(pos);
-            }
+        if (!db_) {
+            return Result<void>();
+        }
+        
+        std::vector<Position> pos_vec;
+        pos_vec.reserve(positions_.size());
+        for (const auto& [symbol, pos] : positions_) {
+            pos_vec.push_back(pos);
+        }
+        
+        if (!pos_vec.empty()) {
             return db_->store_positions(pos_vec, "trading.positions");
         }
         return Result<void>();
+        
     } catch (const std::exception& e) {
         return make_error<void>(
             ErrorCode::DATABASE_ERROR,
@@ -410,12 +498,20 @@ Result<void> BaseStrategy::save_positions() {
     }
 }
 
-Result<void> BaseStrategy::save_signals(const std::unordered_map<std::string, double>& signals) {
+Result<void> BaseStrategy::save_signals(
+    const std::unordered_map<std::string, double>& signals) {
     try {
-        if (db_) {
-            return db_->store_signals(signals, id_, std::chrono::system_clock::now(), "trading.signals");
+        if (!db_) {
+            return Result<void>();
         }
-        return Result<void>();
+        // Clear any existing signals before saving new ones
+        last_signals_.clear();
+        for (const auto& [symbol, signal] : signals) {
+            last_signals_[symbol] = signal;
+        }
+        return db_->store_signals(signals, id_, 
+                                std::chrono::system_clock::now(), 
+                                "trading.signals");
     } catch (const std::exception& e) {
         return make_error<void>(
             ErrorCode::DATABASE_ERROR,
