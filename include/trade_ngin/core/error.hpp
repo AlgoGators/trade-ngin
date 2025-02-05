@@ -18,7 +18,7 @@ enum class ErrorCode {
     NONE = 0,
     UNKNOWN_ERROR = 1,
     INVALID_ARGUMENT = 2,
-    NOT_INITIALIZED = 3,  // This should be the code returned for disconnected operations
+    NOT_INITIALIZED = 3, 
     
     // Data errors
     DATABASE_ERROR = 4,
