@@ -11,5 +11,4 @@ C:/Users/kbott/OneDrive/Desktop/School/UF Algo Fund/trade-ngin-rebuild/trade-ngi
 C:/Users/kbott/OneDrive/Desktop/School/UF Algo Fund/trade-ngin-rebuild/trade-ngin/build/trade_ngin.dir/RelWithDebInfo/portfolio_manager.obj
 C:/Users/kbott/OneDrive/Desktop/School/UF Algo Fund/trade-ngin-rebuild/trade-ngin/build/trade_ngin.dir/RelWithDebInfo/transaction_cost_analysis.obj
 C:/Users/kbott/OneDrive/Desktop/School/UF Algo Fund/trade-ngin-rebuild/trade-ngin/build/trade_ngin.dir/RelWithDebInfo/trend_following.obj
-C:/Users/kbott/OneDrive/Desktop/School/UF Algo Fund/trade-ngin-rebuild/trade-ngin/build/trade_ngin.dir/RelWithDebInfo/forecast_scaler.obj
 C:/Users/kbott/OneDrive/Desktop/School/UF Algo Fund/trade-ngin-rebuild/trade-ngin/build/trade_ngin.dir/RelWithDebInfo/base_strategy.obj

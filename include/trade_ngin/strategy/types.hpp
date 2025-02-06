@@ -83,6 +83,7 @@ struct StrategyMetrics {
     double max_loser;                // Largest losing trade
     double avg_holding_period;       // Average holding period
     double turnover;                 // Portfolio turnover
+    double volatility;               // Portfolio volatility
 };
 
 } // namespace trade_ngin
