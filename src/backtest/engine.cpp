@@ -167,7 +167,11 @@ Result<void> BacktestEngine::process_bar(
         if (config_.use_risk_management && risk_manager_) {
             auto risk_result = risk_manager_->process_positions(current_positions);
             if (risk_result.is_error()) {
-                return risk_result;
+                return make_error<void>(
+                    risk_result.error()->code(),
+                    risk_result.error()->what(),
+                    "BacktestEngine"
+                );
             }
 
             // Scale positions if risk limits exceeded
@@ -193,7 +197,10 @@ Result<void> BacktestEngine::process_bar(
                 current_pos, target_pos, costs, weights, covariance);
             
             if (opt_result.is_error()) {
-                return opt_result;
+                return make_error<void>(
+                    opt_result.error()->code(),
+                    opt_result.error()->what()
+                );
             }
 
             // Apply optimized positions
@@ -203,7 +210,7 @@ Result<void> BacktestEngine::process_bar(
             }
         }
 
-        return Result<void>({});
+        return Result<void>();
 
     } catch (const std::exception& e) {
         return make_error<void>(
@@ -463,7 +470,7 @@ Result<void> BacktestEngine::save_results(
             }
         }
 
-        return Result<void>({});
+        return Result<void>();
 
     } catch (const std::exception& e) {
         return make_error<void>(

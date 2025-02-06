@@ -1,7 +1,6 @@
 #include <gtest/gtest.h>
+#include "mock_strategy.hpp"
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
-#include "trade_ngin/strategy/trend_following.hpp"
-#include "../core/test_base.hpp"
 #include "../order/test_utils.hpp"
 #include "../data/test_db_utils.hpp"
 
@@ -90,16 +89,9 @@ protected:
             strategy_config.trading_params[symbol] = 1.0;  // Add multiplier for each symbol
             strategy_config.position_limits[symbol] = 10000.0;  // Add position limit
         }
-        
-        TrendFollowingConfig trend_config;
-        trend_config.risk_target = 0.2;
-        trend_config.idm = 2.5;
-        trend_config.use_position_buffering = true;
-        trend_config.ema_windows = {{2, 8}, {4, 16}};
-        trend_config.vol_lookback_long = 256;
 
-        auto strategy = std::make_shared<TrendFollowingStrategy>(
-            unique_id, strategy_config, trend_config, db_);
+        auto strategy = std::make_shared<MockStrategy>(
+            unique_id, strategy_config, db_);
         
         // Initialize and start strategy
         auto init_result = strategy->initialize();
@@ -117,25 +109,27 @@ protected:
         return strategy;
     }
 
-    std::vector<Bar> create_historical_data(const std::string& symbol, 
-                                      int num_bars = 300) {  // More than 256 required
-    std::vector<Bar> data;
-    auto now = std::chrono::system_clock::now();
-    
-    for (int i = 0; i < num_bars; i++) {
-        Bar bar;
-        bar.symbol = symbol;
-        bar.timestamp = now - std::chrono::hours(24 * (num_bars - i));
-        bar.open = 100.0 + std::sin(i * 0.1);  // Create some price movement
-        bar.high = bar.open + 1.0;
-        bar.low = bar.open - 1.0;
-        bar.close = bar.open + 0.5;
-        bar.volume = 100000;
-        data.push_back(bar);
+    std::vector<Bar> create_historical_data(
+        const std::string& symbol, 
+        int num_bars = 300) {  // More than 256 required
+        std::vector<Bar> data;
+        
+        auto now = std::chrono::system_clock::now();
+        
+        for (int i = 0; i < num_bars; i++) {
+            Bar bar;
+            bar.symbol = symbol;
+            bar.timestamp = now - std::chrono::hours(24 * (num_bars - i));
+            bar.open = 100.0 + std::sin(i * 0.1);  // Create some price movement
+            bar.high = bar.open + 1.0;
+            bar.low = bar.open - 1.0;
+            bar.close = bar.open + 0.5;
+            bar.volume = 100000;
+            data.push_back(bar);
+        }
+        
+        return data;
     }
-    
-    return data;
-}
 
     std::unique_ptr<PortfolioManager> manager_;
     std::shared_ptr<DatabaseInterface> db_;
@@ -145,7 +139,7 @@ protected:
 TEST_F(PortfolioManagerTest, AddStrategy) {
     try {
         // Create a test strategy with explicit error checking
-        auto strategy = create_test_strategy("TREND");
+        auto strategy = create_test_strategy("MOCK");
         ASSERT_TRUE(strategy != nullptr) << "Strategy creation failed";
 
         // Verify strategy state
@@ -192,17 +186,17 @@ TEST_F(PortfolioManagerTest, AddStrategy) {
 TEST_F(PortfolioManagerTest, AllocationLimits) {
     try {
         // Try to add strategy with too high allocation
-        auto strategy1 = create_test_strategy("TREND");
+        auto strategy1 = create_test_strategy("MOCK");
         auto result1 = manager_->add_strategy(strategy1, 0.5); // 50% > max 40%
         EXPECT_TRUE(result1.is_error());
 
         // Add strategy with valid allocation
-        auto strategy2 = create_test_strategy("TREND");
+        auto strategy2 = create_test_strategy("MOCK");
         auto result2 = manager_->add_strategy(strategy2, 0.3); // 30% is valid
         ASSERT_TRUE(result2.is_ok());
 
         // Try to add another strategy that would exceed 100%
-        auto strategy3 = create_test_strategy("TREND");
+        auto strategy3 = create_test_strategy("MOCK");
         auto result3 = manager_->add_strategy(strategy3, 0.8); // Would exceed 100%
         EXPECT_TRUE(result3.is_error());
     } catch (const std::exception& e) {
@@ -213,8 +207,8 @@ TEST_F(PortfolioManagerTest, AllocationLimits) {
 TEST_F(PortfolioManagerTest, ProcessMarketData) {
     try {
         // Add two strategies
-        auto strategy1 = create_test_strategy("TREND", {"AAPL"});
-        auto strategy2 = create_test_strategy("TREND", {"MSFT"});
+        auto strategy1 = create_test_strategy("MOCK", {"AAPL"});
+        auto strategy2 = create_test_strategy("MOCK", {"MSFT"});
         
         // Add strategies to manager
         ASSERT_TRUE(manager_->add_strategy(strategy1, 0.3).is_ok());
@@ -252,9 +246,9 @@ TEST_F(PortfolioManagerTest, ProcessMarketData) {
 
 TEST_F(PortfolioManagerTest, UpdateAllocations) {
     try {
-        auto strategy1 = create_test_strategy("TREND");
-        auto strategy2 = create_test_strategy("TREND");
-        auto strategy3 = create_test_strategy("TREND");
+        auto strategy1 = create_test_strategy("MOCK");
+        auto strategy2 = create_test_strategy("MOCK");
+        auto strategy3 = create_test_strategy("MOCK");
         
         ASSERT_TRUE(manager_->add_strategy(strategy1, 0.2).is_ok());
         ASSERT_TRUE(manager_->add_strategy(strategy2, 0.2).is_ok());
@@ -274,7 +268,7 @@ TEST_F(PortfolioManagerTest, UpdateAllocations) {
 }
 
 TEST_F(PortfolioManagerTest, OptimizationIntegration) {
-    auto strategy = create_test_strategy("TREND");
+    auto strategy = create_test_strategy("MOCK");
     ASSERT_TRUE(strategy != nullptr) << "Strategy creation failed";
         
     // Verify strategy state
@@ -303,7 +297,7 @@ TEST_F(PortfolioManagerTest, OptimizationIntegration) {
 }
 
 TEST_F(PortfolioManagerTest, RiskManagementIntegration) {
-    auto strategy = create_test_strategy("TREND_1");
+    auto strategy = create_test_strategy("MOCK_1");
     ASSERT_TRUE(manager_->add_strategy(strategy, 0.3, false, true).is_ok());
 
     // Create market data with high volatility
@@ -341,7 +335,7 @@ TEST_F(PortfolioManagerTest, StressTest) {
         // Add multiple strategies
         std::vector<std::shared_ptr<StrategyInterface>> strategies;
         for (int i = 0; i < 5; ++i) {
-            auto strategy = create_test_strategy("TREND");
+            auto strategy = create_test_strategy("MOCK");
             ASSERT_TRUE(manager_->add_strategy(strategy, 0.15).is_ok());
             strategies.push_back(strategy);
         }

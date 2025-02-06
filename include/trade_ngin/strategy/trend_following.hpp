@@ -2,7 +2,6 @@
 #pragma once
 
 #include "trade_ngin/strategy/base_strategy.hpp"
-#include "trade_ngin/strategy/forecast_scaler.hpp"
 #include "trade_ngin/core/types.hpp"
 #include "trade_ngin/core/error.hpp"
 #include <vector>
@@ -22,17 +21,10 @@ struct TrendFollowingConfig {
     std::vector<std::pair<int, int>> ema_windows{ // EMA window pairs for crossovers
         {2, 8}, {4, 16}, {8, 32}, {16, 64}, {32, 128}, {64, 256}
     };
-    int vol_lookback_short{22};    // Short lookback for volatility calculation
+    int vol_lookback_short{32};    // Short lookback for volatility calculation
     int vol_lookback_long{2520};   // Long lookback for volatility calculation
-    double forecast_scalar{1.0};  // Add this line before forecast_config
-
-    // Forecast scaling configuration
-    ForecastScalerConfig forecast_config{
-        252,    // volatility_lookback
-        10.0,   // ewma_decay
-        30.0,   // base_scalar_trend
-        23.0,   // base_scalar_carry
-        20.0    // forecast_cap
+    std::vector<std::pair<int, double>> fdm {
+        {1, 1.0}, {2, 1.03}, {3, 1.08}, {4, 1.13}, {5, 1.19}, {6, 1.26}
     };
 };
 
@@ -76,20 +68,19 @@ protected:
 
 private:
     TrendFollowingConfig trend_config_;
-    ForecastScaler forecast_scaler_;
     
     // Price and signal storage
     std::unordered_map<std::string, std::vector<double>> price_history_;
     std::unordered_map<std::string, std::vector<double>> volatility_history_;
 
     /**
-     * @brief Calculate EMA crossover signals
+     * @brief Calculate EMA crossover signals and scale by volatility
      * @param prices Price history for a symbol
      * @param short_window Shorter EMA window
      * @param long_window Longer EMA window
      * @return Vector of crossover signals
      */
-    std::vector<double> calculate_ema_crossover(
+    std::vector<double> get_single_scaled_forecast(
         const std::vector<double>& prices,
         int short_window,
         int long_window) const;
@@ -143,6 +134,16 @@ private:
         double raw_position,
         double price, 
         double volatility) const;
+
+    /**
+     * @brief Calculate volatility regime multiplier
+     * @param prices Price history
+     * @param volatility Pre-calculated volatility series
+     * @return Volatility regime multiplier
+     */
+    double calculate_vol_regime_multiplier(
+        const std::vector<double>& prices,
+        const std::vector<double>& volatility) const;
 };
 
 } // namespace trade_ngin
