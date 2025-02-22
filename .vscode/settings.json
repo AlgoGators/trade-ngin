@@ -91,6 +91,7 @@
         "set": "cpp",
         "future": "cpp",
         "coroutine": "cpp",
-        "resumable": "cpp"
+        "resumable": "cpp",
+        "barrier": "cpp"
     }
 }

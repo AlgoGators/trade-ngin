@@ -14,6 +14,14 @@ TrendFollowingStrategy::TrendFollowingStrategy(
     std::shared_ptr<DatabaseInterface> db)
     : BaseStrategy(std::move(id), std::move(config), std::move(db)),
     trend_config_(std::move(trend_config)) {  // Move trend_config after using its config
+
+    // Verify lengths of lookback periods
+    if (trend_config_.vol_lookback_short <= 0) {
+        trend_config_.vol_lookback_short = 22;
+    }
+    if (trend_config_.vol_lookback_long <= trend_config_.vol_lookback_short) {
+        trend_config_.vol_lookback_long = trend_config_.vol_lookback_short * 4;
+    }
     
     // Initialize metadata
     metadata_.name = "Trend Following Strategy";
@@ -67,6 +75,16 @@ Result<void> TrendFollowingStrategy::initialize() {
             volatility_history_[symbol] = std::vector<double>();
         }
 
+        // Initialize positions for each symbol
+        for (const auto& symbol_param : config_.trading_params) {
+            Position pos;
+            pos.symbol = symbol_param.first;
+            pos.quantity = 0.0;
+            pos.average_price = 0.0;
+            pos.last_update = std::chrono::system_clock::now();
+            positions_[symbol_param.first] = pos;
+        }
+
         // Validate trend-specific configuration
         auto validate_result = validate_config();
         if (validate_result.is_error()) {
@@ -85,65 +103,105 @@ Result<void> TrendFollowingStrategy::initialize() {
 }
 
 Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
+    // Call base class data processing first
     auto base_result = BaseStrategy::on_data(data);
     if (base_result.is_error()) return base_result;
+
+    // Add validation for bar fields
+    for (const auto& bar : data) {
+        if (bar.high <= 0 || bar.low <= 0 || bar.open <= 0 || bar.volume <= 0) {
+            return make_error<void>(
+                ErrorCode::INVALID_DATA,
+                "Invalid bar data for symbol " + bar.symbol,
+                "TrendFollowingStrategy"
+            );
+        }
+    }
+
+    // Group data by symbol before processing
+    std::unordered_map<std::string, std::vector<Bar>> grouped_data;
+    for (const auto& bar : data) {
+        grouped_data[bar.symbol].push_back(bar);
+    }
     
     try {
+        // Validate data
+        if (data.empty()) {
+            return Result<void>();
+        }
+
+        // Get longest window in ema pairs
+        int max_window = 0;
+        for (const auto& window_pair : trend_config_.ema_windows) {
+            max_window = std::max(max_window, window_pair.second);
+        }
+
         // Group data by symbol and update price history
         for (const auto& bar : data) {
+            // Validate essential fields
+            if (bar.symbol.empty() || bar.close <= 0.0) {
+                return make_error<void>(
+                    ErrorCode::INVALID_DATA,
+                    "Invalid bar data",
+                    "TrendFollowingStrategy"
+                );
+            }
             price_history_[bar.symbol].push_back(bar.close);
             
-            // Only process if we have enough data
-            if (price_history_[bar.symbol].size() > 256) { // Minimum required for longest EMA
-                const auto& prices = price_history_[bar.symbol];
-                
-                // Calculate volatility estimate
-                auto volatility = calculate_volatility(
-                    prices,
-                    trend_config_.vol_lookback_short,
-                    trend_config_.vol_lookback_long
-                );
-                volatility_history_[bar.symbol] = volatility;
-                
-                // Generate forecast
-                auto forecast = generate_raw_forecasts(prices, volatility);
-                
-                // Calculate position
-                double raw_position = calculate_position(
-                    bar.symbol,
-                    forecast.back(), // Use latest forecast
-                    bar.close,
-                    volatility.back()
-                );
-                
-                // Apply buffering if enabled
-                double final_position = trend_config_.use_position_buffering
-                    ? apply_position_buffer(bar.symbol, raw_position, bar.close, volatility.back())
-                    : raw_position;
-                
-                // Save forecast
-                auto signal_result = on_signal(bar.symbol, forecast.back());
-                if (signal_result.is_error()) {
-                    return signal_result;
-                }
-                
-                // Update position
-                Position pos;
-                pos.symbol = bar.symbol;
-                pos.quantity = final_position;
-                pos.average_price = bar.close;
-                pos.last_update = bar.timestamp;
-                
-                auto pos_result = update_position(bar.symbol, pos);
-                if (pos_result.is_error()) {
-                    return pos_result;
-                } 
+            // Wait for enough data before processing
+            if (price_history_[bar.symbol].size() < max_window) {
+                INFO("Accumulating data for " + bar.symbol + ": " + 
+                     std::to_string(price_history_[bar.symbol].size()) + "/" +
+                     std::to_string(max_window));
+                continue;
             }
+            
+            const auto& prices = price_history_[bar.symbol];
+
+            auto volatility = blended_ewma_stddev(prices, trend_config_.vol_lookback_short);
+            volatility_history_[bar.symbol] = volatility;
+
+            // Get raw combined forecast
+            auto raw_forecasts = get_raw_combined_forecast(prices);
+            auto scaled_forecasts = get_scaled_combined_forecast(raw_forecasts);
+            
+            // Calculate position using the most recent forecast value
+            double raw_position = calculate_position(
+                bar.symbol,
+                scaled_forecasts.back(), // Use latest forecast
+                bar.close,
+                volatility.back()
+            );
+            
+            // Apply buffering if enabled
+            double final_position = trend_config_.use_position_buffering
+                ? apply_position_buffer(bar.symbol, raw_position, bar.close, volatility.back())
+                : raw_position;
+            
+            // Save forecast
+            auto signal_result = on_signal(bar.symbol, scaled_forecasts.back());
+            if (signal_result.is_error()) {
+                return signal_result;
+            }
+            
+            // Update position
+            Position pos;
+            pos.symbol = bar.symbol;
+            pos.quantity = final_position;
+            pos.average_price = bar.close;
+            pos.last_update = bar.timestamp;
+            
+            auto pos_result = update_position(bar.symbol, pos);
+            if (pos_result.is_error()) {
+                return pos_result;
+            } 
+            
         }
         
         return Result<void>();
         
     } catch (const std::exception& e) {
+        std::cout << "Error in TrendFollowingStrategy::on_data: " << std::string(e.what());
         return make_error<void>(
             ErrorCode::STRATEGY_ERROR,
             std::string("Error processing data: ") + e.what(),
@@ -152,188 +210,173 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
     }
 }
 
-std::vector<double> TrendFollowingStrategy::get_single_scaled_forecast(
+std::vector<double> TrendFollowingStrategy::calculate_ewma(
     const std::vector<double>& prices,
-    int short_window,
-    int long_window) const {
-    
-    // Calculate EMAs
-    std::vector<double> short_ema(prices.size());
-    std::vector<double> long_ema(prices.size());
-    
-    // EMA multipliers
-    double short_alpha = 2.0 / (short_window + 1);
-    double long_alpha = 2.0 / (long_window + 1);
-    
-    // Initialize
-    short_ema[0] = prices[0];
-    long_ema[0] = prices[0];
-    
-    // Calculate EMAs
+    int window) const {
+
+    std::vector<double> ewma(prices.size(), 0.0);
+    if (prices.empty() || window <= 0) {
+        return ewma;
+        }
+    double lambda = 2.0 / (window + 1);
+    ewma[0] = prices[0];
+
     for (size_t i = 1; i < prices.size(); ++i) {
-        short_ema[i] = prices[i] * short_alpha + short_ema[i-1] * (1 - short_alpha);
-        long_ema[i] = prices[i] * long_alpha + long_ema[i-1] * (1 - long_alpha);
+        ewma[i] = lambda * prices[i] + (1 - lambda) * ewma[i - 1];
+    }
+    return ewma;
+}
+
+std::vector<double> TrendFollowingStrategy::ewma_standard_deviation(const std::vector<double>& prices, int window) const {
+    if (prices.empty() || window <= 0) return {};
+
+    std::vector<double> ewma_stddev(prices.size(), 0.0);
+    std::vector<double> ewma_mean(prices.size(), 0.0);
+    std::vector<double> ewma_variance(prices.size(), 0.0);
+
+    double lambda = 2.0 / (window + 1); // Compute lambda
+    ewma_mean[0] = prices[0];      // Initialize EWMA mean
+    ewma_variance[0] = 0.0;        // Initial variance is zero
+
+    for (size_t t = 1; t < prices.size(); ++t) {
+        ewma_mean[t] = lambda * prices[t] + (1 - lambda) * ewma_mean[t - 1];
+        double deviation = prices[t] - ewma_mean[t];
+        ewma_variance[t] = lambda * (deviation * deviation) + (1 - lambda) * ewma_variance[t - 1];
+        ewma_stddev[t] = std::sqrt(ewma_variance[t]);
     }
 
-    // Get volatility series
-    auto volatility = calculate_volatility(
-        prices,
-        trend_config_.vol_lookback_short,
-        trend_config_.vol_lookback_long
-    );
+    return ewma_stddev;
+}
 
-    // If any volatility is 0, fail system using custom error, else use volatility
-    if (std::any_of(volatility.begin(), volatility.end(), [](double v) { return v == 0.0; })) {
-        throw std::runtime_error("Zero volatility detected");
+double TrendFollowingStrategy::compute_long_term_avg(const std::vector<double>& history, size_t max_history) const {
+    if (history.empty()) return 0.0;
+
+    size_t start_index = history.size() > max_history ? history.size() - max_history : 0;
+    double sum = std::accumulate(history.begin() + start_index, history.end(), 0.0);
+    return sum / (history.size() - start_index);
+}
+
+std::vector<double> TrendFollowingStrategy::blended_ewma_stddev(const std::vector<double>& prices, int window,
+double weight_short, double weight_long,
+size_t max_history) const {
+    if (prices.empty() || window <= 0) return {};
+
+    std::vector<double> ewma_stddev = ewma_standard_deviation(prices, window);
+    std::vector<double> blended_stddev(prices.size(), 0.0);
+    std::vector<double> history; // Stores past short-term EWMA standard deviations
+
+    for (size_t t = 0; t < prices.size(); ++t) {
+        history.push_back(ewma_stddev[t]);  // Store the short-term EWMA standard deviation
+
+        double long_term_avg = compute_long_term_avg(history, max_history);
+        blended_stddev[t] = weight_short * ewma_stddev[t] + weight_long * long_term_avg;
+
+        if (blended_stddev[t] <= 0.0 || std::isnan(blended_stddev[t])) {
+            blended_stddev[t] = 0.001;  // Avoid division by zero
+        }
     }
 
-    // Calculate crossover signals and apply volatility multiplier
-    std::vector<double> forecasts(prices.size());
-    double vol_multiplier = calculate_vol_regime_multiplier(prices, volatility);
+    return blended_stddev;
+}
 
+std::vector<double> TrendFollowingStrategy::get_raw_forecast(const std::vector<double>& prices, int short_window, int long_window) const {
+    if (prices.size() < 2) return {};
+
+    std::vector<double> short_ema = calculate_ewma(prices, short_window);
+    std::vector<double> long_ema = calculate_ewma(prices, long_window);
+
+    std::vector<double> blended_stddev = blended_ewma_stddev(prices, short_window);
+    double vol_multiplier = calculate_vol_regime_multiplier(prices, blended_stddev);
+
+    std::vector<double> raw_forecast = std::vector<double>(prices.size(), 0.0);
     for (size_t i = 0; i < prices.size(); ++i) {
-        forecasts[i] = (short_ema[i] - long_ema[i]) / (prices[i] * volatility[i] / 16.0);
-        forecasts[i] *= vol_multiplier;
+        raw_forecast[i] = (short_ema[i] - long_ema[i]) / blended_stddev[i];
+        raw_forecast[i] *= vol_multiplier;
     }
 
-    // Get average absolute value of forecasts
-    double abs_sum = std::accumulate(forecasts.begin(), forecasts.end(), 0.0,
-        [](double acc, double val) { return acc + std::abs(val); });
-    double abs_avg = abs_sum / forecasts.size();
-
-    // Scale forecasts by (10 / average absolute value)
-    for (size_t i = 0; i < forecasts.size(); ++i) {
-        forecasts[i] *= 10.0 / abs_avg;
-    }
-
-    // Cap forecasts between -20 and 20
-    for (size_t i = 0; i < forecasts.size(); ++i) {
-        forecasts[i] = std::max(-20.0, std::min(20.0, forecasts[i]));
-    }
-    
-    return forecasts;
+    return raw_forecast;
 }
 
-std::vector<double> TrendFollowingStrategy::calculate_volatility(
-    const std::vector<double>& prices,
-    int short_lookback,
-    int long_lookback) const {
-    
-    // Need at least 1 year of data
-    if (prices.size() < 252) {
-        return std::vector<double>(prices.size(), std::numeric_limits<double>::quiet_NaN());
+
+std::vector<double> TrendFollowingStrategy::get_scaled_forecast(const std::vector<double>& raw_forecasts,
+    const std::vector<double>& blended_stddev) const {
+    if (raw_forecasts.empty() || blended_stddev.empty()) return {};
+
+    double abs_sum = get_abs_value(raw_forecasts);
+    double abs_avg = abs_sum / raw_forecasts.size();
+
+    std::vector<double> scaled_forecasts(raw_forecasts.size(), 0.0);
+    for (size_t i = 0; i < raw_forecasts.size(); ++i) {
+        scaled_forecasts[i] = 10.0 * raw_forecasts[i] / abs_avg;
+        scaled_forecasts[i] = std::max(-20.0, std::min(20.0, scaled_forecasts[i]));
     }
 
-    std::vector<double> returns(prices.size() - 1);
-    for (size_t i = 1; i < prices.size(); ++i) {
-        returns[i-1] = std::log(prices[i] / prices[i-1]);
-    }
-    
-    std::vector<double> volatility(prices.size(), 0.0);
-    
-    // Calculate rolling standard deviations
-    for (size_t i = short_lookback; i < prices.size(); ++i) {
-        // Short-term volatility
-        // First calculate mean of returns in the window
-        double short_mean = 0.0;
-        for (int j = 0; j < short_lookback; ++j) {
-            short_mean += returns[i-j-1];
-        }
-        short_mean /= short_lookback;
-        
-        // Then calculate variance
-        double short_var = 0.0;
-        for (int j = 0; j < short_lookback; ++j) {
-            double deviation = returns[i-j-1] - short_mean;
-            short_var += deviation * deviation;
-        }
-        short_var /= (short_lookback - 1);
-        
-        // Calculate adaptive long-term lookback
-        size_t available_history = i + 1;
-        int adaptive_long_lookback = std::min(
-            static_cast<size_t>(long_lookback),
-            std::max(static_cast<size_t>(252),
-                    available_history)
-        );
-        
-        // Long-term volatility
-        // First calculate mean
-        double long_mean = 0.0;
-        for (int j = 0; j < adaptive_long_lookback; ++j) {
-            if (i-j-1 < returns.size()) {
-                long_mean += returns[i-j-1];
-            }
-        }
-        long_mean /= adaptive_long_lookback;
-        
-        // Then calculate variance
-        double long_var = 0.0;
-        for (int j = 0; j < adaptive_long_lookback; ++j) {
-            if (i-j-1 < returns.size()) {
-                double deviation = returns[i-j-1] - long_mean;
-                long_var += deviation * deviation;
-            }
-        }
-        long_var /= (adaptive_long_lookback - 1);
-        
-        // Blend volatilities and annualize
-        volatility[i] = std::sqrt(0.7 * short_var + 0.3 * long_var) * std::sqrt(252.0);
-    }
-    
-    return volatility;
-}
+    return scaled_forecasts;
+}        
 
-std::vector<double> TrendFollowingStrategy::generate_raw_forecasts(
-    const std::vector<double>& prices,
-    const std::vector<double>& volatility) const {
-    
-    std::vector<std::vector<double>> all_forecasts;
-    
-    // Calculate forecasts for each EMA pair
+std::vector<double> TrendFollowingStrategy::get_raw_combined_forecast(const std::vector<double>& prices) const {
+    if (prices.size() < 2) return {};
+
+    std::vector<double> combined_forecast(prices.size(), 0.0);
+    int valid_window_pairs = 0;
+
     for (const auto& window_pair : trend_config_.ema_windows) {
-        auto single_rule_forecasts = get_single_scaled_forecast(
-            prices,
-            window_pair.first,
-            window_pair.second
-        );
-        all_forecasts.push_back(single_rule_forecasts);
+        std::vector<double> raw_forecast = get_raw_forecast(prices, window_pair.first, window_pair.second);
+
+        // Skip invalid forecasts
+        if (raw_forecast.empty()) continue;
+
+        std::vector<double> blended_stddev = blended_ewma_stddev(prices, window_pair.first);
+        std::vector<double> scaled_forecast = get_scaled_forecast(raw_forecast, blended_stddev);
+
+        if (scaled_forecast.empty()) continue;
+
+        valid_window_pairs++;
+        
+        for (size_t i = 0; i < prices.size(); ++i) {
+            combined_forecast[i] += scaled_forecast[i];
+        }        
     }
 
-    // Get FDM from trend config which depends on the number of EMA windows
-    double fdm = trend_config_.fdm[all_forecasts.size()].second;
+    // Normalize combined forecast by the number of valid window pairs
+    if (valid_window_pairs > 0) {
+        for (size_t i = 0; i < combined_forecast.size(); ++i) {
+            combined_forecast[i] /= valid_window_pairs;
+        }
+    } else {
+        combined_forecast.clear();
+    }
     
-    // Iterate through each day
-    std::vector<double> combined_forecasts(prices.size(), 0.0);
-    for (size_t i = 0; i < prices.size(); ++i) {
-        double sum = 0.0;
-        bool all_valid = true;
-        
-        // Check forecasts from each EMA pair for this day
-        for (const auto& forecasts : all_forecasts) {
-            // If any forecast series doesn't have a valid forecast for this day,
-            // mark as invalid and skip
-            if (i < forecasts.size() && !std::isnan(forecasts[i])) {
-                all_valid = false;
-                break;
-            }
-            sum += forecasts[i];
-        }
-                
-        // Only add combined forecast if all pairs contributed
-        if (all_valid) {
-            double raw_combined_forecast = (sum / all_forecasts.size());
-            double scaled_combined_forecast = raw_combined_forecast * fdm;
-            double capped_combined_forecast = std::max(-20.0, std::min(20.0, scaled_combined_forecast));
-
-            combined_forecasts.push_back(capped_combined_forecast);
-        } else {
-            // Else, mark as NaN
-            combined_forecasts.push_back(std::numeric_limits<double>::quiet_NaN());
-        }
+    return combined_forecast;
 }
 
-    return combined_forecasts;
+std::vector<double> TrendFollowingStrategy::get_scaled_combined_forecast(const std::vector<double>& raw_combined_forecast) const {
+    if (raw_combined_forecast.empty()) return {};
+
+    // Get FDM from trend_config_ based on the number of rules
+    size_t num_rules = trend_config_.ema_windows.size();
+    double fdm = 1.0; // Default if not found
+    for (const auto& fdm_pair : trend_config_.fdm) {
+        if (fdm_pair.first == num_rules) {
+            fdm = fdm_pair.second;
+            break;
+        }
+    }
+
+    // Multiply raw combined forecast by FDM and scale to [-20, 20]
+    std::vector<double> scaled_combined_forecast(raw_combined_forecast.size(), 0.0);
+    for (size_t i = 0; i < raw_combined_forecast.size(); ++i) {
+        scaled_combined_forecast[i] = raw_combined_forecast[i] * fdm;
+        scaled_combined_forecast[i] = std::max(-20.0, std::min(20.0, scaled_combined_forecast[i]));
+    }
+
+    return scaled_combined_forecast;
+}
+
+
+double TrendFollowingStrategy::get_abs_value(const std::vector<double>& values) const {
+    return std::accumulate(values.begin(), values.end(), 0.0,
+        [](double acc, double val) { return acc + std::abs(val); });
 }
 
 double TrendFollowingStrategy::calculate_position(
@@ -341,10 +384,22 @@ double TrendFollowingStrategy::calculate_position(
     double forecast,
     double price,
     double volatility) const {
+
+    // Validate inputs
+    if (std::isnan(forecast) || std::isnan(price) || std::isnan(volatility)) {
+        throw std::runtime_error("NaN values in position calculation");
+    }
+    
+    if (price <= 0.0 || volatility <= 0.0) {
+        throw std::runtime_error("Invalid price or volatility in position calculation");
+    }
     
     // Get contract specification
     const auto& contracts = config_.trading_params;
-    double contract_size = contracts.count(symbol) ? contracts.at(symbol) : 1.0;
+    if (contracts.count(symbol) == 0) {
+        throw std::runtime_error("No contract specification for symbol: " + symbol);
+    }
+    double contract_size = contracts.at(symbol);
     
     // Calculate position using volatility targeting formula
     double position = (forecast * config_.capital_allocation * trend_config_.idm * trend_config_.risk_target) /
@@ -358,6 +413,10 @@ double TrendFollowingStrategy::apply_position_buffer(
     double raw_position,
     double price,
     double volatility) const {
+
+    if (!trend_config_.use_position_buffering) {
+        return raw_position;
+    }
     
     // Get contract specification
     const auto& contracts = config_.trading_params;
@@ -398,18 +457,15 @@ double TrendFollowingStrategy::calculate_vol_regime_multiplier(
         // Get current blended volatility (last value in volatility vector)
         double current_vol = volatility.back();
 
-        // Calculate the lookback period for long-run average
-        // Minimum 1 year (252), maximum 10 years (2520), scale with available data
+        // Calculate lookback period for long-run average
         size_t max_lookback = 2520;  // 10 years
         size_t available_days = prices.size();
         size_t lookback = std::min(available_days, max_lookback);
-        lookback = std::max(lookback, static_cast<size_t>(252));  // Minimum 1 year
 
         // Calculate long-run average volatility
         double sum_vol = 0.0;
         size_t count = 0;
-        for (size_t i = volatility.size() - std::min(volatility.size(), lookback); 
-            i < volatility.size(); ++i) {
+        for (size_t i = volatility.size() - lookback; i < volatility.size(); ++i) {
             sum_vol += volatility[i];
             count++;
         }
@@ -418,12 +474,11 @@ double TrendFollowingStrategy::calculate_vol_regime_multiplier(
         // Calculate relative volatility level
         double relative_vol_level = current_vol / avg_vol;
 
-        // Calculate quantile of relative volatility levels using historical values
+        // Calculate quantile of relative volatility levels over lookback period
         std::vector<double> historical_rel_vol_levels;
         historical_rel_vol_levels.reserve(lookback);
         
-        for (size_t i = volatility.size() - std::min(volatility.size(), lookback);
-            i < volatility.size() - 1; ++i) {  // Exclude current day
+        for (size_t i = volatility.size() - lookback; i < volatility.size() - 1; ++i) {  // Exclude current day
             historical_rel_vol_levels.push_back(volatility[i] / avg_vol);
         }
 
@@ -434,8 +489,6 @@ double TrendFollowingStrategy::calculate_vol_regime_multiplier(
         auto it = std::upper_bound(historical_rel_vol_levels.begin(), historical_rel_vol_levels.end(), relative_vol_level);
         double quantile = static_cast<double>(std::distance(historical_rel_vol_levels.begin(), it)) / 
                 static_cast<double>(historical_rel_vol_levels.size());
-
-        // TO:DO - ENSURE QUANTILE IS BETWEEN 0 AND 1 IN TESTING
 
         // Calculate raw multiplier using formula: 2 - 1.5 * Q
         double raw_multiplier = 2.0 - 1.5 * quantile;

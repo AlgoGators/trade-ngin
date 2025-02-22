@@ -39,8 +39,8 @@ set(TRADE_NGIN_SOURCES
     src/execution/execution_engine.cpp
     src/portfolio/portfolio_manager.cpp
     src/backtest/transaction_cost_analysis.cpp
-    src/strategy/trend_following.cpp
     src/strategy/base_strategy.cpp
+    src/strategy/trend_following.cpp
 )
 
 # Add library target
