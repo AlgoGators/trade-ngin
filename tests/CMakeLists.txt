@@ -5,18 +5,19 @@ set(TEST_SOURCES
     core/test_logger.cpp
     core/test_config_manager.cpp
     core/test_config_version.cpp
-    data/test_postgres_database.cpp
     data/test_db_utils.cpp
+    data/test_postgres_database.cpp
     data/test_database_pooling.cpp
+    data/test_market_data_bus.cpp
     order/test_order_manager.cpp
     order/test_utils.cpp
     risk/test_risk_manager.cpp
     optimization/test_dynamic_optimizer.cpp
     backtesting/test_transaction_cost_analysis.cpp
-    data/test_market_data_bus.cpp
     execution/test_execution_engine.cpp
     portfolio/test_portfolio_manager.cpp
     strategy/test_base_strategy.cpp
+    strategy/test_trend_following.cpp
 )
 
 # Create test executable
