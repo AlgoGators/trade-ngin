@@ -74,38 +74,93 @@ private:
     std::unordered_map<std::string, std::vector<double>> volatility_history_;
 
     /**
-     * @brief Calculate EMA crossover signals and scale by volatility
-     * @param prices Price history for a symbol
-     * @param short_window Shorter EMA window
-     * @param long_window Longer EMA window
-     * @return Vector of crossover signals
+     * @brief Calculate EWMA for a price series
+     * @param prices Price series
+     * @param window EWMA window
+     * @return Vector of EWMA values
      */
-    std::vector<double> get_single_scaled_forecast(
+    std::vector<double> calculate_ewma(
+        const std::vector<double>& prices,
+        int window) const;
+
+    /**
+     * @brief Computes the blended EWMA standard deviation using short-term and long-term components.
+     * @param prices Vector of price data.
+     * @param N Lookback period for short-term EWMA std dev.
+     * @param weight_short Weight for short-term EWMA (default: 70%).
+     * @param weight_long Weight for long-term EWMA (default: 30%).
+     * @param max_history Maximum historical records (default: 10 years).
+     * @return Vector of blended EWMA standard deviation.
+     */
+    std::vector<double> blended_ewma_stddev(
+        const std::vector<double>& prices,
+        int N,
+        double weight_short = 0.7,
+        double weight_long = 0.3,
+        size_t max_history = 2520) const;
+
+    /**
+     * @brief Computes the EWMA standard deviation using a lambda-based approach.
+     * @param prices Vector of price data.
+     * @param N Lookback period for EWMA.
+     * @return Vector of EWMA standard deviation values.
+     */
+    std::vector<double> ewma_standard_deviation(
+        const std::vector<double>& prices,
+        int N) const;
+
+    /**
+     * @brief Computes the long-term average of EWMA standard deviations.
+     * @param history Vector storing past EWMA standard deviations.
+     * @param max_history Maximum number of historical periods (default: 10 years).
+     * @return Long-term average EWMA standard deviation.
+     */
+    double compute_long_term_avg(
+        const std::vector<double>& history,
+        size_t max_history = 2520) const;
+
+    /** 
+    * @brief Calculate EMA crossover signals and scale by volatility
+    * @param prices Price history for a symbol
+    * @param short_window Shorter EMA window
+    * @param long_window Longer EMA window
+    * @return Vector of crossover signals
+    */
+    std::vector<double> get_raw_forecast(
         const std::vector<double>& prices,
         int short_window,
         int long_window) const;
 
     /**
-     * @brief Calculate volatility estimate
-     * @param prices Price history
-     * @param short_lookback Short lookback period
-     * @param long_lookback Long lookback period
-     * @return Vector of volatility estimates
+     * @brief Scale raw forecasts by volatility
+     * @param raw_forecasts Raw forecast values
+     * @param blended_stddev Blended EWMA standard deviation
+     * @return Scaled forecast values
      */
-    std::vector<double> calculate_volatility(
-        const std::vector<double>& prices,
-        int short_lookback,
-        int long_lookback) const;
+    std::vector<double> get_scaled_forecast(
+        const std::vector<double>& raw_forecasts,
+        const std::vector<double>& blended_stddev) const;
 
     /**
      * @brief Generate raw forecast from EMA crossovers
      * @param prices Price history
-     * @param volatility Volatility estimates
      * @return Vector of raw forecasts
      */
-    std::vector<double> generate_raw_forecasts(
-        const std::vector<double>& prices,
-        const std::vector<double>& volatility) const;
+    std::vector<double> get_raw_combined_forecast(const std::vector<double>& prices) const;
+
+    /**
+     * @brief Calculate absolute value of a vector
+     * @param values Input vector
+     * @return Absolute sum of vector elements
+     */
+    double get_abs_value(const std::vector<double>& values) const;
+
+    /**
+     * @brief Generate scaled forecast from EMA crossovers
+     * @param raw_combined_forecast Raw forecast values
+     * @return Scaled forecast values
+     */
+    std::vector<double> get_scaled_combined_forecast(const std::vector<double>& raw_combined_forecast) const; 
 
     /**
      * @brief Calculate position for a symbol
