@@ -1,0 +1,7 @@
+.DS_Store
+/build/
+*.o
+*.a
+CMakeFiles/
+CMakeCache.txt
+third_party/clientportal.beta.gw.zip

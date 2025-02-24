@@ -1,0 +1,50 @@
+{
+    "host": "127.0.0.1",
+    "port": 4002,
+    "clientId": 0,
+    "accountId": "",
+    "useLogger": true,
+    "mode": "paper",
+    "api_settings": {
+        "read_only": true,
+        "encoding": "ASCII",
+        "download_open_orders": true,
+        "include_fx": true,
+        "prepare_daily_pnl": true,
+        "expose_schedule": true,
+        "use_account_groups": true,
+        "logging_level": "ERROR",
+        "timeout": 30,
+        "forex": {
+            "show_decimal_pips": true,
+            "allow_decimal_trading": true
+        }
+    },
+    "trading": {
+        "max_position_size": 100,
+        "max_order_value": 10000,
+        "default_order_type": "MARKET",
+        "simulation_mode": true
+    },
+    "risk": {
+        "max_daily_loss": 1000,
+        "max_position_loss": 500,
+        "paper_trading_limits": {
+            "max_contracts_per_order": 100,
+            "max_daily_trades": 50,
+            "allow_overnight_positions": true
+        }
+    },
+    "logging": {
+        "level": "ERROR",
+        "file_path": "logs/ibkr_interface.log",
+        "max_file_size_mb": 5,
+        "backup_count": 3
+    },
+    "connection": {
+        "auto_restart": true,
+        "max_retries": 3,
+        "retry_interval_seconds": 5,
+        "maintain_connection": true
+    }
+}

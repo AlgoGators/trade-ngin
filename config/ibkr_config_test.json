@@ -1,0 +1,22 @@
+{
+    "api": {
+        "endpoint": "http://localhost:8080",
+        "account_id": "paper_account_123",
+        "paper_trading": true
+    },
+    "trading": {
+        "max_position_size": 100,
+        "max_order_value": 10000,
+        "default_order_type": "MARKET"
+    },
+    "risk": {
+        "max_daily_loss": 1000,
+        "max_position_loss": 500
+    },
+    "logging": {
+        "level": "DEBUG",
+        "file_path": "logs/ibkr_interface.log",
+        "max_file_size_mb": 5,
+        "backup_count": 3
+    }
+}
