@@ -410,31 +410,16 @@ Result<void> BaseStrategy::check_risk_limits() {
     // Keep track of any errors during price lookup
     std::string error_symbols;
 
-    // Add detailed debugging
-    std::cout << "=== RISK CHECK DETAILS ===" << std::endl;
-    std::cout << "Capital allocation: " << config_.capital_allocation << std::endl;
-    std::cout << "Max leverage: " << risk_limits_.max_leverage << std::endl;
-    std::cout << "Position limits: " << std::endl;
-    
-    for (const auto& [symbol, limit] : config_.position_limits) {
-        std::cout << "  " << symbol << ": " << limit << std::endl;
-    }
-
     for (const auto& [symbol, position] : positions_) {
         // Skip zero positions to avoid unnecessary calculations
         if (position.quantity == 0) {
             continue;
         }
-        
-        std::cout << "Position for " << symbol << ": " << position.quantity 
-                  << " @ " << position.average_price << std::endl;
 
         double contract_size = config_.trading_params.count(symbol) > 0 ? config_.trading_params.at(symbol) : 1.0;
         
         double position_value = std::abs(position.quantity * position.average_price * contract_size);
         total_value += position_value;
-        
-        std::cout << "  Value: " << position_value << std::endl;
     }
     
     // Check leverage
@@ -442,10 +427,6 @@ Result<void> BaseStrategy::check_risk_limits() {
     if (total_value < 0.1) { // If positions are essentially 0
         leverage = 0.0;  // No leverage when no positions
     }
-
-    std::cout << "Total position value: " << total_value << std::endl;
-    std::cout << "Calculated leverage: " << leverage << std::endl;
-    std::cout << "=========================" << std::endl;
 
     if (leverage > risk_limits_.max_leverage) {
         return make_error<void>(

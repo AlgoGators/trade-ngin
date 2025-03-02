@@ -112,8 +112,6 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
     for (const auto& window_pair : trend_config_.ema_windows) {
         max_window = std::max(max_window, window_pair.second);
     }
-
-    std::cout << "Max window: " << max_window << std::endl;
     
     try {
         // Group data by symbol and update price history
@@ -162,13 +160,10 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
             // Get price history for the symbol
             const auto& prices = price_history_[bar.symbol];
 
-            std::cout << "Prices size: " << prices.size() << std::endl;
-
             // Calculate volatility
             std::vector<double> volatility;
             try {
                 volatility = blended_ewma_stddev(prices, trend_config_.vol_lookback_short);
-                std::cout << "Volatility size: " << volatility.size() << std::endl;
                 if (volatility.empty()) {
                     // If volatility calculation fails, use a default value
                     volatility.resize(prices.size(), 0.01);
@@ -187,7 +182,6 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
             std::vector<double> raw_forecasts;
             try {
                 raw_forecasts = get_raw_combined_forecast(prices);
-                std::cout << "Raw forecast size: " << raw_forecasts.size() << std::endl;
                 if (raw_forecasts.empty()) {
                     INFO("Empty raw forecast for " + bar.symbol);
 
@@ -206,7 +200,6 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
              std::vector<double> scaled_forecasts;
              try {
                 scaled_forecasts = get_scaled_combined_forecast(raw_forecasts);
-                std::cout << "Scaled forecast size: " << scaled_forecasts.size() << std::endl;
                 if (scaled_forecasts.empty()) {
                     INFO("Empty scaled forecast for " + bar.symbol);
                     scaled_forecasts.resize(raw_forecasts.size(), 0.0);
@@ -239,11 +232,6 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
                         // Use a default value to avoid extreme positions
                         latest_volatility = 0.2;
                     }
-
-                    std::cout << "Bar symbol: " << bar.symbol << std::endl;
-                    std::cout << "Latest forecast: " << latest_forecast << std::endl;
-                    std::cout << "Bar close: " << bar.close << std::endl;
-                    std::cout << "Latest volatility: " << latest_volatility << std::endl;
                     
                     raw_position = calculate_position(
                         bar.symbol,
@@ -252,8 +240,6 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
                         bar.close,
                         latest_volatility
                     );
-
-                    std::cout << "Raw position for " << bar.symbol << ": " << raw_position << std::endl;
                 }
             } catch (const std::exception& e) {
                 std::cout << "Position calculation exception for " << bar.symbol << ": " << e.what() << std::endl;
@@ -291,8 +277,6 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
                 auto pos_it = positions_.find(bar.symbol);
                 final_position = (pos_it != positions_.end()) ? pos_it->second.quantity : 0.0;
             }
-
-            std::cout << "Final position for " << bar.symbol << ": " << final_position << std::endl;
             
             // Save forecast with error handling
             auto signal_result = on_signal(bar.symbol, scaled_forecasts.empty() ? 0.0 : scaled_forecasts.back());
@@ -736,8 +720,6 @@ double TrendFollowingStrategy::calculate_position(
     } else {
         std::cout << "WARNING: No contract specification for " << symbol << ", using default size" << std::endl;
     }
-
-    std::cout << "Contract size for " << symbol << ": " << contract_size << std::endl;
     
     // Ensure all parameters are valid
     double capital = std::max(1000.0, config_.capital_allocation);
@@ -806,8 +788,6 @@ double TrendFollowingStrategy::apply_position_buffer(
         }
     }
 
-    std::cout << "Current position for " << symbol << ": " << current_position << std::endl;
-
     double weight = std::max(0.0, trend_config_.weight);
     double contract_size = config_.trading_params.count(symbol) > 0 ? config_.trading_params.at(symbol) : 1.0;
 
@@ -817,14 +797,9 @@ double TrendFollowingStrategy::apply_position_buffer(
     double buffer_width = 0.1 * config_.capital_allocation * trend_config_.idm  * trend_config_.risk_target * weight /
         (contract_size * price * trend_config_.fx_rate * volatility);
 
-    std::cout << "Buffer width for " << symbol << ": " << buffer_width << std::endl;
-
     // Calculate buffer bounds
     double lower_buffer = raw_position - buffer_width;
     double upper_buffer = raw_position + buffer_width;
-
-    std::cout << "Lower buffer: " << lower_buffer << std::endl;
-    std::cout << "Upper buffer: " << upper_buffer << std::endl;
 
     // Apply buffering logic
     double new_position;
@@ -836,7 +811,12 @@ double TrendFollowingStrategy::apply_position_buffer(
         new_position = std::round(current_position);
     }
 
-    std::cout << "New position for " << symbol << ": " << new_position << std::endl;
+    // Debug large changes that are being dampened
+    if (std::abs(raw_position) > 50 && std::abs(new_position) < 10) {
+        std::cout << "DEBUG: Buffer dampening large position: raw=" 
+                 << raw_position << ", buffered=" << new_position 
+                 << ", current=" << current_position << std::endl;
+    }
     
     // Final safety check - cap positions to a reasonable maximum for testing
     double position_limit = 1000.0;
