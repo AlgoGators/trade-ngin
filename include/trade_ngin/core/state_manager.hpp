@@ -28,7 +28,8 @@ enum class ComponentType {
     MARKET_DATA,
     ORDER_MANAGER,
     DATABASE,
-    EXECUTION_ENGINE
+    EXECUTION_ENGINE,
+    BACKTEST_ENGINE
 };
 
 struct ComponentInfo {
