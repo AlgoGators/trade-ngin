@@ -5,7 +5,7 @@
 #include "trade_ngin/core/state_manager.hpp"
 #include "trade_ngin/data/market_data_bus.hpp"
 #include <sstream>
-
+#include <iostream>
 
 namespace trade_ngin {
 
@@ -29,7 +29,7 @@ Result<void> BaseStrategy::initialize() {
     if (state_ != StrategyState::INITIALIZED) {
         return make_error<void>(
             ErrorCode::INVALID_ARGUMENT,
-            "Strategy already initialized",
+            "Strategy not initialized",
             "BaseStrategy"
         );
     }
@@ -128,9 +128,8 @@ Result<void> BaseStrategy::initialize() {
 }
 
 Result<void> BaseStrategy::start() {
-    auto result = transition_state(StrategyState::RUNNING);
-
-    if (!is_initialized_) {  // Add this member variable to track initialization
+    if (!is_initialized_) {
+        std::cerr << "Strategy must be initialized before starting" << std::endl;
         return make_error<void>(
             ErrorCode::NOT_INITIALIZED,
             "Strategy must be initialized before starting",
@@ -138,8 +137,13 @@ Result<void> BaseStrategy::start() {
         );
     }
 
+    auto result = transition_state(StrategyState::RUNNING);
+
     if (result.is_ok()) {
         running_ = true;
+    } else {
+        std::cerr << "Failed to transition to RUNNING state: "
+                    << (result.error() ? result.error()->what() : "Unknown error") << std::endl;
     }
 
     return result;
@@ -402,12 +406,28 @@ Result<void> BaseStrategy::update_risk_limits(const RiskLimits& limits) {
 Result<void> BaseStrategy::check_risk_limits() {
     // Calculate total position value
     double total_value = 0.0;
+
+    // Keep track of any errors during price lookup
+    std::string error_symbols;
+
     for (const auto& [symbol, position] : positions_) {
-        total_value += std::abs(position.quantity * position.average_price);
+        // Skip zero positions to avoid unnecessary calculations
+        if (position.quantity == 0) {
+            continue;
+        }
+
+        double contract_size = config_.trading_params.count(symbol) > 0 ? config_.trading_params.at(symbol) : 1.0;
+        
+        double position_value = std::abs(position.quantity * position.average_price * contract_size);
+        total_value += position_value;
     }
     
     // Check leverage
     double leverage = total_value / config_.capital_allocation;
+    if (total_value < 0.1) { // If positions are essentially 0
+        leverage = 0.0;  // No leverage when no positions
+    }
+
     if (leverage > risk_limits_.max_leverage) {
         return make_error<void>(
             ErrorCode::RISK_LIMIT_EXCEEDED,
@@ -502,7 +522,11 @@ Result<void> BaseStrategy::save_signals(
     const std::unordered_map<std::string, double>& signals) {
     try {
         if (!db_) {
-            return Result<void>();
+            return make_error<void>(
+                ErrorCode::DATABASE_ERROR,
+                "Database interface is null",
+                "BaseStrategy"
+            );
         }
         // Clear any existing signals before saving new ones
         last_signals_.clear();

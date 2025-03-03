@@ -8,12 +8,16 @@
 #include <utility>
 #include <memory>
 
+// TO-DO: IMPLEMENT WEIGHT CALCULATION FROM DYN OPT 
+// INTO POSITION SIZING AND BUFFERING
+
 namespace trade_ngin {
 
 /**
  * @brief Configuration specific to trend following strategy
  */
 struct TrendFollowingConfig {
+    double weight{1.0};               // Weight for position sizing
     double risk_target{0.2};          // Target annualized risk level
     double fx_rate{1.0};              // FX conversion rate
     double idm{2.5};                  // Instrument diversification multiplier
@@ -166,6 +170,7 @@ private:
      * @brief Calculate position for a symbol
      * @param symbol Instrument symbol
      * @param forecast Trading forecast
+     * @param weight Weight
      * @param price Current price
      * @param volatility Current volatility
      * @return Target position
@@ -173,6 +178,7 @@ private:
     double calculate_position(
         const std::string& symbol,
         double forecast,
+        double weight,
         double price,
         double volatility) const;
 
