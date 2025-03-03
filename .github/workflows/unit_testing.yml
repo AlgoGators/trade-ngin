@@ -1,0 +1,42 @@
+name: Unit Testing Pipeline
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install Dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake g++ libgtest-dev
+
+      - name: Build and Install GTest
+        run: |
+          cd /usr/src/gtest
+          sudo cmake .
+          sudo make
+          sudo cp lib/*.a /usr/lib
+
+      - name: Configure and Build Project
+        run: |
+          mkdir -p build
+          cd build
+          cmake ..
+          make VERBOSE=1
+
+      - name: Run Unit Tests
+        run: |
+          cd build/bin
+          ./trade_ngin_tests
