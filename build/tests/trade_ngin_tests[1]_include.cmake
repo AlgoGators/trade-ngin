@@ -1,5 +1,0 @@
-if(EXISTS "C:/Users/kbott/OneDrive/Desktop/School/UF Algo Fund/trade-ngin-rebuild/trade-ngin/build/tests/trade_ngin_tests[1]_tests.cmake")
-  include("C:/Users/kbott/OneDrive/Desktop/School/UF Algo Fund/trade-ngin-rebuild/trade-ngin/build/tests/trade_ngin_tests[1]_tests.cmake")
-else()
-  add_test(trade_ngin_tests_NOT_BUILT trade_ngin_tests_NOT_BUILT)
-endif()
