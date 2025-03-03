@@ -522,7 +522,11 @@ Result<void> BaseStrategy::save_signals(
     const std::unordered_map<std::string, double>& signals) {
     try {
         if (!db_) {
-            return Result<void>();
+            return make_error<void>(
+                ErrorCode::DATABASE_ERROR,
+                "Database interface is null",
+                "BaseStrategy"
+            );
         }
         // Clear any existing signals before saving new ones
         last_signals_.clear();
