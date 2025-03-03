@@ -1,5 +1,6 @@
 //===== order_manager.cpp =====
 #include "trade_ngin/order/order_manager.hpp"
+#include <atomic>
 
 namespace trade_ngin {
 
