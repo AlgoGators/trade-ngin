@@ -205,6 +205,13 @@ private:
      */
     std::unordered_map<std::string, double> calculate_risk_metrics(
         const std::vector<double>& returns) const;
+
+    /**
+     * @brief Helper function for timestamp formatting
+     * @param timestamp Timestamp to format
+     * @return Formatted string
+     */
+    std::string format_timestamp(const Timestamp& ts) const;
 };
 
 } // namespace backtest

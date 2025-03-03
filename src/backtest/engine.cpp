@@ -2,7 +2,9 @@
 #include "trade_ngin/backtest/engine.hpp"
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/core/state_manager.hpp"
+#include "trade_ngin/data/database_interface.hpp"
 #include "trade_ngin/data/conversion_utils.hpp"
+#include "trade_ngin/data/postgres_database.hpp"
 #include <algorithm>
 #include <numeric>
 #include <cmath>
@@ -493,9 +495,31 @@ Result<void> BacktestEngine::process_bar(
 
 Result<std::vector<Bar>> BacktestEngine::load_market_data() const {
     try {
-        INFO("Loading market data for backtest.");
+        INFO("Loading market data for backtest from " + 
+            std::to_string(config_.start_date.time_since_epoch().count()) + 
+             " to " + std::to_string(config_.end_date.time_since_epoch().count()));
         
-        // Load data from database
+        // Validate the database connection
+        if (!db_) {
+            return make_error<std::vector<Bar>>(
+                ErrorCode::DATABASE_ERROR,
+                "Database interface is null",
+                "BacktestEngine"
+            );
+        }
+        
+        if (!db_->is_connected()) {
+            auto connect_result = db_->connect();
+            if (connect_result.is_error()) {
+                return make_error<std::vector<Bar>>(
+                    connect_result.error()->code(),
+                    "Failed to connect to database: " + std::string(connect_result.error()->what()),
+                    "BacktestEngine"
+                );
+            }
+        }
+
+        // Load market data directly using DatabaseInterface
         auto result = db_->get_market_data(
             config_.symbols,
             config_.start_date,
@@ -512,7 +536,7 @@ Result<std::vector<Bar>> BacktestEngine::load_market_data() const {
             );
         }
 
-        // Convert Arrow table to Bars
+        // Convert Arrow table to Bars using your DataConversionUtils
         auto conversion_result = DataConversionUtils::arrow_table_to_bars(result.value());
         if (conversion_result.is_error()) {
             return make_error<std::vector<Bar>>(
@@ -779,6 +803,14 @@ Result<void> BacktestEngine::save_results(
             run_id;
             
         INFO("Saving backtest results with ID: " + actual_run_id);
+
+        if (!db_ || !db_->is_connected()) {
+            return make_error<void>(
+                ErrorCode::DATABASE_ERROR,
+                "Database not connected",
+                "BacktestEngine"
+            );
+        }
             
         // Create SQL query to save results
         std::string query = 
@@ -786,7 +818,23 @@ Result<void> BacktestEngine::save_results(
             "(run_id, total_return, sharpe_ratio, sortino_ratio, max_drawdown, "
             "calmar_ratio, volatility, total_trades, win_rate, profit_factor, "
             "var_95, cvar_95, beta, correlation, start_date, end_date, config) VALUES "
-            "($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)";
+            "('" + actual_run_id + "', " +
+            std::to_string(results.total_return) + ", " +
+            std::to_string(results.sharpe_ratio) + ", " +
+            std::to_string(results.sortino_ratio) + ", " +
+            std::to_string(results.max_drawdown) + ", " +
+            std::to_string(results.calmar_ratio) + ", " +
+            std::to_string(results.volatility) + ", " +
+            std::to_string(results.total_trades) + ", " +
+            std::to_string(results.win_rate) + ", " +
+            std::to_string(results.profit_factor) + ", " +
+            std::to_string(results.var_95) + ", " +
+            std::to_string(results.cvar_95) + ", " +
+            std::to_string(results.beta) + ", " +
+            std::to_string(results.correlation) + ", '" +
+            std::to_string(std::chrono::system_clock::to_time_t(config_.start_date)) + "', '" +
+            std::to_string(std::chrono::system_clock::to_time_t(config_.end_date)) + "', ";
+
             
         // Format the configuration as JSON for storage
         std::string config_json = "{\"initial_capital\": " + std::to_string(config_.initial_capital) + 
@@ -798,6 +846,8 @@ Result<void> BacktestEngine::save_results(
         }
         
         config_json += "]}";
+
+        query += "'" + config_json + "')";
         
         // Execute query
         auto result = db_->execute_query(query);
@@ -973,6 +1023,14 @@ Result<void> BacktestEngine::save_results(
             "BacktestEngine"
         );
     }
+}
+
+// Helper for timestamp formatting
+std::string BacktestEngine::format_timestamp(const Timestamp& ts) const {
+    auto time_t = std::chrono::system_clock::to_time_t(ts);
+    std::stringstream ss;
+    ss << std::put_time(std::gmtime(&time_t), "%Y-%m-%d %H:%M:%S");
+    return ss.str();
 }
 
 Result<BacktestResults> BacktestEngine::load_results(
