@@ -23,15 +23,16 @@ Run run your build:
 
 ### Warning:
 
-At times (for reasons unknown to the writer), docker fails to import generic libraries from source code. If you run the dockerfile, you might be met with an extensive error which includes:
+At times (for reasons unknown to the writer), docker fails to import generic libraries from source code. If you run the dockerfile, you might be met with an extensive error.
 
+Example of an error:
 ```bash
 /app/include/trade_ngin/order/order_manager.hpp:83:38: error: variable 'std::atomic<long unsigned int> counter' has initializer but incomplete type
     83 |         static std::atomic<uint64_t> counter{0};
        |                                      ^~~~~~~
 ```
 
-This error complains that it does not know what type 'counter{0}' is, but it is defined within the Atomic library which _is_ included in the /order_manager.hpp file. In order to fix this error, use 'sed' (a Unix utility short for stream editor) to import the library manually.
+This error complains that it does not know what type 'counter{0}' is, but it is defined within the Atomic library and _is_ included in the /order_manager.hpp file. In order to fix this error, use 'sed' (a Unix utility short for stream editor) to import the library manually.
 
 Fix
 ```Dockerfile

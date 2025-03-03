@@ -74,7 +74,8 @@ RUN sed -i '1i\#include <algorithm>' src/core/logger.cpp && \
     sed -i '1i\#include <thread>' tests/order/test_order_manager.cpp && \
     sed -i '1i\#include <thread>' tests/execution/test_execution_engine.cpp && \
     sed -i '1i\#include <cmath>' tests/portfolio/mock_strategy.hpp && \
-    sed -i '1i\#include <thread>' tests/portfolio/test_portfolio_manager.cpp
+    sed -i '1i\#include <thread>' tests/portfolio/test_portfolio_manager.cpp && \
+    sed -i '1i\#include <thread>' tests/backtesting/test_engine.cpp
 
 # Create build directory
 RUN mkdir -p build
