@@ -3,6 +3,7 @@
 
 #include "trade_ngin/core/types.hpp"
 #include "trade_ngin/core/error.hpp"
+#include "trade_ngin/backtest/slippage_models.hpp"
 #include "trade_ngin/strategy/strategy_interface.hpp"
 #include "trade_ngin/data/database_interface.hpp"
 #include "trade_ngin/risk/risk_manager.hpp"
@@ -140,6 +141,7 @@ private:
     std::shared_ptr<DatabaseInterface> db_;
     std::unique_ptr<RiskManager> risk_manager_;
     std::unique_ptr<DynamicOptimizer> optimizer_;
+    std::unique_ptr<SlippageModel> slippage_model_;
 
     /**
      * @brief Load market data for simulation
@@ -156,10 +158,11 @@ private:
      * @return Result indicating success or failure
      */
     Result<void> process_bar(
-        const Bar& bar,
+        const std::vector<Bar>& bars,
         std::shared_ptr<StrategyInterface> strategy,
         std::unordered_map<std::string, Position>& current_positions,
-        std::vector<std::pair<Timestamp, double>>& equity_curve);
+        std::vector<std::pair<Timestamp, double>>& equity_curve,
+        std::vector<RiskResult>& risk_metrics);
 
     /**
      * @brief Calculate transaction costs
@@ -202,6 +205,13 @@ private:
      */
     std::unordered_map<std::string, double> calculate_risk_metrics(
         const std::vector<double>& returns) const;
+
+    /**
+     * @brief Helper function for timestamp formatting
+     * @param timestamp Timestamp to format
+     * @return Formatted string
+     */
+    std::string format_timestamp(const Timestamp& ts) const;
 };
 
 } // namespace backtest
