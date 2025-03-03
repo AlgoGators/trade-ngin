@@ -33,12 +33,15 @@ set(TRADE_NGIN_SOURCES
     src/core/config_version.cpp 
     src/data/postgres_database.cpp
     src/data/market_data_bus.cpp
+    src/data/conversion_utils.cpp
     src/order/order_manager.cpp
     src/risk/risk_manager.cpp
     src/optimization/dynamic_optimizer.cpp
     src/execution/execution_engine.cpp
     src/portfolio/portfolio_manager.cpp
     src/backtest/transaction_cost_analysis.cpp
+    src/backtest/engine.cpp
+    src/backtest/slippage_model.cpp
     src/strategy/base_strategy.cpp
     src/strategy/trend_following.cpp
 )

@@ -4,11 +4,14 @@ C:/Users/kbott/OneDrive/Desktop/School/UF Algo Fund/trade-ngin-rebuild/trade-ngi
 C:/Users/kbott/OneDrive/Desktop/School/UF Algo Fund/trade-ngin-rebuild/trade-ngin/build/trade_ngin.dir/Release/config_version.obj
 C:/Users/kbott/OneDrive/Desktop/School/UF Algo Fund/trade-ngin-rebuild/trade-ngin/build/trade_ngin.dir/Release/postgres_database.obj
 C:/Users/kbott/OneDrive/Desktop/School/UF Algo Fund/trade-ngin-rebuild/trade-ngin/build/trade_ngin.dir/Release/market_data_bus.obj
+C:/Users/kbott/OneDrive/Desktop/School/UF Algo Fund/trade-ngin-rebuild/trade-ngin/build/trade_ngin.dir/Release/conversion_utils.obj
 C:/Users/kbott/OneDrive/Desktop/School/UF Algo Fund/trade-ngin-rebuild/trade-ngin/build/trade_ngin.dir/Release/order_manager.obj
 C:/Users/kbott/OneDrive/Desktop/School/UF Algo Fund/trade-ngin-rebuild/trade-ngin/build/trade_ngin.dir/Release/risk_manager.obj
 C:/Users/kbott/OneDrive/Desktop/School/UF Algo Fund/trade-ngin-rebuild/trade-ngin/build/trade_ngin.dir/Release/dynamic_optimizer.obj
 C:/Users/kbott/OneDrive/Desktop/School/UF Algo Fund/trade-ngin-rebuild/trade-ngin/build/trade_ngin.dir/Release/execution_engine.obj
 C:/Users/kbott/OneDrive/Desktop/School/UF Algo Fund/trade-ngin-rebuild/trade-ngin/build/trade_ngin.dir/Release/portfolio_manager.obj
 C:/Users/kbott/OneDrive/Desktop/School/UF Algo Fund/trade-ngin-rebuild/trade-ngin/build/trade_ngin.dir/Release/transaction_cost_analysis.obj
+C:/Users/kbott/OneDrive/Desktop/School/UF Algo Fund/trade-ngin-rebuild/trade-ngin/build/trade_ngin.dir/Release/engine.obj
+C:/Users/kbott/OneDrive/Desktop/School/UF Algo Fund/trade-ngin-rebuild/trade-ngin/build/trade_ngin.dir/Release/slippage_model.obj
 C:/Users/kbott/OneDrive/Desktop/School/UF Algo Fund/trade-ngin-rebuild/trade-ngin/build/trade_ngin.dir/Release/base_strategy.obj
 C:/Users/kbott/OneDrive/Desktop/School/UF Algo Fund/trade-ngin-rebuild/trade-ngin/build/trade_ngin.dir/Release/trend_following.obj
