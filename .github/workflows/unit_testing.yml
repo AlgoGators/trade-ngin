@@ -21,5 +21,3 @@ jobs:
 
       - name: Run Docker Container and Execute Build
         run: docker run --rm trade_ngin ./start.up
-
-        continue-on-error: true # DELETE FOR PRODUCTION
