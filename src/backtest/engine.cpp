@@ -10,6 +10,19 @@
 #include <iomanip>
 #include <chrono>
 
+namespace {
+std::string join(const std::vector<std::string>& elements, const std::string& delimiter) {
+    std::ostringstream os;
+    if (!elements.empty()) {
+        os << elements[0];
+        for (size_t i = 1; i < elements.size(); ++i) {
+            os << delimiter << elements[i];
+        }
+    }
+    return os.str();
+}
+} // anonymous namespace
+
 namespace trade_ngin {
 namespace backtest {
 
@@ -163,7 +176,7 @@ Result<BacktestResults> BacktestEngine::run(
         INFO("Starting backtest simulation with " + 
              std::to_string(data_result.value().size()) + " bars");
         
-        int processed_bars = 0;
+        size_t processed_bars = 0;
         std::vector<RiskResult> risk_metrics;
         
         // Group bars by timestamp for realistic simulation
@@ -798,59 +811,155 @@ Result<void> BacktestEngine::save_results(
 
         // Save equity curve if enabled
         if (config_.store_trade_details) {
-            query = "INSERT INTO " + config_.results_db_schema + ".equity_curve "
-                   "(run_id, timestamp, equity) VALUES ($1, $2, $3)";
-            
+            // Prepare batch for equity curve points
+            std::vector<std::string> equity_values;
             for (const auto& [timestamp, equity] : results.equity_curve) {
+                std::string timestamp_str = std::to_string(std::chrono::system_clock::to_time_t(timestamp));
+                std::string value = "('" + actual_run_id + "', '" + timestamp_str + "', " + 
+                                  std::to_string(equity) + ")";
+                equity_values.push_back(value);
+                
+                // Insert in batches of 1000 to avoid too-large queries
+                if (equity_values.size() >= 1000) {
+                    query = "INSERT INTO " + config_.results_db_schema + ".equity_curve "
+                           "(run_id, timestamp, equity) VALUES " + 
+                           join(equity_values, ", ");
+                           
+                    auto curve_result = db_->execute_query(query);
+                    if (curve_result.is_error()) {
+                        WARN("Failed to save equity curve batch: " + 
+                             std::string(curve_result.error()->what()));
+                    }
+                    equity_values.clear();
+                }
+            }
+            
+            // Insert any remaining equity curve points
+            if (!equity_values.empty()) {
+                query = "INSERT INTO " + config_.results_db_schema + ".equity_curve "
+                       "(run_id, timestamp, equity) VALUES " + 
+                       join(equity_values, ", ");
+                       
                 auto curve_result = db_->execute_query(query);
                 if (curve_result.is_error()) {
-                    WARN("Failed to save equity curve point: " + 
+                    WARN("Failed to save final equity curve batch: " + 
                          std::string(curve_result.error()->what()));
                 }
             }
-        }
-
-        // Save trade executions if enabled
-        if (config_.store_trade_details) {
-            query = "INSERT INTO " + config_.results_db_schema + ".trade_executions "
-                   "(run_id, timestamp, symbol, side, quantity, fill_price, "
-                   "commission, order_id, exec_id) VALUES "
-                   "($1, $2, $3, $4, $5, $6, $7, $8, $9)";
             
+            // Save trade executions in batches
+            std::vector<std::string> execution_values;
             for (const auto& exec : results.executions) {
+                std::string timestamp_str = std::to_string(std::chrono::system_clock::to_time_t(exec.fill_time));
+                std::string side_str = exec.side == Side::BUY ? "BUY" : "SELL";
+                
+                std::string value = "('" + actual_run_id + "', '" + 
+                                  exec.order_id + "', '" + 
+                                  exec.symbol + "', '" + 
+                                  side_str + "', " + 
+                                  std::to_string(exec.filled_quantity) + ", " + 
+                                  std::to_string(exec.fill_price) + ", '" + 
+                                  timestamp_str + "', " + 
+                                  std::to_string(exec.commission) + ")";
+                                  
+                execution_values.push_back(value);
+                
+                // Insert in batches of 1000
+                if (execution_values.size() >= 1000) {
+                    query = "INSERT INTO " + config_.results_db_schema + ".trade_executions "
+                           "(run_id, order_id, symbol, side, quantity, price, timestamp, commission) "
+                           "VALUES " + join(execution_values, ", ");
+                           
+                    auto exec_result = db_->execute_query(query);
+                    if (exec_result.is_error()) {
+                        WARN("Failed to save executions batch: " + 
+                             std::string(exec_result.error()->what()));
+                    }
+                    execution_values.clear();
+                }
+            }
+            
+            // Insert any remaining executions
+            if (!execution_values.empty()) {
+                query = "INSERT INTO " + config_.results_db_schema + ".trade_executions "
+                       "(run_id, order_id, symbol, side, quantity, price, timestamp, commission) "
+                       "VALUES " + join(execution_values, ", ");
+                       
                 auto exec_result = db_->execute_query(query);
                 if (exec_result.is_error()) {
-                    WARN("Failed to save trade execution: " + 
+                    WARN("Failed to save final executions batch: " + 
                          std::string(exec_result.error()->what()));
                 }
             }
-        }
-
-        // Save positions if enabled
-        if (config_.store_trade_details) {
-            query = "INSERT INTO " + config_.results_db_schema + ".positions "
-                   "(run_id, timestamp, symbol, quantity) VALUES ($1, $2, $3, $4)";
             
+            // Save final positions
+            std::vector<std::string> position_values;
             for (const auto& pos : results.positions) {
+                if (std::abs(pos.quantity) < 1e-6) continue; // Skip empty positions
+                
+                std::string value = "('" + actual_run_id + "', '" + 
+                                  pos.symbol + "', " + 
+                                  std::to_string(pos.quantity) + ", " + 
+                                  std::to_string(pos.average_price) + ", " + 
+                                  std::to_string(pos.unrealized_pnl) + ", " + 
+                                  std::to_string(pos.realized_pnl) + ")";
+                                  
+                position_values.push_back(value);
+            }
+            
+            if (!position_values.empty()) {
+                query = "INSERT INTO " + config_.results_db_schema + ".final_positions "
+                       "(run_id, symbol, quantity, average_price, unrealized_pnl, realized_pnl) "
+                       "VALUES " + join(position_values, ", ");
+                       
                 auto pos_result = db_->execute_query(query);
                 if (pos_result.is_error()) {
-                    WARN("Failed to save position: " + 
+                    WARN("Failed to save positions: " + 
                          std::string(pos_result.error()->what()));
                 }
             }
-        }
-
-        // Save risk metrics if enabled
-        if (config_.store_trade_details) {
-            query = "INSERT INTO " + config_.results_db_schema + ".risk_metrics "
-                   "(run_id, timestamp, max_drawdown, var_95, cvar_95, downside_volatility) "
-                   "VALUES ($1, $2, $3, $4, $5, $6)";
             
-            for (const auto& [timestamp, risk] : results.risk_metrics) {
-                auto risk_result = db_->execute_query(query);
-                if (risk_result.is_error()) {
-                    WARN("Failed to save risk metrics: " + 
-                         std::string(risk_result.error()->what()));
+            // Save monthly returns
+            std::vector<std::string> monthly_values;
+            for (const auto& [month, ret] : results.monthly_returns) {
+                std::string value = "('" + actual_run_id + "', '" + 
+                                  month + "', " + 
+                                  std::to_string(ret) + ")";
+                                  
+                monthly_values.push_back(value);
+            }
+            
+            if (!monthly_values.empty()) {
+                query = "INSERT INTO " + config_.results_db_schema + ".monthly_returns "
+                       "(run_id, month, return) VALUES " + 
+                       join(monthly_values, ", ");
+                       
+                auto month_result = db_->execute_query(query);
+                if (month_result.is_error()) {
+                    WARN("Failed to save monthly returns: " + 
+                         std::string(month_result.error()->what()));
+                }
+            }
+            
+            // Save symbol P&L
+            std::vector<std::string> symbol_pnl_values;
+            for (const auto& [symbol, pnl] : results.symbol_pnl) {
+                std::string value = "('" + actual_run_id + "', '" + 
+                                  symbol + "', " + 
+                                  std::to_string(pnl) + ")";
+                                  
+                symbol_pnl_values.push_back(value);
+            }
+            
+            if (!symbol_pnl_values.empty()) {
+                query = "INSERT INTO " + config_.results_db_schema + ".symbol_pnl "
+                       "(run_id, symbol, pnl) VALUES " + 
+                       join(symbol_pnl_values, ", ");
+                       
+                auto pnl_result = db_->execute_query(query);
+                if (pnl_result.is_error()) {
+                    WARN("Failed to save symbol P&L: " + 
+                         std::string(pnl_result.error()->what()));
                 }
             }
         }
