@@ -4,6 +4,7 @@
 #include "trade_ngin/core/error.hpp"
 #include <iostream>
 #include <iomanip>
+#include <algorithm>
 
 namespace trade_ngin {
 
