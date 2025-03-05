@@ -1,4 +1,4 @@
 .env
 .vscode/
 build/
-config.yaml
+config.json
