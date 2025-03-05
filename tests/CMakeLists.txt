@@ -5,6 +5,7 @@ set(TEST_SOURCES
     core/test_logger.cpp
     core/test_config_manager.cpp
     core/test_config_version.cpp
+    core/test_config_base.cpp
     data/test_db_utils.cpp
     data/test_postgres_database.cpp
     data/test_database_pooling.cpp

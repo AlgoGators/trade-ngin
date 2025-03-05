@@ -30,7 +30,7 @@ namespace backtest {
 
 BacktestEngine::BacktestEngine(
     BacktestConfig config,
-    std::shared_ptr<DatabaseInterface> db)
+    std::shared_ptr<PostgresDatabase> db)
     : config_(std::move(config))
     , db_(std::move(db)) {
 
@@ -519,13 +519,14 @@ Result<std::vector<Bar>> BacktestEngine::load_market_data() const {
             }
         }
 
-        // Load market data directly using DatabaseInterface
+        // Load market data directly using PostgresInterface
         auto result = db_->get_market_data(
             config_.symbols,
             config_.start_date,
             config_.end_date,
             config_.asset_class,
-            config_.data_freq
+            config_.data_freq,
+            config_.data_type
         );
 
         if (result.is_error()) {
