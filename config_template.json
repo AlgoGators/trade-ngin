@@ -1,0 +1,12 @@
+{
+  "_comment": "Database connection configuration for Trade-ngin",
+  "_comment2": "Copy this file to config.json and fill in the correct values",
+  "database": {
+    "_comment": "PostgreSQL database settings",
+    "host": "your-db-host.example.com",
+    "port": 5432,
+    "username": "db_user",
+    "password": "your_password",
+    "name": "trading_db"
+  }
+}

@@ -9,6 +9,7 @@ set(TEST_SOURCES
     data/test_postgres_database.cpp
     data/test_database_pooling.cpp
     data/test_market_data_bus.cpp
+    data/test_credential_store.cpp
     order/test_order_manager.cpp
     order/test_utils.cpp
     risk/test_risk_manager.cpp

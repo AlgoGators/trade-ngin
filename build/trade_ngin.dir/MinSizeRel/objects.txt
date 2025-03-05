@@ -5,6 +5,7 @@ C:/Users/kbott/OneDrive/Desktop/School/UF Algo Fund/trade-ngin-rebuild/trade-ngi
 C:/Users/kbott/OneDrive/Desktop/School/UF Algo Fund/trade-ngin-rebuild/trade-ngin/build/trade_ngin.dir/MinSizeRel/postgres_database.obj
 C:/Users/kbott/OneDrive/Desktop/School/UF Algo Fund/trade-ngin-rebuild/trade-ngin/build/trade_ngin.dir/MinSizeRel/market_data_bus.obj
 C:/Users/kbott/OneDrive/Desktop/School/UF Algo Fund/trade-ngin-rebuild/trade-ngin/build/trade_ngin.dir/MinSizeRel/conversion_utils.obj
+C:/Users/kbott/OneDrive/Desktop/School/UF Algo Fund/trade-ngin-rebuild/trade-ngin/build/trade_ngin.dir/MinSizeRel/credential_store.obj
 C:/Users/kbott/OneDrive/Desktop/School/UF Algo Fund/trade-ngin-rebuild/trade-ngin/build/trade_ngin.dir/MinSizeRel/order_manager.obj
 C:/Users/kbott/OneDrive/Desktop/School/UF Algo Fund/trade-ngin-rebuild/trade-ngin/build/trade_ngin.dir/MinSizeRel/risk_manager.obj
 C:/Users/kbott/OneDrive/Desktop/School/UF Algo Fund/trade-ngin-rebuild/trade-ngin/build/trade_ngin.dir/MinSizeRel/dynamic_optimizer.obj
