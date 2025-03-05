@@ -20,9 +20,13 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/bin/Debug")
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/bin/Release")
 
 # Find packages
+#set(GTest_DIR "C:/vcpkg/installed/x64-windows/share/gtest")
 find_package(GTest CONFIG REQUIRED)
+#set(nlohmann_json_DIR "C:/vcpkg/installed/x64-windows/share/nlohmann_json")
 find_package(nlohmann_json CONFIG REQUIRED)
+#set(Arrow_DIR "C:/vcpkg/installed/x64-windows/share/arrow")
 find_package(Arrow REQUIRED)
+#set(libpqxx_DIR "C:/vcpkg/installed/x64-windows/share/libpqxx")
 find_package(libpqxx CONFIG REQUIRED)
 
 # Add source files for the library
