@@ -8,6 +8,8 @@
 #include <filesystem>
 #include <unordered_map>
 #include <mutex>
+#include <iostream>
+
 
 namespace trade_ngin {
 
@@ -183,6 +185,8 @@ private:
     nlohmann::json config_;
     std::unordered_map<ConfigType, std::unique_ptr<ConfigValidator>> validators_;
     mutable std::mutex mutex_;
+
+
 
     /**
      * @brief Initialize validators

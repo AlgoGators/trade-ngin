@@ -1,6 +1,7 @@
 #include "trade_ngin/backtest/engine.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
+#include "trade_ngin/data/credential_store.hpp"
 #include "trade_ngin/backtest/transaction_cost_analysis.hpp"
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
 #include <iostream>
@@ -18,12 +19,24 @@ TO-DO:
     - Portfolio might have issues initial_capital vs. total_capital (% allocation vs $ allocation)
     - Use the full portfolio instead of just the strategy
     - Fix data access for strategies & TCA
+    - Move trend_following & regime_detector to strategies
+    - Fix warnings about 'localtime' and 'gmtime' being unsafe
 */
 
 int main() {
     try {
         // 1. Initialize database connection
-        auto db = std::make_shared<trade_ngin::PostgresDatabase>("postgresql://username:password@localhost:5432/trade_ngin");
+        auto credentials = std::make_shared<trade_ngin::CredentialStore>("./config.json");
+        std::string username = credentials->get<std::string>("database", "username");
+        std::string password = credentials->get<std::string>("database", "password");
+        std::string host = credentials->get<std::string>("database", "host");
+        std::string port = credentials->get<std::string>("database", "port");
+        std::string db_name = credentials->get<std::string>("database", "name");
+
+        auto db = std::make_shared<trade_ngin::PostgresDatabase>(
+            "postgresql://" + username + ":" + password + "@" + host + ":" + port + "/" + db_name
+        );
+
         auto connect_result = db->connect();
         if (connect_result.is_error()) {
             std::cerr << "Failed to connect to database: " << connect_result.error()->what() << std::endl;
@@ -138,7 +151,7 @@ int main() {
 
         // 11. Run the backtest
         std::cout << "Starting backtest..." << std::endl;
-        auto result = engine->run(tf_strategy);
+        auto result = engine->run(tf_strategy); // *CHANGE*: Run the portfolio instead of the strategy
         
         if (result.is_error()) {
             std::cerr << "Backtest failed: " << result.error()->what() << std::endl;

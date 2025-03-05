@@ -34,6 +34,7 @@ set(TRADE_NGIN_SOURCES
     src/data/postgres_database.cpp
     src/data/market_data_bus.cpp
     src/data/conversion_utils.cpp
+    src/data/credential_store.cpp
     src/order/order_manager.cpp
     src/risk/risk_manager.cpp
     src/optimization/dynamic_optimizer.cpp
@@ -76,3 +77,6 @@ enable_testing()
 
 # Add tests subdirectory
 add_subdirectory(tests)
+
+# Add apps subdirectory
+add_subdirectory(apps)

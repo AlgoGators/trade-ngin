@@ -434,6 +434,7 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
     <ClCompile Include="C:\Users\kbott\OneDrive\Desktop\School\UF Algo Fund\trade-ngin-rebuild\trade-ngin\tests\data\test_postgres_database.cpp" />
     <ClCompile Include="C:\Users\kbott\OneDrive\Desktop\School\UF Algo Fund\trade-ngin-rebuild\trade-ngin\tests\data\test_database_pooling.cpp" />
     <ClCompile Include="C:\Users\kbott\OneDrive\Desktop\School\UF Algo Fund\trade-ngin-rebuild\trade-ngin\tests\data\test_market_data_bus.cpp" />
+    <ClCompile Include="C:\Users\kbott\OneDrive\Desktop\School\UF Algo Fund\trade-ngin-rebuild\trade-ngin\tests\data\test_credential_store.cpp" />
     <ClCompile Include="C:\Users\kbott\OneDrive\Desktop\School\UF Algo Fund\trade-ngin-rebuild\trade-ngin\tests\order\test_order_manager.cpp" />
     <ClCompile Include="C:\Users\kbott\OneDrive\Desktop\School\UF Algo Fund\trade-ngin-rebuild\trade-ngin\tests\order\test_utils.cpp" />
     <ClCompile Include="C:\Users\kbott\OneDrive\Desktop\School\UF Algo Fund\trade-ngin-rebuild\trade-ngin\tests\risk\test_risk_manager.cpp" />
