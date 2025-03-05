@@ -8,6 +8,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <regex>
 
 namespace trade_ngin {
 
@@ -19,10 +20,36 @@ struct ConfigVersion {
     int minor{0};
     int patch{0};
 
-    std::string to_string() const;
-    static ConfigVersion from_string(const std::string& version_str);
-    bool operator<(const ConfigVersion& other) const;
-    bool operator==(const ConfigVersion& other) const;
+    std::string to_string() const {
+        return std::to_string(major) + "." + 
+               std::to_string(minor) + "." + 
+               std::to_string(patch);
+    }
+    
+    static ConfigVersion from_string(const std::string& version_str) {
+        ConfigVersion version;
+        std::regex version_regex(R"((\d+)\.(\d+)\.(\d+))");
+        std::smatch matches;
+        
+        if (std::regex_match(version_str, matches, version_regex) && matches.size() == 4) {
+            version.major = std::stoi(matches[1].str());
+            version.minor = std::stoi(matches[2].str());
+            version.patch = std::stoi(matches[3].str());
+        }
+        
+        return version;
+    }
+
+    bool operator<(const ConfigVersion& other) const {
+        if (major != other.major) return major < other.major;
+        if (minor != other.minor) return minor < other.minor;
+        return patch < other.patch;
+    }
+    
+    bool operator==(const ConfigVersion& other) const {
+        return major == other.major && minor == other.minor && patch == other.patch;
+    }
+    
     bool operator<=(const ConfigVersion& other) const {
         return *this < other || *this == other;
     }

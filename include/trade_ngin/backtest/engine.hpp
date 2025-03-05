@@ -3,6 +3,7 @@
 
 #include "trade_ngin/core/types.hpp"
 #include "trade_ngin/core/error.hpp"
+#include "trade_ngin/core/config_base.hpp"
 #include "trade_ngin/backtest/slippage_models.hpp"
 #include "trade_ngin/strategy/strategy_interface.hpp"
 #include "trade_ngin/data/database_interface.hpp"
@@ -19,7 +20,7 @@ namespace backtest {
 /**
  * @brief Configuration for backtest simulation
  */
-struct BacktestConfig {
+struct BacktestConfig : public ConfigBase {
     // Time parameters
     Timestamp start_date;
     Timestamp end_date;
@@ -29,6 +30,10 @@ struct BacktestConfig {
     std::vector<std::string> symbols;
     AssetClass asset_class{AssetClass::FUTURES};
     DataFrequency data_freq{DataFrequency::DAILY};
+
+    // Data parameters
+    std::string data_source{"database"};
+    std::string data_type{"ohlcv"};
 
     // Trading parameters
     double initial_capital{1000000.0};
@@ -49,6 +54,60 @@ struct BacktestConfig {
     bool store_trade_details{true};
     bool calc_risk_metrics{true};
     std::string results_db_schema{"backtest_results"};
+
+    // Configuration metadata
+    std::string version{"1.0.0"};
+
+    // Implement serialization/deserialization methods
+    nlohmann::json to_json() const override {
+        nlohmann::json j;
+        j["start_date"] = start_date.time_since_epoch().count();
+        j["end_date"] = end_date.time_since_epoch().count();
+        j["use_calendar_time"] = use_calendar_time;
+        j["symbols"] = symbols;
+        j["asset_class"] = static_cast<int>(asset_class);
+        j["data_freq"] = static_cast<int>(data_freq);
+        j["data_source"] = data_source;
+        j["data_type"] = data_type;
+        j["initial_capital"] = initial_capital;
+        j["reinvest_profits"] = reinvest_profits;
+        j["commission_rate"] = commission_rate;
+        j["slippage_model"] = slippage_model;
+        j["risk_config"] = risk_config.to_json();
+        j["use_risk_management"] = use_risk_management;
+        j["opt_config"] = opt_config.to_json();
+        j["use_optimization"] = use_optimization;
+        j["calc_intraday_metrics"] = calc_intraday_metrics;
+        j["store_trade_details"] = store_trade_details;
+        j["calc_risk_metrics"] = calc_risk_metrics;
+        j["results_db_schema"] = results_db_schema;
+        j["version"] = version;
+        return j;
+    }
+
+    void from_json(const nlohmann::json& j) override {
+        if (j.contains("start_date")) start_date = Timestamp(std::chrono::milliseconds(j.at("start_date").get<int64_t>()));
+        if (j.contains("end_date")) end_date = Timestamp(std::chrono::milliseconds(j.at("end_date").get<int64_t>()));
+        if (j.contains("use_calendar_time")) use_calendar_time = j.at("use_calendar_time").get<bool>();
+        if (j.contains("symbols")) symbols = j.at("symbols").get<std::vector<std::string>>();
+        if (j.contains("asset_class")) asset_class = static_cast<AssetClass>(j.at("asset_class").get<int>());
+        if (j.contains("data_freq")) data_freq = static_cast<DataFrequency>(j.at("data_freq").get<int>());
+        if (j.contains("data_source")) data_source = j.at("data_source").get<std::string>();
+        if (j.contains("data_type")) data_type = j.at("data_type").get<std::string>();
+        if (j.contains("initial_capital")) initial_capital = j.at("initial_capital").get<double>();
+        if (j.contains("reinvest_profits")) reinvest_profits = j.at("reinvest_profits").get<bool>();
+        if (j.contains("commission_rate")) commission_rate = j.at("commission_rate").get<double>();
+        if (j.contains("slippage_model")) slippage_model = j.at("slippage_model").get<double>();
+        if (j.contains("risk_config")) risk_config.from_json(j.at("risk_config"));
+        if (j.contains("use_risk_management")) use_risk_management = j.at("use_risk_management").get<bool>();
+        if (j.contains("opt_config")) opt_config.from_json(j.at("opt_config"));
+        if (j.contains("use_optimization")) use_optimization = j.at("use_optimization").get<bool>();
+        if (j.contains("calc_intraday_metrics")) calc_intraday_metrics = j.at("calc_intraday_metrics").get<bool>();
+        if (j.contains("store_trade_details")) store_trade_details = j.at("store_trade_details").get<bool>();
+        if (j.contains("calc_risk_metrics")) calc_risk_metrics = j.at("calc_risk_metrics").get<bool>();
+        if (j.contains("results_db_schema")) results_db_schema = j.at("results_db_schema").get<std::string>();
+        if (j.contains("version")) version = j.at("version").get<std::string>();
+    }
 };
 
 /**
@@ -102,7 +161,7 @@ public:
      * @param config Backtest configuration
      * @param db Database interface for market data
      */
-    BacktestEngine(BacktestConfig config, std::shared_ptr<DatabaseInterface> db);
+    BacktestEngine(BacktestConfig config, std::shared_ptr<PostgresDatabase> db);
 
     /**
      * @brief Run backtest simulation
@@ -138,7 +197,7 @@ public:
 
 private:
     BacktestConfig config_;
-    std::shared_ptr<DatabaseInterface> db_;
+    std::shared_ptr<PostgresDatabase> db_;
     std::unique_ptr<RiskManager> risk_manager_;
     std::unique_ptr<DynamicOptimizer> optimizer_;
     std::unique_ptr<SlippageModel> slippage_model_;

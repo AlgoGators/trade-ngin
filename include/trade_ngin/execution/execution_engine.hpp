@@ -4,6 +4,7 @@
 #include "trade_ngin/core/types.hpp"
 #include "trade_ngin/core/error.hpp"
 #include "trade_ngin/order/order_manager.hpp"
+#include "trade_ngin/core/config_base.hpp"
 #include <memory>
 #include <vector>
 #include <unordered_map>
@@ -45,7 +46,7 @@ struct ExecutionMetrics {
 /**
  * @brief Configuration for execution algorithms
  */
-struct ExecutionConfig {
+struct ExecutionConfig : public ConfigBase {
     double max_participation_rate{0.3};  // Maximum participation in volume
     double urgency_level{0.5};          // Urgency factor (0-1)
     std::chrono::minutes time_horizon{60}; // Time horizon for completion
@@ -55,6 +56,39 @@ struct ExecutionConfig {
     double min_child_size{100.0};       // Minimum child order size
     std::vector<std::string> venues;    // Allowed execution venues
     std::unordered_map<std::string, double> venue_weights; // Venue routing weights
+
+    // Configuration metadata
+    std::string version{"1.0.0"};       // Configuration version
+
+    // Implement serialization methods
+    nlohmann::json to_json() const override {
+        nlohmann::json j;
+        j["max_participation_rate"] = max_participation_rate;
+        j["urgency_level"] = urgency_level;
+        j["time_horizon"] = time_horizon.count();
+        j["allow_cross_venue"] = allow_cross_venue;
+        j["dark_pool_only"] = dark_pool_only;
+        j["max_child_orders"] = max_child_orders;
+        j["min_child_size"] = min_child_size;
+        j["venues"] = venues;
+        j["venue_weights"] = venue_weights;
+        j["version"] = version;
+
+        return j;
+    }
+
+    void from_json(const nlohmann::json& j) override {
+        if (j.contains("max_participation_rate")) max_participation_rate = j.at("max_participation_rate").get<double>();
+        if (j.contains("urgency_level")) urgency_level = j.at("urgency_level").get<double>();
+        if (j.contains("time_horizon")) time_horizon = std::chrono::minutes(j.at("time_horizon").get<int>());
+        if (j.contains("allow_cross_venue")) allow_cross_venue = j.at("allow_cross_venue").get<bool>();
+        if (j.contains("dark_pool_only")) dark_pool_only = j.at("dark_pool_only").get<bool>();
+        if (j.contains("max_child_orders")) max_child_orders = j.at("max_child_orders").get<int>();
+        if (j.contains("min_child_size")) min_child_size = j.at("min_child_size").get<double>();
+        if (j.contains("venues")) venues = j.at("venues").get<std::vector<std::string>>();
+        if (j.contains("venue_weights")) venue_weights = j.at("venue_weights").get<std::unordered_map<std::string, double>>();
+        if (j.contains("version")) version = j.at("version").get<std::string>();
+    }
 };
 
 /**

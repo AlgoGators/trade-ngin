@@ -154,6 +154,19 @@ public:
         const nlohmann::json& config);
 
     /**
+     * @brief Save entire configuration to files
+     * @return Result indicating success or failure
+     */
+    Result<void> save_configs();
+
+    /**
+     * @brief Create a default configuration for a component
+     * @param component_type Component type
+     * @return Default configuration as JSON
+     */
+    nlohmann::json create_default_config(ConfigType component_type) const;
+
+    /**
      * @brief Get current environment
      */
     Environment get_environment() const { return current_env_; }
@@ -176,17 +189,22 @@ public:
     static Environment string_to_environment(const std::string& env_str);
 
 private:
-    ConfigManager();
+    ConfigManager() = default;
     ConfigManager(const ConfigManager&) = delete;
     ConfigManager& operator=(const ConfigManager&) = delete;
 
-    Environment current_env_;
+    Environment current_env_{Environment::DEVELOPMENT};
     std::filesystem::path config_path_;
     nlohmann::json config_;
     std::unordered_map<ConfigType, std::unique_ptr<ConfigValidator>> validators_;
     mutable std::mutex mutex_;
 
-
+    /**
+     * @brief Path to credentials file
+     */
+    std::filesystem::path get_credentials_path() const {
+        return config_path_ / "credentials.json";
+    }
 
     /**
      * @brief Initialize validators
@@ -217,7 +235,33 @@ private:
      * @brief Get component name from type
      */
     static std::string get_component_name(ConfigType type);
+
+    /**
+     * @brief Create default strategy configuration
+     */
+    nlohmann::json create_default_strategy_config() const;
+
+    /**
+     * @brief Create default risk configuration
+     */
+    nlohmann::json create_default_risk_config() const;
+
+    /**
+     * @brief Create default execution configuration
+     */
+    nlohmann::json create_default_execution_config() const;
+
+    /**
+     * @brief Create default database configuration
+     */
+    nlohmann::json create_default_database_config() const;
+
+    /**
+     * @brief Create default logging configuration
+     */
+    nlohmann::json create_default_logging_config() const;
 };
+
 
 // Template implementation
 template<typename T>
@@ -236,8 +280,10 @@ Result<T> ConfigManager::get_config(ConfigType component_type) const {
             );
         }
 
-        // Get and validate config
+        // Get config JSON
         const auto& component_config = config_[component];
+
+        // Validate config
         auto validation = validate_config(component_type, component_config);
         if (validation.is_error()) {
             return make_error<T>(
@@ -247,8 +293,18 @@ Result<T> ConfigManager::get_config(ConfigType component_type) const {
             );
         }
 
+        T config;
+
+        // Special handling for ConfigBase derived classes
+        if constexpr (std::is_base_of<ConfigBase, T>::value) {
+            config.from_json(component_config);
+        } else {
+            // Direct conversion from JSON
+            config = component_config.get<T>();
+        }
+
         // Convert to requested type
-        return Result<T>(component_config.get<T>());
+        return Result<T>(config);
 
     } catch (const std::exception& e) {
         return make_error<T>(

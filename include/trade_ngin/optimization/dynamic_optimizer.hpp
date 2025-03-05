@@ -3,6 +3,7 @@
 
 #include "trade_ngin/core/types.hpp"
 #include "trade_ngin/core/error.hpp"
+#include "trade_ngin/core/config_base.hpp"
 #include <vector>
 #include <memory>
 #include <unordered_map>
@@ -12,13 +13,46 @@ namespace trade_ngin {
 /**
  * @brief Configuration for dynamic optimization
  */
-struct DynamicOptConfig {
+struct DynamicOptConfig : public ConfigBase {
     double tau{1.0};                    // Risk aversion parameter
     double capital{0.0};                // Total capital
     double asymmetric_risk_buffer{0.1}; // Risk buffer for asymmetric costs
     int cost_penalty_scalar{10};        // Scalar for trading cost penalty
     size_t max_iterations{1000};        // Maximum optimization iterations
     double convergence_threshold{1e-6}; // Convergence threshold
+
+    // Configuration metadata
+    std::string version{"1.0.0"};
+
+    nlohmann::json to_json() const override {
+        nlohmann::json j;
+        j["tau"] = tau;
+        j["capital"] = capital;
+        j["asymmetric_risk_buffer"] = asymmetric_risk_buffer;
+        j["cost_penalty_scalar"] = cost_penalty_scalar;
+        j["max_iterations"] = max_iterations;
+        j["convergence_threshold"] = convergence_threshold;
+        j["version"] = version;
+        return j;
+    }
+
+    void from_json(const nlohmann::json& j) override {
+        if (j.contains("tau")) tau = j.at("tau").get<double>();
+        if (j.contains("capital")) capital = j.at("capital").get<double>();
+        if (j.contains("asymmetric_risk_buffer")) {
+            asymmetric_risk_buffer = j.at("asymmetric_risk_buffer").get<double>();
+        }
+        if (j.contains("cost_penalty_scalar")) {
+            cost_penalty_scalar = j.at("cost_penalty_scalar").get<int>();
+        }
+        if (j.contains("max_iterations")) {
+            max_iterations = j.at("max_iterations").get<size_t>();
+        }
+        if (j.contains("convergence_threshold")) {
+            convergence_threshold = j.at("convergence_threshold").get<double>();
+        }
+        if (j.contains("version")) version = j.at("version").get<std::string>();
+    }
 };
 
 /**

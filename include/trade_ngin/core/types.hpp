@@ -106,8 +106,6 @@ struct ContractSpec {
     double multiplier;
     double tick_size;
     double commission_per_contract;
-    
-    // Futures-specific fields
     std::optional<Timestamp> expiry;
     std::optional<std::string> underlying;
 };

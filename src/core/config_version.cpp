@@ -63,13 +63,14 @@ Result<void> ConfigVersionManager::register_migration(
         }
 
         // Store migration
+        ConfigType component_type = ConfigType::STRATEGY; // Default
         std::string key = make_version_key(from_version, to_version);
-        migrations_[ConfigType::STRATEGY][key] = std::move(step);
+        migrations_[component_type][key] = step;
 
-        // Update latest version if needed
-        auto& latest = latest_versions_[ConfigType::STRATEGY];
-        if (latest < to_version) {
-            latest = to_version;
+        // Update latest version
+        if (latest_versions_.find(component_type) == latest_versions_.end() ||
+            to_version.to_string() > latest_versions_[component_type].to_string()) {
+            latest_versions_[component_type] = to_version;
         }
 
         return Result<void>();
@@ -83,9 +84,7 @@ Result<void> ConfigVersionManager::register_migration(
     }
 }
 
-ConfigVersion ConfigVersionManager::get_latest_version(
-    ConfigType component_type) const {
-    
+ConfigVersion ConfigVersionManager::get_latest_version(ConfigType component_type) const {
     auto it = latest_versions_.find(component_type);
     if (it != latest_versions_.end()) {
         return it->second;
@@ -97,79 +96,100 @@ bool ConfigVersionManager::needs_migration(
     const nlohmann::json& config,
     ConfigType component_type) const {
     
+    // Extract version from config
     auto version_result = get_config_version(config);
     if (version_result.is_error()) {
-        return true;  // No version info means migration needed
+        return false;  // Can't determine version
     }
 
-    return version_result.value() < get_latest_version(component_type);
+    ConfigVersion current_version = version_result.value();
+    ConfigVersion latest_version = get_latest_version(component_type);
+
+    return current_version < latest_version;
 }
 
 Result<MigrationPlan> ConfigVersionManager::create_migration_plan(
     const ConfigVersion& from_version,
     const ConfigVersion& to_version) const {
+
+    MigrationPlan plan;
+    plan.start_version = from_version;
+    plan.target_version = to_version;
+
+    if (from_version == to_version) {
+        return Result<MigrationPlan>(plan); // No migration needed
+    }
     
-    if (!(from_version < to_version)) {
+    if (to_version < from_version) {
         return make_error<MigrationPlan>(
             ErrorCode::INVALID_ARGUMENT,
-            "Target version must be greater than current version",
+            "Cannot migrate from newer to older version",
             "ConfigVersionManager"
         );
     }
 
-    // Find all possible paths using BFS
-    std::queue<std::vector<MigrationStep>> paths;
-    std::set<ConfigVersion> visited;
-    
-    // Start with empty path
-    paths.push({});
-    visited.insert(from_version);
+    ConfigType component_type = ConfigType::STRATEGY; // Default
 
-    MigrationPlan best_plan;
-    bool found_path = false;
-
-    while (!paths.empty()) {
-        auto current_path = paths.front();
-        paths.pop();
-
-        ConfigVersion current_version = current_path.empty() ? 
-            from_version : current_path.back().to_version;
-
-        if (current_version == to_version) {
-            if (!found_path || current_path.size() < best_plan.steps.size()) {
-                best_plan.steps = current_path;
-                best_plan.start_version = from_version;
-                best_plan.target_version = to_version;
-                found_path = true;
-            }
-            continue;
-        }
-
-        // Try all possible next steps
-        for (const auto& [_, migrations] : migrations_) {
-            for (const auto& [__, step] : migrations) {
-                if (step.from_version == current_version &&
-                    visited.find(step.to_version) == visited.end() &&
-                    step.to_version <= to_version) {
-                    
-                    auto new_path = current_path;
-                    new_path.push_back(step);
-                    paths.push(new_path);
-                    visited.insert(step.to_version);
-                }
-            }
+    // Find direct migration
+    std::string direct_key = make_version_key(from_version, to_version);
+    auto comp_migrations = migrations_.find(component_type);
+    if (comp_migrations != migrations_.end()) {
+        auto direct_it = comp_migrations->second.find(direct_key);
+        if (direct_it != comp_migrations->second.end()) {
+            plan.steps.push_back(direct_it->second);
+            return Result<MigrationPlan>(plan);
         }
     }
 
-    if (!found_path) {
+    // No direct migration, find path
+    std::vector<ConfigVersion> versions;
+    for (const auto& [_, step_map] : migrations_) {
+        for (const auto& [__, step] : step_map) {
+            if (std::find(versions.begin(), versions.end(), step.from_version) == versions.end()) {
+                versions.push_back(step.from_version);
+            }
+            if (std::find(versions.begin(), versions.end(), step.to_version) == versions.end()) {
+                versions.push_back(step.to_version);
+            }
+        }
+    }
+    
+    // Sort versions
+    std::sort(versions.begin(), versions.end());
+    
+    // Find migration path
+    ConfigVersion current = from_version;
+    while (current < to_version) {
+        // Find next version
+        auto next_it = std::upper_bound(versions.begin(), versions.end(), current);
+        if (next_it == versions.end() || to_version < *next_it) {
+            break; // No more versions or next version is past target
+        }
+        
+        // Find migration step
+        std::string key = make_version_key(current, *next_it);
+        if (comp_migrations != migrations_.end()) {
+            auto step_it = comp_migrations->second.find(key);
+            if (step_it != comp_migrations->second.end()) {
+                plan.steps.push_back(step_it->second);
+                current = *next_it;
+                continue;
+            }
+        }
+        
+        // No migration step found, try next version
+        current = *next_it;
+    }
+    
+    if (current < to_version) {
         return make_error<MigrationPlan>(
             ErrorCode::INVALID_ARGUMENT,
-            "No migration path found",
+            "Cannot find complete migration path",
             "ConfigVersionManager"
         );
     }
-
-    return Result<MigrationPlan>(best_plan);
+    
+    return Result<MigrationPlan>(plan);
 }
 
 Result<MigrationResult> ConfigVersionManager::execute_migration(
@@ -178,89 +198,108 @@ Result<MigrationResult> ConfigVersionManager::execute_migration(
     
     MigrationResult result;
     result.original_version = plan.start_version;
+    result.final_version = plan.start_version;
     
-    try {
-        // Execute each migration step
-        for (const auto& step : plan.steps) {
+    // Execute each step
+    for (const auto& step : plan.steps) {
+        try {
             auto migration_result = step.migrate(config);
             if (migration_result.is_error()) {
+                result.warnings.push_back(
+                    "Error migrating from " + step.from_version.to_string() + 
+                    " to " + step.to_version.to_string() + ": " + 
+                    migration_result.error()->what()
+                );
                 return make_error<MigrationResult>(
                     migration_result.error()->code(),
                     migration_result.error()->what(),
                     "ConfigVersionManager"
                 );
             }
-
-            config = migration_result.value();
-            result.changes.push_back(step.description);
             
-            // Update version in config
+            // Update config
+            config = migration_result.value();
+            
+            // Update version
             config["version"] = step.to_version.to_string();
+            
+            // Record change
+            result.changes.push_back(
+                "Migrated from " + step.from_version.to_string() + 
+                " to " + step.to_version.to_string() + ": " + 
+                step.description
+            );
+            
+            result.final_version = step.to_version;
+            
+        } catch (const std::exception& e) {
+            result.warnings.push_back(
+                "Exception migrating from " + step.from_version.to_string() + 
+                " to " + step.to_version.to_string() + ": " + e.what()
+            );
+            return make_error<MigrationResult>(
+                ErrorCode::UNKNOWN_ERROR,
+                std::string("Error executing migration: ") + e.what(),
+                "ConfigVersionManager"
+            );
         }
-
-        result.success = true;
-        result.final_version = plan.target_version;
-        return Result<MigrationResult>(result);
-
-    } catch (const std::exception& e) {
-        return make_error<MigrationResult>(
-            ErrorCode::UNKNOWN_ERROR,
-            std::string("Error executing migration: ") + e.what(),
-            "ConfigVersionManager"
-        );
     }
+    
+    result.success = true;
+    return Result<MigrationResult>(result);
 }
 
 Result<MigrationResult> ConfigVersionManager::auto_migrate(
     nlohmann::json& config,
     ConfigType component_type) const {
     
-    try {
-        // Get current version
-        auto version_result = get_config_version(config);
-        if (version_result.is_error()) {
-            // No version info, assume oldest version
-            version_result = Result<ConfigVersion>(ConfigVersion{1, 0, 0});
-        }
-
-        ConfigVersion current_version = version_result.value();
-        ConfigVersion latest_version = get_latest_version(component_type);
-
-        if (!(current_version < latest_version)) {
-            // Already at latest version
-            MigrationResult result;
-            result.success = true;
-            result.original_version = current_version;
-            result.final_version = current_version;
-            return Result<MigrationResult>(result);
-        }
-
-        // Create and execute migration plan
-        auto plan_result = create_migration_plan(current_version, latest_version);
-        if (plan_result.is_error()) {
-            return make_error<MigrationResult>(
-                plan_result.error()->code(),
-                plan_result.error()->what(),
-                "ConfigVersionManager"
-            );
-        }
-
-        return execute_migration(config, plan_result.value());
-
-    } catch (const std::exception& e) {
+    // Get current version
+    auto version_result = get_config_version(config);
+    if (version_result.is_error()) {
+        // Default to version 1.0.0 if not specified
+        config["version"] = "1.0.0";
+        return Result<MigrationResult>(MigrationResult{
+            true,
+            ConfigVersion{1, 0, 0},
+            ConfigVersion{1, 0, 0},
+            {"Initialized version to 1.0.0"},
+            {}
+        });
+    }
+    
+    ConfigVersion current_version = version_result.value();
+    ConfigVersion latest_version = get_latest_version(component_type);
+    
+    if (latest_version <= current_version) {
+        // Already at latest version
+        return Result<MigrationResult>(MigrationResult{
+            true,
+            current_version,
+            current_version,
+            {},
+            {}
+        });
+    }
+    
+    // Create migration plan
+    auto plan_result = create_migration_plan(current_version, latest_version);
+    if (plan_result.is_error()) {
         return make_error<MigrationResult>(
-            ErrorCode::UNKNOWN_ERROR,
-            std::string("Error in auto migration: ") + e.what(),
+            plan_result.error()->code(),
+            plan_result.error()->what(),
             "ConfigVersionManager"
         );
     }
+    
+    // Execute migration
+    return execute_migration(config, plan_result.value());
 }
 
 Result<ConfigVersion> ConfigVersionManager::get_config_version(
     const nlohmann::json& config) const {
     
     try {
-        if (!config.contains("version")) {
+        if (!config.contains("version") || !config["version"].is_string()) {
             return make_error<ConfigVersion>(
                 ErrorCode::INVALID_ARGUMENT,
                 "No version field in config",
@@ -283,11 +322,19 @@ Result<ConfigVersion> ConfigVersionManager::get_config_version(
 
 Result<void> ConfigVersionManager::validate_migration_step(
     const MigrationStep& step) const {
-    
-    if (!(step.from_version < step.to_version)) {
+
+    if (step.from_version == step.to_version) {
         return make_error<void>(
             ErrorCode::INVALID_ARGUMENT,
-            "Target version must be greater than source version",
+            "From and to versions cannot be the same",
+            "ConfigVersionManager"
+        );
+    }
+    
+    if (step.to_version < step.from_version) {
+        return make_error<void>(
+            ErrorCode::INVALID_ARGUMENT,
+            "To version must be greater than from version",
             "ConfigVersionManager"
         );
     }
@@ -296,14 +343,6 @@ Result<void> ConfigVersionManager::validate_migration_step(
         return make_error<void>(
             ErrorCode::INVALID_ARGUMENT,
             "Migration function cannot be null",
-            "ConfigVersionManager"
-        );
-    }
-
-    if (step.description.empty()) {
-        return make_error<void>(
-            ErrorCode::INVALID_ARGUMENT,
-            "Migration description cannot be empty",
             "ConfigVersionManager"
         );
     }
