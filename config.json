@@ -1,0 +1,9 @@
+{
+  "database": {
+    "host": "3.140.200.228",
+    "port": "5432",
+    "username": "postgres",
+    "password": "algogators",
+    "name": "algo_data"
+  }
+}
