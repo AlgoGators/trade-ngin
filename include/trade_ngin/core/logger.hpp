@@ -1,5 +1,4 @@
 // include/trade_ngin/core/logger.hpp
-
 #pragma once
 
 #include <string>
@@ -10,7 +9,9 @@
 #include <unordered_map>
 #include <chrono>
 #include <filesystem>
+#include <nlohmann/json.hpp>
 #include "trade_ngin/core/types.hpp"
+#include "trade_ngin/core/config_base.hpp"
 
 namespace trade_ngin {
 
@@ -35,10 +36,31 @@ enum class LogDestination {
     BOTH      // Both console and file
 };
 
+inline std::string level_to_string(LogLevel level) {
+    switch (level) {
+        case LogLevel::TRACE: return "TRACE";
+        case LogLevel::DEBUG: return "DEBUG";
+        case LogLevel::INFO: return "INFO";
+        case LogLevel::WARNING: return "WARNING";
+        case LogLevel::ERR: return "ERROR";
+        case LogLevel::FATAL: return "FATAL";
+        default: return "UNKNOWN";
+    }
+}
+
+inline std::string log_destination_to_string(LogDestination dest) {
+    switch (dest) {
+        case LogDestination::CONSOLE: return "CONSOLE";
+        case LogDestination::FILE: return "FILE";
+        case LogDestination::BOTH: return "BOTH";
+        default: return "UNKNOWN";
+    }
+}
+
 /**
  * @brief Configuration for the logger
  */
-struct LoggerConfig {
+struct LoggerConfig : public ConfigBase {
     LogLevel min_level{LogLevel::INFO};         // Minimum level to log
     LogDestination destination{LogDestination::CONSOLE};
     std::string log_directory{"logs"};          // Directory for log files
@@ -47,6 +69,50 @@ struct LoggerConfig {
     bool include_level{true};                   // Include log level in logs
     size_t max_file_size{50 * 1024 * 1024};    // Max log file size (50MB)
     size_t max_files{10};                       // Maximum number of log files to keep
+
+    // Configuration metadata
+    std::string version{"1.0.0"};               // Configuration version
+
+    // Implement serialization methods
+    nlohmann::json to_json() const override {
+        nlohmann::json j;
+        j["min_level"] = level_to_string(min_level);
+        j["destination"] = log_destination_to_string(destination);
+        j["log_directory"] = log_directory;
+        j["filename_prefix"] = filename_prefix;
+        j["include_timestamp"] = include_timestamp;
+        j["include_level"] = include_level;
+        j["max_file_size"] = max_file_size;
+        j["max_files"] = max_files;
+        j["version"] = version;
+        
+        return j;
+    }
+
+    void from_json(const nlohmann::json& j) override {
+        if (j.contains("min_level")) {
+            std::string level_str = j.at("min_level").get<std::string>();
+            if (level_str == "TRACE") min_level = LogLevel::TRACE;
+            else if (level_str == "DEBUG") min_level = LogLevel::DEBUG;
+            else if (level_str == "INFO") min_level = LogLevel::INFO;
+            else if (level_str == "WARNING") min_level = LogLevel::WARNING;
+            else if (level_str == "ERROR") min_level = LogLevel::ERR;
+            else if (level_str == "FATAL") min_level = LogLevel::FATAL;
+        }
+        if (j.contains("destination")) {
+            std::string dest_str = j.at("destination").get<std::string>();
+            if (dest_str == "CONSOLE") destination = LogDestination::CONSOLE;
+            else if (dest_str == "FILE") destination = LogDestination::FILE;
+            else if (dest_str == "BOTH") destination = LogDestination::BOTH;
+        }
+        if (j.contains("log_directory")) log_directory = j.at("log_directory").get<std::string>();
+        if (j.contains("filename_prefix")) filename_prefix = j.at("filename_prefix").get<std::string>();
+        if (j.contains("include_timestamp")) include_timestamp = j.at("include_timestamp").get<bool>();
+        if (j.contains("include_level")) include_level = j.at("include_level").get<bool>();
+        if (j.contains("max_file_size")) max_file_size = j.at("max_file_size").get<size_t>();
+        if (j.contains("max_files")) max_files = j.at("max_files").get<size_t>();
+        if (j.contains("version")) version = j.at("version").get<std::string>();
+    }
 };
 
 /**
@@ -103,13 +169,6 @@ public:
     LogLevel get_min_level() const {
         return config_.min_level;
     }
-
-    /**
-     * @brief Convert LogLevel to string
-     * @param level Log level to convert
-     * @return String representation of log level
-     */
-    static std::string level_to_string(LogLevel level);
 
 private:
     Logger() = default;

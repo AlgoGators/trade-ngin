@@ -13,7 +13,7 @@ TrendFollowingStrategy::TrendFollowingStrategy(
     TrendFollowingConfig trend_config,
     std::shared_ptr<DatabaseInterface> db)
     : BaseStrategy(std::move(id), std::move(config), std::move(db)),
-    trend_config_(std::move(trend_config)) {  // Move trend_config after using its config
+    trend_config_(std::move(trend_config)) { 
 
     // Verify lengths of lookback periods
     if (trend_config_.vol_lookback_short <= 0) {

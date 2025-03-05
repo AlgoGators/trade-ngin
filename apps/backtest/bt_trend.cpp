@@ -56,7 +56,14 @@ int main() {
         } else {
             // Handle the error case
             throw std::runtime_error("Failed to get symbols");
-        }        
+        }
+        
+        std::cout << "Symbols: ";
+        for (const auto& symbol : config.symbols) {
+            std::cout << symbol << " ";
+        }
+
+        exit(0);
         
         config.initial_capital = 1000000.0;  // $1M
         config.commission_rate = 0.0005;     // 5 basis points
