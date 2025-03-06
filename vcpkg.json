@@ -1,0 +1,8 @@
+{
+  "dependencies": [
+    "arrow",
+    "gtest",
+    "nlohmann-json",
+    "libpqxx"
+  ]
+}
