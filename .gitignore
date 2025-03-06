@@ -3,3 +3,5 @@
 build/
 config.json
 CMakeUserPresets.json
+vcpkg_installed
+vcpkg-manifest-install.log

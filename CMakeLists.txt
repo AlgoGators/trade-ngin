@@ -58,8 +58,14 @@ add_library(trade_ngin SHARED ${TRADE_NGIN_SOURCES})
 target_link_libraries(trade_ngin
     PUBLIC
         nlohmann_json::nlohmann_json
+)
+target_link_libraries(trade_ngin
+    PUBLIC
         libpqxx::pqxx
-        Arrow::arrow_shared
+)
+target_link_libraries(trade_ngin
+        PRIVATE
+        Arrow::arrow_static
 )
 
 # Windows-specific settings
