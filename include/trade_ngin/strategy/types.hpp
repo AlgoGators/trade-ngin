@@ -139,6 +139,8 @@ struct StrategyConfig : public ConfigBase {
  * @brief Performance metrics for a strategy
  */
 struct StrategyMetrics {
+    double unrealized_pnl;           // Total unrealized profit/loss
+    double realized_pnl;             // Total realized profit/loss
     double total_pnl;                // Total profit/loss
     double sharpe_ratio;             // Sharpe ratio
     double sortino_ratio;            // Sortino ratio
