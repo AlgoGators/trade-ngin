@@ -1,5 +1,5 @@
 #include <gtest/gtest.h>
-#include "trade_ngin/backtest/engine.hpp"
+#include "trade_ngin/backtest/backtest_engine.hpp"
 #include "trade_ngin/core/state_manager.hpp"
 #include "trade_ngin/strategy/base_strategy.hpp"
 #include "../data/test_db_utils.hpp"

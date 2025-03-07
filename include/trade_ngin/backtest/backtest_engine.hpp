@@ -1,10 +1,11 @@
-// include/trade_ngin/backtest/engine.hpp
+// include/trade_ngin/backtest/backtest_engine.hpp
 #pragma once
 
 #include "trade_ngin/core/types.hpp"
 #include "trade_ngin/core/error.hpp"
 #include "trade_ngin/core/config_base.hpp"
 #include "trade_ngin/backtest/slippage_models.hpp"
+#include "trade_ngin/backtest/strategy_backtester.hpp"
 #include "trade_ngin/strategy/strategy_interface.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
 #include "trade_ngin/risk/risk_manager.hpp"
@@ -20,98 +21,82 @@ namespace backtest {
 /**
  * @brief Configuration for backtest simulation
  */
-struct BacktestConfig : public ConfigBase {
-    // Time parameters
-    Timestamp start_date;
-    Timestamp end_date;
-    bool use_calendar_time{true};     // Whether to use calendar time or trading time
-
-    // Asset parameters
-    std::vector<std::string> symbols;
-    AssetClass asset_class{AssetClass::FUTURES};
-    DataFrequency data_freq{DataFrequency::DAILY};
-
-    // Data parameters
-    std::string data_source{"database"};
-    std::string data_type{"ohlcv"};
-
-    // Trading parameters
-    double initial_capital{1000000.0};
-    bool reinvest_profits{true};
-    double commission_rate{0.0};
-    double slippage_model{0.0};       // Basis points
-    
-    // Risk parameters
+struct PortfolioBacktestConfig : public ConfigBase {
+    double initial_capital{1000000.0}; // Initial capital for portfolio
+    bool use_risk_management{false};   // Enable risk management
+    bool use_optimization{false};      // Enable optimization
     RiskConfig risk_config;
-    bool use_risk_management{true};
-    
-    // Optimization parameters
     DynamicOptConfig opt_config;
-    bool use_optimization{true};
-
-    // Analysis parameters
-    bool calc_intraday_metrics{false};
-    bool store_trade_details{true};
-    bool calc_risk_metrics{true};
-    std::string results_db_schema{"backtest_results"};
+    
+    // Portfolio configuration
+    std::vector<double> strategy_weights; // Initial capital allocation to each strategy
+    bool auto_rebalance; 
+    int rebalance_period; // In days
 
     // Configuration metadata
     std::string version{"1.0.0"};
 
-    // Implement serialization/deserialization methods
+    // JSON serialization
     nlohmann::json to_json() const override {
         nlohmann::json j;
-        j["start_date"] = start_date.time_since_epoch().count();
-        j["end_date"] = end_date.time_since_epoch().count();
-        j["use_calendar_time"] = use_calendar_time;
-        j["symbols"] = symbols;
-        j["asset_class"] = static_cast<int>(asset_class);
-        j["data_freq"] = static_cast<int>(data_freq);
-        j["data_source"] = data_source;
-        j["data_type"] = data_type;
         j["initial_capital"] = initial_capital;
-        j["reinvest_profits"] = reinvest_profits;
-        j["commission_rate"] = commission_rate;
-        j["slippage_model"] = slippage_model;
-        j["risk_config"] = risk_config.to_json();
         j["use_risk_management"] = use_risk_management;
-        j["opt_config"] = opt_config.to_json();
         j["use_optimization"] = use_optimization;
-        j["calc_intraday_metrics"] = calc_intraday_metrics;
-        j["store_trade_details"] = store_trade_details;
-        j["calc_risk_metrics"] = calc_risk_metrics;
-        j["results_db_schema"] = results_db_schema;
+        j["risk_config"] = risk_config.to_json();
+        j["opt_config"] = opt_config.to_json();
+        j["strategy_weights"] = strategy_weights;
+        j["auto_rebalance"] = auto_rebalance;
+        j["rebalance_period"] = rebalance_period;
         j["version"] = version;
         return j;
     }
 
     void from_json(const nlohmann::json& j) override {
-        if (j.contains("start_date")) start_date = Timestamp(std::chrono::milliseconds(j.at("start_date").get<int64_t>()));
-        if (j.contains("end_date")) end_date = Timestamp(std::chrono::milliseconds(j.at("end_date").get<int64_t>()));
-        if (j.contains("use_calendar_time")) use_calendar_time = j.at("use_calendar_time").get<bool>();
-        if (j.contains("symbols")) symbols = j.at("symbols").get<std::vector<std::string>>();
-        if (j.contains("asset_class")) asset_class = static_cast<AssetClass>(j.at("asset_class").get<int>());
-        if (j.contains("data_freq")) data_freq = static_cast<DataFrequency>(j.at("data_freq").get<int>());
-        if (j.contains("data_source")) data_source = j.at("data_source").get<std::string>();
-        if (j.contains("data_type")) data_type = j.at("data_type").get<std::string>();
         if (j.contains("initial_capital")) initial_capital = j.at("initial_capital").get<double>();
-        if (j.contains("reinvest_profits")) reinvest_profits = j.at("reinvest_profits").get<bool>();
-        if (j.contains("commission_rate")) commission_rate = j.at("commission_rate").get<double>();
-        if (j.contains("slippage_model")) slippage_model = j.at("slippage_model").get<double>();
-        if (j.contains("risk_config")) risk_config.from_json(j.at("risk_config"));
         if (j.contains("use_risk_management")) use_risk_management = j.at("use_risk_management").get<bool>();
-        if (j.contains("opt_config")) opt_config.from_json(j.at("opt_config"));
         if (j.contains("use_optimization")) use_optimization = j.at("use_optimization").get<bool>();
-        if (j.contains("calc_intraday_metrics")) calc_intraday_metrics = j.at("calc_intraday_metrics").get<bool>();
-        if (j.contains("store_trade_details")) store_trade_details = j.at("store_trade_details").get<bool>();
-        if (j.contains("calc_risk_metrics")) calc_risk_metrics = j.at("calc_risk_metrics").get<bool>();
-        if (j.contains("results_db_schema")) results_db_schema = j.at("results_db_schema").get<std::string>();
+        if (j.contains("risk_config")) risk_config.from_json(j.at("risk_config"));
+        if (j.contains("opt_config")) opt_config.from_json(j.at("opt_config"));
+        if (j.contains("strategy_weights")) strategy_weights = j.at("strategy_weights").get<std::vector<double>>();
+        if (j.contains("auto_rebalance")) auto_rebalance = j.at("auto_rebalance").get<bool>();
+        if (j.contains("rebalance_period")) rebalance_period = j.at("rebalance_period").get<int>();
         if (j.contains("version")) version = j.at("version").get<std::string>();
     }
 };
 
+struct BacktestConfig : public ConfigBase {
+    StrategyBacktestConfig strategy_config;
+    PortfolioBacktestConfig portfolio_config;
+    std::string results_db_schema = "backtest_results";
+    bool store_trade_details = true;
+
+    // Configuration metadata
+    std::string version{"1.0.0"};
+
+    // JSON serialization
+    nlohmann::json to_json() const override {
+        nlohmann::json j;
+        j["strategy_config"] = strategy_config.to_json();
+        j["portfolio_config"] = portfolio_config.to_json();
+        j["results_db_schema"] = results_db_schema;
+        j["store_trade_details"] = store_trade_details;
+        j["version"] = version;
+        return j;
+    }
+
+    void from_json(const nlohmann::json& j) override {
+        if (j.contains("strategy_config")) strategy_config.from_json(j.at("strategy_config"));
+        if (j.contains("portfolio_config")) portfolio_config.from_json(j.at("portfolio_config"));
+        if (j.contains("results_db_schema")) results_db_schema = j.at("results_db_schema").get<std::string>();
+        if (j.contains("store_trade_details")) store_trade_details = j.at("store_trade_details").get<bool>();
+        if (j.contains("version")) version = j.at("version").get<std::string>();
+    }
+};
+
+
+
 /**
- * @brief Results from a backtest run
+ * @brief Strategy backtest results
  */
 struct BacktestResults {
     // Performance metrics
@@ -164,11 +149,18 @@ public:
     BacktestEngine(BacktestConfig config, std::shared_ptr<PostgresDatabase> db);
 
     /**
-     * @brief Run backtest simulation
+     * @brief Run backtest simulation for a single strategy with portfolio-level constraints
      * @param strategy Strategy to test
      * @return Result containing backtest results
      */
     Result<BacktestResults> run(std::shared_ptr<StrategyInterface> strategy);
+
+    /**
+     * @brief Run portfolio backtest simulation
+     * @param strategies Vector of strategies to test
+     * @return Result containing backtest results
+     */
+    Result<BacktestResults> run_portfolio(const std::vector<std::shared_ptr<StrategyInterface>>& strategies);
 
     /**
      * @brief Save backtest results to database
@@ -207,6 +199,76 @@ private:
      * @return Result containing market data bars
      */
     Result<std::vector<Bar>> load_market_data() const;
+
+    /**
+     * @brief Process single market data update
+     * @param bars Market data bar
+     * @param strategy Strategy being tested
+     * @param current_positions Current portfolio positions
+     * @param equity_curve Equity curve to update
+     * @return Result indicating success or failure
+     */
+    Result<void> process_strategy_signals(
+        const std::vector<Bar>& bars,
+        std::shared_ptr<StrategyInterface> strategy,
+        std::unordered_map<std::string, Position>& current_positions,
+        std::vector<ExecutionReport>& executions,
+        std::vector<std::pair<Timestamp, double>>& equity_curve);
+    
+    /**
+     * @brief Apply portfolio constraints to current positions
+     * @param current_positions Current portfolio positions
+     * @param equity_curve Equity curve points
+     * @param risk_metrics Risk metrics to update
+     * @return Result indicating success or failure
+     */
+    Result<void> apply_portfolio_constraints(
+        std::unordered_map<std::string, Position>& current_positions,
+        std::vector<std::pair<Timestamp, double>>& equity_curve,
+        std::vector<RiskResult>& risk_metrics);
+    
+    
+    /**
+     * @brief Combine strategy positions into a single portfolio
+     * @param strategy_positions Vector of strategy positions
+     * @param portfolio_positions Combined portfolio positions
+     */    
+    void combine_strategy_positions(
+        const std::vector<std::unordered_map<std::string, Position>>& strategy_positions,
+        std::unordered_map<std::string, Position>& portfolio_positions);
+
+    /**
+     * @brief Redistribute positions based on strategy weights
+     * @param portfolio_positions Current portfolio positions
+     * @param strategy_positions Vector of strategy positions
+     * @param strategies Vector of strategy instances
+     */    
+    void redistribute_positions(
+        const std::unordered_map<std::string, Position>& portfolio_positions,
+        std::vector<std::unordered_map<std::string, Position>>& strategy_positions,
+        const std::vector<std::shared_ptr<StrategyInterface>>& strategies);
+
+    /**
+     * @brief Process single time step for portfolio backtest  
+     * @param timestamp Current timestamp
+     * @param bars Market data bars for this period
+     * @param strategies Vector of strategies to test
+     * @param strategy_positions Vector of strategy positions
+     * @param portfolio_positions Current portfolio positions
+     * @param executions Vector to store generated executions
+     * @param equity_curve Vector to store equity curve points
+     * @param risk_metrics Vector to store risk metrics
+     * @return Result indicating success or failure
+     */    
+    Result<void> process_portfolio_time_step(
+        const Timestamp& timestamp,
+        const std::vector<Bar>& bars,
+        const std::vector<std::shared_ptr<StrategyInterface>>& strategies,
+        std::vector<std::unordered_map<std::string, Position>>& strategy_positions,
+        std::unordered_map<std::string, Position>& portfolio_positions,
+        std::vector<ExecutionReport>& executions,
+        std::vector<std::pair<Timestamp, double>>& equity_curve,
+        std::vector<RiskResult>& risk_metrics);
 
     /**
      * @brief Process single market data update
@@ -267,7 +329,7 @@ private:
 
     /**
      * @brief Helper function for timestamp formatting
-     * @param timestamp Timestamp to format
+     * @param ts Timestamp to format
      * @return Formatted string
      */
     std::string format_timestamp(const Timestamp& ts) const;

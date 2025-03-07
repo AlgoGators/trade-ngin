@@ -135,7 +135,6 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
             
             if (bar.open <= 0.0 || bar.high <= 0.0 || bar.high < bar.low || 
                 bar.low <= 0.0 || bar.close <= 0.0 || bar.volume < 0.0) {
-                    std::cout << "Invalid bar data for symbol " << bar.symbol << std::endl;
                     return make_error<void>(
                         ErrorCode::INVALID_DATA,
                         "Invalid bar data for symbol " + bar.symbol,
@@ -168,7 +167,6 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
                     INFO("Using default volatility for " + bar.symbol + " due to calculation issues");
                 }
             } catch (const std::exception& e) {
-                std::cout << "Volatility calculation exception for " << bar.symbol << ": " << e.what() << std::endl;
                 INFO("Volatility calculation exception for " + bar.symbol + ": " + e.what());
                 volatility.resize(prices.size(), 0.01);
             }
@@ -187,7 +185,6 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
                     raw_forecasts.resize(prices.size(), 0.0);
                 }
             } catch (const std::exception& e) {
-                std::cout << "Forecast calculation exception for " << bar.symbol << ": " << e.what() << std::endl;
                 INFO("Forecast calculation exception for " + bar.symbol + ": " + e.what());
 
                 // Resize to avoid issues
@@ -203,7 +200,6 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
                     scaled_forecasts.resize(raw_forecasts.size(), 0.0);
                 }
              } catch (const std::exception& e) {
-                std::cout << "Scaled forecast exception for " << bar.symbol << ": " << e.what() << std::endl;
                 INFO("Scaled forecast exception for " + bar.symbol + ": " + e.what());
                 scaled_forecasts.resize(raw_forecasts.size(), 0.0);
              }
@@ -240,7 +236,6 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
                     );
                 }
             } catch (const std::exception& e) {
-                std::cout << "Position calculation exception for " << bar.symbol << ": " << e.what() << std::endl;
                 INFO("Position calculation exception for " + bar.symbol + ": " + e.what());
                 raw_position = 0.0;
             }
@@ -268,7 +263,6 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
                     final_position = (pos_it != positions_.end()) ? pos_it->second.quantity : 0.0;
                 }                
             } catch (const std::exception& e) {
-                std::cout << "Position buffering exception for " << bar.symbol << ": " << e.what() << std::endl;
                 INFO("Position buffering exception for " + bar.symbol + ": " + e.what());
                 
                 // Use previous position or zero as fallback
@@ -301,7 +295,6 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
         return Result<void>();
         
     } catch (const std::exception& e) {
-        std::cout << "Error in TrendFollowingStrategy::on_data: " << std::string(e.what());
         return make_error<void>(
             ErrorCode::STRATEGY_ERROR,
             std::string("Error processing data: ") + e.what(),
@@ -431,12 +424,12 @@ std::vector<double> TrendFollowingStrategy::blended_ewma_stddev(
     size_t max_history) const {
 
     if (prices.empty() || window <= 0) {
-        std::cout << "Prices are empty or window is invalid" << std::endl;
+        WARN("Empty price data or invalid window for blended stddev calculation");
         return std::vector<double>(1, 0.01);  // Return default value
     }
 
     if (prices.size() < 2) {
-        std::cout << "WARNING: Not enough price data for stddev calculation" << std::endl;
+        WARN("Not enough price data for blended stddev calculation");
         // Return a vector of small values
         return std::vector<double>(prices.size(), 0.01);
     }
@@ -449,7 +442,7 @@ std::vector<double> TrendFollowingStrategy::blended_ewma_stddev(
             return std::vector<double>(prices.size(), 0.01);  // Default value
         }
     } catch (const std::exception& e) {
-        std::cout << "Exception in ewma_standard_deviation: " << e.what() << std::endl;
+        ERROR("Exception in blended_ewma_stddev: " + std::string(e.what()));
         return std::vector<double>(prices.size(), 0.01);  // Default value
     }
 
@@ -501,7 +494,7 @@ std::vector<double> TrendFollowingStrategy::get_raw_forecast(
 
      // Validation
     if (prices.size() < std::max(short_window, long_window)) {
-        std::cout << "Not enough price data for forecasts" << std::endl;
+        ERROR("Not enough price data for raw forecast");
         return std::vector<double>(prices.size(), 0.0);  // Return neutral forecast
     }
 
@@ -513,7 +506,7 @@ std::vector<double> TrendFollowingStrategy::get_raw_forecast(
         short_ema = calculate_ewma(prices, short_window);
         long_ema = calculate_ewma(prices, long_window);
     } catch (const std::exception& e) {
-        std::cout << "Exception in calculate_ewma: " << e.what() << std::endl;
+        ERROR("Exception in get_raw_forecast: " + std::string(e.what()));
         return std::vector<double>(prices.size(), 0.0);  // Return neutral forecast
     }
     
@@ -538,7 +531,7 @@ std::vector<double> TrendFollowingStrategy::get_raw_forecast(
             }
         }
     } catch (const std::exception& e) {
-        std::cout << "Exception in volatility calculation: " << e.what() << std::endl;
+        ERROR("Exception in get_raw_forecast: " + std::string(e.what()));
         // If volatility calculation fails, use a default value
         blended_stddev.resize(prices.size(), 0.01);
     }
@@ -590,11 +583,11 @@ std::vector<double> TrendFollowingStrategy::get_scaled_forecast(
 std::vector<double> TrendFollowingStrategy::get_raw_combined_forecast(
     const std::vector<double>& prices) const {
     if (prices.size() < 2) {
-        std::cout << "Not enough price data for forecasts" << std::endl;
+        WARN("Not enough price data for combined forecast");
         return std::vector<double>(prices.size(), 0.0);  // Return neutral forecast
     }
     if (trend_config_.ema_windows.empty()) {
-        std::cout << "No EMA windows defined" << std::endl;
+        WARN("No EMA windows specified for combined forecast");
         return std::vector<double>(prices.size(), 0.0);  // Return neutral forecast
     }
 
@@ -610,9 +603,9 @@ std::vector<double> TrendFollowingStrategy::get_raw_combined_forecast(
                 prices, window_pair.first, window_pair.second);
             // Skip if invalid
             if (raw_forecast.empty() || raw_forecast.size() != prices.size()) {
-                std::cout << "Invalid raw forecast for window pair (" 
-                         << window_pair.first << ", " << window_pair.second 
-                         << "), skipping" << std::endl;
+                WARN("Invalid raw forecast for window pair (" 
+                     + std::to_string(window_pair.first) + ", " 
+                     + std::to_string(window_pair.second) + "), skipping");
                 continue;
             }
             // Get volatility for scaling
@@ -622,13 +615,13 @@ std::vector<double> TrendFollowingStrategy::get_raw_combined_forecast(
 
                 // Check if volatility calculation failed
                 if (blended_stddev.empty() || blended_stddev.size() != prices.size()) {
-                    std::cout << "Invalid volatility for window pair ("
-                             << window_pair.first << ", " << window_pair.second
-                             << "), using default" << std::endl;
+                    WARN("Invalid volatility for window pair (" 
+                         + std::to_string(window_pair.first) + ", " 
+                         + std::to_string(window_pair.second) + "), using default");
                     blended_stddev.resize(prices.size(), 0.01);
                 }
             } catch (const std::exception& e) {
-                std::cout << "Exception in blended_ewma_stddev: " << e.what() << std::endl;
+                ERROR("Exception in get_raw_combined_forecast: " + std::string(e.what()));
                 blended_stddev.resize(prices.size(), 0.01);
             }
             // Get scaled forecast
@@ -640,7 +633,7 @@ std::vector<double> TrendFollowingStrategy::get_raw_combined_forecast(
             }
             valid_window_pairs++;
         } catch (const std::exception& e) {
-            std::cout << "Exception in get_raw_combined_forecast: " << e.what() << std::endl;
+            ERROR("Exception in get_raw_combined_forecast: " + std::string(e.what()));
         }
     }
 
@@ -716,7 +709,7 @@ double TrendFollowingStrategy::calculate_position(
     if (contracts.count(symbol) > 0) {
         contract_size = contracts.at(symbol);
     } else {
-        std::cout << "WARNING: No contract specification for " << symbol << ", using default size" << std::endl;
+        WARN("No contract size found for " + symbol + ", using default value");
     }
     
     // Ensure all parameters are valid
@@ -760,17 +753,14 @@ double TrendFollowingStrategy::apply_position_buffer(
     
     // Validation
     if (std::isnan(raw_position) || std::isinf(raw_position)) {
-        std::cout << "Invalid raw position for " << symbol << ": " << raw_position << std::endl;
         return 0.0;
     }
 
     if (std::isnan(price) || price <= 0.0) {
-        std::cout << "Invalid price for " << symbol << ": " << price << std::endl;
         return 0.0;
     }
 
     if (std::isnan(volatility) || std::isinf(volatility) || volatility <= 0.0) {
-        std::cout << "Invalid volatility for " << symbol << ": " << volatility << std::endl;
         return 0.0;
     }
 
@@ -807,13 +797,6 @@ double TrendFollowingStrategy::apply_position_buffer(
         new_position = std::round(upper_buffer);
     } else {
         new_position = std::round(current_position);
-    }
-
-    // Debug large changes that are being dampened
-    if (std::abs(raw_position) > 50 && std::abs(new_position) < 10) {
-        std::cout << "DEBUG: Buffer dampening large position: raw=" 
-                 << raw_position << ", buffered=" << new_position 
-                 << ", current=" << current_position << std::endl;
     }
     
     // Final safety check - cap positions to a reasonable maximum for testing

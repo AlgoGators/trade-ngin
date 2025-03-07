@@ -1,4 +1,4 @@
-#include "trade_ngin/backtest/engine.hpp"
+#include "trade_ngin/backtest/backtest_engine.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
 #include "trade_ngin/data/credential_store.hpp"
@@ -21,6 +21,9 @@ TO-DO:
     - Fix data access for strategies & TCA
     - Move trend_following & regime_detector to strategies
     - Fix warnings about 'localtime' and 'gmtime' being unsafe
+    - Integrate risk multipliers at the portfolio level
+    - Update all the configs to save / load to a file
+    - Fully implement logger
 */
 
 int main() {
@@ -45,63 +48,63 @@ int main() {
         
         // 2. Configure backtest parameters
         trade_ngin::backtest::BacktestConfig config;
-        config.start_date = std::chrono::system_clock::now() - std::chrono::hours(24 * 365 * 3); // 3 years of data
-        config.end_date = std::chrono::system_clock::now();
-        config.asset_class = trade_ngin::AssetClass::FUTURES;
-        config.data_freq = trade_ngin::DataFrequency::DAILY;
+        config.strategy_config.start_date = std::chrono::system_clock::now() - std::chrono::hours(24 * 365 * 3); // 3 years of data
+        config.strategy_config.end_date = std::chrono::system_clock::now();
+        config.strategy_config.asset_class = trade_ngin::AssetClass::FUTURES;
+        config.strategy_config.data_freq = trade_ngin::DataFrequency::DAILY;
         
         auto symbols = db->get_symbols(trade_ngin::AssetClass::FUTURES);
         if (symbols.is_ok()) {
-            config.symbols = symbols.value();
+            config.strategy_config.symbols = symbols.value();
         } else {
             // Handle the error case
             throw std::runtime_error("Failed to get symbols");
         }
         
         std::cout << "Symbols: ";
-        for (const auto& symbol : config.symbols) {
+        for (const auto& symbol : config.strategy_config.symbols) {
             std::cout << symbol << " ";
         }
 
         exit(0);
         
-        config.initial_capital = 1000000.0;  // $1M
-        config.commission_rate = 0.0005;     // 5 basis points
-        config.slippage_model = 1.0;         // 1 basis point
-        config.use_risk_management = true;
-        config.use_optimization = true;
+        config.portfolio_config.initial_capital = 1000000.0;  // $1M
+        config.strategy_config.commission_rate = 0.0005;     // 5 basis points
+        config.strategy_config.slippage_model = 1.0;         // 1 basis point
+        config.portfolio_config.use_risk_management = true;
+        config.portfolio_config.use_optimization = true;
         
         // 3. Configure risk management
-        config.risk_config.capital = config.initial_capital;
-        config.risk_config.confidence_level = 0.99;
-        config.risk_config.lookback_period = 252;
-        config.risk_config.var_limit = 0.15;
-        config.risk_config.jump_risk_limit = 0.10;
-        config.risk_config.max_correlation = 0.7;
-        config.risk_config.max_gross_leverage = 4.0;
-        config.risk_config.max_net_leverage = 2.0;
+        config.portfolio_config.risk_config.capital = config.portfolio_config.initial_capital;
+        config.portfolio_config.risk_config.confidence_level = 0.99;
+        config.portfolio_config.risk_config.lookback_period = 252;
+        config.portfolio_config.risk_config.var_limit = 0.15;
+        config.portfolio_config.risk_config.jump_risk_limit = 0.10;
+        config.portfolio_config.risk_config.max_correlation = 0.7;
+        config.portfolio_config.risk_config.max_gross_leverage = 4.0;
+        config.portfolio_config.risk_config.max_net_leverage = 2.0;
         
         // 4. Configure optimization
-        config.opt_config.tau = 1.0;
-        config.opt_config.capital = config.initial_capital;
-        config.opt_config.asymmetric_risk_buffer = 0.1;
-        config.opt_config.cost_penalty_scalar = 10;
-        config.opt_config.max_iterations = 100;
-        config.opt_config.convergence_threshold = 1e-6;
+        config.portfolio_config.opt_config.tau = 1.0;
+        config.portfolio_config.opt_config.capital = config.portfolio_config.initial_capital;
+        config.portfolio_config.opt_config.asymmetric_risk_buffer = 0.1;
+        config.portfolio_config.opt_config.cost_penalty_scalar = 10;
+        config.portfolio_config.opt_config.max_iterations = 100;
+        config.portfolio_config.opt_config.convergence_threshold = 1e-6;
         
         // 5. Initialize backtest engine
         auto engine = std::make_unique<trade_ngin::backtest::BacktestEngine>(config, db);
 
         // 6. Setup portfolio configuration
         trade_ngin::PortfolioConfig portfolio_config;
-        portfolio_config.total_capital = config.initial_capital;
-        portfolio_config.reserve_capital = config.initial_capital * 0.1; // 10% reserve
+        portfolio_config.total_capital = config.portfolio_config.initial_capital;
+        portfolio_config.reserve_capital = config.portfolio_config.initial_capital * 0.1; // 10% reserve
         portfolio_config.max_strategy_allocation = 1.0; // Only have one strategy currently
         portfolio_config.min_strategy_allocation = 0.1;
         portfolio_config.use_optimization = true;
         portfolio_config.use_risk_management = true;
-        portfolio_config.opt_config = config.opt_config;
-        portfolio_config.risk_config = config.risk_config;
+        portfolio_config.opt_config = config.portfolio_config.opt_config;
+        portfolio_config.risk_config = config.portfolio_config.risk_config;
 
         // 7. Create portfolio manager
         auto portfolio = std::make_shared<trade_ngin::PortfolioManager>(portfolio_config);
@@ -110,17 +113,17 @@ int main() {
         
         // 8.1. Trend following strategy
         trade_ngin::StrategyConfig tf_config;
-        tf_config.capital_allocation = config.initial_capital * 1.0; // 100% allocation
+        tf_config.capital_allocation = config.portfolio_config.initial_capital * 1.0; // 100% allocation
         tf_config.max_leverage = 4.0;
         tf_config.save_positions = true;
         tf_config.save_signals = true;
         tf_config.save_executions = true;
         
         // Add position limits
-        for (const auto& symbol : config.symbols) {
+        for (const auto& symbol : config.strategy_config.symbols) {
             tf_config.position_limits[symbol] = 1000.0;  // Max 1000 units per symbol
             tf_config.trading_params[symbol] = 1.0;      // *CHANGE*: Contract size multiplier
-            tf_config.costs[symbol] = config.commission_rate;
+            tf_config.costs[symbol] = config.strategy_config.commission_rate;
         }
         
         // Configure trend following parameters
@@ -240,7 +243,7 @@ int main() {
         std::cout << "  Total Timing Cost: $" << total_timing_cost << std::endl;
         std::cout << "  Total Costs: $" << (total_commission + total_spread_cost + total_market_impact + total_timing_cost) << std::endl;
         std::cout << "  % of Total Return: " << ((total_commission + total_spread_cost + total_market_impact + total_timing_cost) / 
-                                               (backtest_results.total_return * config.initial_capital)) * 100.0 << "%" << std::endl;
+                                               (backtest_results.total_return * config.portfolio_config.initial_capital)) * 100.0 << "%" << std::endl;
         
         // 14. Analyze portfolio performance
         std::cout << "\n======= Portfolio Analysis =======" << std::endl;
@@ -249,7 +252,7 @@ int main() {
         auto portfolio_positions = portfolio->get_portfolio_positions();
         
         // Calculate portfolio metrics
-        double portfolio_value = config.initial_capital;
+        double portfolio_value = config.portfolio_config.initial_capital;
         for (const auto& [symbol, pos] : portfolio_positions) {
             // Assume we use the last price from backtest results
             double last_price = 0.0;
@@ -275,7 +278,7 @@ int main() {
         }
         
         std::cout << "\nFinal Portfolio Value: $" << portfolio_value << std::endl;
-        std::cout << "Total Return: " << ((portfolio_value / config.initial_capital) - 1.0) * 100.0 << "%" << std::endl;
+        std::cout << "Total Return: " << ((portfolio_value / config.portfolio_config.initial_capital) - 1.0) * 100.0 << "%" << std::endl;
         
         // 15. Save results to database and CSV
         std::string run_id = "TF_PORTFOLIO_" + std::to_string(
