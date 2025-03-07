@@ -200,36 +200,36 @@ protected:
         test_bars_ = create_test_data({"AAPL", "MSFT", "GOOG"}, 30);
 
         // Create default backtest configuration
-        config_.start_date = std::chrono::system_clock::now() - std::chrono::hours(24 * 30);  // 30 days ago
-        config_.end_date = std::chrono::system_clock::now();
-        config_.symbols = {"AAPL", "MSFT", "GOOG"};
-        config_.asset_class = AssetClass::EQUITIES;
-        config_.data_freq = DataFrequency::DAILY;
-        config_.initial_capital = 1000000.0;  // $1M
-        config_.commission_rate = 0.0005;     // 5 basis points
-        config_.slippage_model = 1.0;         // 1 bp
-        config_.use_risk_management = true;
-        config_.use_optimization = true;
+        config_.strategy_config.start_date = std::chrono::system_clock::now() - std::chrono::hours(24 * 30);  // 30 days ago
+        config_.strategy_config.end_date = std::chrono::system_clock::now();
+        config_.strategy_config.symbols = {"AAPL", "MSFT", "GOOG"};
+        config_.strategy_config.asset_class = AssetClass::FUTURES;
+        config_.strategy_config.data_freq = DataFrequency::DAILY;
+        config_.strategy_config.initial_capital = 1000000.0;  // $1M
+        config_.strategy_config.commission_rate = 0.0005;     // 5 basis points
+        config_.strategy_config.slippage_model = 1.0;         // 1 bp
+        config_.portfolio_config.use_risk_management = true;
+        config_.portfolio_config.use_optimization = true;
         config_.store_trade_details = true;
         config_.results_db_schema = "backtest_results";
         
         // Risk config
-        config_.risk_config.capital = config_.initial_capital;
-        config_.risk_config.confidence_level = 0.99;
-        config_.risk_config.lookback_period = 252;
-        config_.risk_config.var_limit = 0.15;
-        config_.risk_config.jump_risk_limit = 0.10;
-        config_.risk_config.max_correlation = 0.7;
-        config_.risk_config.max_gross_leverage = 10.0;
-        config_.risk_config.max_net_leverage = 10.0;
+        config_.portfolio_config.risk_config.capital = config_.portfolio_config.initial_capital;
+        config_.portfolio_config.risk_config.confidence_level = 0.99;
+        config_.portfolio_config.risk_config.lookback_period = 252;
+        config_.portfolio_config.risk_config.var_limit = 0.15;
+        config_.portfolio_config.risk_config.jump_risk_limit = 0.10;
+        config_.portfolio_config.risk_config.max_correlation = 0.7;
+        config_.portfolio_config.risk_config.max_gross_leverage = 10.0;
+        config_.portfolio_config.risk_config.max_net_leverage = 10.0;
         
         // Optimization config
-        config_.opt_config.tau = 1.0;
-        config_.opt_config.capital = config_.initial_capital;
-        config_.opt_config.asymmetric_risk_buffer = 0.1;
-        config_.opt_config.cost_penalty_scalar = 10;
-        config_.opt_config.max_iterations = 100;
-        config_.opt_config.convergence_threshold = 1e-6;
+        config_.portfolio_config.opt_config.tau = 1.0;
+        config_.portfolio_config.opt_config.capital = config_.portfolio_config.initial_capital;
+        config_.portfolio_config.opt_config.asymmetric_risk_buffer = 0.1;
+        config_.portfolio_config.opt_config.cost_penalty_scalar = 10;
+        config_.portfolio_config.opt_config.max_iterations = 100;
+        config_.portfolio_config.opt_config.convergence_threshold = 1e-6;
     }
 
     void TearDown() override {
@@ -498,7 +498,7 @@ TEST_F(BacktestEngineTest, RunBasicBacktest) {
     patch_mock_db_to_return_test_data();
 
     // Disable risk management for this test
-    config_.use_risk_management = false;
+    config_.portfolio_config.use_risk_management = false;
 
     // This test verifies basic backtest execution works
     auto engine = std::make_unique<BacktestEngine>(config_, db_);
@@ -626,7 +626,7 @@ TEST_F(BacktestEngineTest, SlippageImpact) {
     
     for (double slippage : slippage_values) {
         // Update config
-        config_.slippage_model = slippage;
+        config_.strategy_config.slippage_model = slippage;
 
         // Create new engine with updated config
         auto engine = std::make_unique<BacktestEngine>(config_, db_);
@@ -655,11 +655,11 @@ TEST_F(BacktestEngineTest, RiskManagementIntegration) {
     patch_mock_db_to_return_test_data();
 
     // Set high leverage limits
-    config_.risk_config.max_gross_leverage = 20.0;
-    config_.risk_config.max_net_leverage = 20.0;
+    config_.portfolio_config.risk_config.max_gross_leverage = 20.0;
+    config_.portfolio_config.risk_config.max_net_leverage = 20.0;
 
     // Test with risk management
-    config_.use_risk_management = true;
+    config_.portfolio_config.use_risk_management = true;
     auto engine_with_risk = std::make_unique<BacktestEngine>(config_, db_);
     auto strategy1 = std::make_shared<MockStrategy>();
     
@@ -668,7 +668,7 @@ TEST_F(BacktestEngineTest, RiskManagementIntegration) {
         (result_with_risk.error() ? result_with_risk.error()->what() : "Unknown error");
     
     // Run without risk management
-    config_.use_risk_management = false;
+    config_.portfolio_config.use_risk_management = false;
     auto engine_without_risk = std::make_unique<BacktestEngine>(config_, db_);
     auto strategy2 = std::make_shared<MockStrategy>();
     
@@ -715,7 +715,7 @@ TEST_F(BacktestEngineTest, SaveAndLoadResults) {
 
 TEST_F(BacktestEngineTest, OptimizationIntegration) {
     // Test with and without optimization
-    config_.use_optimization = true;
+    config_.portfolio_config.use_optimization = true;
     auto engine_with_opt = std::make_unique<BacktestEngine>(config_, db_);
     auto strategy1 = std::make_shared<MockStrategy>();
     
@@ -723,7 +723,7 @@ TEST_F(BacktestEngineTest, OptimizationIntegration) {
     ASSERT_TRUE(result_with_opt.is_ok());
     
     // Run without optimization
-    config_.use_optimization = false;
+    config_.portfolio_config.use_optimization = false;
     auto engine_without_opt = std::make_unique<BacktestEngine>(config_, db_);
     auto strategy2 = std::make_shared<MockStrategy>();
     
@@ -739,7 +739,7 @@ TEST_F(BacktestEngineTest, CompareBacktestResults) {
     
     for (int i = 0; i < 3; ++i) {
         // Vary initial capital
-        config_.initial_capital = 1000000.0 * (1.0 + 0.1 * i);
+        config_.portfolio_config.initial_capital = 1000000.0 * (1.0 + 0.1 * i);
         
         auto engine = std::make_unique<BacktestEngine>(config_, db_);
         auto strategy = std::make_shared<MockStrategy>();
@@ -775,8 +775,8 @@ TEST_F(BacktestEngineTest, DateRangeHandling) {
     
     for (int days : day_ranges) {
         // Update config
-        config_.start_date = std::chrono::system_clock::now() - std::chrono::hours(24 * days);
-        config_.end_date = std::chrono::system_clock::now();
+        config_.strategy_config.start_date = std::chrono::system_clock::now() - std::chrono::hours(24 * days);
+        config_.strategy_config.end_date = std::chrono::system_clock::now();
         
         auto engine = std::make_unique<BacktestEngine>(config_, db_);
         auto strategy = std::make_shared<MockStrategy>();
@@ -797,9 +797,9 @@ TEST_F(BacktestEngineTest, StressTest) {
     int days = 252;  // One year of trading days
     
     // Update config
-    config_.symbols = symbols;
-    config_.start_date = std::chrono::system_clock::now() - std::chrono::hours(24 * days);
-    config_.end_date = std::chrono::system_clock::now();
+    config_.strategy_config.symbols = symbols;
+    config_.strategy_config.start_date = std::chrono::system_clock::now() - std::chrono::hours(24 * days);
+    config_.strategy_config.end_date = std::chrono::system_clock::now();
     
     auto engine = std::make_unique<BacktestEngine>(config_, db_);
     auto strategy = std::make_shared<MockStrategy>();
@@ -822,7 +822,7 @@ TEST_F(BacktestEngineTest, ErrorHandling) {
     // Test various error conditions
     
     // 1. Invalid date range
-    config_.end_date = config_.start_date - std::chrono::hours(24);  // End before start
+    config_.strategy_config.end_date = config_.strategy_config.start_date - std::chrono::hours(24);  // End before start
     
     auto engine1 = std::make_unique<BacktestEngine>(config_, db_);
     auto strategy1 = std::make_shared<MockStrategy>();
@@ -831,8 +831,8 @@ TEST_F(BacktestEngineTest, ErrorHandling) {
     EXPECT_TRUE(result1.is_error());
     
     // Reset dates for next tests
-    config_.start_date = std::chrono::system_clock::now() - std::chrono::hours(24 * 30);
-    config_.end_date = std::chrono::system_clock::now();
+    config_.strategy_config.start_date = std::chrono::system_clock::now() - std::chrono::hours(24 * 30);
+    config_.strategy_config.end_date = std::chrono::system_clock::now();
     
     // 2. Strategy initialization failure
     auto failing_strategy = std::make_shared<MockStrategy>();
@@ -858,7 +858,7 @@ TEST_F(BacktestEngineTest, TransactionCosts) {
     
     for (double rate : commission_rates) {
         // Update config
-        config_.commission_rate = rate;
+        config_.strategy_config.commission_rate = rate;
         
         auto engine = std::make_unique<BacktestEngine>(config_, db_);
         auto strategy = std::make_shared<MockStrategy>();
