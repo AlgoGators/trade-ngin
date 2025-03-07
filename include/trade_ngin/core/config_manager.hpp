@@ -2,6 +2,7 @@
 
 #include "trade_ngin/core/types.hpp"
 #include "trade_ngin/core/error.hpp"
+#include "trade_ngin/core/config_base.hpp"
 #include <nlohmann/json.hpp>
 #include <string>
 #include <memory>

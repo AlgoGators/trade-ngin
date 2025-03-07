@@ -20,7 +20,7 @@ namespace trade_ngin {
 /**
  * @brief Configuration for portfolio management
  */
-struct PortfolioConfig {
+struct PortfolioConfig : public ConfigBase {
     double total_capital{0.0};            // Total portfolio capital
     double reserve_capital{0.0};          // Capital to keep in reserve
     double max_strategy_allocation{1.0};   // Maximum allocation to any strategy
@@ -29,6 +29,54 @@ struct PortfolioConfig {
     bool use_risk_management{false};      // Whether to use risk management
     DynamicOptConfig opt_config;          // Optimization configuration
     RiskConfig risk_config;               // Risk management configuration
+
+    std::string version{"1.0.0"};         // Configuration version
+
+    PortfolioConfig() = default;
+
+    PortfolioConfig(double total_capital, double reserve_capital,
+        double max_strategy_allocation, double min_strategy_allocation,
+        bool use_optimization, bool use_risk_management)
+        : total_capital(total_capital), reserve_capital(reserve_capital),
+          max_strategy_allocation(max_strategy_allocation),
+          min_strategy_allocation(min_strategy_allocation),
+          use_optimization(use_optimization),
+          use_risk_management(use_risk_management) {}
+
+    // JSON serialization
+    nlohmann::json to_json() const override {
+        nlohmann::json j;
+        j["total_capital"] = total_capital;
+        j["reserve_capital"] = reserve_capital;
+        j["max_strategy_allocation"] = max_strategy_allocation;
+        j["min_strategy_allocation"] = min_strategy_allocation;
+        j["use_optimization"] = use_optimization;
+        j["use_risk_management"] = use_risk_management;
+        j["opt_config"] = opt_config.to_json();
+        j["risk_config"] = risk_config.to_json();
+        j["version"] = version;
+        return j;
+    }
+
+    void from_json(const nlohmann::json& j) override {
+        if (j.contains("total_capital")) total_capital = j.at("total_capital").get<double>();
+        if (j.contains("reserve_capital")) reserve_capital = j.at("reserve_capital").get<double>();
+        if (j.contains("max_strategy_allocation")) {
+            max_strategy_allocation = j.at("max_strategy_allocation").get<double>();
+        }
+        if (j.contains("min_strategy_allocation")) {
+            min_strategy_allocation = j.at("min_strategy_allocation").get<double>();
+        }
+        if (j.contains("use_optimization")) {
+            use_optimization = j.at("use_optimization").get<bool>();
+        }
+        if (j.contains("use_risk_management")) {
+            use_risk_management = j.at("use_risk_management").get<bool>();
+        }
+        if (j.contains("opt_config")) opt_config.from_json(j.at("opt_config"));
+        if (j.contains("risk_config")) risk_config.from_json(j.at("risk_config"));
+        if (j.contains("version")) version = j.at("version").get<std::string>();
+    }
 };
 
 /**

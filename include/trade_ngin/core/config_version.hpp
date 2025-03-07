@@ -27,15 +27,17 @@ struct ConfigVersion {
     }
     
     static ConfigVersion from_string(const std::string& version_str) {
-        ConfigVersion version;
         std::regex version_regex(R"((\d+)\.(\d+)\.(\d+))");
         std::smatch matches;
         
-        if (std::regex_match(version_str, matches, version_regex) && matches.size() == 4) {
-            version.major = std::stoi(matches[1].str());
-            version.minor = std::stoi(matches[2].str());
-            version.patch = std::stoi(matches[3].str());
+        if (!std::regex_match(version_str, matches, version_regex)) {
+            throw std::runtime_error("Invalid version format: " + version_str);
         }
+        
+        ConfigVersion version;
+        version.major = std::stoi(matches[1]);
+        version.minor = std::stoi(matches[2]);
+        version.patch = std::stoi(matches[3]);
         
         return version;
     }

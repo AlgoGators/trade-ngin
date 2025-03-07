@@ -46,4 +46,6 @@ Result<void> ConfigBase::load_from_file(const std::string& filepath) {
         );
     }
 
+}
+
 } // namespace trade_ngin

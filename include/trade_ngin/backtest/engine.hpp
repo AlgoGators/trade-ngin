@@ -6,7 +6,7 @@
 #include "trade_ngin/core/config_base.hpp"
 #include "trade_ngin/backtest/slippage_models.hpp"
 #include "trade_ngin/strategy/strategy_interface.hpp"
-#include "trade_ngin/data/database_interface.hpp"
+#include "trade_ngin/data/postgres_database.hpp"
 #include "trade_ngin/risk/risk_manager.hpp"
 #include "trade_ngin/optimization/dynamic_optimizer.hpp"
 #include <memory>

@@ -266,6 +266,7 @@ Result<void> BaseStrategy::on_execution(const ExecutionReport& report) {
             }
             
             pos.realized_pnl += realized_pnl;
+            metrics_.realized_pnl += realized_pnl;
             metrics_.total_pnl += realized_pnl;
         }
         
@@ -431,7 +432,8 @@ Result<void> BaseStrategy::check_risk_limits() {
     if (leverage > risk_limits_.max_leverage) {
         return make_error<void>(
             ErrorCode::RISK_LIMIT_EXCEEDED,
-            "Leverage exceeds limit: " + std::to_string(leverage),
+            "Leverage exceeds limit of " + std::to_string(risk_limits_.max_leverage) + ": "
+            + std::to_string(leverage),
             "BaseStrategy"
         );
     }
@@ -549,11 +551,12 @@ Result<void> BaseStrategy::update_metrics() {
     // Calculate total unrealized P&L
     double total_unrealized = 0.0;
     for (const auto& [symbol, position] : positions_) {
-        // Note: This is simplified - in reality you'd need current market prices
+        // Note: This is simplified - in reality we'd need current market prices
         total_unrealized += position.unrealized_pnl;
     }
     
-    metrics_.total_pnl = total_unrealized;  // Plus realized P&L
+    metrics_.unrealized_pnl = total_unrealized; 
+    metrics_.total_pnl = metrics_.unrealized_pnl + metrics_.realized_pnl;
     
     // Update other metrics
     if (metrics_.total_trades > 0) {

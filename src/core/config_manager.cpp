@@ -655,7 +655,6 @@ nlohmann::json ConfigManager::create_default_risk_config() const {
 
 nlohmann::json ConfigManager::create_default_execution_config() const {
     nlohmann::json config;
-    nlohmann::json config;
     config["max_orders_per_second"] = 100;
     config["max_pending_orders"] = 1000;
     config["max_order_size"] = 100000.0;
