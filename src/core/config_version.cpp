@@ -9,39 +9,6 @@
 
 namespace trade_ngin {
 
-std::string ConfigVersion::to_string() const {
-    std::stringstream ss;
-    ss << major << "." << minor << "." << patch;
-    return ss.str();
-}
-
-ConfigVersion ConfigVersion::from_string(const std::string& version_str) {
-    std::regex version_regex(R"((\d+)\.(\d+)\.(\d+))");
-    std::smatch matches;
-    
-    if (!std::regex_match(version_str, matches, version_regex)) {
-        throw std::runtime_error("Invalid version string: " + version_str);
-    }
-
-    return ConfigVersion{
-        std::stoi(matches[1].str()),
-        std::stoi(matches[2].str()),
-        std::stoi(matches[3].str())
-    };
-}
-
-bool ConfigVersion::operator<(const ConfigVersion& other) const {
-    if (major != other.major) return major < other.major;
-    if (minor != other.minor) return minor < other.minor;
-    return patch < other.patch;
-}
-
-bool ConfigVersion::operator==(const ConfigVersion& other) const {
-    return major == other.major && 
-           minor == other.minor && 
-           patch == other.patch;
-}
-
 Result<void> ConfigVersionManager::register_migration(
     const ConfigVersion& from_version,
     const ConfigVersion& to_version,

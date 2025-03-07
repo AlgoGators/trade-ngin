@@ -148,12 +148,10 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
             // Wait for enough data before processing
             if (price_history_[bar.symbol].size() < max_window) {
                 if (price_history_[bar.symbol].size() % 50 == 0) {
-                    std::cout << "Waiting for enough data for symbol " << bar.symbol
-                        << " (" << price_history_[bar.symbol].size() << " of " << max_window << ")" << std::endl;
+                    INFO("Waiting for enough data for symbol " + bar.symbol
+                        + " (" + std::to_string(price_history_[bar.symbol].size()) + " of " 
+                        + std::to_string(max_window) + ")");
                 }
-                INFO("Waiting for enough data for symbol " + bar.symbol
-                + " (" + std::to_string(price_history_[bar.symbol].size()) + " of " 
-                + std::to_string(max_window) + ")");
                 continue;
             }
             

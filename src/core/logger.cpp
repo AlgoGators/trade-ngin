@@ -145,18 +145,4 @@ void Logger::rotate_log_files() {
     log_file_.open(new_filename, std::ios::app);
 }
 
-std::string Logger::level_to_string(LogLevel level) {
-    static const std::unordered_map<LogLevel, std::string> level_strings = {
-        {LogLevel::TRACE, "TRACE"},
-        {LogLevel::DEBUG, "DEBUG"},
-        {LogLevel::INFO, "INFO"},
-        {LogLevel::WARNING, "WARNING"},
-        {LogLevel::ERR, "ERROR"},
-        {LogLevel::FATAL, "FATAL"}
-    };
-
-    auto it = level_strings.find(level);
-    return it != level_strings.end() ? it->second : "UNKNOWN";
-}
-
 } // namespace trade_ngin

@@ -24,6 +24,14 @@ struct DynamicOptConfig : public ConfigBase {
     // Configuration metadata
     std::string version{"1.0.0"};
 
+    DynamicOptConfig() = default;
+
+    DynamicOptConfig(double tau, double capital, double asymmetric_risk_buffer, 
+        int cost_penalty_scalar, size_t max_iterations, double convergence_threshold)
+        : tau(tau), capital(capital), asymmetric_risk_buffer(asymmetric_risk_buffer),
+          cost_penalty_scalar(cost_penalty_scalar), max_iterations(max_iterations),
+          convergence_threshold(convergence_threshold) {}
+
     nlohmann::json to_json() const override {
         nlohmann::json j;
         j["tau"] = tau;

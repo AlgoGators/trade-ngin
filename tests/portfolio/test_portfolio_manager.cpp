@@ -17,13 +17,14 @@ protected:
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
         
         // Create portfolio config
-        PortfolioConfig config;
-        config.total_capital = 1000000.0;    // $1M
-        config.reserve_capital = 100000.0;    // $100K reserve
-        config.max_strategy_allocation = 0.4;  // 40% max per strategy
-        config.min_strategy_allocation = 0.1;  // 10% min per strategy
-        config.use_optimization = false;
-        config.use_risk_management = false;
+        PortfolioConfig config{
+            1000000.0,    // total_capital ($1M)
+            100000.0,     // reserve_capital ($100K reserve)
+            0.4,          // max_strategy_allocation (40% max per strategy)
+            0.1,          // min_strategy_allocation (10% min per strategy)
+            false,        // use_optimization
+            false         // use_risk_management
+        };
 
         // Set up optimization config
         config.opt_config.tau = 1.0;
