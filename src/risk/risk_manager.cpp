@@ -161,8 +161,7 @@ double RiskManager::calculate_correlation_multiplier(
 double RiskManager::calculate_leverage_multiplier(
     const std::vector<double>& weights,
     double total_value,
-    RiskResult& result) const 
-{
+    RiskResult& result) const {
     // Calculate gross and net leverage
     double gross = total_value;
     
@@ -180,11 +179,16 @@ double RiskManager::calculate_leverage_multiplier(
     
     result.max_leverage_risk = calculate_99th_percentile(historical_leverage);
     
-    return std::min({
-        1.0,
-        config_.max_gross_leverage / result.gross_leverage,
-        config_.max_net_leverage / result.net_leverage
-    });
+    // Only scale down positions if leverage exceeds limits
+    double gross_multiplier = result.gross_leverage > config_.max_gross_leverage 
+        ? config_.max_gross_leverage / result.gross_leverage 
+        : 1.0;
+        
+    double net_multiplier = result.net_leverage > config_.max_net_leverage 
+        ? config_.max_net_leverage / result.net_leverage 
+        : 1.0;
+
+    return std::min({1.0, gross_multiplier, net_multiplier});
 }
 
 Result<void> RiskManager::update_market_data(const std::vector<Bar>& data) {
