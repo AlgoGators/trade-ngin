@@ -1,4 +1,4 @@
-# Use a base image with C++ build tools
+# Builder Stage
 FROM ubuntu:22.04 AS builder
 
 # Avoid prompts during package installation
@@ -28,7 +28,7 @@ RUN git clone https://github.com/google/googletest.git /tmp/googletest && \
 
 # Add Apache Arrow repository
 RUN wget -O - https://apt.llvm.org/llvm-snapshot.gpg.key | apt-key add - && \
-    wget -O - https://apache.jfrog.io/artifactory/arrow/ubuntu/apache-arrow-apt-source-latest-$(lsb_release -cs).deb -O /tmp/apache-arrow-apt-source.deb && \
+    wget -O /tmp/apache-arrow-apt-source.deb https://apache.jfrog.io/artifactory/arrow/ubuntu/apache-arrow-apt-source-latest-$(lsb_release -cs).deb && \
     apt-get update && apt-get install -y /tmp/apache-arrow-apt-source.deb && \
     apt-get update
 
@@ -66,7 +66,7 @@ WORKDIR /app
 # Copy the source code
 COPY . .
 
-# Fix the missing includes
+# Fix the missing includes and adjust function signature in tests
 RUN sed -i '1i\#include <algorithm>' src/core/logger.cpp && \
     sed -i '1i\#include <atomic>' include/trade_ngin/order/order_manager.hpp && \
     sed -i '1i\#include <atomic>' src/order/order_manager.cpp && \
@@ -75,29 +75,29 @@ RUN sed -i '1i\#include <algorithm>' src/core/logger.cpp && \
     sed -i '1i\#include <thread>' tests/execution/test_execution_engine.cpp && \
     sed -i '1i\#include <cmath>' tests/portfolio/mock_strategy.hpp && \
     sed -i '1i\#include <thread>' tests/portfolio/test_portfolio_manager.cpp && \
-    sed -i '1i\#include <thread>' tests/backtesting/test_engine.cpp
+    sed -i '1i\#include <chrono>' tests/backtesting/test_engine.cpp && \
+    sed -i '1i\#include <thread>' tests/backtesting/test_engine.cpp && \
+    sed -i 's/void BacktestEngineTest::patch_mock_db_to_return_test_data/void patch_mock_db_to_return_test_data/' tests/backtesting/test_engine.cpp
 
-# Create build directory
+# Create build directory and build the project
 RUN mkdir -p build
-
-# Configure and build the project
 WORKDIR /app/build
 RUN cmake .. \
     -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
-    && cmake --build . --config Release
+    -DCMAKE_POSITION_INDEPENDENT_CODE=ON && \
+    cmake --build . --config Release
 
 # Debug: List ALL executables built in the project
 RUN echo "ALL EXECUTABLES:" && \
     find /app -type f -executable -not -path "*/\.*" | sort
 
-# Create a minimal runtime image
+# Runtime Stage
 FROM ubuntu:22.04
 
 # Avoid prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install basic tools and dependencies
+# Install basic runtime tools and dependencies
 RUN apt-get update && apt-get install -y \
     wget \
     gnupg \
@@ -108,11 +108,11 @@ RUN apt-get update && apt-get install -y \
 
 # Add Apache Arrow repository
 RUN wget -O - https://apt.llvm.org/llvm-snapshot.gpg.key | apt-key add - && \
-    wget -O - https://apache.jfrog.io/artifactory/arrow/ubuntu/apache-arrow-apt-source-latest-$(lsb_release -cs).deb -O /tmp/apache-arrow-apt-source.deb && \
+    wget -O /tmp/apache-arrow-apt-source.deb https://apache.jfrog.io/artifactory/arrow/ubuntu/apache-arrow-apt-source-latest-$(lsb_release -cs).deb && \
     apt-get update && apt-get install -y /tmp/apache-arrow-apt-source.deb && \
     apt-get update
 
-# Install runtime dependencies
+# Install runtime dependencies for Arrow
 RUN apt-get install -y \
     libarrow-dev \
     libarrow-dataset-dev \
@@ -127,24 +127,24 @@ COPY --from=builder /usr/local/include/ /usr/local/include/
 RUN ldconfig
 
 # Copy the entire app directory (including build artifacts)
-COPY --from=builder /app /app/
+COPY --from=builder /app /app
 
-# Create a startup script
-RUN echo '#!/bin/bash\n\
-echo "Searching for trade_ngin executable..."\n\
-EXES=$(find /app -type f -executable -name "*trade_ngin*" 2>/dev/null)\n\
-\n\
-if [ -n "$EXES" ]; then\n\
-  # Use the first matching executable\n\
-  EXECUTABLE=$(echo "$EXES" | head -n 1)\n\
-  echo "Found executable: $EXECUTABLE"\n\
-  exec "$EXECUTABLE" "$@"\n\
-else\n\
-  echo "Error: No trade_ngin executable found. Available executables:"\n\
-  find /app -type f -executable | sort\n\
-  exit 1\n\
-fi' > /app/startup.sh && \
-    chmod +x /app/startup.sh
+# Create the startup script using traditional RUN/echo commands
+RUN echo '#!/bin/bash' > /app/startup.sh && \
+    echo 'echo "Searching for trade_ngin executable..."' >> /app/startup.sh && \
+    echo 'EXES=$(find /app -type f -executable -name "*trade_ngin*" 2>/dev/null)' >> /app/startup.sh && \
+    echo 'if [ -n "$EXES" ]; then' >> /app/startup.sh && \
+    echo '  EXECUTABLE=$(echo "$EXES" | head -n 1)' >> /app/startup.sh && \
+    echo '  echo "Found executable: $EXECUTABLE"' >> /app/startup.sh && \
+    echo '  exec "$EXECUTABLE" "$@"' >> /app/startup.sh && \
+    echo 'else' >> /app/startup.sh && \
+    echo '  echo "Error: No trade_ngin executable found. Available executables:"' >> /app/startup.sh && \
+    echo '  find /app -type f -executable | sort' >> /app/startup.sh && \
+    echo '  exit 1' >> /app/startup.sh && \
+    echo 'fi' >> /app/startup.sh
+
+# Make the startup script executable
+RUN chmod +x /app/startup.sh
 
 # Set the library path
 ENV LD_LIBRARY_PATH=/usr/local/lib:/app/build:/app/lib
