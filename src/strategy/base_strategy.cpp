@@ -21,6 +21,10 @@ BaseStrategy::BaseStrategy(std::string id,
     metadata_.id = id_;
     metadata_.name = "Base Strategy";
     metadata_.description = "Base strategy implementation";
+
+    // Initialize risk limits from config
+    risk_limits_.max_leverage = config_.max_leverage;
+    risk_limits_.max_drawdown = config_.max_drawdown;
 }
 
 Result<void> BaseStrategy::initialize() {
@@ -429,7 +433,18 @@ Result<void> BaseStrategy::check_risk_limits() {
         leverage = 0.0;  // No leverage when no positions
     }
 
-    if (leverage > risk_limits_.max_leverage) {
+    // Make sure we have a valid leverage limit
+    double max_leverage = risk_limits_.max_leverage;
+    if (max_leverage <= 0.0) {
+        // Use a reasonable default if not set
+        max_leverage = config_.max_leverage > 0.0 ? config_.max_leverage : 2.0;
+
+        // Log a warning that we're using a default value
+        WARN("Risk limit max_leverage was 0 or negative. Using " +
+             std::to_string(max_leverage) + " as default.");
+    }
+
+    if (leverage > max_leverage) {
         return make_error<void>(
             ErrorCode::RISK_LIMIT_EXCEEDED,
             "Leverage exceeds limit of " + std::to_string(risk_limits_.max_leverage) + ": "

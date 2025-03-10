@@ -24,6 +24,7 @@ TO-DO:
     - Integrate risk multipliers at the portfolio level
     - Update all the configs to save / load to a file
     - Fully implement logger
+    - Remove wait times in tests (if possible)
 */
 
 int main() {
