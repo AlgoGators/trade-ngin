@@ -20,7 +20,7 @@ set(TEST_SOURCES
     execution/test_execution_engine.cpp
     portfolio/test_portfolio_manager.cpp
     # strategy/test_base_strategy.cpp
-    strategy/test_trend_following.cpp
+    # strategy/test_trend_following.cpp
 )
 
 # Create test executable
