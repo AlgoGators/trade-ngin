@@ -75,6 +75,12 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data)
     std::vector<std::string> processed_strategies;
     
     try {
+        // Store current positions for each strategy to detect changes
+        std::unordered_map<std::string, std::unordered_map<std::string, Position>> prev_positions;
+        for (const auto& [id, info] : strategies_) {
+            prev_positions[id] = info.current_positions;
+        }
+
         // Process data through each strategy
         for (auto& [id, info] : strategies_) {
             if (!info.strategy) {
@@ -121,6 +127,54 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data)
             auto risk_result = apply_risk_management();
             if (risk_result.is_error()) {
                 return risk_result;
+            }
+        }
+
+        // Generate execution reports for position changes
+        for (auto& [id, info] : strategies_) {
+            for (const auto& [symbol, new_pos] : info.target_positions) {
+                double current_qty = 0.0;
+                
+                // Get previous position quantity
+                auto prev_pos_it = prev_positions[id].find(symbol);
+                if (prev_pos_it != prev_positions[id].end()) {
+                    current_qty = prev_pos_it->second.quantity;
+                }
+                
+                // If position changed, create execution report
+                if (std::abs(new_pos.quantity - current_qty) > 1e-6) {
+                    // Calculate trade size
+                    double trade_size = new_pos.quantity - current_qty;
+                    Side side = trade_size > 0 ? Side::BUY : Side::SELL;
+                    
+                    // Find latest price for symbol
+                    double latest_price = 0.0;
+                    for (const auto& bar : data) {
+                        if (bar.symbol == symbol) {
+                            latest_price = bar.close;
+                            break;
+                        }
+                    }
+                    
+                    if (latest_price == 0.0) {
+                        continue; // Skip if price not available
+                    }
+                    
+                    // Create execution report
+                    ExecutionReport exec;
+                    exec.order_id = "PM-" + id + "-" + std::to_string(recent_executions_.size());
+                    exec.exec_id = "EX-" + id + "-" + std::to_string(recent_executions_.size());
+                    exec.symbol = symbol;
+                    exec.side = side;
+                    exec.filled_quantity = std::abs(trade_size);
+                    exec.fill_price = latest_price;
+                    exec.fill_time = data.empty() ? std::chrono::system_clock::now() : data[0].timestamp;
+                    exec.commission = 0.0; // Commission calculation would be done by backtest engine
+                    exec.is_partial = false;
+                    
+                    // Add to recent executions
+                    recent_executions_.push_back(exec);
+                }
             }
         }
         
@@ -345,6 +399,50 @@ Result<void> PortfolioManager::validate_allocations(
     }
     
     return Result<void>();
+}
+
+std::vector<ExecutionReport> PortfolioManager::get_recent_executions() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return recent_executions_;
+}
+
+void PortfolioManager::clear_execution_history() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    recent_executions_.clear();
+}
+
+std::vector<std::shared_ptr<StrategyInterface>> PortfolioManager::get_strategies() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::vector<std::shared_ptr<StrategyInterface>> result;
+    result.reserve(strategies_.size());
+    
+    for (const auto& [_, info] : strategies_) {
+        result.push_back(info.strategy);
+    }
+    
+    return result;
+}
+
+double PortfolioManager::get_portfolio_value(const std::unordered_map<std::string, double>& current_prices) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    
+    // Start with available capital
+    double portfolio_value = config_.total_capital - config_.reserve_capital;
+    
+    // Add value of positions
+    auto positions = get_portfolio_positions();
+    for (const auto& [symbol, pos] : positions) {
+        auto it = current_prices.find(symbol);
+        if (it != current_prices.end()) {
+            // Use the provided price
+            portfolio_value += pos.quantity * it->second;
+        } else {
+            // Fall back to average price if current price not available
+            portfolio_value += pos.quantity * pos.average_price;
+        }
+    }
+    
+    return portfolio_value;
 }
 
 } // namespace trade_ngin
