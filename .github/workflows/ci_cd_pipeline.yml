@@ -1,0 +1,85 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - rebuild
+  pull_request:
+    branches:
+      - rebuild
+
+jobs:
+  lint:
+    name: Lint Code
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Run C++ and Clang Format Linter
+        run: |
+          docker run --rm -v $(pwd):/app -w /app cpp-linter:latest clang-format -i src/**/*.cpp include/**/*.hpp
+          docker run --rm -v $(pwd):/app -w /app cpp-linter:latest cpplint --recursive src include
+
+      - name: Check for Formatting and Linting Issues
+        run: |
+          git diff --exit-code || echo "Linting errors detected! Review the changes."
+
+      - name: Upload Linting Report
+        run: |
+          git diff > linting_report.txt || true
+
+      - name: Upload Linting Errors
+        uses: actions/upload-artifact@v4
+        with:
+          name: linting-report
+          path: linting_report.txt
+
+  build:
+    name: Build and Compile
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Build Docker Image
+        run: |
+          docker build -t trade_ngin .
+
+      - name: Compile Code inside Docker
+        run: |
+          docker run --rm -v $(pwd):/app -w /app trade_ngin cmake -B build && cmake --build build
+
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Run Unit Tests in Container
+        run: |
+          docker run --rm -v $(pwd):/app -w /app/build trade_ngin ctest --output-on-failure
+
+      - name: Run Code Coverage
+        run: |
+          docker run --rm -v $(pwd):/app -w /app/build trade_ngin lcov --capture --directory . --output-file coverage.info
+          docker run --rm -v $(pwd):/app -w /app/build trade_ngin lcov --list coverage.info
+
+      - name: Generate Coverage Report with Gcovr
+        run: |
+          docker run --rm -v $(pwd):/app -w /app/build trade_ngin gcovr --root . --exclude tests --xml-pretty --output coverage.xml --html --html-details --output coverage.html --filter ../src
+
+      - name: Upload Coverage Report (HTML)
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: build/coverage.html
+
+      - name: Upload Cobertura Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: cobertura-report
+          path: build/coverage.xml
