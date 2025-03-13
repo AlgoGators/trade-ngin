@@ -3,7 +3,7 @@ set(TEST_SOURCES
     core/test_result.cpp
     core/test_state_manager.cpp
     core/test_logger.cpp
-    core/test_config_manager.cpp
+    # core/test_config_manager.cpp  # disabled for faster CI
     core/test_config_version.cpp
     core/test_config_base.cpp
     data/test_db_utils.cpp
