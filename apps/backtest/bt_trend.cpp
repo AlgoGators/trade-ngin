@@ -29,7 +29,10 @@ TO-DO:
 
 int main() {
     try {
+        std::cout << "=== Starting Backtest Setup ===" << std::endl;
+        
         // 1. Initialize database connection
+        std::cout << "Initializing database connection..." << std::endl;
         auto credentials = std::make_shared<trade_ngin::CredentialStore>("./config.json");
         std::string username = credentials->get<std::string>("database", "username");
         std::string password = credentials->get<std::string>("database", "password");
@@ -46,13 +49,18 @@ int main() {
             std::cerr << "Failed to connect to database: " << connect_result.error()->what() << std::endl;
             return 1;
         }
+        std::cout << "Database connection successful" << std::endl;
         
         // 2. Configure backtest parameters
+        std::cout << "\nConfiguring backtest parameters..." << std::endl;
         trade_ngin::backtest::BacktestConfig config;
+
         config.strategy_config.start_date = std::chrono::system_clock::now() - std::chrono::hours(24 * 365 * 3); // 3 years of data
         config.strategy_config.end_date = std::chrono::system_clock::now();
         config.strategy_config.asset_class = trade_ngin::AssetClass::FUTURES;
         config.strategy_config.data_freq = trade_ngin::DataFrequency::DAILY;
+        config.strategy_config.commission_rate = 0.0005; // 5 basis points
+        config.strategy_config.slippage_model = 1.0; // 1 basis point
         
         auto symbols = db->get_symbols(trade_ngin::AssetClass::FUTURES);
         if (symbols.is_ok()) {
@@ -67,15 +75,17 @@ int main() {
             std::cout << symbol << " ";
         }
 
-        exit(0);
-        
+        // Configure portfolio settings
         config.portfolio_config.initial_capital = 1000000.0;  // $1M
-        config.strategy_config.commission_rate = 0.0005;     // 5 basis points
-        config.strategy_config.slippage_model = 1.0;         // 1 basis point
         config.portfolio_config.use_risk_management = true;
         config.portfolio_config.use_optimization = true;
         
-        // 3. Configure risk management
+        std::cout << "Retrieved " << config.strategy_config.symbols.size() << " symbols" << std::endl;
+        std::cout << "Initial capital: $" << config.portfolio_config.initial_capital << std::endl;
+        std::cout << "Commission rate: " << (config.strategy_config.commission_rate * 100) << " bps" << std::endl;
+        std::cout << "Slippage model: " << config.strategy_config.slippage_model << " bps" << std::endl;
+        
+        // 3. Configure portfolio risk management
         config.portfolio_config.risk_config.capital = config.portfolio_config.initial_capital;
         config.portfolio_config.risk_config.confidence_level = 0.99;
         config.portfolio_config.risk_config.lookback_period = 252;
@@ -85,7 +95,7 @@ int main() {
         config.portfolio_config.risk_config.max_gross_leverage = 4.0;
         config.portfolio_config.risk_config.max_net_leverage = 2.0;
         
-        // 4. Configure optimization
+        // 4. Configure portfolio optimization
         config.portfolio_config.opt_config.tau = 1.0;
         config.portfolio_config.opt_config.capital = config.portfolio_config.initial_capital;
         config.portfolio_config.opt_config.asymmetric_risk_buffer = 0.1;
@@ -106,21 +116,16 @@ int main() {
         portfolio_config.use_risk_management = true;
         portfolio_config.opt_config = config.portfolio_config.opt_config;
         portfolio_config.risk_config = config.portfolio_config.risk_config;
-
-        // 7. Create portfolio manager
-        auto portfolio = std::make_shared<trade_ngin::PortfolioManager>(portfolio_config);
-
-        // 8. Configure strategies
         
-        // 8.1. Trend following strategy
+        // Create trend following strategy configuration
         trade_ngin::StrategyConfig tf_config;
-        tf_config.capital_allocation = config.portfolio_config.initial_capital * 1.0; // 100% allocation
+        tf_config.capital_allocation = config.portfolio_config.initial_capital;
         tf_config.max_leverage = 4.0;
         tf_config.save_positions = true;
         tf_config.save_signals = true;
         tf_config.save_executions = true;
         
-        // Add position limits
+        // Add position limits and contract sizes
         for (const auto& symbol : config.strategy_config.symbols) {
             tf_config.position_limits[symbol] = 1000.0;  // Max 1000 units per symbol
             tf_config.trading_params[symbol] = 1.0;      // *CHANGE*: Contract size multiplier
@@ -133,21 +138,20 @@ int main() {
         trend_config.risk_target = 0.2;       // Target 20% annualized risk
         trend_config.idm = 2.5;               // Instrument diversification multiplier
         trend_config.use_position_buffering = true;
-        
-        // EMA window pairs
         trend_config.ema_windows = {
             {2, 8}, {4, 16}, {8, 32}, {16, 64}, {32, 128}, {64, 256}
         };
-        
         trend_config.vol_lookback_short = 32;  // Short vol lookback
         trend_config.vol_lookback_long = 252;  // Long vol lookback
-        
-        // Define FDM (forecast diversification multiplier)
         trend_config.fdm = {
             {1, 1.0}, {2, 1.03}, {3, 1.08}, {4, 1.13}, {5, 1.19}, {6, 1.26}
         };
         
-        // 9. Create and initialize the strategies
+        // 8. Create and initialize the strategies
+        std::cout << "\nInitializing TrendFollowingStrategy..." << std::endl;
+        std::cout << "Strategy capital allocation: $" << tf_config.capital_allocation << std::endl;
+        std::cout << "Max leverage: " << tf_config.max_leverage << "x" << std::endl;
+        
         auto tf_strategy = std::make_shared<trade_ngin::TrendFollowingStrategy>(
             "TREND_FOLLOWING", tf_config, trend_config, db);
         
@@ -156,16 +160,29 @@ int main() {
             std::cerr << "Failed to initialize strategy: " << init_result.error()->what() << std::endl;
             return 1;
         }
-        
-        // 10. Add strategies to the portfolio
-        portfolio->add_strategy(tf_strategy, tf_config.capital_allocation, true, true);
+        std::cout << "Strategy initialization successful" << std::endl;
 
-        // 11. Run the backtest
-        std::cout << "Starting backtest..." << std::endl;
-        auto result = engine->run(tf_strategy); // *CHANGE*: Run the portfolio instead of the strategy
+        // 9. Create portfolio manager and add strategy
+        auto portfolio = std::make_shared<trade_ngin::PortfolioManager>(portfolio_config);
+        auto add_result = portfolio->add_strategy(tf_strategy, 1.0, 
+                                config.portfolio_config.use_optimization,
+                                config.portfolio_config.use_risk_management);
+        if (add_result.is_error()) {
+            std::cerr << "Failed to add strategy to portfolio: " << add_result.error()->what() << std::endl;
+            return 1;
+        } 
+
+        // 10. Run the backtest
+        std::cout << "\n=== Starting Backtest Execution ===" << std::endl;
+        std::cout << "Time period: " << 
+            std::chrono::system_clock::to_time_t(config.strategy_config.start_date) << " to " <<
+            std::chrono::system_clock::to_time_t(config.strategy_config.end_date) << std::endl;
+        
+        auto result = engine->run_portfolio(portfolio);
         
         if (result.is_error()) {
             std::cerr << "Backtest failed: " << result.error()->what() << std::endl;
+            std::cerr << "Error code: " << static_cast<int>(result.error()->code()) << std::endl;
             return 1;
         }
         

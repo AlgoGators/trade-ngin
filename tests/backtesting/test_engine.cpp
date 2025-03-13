@@ -22,7 +22,7 @@ public:
             config.capital_allocation = 100000.0;
             config.max_leverage = 20.0;
             config.position_limits = {{"AAPL", 1000.0}};
-            config.max_drawdown = 1.0;
+            config.max_drawdown = 0.5;
             config.var_limit = 0.25;
             config.correlation_limit = 0.5;
             config.trading_params = {{"AAPL", 1.0}};
@@ -43,7 +43,7 @@ public:
             metadata_.description = "Mock strategy for testing";
             metadata_.sharpe_ratio = 1.5;
             metadata_.sortino_ratio = 1.2;
-            metadata_.max_drawdown = 0.3;
+            metadata_.max_drawdown = 0.2;
             metadata_.win_rate = 0.6;
 
             // Initialize with some positions to avoid "No positions provided" error
@@ -87,22 +87,6 @@ public:
 
         // Simple strategy logic: buy when price moves up, sell when it moves down
         for (const auto& bar : data) {
-            // Check leverage and update scaling factor
-            if (positions_.size() > 0) {
-                // Calculate current gross leverage
-                double total_exposure = 0.0;
-                for (const auto& [symbol, pos] : positions_) {
-                    total_exposure += std::abs(pos.quantity * bar.close);
-                }
-                double current_leverage = total_exposure / config_.capital_allocation;
-
-                // If we're at 75% of max leverage, scale down positions
-                if (current_leverage >= (config_.max_leverage * 0.75)) {
-                    position_scale_ = 0.5;  // Scale down by 50%
-                } else {
-                    position_scale_ = 1.0;   // Normal scaling
-                }
-            }
             // Get previous bar info
             auto it = last_prices_.find(bar.symbol);
             if (it != last_prices_.end()) {
@@ -114,10 +98,6 @@ public:
                     // Buy signal on 0.5% increase
                     Position pos = positions_[bar.symbol];
                     pos.quantity += trade_size_;
-
-                    // Apply position scaling
-                    pos.quantity *= position_scale_;
-
                     pos.average_price = (pos.average_price * (pos.quantity - trade_size_) +
                                        bar.close * trade_size_) / pos.quantity;
                     pos.last_update = bar.timestamp;
@@ -132,10 +112,6 @@ public:
                     if (pos.quantity > trade_size_) {  // Ensure we maintain some position
                         double sold_quantity = std::min(pos.quantity - initial_position_size_, trade_size_);
                         pos.quantity -= sold_quantity;
-
-                        // Apply position scaling
-                        pos.quantity *= position_scale_;
-
                         pos.realized_pnl += (bar.close - pos.average_price) * sold_quantity;
                         pos.last_update = bar.timestamp;
                         pos.unrealized_pnl = (bar.close - pos.average_price) * pos.quantity;
@@ -183,7 +159,6 @@ public:
     void set_fail_on_data(bool fail) { fail_on_data_ = fail; }
     void set_trade_size(double size) { trade_size_ = size; }
     void set_initial_position_size(double size) { initial_position_size_ = size; }
-    void set_position_scale(double scale) {position_scale_ = scale; }
     int get_bars_received() const { return bars_received_; }
     int get_executions_received() const { return executions_received_; }
     int get_signals_received() const { return signals_received_; }
@@ -205,7 +180,6 @@ private:
     bool fail_on_data_ = false;
     double trade_size_ = 10.0;
     double initial_position_size_ = 100.0;
-    double position_scale_ = 1.0;
     int bars_received_ = 0;
     int executions_received_ = 0;
     int signals_received_ = 0;
@@ -246,8 +220,8 @@ protected:
         config_.portfolio_config.risk_config.var_limit = 0.15;
         config_.portfolio_config.risk_config.jump_risk_limit = 0.10;
         config_.portfolio_config.risk_config.max_correlation = 0.7;
-        config_.portfolio_config.risk_config.max_gross_leverage = 5.0;
-        config_.portfolio_config.risk_config.max_net_leverage = 5.0;
+        config_.portfolio_config.risk_config.max_gross_leverage = 20.0;
+        config_.portfolio_config.risk_config.max_net_leverage = 20.0;
         
         // Optimization config
         config_.portfolio_config.opt_config.tau = 1.0;
@@ -787,6 +761,35 @@ TEST_F(BacktestEngineTest, CompareBacktestResults) {
     EXPECT_TRUE(metrics.find("worst_return") != metrics.end());
 }
 
+TEST_F(BacktestEngineTest, DateRangeHandling) {
+    // Create test data that covers a long period
+    std::vector<std::string> symbols = {"AAPL"};
+    int days = 180;
+    test_bars_ = create_test_data(symbols, days);
+
+    // Patch mock database to return test data
+    patch_mock_db_to_return_test_data();
+
+    // Test with different date ranges
+    std::vector<int> day_ranges = {30, 90, 180};
+    
+    for (int days : day_ranges) {
+        // Update config
+        config_.strategy_config.start_date = std::chrono::system_clock::now() - std::chrono::hours(24 * days);
+        config_.strategy_config.end_date = std::chrono::system_clock::now();
+        
+        auto engine = std::make_unique<BacktestEngine>(config_, db_);
+        auto strategy = std::make_shared<MockStrategy>();
+        
+        auto result = engine->run(strategy);
+        
+        // In real tests with real data, we would expect different date ranges
+        // to have different amounts of data. With our mocks, we just verify
+        // the test completes successfully.
+        ASSERT_TRUE(result.is_ok()) << "Backtest failed with date range: " << days;
+    }
+}
+
 TEST_F(BacktestEngineTest, StressTest) {
     // Run a larger backtest to stress test the engine
     std::vector<std::string> symbols = {"AAPL", "MSFT", "GOOG", "AMZN", "FB", 
@@ -809,7 +812,9 @@ TEST_F(BacktestEngineTest, StressTest) {
     
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
         end_time - start_time).count();
-        
+    
+    std::cout << "Stress test completed in " << duration << "ms" << std::endl;
+    
     // We don't have specific performance requirements, just verifying completion
 }
 

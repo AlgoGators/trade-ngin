@@ -317,7 +317,7 @@ Result<BacktestResults> BacktestEngine::run(
 }
 
 Result<BacktestResults> BacktestEngine::run_portfolio(
-    const std::vector<std::shared_ptr<StrategyInterface>>& strategies) {
+    std::shared_ptr<PortfolioManager> portfolio) {
     
     // Update state to running
     auto state_result = StateManager::instance().update_state(
@@ -331,51 +331,12 @@ Result<BacktestResults> BacktestEngine::run_portfolio(
     }
     
     try {
-        if (strategies.empty()) {
+        if (!portfolio) {
             return make_error<BacktestResults>(
                 ErrorCode::INVALID_ARGUMENT,
-                "No strategies provided for portfolio backtest",
+                "Null portfolio manager provided for backtest",
                 "BacktestEngine"
             );
-        }
-        
-        // Initialize all strategies
-        for (auto& strategy : strategies) {
-            auto init_result = strategy->initialize();
-            if (init_result.is_error()) {
-                ERROR("Strategy initialization failed: " + 
-                      std::string(init_result.error()->what()));
-                
-                StateManager::instance().update_state(
-                    "BACKTEST_ENGINE", 
-                    ComponentState::ERR_STATE,
-                    init_result.error()->what()
-                );
-                
-                return make_error<BacktestResults>(
-                    init_result.error()->code(),
-                    init_result.error()->what(),
-                    "BacktestEngine"
-                );
-            }
-            
-            auto start_result = strategy->start();
-            if (start_result.is_error()) {
-                ERROR("Strategy start failed: " + 
-                      std::string(start_result.error()->what()));
-                
-                StateManager::instance().update_state(
-                    "BACKTEST_ENGINE", 
-                    ComponentState::ERR_STATE,
-                    start_result.error()->what()
-                );
-                
-                return make_error<BacktestResults>(
-                    start_result.error()->code(),
-                    start_result.error()->what(),
-                    "BacktestEngine"
-                );
-            }
         }
         
         // Load historical market data
@@ -399,43 +360,15 @@ Result<BacktestResults> BacktestEngine::run_portfolio(
 
         // Initialize tracking variables
         std::vector<ExecutionReport> executions;
-        std::vector<std::unordered_map<std::string, Position>> strategy_positions(strategies.size());
-        std::unordered_map<std::string, Position> portfolio_positions;
         std::vector<std::pair<Timestamp, double>> equity_curve;
         std::vector<RiskResult> risk_metrics;
         
-        double current_equity = config_.portfolio_config.initial_capital;
-        equity_curve.emplace_back(config_.strategy_config.start_date, current_equity);
-        
-        // Allocate initial capital to each strategy based on weights
-        std::vector<double> strategy_capital;
-        if (config_.portfolio_config.strategy_weights.empty()) {
-            // Equal allocation if no weights provided
-            double equal_weight = 1.0 / strategies.size();
-            strategy_capital.resize(strategies.size(), config_.portfolio_config.initial_capital * equal_weight);
-        } else {
-            // Ensure weights sum to 1.0
-            double weight_sum = std::accumulate(
-                config_.portfolio_config.strategy_weights.begin(),
-                config_.portfolio_config.strategy_weights.end(),
-                0.0);
-            
-            if (weight_sum <= 0.0) {
-                return make_error<BacktestResults>(
-                    ErrorCode::INVALID_ARGUMENT,
-                    "Strategy weights sum to zero or negative",
-                    "BacktestEngine"
-                );
-            }
-            
-            // Normalize weights and calculate capital allocation
-            for (size_t i = 0; i < strategies.size(); ++i) {
-                double weight = i < config_.portfolio_config.strategy_weights.size() ?
-                              config_.portfolio_config.strategy_weights[i] / weight_sum : 0.0;
-                              
-                strategy_capital.push_back(config_.portfolio_config.initial_capital * weight);
-            }
-        }
+        // Get initial portfolio config
+        const auto& portfolio_config = portfolio->get_config();
+        double initial_capital = portfolio_config.total_capital - portfolio_config.reserve_capital;
+
+        // Initialize equity curve with starting point
+        equity_curve.emplace_back(config_.strategy_config.start_date, initial_capital);
         
         // Group bars by timestamp for realistic simulation
         std::map<Timestamp, std::vector<Bar>> bars_by_time;
@@ -444,28 +377,28 @@ Result<BacktestResults> BacktestEngine::run_portfolio(
         }
         
         INFO("Starting portfolio backtest simulation with " + 
-             std::to_string(strategies.size()) + " strategies and " +
+             std::to_string(portfolio->get_strategies().size()) + " strategies and " +
              std::to_string(data_result.value().size()) + " bars");
         
         size_t processed_bars = 0;
-        int time_steps = 0;
         
         // Process bars in chronological order
         for (const auto& [timestamp, bars] : bars_by_time) {
+            // Clear previous executions from portfolio manager
+            portfolio->clear_execution_history();
+
             // Process portfolio time step
-            auto result = process_portfolio_time_step(
+            auto result = process_portfolio_data(
                 timestamp,
                 bars,
-                strategies,
-                strategy_positions,
-                portfolio_positions,
+                portfolio,
                 executions,
                 equity_curve,
                 risk_metrics
             );
             
             if (result.is_error()) {
-                ERROR("Portfolio time step processing failed: " + 
+                ERROR("Portfolio data processing failed: " + 
                       std::string(result.error()->what()));
                 
                 StateManager::instance().update_state(
@@ -481,133 +414,13 @@ Result<BacktestResults> BacktestEngine::run_portfolio(
                 );
             }
             
-            // Perform portfolio rebalancing if enabled and it's time to rebalance
-            if (config_.portfolio_config.auto_rebalance && 
-                (++time_steps % config_.portfolio_config.rebalance_period == 0)) {
-                
-                // Rebalance portfolio based on original weights
-                INFO("Performing scheduled portfolio rebalance at time step " + 
-                     std::to_string(time_steps));
-                
-                // Calculate current portfolio value
-                double total_value = 0.0;
-                for (const auto& [symbol, pos] : portfolio_positions) {
-                    // Find latest price for symbol
-                    double latest_price = 0.0;
-                    for (const auto& bar : bars) {
-                        if (bar.symbol == symbol) {
-                            latest_price = bar.close;
-                            break;
-                        }
-                    }
-                    
-                    if (latest_price > 0.0) {
-                        total_value += pos.quantity * latest_price;
-                    }
-                }
-                
-                // Adjust strategy position weights
-                std::vector<double> target_weights;
-                if (config_.portfolio_config.strategy_weights.empty()) {
-                    // Equal allocation if no weights provided
-                    double equal_weight = 1.0 / strategies.size();
-                    target_weights.resize(strategies.size(), equal_weight);
-                } else {
-                    // Normalize provided weights
-                    double weight_sum = std::accumulate(
-                        config_.portfolio_config.strategy_weights.begin(),
-                        config_.portfolio_config.strategy_weights.end(),
-                        0.0);
-                    
-                    for (size_t i = 0; i < strategies.size(); ++i) {
-                        double weight = i < config_.portfolio_config.strategy_weights.size() ?
-                                      config_.portfolio_config.strategy_weights[i] / weight_sum : 0.0;
-                        target_weights.push_back(weight);
-                    }
-                }
-                
-                // Calculate strategy values and scaling factors
-                std::vector<double> strategy_values(strategies.size(), 0.0);
-                std::vector<double> scaling_factors(strategies.size(), 1.0);
-                
-                // First calculate current values per strategy
-                for (size_t i = 0; i < strategies.size(); ++i) {
-                    const auto& positions = strategy_positions[i];
-                    double strategy_value = 0.0;
-                    
-                    for (const auto& [symbol, pos] : positions) {
-                        // Find latest price for symbol
-                        double latest_price = 0.0;
-                        for (const auto& bar : bars) {
-                            if (bar.symbol == symbol) {
-                                latest_price = bar.close;
-                                break;
-                            }
-                        }
-                        
-                        if (latest_price > 0.0) {
-                            strategy_value += pos.quantity * latest_price;
-                        }
-                    }
-                    
-                    strategy_values[i] = strategy_value;
-                }
-                
-                // Then calculate scaling factors to achieve target weights
-                for (size_t i = 0; i < strategies.size(); ++i) {
-                    double target_value = total_value * target_weights[i];
-                    
-                    if (strategy_values[i] > 0.0) {
-                        scaling_factors[i] = target_value / strategy_values[i];
-                    } else {
-                        scaling_factors[i] = 1.0;  // No scaling if no positions
-                    }
-                    
-                    // Apply scaling factor to all positions in this strategy
-                    for (auto& [symbol, pos] : strategy_positions[i]) {
-                        pos.quantity *= scaling_factors[i];
-                    }
-                    
-                    // Update the strategy
-                    if (strategy_positions[i].size() > 0) {
-                        for (const auto& [symbol, pos] : strategy_positions[i]) {
-                            strategies[i]->update_position(symbol, pos);
-                        }
-                    }
-                }
-                
-                // Recombine positions after rebalancing
-                combine_strategy_positions(strategy_positions, portfolio_positions);
-                
-                // Apply portfolio constraints (risk/optimization) after rebalancing
-                if (config_.portfolio_config.use_risk_management || 
-                    config_.portfolio_config.use_optimization) {
-                    
-                    auto constraint_result = apply_portfolio_constraints(
-                        portfolio_positions, equity_curve, risk_metrics);
-                    
-                    if (constraint_result.is_error()) {
-                        WARN("Failed to apply portfolio constraints after rebalancing: " + 
-                             std::string(constraint_result.error()->what()));
-                    } else {
-                        // Redistribute constrained positions back to strategies
-                        redistribute_positions(portfolio_positions, strategy_positions, strategies);
-                    }
-                }
-            }
-            
             processed_bars += bars.size();
             
             // Periodically log progress
             if (processed_bars % 1000 == 0) {
                 INFO("Processed " + std::to_string(processed_bars) + " bars across " +
-                     std::to_string(strategies.size()) + " strategies");
+                     std::to_string(portfolio->get_strategies().size()) + " strategies");
             }
-        }
-
-        // Stop all strategies
-        for (auto& strategy : strategies) {
-            strategy->stop();
         }
 
         // Calculate final results
@@ -616,6 +429,9 @@ Result<BacktestResults> BacktestEngine::run_portfolio(
 
         // Add position and execution history
         results.executions = std::move(executions);
+
+        // Get final portfolio positions
+        auto portfolio_positions = portfolio->get_portfolio_positions();
         results.positions.reserve(portfolio_positions.size());
         for (const auto& [_, pos] : portfolio_positions) {
             results.positions.push_back(pos);
@@ -642,7 +458,7 @@ Result<BacktestResults> BacktestEngine::run_portfolio(
         );
         
         INFO("Portfolio backtest completed successfully with " + 
-             std::to_string(strategies.size()) + " strategies");
+             std::to_string(portfolio->get_strategies().size()) + " strategies");
 
         return Result<BacktestResults>(results);
 
@@ -1170,12 +986,10 @@ void BacktestEngine::redistribute_positions(
 }
 
 // Main portfolio backtesting loop
-Result<void> BacktestEngine::process_portfolio_time_step(
+Result<void> BacktestEngine::process_portfolio_data(
     const Timestamp& timestamp,
     const std::vector<Bar>& bars,
-    const std::vector<std::shared_ptr<StrategyInterface>>& strategies,
-    std::vector<std::unordered_map<std::string, Position>>& strategy_positions,
-    std::unordered_map<std::string, Position>& portfolio_positions,
+    std::shared_ptr<PortfolioManager> portfolio,
     std::vector<ExecutionReport>& executions,
     std::vector<std::pair<Timestamp, double>>& equity_curve,
     std::vector<RiskResult>& risk_metrics) {
@@ -1197,143 +1011,68 @@ Result<void> BacktestEngine::process_portfolio_time_step(
             }
         }
         
-        // Process each strategy independently
-        std::vector<ExecutionReport> period_executions;
-        
-        for (size_t i = 0; i < strategies.size(); ++i) {
-            // Feed market data to strategy
-            auto data_result = strategies[i]->on_data(bars);
-            if (data_result.is_error()) {
-                return data_result;
-            }
-            
-            // Get updated positions
-            auto new_positions = strategies[i]->get_positions();
-            
-            // Store in the strategy's slot in strategy_positions
-            strategy_positions[i] = new_positions;
+        // Process market data through portfolio manager
+        auto data_result = portfolio->process_market_data(bars);
+        if (data_result.is_error()) {
+            return data_result;
         }
         
-        // Combine positions from all strategies
-        std::unordered_map<std::string, Position> new_portfolio_positions;
-        combine_strategy_positions(strategy_positions, new_portfolio_positions);
+        // Get executions from the portfolio manager
+        auto period_executions = portfolio->get_recent_executions();
         
-        // 3. Generate executions for position changes at portfolio level
-        for (const auto& [symbol, new_pos] : new_portfolio_positions) {
-            const auto current_it = portfolio_positions.find(symbol);
-            double current_qty = (current_it != portfolio_positions.end()) ? 
-                current_it->second.quantity : 0.0;
-            
-            if (std::abs(new_pos.quantity - current_qty) > 1e-6) {
-                // Find latest price for symbol
-                double latest_price = 0.0;
+        // Apply slippage and transaction costs to executions
+        for (auto& exec : period_executions) {
+            // Apply slippage
+            if (slippage_model_) {
+                // Find the bar for this symbol
+                std::optional<Bar> symbol_bar;
                 for (const auto& bar : bars) {
-                    if (bar.symbol == symbol) {
-                        latest_price = bar.close;
+                    if (bar.symbol == exec.symbol) {
+                        symbol_bar = bar;
                         break;
                     }
                 }
                 
-                if (latest_price == 0.0) {
-                    continue; // Skip if price not available
-                }
+                double adjusted_price = slippage_model_->calculate_slippage(
+                    exec.fill_price, 
+                    exec.filled_quantity, 
+                    exec.side,
+                    symbol_bar
+                );
                 
-                // Calculate trade size
-                double trade_size = new_pos.quantity - current_qty;
-                Side side = trade_size > 0 ? Side::BUY : Side::SELL;
-                
-                // Apply slippage
-                double fill_price;
-                if (slippage_model_) {
-                    // Find the bar for this symbol
-                    std::optional<Bar> symbol_bar;
-                    for (const auto& bar : bars) {
-                        if (bar.symbol == symbol) {
-                            symbol_bar = bar;
-                            break;
-                        }
-                    }
-                    
-                    fill_price = slippage_model_->calculate_slippage(
-                        latest_price, 
-                        std::abs(trade_size), 
-                        side,
-                        symbol_bar
-                    );
-                } else {
-                    double slip_factor = config_.strategy_config.slippage_model / 10000.0;
-                    fill_price = side == Side::BUY ? 
-                               latest_price * (1.0 + slip_factor) : 
-                               latest_price * (1.0 - slip_factor);
-                }
-                
-                // Create execution report
-                ExecutionReport exec;
-                exec.order_id = "BT-" + std::to_string(equity_curve.size());
-                exec.exec_id = "EX-" + std::to_string(equity_curve.size());
-                exec.symbol = symbol;
-                exec.side = side;
-                exec.filled_quantity = std::abs(trade_size);
-                exec.fill_price = fill_price;
-                exec.fill_time = timestamp;
-                exec.commission = calculate_transaction_costs(exec);
-                exec.is_partial = false;
-                
-                // Add to executions
-                executions.push_back(exec);
-                period_executions.push_back(exec);
+                exec.fill_price = adjusted_price;
+            } else {
+                // Apply basic slippage model
+                double slip_factor = config_.strategy_config.slippage_model / 10000.0;
+                exec.fill_price = exec.side == Side::BUY ? 
+                               exec.fill_price * (1.0 + slip_factor) : 
+                               exec.fill_price * (1.0 - slip_factor);
             }
+            
+            // Calculate and add commission
+            exec.commission = calculate_transaction_costs(exec);
+            
+            // Add to overall executions list
+            executions.push_back(exec);
         }
         
-        // Update portfolio positions
-        portfolio_positions = new_portfolio_positions;
-        
-        // Apply portfolio-level constraints
-        if (config_.portfolio_config.use_risk_management || 
-            config_.portfolio_config.use_optimization) {
-            
-            auto constraint_result = apply_portfolio_constraints(
-                portfolio_positions, equity_curve, risk_metrics);
-            
-            if (constraint_result.is_error()) {
-                return constraint_result;
-            }
+        // Create price map for portfolio value calculation
+        std::unordered_map<std::string, double> current_prices;
+        for (const auto& bar : bars) {
+            current_prices[bar.symbol] = bar.close;
         }
-        
-        // Redistribute portfolio positions back to strategies
-        redistribute_positions(portfolio_positions, strategy_positions, strategies);
         
         // Calculate portfolio value and update equity curve
-        double portfolio_value = config_.portfolio_config.initial_capital;
-        for (const auto& [symbol, pos] : portfolio_positions) {
-            // Find latest price for symbol
-            double latest_price = 0.0;
-            for (const auto& bar : bars) {
-                if (bar.symbol == symbol) {
-                    latest_price = bar.close;
-                    break;
-                }
-            }
-            
-            if (latest_price > 0.0) {
-                portfolio_value += pos.quantity * latest_price;
-            }
-        }
-        
-        // Update equity curve
+        double portfolio_value = portfolio->get_portfolio_value(current_prices);
         equity_curve.emplace_back(timestamp, portfolio_value);
         
-        // Notify strategies of executions
-        for (const auto& exec : period_executions) {
-            // Find which strategy(s) should receive this execution
-            for (auto& strategy : strategies) {
-                // Get positions for this strategy
-                const auto& positions = strategy->get_positions();
-                
-                // If strategy has a position in this symbol, notify it of execution
-                if (positions.find(exec.symbol) != positions.end()) {
-                    strategy->on_execution(exec);
-                }
+        // Get risk metrics
+        if (config_.portfolio_config.use_risk_management && risk_manager_) {
+            auto portfolio_positions = portfolio->get_portfolio_positions();
+            auto risk_result = risk_manager_->process_positions(portfolio_positions);
+            
+            if (risk_result.is_ok()) {
+                risk_metrics.push_back(risk_result.value());
             }
         }
         
@@ -1342,7 +1081,7 @@ Result<void> BacktestEngine::process_portfolio_time_step(
     } catch (const std::exception& e) {
         return make_error<void>(
             ErrorCode::UNKNOWN_ERROR,
-            std::string("Error processing portfolio time step: ") + e.what(),
+            std::string("Error processing portfolio data: ") + e.what(),
             "BacktestEngine"
         );
     }
