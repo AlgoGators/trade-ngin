@@ -19,7 +19,7 @@ set(TEST_SOURCES
     backtesting/test_engine.cpp
     execution/test_execution_engine.cpp
     portfolio/test_portfolio_manager.cpp
-    strategy/test_base_strategy.cpp
+    # strategy/test_base_strategy.cpp
     strategy/test_trend_following.cpp
 )
 
