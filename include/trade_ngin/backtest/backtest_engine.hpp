@@ -5,11 +5,11 @@
 #include "trade_ngin/core/error.hpp"
 #include "trade_ngin/core/config_base.hpp"
 #include "trade_ngin/backtest/slippage_models.hpp"
-#include "trade_ngin/backtest/strategy_backtester.hpp"
 #include "trade_ngin/strategy/strategy_interface.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
 #include "trade_ngin/risk/risk_manager.hpp"
 #include "trade_ngin/optimization/dynamic_optimizer.hpp"
+#include "trade_ngin/portfolio/portfolio_manager.hpp"
 #include <memory>
 #include <vector>
 #include <unordered_map>
@@ -19,7 +19,62 @@ namespace trade_ngin {
 namespace backtest {
 
 /**
- * @brief Configuration for backtest simulation
+ * @brief Strategy configuration for backtest simulation
+ */
+struct StrategyBacktestConfig : public ConfigBase {
+    std::vector<std::string> symbols;
+    AssetClass asset_class = AssetClass::FUTURES;
+    DataFrequency data_freq = DataFrequency::DAILY;
+    std::string data_type = "ohlcv";
+    Timestamp start_date;
+    Timestamp end_date;
+    double initial_capital = 1000000.0;  // $1M for strategy allocation
+    double commission_rate = 0.0005;     // 5 basis points
+    double slippage_model = 1.0;         // 1 bp
+    bool store_trade_details = true;
+
+    // Configuration metadata
+    std::string version{"1.0.0"};
+
+    // Helper method to format timestamp
+    std::string format_timestamp(const Timestamp& ts) const {
+        return std::to_string(std::chrono::duration_cast<std::chrono::seconds>(ts.time_since_epoch()).count());
+    }
+
+    // JSON serialization
+    nlohmann::json to_json() const override {
+        nlohmann::json j;
+        j["symbols"] = symbols;
+        j["asset_class"] = asset_class;
+        j["data_freq"] = data_freq;
+        j["data_type"] = data_type;
+        j["start_date"] = format_timestamp(start_date);
+        j["end_date"] = format_timestamp(end_date);
+        j["initial_capital"] = initial_capital;
+        j["commission_rate"] = commission_rate;
+        j["slippage_model"] = slippage_model;
+        j["store_trade_details"] = store_trade_details;
+        j["version"] = version;
+        return j;
+    }
+
+    void from_json(const nlohmann::json& j) override {
+        if (j.contains("symbols")) symbols = j.at("symbols").get<std::vector<std::string>>();
+        if (j.contains("asset_class")) asset_class = j.at("asset_class").get<AssetClass>();
+        if (j.contains("data_freq")) data_freq = j.at("data_freq").get<DataFrequency>();
+        if (j.contains("data_type")) data_type = j.at("data_type").get<std::string>();
+        if (j.contains("start_date")) start_date = Timestamp(std::chrono::seconds(j.at("start_date").get<int64_t>()));
+        if (j.contains("end_date")) end_date = Timestamp(std::chrono::seconds(j.at("end_date").get<int64_t>()));
+        if (j.contains("initial_capital")) initial_capital = j.at("initial_capital").get<double>();
+        if (j.contains("commission_rate")) commission_rate = j.at("commission_rate").get<double>();
+        if (j.contains("slippage_model")) slippage_model = j.at("slippage_model").get<double>();
+        if (j.contains("store_trade_details")) store_trade_details = j.at("store_trade_details").get<bool>();
+        if (j.contains("version")) version = j.at("version").get<std::string>();
+    }
+};
+
+/**
+ * @brief Portfolio configuration for backtest simulation
  */
 struct PortfolioBacktestConfig : public ConfigBase {
     double initial_capital{1000000.0}; // Initial capital for portfolio
@@ -64,9 +119,12 @@ struct PortfolioBacktestConfig : public ConfigBase {
     }
 };
 
+/**
+ * @brief Backtest configuration for simulation
+ */
 struct BacktestConfig : public ConfigBase {
-    StrategyBacktestConfig strategy_config;
     PortfolioBacktestConfig portfolio_config;
+    StrategyBacktestConfig strategy_config;
     std::string results_db_schema = "backtest_results";
     bool store_trade_details = true;
 
@@ -93,19 +151,17 @@ struct BacktestConfig : public ConfigBase {
     }
 };
 
-
-
 /**
  * @brief Strategy backtest results
  */
 struct BacktestResults {
     // Performance metrics
     double total_return{0.0};
+    double volatility{0.0};
     double sharpe_ratio{0.0};
     double sortino_ratio{0.0};
     double max_drawdown{0.0};
     double calmar_ratio{0.0};
-    double volatility{0.0};
     
     // Trading metrics
     int total_trades{0};
@@ -157,10 +213,10 @@ public:
 
     /**
      * @brief Run portfolio backtest simulation
-     * @param strategies Vector of strategies to test
+     * @param portfolio Portfolio manager with multiple strategies
      * @return Result containing backtest results
      */
-    Result<BacktestResults> run_portfolio(const std::vector<std::shared_ptr<StrategyInterface>>& strategies);
+    Result<BacktestResults> run_portfolio(std::shared_ptr<PortfolioManager> portfolio);
 
     /**
      * @brief Save backtest results to database
@@ -249,23 +305,19 @@ private:
         const std::vector<std::shared_ptr<StrategyInterface>>& strategies);
 
     /**
-     * @brief Process single time step for portfolio backtest  
+     * @brief Process portfolio data for a single time step
      * @param timestamp Current timestamp
      * @param bars Market data bars for this period
-     * @param strategies Vector of strategies to test
-     * @param strategy_positions Vector of strategy positions
-     * @param portfolio_positions Current portfolio positions
+     * @param portfolio Portfolio manager
      * @param executions Vector to store generated executions
      * @param equity_curve Vector to store equity curve points
      * @param risk_metrics Vector to store risk metrics
      * @return Result indicating success or failure
-     */    
-    Result<void> process_portfolio_time_step(
+     */
+    Result<void> process_portfolio_data(
         const Timestamp& timestamp,
         const std::vector<Bar>& bars,
-        const std::vector<std::shared_ptr<StrategyInterface>>& strategies,
-        std::vector<std::unordered_map<std::string, Position>>& strategy_positions,
-        std::unordered_map<std::string, Position>& portfolio_positions,
+        std::shared_ptr<PortfolioManager> portfolio,
         std::vector<ExecutionReport>& executions,
         std::vector<std::pair<Timestamp, double>>& equity_curve,
         std::vector<RiskResult>& risk_metrics);

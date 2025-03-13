@@ -222,6 +222,36 @@ public:
      */
     std::unordered_map<std::string, double> get_required_changes() const;
 
+    /**
+     * @brief Get recent execution reports from position changes
+     * @return Vector of execution reports since last call
+     */
+    std::vector<ExecutionReport> get_recent_executions() const;
+    
+    /**
+     * @brief Clear the execution history (useful after retrieving them)
+     */
+    void clear_execution_history();
+    
+    /**
+     * @brief Get all strategies managed by this portfolio
+     * @return Vector of strategy interfaces
+     */
+    std::vector<std::shared_ptr<StrategyInterface>> get_strategies() const;
+    
+    /**
+     * @brief Get portfolio's current total value
+     * @param current_prices Map of symbol to current price
+     * @return Current portfolio value including cash
+     */
+    double get_portfolio_value(const std::unordered_map<std::string, double>& current_prices) const;
+    
+    /**
+     * @brief Get the portfolio's configuration
+     * @return Portfolio configuration
+     */
+    const PortfolioConfig& get_config() const { return config_; }
+
 private:
     PortfolioConfig config_;
     std::string id_;
@@ -238,6 +268,7 @@ private:
     };
 
     std::unordered_map<std::string, StrategyInfo> strategies_;
+    std::vector<ExecutionReport> recent_executions_;
     mutable std::mutex mutex_;
     const std::string instance_id_;
 
