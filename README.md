@@ -296,7 +296,49 @@ trade-ngin follows a modular, component-based architecture with interfaces betwe
    - Analyze transaction costs
    - Generate visualizations and reports
    - Save results to database
+``` mermaid
+sequenceDiagram
+    participant User as User
+    participant BE as BacktestEngine
+    participant DB as Database
+    participant PM as PortfolioManager
+    participant SI as Strategy
+    participant RM as RiskManager
+    participant DO as DynamicOptimizer
+    participant TCA as TCA
 
+    User->>BE: run_portfolio()
+    BE->>DB: load_market_data()
+    DB-->>BE: historical market data
+    
+    loop For each timestamp
+        BE->>PM: process_market_data(bars)
+        PM->>SI: on_data(bars)
+        SI-->>PM: target_positions
+        
+        opt If risk management enabled
+            PM->>RM: process_positions(positions)
+            RM-->>PM: risk_result
+        end
+        
+        opt If optimization enabled
+            PM->>DO: optimize_single_period(positions)
+            DO-->>PM: optimized_positions
+        end
+        
+        PM-->>BE: updated positions & executions
+        
+        BE->>BE: apply_slippage(executions)
+        BE->>BE: calculate_transaction_costs(executions)
+        BE->>BE: update_equity_curve()
+    end
+    
+    BE->>BE: calculate_metrics()
+    BE->>TCA: analyze_trade_sequence()
+    TCA-->>BE: transaction_cost_metrics
+    
+    BE-->>User: backtest_results
+```
 ### Live Trading Workflow
 
 1. **Initialization**
