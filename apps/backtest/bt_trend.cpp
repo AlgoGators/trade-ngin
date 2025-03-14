@@ -4,6 +4,8 @@
 #include "trade_ngin/data/credential_store.hpp"
 #include "trade_ngin/backtest/transaction_cost_analysis.hpp"
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
+#include "trade_ngin/core/time_utils.hpp"
+#include "trade_ngin/core/logger.hpp"
 #include <iostream>
 #include <iomanip>
 #include <fstream>
@@ -25,10 +27,20 @@ TO-DO:
 
 int main() {
     try {
+        // Initialize the logger
+        LoggerConfig logger_config;
+        logger_config.min_level = LogLevel::INFO;
+        logger_config.destination = LogDestination::BOTH;
+        logger_config.log_directory = "logs";
+        logger_config.filename_prefix = "bt_trend";
+        Logger::instance().initialize(logger_config);
+
+        INFO("Starting trend following backtest application");
+
         std::cout << "=== Starting Backtest Setup ===" << std::endl;
         
         // 1. Initialize database connection
-        std::cout << "Initializing database connection..." << std::endl;
+        INFO("Connecting to database...");
         auto credentials = std::make_shared<trade_ngin::CredentialStore>("./config.json");
         std::string username = credentials->get<std::string>("database", "username");
         std::string password = credentials->get<std::string>("database", "password");
@@ -45,10 +57,10 @@ int main() {
             std::cerr << "Failed to connect to database: " << connect_result.error()->what() << std::endl;
             return 1;
         }
-        std::cout << "Database connection successful" << std::endl;
+        INFO("Database connection established");
         
         // 2. Configure backtest parameters
-        std::cout << "\nConfiguring backtest parameters..." << std::endl;
+        INFO("Loading configuration...");
         trade_ngin::backtest::BacktestConfig config;
 
         config.strategy_config.start_date = std::chrono::system_clock::now() - std::chrono::hours(24 * 365 * 3); // 3 years of data
@@ -65,6 +77,9 @@ int main() {
             // Handle the error case
             throw std::runtime_error("Failed to get symbols");
         }
+        
+        INFO("Configuration loaded successfully. Testing " << config.strategy_config.symbols.size() << " symbols from " 
+             << format_timestamp(config.strategy_config.start_date) << " to " << format_timestamp(config.strategy_config.end_date));
         
         std::cout << "Symbols: ";
         for (const auto& symbol : config.strategy_config.symbols) {
@@ -100,6 +115,7 @@ int main() {
         config.portfolio_config.opt_config.convergence_threshold = 1e-6;
         
         // 5. Initialize backtest engine
+        INFO("Initializing backtest engine...");
         auto engine = std::make_unique<trade_ngin::backtest::BacktestEngine>(config, db);
 
         // 6. Setup portfolio configuration
@@ -144,7 +160,7 @@ int main() {
         };
         
         // 8. Create and initialize the strategies
-        std::cout << "\nInitializing TrendFollowingStrategy..." << std::endl;
+        INFO("Initializing TrendFollowingStrategy...");
         std::cout << "Strategy capital allocation: $" << tf_config.capital_allocation << std::endl;
         std::cout << "Max leverage: " << tf_config.max_leverage << "x" << std::endl;
         
@@ -156,7 +172,7 @@ int main() {
             std::cerr << "Failed to initialize strategy: " << init_result.error()->what() << std::endl;
             return 1;
         }
-        std::cout << "Strategy initialization successful" << std::endl;
+        INFO("Strategy initialization successful");
 
         // 9. Create portfolio manager and add strategy
         auto portfolio = std::make_shared<trade_ngin::PortfolioManager>(portfolio_config);
@@ -169,6 +185,7 @@ int main() {
         } 
 
         // 10. Run the backtest
+        INFO("Backtest engine initialized, starting backtest run...");
         std::cout << "\n=== Starting Backtest Execution ===" << std::endl;
         std::cout << "Time period: " << 
             std::chrono::system_clock::to_time_t(config.strategy_config.start_date) << " to " <<
@@ -182,8 +199,12 @@ int main() {
             return 1;
         }
         
+        INFO("Backtest completed successfully");
+        
         // 12. Analyze and display results
         const auto& backtest_results = result.value();
+        
+        INFO("Analyzing performance metrics...");
         
         std::cout << "======= Backtest Results =======" << std::endl;
         std::cout << "Total Return: " << (backtest_results.total_return * 100.0) << "%" << std::endl;
@@ -295,6 +316,7 @@ int main() {
         std::cout << "Total Return: " << ((portfolio_value / config.portfolio_config.initial_capital) - 1.0) * 100.0 << "%" << std::endl;
         
         // 15. Save results to database and CSV
+        INFO("Writing results to file...");
         std::string run_id = "TF_PORTFOLIO_" + std::to_string(
             std::chrono::system_clock::now().time_since_epoch().count());
             
@@ -312,7 +334,8 @@ int main() {
             for (const auto& [timestamp, equity] : backtest_results.equity_curve) {
                 // Convert timestamp to string
                 auto time_t = std::chrono::system_clock::to_time_t(timestamp);
-                std::tm tm = *std::localtime(&time_t);
+                std::tm tm;
+                trade_ngin::core::safe_localtime(&time_t, &tm);
                 std::stringstream ss;
                 ss << std::put_time(&tm, "%Y-%m-%d");
                 
@@ -328,7 +351,8 @@ int main() {
             trades_file << "Symbol,Side,Quantity,Price,DateTime,Commission\n";
             for (const auto& exec : backtest_results.executions) {
                 auto time_t = std::chrono::system_clock::to_time_t(exec.fill_time);
-                std::tm tm = *std::localtime(&time_t);
+                std::tm tm;
+                trade_ngin::core::safe_localtime(&time_t, &tm);
                 std::stringstream ss;
                 ss << std::put_time(&tm, "%Y-%m-%d %H:%M:%S");
                 
@@ -342,6 +366,8 @@ int main() {
             trades_file.close();
             std::cout << "Trade list saved to CSV file" << std::endl;
         }
+        
+        INFO("Backtest application completed successfully");
         
         return 0;
         
