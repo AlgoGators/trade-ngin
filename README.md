@@ -1,4 +1,7 @@
 # trade-ngin
+[![Build Status](https://img.shields.io/badge/build-passing-brightgreen)]()
+[![C++](https://img.shields.io/badge/C++-17-blue.svg)]()
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 
 ## 📖 Project Overview
 
