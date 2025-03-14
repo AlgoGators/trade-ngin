@@ -214,15 +214,15 @@ flowchart TD
     B -->|No| C[Store price in history]
     B -->|Yes| D[Calculate volatility]
     
-    D --> E[Calculate EMA crossovers\nfor multiple timeframes]
+    D --> E[Calculate EMA crossovers for multiple timeframes]
     E --> F[Generate raw forecasts]
     F --> G[Scale forecasts by volatility]
     G --> H[Combine forecasts with FDM]
     
-    H --> I[Calculate position size based on\nvolatility-targeting formula]
+    H --> I[Calculate position size based on volatility-targeting formula]
     I --> J{Use position buffering?}
     
-    J -->|Yes| K[Apply position buffer\nto reduce trading]
+    J -->|Yes| K[Apply position buffer to reduce trading]
     J -->|No| L[Use raw position]
     
     K --> M[Update position]
@@ -840,8 +840,8 @@ classDiagram
     Result~T~ o-- TradeError
     TradeError o-- ErrorCode
     
-    note for Result~T~ "Pattern for error propagation\nUsed throughout the system"
-    note for TradeError "Extends std::runtime_error\nProvides error context"
+    note for Result~T~ "Result<T>: Pattern for error propagation"
+    note for TradeError "TradeError: Extends std::runtime_error and provides error context"
 ```
 
 ### Troubleshooting Techniques
@@ -988,7 +988,7 @@ Result<void> MyComponent::doSomething() {
 
 ## 📖 License & Usage Terms
 
-trade-ngin is licensed under the [GPL v3] License. See LICENSE file for details.
+trade-ngin is licensed under the [GPL v3](https://www.gnu.org/licenses/gpl-3.0) License. See LICENSE file for details.
 
 Third-party dependencies:
 - nlohmann_json: MIT License
