@@ -12,16 +12,12 @@
 TO-DO:
     - Setup db credentials
     - Get metadata from postgres on contracts (size, margin, etc.)
-    - Implement risk management
-    - Implement optimization
-    - Visualize results
-    - Implement slippage model
-    - Portfolio might have issues initial_capital vs. total_capital (% allocation vs $ allocation)
-    - Use the full portfolio instead of just the strategy
+    - Check that risk management is working
+    - Check that optimization is working
+    - Visualize results (matplotlib?)
+    - Check that slippage model is working
     - Fix data access for strategies & TCA
-    - Move trend_following & regime_detector to strategies
     - Fix warnings about 'localtime' and 'gmtime' being unsafe
-    - Integrate risk multipliers at the portfolio level
     - Update all the configs to save / load to a file
     - Fully implement logger
     - Remove wait times in tests (if possible)
