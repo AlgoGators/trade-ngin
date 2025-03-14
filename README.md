@@ -115,7 +115,7 @@ trade_ngin/
 
 ## ⚙️ System Architecture & Component Breakdown
 
-trade-ngin follows a modular, component-based architecture with well-defined interfaces between system components. Here's a detailed breakdown of the major components:
+trade-ngin follows a modular, component-based architecture with interfaces between system components. Here's a detailed breakdown of the major components:
 
 ### Core System Components
 
