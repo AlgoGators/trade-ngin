@@ -3,6 +3,7 @@
 #include "trade_ngin/data/postgres_database.hpp"
 #include "trade_ngin/core/state_manager.hpp"
 #include "trade_ngin/data/market_data_bus.hpp"
+#include "trade_ngin/core/time_utils.hpp"
 #include <sstream>
 #include <iomanip>
 
@@ -113,10 +114,9 @@ Result<std::shared_ptr<arrow::Table>> PostgresDatabase::get_market_data(
                 event.symbol = row["symbol"].as<std::string>();
                 
                 // Parse timestamp
-                std::tm tm = {};
-                std::stringstream ss(row["time"].as<std::string>());
-                ss >> std::get_time(&tm, "%Y-%m-%d %H:%M:%S");
-                event.timestamp = std::chrono::system_clock::from_time_t(std::mktime(&tm));
+                std::tm time_info;
+                trade_ngin::core::safe_gmtime(std::chrono::system_clock::to_time_t(row["time"].as<Timestamp>()), &time_info);
+                event.timestamp = std::chrono::system_clock::from_time_t(std::mktime(&time_info));
 
                 // Add numeric fields
                 event.numeric_fields["open"] = row["open"].as<double>();
@@ -181,7 +181,9 @@ Result<void> PostgresDatabase::store_executions(
 std::string PostgresDatabase::format_timestamp(const Timestamp& ts) const {
     auto time_t = std::chrono::system_clock::to_time_t(ts);
     std::stringstream ss;
-    ss << std::put_time(std::gmtime(&time_t), "%Y-%m-%d %H:%M:%S");
+    std::tm time_info;
+    trade_ngin::core::safe_gmtime(&time_t, &time_info);
+    ss << std::put_time(&time_info, "%Y-%m-%d %H:%M:%S");
     return ss.str();
 }
 
@@ -439,10 +441,9 @@ Result<std::shared_ptr<arrow::Table>> PostgresDatabase::convert_to_arrow_table(
         // Populate builders
         for (const auto& row : result) {
             // Convert string timestamp to epoch seconds
-            std::tm tm = {};
-            std::stringstream ss(row["time"].as<std::string>());
-            ss >> std::get_time(&tm, "%Y-%m-%d %H:%M:%S");
-            auto tp = std::chrono::system_clock::from_time_t(std::mktime(&tm));
+            std::tm time_info;
+            trade_ngin::core::safe_gmtime(std::chrono::system_clock::to_time_t(row["time"].as<Timestamp>()), &time_info);
+            auto tp = std::chrono::system_clock::from_time_t(std::mktime(&time_info));
             
             auto timestamp = std::chrono::duration_cast<std::chrono::seconds>(
                 tp.time_since_epoch()).count();
@@ -544,10 +545,9 @@ Result<Timestamp> PostgresDatabase::get_latest_data_time(
             );
         }
 
-        std::tm tm = {};
-        std::stringstream ss(result[0].as<std::string>());
-        ss >> std::get_time(&tm, "%Y-%m-%d %H:%M:%S");
-        auto tp = std::chrono::system_clock::from_time_t(std::mktime(&tm));
+        std::tm time_info;
+        trade_ngin::core::safe_gmtime(std::chrono::system_clock::to_time_t(result[0].as<Timestamp>()), &time_info);
+        auto tp = std::chrono::system_clock::from_time_t(std::mktime(&time_info));
         
         return Result<Timestamp>(tp);
 
@@ -589,10 +589,9 @@ Result<std::pair<Timestamp, Timestamp>> PostgresDatabase::get_data_time_range(
         }
 
         auto parse_timestamp = [](const std::string& ts_str) {
-            std::tm tm = {};
-            std::stringstream ss(ts_str);
-            ss >> std::get_time(&tm, "%Y-%m-%d %H:%M:%S");
-            return std::chrono::system_clock::from_time_t(std::mktime(&tm));
+            std::tm time_info;
+            trade_ngin::core::safe_gmtime(std::chrono::system_clock::to_time_t(Timestamp(ts_str)), &time_info);
+            return std::chrono::system_clock::from_time_t(std::mktime(&time_info));
         };
 
         Timestamp start_time = parse_timestamp(result[0].as<std::string>());
