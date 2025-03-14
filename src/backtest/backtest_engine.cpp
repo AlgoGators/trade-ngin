@@ -5,6 +5,7 @@
 #include "trade_ngin/data/database_interface.hpp"
 #include "trade_ngin/data/conversion_utils.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
+#include "trade_ngin/core/time_utils.hpp"
 #include <algorithm>
 #include <numeric>
 #include <cmath>
@@ -1297,7 +1298,8 @@ BacktestResults BacktestEngine::calculate_metrics(
     std::map<std::string, double> monthly_returns_map;
     for (size_t i = 1; i < equity_curve.size(); ++i) {
         auto time_t = std::chrono::system_clock::to_time_t(equity_curve[i].first);
-        std::tm tm = *std::localtime(&time_t);
+        std::tm tm;
+        trade_ngin::core::safe_localtime(&time_t, &tm);
         
         std::ostringstream month_key;
         month_key << std::setw(4) << (tm.tm_year + 1900) << "-" 
@@ -1624,7 +1626,9 @@ Result<void> BacktestEngine::save_results(
 std::string BacktestEngine::format_timestamp(const Timestamp& ts) const {
     auto time_t = std::chrono::system_clock::to_time_t(ts);
     std::stringstream ss;
-    ss << std::put_time(std::gmtime(&time_t), "%Y-%m-%d %H:%M:%S");
+    std::tm tm;
+    trade_ngin::core::safe_localtime(&time_t, &tm);
+    ss << std::put_time(&tm, "%Y-%m-%d %H:%M:%S");
     return ss.str();
 }
 
@@ -1853,6 +1857,75 @@ Result<std::unordered_map<std::string, double>> BacktestEngine::compare_results(
     comparison["return_stddev"] = std::sqrt(return_variance / results.size());
 
     return Result<std::unordered_map<std::string, double>>(comparison);
+}
+
+Result<void> BacktestEngine::initialize(const BacktestConfig& config) {
+    INFO("Initializing backtest engine with config: " 
+         << "start_date=" << format_timestamp(config.start_date) 
+         << ", end_date=" << format_timestamp(config.end_date)
+         << ", symbols=" << config.symbols.size() << " instruments");
+    
+    // ... existing initialization code ...
+    
+    if (/* error condition */) {
+        ERROR("Backtest initialization failed: " << /* error message */);
+        return Result<void>::error(/* error message */);
+    }
+    
+    INFO("Backtest engine initialized successfully");
+    return Result<void>::success();
+}
+
+Result<BacktestResults> BacktestEngine::run() {
+    INFO("Starting backtest run");
+    
+    // ... existing code ...
+    
+    // Log the progress at regular intervals
+    if (/* progress condition */) {
+        INFO("Backtest progress: " << /* progress percentage */ << "% complete");
+    }
+    
+    // Log any errors during the run
+    if (/* error condition */) {
+        ERROR("Error during backtest: " << /* error message */);
+        // ... error handling ...
+    }
+    
+    INFO("Backtest completed with " << /* number of trades */ << " trades");
+    
+    return Result<BacktestResults>::success(/* results */);
+}
+
+// Also add logging to key functions like:
+// - process_market_data_event
+// - execute_strategy
+// - handle_order_fills
+// - calculate_performance_metrics
+
+Result<void> BacktestEngine::process_market_data_event(const MarketDataEvent& event) {
+    DEBUG("Processing market data: " << event.symbol << " @ " << format_timestamp(event.timestamp));
+    
+    // ... existing code ...
+    
+    return Result<void>::success();
+}
+
+Result<void> BacktestEngine::execute_strategy() {
+    DEBUG("Executing strategy at " << format_timestamp(current_time_));
+    
+    // ... existing code ...
+    
+    return Result<void>::success();
+}
+
+Result<void> BacktestEngine::handle_order_fill(const Order& order, const ExecutionReport& fill) {
+    INFO("Order filled: " << order.order_id << ", symbol: " << order.symbol 
+         << ", quantity: " << fill.quantity << ", price: " << fill.price);
+    
+    // ... existing code ...
+    
+    return Result<void>::success();
 }
 
 } // namespace backtest
