@@ -1,12 +1,12 @@
 name: CI/CD Pipeline
 
-on:
-  push:
-    branches:
-      - rebuild
-  pull_request:
-    branches:
-      - rebuild
+# on:
+#   push:
+#     branches:
+#       - rebuild
+#   pull_request:
+#     branches:
+#       - rebuild
 
 jobs:
   lint:
