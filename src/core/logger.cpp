@@ -2,6 +2,7 @@
 
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/core/error.hpp"
+#include "trade_ngin/core/time_utils.hpp"
 #include <iostream>
 #include <iomanip>
 #include <algorithm>
@@ -83,7 +84,14 @@ std::string Logger::format_message(LogLevel level, const std::string& message) {
     if (config_.include_timestamp) {
         auto now = std::chrono::system_clock::now();
         auto now_c = std::chrono::system_clock::to_time_t(now);
-        ss << std::put_time(std::localtime(&now_c), "%Y-%m-%d %H:%M:%S") << " ";
+        
+        // Use thread-safe time utilities
+        std::tm time_info;
+        core::safe_localtime(&now_c, &time_info);
+        
+        char time_str[32];
+        std::strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", &time_info);
+        ss << time_str << " ";
     }
 
     if (config_.include_level) {
