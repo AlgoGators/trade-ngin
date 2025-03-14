@@ -208,6 +208,47 @@ trade-ngin follows a modular, component-based architecture with interfaces betwe
 - `TrendFollowingStrategy` - Multi-timeframe trend following using EMA crossovers
 - Extensible framework for adding new strategies
 
+```mermaid
+flowchart TD
+    A[Receive market data] --> B{Enough history?}
+    B -->|No| C[Store price in history]
+    B -->|Yes| D[Calculate volatility]
+    
+    D --> E[Calculate EMA crossovers\nfor multiple timeframes]
+    E --> F[Generate raw forecasts]
+    F --> G[Scale forecasts by volatility]
+    G --> H[Combine forecasts with FDM]
+    
+    H --> I[Calculate position size based on\nvolatility-targeting formula]
+    I --> J{Use position buffering?}
+    
+    J -->|Yes| K[Apply position buffer\nto reduce trading]
+    J -->|No| L[Use raw position]
+    
+    K --> M[Update position]
+    L --> M
+    
+    M --> N[Emit position signal]
+    
+    subgraph Volatility Calculation
+        D1[Calculate returns] --> D2[Calculate EWMA std deviation]
+        D2 --> D3[Blend short and long-term volatility]
+        D3 --> D4[Apply volatility regime multiplier]
+    end
+    
+    D -.-> D1
+    D4 -.-> D
+    
+    subgraph Position Sizing
+        I1[Calculate target risk] --> I2[Apply IDM factor]
+        I2 --> I3[Scale by forecast strength]
+        I3 --> I4[Divide by price * volatility * point value]
+    end
+    
+    I -.-> I1
+    I4 -.-> I
+```
+
 ### Risk Management
 
 - Position-level and portfolio-level risk constraints
@@ -251,6 +292,143 @@ trade-ngin follows a modular, component-based architecture with interfaces betwe
 - Risk constraints enforcement
 - Tracking error minimization
 - Convex optimization techniques
+
+```mermaid
+classDiagram
+    class ConfigBase {
+        <<abstract>>
+        +save_to_file(filepath) Result~void~
+        +load_from_file(filepath) Result~void~
+        +to_json() json
+        +from_json(json) void
+    }
+    
+    class StrategyConfig {
+        +capital_allocation double
+        +max_leverage double
+        +position_limits map
+        +max_drawdown double
+        +trading_params map
+        +to_json() json
+        +from_json(json) void
+    }
+    
+    class PortfolioConfig {
+        +total_capital double
+        +reserve_capital double
+        +use_optimization bool
+        +use_risk_management bool
+        +to_json() json
+        +from_json(json) void
+    }
+
+    class RiskConfig {
+        +var_limit double
+        +jump_risk_limit double
+        +max_correlation double
+        +to_json() json
+        +from_json(json) void
+    }
+    
+    class DynamicOptConfig {
+        +tau double
+        +capital double
+        +max_iterations int
+        +to_json() json
+        +from_json(json) void
+    }
+    
+    class BacktestConfig {
+        +strategy_config StrategyConfig
+        +portfolio_config PortfolioConfig
+        +results_db_schema string
+        +to_json() json
+        +from_json(json) void
+    }
+    
+    class DatabaseInterface {
+        <<interface>>
+        +connect() Result~void~
+        +disconnect() void
+        +is_connected() bool
+        +get_market_data(...) Result~Table~
+        +store_executions(...) Result~void~
+        +store_positions(...) Result~void~
+        +store_signals(...) Result~void~
+        +get_symbols(...) Result~string[]~
+    }
+    
+    class PostgresDatabase {
+        -connection_string string
+        -connection pqxx::connection
+        +connect() Result~void~
+        +disconnect() void
+        +is_connected() bool
+        +get_market_data(...) Result~Table~
+    }
+    
+    class StrategyInterface {
+        <<interface>>
+        +initialize() Result~void~
+        +start() Result~void~
+        +stop() Result~void~
+        +pause() Result~void~
+        +resume() Result~void~
+        +on_data(data) Result~void~
+        +on_execution(report) Result~void~
+        +on_signal(symbol, signal) Result~void~
+        +get_positions() Position[]
+    }
+    
+    class BaseStrategy {
+        #id_ string
+        #config_ StrategyConfig
+        #positions_ map
+        #state_ StrategyState
+        +initialize() Result~void~
+        +on_data(data) Result~void~
+        +check_risk_limits() Result~void~
+    }
+    
+    class TrendFollowingStrategy {
+        -trend_config_ TrendFollowingConfig
+        -price_history_ map
+        -volatility_history_ map
+        +on_data(data) Result~void~
+        -calculate_ewma(...) vector~double~
+        -get_raw_forecast(...) vector~double~
+        -calculate_position(...) double
+    }
+    
+    class Instrument {
+        <<interface>>
+        +get_symbol() string
+        +get_type() AssetType
+        +is_tradeable() bool
+        +get_margin_requirement() double
+        +round_price(price) double
+    }
+    
+    class SlippageModel {
+        <<interface>>
+        +calculate_slippage(...) double
+        +update(market_data) void
+    }
+    
+    ConfigBase <|-- StrategyConfig
+    ConfigBase <|-- PortfolioConfig
+    ConfigBase <|-- RiskConfig
+    ConfigBase <|-- DynamicOptConfig
+    ConfigBase <|-- BacktestConfig
+    
+    DatabaseInterface <|-- PostgresDatabase
+    
+    StrategyInterface <|-- BaseStrategy
+    BaseStrategy <|-- TrendFollowingStrategy
+    
+    SlippageModel <|-- VolumeSlippageModel
+    SlippageModel <|-- SpreadSlippageModel
+```
 
 ## 🔄 Workflow & System Flow
 
@@ -619,6 +797,52 @@ To add a new execution algorithm:
 - `ErrorCode::INVALID_ORDER` - Invalid order parameters
 - `ErrorCode::STRATEGY_ERROR` - Error in strategy logic
 - `ErrorCode::RISK_LIMIT_EXCEEDED` - Risk limit exceeded
+```mermaid
+classDiagram
+    class Result~T~ {
+        -value_ T
+        -error_ unique_ptr~TradeError~
+        +Result(value T)
+        +Result(error unique_ptr~TradeError~)
+        +is_ok() bool
+        +is_error() bool
+        +value() T
+        +error() TradeError*
+    }
+    
+    class TradeError {
+        -code_ ErrorCode
+        -component_ string
+        +TradeError(code, message, component)
+        +code() ErrorCode
+        +component() string
+        +to_string() string
+    }
+    
+    class ErrorCode {
+        <<enumeration>>
+        NONE
+        UNKNOWN_ERROR
+        INVALID_ARGUMENT
+        NOT_INITIALIZED
+        DATABASE_ERROR
+        DATA_NOT_FOUND
+        INVALID_DATA
+        CONVERSION_ERROR
+        ORDER_REJECTED
+        INSUFFICIENT_FUNDS
+        POSITION_LIMIT_EXCEEDED
+        INVALID_ORDER
+        STRATEGY_ERROR
+        RISK_LIMIT_EXCEEDED
+    }
+    
+    Result~T~ o-- TradeError
+    TradeError o-- ErrorCode
+    
+    note for Result~T~ "Pattern for error propagation\nUsed throughout the system"
+    note for TradeError "Extends std::runtime_error\nProvides error context"
+```
 
 ### Troubleshooting Techniques
 
