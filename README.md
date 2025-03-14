@@ -357,7 +357,7 @@ cd trade_ngin
 ### Setup Database
 
 1. Create a PostgreSQL database for market data and strategy results
-2. Create the necessary schemas and tables (scripts provided in `scripts/db`)
+2. Create the necessary schemas and tables
 3. Configure database credentials:
    ```bash
    cp config_template.json config.json
