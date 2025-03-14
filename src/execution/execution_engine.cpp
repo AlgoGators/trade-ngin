@@ -76,6 +76,9 @@ ExecutionEngine::~ExecutionEngine() {
 }
 
 Result<void> ExecutionEngine::initialize() {
+    // Add initialization log
+    INFO("Initializing execution engine");
+    
     try {
         // Subscribe to market data for execution analysis
         MarketDataCallback callback = [this](const MarketDataEvent& event) {
@@ -123,6 +126,23 @@ Result<std::string> ExecutionEngine::submit_execution(
     const Order& order,
     ExecutionAlgo algo,
     const ExecutionConfig& config) {
+    
+    std::string algo_name;
+    switch (algo) {
+        case ExecutionAlgo::MARKET: algo_name = "MARKET"; break;
+        case ExecutionAlgo::TWAP: algo_name = "TWAP"; break;
+        case ExecutionAlgo::VWAP: algo_name = "VWAP"; break;
+        case ExecutionAlgo::IS: algo_name = "IS"; break;
+        case ExecutionAlgo::POV: algo_name = "POV"; break;
+        case ExecutionAlgo::DARK_POOL: algo_name = "DARK_POOL"; break;
+        case ExecutionAlgo::ADAPTIVE_LIMIT: algo_name = "ADAPTIVE_LIMIT"; break;
+        case ExecutionAlgo::CUSTOM: algo_name = "CUSTOM"; break;
+        default: algo_name = "UNKNOWN";
+    }
+    
+    INFO("Submitting " << algo_name << " execution for order " << order.order_id 
+         << ", symbol: " << order.symbol 
+         << ", quantity: " << order.quantity);
     
     try {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -179,6 +199,9 @@ Result<std::string> ExecutionEngine::submit_execution(
 
         active_jobs_[job_id].parent_order_id = order_result.value();
 
+        // Log the job creation
+        INFO("Created execution job " << job_id << " for order " << order.order_id);
+        
         // Start execution based on algorithm
         Result<void> exec_result;
         switch (algo) {
@@ -223,8 +246,12 @@ Result<std::string> ExecutionEngine::submit_execution(
                 break;
         }
 
+        // Log the execution start attempt
+        INFO("Starting execution for job " << job_id << " using " << algo_name << " algorithm");
+        
         if (exec_result.is_error()) {
             active_jobs_.erase(job_id);
+            ERROR("Execution job " << job_id << " failed to start: " << exec_result.error);
             return make_error<std::string>(
                 exec_result.error()->code(),
                 exec_result.error()->what(),
@@ -232,6 +259,7 @@ Result<std::string> ExecutionEngine::submit_execution(
             );
         }
         
+        INFO("Execution job " << job_id << " started successfully");
         return Result<std::string>(job_id);
 
     } catch (const std::exception& e) {
@@ -244,15 +272,15 @@ Result<std::string> ExecutionEngine::submit_execution(
 }
 
 Result<void> ExecutionEngine::cancel_execution(const std::string& job_id) {
+    INFO("Attempting to cancel execution job " << job_id);
+    
     std::lock_guard<std::mutex> lock(mutex_);
 
     auto it = active_jobs_.find(job_id);
     if (it == active_jobs_.end()) {
-        return make_error<void>(
-            ErrorCode::INVALID_ARGUMENT,
-            "Job not found: " + job_id,
-            "ExecutionEngine"
-        );
+        std::string error = "Job not found: " + job_id;
+        WARN("Cancel execution failed: " << error);
+        return Result<void>::error(error);
     }
 
     auto& job = it->second;
@@ -288,7 +316,8 @@ Result<void> ExecutionEngine::cancel_execution(const std::string& job_id) {
     // Remove from active jobs
     active_jobs_.erase(it);
 
-    return Result<void>();
+    INFO("Successfully cancelled execution job " << job_id);
+    return Result<void>::success();
 }
 
 Result<ExecutionMetrics> ExecutionEngine::get_metrics(
@@ -341,6 +370,8 @@ Result<void> ExecutionEngine::register_custom_algo(
 }
 
 Result<void> ExecutionEngine::execute_market(const ExecutionJob& job) {
+    INFO("Executing market order algorithm for job " << job.job_id);
+    
     try {
         // Get order details
         auto order_result = order_manager_->get_order_status(job.parent_order_id);
@@ -382,6 +413,9 @@ Result<void> ExecutionEngine::execute_market(const ExecutionJob& job) {
         active_job.is_complete = true;
         active_job.end_time = std::chrono::system_clock::now();
 
+        // Add logs for child order generation
+        DEBUG("Generating child orders for job " << job.job_id);
+        
         return Result<void>();
 
     } catch (const std::exception& e) {
