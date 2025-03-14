@@ -1,8 +1,8 @@
-# TradeNgin - Advanced Quantitative Trading System
+# trade-ngin
 
-## 📖 Introduction & Project Overview
+## 📖 Project Overview
 
-TradeNgin is a high-performance, modular quantitative trading system built in C++ designed for professional algorithmic traders and financial institutions. The system supports systematic trading strategies across multiple asset classes with a focus on futures, equities, and options markets.
+trade-ngin is a high-performance, modular quantitative trading system built in C++ designed for professional algorithmic traders and financial institutions. The system supports systematic trading strategies across multiple asset classes with a focus on futures, equities, and options markets.
 
 ### Core Capabilities
 
@@ -13,7 +13,7 @@ TradeNgin is a high-performance, modular quantitative trading system built in C+
 - **Modular architecture** designed for extensibility and customization
 - **Professional-grade performance** with C++ efficiency
 
-TradeNgin is designed to handle both backtesting and live trading seamlessly, with a unified codebase that maintains consistency between simulation and production environments.
+trade-ngin is designed to handle both backtesting and live trading seamlessly, with a unified codebase that maintains consistency between simulation and production environments.
 
 ## 📂 Repository Structure & Organization
 
@@ -115,7 +115,7 @@ trade_ngin/
 
 ## ⚙️ System Architecture & Component Breakdown
 
-TradeNgin follows a modular, component-based architecture with well-defined interfaces between system components. Here's a detailed breakdown of the major components:
+trade-ngin follows a modular, component-based architecture with well-defined interfaces between system components. Here's a detailed breakdown of the major components:
 
 ### Core System Components
 
@@ -405,7 +405,7 @@ ctest -C Release
 
 ### Configuration Parameters
 
-All components in TradeNgin are configurable through JSON configuration files:
+All components in trade-ngin are configurable through JSON configuration files:
 
 #### Backtest Configuration
 
@@ -528,7 +528,7 @@ To integrate a new data source:
 
 1. Implement a new class derived from `DatabaseInterface`
 2. Override all abstract methods to interact with your data source
-3. Implement conversion from your data source's format to TradeNgin's internal types
+3. Implement conversion from your data source's format to trade-ngin's internal types
 
 ### Adding New Execution Algorithms
 
@@ -630,7 +630,7 @@ If you encounter memory issues:
 
 ### Data Processing Optimization
 
-TradeNgin uses Apache Arrow for efficient in-memory data representation:
+trade-ngin uses Apache Arrow for efficient in-memory data representation:
 
 - Zero-copy data sharing between components
 - Columnar memory layout for efficient processing
@@ -652,7 +652,7 @@ TradeNgin uses Apache Arrow for efficient in-memory data representation:
 
 ### Performance Profiling
 
-To profile TradeNgin performance:
+To profile trade-ngin performance:
 
 1. Build with profiling flags enabled
    ```bash
@@ -719,7 +719,7 @@ Result<void> MyComponent::doSomething() {
 
 ## 📖 License & Usage Terms
 
-TradeNgin is licensed under the [GPL v3] License. See LICENSE file for details.
+trade-ngin is licensed under the [GPL v3] License. See LICENSE file for details.
 
 Third-party dependencies:
 - nlohmann_json: MIT License
