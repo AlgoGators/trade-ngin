@@ -3,6 +3,7 @@
 #include <cmath>
 #include <regex>
 #include <algorithm>
+#include "trade_ngin/core/time_utils.hpp"
 
 namespace trade_ngin {
 
@@ -22,7 +23,8 @@ bool EquityInstrument::is_market_open(const Timestamp& timestamp) const {
     try {
         // Convert timestamp to local time
         std::time_t time = std::chrono::system_clock::to_time_t(timestamp);
-        std::tm* local_time = std::localtime(&time);
+        std::tm local_time_buffer;
+        std::tm* local_time = trade_ngin::core::safe_localtime(&time, &local_time_buffer);
         
         // Check for weekdays only
         if (local_time->tm_wday == 0 || local_time->tm_wday == 6) {
