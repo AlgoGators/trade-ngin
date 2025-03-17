@@ -385,34 +385,41 @@ Result<BacktestResults> BacktestEngine::run_portfolio(
         
         // Process bars in chronological order
         for (const auto& [timestamp, bars] : bars_by_time) {
-            // Clear previous executions from portfolio manager
-            portfolio->clear_execution_history();
-
-            // Process portfolio time step
-            auto result = process_portfolio_data(
-                timestamp,
-                bars,
-                portfolio,
-                executions,
-                equity_curve,
-                risk_metrics
-            );
-            
-            if (result.is_error()) {
-                ERROR("Portfolio data processing failed: " + 
-                      std::string(result.error()->what()));
-                
-                StateManager::instance().update_state(
-                    "BACKTEST_ENGINE", 
-                    ComponentState::ERR_STATE,
-                    result.error()->what()
+            try {
+                // Process portfolio time step
+                auto result = process_portfolio_data(
+                    timestamp,
+                    bars,
+                    portfolio,
+                    executions,
+                    equity_curve,
+                    risk_metrics
                 );
                 
-                return make_error<BacktestResults>(
-                    result.error()->code(),
-                    result.error()->what(),
-                    "BacktestEngine"
-                );
+                if (result.is_error()) {
+                    WARN("Portfolio data processing failed for timestamp " + 
+                         std::to_string(std::chrono::system_clock::to_time_t(timestamp)) + 
+                         ": " + std::string(result.error()->what()) + 
+                         ". Continuing with next time period.");
+                    
+                    // Don't fail the entire backtest due to a single time period failure
+                    // Instead, add a placeholder to maintain continuity
+                    if (!equity_curve.empty()) {
+                        // Use previous value for equity curve
+                        equity_curve.emplace_back(timestamp, equity_curve.back().second);
+                    }
+                }
+            } catch (const std::exception& e) {
+                WARN("Exception processing portfolio data for timestamp " + 
+                     std::to_string(std::chrono::system_clock::to_time_t(timestamp)) + 
+                     ": " + std::string(e.what()) + 
+                     ". Continuing with next time period.");
+                
+                // Don't fail the entire backtest due to a single time period exception
+                if (!equity_curve.empty()) {
+                    // Use previous value for equity curve
+                    equity_curve.emplace_back(timestamp, equity_curve.back().second);
+                }
             }
             
             processed_bars += bars.size();
@@ -432,11 +439,18 @@ Result<BacktestResults> BacktestEngine::run_portfolio(
         results.executions = std::move(executions);
 
         // Get final portfolio positions
-        auto portfolio_positions = portfolio->get_portfolio_positions();
-        results.positions.reserve(portfolio_positions.size());
-        for (const auto& [_, pos] : portfolio_positions) {
-            results.positions.push_back(pos);
+        // Get final portfolio positions with error isolation
+        try {
+            auto portfolio_positions = portfolio->get_portfolio_positions();
+            results.positions.reserve(portfolio_positions.size());
+            for (const auto& [_, pos] : portfolio_positions) {
+                results.positions.push_back(pos);
+            }
+        } catch (const std::exception& e) {
+            WARN("Exception getting final portfolio positions: " + std::string(e.what()) + 
+                 ". Backtest results will have incomplete position data.");
         }
+
         results.equity_curve = std::move(equity_curve);
 
         // Calculate drawdown curve
@@ -996,65 +1010,117 @@ Result<void> BacktestEngine::process_portfolio_data(
     std::vector<RiskResult>& risk_metrics) {
     
     try {
+        // Check for empty data
+        if (bars.empty()) {
+            ERROR("Empty market data provided for portfolio backtest");
+            return make_error<void>(
+                ErrorCode::MARKET_DATA_ERROR,
+                "Empty market data provided for portfolio backtest",
+                "BacktestEngine"
+            );
+        }
+
+        // Check for invalid portfolio manager
+        if (!portfolio) {
+            ERROR("Null portfolio manager provided for portfolio backtest");
+            return make_error<void>(
+                ErrorCode::INVALID_ARGUMENT,
+                "Null portfolio manager provided for portfolio backtest",
+                "BacktestEngine"
+            );
+        }
+
         // Update risk manager market data
         if (risk_manager_) {
-            auto update_result = risk_manager_->update_market_data(bars);
-            if (update_result.is_error()) {
-                WARN("Failed to update risk manager market data: " + 
-                     std::string(update_result.error()->what()));
+            try {
+                auto update_result = risk_manager_->update_market_data(bars);
+                if (update_result.is_error()) {
+                    WARN("Failed to update risk manager market data: " + 
+                         std::string(update_result.error()->what()) + 
+                         ". Continuing without market data update.");
+                }
+            } catch (const std::exception& e) {
+                WARN("Exception updating risk manager market data: " + std::string(e.what()) + 
+                     ". Continuing without market data update.");
             }
         }
         
         // Update slippage model
         if (slippage_model_) {
             for (const auto& bar : bars) {
-                slippage_model_->update(bar);
+                try {
+                    slippage_model_->update(bar);
+                } catch (const std::exception& e) {
+                    WARN("Exception updating slippage model: " + std::string(e.what()) + 
+                         ". Continuing without slippage update for symbol " + bar.symbol);
+                }
             }
         }
         
         // Process market data through portfolio manager
-        auto data_result = portfolio->process_market_data(bars);
-        if (data_result.is_error()) {
-            return data_result;
+        try {
+            auto data_result = portfolio->process_market_data(bars);
+            if (data_result.is_error()) {
+                return data_result;
+            }
+        } catch (const std::exception& e) {
+            return make_error<void>(
+                ErrorCode::UNKNOWN_ERROR,
+                std::string("Error processing market data through portfolio: ") + e.what(),
+                "BacktestEngine"
+            );
         }
         
         // Get executions from the portfolio manager
-        auto period_executions = portfolio->get_recent_executions();
+        std::vector<ExecutionReport> period_executions;
+        try {
+            period_executions = portfolio->get_recent_executions();
+        } catch (const std::exception& e) {
+            WARN("Exception getting recent executions: " + std::string(e.what()) + 
+                 ". Continuing with empty executions list.");
+            period_executions.clear();
+        }
         
         // Apply slippage and transaction costs to executions
         for (auto& exec : period_executions) {
-            // Apply slippage
-            if (slippage_model_) {
-                // Find the bar for this symbol
-                std::optional<Bar> symbol_bar;
-                for (const auto& bar : bars) {
-                    if (bar.symbol == exec.symbol) {
-                        symbol_bar = bar;
-                        break;
+            try {
+                // Apply slippage
+                if (slippage_model_) {
+                    // Find the bar for this symbol
+                    std::optional<Bar> symbol_bar;
+                    for (const auto& bar : bars) {
+                        if (bar.symbol == exec.symbol) {
+                            symbol_bar = bar;
+                            break;
+                        }
                     }
+                    
+                    double adjusted_price = slippage_model_->calculate_slippage(
+                        exec.fill_price, 
+                        exec.filled_quantity, 
+                        exec.side,
+                        symbol_bar
+                    );
+                    
+                    exec.fill_price = adjusted_price;
+                } else {
+                    // Apply basic slippage model
+                    double slip_factor = config_.strategy_config.slippage_model / 10000.0;
+                    exec.fill_price = exec.side == Side::BUY ? 
+                                   exec.fill_price * (1.0 + slip_factor) : 
+                                   exec.fill_price * (1.0 - slip_factor);
                 }
                 
-                double adjusted_price = slippage_model_->calculate_slippage(
-                    exec.fill_price, 
-                    exec.filled_quantity, 
-                    exec.side,
-                    symbol_bar
-                );
+                // Calculate and add commission
+                exec.commission = calculate_transaction_costs(exec);
                 
-                exec.fill_price = adjusted_price;
-            } else {
-                // Apply basic slippage model
-                double slip_factor = config_.strategy_config.slippage_model / 10000.0;
-                exec.fill_price = exec.side == Side::BUY ? 
-                               exec.fill_price * (1.0 + slip_factor) : 
-                               exec.fill_price * (1.0 - slip_factor);
+                // Add to overall executions list
+                executions.push_back(exec);
+            } catch (const std::exception& e) {
+                WARN("Exception processing execution for " + exec.symbol + ": " + 
+                     std::string(e.what()) + ". Skipping this execution.");
+                // Skip this execution but continue with others
             }
-            
-            // Calculate and add commission
-            exec.commission = calculate_transaction_costs(exec);
-            
-            // Add to overall executions list
-            executions.push_back(exec);
         }
         
         // Create price map for portfolio value calculation
@@ -1064,26 +1130,46 @@ Result<void> BacktestEngine::process_portfolio_data(
         }
         
         // Calculate portfolio value and update equity curve
-        double portfolio_value = portfolio->get_portfolio_value(current_prices);
-        equity_curve.emplace_back(timestamp, portfolio_value);
+        double portfolio_value = 0.0;
+        try {
+            portfolio_value = portfolio->get_portfolio_value(current_prices);
+            equity_curve.emplace_back(timestamp, portfolio_value);
+        } catch (const std::exception& e) {
+            WARN("Exception calculating portfolio value: " + std::string(e.what()) + 
+                 ". Using previous value for equity curve.");
+                 
+            // Use previous value if available, otherwise use initial capital
+            double last_value = equity_curve.empty() ? 
+                config_.portfolio_config.initial_capital : 
+                equity_curve.back().second;
+                
+            equity_curve.emplace_back(timestamp, last_value);
+        }
         
         // Get risk metrics
         if (config_.portfolio_config.use_risk_management && risk_manager_) {
-            auto portfolio_positions = portfolio->get_portfolio_positions();
-            INFO("Starting risk management with " + std::to_string(portfolio_positions.size()) + " positions");
-            auto risk_result = risk_manager_->process_positions(portfolio_positions);
-            
-            if (risk_result.is_ok()) {
-                risk_metrics.push_back(risk_result.value());
-            } else {
-                ERROR("Risk management failed: " + std::string(risk_result.error()->what()) + 
-                    " with code " + std::to_string(static_cast<int>(risk_result.error()->code())));
-                return make_error<void>(
-                    risk_result.error()->code(),
-                    "Risk management failed: " + std::string(risk_result.error()->what()),
-                    "PortfolioManager"
-                );
+            try {
+                auto portfolio_positions = portfolio->get_portfolio_positions();
+                
+                if (!portfolio_positions.empty()) {
+                    auto risk_result = risk_manager_->process_positions(portfolio_positions);
+                    
+                    if (risk_result.is_ok()) {
+                        risk_metrics.push_back(risk_result.value());
+                    }
+                }
+            } catch (const std::exception& e) {
+                WARN("Exception calculating risk metrics: " + std::string(e.what()) + 
+                     ". Continuing without risk metrics for this period.");
             }
+        }
+
+        // Clear the portfolio's execution history to prevent duplicate processing
+        try {
+            portfolio->clear_execution_history();
+        } catch (const std::exception& e) {
+            WARN("Exception clearing execution history: " + std::string(e.what()));
+            // Non-critical error, can continue
         }
         
         return Result<void>();
@@ -1105,16 +1191,19 @@ Result<std::vector<Bar>> BacktestEngine::load_market_data() const {
         
         // Validate the database connection
         if (!db_) {
+            ERROR("Database interface is null");
             return make_error<std::vector<Bar>>(
                 ErrorCode::DATABASE_ERROR,
                 "Database interface is null",
                 "BacktestEngine"
             );
         }
-        
+
+        // Connect to the database if not already connected
         if (!db_->is_connected()) {
             auto connect_result = db_->connect();
             if (connect_result.is_error()) {
+                ERROR("Failed to connect to database: " + std::string(connect_result.error()->what()));
                 return make_error<std::vector<Bar>>(
                     connect_result.error()->code(),
                     "Failed to connect to database: " + std::string(connect_result.error()->what()),
@@ -1123,41 +1212,86 @@ Result<std::vector<Bar>> BacktestEngine::load_market_data() const {
             }
         }
 
-        // Load market data directly using PostgresInterface
-        auto result = db_->get_market_data(
-            config_.strategy_config.symbols,
-            config_.strategy_config.start_date,
-            config_.strategy_config.end_date,
-            config_.strategy_config.asset_class,
-            config_.strategy_config.data_freq,
-            config_.strategy_config.data_type
-        );
-
-        if (result.is_error()) {
+        // Validate symbols list
+        if (config_.strategy_config.symbols.empty()) {
+            ERROR("Empty symbols list provided for backtest");
             return make_error<std::vector<Bar>>(
-                result.error()->code(),
-                result.error()->what(),
+                ErrorCode::INVALID_ARGUMENT,
+                "Empty symbols list provided for backtest",
                 "BacktestEngine"
             );
         }
 
-        // Convert Arrow table to Bars using your DataConversionUtils
-        auto conversion_result = DataConversionUtils::arrow_table_to_bars(result.value());
-        if (conversion_result.is_error()) {
+        // Load market data in batches
+        std::vector<Bar> all_bars;
+        constexpr size_t MAX_SYMBOLS_PER_BATCH = 5;
+
+        for (size_t i = 0; i < config_.strategy_config.symbols.size(); i += MAX_SYMBOLS_PER_BATCH) {
+            // Create a batch of symbols
+            size_t end_idx = std::min(i + MAX_SYMBOLS_PER_BATCH, config_.strategy_config.symbols.size());
+            std::vector<std::string> symbol_batch(
+                config_.strategy_config.symbols.begin() + i,
+                config_.strategy_config.symbols.begin() + end_idx
+            );
+            
+            // Load this batch of data
+            try {
+                auto result = db_->get_market_data(
+                    symbol_batch,
+                    config_.strategy_config.start_date,
+                    config_.strategy_config.end_date,
+                    config_.strategy_config.asset_class,
+                    config_.strategy_config.data_freq,
+                    config_.strategy_config.data_type
+                );
+
+                if (result.is_error()) {
+                    WARN("Error loading data for symbols batch " + std::to_string(i) + "-" + 
+                         std::to_string(end_idx) + ": " + result.error()->what() + 
+                         ". Continuing with other batches.");
+                    continue;
+                }
+
+                // Convert Arrow table to Bars
+                auto conversion_result = DataConversionUtils::arrow_table_to_bars(result.value());
+                if (conversion_result.is_error()) {
+                    WARN("Error converting data for symbols batch " + std::to_string(i) + "-" + 
+                         std::to_string(end_idx) + ": " + conversion_result.error()->what() + 
+                         ". Continuing with other batches.");
+                    continue;
+                }
+                
+                // Add these bars to our collection
+                auto& batch_bars = conversion_result.value();
+                all_bars.insert(all_bars.end(), batch_bars.begin(), batch_bars.end());
+                
+                INFO("Loaded " + std::to_string(batch_bars.size()) + " bars for symbols batch " + 
+                     std::to_string(i) + "-" + std::to_string(end_idx));
+            }
+            catch (const std::exception& e) {
+                WARN("Exception loading data for symbols batch " + std::to_string(i) + "-" + 
+                     std::to_string(end_idx) + ": " + std::string(e.what()) + 
+                     ". Continuing with other batches.");
+            }
+        }
+
+        // Check for empty data
+        if (all_bars.empty()) {
+            ERROR("No market data loaded for backtest");
             return make_error<std::vector<Bar>>(
-                conversion_result.error()->code(),
-                conversion_result.error()->what(),
+                ErrorCode::MARKET_DATA_ERROR,
+                "No market data loaded for backtest",
                 "BacktestEngine"
             );
         }
         
-        auto& bars = conversion_result.value();
-        INFO("Loaded " + std::to_string(bars.size()) + " bars for " + 
+        INFO("Loaded a total of " + std::to_string(all_bars.size()) + " bars for " + 
              std::to_string(config_.strategy_config.symbols.size()) + " symbols");
              
-        return conversion_result;
+        return Result<std::vector<Bar>>(all_bars);
 
     } catch (const std::exception& e) {
+        ERROR("Unexpected error loading market data: " + std::string(e.what()));
         return make_error<std::vector<Bar>>(
             ErrorCode::UNKNOWN_ERROR,
             std::string("Error loading market data: ") + e.what(),

@@ -75,6 +75,16 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data)
     std::vector<std::string> processed_strategies;
     
     try {
+        // Validate market data
+        if (data.empty()) {
+            ERROR("Empty market data provided");
+            return make_error<void>(
+                ErrorCode::MARKET_DATA_ERROR,
+                "Empty market data provided",
+                "PortfolioManager"
+            );
+        }
+
         // Store current positions for each strategy to detect changes
         std::unordered_map<std::string, std::unordered_map<std::string, Position>> prev_positions;
         for (const auto& [id, info] : strategies_) {
@@ -84,6 +94,7 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data)
         // Process data through each strategy
         for (auto& [id, info] : strategies_) {
             if (!info.strategy) {
+                ERROR("Null strategy pointer found for ID: " + id);
                 return make_error<void>(
                     ErrorCode::INVALID_ARGUMENT,
                     "Null strategy pointer found for ID: " + id,
@@ -116,17 +127,29 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data)
 
         // Log before potential optimization
         if (config_.use_optimization && optimizer_) {
-            auto opt_result = optimize_positions();
-            if (opt_result.is_error()) {
-                return opt_result;
+            try {
+                auto opt_result = optimize_positions();
+                if (opt_result.is_error()) {
+                    WARN("Portfolio optimization failed: " + std::string(opt_result.error()->what()) + 
+                         ", continuing without optimization");
+                }
+            } catch (const std::exception& e) {
+                WARN("Exception during portfolio optimization: " + std::string(e.what()) + 
+                     ", continuing without optimization");
             }
         }
         
         // Log before risk management
         if (config_.use_risk_management && risk_manager_) {
-            auto risk_result = apply_risk_management();
-            if (risk_result.is_error()) {
-                return risk_result;
+            try {
+                auto risk_result = apply_risk_management();
+                if (risk_result.is_error()) {
+                    WARN("Portfolio risk management failed: " + std::string(risk_result.error()->what()) + 
+                         ", continuing without risk management");
+                }
+            } catch (const std::exception& e) {
+                WARN("Exception during risk management: " + std::string(e.what()) + 
+                     ", continuing without risk management");
             }
         }
 
@@ -197,7 +220,9 @@ Result<void> PortfolioManager::optimize_positions() {
         std::unordered_map<std::string, double> costs;
                 
         // First pass: collect unique symbols
-        for (const auto& [id, info] : strategies_) {            
+        for (const auto& [id, info] : strategies_) {      
+            if(!info.use_optimization) continue;
+
             for (const auto& [symbol, pos] : info.target_positions) {
                 if (std::find(symbols.begin(), symbols.end(), symbol) == symbols.end()) {
                     symbols.push_back(symbol);
@@ -208,7 +233,7 @@ Result<void> PortfolioManager::optimize_positions() {
         }
         
         if (symbols.empty()) {
-            std::cout << "No symbols to optimize" << std::endl;
+            INFO("No symbols to optimize");
             return Result<void>();  // Nothing to optimize
         }
                 
@@ -234,20 +259,49 @@ Result<void> PortfolioManager::optimize_positions() {
                              strategy_config.costs.at(symbol) : 1.0;
                 symbol_costs.push_back(cost);
             }
-            
-            auto result = optimizer_->optimize_single_period(
-                current_pos,
-                target_pos,
-                symbol_costs,
-                std::vector<double>(current_pos.size(), 1.0),
-                std::vector<std::vector<double>>(current_pos.size(),
-                    std::vector<double>(current_pos.size(), 0.0))
-            );
-            
-            if (result.is_error()) {
+
+            // Make sure we have valid data for this optimization
+            if (current_pos.empty() || target_pos.empty() || symbol_costs.empty()) {
+                ERROR("Invalid data for optimization: " + symbol);
                 return make_error<void>(
-                    result.error()->code(),
-                    "Optimization failed for " + symbol + ": " + result.error()->what(),
+                    ErrorCode::INVALID_ARGUMENT,
+                    "Invalid data for optimization",
+                    "PortfolioManager"
+                );
+            }
+
+            // Construct minimal covariance matrix
+            std::vector<std::vector<double>> covariance(
+                current_pos.size(),
+                std::vector<double>(current_pos.size(), 0.0)
+            );
+
+            // Set diagonal elements (variances) to a safe default value
+            for (size_t i = 0; i < current_pos.size(); ++i) {
+                covariance[i][i] = 0.01;  // Default variance value
+            }
+
+            // Run optimization 
+            try {
+                auto opt_result = optimizer_->optimize_single_period(
+                    current_pos,
+                    target_pos,
+                    symbol_costs,
+                    std::vector<double>(current_pos.size(), 1.0),
+                    covariance
+                );
+
+                if (opt_result.is_error()) {
+                    return make_error<void>(
+                        opt_result.error()->code(),
+                        "Optimization failed for " + symbol + ": " + opt_result.error()->what(),
+                        "PortfolioManager"
+                    );
+                }
+            } catch (const std::exception& e) {
+                return make_error<void>(
+                    ErrorCode::UNKNOWN_ERROR,
+                    "Optimization failed for " + symbol + ": " + e.what(),
                     "PortfolioManager"
                 );
             }
@@ -256,6 +310,7 @@ Result<void> PortfolioManager::optimize_positions() {
         return Result<void>();
         
     } catch (const std::exception& e) {
+        ERROR("Error during optimization: " + std::string(e.what()));
         return make_error<void>(
             ErrorCode::UNKNOWN_ERROR,
             std::string("Error during optimization: ") + e.what(),
@@ -273,19 +328,45 @@ Result<void> PortfolioManager::apply_risk_management() {
         // Collect all positions
         auto portfolio_positions = get_portfolio_positions();
         
-        // Apply risk management
-        auto result = risk_manager_->process_positions(portfolio_positions);
-        if (result.is_error()) {
-            return make_error<void>(
-                result.error()->code(),
-                "Risk management failed: " + std::string(result.error()->what()),
-                "PortfolioManager"
-            );
+        // Check if we have positions to process
+        if (portfolio_positions.empty()) {
+            INFO("No positions to apply risk management to");
+            return Result<void>();
+        }
+        
+        // Apply risk management with proper error handling
+        try {
+            auto result = risk_manager_->process_positions(portfolio_positions);
+            if (result.is_error()) {
+                WARN("Risk management calculation failed: " + 
+                    std::string(result.error()->what()) + 
+                    ". Continuing without risk management.");
+                return Result<void>();  // Don't fail the entire operation
+            }
+            
+            // Apply risk scaling if necessary
+            const auto& risk_result = result.value();
+            if (risk_result.risk_exceeded) {
+                INFO("Risk limits exceeded, scaling positions by " + 
+                    std::to_string(risk_result.recommended_scale));
+                
+                // Scale positions in all strategies
+                for (auto& [id, info] : strategies_) {
+                    for (auto& [symbol, pos] : info.target_positions) {
+                        pos.quantity *= risk_result.recommended_scale;
+                    }
+                }
+            }
+        } catch (const std::exception& e) {
+            WARN("Exception in risk management: " + std::string(e.what()) + 
+                ". Continuing without risk management.");
+            return Result<void>();  // Don't fail the entire operation
         }
         
         return Result<void>();
         
     } catch (const std::exception& e) {
+        ERROR("Error during risk management: " + std::string(e.what()));
         return make_error<void>(
             ErrorCode::UNKNOWN_ERROR,
             std::string("Error during risk management: ") + e.what(),

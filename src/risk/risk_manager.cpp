@@ -15,10 +15,33 @@ Result<RiskResult> RiskManager::process_positions(
         try {
             RiskResult result;
 
+            // Initialize with default values
+            result.risk_exceeded = false;
+            result.recommended_scale = 1.0;
+            result.portfolio_multiplier = 1.0;
+            result.jump_multiplier = 1.0;
+            result.correlation_multiplier = 1.0;
+            result.leverage_multiplier = 1.0;
+
             if (positions.empty()) {
+                ERROR("RiskManager: No positions provided for risk calculation");
                 return make_error<RiskResult>(
-                    ErrorCode::INVALID_ARGUMENT,
-                    "No positions provided"
+                    ErrorCode::INVALID_DATA,
+                    "No positions provided",
+                    "RiskManager"
+                );
+            }
+
+            // Add mutex lock for thread safety
+            std::lock_guard<std::mutex> lock(mutex_);
+
+            // Check if we have market data available
+            if (market_data_.returns.empty() || market_data_.covariance.empty()) {
+                ERROR("RiskManager: Market data not available for risk calculation");
+                return make_error<RiskResult>(
+                    ErrorCode::MARKET_DATA_ERROR,
+                    "Market data not available for risk calculation",
+                    "RiskManager"
                 );
             }
 
@@ -46,9 +69,11 @@ Result<RiskResult> RiskManager::process_positions(
             return Result<RiskResult>(result);
             
         } catch(const std::exception& e) {
+            ERROR("RiskManager: Risk calculation failed: " + std::string(e.what()));
             return make_error<RiskResult>(
                 ErrorCode::INVALID_RISK_CALCULATION,
-                std::string("Risk calculation failed: ") + e.what()
+                std::string("Risk calculation failed: ") + e.what(),
+                "RiskManager"
             );
         }
     }
@@ -193,26 +218,54 @@ double RiskManager::calculate_leverage_multiplier(
 
 Result<void> RiskManager::update_market_data(const std::vector<Bar>& data) {
     try {
-        // Calculate returns and covariance
-        market_data_.returns = calculate_returns(data);
-        market_data_.covariance = calculate_covariance(market_data_.returns);
-        
-        // Update symbol indices mapping
-        market_data_.symbol_indices.clear();
-        size_t idx = 0;
-        for(const auto& bar : data) {
-            if(market_data_.symbol_indices.find(bar.symbol) == 
-               market_data_.symbol_indices.end()) {
-                market_data_.symbol_indices[bar.symbol] = idx++;
+        // Mutex lock for thread safety
+        std::lock_guard<std::mutex> lock(mutex_);
+
+        // Check for empty data
+        if(data.empty()) {
+            return make_error<void>(
+                ErrorCode::MARKET_DATA_ERROR,
+                "Empty market data provided",
+                "RiskManager"
+            );
+        }
+
+        // Calculate returns and covariance with proper error handling
+        try {
+            std::vector<std::vector<double>> new_returns = calculate_returns(data);
+            
+            // Only update if we have valid returns
+            if (!new_returns.empty()) {
+                market_data_.returns = new_returns;
+                market_data_.covariance = calculate_covariance(market_data_.returns);
             }
+            
+            // Update symbol indices mapping
+            market_data_.symbol_indices.clear();
+            size_t idx = 0;
+            for(const auto& bar : data) {
+                if(market_data_.symbol_indices.find(bar.symbol) == 
+                   market_data_.symbol_indices.end()) {
+                    market_data_.symbol_indices[bar.symbol] = idx++;
+                }
+            }
+        } catch(const std::exception& e) {
+            ERROR("Failed to calculate returns or covariance: " + std::string(e.what()));
+            return make_error<void>(
+                ErrorCode::MARKET_DATA_ERROR,
+                "Failed to calculate returns or covariance: " + std::string(e.what()),
+                "RiskManager"
+            );
         }
         
         return Result<void>();
         
     } catch(const std::exception& e) {
+        ERROR("Failed to update market data: " + std::string(e.what()));
         return make_error<void>(
             ErrorCode::MARKET_DATA_ERROR,
-            "Failed to update market data: " + std::string(e.what())
+            "Failed to update market data: " + std::string(e.what()),
+            "RiskManager"
         );
     }
 }
