@@ -10,6 +10,7 @@
 #include "trade_ngin/risk/risk_manager.hpp"
 #include "trade_ngin/optimization/dynamic_optimizer.hpp"
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
+#include "trade_ngin/core/time_utils.hpp"
 #include <memory>
 #include <vector>
 #include <unordered_map>
@@ -17,6 +18,20 @@
 
 namespace trade_ngin {
 namespace backtest {
+
+/**
+ * @brief Helper function to format timestamp as string
+ * @param tp Timestamp to format
+ * @return Formatted timestamp string
+ */
+inline std::string format_timestamp(const std::chrono::system_clock::time_point& tp) {
+    auto time_t = std::chrono::system_clock::to_time_t(tp);
+    std::tm tm;
+    core::safe_localtime(&time_t, &tm);
+    std::stringstream ss;
+    ss << std::put_time(&tm, "%Y-%m-%d %H:%M:%S");
+    return ss.str();
+}
 
 /**
  * @brief Strategy configuration for backtest simulation
