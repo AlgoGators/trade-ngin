@@ -1,0 +1,24 @@
+{
+  "name": "Trade Engine Development",
+  "image": "trade-ngin-dev",
+  "remoteUser": "vscode",
+  "settings": {
+    "terminal.integrated.defaultProfile.linux": "bash",
+    "terminal.integrated.profiles.linux": {
+      "bash": {
+        "path": "/bin/bash"
+      }
+    },
+    "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools"
+  },
+  "extensions": [
+    "ms-vscode.cpptools-extension-pack",
+    "ms-vscode.cmake-tools",
+    "twxs.cmake",
+    "matepek.vscode-catch2-test-adapter",
+    "cschlosser.doxdocgen",
+    "jeff-hykin.better-cpp-syntax"
+  ],
+  "forwardPorts": [],
+  "postCreateCommand": "echo 'C++ Development Container is ready!'"
+}
