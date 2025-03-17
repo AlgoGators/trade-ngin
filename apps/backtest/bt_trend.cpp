@@ -28,20 +28,21 @@ using namespace trade_ngin;
 using namespace trade_ngin::backtest;
 
 int main() {
+    std::cout << "=== Starting Backtest Setup ===" << std::endl;
+    INFO("Starting trend following backtest application");
+
     try {
         // Initialize the logger
+        INFO("Initializing logger...");
         LoggerConfig logger_config;
         logger_config.min_level = LogLevel::INFO;
         logger_config.destination = LogDestination::BOTH;
         logger_config.log_directory = "logs";
         logger_config.filename_prefix = "bt_trend";
         Logger::instance().initialize(logger_config);
-
-        INFO("Starting trend following backtest application");
-
-        std::cout << "=== Starting Backtest Setup ===" << std::endl;
+        INFO("Logger initialized successfully");
         
-        // 1. Initialize database connection
+        // Initialize database connection
         INFO("Connecting to database...");
         auto credentials = std::make_shared<trade_ngin::CredentialStore>("./config.json");
         std::string username = credentials->get<std::string>("database", "username");
@@ -61,8 +62,9 @@ int main() {
         }
         INFO("Database connection established");
         
-        // 2. Configure backtest parameters
+        // Configure backtest parameters
         INFO("Loading configuration...");
+
         trade_ngin::backtest::BacktestConfig config;
 
         config.strategy_config.start_date = std::chrono::system_clock::now() - std::chrono::hours(24 * 365 * 3); // 3 years of data
@@ -80,13 +82,11 @@ int main() {
             throw std::runtime_error("Failed to get symbols");
         }
         
-        INFO("Configuration loaded successfully. Testing " << config.strategy_config.symbols.size() << " symbols from " 
-             << format_timestamp(config.strategy_config.start_date) << " to " << format_timestamp(config.strategy_config.end_date));
-        
         std::cout << "Symbols: ";
         for (const auto& symbol : config.strategy_config.symbols) {
             std::cout << symbol << " ";
         }
+        std::cout << std::endl;
 
         // Configure portfolio settings
         config.portfolio_config.initial_capital = 1000000.0;  // $1M
@@ -97,8 +97,13 @@ int main() {
         std::cout << "Initial capital: $" << config.portfolio_config.initial_capital << std::endl;
         std::cout << "Commission rate: " << (config.strategy_config.commission_rate * 100) << " bps" << std::endl;
         std::cout << "Slippage model: " << config.strategy_config.slippage_model << " bps" << std::endl;
+
+        INFO("Configuration loaded successfully. Testing " + 
+            std::to_string(config.strategy_config.symbols.size()) + " symbols from " + 
+            std::to_string(std::chrono::system_clock::to_time_t(config.strategy_config.start_date)) + " to " + 
+            std::to_string(std::chrono::system_clock::to_time_t(config.strategy_config.end_date)));
         
-        // 3. Configure portfolio risk management
+        // Configure portfolio risk management
         config.portfolio_config.risk_config.capital = config.portfolio_config.initial_capital;
         config.portfolio_config.risk_config.confidence_level = 0.99;
         config.portfolio_config.risk_config.lookback_period = 252;
@@ -108,7 +113,7 @@ int main() {
         config.portfolio_config.risk_config.max_gross_leverage = 4.0;
         config.portfolio_config.risk_config.max_net_leverage = 2.0;
         
-        // 4. Configure portfolio optimization
+        // Configure portfolio optimization
         config.portfolio_config.opt_config.tau = 1.0;
         config.portfolio_config.opt_config.capital = config.portfolio_config.initial_capital;
         config.portfolio_config.opt_config.asymmetric_risk_buffer = 0.1;
@@ -116,7 +121,7 @@ int main() {
         config.portfolio_config.opt_config.max_iterations = 100;
         config.portfolio_config.opt_config.convergence_threshold = 1e-6;
         
-        // 5. Initialize backtest engine
+        // Initialize backtest engine
         INFO("Initializing backtest engine...");
         auto engine = std::make_unique<trade_ngin::backtest::BacktestEngine>(config, db);
 
@@ -177,6 +182,7 @@ int main() {
         INFO("Strategy initialization successful");
 
         // 9. Create portfolio manager and add strategy
+        INFO("Creating portfolio manager...");
         auto portfolio = std::make_shared<trade_ngin::PortfolioManager>(portfolio_config);
         auto add_result = portfolio->add_strategy(tf_strategy, 1.0, 
                                 config.portfolio_config.use_optimization,
@@ -184,7 +190,8 @@ int main() {
         if (add_result.is_error()) {
             std::cerr << "Failed to add strategy to portfolio: " << add_result.error()->what() << std::endl;
             return 1;
-        } 
+        }
+        INFO("Strategy added to portfolio successfully"); 
 
         // 10. Run the backtest
         INFO("Backtest engine initialized, starting backtest run...");

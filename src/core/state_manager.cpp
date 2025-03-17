@@ -21,14 +21,6 @@ Result<void> StateManager::register_component(const ComponentInfo& info) {
             "StateManager"
         );
     }
-    cv_.wait_for(lock, std::chrono::milliseconds(50));
-    
-    if (components_.count(info.id)) {
-        return make_error<void>(
-            ErrorCode::INVALID_ARGUMENT,
-            "Component already registered: " + info.id
-        );
-    }
     
     components_[info.id] = info;
     cv_.notify_all();

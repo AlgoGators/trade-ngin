@@ -8,6 +8,7 @@
 #include <unordered_map>
 #include <map>
 #include <iostream>
+#include <mutex>
 
 namespace trade_ngin {
 
@@ -122,6 +123,8 @@ public:
 
 private:
     RiskConfig config_;
+
+    mutable std::mutex mutex_;
     
     // Market data storage
     struct MarketData {
