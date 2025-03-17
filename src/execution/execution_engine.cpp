@@ -251,7 +251,7 @@ Result<std::string> ExecutionEngine::submit_execution(
         
         if (exec_result.is_error()) {
             active_jobs_.erase(job_id);
-            ERROR("Execution job " << job_id << " failed to start: " << exec_result.error);
+            ERROR("Execution job " << job_id << " failed to start: " << exec_result.error()->what());
             return make_error<std::string>(
                 exec_result.error()->code(),
                 exec_result.error()->what(),
@@ -280,7 +280,11 @@ Result<void> ExecutionEngine::cancel_execution(const std::string& job_id) {
     if (it == active_jobs_.end()) {
         std::string error = "Job not found: " + job_id;
         WARN("Cancel execution failed: " << error);
-        return Result<void>::error(error);
+        return make_error<void>(
+            ErrorCode::INVALID_ARGUMENT,
+            error,
+            "ExecutionEngine"
+        );
     }
 
     auto& job = it->second;
@@ -317,7 +321,7 @@ Result<void> ExecutionEngine::cancel_execution(const std::string& job_id) {
     active_jobs_.erase(it);
 
     INFO("Successfully cancelled execution job " << job_id);
-    return Result<void>::success();
+    return Result<void>();
 }
 
 Result<ExecutionMetrics> ExecutionEngine::get_metrics(

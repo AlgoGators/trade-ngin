@@ -21,9 +21,11 @@ TO-DO:
     - Fix data access for strategies & TCA
     - Fix warnings about 'localtime' and 'gmtime' being unsafe
     - Update all the configs to save / load to a file
-    - Fully implement logger
     - Remove wait times in tests (if possible)
 */
+
+using namespace trade_ngin;
+using namespace trade_ngin::backtest;
 
 int main() {
     try {
