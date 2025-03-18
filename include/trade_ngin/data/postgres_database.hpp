@@ -61,6 +61,8 @@ public:
 
     Result<std::shared_ptr<arrow::Table>> execute_query(
         const std::string& query) override;
+    
+    std::string get_connection_string() const { return connection_string_; }
 
 private:
     std::string connection_string_;
