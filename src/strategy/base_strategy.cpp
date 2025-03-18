@@ -4,6 +4,7 @@
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/core/state_manager.hpp"
 #include "trade_ngin/data/market_data_bus.hpp"
+#include "trade_ngin/data/database_pooling.hpp"
 #include <sstream>
 #include <iostream>
 
@@ -455,7 +456,10 @@ Result<void> BaseStrategy::check_risk_limits() {
     
     // Check drawdown
     double drawdown = (metrics_.total_pnl / config_.capital_allocation);
-    if (drawdown < -risk_limits_.max_drawdown) {
+    const double MIN_DRAWDOWN_THRESHOLD = 0.001; // Only trigger if drawdown is at least 0.1%
+
+    // Only trigger error if drawdown exceeds limit AND is greater than minimum threshold
+    if (drawdown < -risk_limits_.max_drawdown && std::abs(drawdown) > MIN_DRAWDOWN_THRESHOLD) {
         return make_error<void>(
             ErrorCode::RISK_LIMIT_EXCEEDED,
             "Drawdown exceeds limit: " + std::to_string(drawdown),
@@ -521,10 +525,26 @@ Result<void> BaseStrategy::save_positions() {
             pos_vec.push_back(pos);
         }
         
-        if (!pos_vec.empty()) {
-            return db_->store_positions(pos_vec, "trading.positions");
+        if (pos_vec.empty()) {
+            return Result<void>();
         }
-        return Result<void>();
+
+        // Use retry logic with pooled connection
+        return utils::retry_with_backoff([&]() {
+            // Get a connection from the pool
+            auto conn_guard = DatabasePool::instance().acquire_connection();
+            auto db = conn_guard.get();
+            
+            if (!db) {
+                return make_error<void>(
+                    ErrorCode::DATABASE_ERROR,
+                    "Failed to acquire database connection",
+                    "BaseStrategy"
+                );
+            }
+            
+            return db->store_positions(pos_vec, "trading.positions");
+        });
         
     } catch (const std::exception& e) {
         return make_error<void>(

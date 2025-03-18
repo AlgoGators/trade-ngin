@@ -2,6 +2,7 @@
 #include "trade_ngin/strategy/trend_following.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
 #include "trade_ngin/data/credential_store.hpp"
+#include "trade_ngin/data/database_pooling.hpp"
 #include "trade_ngin/backtest/transaction_cost_analysis.hpp"
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
 #include "trade_ngin/core/time_utils.hpp"
@@ -33,9 +34,8 @@ int main() {
 
     try {
         // Initialize the logger
-        INFO("Initializing logger...");
         LoggerConfig logger_config;
-        logger_config.min_level = LogLevel::INFO;
+        logger_config.min_level = LogLevel::DEBUG;
         logger_config.destination = LogDestination::BOTH;
         logger_config.log_directory = "logs";
         logger_config.filename_prefix = "bt_trend";
@@ -51,24 +51,45 @@ int main() {
         std::string port = credentials->get<std::string>("database", "port");
         std::string db_name = credentials->get<std::string>("database", "name");
 
-        auto db = std::make_shared<trade_ngin::PostgresDatabase>(
-            "postgresql://" + username + ":" + password + "@" + host + ":" + port + "/" + db_name
-        );
+        std::string conn_string = "postgresql://" + username + ":" + password + "@" + host + ":" + port + "/" + db_name;
 
-        auto connect_result = db->connect();
-        if (connect_result.is_error()) {
-            std::cerr << "Failed to connect to database: " << connect_result.error()->what() << std::endl;
+        auto db = std::make_shared<PostgresDatabase>(conn_string);
+
+        auto conn_result = db->connect();
+        if (conn_result.is_error()) {
+            std::cerr << "Failed to connect to database: " << conn_result.error()->what() << std::endl;
             return 1;
         }
         INFO("Database connection established");
+
+        // Initialize connection pool
+        try {
+            DatabasePool::instance().initialize(conn_string, 5);
+            INFO("Database connection pool initialized with 5 connections");
+        } catch (const std::exception& e) {
+            WARN("Failed to initialize connection pool: " + std::string(e.what()) + 
+                ". Continuing with direct database access.");
+        }
         
         // Configure backtest parameters
         INFO("Loading configuration...");
 
         trade_ngin::backtest::BacktestConfig config;
 
-        config.strategy_config.start_date = std::chrono::system_clock::now() - std::chrono::hours(24 * 365 * 3); // 3 years of data
-        config.strategy_config.end_date = std::chrono::system_clock::now();
+        // Convert timestamps to proper format
+        auto now = std::chrono::system_clock::now();
+        auto now_time_t = std::chrono::system_clock::to_time_t(now);
+        std::tm* now_tm = std::localtime(&now_time_t);
+
+        // Set start date to 3 years ago
+        std::tm start_tm = *now_tm;
+        start_tm.tm_year -= 3; // 3 years ago
+        auto start_time_t = std::mktime(&start_tm);
+        config.strategy_config.start_date = std::chrono::system_clock::from_time_t(start_time_t);
+
+        // Set end date to today
+        config.strategy_config.end_date = now;
+
         config.strategy_config.asset_class = trade_ngin::AssetClass::FUTURES;
         config.strategy_config.data_freq = trade_ngin::DataFrequency::DAILY;
         config.strategy_config.commission_rate = 0.0005; // 5 basis points
@@ -78,8 +99,12 @@ int main() {
         if (symbols.is_ok()) {
             config.strategy_config.symbols = symbols.value();
         } else {
-            // Handle the error case
-            throw std::runtime_error("Failed to get symbols");
+            // Detailed error logging
+            ERROR("Failed to get symbols: {}, error code: {}, component: {}", 
+                symbols.error()->what(),
+                std::to_string(static_cast<int>(symbols.error()->code())),
+                symbols.error()->component());
+            throw std::runtime_error("Failed to get symbols: " + symbols.error()->to_string());
         }
         
         std::cout << "Symbols: ";
@@ -125,7 +150,7 @@ int main() {
         INFO("Initializing backtest engine...");
         auto engine = std::make_unique<trade_ngin::backtest::BacktestEngine>(config, db);
 
-        // 6. Setup portfolio configuration
+        // Setup portfolio configuration
         trade_ngin::PortfolioConfig portfolio_config;
         portfolio_config.total_capital = config.portfolio_config.initial_capital;
         portfolio_config.reserve_capital = config.portfolio_config.initial_capital * 0.1; // 10% reserve
@@ -166,7 +191,7 @@ int main() {
             {1, 1.0}, {2, 1.03}, {3, 1.08}, {4, 1.13}, {5, 1.19}, {6, 1.26}
         };
         
-        // 8. Create and initialize the strategies
+        // Create and initialize the strategies
         INFO("Initializing TrendFollowingStrategy...");
         std::cout << "Strategy capital allocation: $" << tf_config.capital_allocation << std::endl;
         std::cout << "Max leverage: " << tf_config.max_leverage << "x" << std::endl;
@@ -181,7 +206,16 @@ int main() {
         }
         INFO("Strategy initialization successful");
 
-        // 9. Create portfolio manager and add strategy
+        // Start the strategy
+        INFO("Starting strategy...");
+        auto start_result = tf_strategy->start();
+        if (start_result.is_error()) {
+            std::cerr << "Failed to start strategy: " << start_result.error()->what() << std::endl;
+            return 1;
+        }
+        INFO("Strategy started successfully");
+
+        // Create portfolio manager and add strategy
         INFO("Creating portfolio manager...");
         auto portfolio = std::make_shared<trade_ngin::PortfolioManager>(portfolio_config);
         auto add_result = portfolio->add_strategy(tf_strategy, 1.0, 
@@ -193,7 +227,7 @@ int main() {
         }
         INFO("Strategy added to portfolio successfully"); 
 
-        // 10. Run the backtest
+        // Run the backtest
         INFO("Backtest engine initialized, starting backtest run...");
         std::cout << "\n=== Starting Backtest Execution ===" << std::endl;
         std::cout << "Time period: " << 
@@ -210,7 +244,7 @@ int main() {
         
         INFO("Backtest completed successfully");
         
-        // 12. Analyze and display results
+        // Analyze and display results
         const auto& backtest_results = result.value();
         
         INFO("Analyzing performance metrics...");
@@ -225,7 +259,7 @@ int main() {
         std::cout << "Win Rate: " << (backtest_results.win_rate * 100.0) << "%" << std::endl;
         std::cout << "Total Trades: " << backtest_results.total_trades << std::endl;
 
-        // 13. Perform transaction cost analysis
+        // Perform transaction cost analysis
         trade_ngin::backtest::TCAConfig tca_config;
         tca_config.pre_trade_window = std::chrono::minutes(5);
         tca_config.post_trade_window = std::chrono::minutes(5);
@@ -289,7 +323,7 @@ int main() {
         std::cout << "  % of Total Return: " << ((total_commission + total_spread_cost + total_market_impact + total_timing_cost) / 
                                                (backtest_results.total_return * config.portfolio_config.initial_capital)) * 100.0 << "%" << std::endl;
         
-        // 14. Analyze portfolio performance
+        // Analyze portfolio performance
         std::cout << "\n======= Portfolio Analysis =======" << std::endl;
         
         // Get portfolio positions
@@ -324,7 +358,7 @@ int main() {
         std::cout << "\nFinal Portfolio Value: $" << portfolio_value << std::endl;
         std::cout << "Total Return: " << ((portfolio_value / config.portfolio_config.initial_capital) - 1.0) * 100.0 << "%" << std::endl;
         
-        // 15. Save results to database and CSV
+        // Save results to database and CSV
         INFO("Writing results to file...");
         std::string run_id = "TF_PORTFOLIO_" + std::to_string(
             std::chrono::system_clock::now().time_since_epoch().count());
