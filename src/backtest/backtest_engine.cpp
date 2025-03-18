@@ -5,6 +5,7 @@
 #include "trade_ngin/data/database_interface.hpp"
 #include "trade_ngin/data/conversion_utils.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
+#include "trade_ngin/data/database_pooling.hpp"
 #include "trade_ngin/core/time_utils.hpp"
 #include <algorithm>
 #include <numeric>
@@ -35,6 +36,14 @@ BacktestEngine::BacktestEngine(
     : config_(std::move(config))
     , db_(std::move(db)) {
 
+    // Initialize logger
+    LoggerConfig logger_config;
+    logger_config.min_level = LogLevel::INFO;
+    logger_config.destination = LogDestination::BOTH;
+    logger_config.log_directory = "logs";
+    logger_config.filename_prefix = "backtest";
+    Logger::instance().initialize(logger_config);
+
     // Register component with state manager
     ComponentInfo info{
         ComponentType::BACKTEST_ENGINE, 
@@ -49,6 +58,19 @@ BacktestEngine::BacktestEngine(
     if (register_result.is_error()) {
         ERROR("Failed to register backtest engine with state manager: " + 
               std::string(register_result.error()->what()));
+    }
+
+    // Initialize connection pool
+    if (db_ && db_->is_connected()) {
+        std::string conn_string = db_->get_connection_string();
+        if (!conn_string.empty()) {
+            DatabasePool::instance().initialize(conn_string, 10);
+            INFO("Initialized database connection pool with 10 connections");
+        } else {
+            WARN("Could not initialize connection pool - empty connection string");
+        }
+    } else {
+        WARN("Could not initialize connection pool - no valid database connection");
     }
     
     // Initialize risk manager if enabled
@@ -92,9 +114,31 @@ BacktestEngine::BacktestEngine(
          std::to_string(config_.portfolio_config.initial_capital) + " initial capital");
 }
 
-// Backward compatibility method - run single strategy with portfolio-level constraints
+// Run single strategy with portfolio-level constraints
 Result<BacktestResults> BacktestEngine::run(
     std::shared_ptr<StrategyInterface> strategy) {
+    
+    // Check if BACKTEST_ENGINE component exists in StateManager and register if not
+    auto component_result = StateManager::instance().get_state("BACKTEST_ENGINE");
+    if (component_result.is_error()) {
+        // Component doesn't exist, register it
+        ComponentInfo info{
+            ComponentType::BACKTEST_ENGINE, 
+            ComponentState::INITIALIZED,
+            "BACKTEST_ENGINE",
+            "",
+            std::chrono::system_clock::now(),
+            {{"total_capital", config_.portfolio_config.initial_capital}}
+        };
+
+        auto register_result = StateManager::instance().register_component(info);
+        if (register_result.is_error()) {
+            ERROR("Failed to register backtest engine with state manager: " + 
+                  std::string(register_result.error()->what()));
+        } else {
+            INFO("Registered backtest engine with state manager");
+        }
+    }
 
     // Update state to running
     auto state_result = StateManager::instance().update_state(
@@ -1252,17 +1296,45 @@ Result<std::vector<Bar>> BacktestEngine::load_market_data() const {
                     continue;
                 }
 
+                // Inspect data before conversion
+                auto arrow_table = result.value();
+                INFO("Loaded Arrow table with " + std::to_string(arrow_table->num_rows()) + 
+                     " rows and " + std::to_string(arrow_table->num_columns()) + " columns");
+                    
+                if (arrow_table->num_rows() == 0) {
+                    ERROR("Market data query returned an empty table - no data for the specified date range");
+                    return make_error<std::vector<Bar>>(
+                        ErrorCode::DATA_NOT_FOUND,
+                        "Market data query returned an empty table - no data for the specified date range",
+                        "BacktestEngine"
+                    );
+                }
+
                 // Convert Arrow table to Bars
                 auto conversion_result = DataConversionUtils::arrow_table_to_bars(result.value());
                 if (conversion_result.is_error()) {
-                    WARN("Error converting data for symbols batch " + std::to_string(i) + "-" + 
-                         std::to_string(end_idx) + ": " + conversion_result.error()->what() + 
-                         ". Continuing with other batches.");
-                    continue;
+                    ERROR("Failed to convert market data to bars: " + 
+                        std::string(conversion_result.error()->what()));
+                    return make_error<std::vector<Bar>>(
+                        conversion_result.error()->code(),
+                        conversion_result.error()->what(),
+                        "BacktestEngine"
+                    );
                 }
                 
                 // Add these bars to our collection
                 auto& batch_bars = conversion_result.value();
+                if (batch_bars.empty()) {
+                    ERROR("No market data loaded for symbols batch " + 
+                        std::to_string(i) + "-" + std::to_string(end_idx));
+                    return make_error<std::vector<Bar>>(
+                        ErrorCode::MARKET_DATA_ERROR,
+                        "No market data loaded for symbols batch " + 
+                        std::to_string(i) + "-" + std::to_string(end_idx),
+                        "BacktestEngine"
+                    );
+                }
+
                 all_bars.insert(all_bars.end(), batch_bars.begin(), batch_bars.end());
                 
                 INFO("Loaded " + std::to_string(batch_bars.size()) + " bars for symbols batch " + 
@@ -1283,6 +1355,36 @@ Result<std::vector<Bar>> BacktestEngine::load_market_data() const {
                 "No market data loaded for backtest",
                 "BacktestEngine"
             );
+        }
+
+        // Verify data quality - check at least one symbol has price movement
+        bool has_price_movement = false;
+        std::unordered_map<std::string, double> min_prices, max_prices;
+        
+        for (const auto& bar : all_bars) {
+            if (min_prices.find(bar.symbol) == min_prices.end()) {
+                min_prices[bar.symbol] = bar.close;
+                max_prices[bar.symbol] = bar.close;
+            } else {
+                min_prices[bar.symbol] = std::min(min_prices[bar.symbol], bar.close);
+                max_prices[bar.symbol] = std::max(max_prices[bar.symbol], bar.close);
+            }
+        }
+        
+        for (const auto& [symbol, min_price] : min_prices) {
+            double max_price = max_prices[symbol];
+            double price_range_pct = (max_price - min_price) / min_price * 100.0;
+            INFO("Symbol " + symbol + " price range: " + 
+                 std::to_string(min_price) + " to " + std::to_string(max_price) + 
+                 " (" + std::to_string(price_range_pct) + "%)");
+                 
+            if (price_range_pct > 1.0) {  // At least 1% price movement
+                has_price_movement = true;
+            }
+        }
+        
+        if (!has_price_movement) {
+            WARN("No significant price movement detected in market data. Strategy may not generate signals.");
         }
         
         INFO("Loaded a total of " + std::to_string(all_bars.size()) + " bars for " + 
