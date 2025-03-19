@@ -18,18 +18,33 @@ Result<void> DatabasePool::initialize(const std::string& connection_string, size
         return Result<void>();
     }
 
+    // Store connection string for later use
+    default_connection_string_ = connection_string;
+
     // Create connections
+    size_t successful_connections = 0;
     for (size_t i = 0; i < pool_size; ++i) {
         auto db = std::make_shared<PostgresDatabase>(connection_string);
         auto result = db->connect();
         if (result.is_ok()) {
             available_connections_.push_back(db);
+            successful_connections++;
         } else {
             ERROR("Failed to initialize connection in pool: " + 
                 std::string(result.error()->what()));
         }
     }
 
+    if (successful_connections == 0) {
+        return make_error<void>(
+            ErrorCode::CONNECTION_ERROR,
+            "Failed to initialize any database connections",
+            "DatabasePool"
+        );
+    }
+
+    total_connections_ = successful_connections;
+    max_pool_size_ = pool_size;
     initialized_ = true;
     INFO("Database pool initialized with " + std::to_string(pool_size) + " connections");
 
@@ -38,6 +53,12 @@ Result<void> DatabasePool::initialize(const std::string& connection_string, size
 
 std::shared_ptr<PostgresDatabase> DatabasePool::create_new_connection() {
     // Only call this with mutex already locked
+    if (total_connections() >= max_pool_size_) {
+        WARN("Maximum pool size reached (" + std::to_string(max_pool_size_) + 
+             "), cannot create new connections");
+        return nullptr;
+    }
+
     auto db = std::make_shared<PostgresDatabase>(default_connection_string_);
     auto result = db->connect();
     if (result.is_ok()) {
@@ -46,7 +67,8 @@ std::shared_ptr<PostgresDatabase> DatabasePool::create_new_connection() {
             std::to_string(total_connections_));
         return db;
     } else {
-        ERROR("Failed to create new connection: " + result.error()->to_string());
+        ERROR("Failed to create new connection: " + 
+              (result.error() ? result.error()->to_string() : "Unknown error"));
         return nullptr;
     }
 }

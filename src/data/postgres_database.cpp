@@ -24,17 +24,21 @@ Result<void> PostgresDatabase::connect() {
         connection_ = std::make_unique<pqxx::connection>(connection_string_);
         if (!connection_->is_open()) {
             return make_error<void>(
-                ErrorCode::DATABASE_ERROR,
+                ErrorCode::CONNECTION_ERROR,
                 "Failed to open database connection",
                 "PostgresDatabase"
             );
         }
 
-        // Register with state manager
+        // Generate a unique ID for this connection instance
+        static std::atomic<int> counter{0};
+        std::string unique_id = "POSTGRES_DB_" + std::to_string(++counter);
+
+        // Register with state manager using the unique ID
         ComponentInfo info{
             ComponentType::MARKET_DATA,
             ComponentState::INITIALIZED,
-            "POSTGRES_DB",
+            unique_id,
             "",
             std::chrono::system_clock::now(),
             {}
@@ -42,16 +46,21 @@ Result<void> PostgresDatabase::connect() {
 
         auto register_result = StateManager::instance().register_component(info);
         if (register_result.is_error()) {
-            return register_result;
+             // Log the error but don't fail the connection - it's still usable
+             WARN("Failed to register database with StateManager: " + 
+                std::string(register_result.error()->what()));
+        } else {
+            // Store the generated ID for later use in disconnect()
+            component_id_ = unique_id;
+            StateManager::instance().update_state(component_id_, ComponentState::RUNNING);
+            INFO("Successfully connected to PostgreSQL database with ID: " + component_id_);
         }
 
-        StateManager::instance().update_state("POSTGRES_DB", ComponentState::RUNNING);
-        INFO("Successfully connected to PostgreSQL database");
         return Result<void>();
 
     } catch (const std::exception& e) {
         return make_error<void>(
-            ErrorCode::DATABASE_ERROR,
+            ErrorCode::CONNECTION_ERROR,
             "Database connection error: " + std::string(e.what()),
             "PostgresDatabase"
         );
@@ -63,6 +72,17 @@ void PostgresDatabase::disconnect() {
     if (connection_ && connection_->is_open()) {
         connection_->close();
         connection_.reset();
+
+        // Only attempt to unregister if we have a valid component ID
+        if (!component_id_.empty()) {
+            try {
+                StateManager::instance().unregister_component(component_id_);
+            } catch (const std::exception& e) {
+                WARN("Error unregistering database component: " + std::string(e.what()));
+            }
+            component_id_.clear();
+        }
+
         INFO("Disconnected from PostgreSQL database");
     }
 }
@@ -80,7 +100,7 @@ Result<std::shared_ptr<arrow::Table>> PostgresDatabase::get_market_data(
     const std::string& data_type) {
         if (start_date > end_date) {
             return make_error<std::shared_ptr<arrow::Table>>(
-                ErrorCode::DATABASE_ERROR,
+                ErrorCode::INVALID_ARGUMENT,
                 "Start date must be before end date"
             );
         }
@@ -194,7 +214,7 @@ std::string PostgresDatabase::format_timestamp(const Timestamp& ts) const {
 Result<void> PostgresDatabase::validate_connection() const {
     if (!is_connected() || !connection_ || !connection_->is_open()) {
             return make_error<void>(
-                ErrorCode::DATABASE_ERROR,  
+                ErrorCode::CONNECTION_ERROR,  
                 "Not connected to database",
                 "PostgresDatabase"
             );
@@ -360,6 +380,57 @@ Result<std::shared_ptr<arrow::Table>> PostgresDatabase::execute_query(
     }
 }
 
+Result<std::shared_ptr<arrow::Table>> PostgresDatabase::get_contract_metadata() const {
+    
+    auto validation = validate_connection();
+    if (validation.is_error()) {
+        return make_error<std::shared_ptr<arrow::Table>>(
+            validation.error()->code(),
+            validation.error()->what(),
+            "PostgresDatabase"
+        );
+    }
+
+    try {
+        // Build the query
+        std::string query = "SELECT * FROM metadata.contract_metadata WHERE 1=1";
+        
+        // Execute query
+        pqxx::work txn(*connection_);
+        auto result = txn.exec(query);
+        txn.commit();
+        
+        // Convert to Arrow table
+        return convert_metadata_to_arrow(result);
+        
+    } catch (const std::exception& e) {
+        return make_error<std::shared_ptr<arrow::Table>>(
+            ErrorCode::DATABASE_ERROR,
+            "Failed to retrieve contract metadata: " + std::string(e.what()),
+            "PostgresDatabase"
+        );
+    }
+}
+
+std::string PostgresDatabase::asset_class_to_string(AssetClass asset_class) const {
+    switch (asset_class) {
+        case AssetClass::FUTURES:
+            return "FUTURE";
+        case AssetClass::EQUITIES:
+            return "EQUITY";
+        case AssetClass::FIXED_INCOME:
+            return "BOND";
+        case AssetClass::CURRENCIES:
+            return "FOREX";
+        case AssetClass::COMMODITIES:
+            return "COMMODITY";
+        case AssetClass::CRYPTO:
+            return "CRYPTO";
+        default:
+            return "";
+    }
+}
+
 std::string PostgresDatabase::build_market_data_query(
     const std::vector<std::string>& symbols,
     const Timestamp& start_date,
@@ -512,6 +583,239 @@ Result<std::shared_ptr<arrow::Table>> PostgresDatabase::convert_to_arrow_table(
             "Exception during Arrow table conversion: " + std::string(e.what())
         );
     }
+}
+
+Result<std::shared_ptr<arrow::Table>> PostgresDatabase::convert_metadata_to_arrow(
+    const pqxx::result& result) const {
+    
+    if (result.empty()) {
+        // Return empty table with schema
+        auto schema = arrow::schema({
+            arrow::field("Name", arrow::utf8()),
+            arrow::field("Databento Symbol", arrow::utf8()),
+            arrow::field("IB Symbol", arrow::utf8()),
+            arrow::field("Asset Type", arrow::utf8()),
+            arrow::field("Sector", arrow::utf8()),          // For futures: Energy, Metals, Agriculture, etc.
+            arrow::field("Exchange", arrow::utf8()),
+            arrow::field("Contract Size", arrow::float64()),
+            arrow::field("Minimum Price Fluctuation", arrow::float64()),
+            arrow::field("Tick Size", arrow::utf8()),
+            arrow::field("Trading Hours (EST)", arrow::utf8()),
+            arrow::field("Overnight Initial Margin", arrow::float64()),
+            arrow::field("Overnight Maintenance Margin", arrow::float64()),
+            arrow::field("Intraday Initial Margin", arrow::float64()),
+            arrow::field("Intraday Maintenance Margin", arrow::float64()),
+            arrow::field("Units", arrow::utf8()),
+            arrow::field("Data Provider", arrow::utf8()),
+            arrow::field("Dataset", arrow::utf8()),
+            arrow::field("Contract Months", arrow::utf8())
+        });
+
+        std::vector<std::shared_ptr<arrow::Array>> empty_arrays(18);
+        auto empty_table = arrow::Table::Make(schema, empty_arrays);
+
+        return Result<std::shared_ptr<arrow::Table>>(empty_table);
+    }
+
+    // Create builders for each column
+    arrow::MemoryPool* pool = arrow::default_memory_pool();
+    
+    arrow::StringBuilder name_builder(pool);
+    arrow::StringBuilder databento_symbol_builder(pool);
+    arrow::StringBuilder ib_symbol_builder(pool);
+    arrow::StringBuilder asset_type_builder(pool);
+    arrow::StringBuilder sector_builder(pool);
+    arrow::StringBuilder exchange_builder(pool);
+    arrow::DoubleBuilder contract_size_builder(pool);
+    arrow::DoubleBuilder min_tick_builder(pool);
+    arrow::StringBuilder tick_size_builder(pool);
+    arrow::StringBuilder trading_hours_builder(pool);
+    arrow::DoubleBuilder overnight_initial_margin_builder(pool);
+    arrow::DoubleBuilder overnight_maintenance_margin_builder(pool);
+    arrow::DoubleBuilder intraday_initial_margin_builder(pool);
+    arrow::DoubleBuilder intraday_maintenance_margin_builder(pool);
+    arrow::StringBuilder units_builder(pool);
+    arrow::StringBuilder data_provider_builder(pool);
+    arrow::StringBuilder dataset_builder(pool);
+    arrow::StringBuilder contract_months_builder(pool);
+
+    // Helper function to reserve space and check status
+    auto reserve_and_check = [&result](auto& builder) -> arrow::Status {
+        return builder.Reserve(result.size());
+    };
+
+    // Check all reserve calls
+    arrow::Status status;
+    std::vector<std::pair<arrow::Status, std::string>> reserve_results;
+    
+    reserve_results.push_back({reserve_and_check(name_builder), "Name"});
+    reserve_results.push_back({reserve_and_check(databento_symbol_builder), "Databento Symbol"});
+    reserve_results.push_back({reserve_and_check(ib_symbol_builder), "IB Symbol"});
+    reserve_results.push_back({reserve_and_check(asset_type_builder), "Asset Type"});
+    reserve_results.push_back({reserve_and_check(sector_builder), "Sector"});
+    reserve_results.push_back({reserve_and_check(exchange_builder), "Exchange"});
+    reserve_results.push_back({reserve_and_check(contract_size_builder), "Contract Size"});
+    reserve_results.push_back({reserve_and_check(min_tick_builder), "Minimum Price Fluctuation"});
+    reserve_results.push_back({reserve_and_check(tick_size_builder), "Tick Size"});
+    reserve_results.push_back({reserve_and_check(trading_hours_builder), "Trading Hours"});
+    reserve_results.push_back({reserve_and_check(overnight_initial_margin_builder), "Overnight Initial Margin"});
+    reserve_results.push_back({reserve_and_check(overnight_maintenance_margin_builder), "Overnight Maintenance Margin"});
+    reserve_results.push_back({reserve_and_check(intraday_initial_margin_builder), "Intraday Initial Margin"});
+    reserve_results.push_back({reserve_and_check(intraday_maintenance_margin_builder), "Intraday Maintenance Margin"});
+    reserve_results.push_back({reserve_and_check(units_builder), "Units"});
+    reserve_results.push_back({reserve_and_check(data_provider_builder), "Data Provider"});
+    reserve_results.push_back({reserve_and_check(dataset_builder), "Dataset"});
+    reserve_results.push_back({reserve_and_check(contract_months_builder), "Contract Months"});
+
+    // Check if any reserve call failed
+    for (const auto& [status, col_name] : reserve_results) {
+        if (!status.ok()) {
+            return make_error<std::shared_ptr<arrow::Table>>(
+                ErrorCode::CONVERSION_ERROR,
+                "Failed to reserve memory for " + col_name + " array: " + status.ToString(),
+                "PostgresDatabase"
+            );
+        }
+    }
+
+    // Populate the arrays
+    for (const auto& row : result) {
+        // Helper function to safely append string values
+        auto append_string = [](arrow::StringBuilder& builder, const pqxx::row::reference& field) {
+            if (field.is_null()) {
+                return builder.AppendNull();
+            } else {
+                return builder.Append(field.c_str());
+            }
+        };
+        
+        // Helper function to safely convert and append double values
+        auto append_double = [](arrow::DoubleBuilder& builder, const pqxx::row::reference& field) {
+            if (field.is_null()) {
+                return builder.AppendNull();
+            } else {
+                try {
+                    // Convert from text to double
+                    std::string str_val = field.c_str();
+                    double value = 0.0;
+                    
+                    // Check for empty string
+                    if (!str_val.empty()) {
+                        try {
+                            // Try to convert to double
+                            value = std::stod(str_val);
+                        } catch (const std::exception&) {
+                            // If conversion fails, try to handle some common formats
+                            // Remove commas, percentage signs, etc.
+                            str_val.erase(std::remove(str_val.begin(), str_val.end(), ','), str_val.end());
+                            str_val.erase(std::remove(str_val.begin(), str_val.end(), '%'), str_val.end());
+                            
+                            try {
+                                value = std::stod(str_val);
+                            } catch (const std::exception&) {
+                                // If all conversions fail, append null
+                                return builder.AppendNull();
+                            }
+                        }
+                    }
+                    
+                    return builder.Append(value);
+                } catch (const std::exception&) {
+                    return builder.AppendNull();
+                }
+            }
+        };
+        
+        append_string(name_builder, row["Name"]);
+        append_string(databento_symbol_builder, row["Databento Symbol"]);
+        append_string(ib_symbol_builder, row["IB Symbol"]);
+        append_string(asset_type_builder, row["Asset Type"]);
+        append_string(sector_builder, row["Sector"]);
+        append_string(exchange_builder, row["Exchange"]);
+        append_double(contract_size_builder, row["Contract Size"]);
+        append_double(min_tick_builder, row["Minimum Price Fluctuation"]);
+        append_string(tick_size_builder, row["Tick Size"]);
+        append_string(trading_hours_builder, row["Trading Hours (EST)"]);
+        append_double(overnight_initial_margin_builder, row["Overnight Initial Margin"]);
+        append_double(overnight_maintenance_margin_builder, row["Overnight Maintenance Margin"]);
+        append_double(intraday_initial_margin_builder, row["Intraday Initial Margin"]);
+        append_double(intraday_maintenance_margin_builder, row["Intraday Maintenance Margin"]);
+        append_string(units_builder, row["Units"]);
+        append_string(data_provider_builder, row["Data Provider"]);
+        append_string(dataset_builder, row["Dataset"]);
+        append_string(contract_months_builder, row["Contract Months"]);
+    }
+
+    // Finish arrays
+    std::shared_ptr<arrow::Array> name_aray, databento_symbol_array, ib_symbol_array, asset_type_array,
+        sector_array, exchange_array, contract_size_array, min_tick_array, tick_size_array,
+        trading_hours_array, overnight_initial_margin_array, overnight_maintenance_margin_array, intraday_initial_margin_array,
+        intraday_maintenance_margin_array, units_array, data_provider_array, dataset_array, contract_months_array;
+    
+    name_builder.Finish(&name_aray);
+    databento_symbol_builder.Finish(&databento_symbol_array);
+    ib_symbol_builder.Finish(&ib_symbol_array);
+    asset_type_builder.Finish(&asset_type_array);
+    sector_builder.Finish(&sector_array);
+    exchange_builder.Finish(&exchange_array);
+    contract_size_builder.Finish(&contract_size_array);
+    min_tick_builder.Finish(&min_tick_array);
+    tick_size_builder.Finish(&tick_size_array);
+    trading_hours_builder.Finish(&trading_hours_array);
+    overnight_initial_margin_builder.Finish(&overnight_initial_margin_array);
+    overnight_maintenance_margin_builder.Finish(&overnight_maintenance_margin_array);
+    intraday_initial_margin_builder.Finish(&intraday_initial_margin_array);
+    intraday_maintenance_margin_builder.Finish(&intraday_maintenance_margin_array);
+    units_builder.Finish(&units_array);
+    data_provider_builder.Finish(&data_provider_array);
+    dataset_builder.Finish(&dataset_array);
+    contract_months_builder.Finish(&contract_months_array);
+
+    // Create schema
+    auto schema = arrow::schema({
+        arrow::field("Name", arrow::utf8()),
+        arrow::field("Databento Symbol", arrow::utf8()),
+        arrow::field("IB Symbol", arrow::utf8()),
+        arrow::field("Asset Type", arrow::utf8()),
+        arrow::field("Sector", arrow::utf8()),
+        arrow::field("Exchange", arrow::utf8()),
+        arrow::field("Contract Size", arrow::float64()),
+        arrow::field("Minimum Price Fluctuation", arrow::float64()),
+        arrow::field("Tick Size", arrow::utf8()),
+        arrow::field("Trading Hours (EST)", arrow::utf8()),
+        arrow::field("Overnight Initial Margin", arrow::float64()),
+        arrow::field("Overnight Maintenance Margin", arrow::float64()),
+        arrow::field("Intraday Initial Margin", arrow::float64()),
+        arrow::field("Intraday Maintenance Margin", arrow::float64()),
+        arrow::field("Units", arrow::utf8()),
+        arrow::field("Data Provider", arrow::utf8()),
+        arrow::field("Dataset", arrow::utf8()),
+        arrow::field("Contract Months", arrow::utf8())
+    });
+
+    // Create and return table
+    auto table = arrow::Table::Make(schema, {
+        name_aray,
+        databento_symbol_array,
+        ib_symbol_array,
+        asset_type_array,
+        sector_array,
+        exchange_array,
+        contract_size_array,
+        min_tick_array,
+        tick_size_array,
+        trading_hours_array,
+        overnight_initial_margin_array,
+        overnight_maintenance_margin_array,
+        intraday_initial_margin_array,
+        intraday_maintenance_margin_array,
+        units_array,
+        data_provider_array,
+        dataset_array,
+        contract_months_array
+    });
+
+    return Result<std::shared_ptr<arrow::Table>>(table);
 }
 
 std::string PostgresDatabase::side_to_string(Side side) const {

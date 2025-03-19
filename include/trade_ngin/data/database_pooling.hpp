@@ -16,7 +16,7 @@ auto retry_with_backoff(Func func, int max_retries = 3) -> decltype(func()) {
     using ReturnType = decltype(func());
     
     int attempt = 0;
-    std::chrono::milliseconds delay(100);  // Start with 100ms delay
+    std::chrono::milliseconds delay(30);  // Start with 30ms delay
     
     while (attempt < max_retries) {
         auto result = func();
@@ -24,7 +24,7 @@ auto retry_with_backoff(Func func, int max_retries = 3) -> decltype(func()) {
         // Check if success or non-retryable error
         if (!result.is_error() || 
             (result.is_error() && 
-            result.error()->code() != ErrorCode::DATABASE_ERROR)) {
+            result.error()->code() != ErrorCode::CONNECTION_ERROR)) {
             return result;
         }
         

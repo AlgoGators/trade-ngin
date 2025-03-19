@@ -4,6 +4,7 @@
 #include "trade_ngin/strategy/base_strategy.hpp"
 #include "trade_ngin/core/types.hpp"
 #include "trade_ngin/core/error.hpp"
+#include "trade_ngin/instruments/instrument_registry.hpp"
 #include <vector>
 #include <utility>
 #include <memory>
