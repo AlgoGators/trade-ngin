@@ -12,41 +12,143 @@
 
 namespace trade_ngin {
 
+/**
+ * @brief Base class for all trading strategies
+ */
 class BaseStrategy : public StrategyInterface {
 public:
+    /**
+     * @brief Constructor
+     * @param id Strategy identifier
+     * @param config Strategy configuration
+     * @param db Database interface
+     */
     BaseStrategy(std::string id,
                 StrategyConfig config,
                 std::shared_ptr<DatabaseInterface> db);
     
+    /**
+     * @brief Destructor
+     */
     virtual ~BaseStrategy() = default;
 
     // StrategyInterface implementations
+    /**
+     * @brief Initialize the strategy
+     * @return Result indicating success or failure
+     */
     Result<void> initialize() override;
+
+    /**
+     * @brief Start the strategy
+     * @return Result indicating success or failure
+     */
     Result<void> start() override;
+
+    /**
+     * @brief Stop the strategy
+     * @return Result indicating success or failure
+     */
     Result<void> stop() override;
+
+    /**
+     * @brief Pause the strategy
+     * @return Result indicating success or failure
+     */
     Result<void> pause() override;
+
+    /**
+     * @brief Resume the strategy
+     * @return Result indicating success or failure
+     */
     Result<void> resume() override;
 
+    /**
+     * @brief Process new market data
+     * @param data Vector of price bars
+     * @return Result indicating success or failure
+     */
     Result<void> on_data(const std::vector<Bar>& data) override;
+
+    /**
+     * @brief Process execution reports
+     * @param report Execution report
+     * @return Result indicating success or failure
+     */
     Result<void> on_execution(const ExecutionReport& report) override;
+
+    /**
+     * @brief Process signals from external sources
+     * @param symbol Symbol for the signal
+     * @param signal Signal value
+     * @return Result indicating success or failure
+     */
     Result<void> on_signal(const std::string& symbol, double signal) override;
     
+    /**
+     * @brief Get the current state of the strategy
+     * @return Strategy state
+     */
     StrategyState get_state() const override;
+
+    /**
+     * @brief Get the current metrics for the strategy
+     * @return Strategy metrics
+     */
     const StrategyMetrics& get_metrics() const override;
+
+    /**
+     * @brief Get the current configuration for the strategy
+     * @return Strategy configuration
+     */
     const StrategyConfig& get_config() const override;
+
+    /**
+     * @brief Get the metadata for the strategy
+     * @return Strategy metadata
+     */
     const StrategyMetadata& get_metadata() const override;
     
+    /**
+     * @brief Get the current positions for the strategy
+     * @return Map of positions by symbol
+     */
     const std::unordered_map<std::string, Position>& get_positions() const override;
+
+    /**
+     * @brief Update a position for a symbol
+     * @param symbol Symbol to update
+     * @param position New position
+     * @return Result indicating success or failure
+     */
     Result<void> update_position(const std::string& symbol, 
                                const Position& position) override;
     
+    /**
+     * @brief Update risk limits for the strategy
+     * @param limits New risk limits
+     * @return Result indicating success or failure
+     */
     Result<void> update_risk_limits(const RiskLimits& limits) override;
+
+    /**
+     * @brief Get the current signals for the strategy
+     * @return Map of signals by symbol
+     */
     Result<void> check_risk_limits() override;
 
+    /**
+     * @brief Get the current signals for the strategy
+     * @return Map of signals by symbol
+     */
     virtual Result<void> update_metrics();
+
+    /**
+     * @brief Transition the strategy to a new state
+     * @param new_state New state to transition to
+     * @return Result indicating success or failure
+     */
     Result<void> transition_state(StrategyState new_state);
-
-
 
 protected:
     // Protected methods for derived classes
@@ -70,7 +172,14 @@ protected:
     mutable std::mutex mutex_;
 
 private:
+    /**
+     * @brief Validate a state transition
+     * @param new_state New state to transition to
+     * @return Result indicating success or failure
+     */
     Result<void> validate_state_transition(StrategyState new_state) const;
+    
+    std::string registered_component_id_;
     bool is_initialized_{false};
     std::atomic<bool> running_{false};
 };

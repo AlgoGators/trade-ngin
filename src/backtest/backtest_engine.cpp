@@ -44,11 +44,16 @@ BacktestEngine::BacktestEngine(
     logger_config.filename_prefix = "backtest";
     Logger::instance().initialize(logger_config);
 
+    // Generate a unique component for the backtest engine
+    std::string unique_id = "BACKTEST_ENGINE_" + std::to_string(
+        std::chrono::system_clock::now().time_since_epoch().count()
+    );
+
     // Register component with state manager
     ComponentInfo info{
         ComponentType::BACKTEST_ENGINE, 
         ComponentState::INITIALIZED,
-        "BACKTEST_ENGINE",
+        unique_id,
         "",
         std::chrono::system_clock::now(),
         {{"total_capital", config_.portfolio_config.initial_capital}}
@@ -57,20 +62,11 @@ BacktestEngine::BacktestEngine(
     auto register_result = StateManager::instance().register_component(info);
     if (register_result.is_error()) {
         ERROR("Failed to register backtest engine with state manager: " + 
-              std::string(register_result.error()->what()));
-    }
-
-    // Initialize connection pool
-    if (db_ && db_->is_connected()) {
-        std::string conn_string = db_->get_connection_string();
-        if (!conn_string.empty()) {
-            DatabasePool::instance().initialize(conn_string, 10);
-            INFO("Initialized database connection pool with 10 connections");
-        } else {
-            WARN("Could not initialize connection pool - empty connection string");
-        }
+            std::string(register_result.error()->what()) + 
+            ". Continuing without state management.");
     } else {
-        WARN("Could not initialize connection pool - no valid database connection");
+        // Store registered component ID for future use
+        backtest_component_id_ = unique_id;
     }
     
     // Initialize risk manager if enabled
@@ -119,13 +115,13 @@ Result<BacktestResults> BacktestEngine::run(
     std::shared_ptr<StrategyInterface> strategy) {
     
     // Check if BACKTEST_ENGINE component exists in StateManager and register if not
-    auto component_result = StateManager::instance().get_state("BACKTEST_ENGINE");
+    auto component_result = StateManager::instance().get_state(backtest_component_id_);
     if (component_result.is_error()) {
         // Component doesn't exist, register it
         ComponentInfo info{
             ComponentType::BACKTEST_ENGINE, 
             ComponentState::INITIALIZED,
-            "BACKTEST_ENGINE",
+            backtest_component_id_,
             "",
             std::chrono::system_clock::now(),
             {{"total_capital", config_.portfolio_config.initial_capital}}
@@ -142,7 +138,7 @@ Result<BacktestResults> BacktestEngine::run(
 
     // Update state to running
     auto state_result = StateManager::instance().update_state(
-        "BACKTEST_ENGINE", 
+        backtest_component_id_, 
         ComponentState::RUNNING
     );
     
@@ -159,7 +155,7 @@ Result<BacktestResults> BacktestEngine::run(
                   std::string(data_result.error()->what()));
             
             StateManager::instance().update_state(
-                "BACKTEST_ENGINE", 
+                backtest_component_id_, 
                 ComponentState::ERR_STATE,
                 data_result.error()->what()
             );
@@ -189,7 +185,7 @@ Result<BacktestResults> BacktestEngine::run(
                   std::string(init_result.error()->what()));
             
             StateManager::instance().update_state(
-                "BACKTEST_ENGINE", 
+                backtest_component_id_, 
                 ComponentState::ERR_STATE,
                 init_result.error()->what()
             );
@@ -209,7 +205,7 @@ Result<BacktestResults> BacktestEngine::run(
                   std::string(start_result.error()->what()));
             
             StateManager::instance().update_state(
-                "BACKTEST_ENGINE", 
+                backtest_component_id_, 
                 ComponentState::ERR_STATE,
                 start_result.error()->what()
             );
@@ -260,7 +256,7 @@ Result<BacktestResults> BacktestEngine::run(
                       std::string(signal_result.error()->what()));
                 
                 StateManager::instance().update_state(
-                    "BACKTEST_ENGINE", 
+                    backtest_component_id_, 
                     ComponentState::ERR_STATE,
                     signal_result.error()->what()
                 );
@@ -284,7 +280,7 @@ Result<BacktestResults> BacktestEngine::run(
                           std::string(constraint_result.error()->what()));
                     
                     StateManager::instance().update_state(
-                        "BACKTEST_ENGINE", 
+                        backtest_component_id_, 
                         ComponentState::ERR_STATE,
                         constraint_result.error()->what()
                     );
@@ -336,7 +332,7 @@ Result<BacktestResults> BacktestEngine::run(
 
         // Update final state
         StateManager::instance().update_state(
-            "BACKTEST_ENGINE", 
+            backtest_component_id_, 
             ComponentState::STOPPED
         );
         
@@ -348,7 +344,7 @@ Result<BacktestResults> BacktestEngine::run(
         ERROR("Unexpected error during backtest: " + std::string(e.what()));
         
         StateManager::instance().update_state(
-            "BACKTEST_ENGINE", 
+            backtest_component_id_, 
             ComponentState::ERR_STATE,
             std::string("Unexpected error: ") + e.what()
         );
@@ -366,7 +362,7 @@ Result<BacktestResults> BacktestEngine::run_portfolio(
     
     // Update state to running
     auto state_result = StateManager::instance().update_state(
-        "BACKTEST_ENGINE", 
+        backtest_component_id_, 
         ComponentState::RUNNING
     );
     
@@ -391,7 +387,7 @@ Result<BacktestResults> BacktestEngine::run_portfolio(
                   std::string(data_result.error()->what()));
             
             StateManager::instance().update_state(
-                "BACKTEST_ENGINE", 
+                backtest_component_id_, 
                 ComponentState::ERR_STATE,
                 data_result.error()->what()
             );
@@ -512,7 +508,7 @@ Result<BacktestResults> BacktestEngine::run_portfolio(
 
         // Update final state
         StateManager::instance().update_state(
-            "BACKTEST_ENGINE", 
+            backtest_component_id_, 
             ComponentState::STOPPED
         );
         
@@ -525,7 +521,7 @@ Result<BacktestResults> BacktestEngine::run_portfolio(
         ERROR("Unexpected error during portfolio backtest: " + std::string(e.what()));
         
         StateManager::instance().update_state(
-            "BACKTEST_ENGINE", 
+            backtest_component_id_, 
             ComponentState::ERR_STATE,
             std::string("Unexpected error: ") + e.what()
         );
@@ -1237,7 +1233,7 @@ Result<std::vector<Bar>> BacktestEngine::load_market_data() const {
         if (!db_) {
             ERROR("Database interface is null");
             return make_error<std::vector<Bar>>(
-                ErrorCode::DATABASE_ERROR,
+                ErrorCode::CONNECTION_ERROR,
                 "Database interface is null",
                 "BacktestEngine"
             );
@@ -1648,7 +1644,7 @@ Result<void> BacktestEngine::save_results(
 
         if (!db_ || !db_->is_connected()) {
             return make_error<void>(
-                ErrorCode::DATABASE_ERROR,
+                ErrorCode::CONNECTION_ERROR,
                 "Database not connected",
                 "BacktestEngine"
             );
@@ -1694,11 +1690,7 @@ Result<void> BacktestEngine::save_results(
         // Execute query
         auto result = db_->execute_query(query);
         if (result.is_error()) {
-            return make_error<void>(
-                result.error()->code(),
-                result.error()->what(),
-                "BacktestEngine"
-            );
+            WARN("Failed to save backtest results: " + std::string(result.error()->what()));
         }
 
         // Save equity curve if enabled

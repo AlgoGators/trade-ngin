@@ -216,6 +216,7 @@ struct RiskLimits {
 enum class AssetClass {
     FUTURES,
     EQUITIES,
+    OPTIONS,
     FIXED_INCOME,
     CURRENCIES,
     COMMODITIES,

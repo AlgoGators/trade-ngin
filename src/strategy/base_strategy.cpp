@@ -55,11 +55,15 @@ Result<void> BaseStrategy::initialize() {
             );
         }
 
+        // Generate a unique component ID for this strategy
+        std::string unique_component_id = id_ + "_" + std::to_string(
+            std::chrono::system_clock::now().time_since_epoch().count());
+
         // Register with state manager with proper error handling
         ComponentInfo info{
             ComponentType::STRATEGY,
             ComponentState::INITIALIZED,
-            id_,
+            unique_component_id,
             "",
             std::chrono::system_clock::now(),
             {
@@ -68,17 +72,15 @@ Result<void> BaseStrategy::initialize() {
             }
         };
 
-        // Before registering, ensure any previous registration is cleared
-        StateManager::reset_instance();
-
         auto register_result = StateManager::instance().register_component(info);
         if (register_result.is_error()) {
-            return make_error<void>(
-                register_result.error()->code(),
-                "Failed to register with StateManager: " + 
-                std::string(register_result.error()->what()),
-                "BaseStrategy"
-            );
+            // Log error but don't fail initialization due to StateManager issues
+            WARN("Failed to register with StateManager: " + 
+                 std::string(register_result.error()->what()) + 
+                 ". Continuing without state management.");
+        } else {
+            // Store registered component ID for future use
+            registered_component_id_ = unique_component_id;
         }
 
         // Subscribe to market data with proper error handling
@@ -529,24 +531,48 @@ Result<void> BaseStrategy::save_positions() {
             return Result<void>();
         }
 
-        // Use retry logic with pooled connection
-        return utils::retry_with_backoff([&]() {
-            // Get a connection from the pool
-            auto conn_guard = DatabasePool::instance().acquire_connection();
+        // Use a retry-with-backoff pattern
+        for (int attempt = 0; attempt < 3; attempt++) {
+            // Get a fresh connection each time
+            auto conn_guard = DatabasePool::instance().acquire_connection(1, std::chrono::milliseconds(500));
             auto db = conn_guard.get();
             
             if (!db) {
+                if (attempt < 2) {
+                    // Wait before retry
+                    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                    continue;
+                }
                 return make_error<void>(
                     ErrorCode::DATABASE_ERROR,
-                    "Failed to acquire database connection",
+                    "Failed to acquire database connection after retries",
                     "BaseStrategy"
                 );
             }
             
-            return db->store_positions(pos_vec, "trading.positions");
-        });
+            auto result = db->store_positions(pos_vec, "trading.positions");
+            if (result.is_ok()) {
+                return result;
+            }
+            
+            // Only retry on connection/busy errors
+            if (result.error()->code() != ErrorCode::DATABASE_ERROR) {
+                return result;
+            }
+            
+            std::this_thread::sleep_for(std::chrono::milliseconds(100 * (1 << attempt)));
+        }
+        
+        return make_error<void>(
+            ErrorCode::DATABASE_ERROR,
+            "Failed to save positions after multiple attempts",
+            "BaseStrategy"
+        );
         
     } catch (const std::exception& e) {
+        // Detailed error message for logging
+        ERROR("Failed to save positions: " + std::string(e.what()) + 
+              ". Strategy ID: " + id_);
         return make_error<void>(
             ErrorCode::DATABASE_ERROR,
             "Failed to save positions: " + std::string(e.what()),
@@ -560,7 +586,7 @@ Result<void> BaseStrategy::save_signals(
     try {
         if (!db_) {
             return make_error<void>(
-                ErrorCode::DATABASE_ERROR,
+                ErrorCode::CONNECTION_ERROR,
                 "Database interface is null",
                 "BaseStrategy"
             );

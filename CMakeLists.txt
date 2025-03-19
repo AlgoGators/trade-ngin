@@ -41,6 +41,10 @@ set(TRADE_NGIN_SOURCES
     src/data/conversion_utils.cpp
     src/data/credential_store.cpp
     src/data/database_pooling.cpp
+    src/instruments/futures.cpp
+    src/instruments/equity.cpp
+    src/instruments/option.cpp
+    src/instruments/instrument_registry.cpp
     src/order/order_manager.cpp
     src/risk/risk_manager.cpp
     src/optimization/dynamic_optimizer.cpp
