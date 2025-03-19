@@ -7,20 +7,18 @@
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
 #include "trade_ngin/core/time_utils.hpp"
 #include "trade_ngin/core/logger.hpp"
+#include "trade_ngin/instruments/instrument_registry.hpp"
 #include <iostream>
 #include <iomanip>
 #include <fstream>
 
 /*
 TO-DO:
-    - Setup db credentials
-    - Get metadata from postgres on contracts (size, margin, etc.)
     - Check that risk management is working
     - Check that optimization is working
     - Visualize results (matplotlib?)
     - Check that slippage model is working
     - Fix data access for strategies & TCA
-    - Fix warnings about 'localtime' and 'gmtime' being unsafe
     - Update all the configs to save / load to a file
     - Remove wait times in tests (if possible)
 */
@@ -42,8 +40,8 @@ int main() {
         Logger::instance().initialize(logger_config);
         INFO("Logger initialized successfully");
         
-        // Initialize database connection
-        INFO("Connecting to database...");
+        // Setup database connection pool
+        INFO("Initializing database connection pool...");
         auto credentials = std::make_shared<trade_ngin::CredentialStore>("./config.json");
         std::string username = credentials->get<std::string>("database", "username");
         std::string password = credentials->get<std::string>("database", "password");
@@ -53,22 +51,43 @@ int main() {
 
         std::string conn_string = "postgresql://" + username + ":" + password + "@" + host + ":" + port + "/" + db_name;
 
-        auto db = std::make_shared<PostgresDatabase>(conn_string);
-
-        auto conn_result = db->connect();
-        if (conn_result.is_error()) {
-            std::cerr << "Failed to connect to database: " << conn_result.error()->what() << std::endl;
+        // Initialize only the connection pool with sufficient connections
+        size_t num_connections = 5;
+        auto pool_result = DatabasePool::instance().initialize(conn_string, num_connections);
+        if (pool_result.is_error()) {
+            std::cerr << "Failed to initialize connection pool: " << pool_result.error()->what() << std::endl;
             return 1;
         }
-        INFO("Database connection established");
+        INFO("Database connection pool initialized with " 
+            + std::to_string(num_connections) + " connections");
+        
+        // Get a database connection from the pool
+        auto db_guard = DatabasePool::instance().acquire_connection();
+        auto db = db_guard.get();
+        
+        if (!db || !db->is_connected()) {
+            std::cerr << "Failed to acquire database connection from pool" << std::endl;
+            return 1;
+        }
+        INFO("Successfully acquired database connection from pool");
 
-        // Initialize connection pool
-        try {
-            DatabasePool::instance().initialize(conn_string, 5);
-            INFO("Database connection pool initialized with 5 connections");
-        } catch (const std::exception& e) {
-            WARN("Failed to initialize connection pool: " + std::string(e.what()) + 
-                ". Continuing with direct database access.");
+        // Initialize instrument registry
+        INFO("Initializing instrument registry...");
+        auto& registry = InstrumentRegistry::instance();
+        auto instrument_registry_init_result = registry.initialize(db);
+        if (instrument_registry_init_result.is_error()) {
+            std::cerr << "Failed to initialize instrument registry: " << 
+            instrument_registry_init_result.error()->what() << std::endl;
+            return 1;
+        }
+        
+        // Load futures instruments
+        auto load_result = registry.load_instruments(AssetClass::FUTURES);
+        if (load_result.is_error()) {
+            std::cerr << "Warning: Failed to load futures instruments: " << load_result.error()->what() << std::endl;
+            std::cerr << "Continuing with configuration-based contract specifications." << std::endl;
+        } else {
+            INFO("Successfully loaded futures instruments from database");
         }
         
         // Configure backtest parameters
@@ -95,17 +114,20 @@ int main() {
         config.strategy_config.commission_rate = 0.0005; // 5 basis points
         config.strategy_config.slippage_model = 1.0; // 1 basis point
         
+        // Set only one symbol for testing (comment this and uncomment below to load all symbols)
+        auto symbols = std::vector<std::string>{"6B.v.0"};
+        config.strategy_config.symbols = symbols;
+
+        // UNCOMMENT TO LOAD SYMBOLS FROM DATABASE
+        /* 
         auto symbols = db->get_symbols(trade_ngin::AssetClass::FUTURES);
         if (symbols.is_ok()) {
             config.strategy_config.symbols = symbols.value();
         } else {
             // Detailed error logging
-            ERROR("Failed to get symbols: {}, error code: {}, component: {}", 
-                symbols.error()->what(),
-                std::to_string(static_cast<int>(symbols.error()->code())),
-                symbols.error()->component());
+            ERROR("Failed to get symbols: " + std::string(symbols.error()->what()));
             throw std::runtime_error("Failed to get symbols: " + symbols.error()->to_string());
-        }
+        } */
         
         std::cout << "Symbols: ";
         for (const auto& symbol : config.strategy_config.symbols) {
@@ -165,9 +187,9 @@ int main() {
         trade_ngin::StrategyConfig tf_config;
         tf_config.capital_allocation = config.portfolio_config.initial_capital;
         tf_config.max_leverage = 4.0;
-        tf_config.save_positions = true;
-        tf_config.save_signals = true;
-        tf_config.save_executions = true;
+        tf_config.save_positions = false;
+        tf_config.save_signals = false;
+        tf_config.save_executions = false;
         
         // Add position limits and contract sizes
         for (const auto& symbol : config.strategy_config.symbols) {
@@ -178,7 +200,7 @@ int main() {
         
         // Configure trend following parameters
         trade_ngin::TrendFollowingConfig trend_config;
-        trend_config.weight = 1.0;
+        trend_config.weight = 1.0 / (config.strategy_config.symbols.size());  // Equal weight for each symbol
         trend_config.risk_target = 0.2;       // Target 20% annualized risk
         trend_config.idm = 2.5;               // Instrument diversification multiplier
         trend_config.use_position_buffering = true;
@@ -282,34 +304,40 @@ int main() {
         double total_spread_cost = 0.0;
         double total_timing_cost = 0.0;
         
-        // Load market data for TCA
-        std::vector<trade_ngin::Bar> market_data;
-        // In a real implementation, you would load the market data from the database
-        // For this example, we'll use the data available in backtest_results.executions
+        // Get another database connection for loading market data for TCA
+        auto tca_db_guard = DatabasePool::instance().acquire_connection();
+        auto tca_db = tca_db_guard.get();
         
-        // Group executions by symbol for analysis
-        std::unordered_map<std::string, std::vector<trade_ngin::ExecutionReport>> executions_by_symbol;
-        for (const auto& exec : backtest_results.executions) {
-            executions_by_symbol[exec.symbol].push_back(exec);
-        }
-        
-        // Analyze executions by symbol
-        for (const auto& [symbol, executions] : executions_by_symbol) {
-            auto tca_result = tca->analyze_trade_sequence(executions, market_data);
-            if (tca_result.is_ok()) {
-                const auto& metrics = tca_result.value();
-                std::cout << "Symbol: " << symbol << std::endl;
-                std::cout << "  Commission: $" << metrics.commission << std::endl;
-                std::cout << "  Spread Cost: $" << metrics.spread_cost << std::endl;
-                std::cout << "  Market Impact: $" << metrics.market_impact << std::endl;
-                std::cout << "  Timing Cost: $" << metrics.timing_cost << std::endl;
-                std::cout << "  Participation Rate: " << metrics.participation_rate * 100.0 << "%" << std::endl;
-                std::cout << "  Execution Time: " << metrics.execution_time.count() << "ms" << std::endl;
-                
-                total_commission += metrics.commission;
-                total_market_impact += metrics.market_impact;
-                total_spread_cost += metrics.spread_cost;
-                total_timing_cost += metrics.timing_cost;
+        if (!tca_db || !tca_db->is_connected()) {
+            WARN("Failed to acquire database connection for TCA. Skipping detailed transaction cost analysis.");
+        } else {
+            // Load market data for TCA - simplified for this example
+            std::vector<trade_ngin::Bar> market_data;
+            
+            // Group executions by symbol for analysis
+            std::unordered_map<std::string, std::vector<trade_ngin::ExecutionReport>> executions_by_symbol;
+            for (const auto& exec : backtest_results.executions) {
+                executions_by_symbol[exec.symbol].push_back(exec);
+            }
+            
+            // Analyze executions by symbol
+            for (const auto& [symbol, executions] : executions_by_symbol) {
+                auto tca_result = tca->analyze_trade_sequence(executions, market_data);
+                if (tca_result.is_ok()) {
+                    const auto& metrics = tca_result.value();
+                    std::cout << "Symbol: " << symbol << std::endl;
+                    std::cout << "  Commission: $" << metrics.commission << std::endl;
+                    std::cout << "  Spread Cost: $" << metrics.spread_cost << std::endl;
+                    std::cout << "  Market Impact: $" << metrics.market_impact << std::endl;
+                    std::cout << "  Timing Cost: $" << metrics.timing_cost << std::endl;
+                    std::cout << "  Participation Rate: " << metrics.participation_rate * 100.0 << "%" << std::endl;
+                    std::cout << "  Execution Time: " << metrics.execution_time.count() << "ms" << std::endl;
+                    
+                    total_commission += metrics.commission;
+                    total_market_impact += metrics.market_impact;
+                    total_spread_cost += metrics.spread_cost;
+                    total_timing_cost += metrics.timing_cost;
+                }
             }
         }
         
@@ -358,6 +386,16 @@ int main() {
         std::cout << "\nFinal Portfolio Value: $" << portfolio_value << std::endl;
         std::cout << "Total Return: " << ((portfolio_value / config.portfolio_config.initial_capital) - 1.0) * 100.0 << "%" << std::endl;
         
+        std::string results_dir = "apps/backtest/results";
+
+        // Create the directory if it doesn't exist (platform-specific)
+        #ifdef _WIN32
+            std::string mkdir_command = "mkdir " + results_dir + " 2> nul";
+        #else
+            std::string mkdir_command = "mkdir -p " + results_dir + " 2> /dev/null";
+        #endif
+        system(mkdir_command.c_str());
+
         // Save results to database and CSV
         INFO("Writing results to file...");
         std::string run_id = "TF_PORTFOLIO_" + std::to_string(
@@ -371,7 +409,8 @@ int main() {
         }
         
         // Save equity curve to CSV
-        std::ofstream equity_curve_file("equity_curve_" + run_id + ".csv");
+        std::string equity_curve_filename = results_dir + "/equity_curve_" + run_id + ".csv";
+        std::ofstream equity_curve_file(equity_curve_filename);
         if (equity_curve_file.is_open()) {
             equity_curve_file << "Date,Equity\n";
             for (const auto& [timestamp, equity] : backtest_results.equity_curve) {
@@ -385,11 +424,12 @@ int main() {
                 equity_curve_file << ss.str() << "," << equity << "\n";
             }
             equity_curve_file.close();
-            std::cout << "Equity curve saved to CSV file" << std::endl;
+            std::cout << "Equity curve saved to " << equity_curve_filename << std::endl;
         }
         
         // Save trade list to CSV
-        std::ofstream trades_file("trades_" + run_id + ".csv");
+        std::string trades_filename = results_dir + "/trades_" + run_id + ".csv";
+        std::ofstream trades_file(trades_filename);
         if (trades_file.is_open()) {
             trades_file << "Symbol,Side,Quantity,Price,DateTime,Commission\n";
             for (const auto& exec : backtest_results.executions) {
@@ -407,7 +447,24 @@ int main() {
                           << exec.commission << "\n";
             }
             trades_file.close();
-            std::cout << "Trade list saved to CSV file" << std::endl;
+            std::cout << "Trade list saved to " << trades_filename << std::endl;
+        }
+
+        // Save performance metrics to CSV
+        std::string metrics_filename = results_dir + "/metrics_" + run_id + ".csv";
+        std::ofstream metrics_file(metrics_filename);
+        if (metrics_file.is_open()) {
+            metrics_file << "Metric,Value\n";
+            metrics_file << "Total Return," << backtest_results.total_return << "\n";
+            metrics_file << "Sharpe Ratio," << backtest_results.sharpe_ratio << "\n";
+            metrics_file << "Sortino Ratio," << backtest_results.sortino_ratio << "\n";
+            metrics_file << "Max Drawdown," << backtest_results.max_drawdown << "\n";
+            metrics_file << "Calmar Ratio," << backtest_results.calmar_ratio << "\n";
+            metrics_file << "Volatility," << backtest_results.volatility << "\n";
+            metrics_file << "Win Rate," << backtest_results.win_rate << "\n";
+            metrics_file << "Total Trades," << backtest_results.total_trades << "\n";
+            metrics_file.close();
+            std::cout << "Performance metrics saved to " << metrics_filename << std::endl;
         }
         
         INFO("Backtest application completed successfully");

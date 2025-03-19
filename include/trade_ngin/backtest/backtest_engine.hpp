@@ -264,6 +264,7 @@ private:
     std::unique_ptr<RiskManager> risk_manager_;
     std::unique_ptr<DynamicOptimizer> optimizer_;
     std::unique_ptr<SlippageModel> slippage_model_;
+    std::string backtest_component_id_;
 
     /**
      * @brief Load market data for simulation

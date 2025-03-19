@@ -17,7 +17,7 @@ TrendFollowingStrategy::TrendFollowingStrategy(
         
     // Initialize logger
     LoggerConfig logger_config;
-    logger_config.min_level = LogLevel::INFO;
+    logger_config.min_level = LogLevel::DEBUG;
     logger_config.destination = LogDestination::BOTH;
     logger_config.log_directory = "logs";
     logger_config.filename_prefix = "trend_following";
@@ -120,9 +120,6 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
     for (const auto& window_pair : trend_config_.ema_windows) {
         max_window = std::max(max_window, window_pair.second);
     }
-
-    INFO("TrendFollowingStrategy processing " + std::to_string(data.size()) + " bars" +
-        " with max window " + std::to_string(max_window));
     
     try {
         // Group data by symbol and update price history
@@ -157,13 +154,11 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
             // Group bars by symbol
             bars_by_symbol[bar.symbol].push_back(bar);
         }
-
-        INFO("Processing " + std::to_string(bars_by_symbol.size()) + " symbols");
         
         // Process each symbol
         for (const auto& [symbol, symbol_bars] : bars_by_symbol) {
             INFO("Processing symbol " + symbol + " with " + 
-                std::to_string(symbol_bars.size()) + " bars");
+                std::to_string(symbol_bars.size()) + " bar(s)");
 
             // Extract prices
             for (const auto& bar : symbol_bars) {
@@ -248,13 +243,6 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
                 scaled_forecasts.resize(raw_forecasts.size(), 0.0);
             }
 
-            // DEBUG: Print scaled forecast values
-            if (!scaled_forecasts.empty()) {
-                INFO("Symbol " + symbol + " scaled forecast: last=" + 
-                     std::to_string(scaled_forecasts.back()) + ", min=" + 
-                     std::to_string(*std::min_element(scaled_forecasts.begin(), scaled_forecasts.end())) + 
-                     ", max=" + std::to_string(*std::max_element(scaled_forecasts.begin(), scaled_forecasts.end())));
-            }
 
             // Calculate position using the most recent forecast value
             double raw_position = 0.0;
@@ -441,6 +429,7 @@ std::vector<double> TrendFollowingStrategy::ewma_standard_deviation(
         } else if (ewma_stddev[t] > 0.5) {
             ewma_stddev[t] = 0.5;  // Cap at 50%
         }
+
     }
 
     // Handle first element
@@ -774,31 +763,21 @@ double TrendFollowingStrategy::calculate_position(
         volatility = 0.01;  // Use safe default
     }
 
-    // Log intermediate values for debugging
-    DEBUG("Position calculation parameters for " + symbol + ":");
-    DEBUG("  Forecast: " + std::to_string(forecast));
-    DEBUG("  Weight: " + std::to_string(weight));
-    DEBUG("  Price: " + std::to_string(price));
-    DEBUG("  Volatility: " + std::to_string(volatility));
-    DEBUG("  Capital: " + std::to_string(config_.capital_allocation));
-    DEBUG("  IDM: " + std::to_string(trend_config_.idm));
-    DEBUG("  Risk target: " + std::to_string(trend_config_.risk_target));
     
-    // Get contract specification
-    const auto& contracts = config_.trading_params;
-    double contract_size = 1.0;  // Default value
     
-    if (contracts.count(symbol) > 0) {
-        contract_size = contracts.at(symbol);
-    } else {
-        WARN("No contract size found for " + symbol + ", using default value of 1.0");
-    }
-    
-    // Ensure all parameters are valid
+    // Default parameters
+    double contract_size = 1.0;
     double capital = std::max(1000.0, config_.capital_allocation);
     double idm = std::max(0.1, trend_config_.idm);
     double risk_target = std::max(0.01, std::min(0.5, trend_config_.risk_target));
     double fx_rate = std::max(0.1, trend_config_.fx_rate);
+
+    auto instrument = InstrumentRegistry::instance().get_instrument(symbol);
+    if (!instrument) {
+        WARN("Invalid instrument for " + symbol + ", using default contract size");
+    } else {
+        contract_size = instrument->get_multiplier();
+    }
     
     // Cap forecast to reasonable values
     forecast = std::clamp(forecast, -20.0, 20.0);
@@ -868,7 +847,17 @@ double TrendFollowingStrategy::apply_position_buffer(
     }
 
     double weight = std::max(0.0, trend_config_.weight);
-    double contract_size = config_.trading_params.count(symbol) > 0 ? config_.trading_params.at(symbol) : 1.0;
+    
+    // Get contract size from instrument registry
+    double contract_size = 1.0;
+    auto instrument = InstrumentRegistry::instance().get_instrument(symbol);
+    if (instrument) {
+        contract_size = instrument->get_multiplier();
+    } else if (config_.trading_params.count(symbol) > 0) {
+        contract_size = config_.trading_params.at(symbol);
+    } else {
+        WARN("Invalid instrument for " + symbol + ", using default contract size");
+    }
 
     // Calculate buffer width as:
     // 0.1 x capital x IDM x weight x tau /
