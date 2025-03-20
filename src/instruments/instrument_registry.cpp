@@ -5,6 +5,7 @@
 
 namespace trade_ngin {
 
+
 Result<void> InstrumentRegistry::initialize(std::shared_ptr<PostgresDatabase> db) {
     std::lock_guard<std::mutex> lock(mutex_);
 
@@ -17,7 +18,13 @@ Result<void> InstrumentRegistry::initialize(std::shared_ptr<PostgresDatabase> db
     Logger::instance().initialize(logger_config);
     INFO("Logger initialized successfully");
     
+    // Add this line to detect multiple initializations
     if (initialized_) {
+        WARN("InstrumentRegistry already initialized - not reinitializing");
+        if (db_) {
+            INFO("Registry already has a database connection");
+        }
+        INFO("Registry currently contains " + std::to_string(instruments_.size()) + " instruments");
         return Result<void>();
     }
     
@@ -43,13 +50,20 @@ std::shared_ptr<Instrument> InstrumentRegistry::get_instrument(const std::string
     if (it != instruments_.end()) {
         return it->second;
     }
+
+    std::string available_symbols = "";
+    for (const auto& [sym, instrument] : instruments_) {
+        available_symbols += sym + ", ";
+    } 
     
+    ERROR("Instrument not found: " + symbol + ". Available symbols: " + available_symbols);
     return nullptr;
 }
 
 std::shared_ptr<FuturesInstrument> InstrumentRegistry::get_futures_instrument(const std::string& symbol) const {
     auto instrument = get_instrument(symbol);
     if (!instrument || instrument->get_type() != AssetType::FUTURE) {
+        WARN("Invalid futures instrument: " + symbol);
         return nullptr;
     }
     
@@ -59,6 +73,7 @@ std::shared_ptr<FuturesInstrument> InstrumentRegistry::get_futures_instrument(co
 std::shared_ptr<EquityInstrument> InstrumentRegistry::get_equity_instrument(const std::string& symbol) const {
     auto instrument = get_instrument(symbol);
     if (!instrument || instrument->get_type() != AssetType::EQUITY) {
+        WARN("Invalid equity instrument: " + symbol);
         return nullptr;
     }
     
@@ -68,6 +83,7 @@ std::shared_ptr<EquityInstrument> InstrumentRegistry::get_equity_instrument(cons
 std::shared_ptr<OptionInstrument> InstrumentRegistry::get_option_instrument(const std::string& symbol) const {
     auto instrument = get_instrument(symbol);
     if (!instrument || instrument->get_type() != AssetType::OPTION) {
+        WARN("Invalid option instrument: " + symbol);
         return nullptr;
     }
     
@@ -96,74 +112,28 @@ Result<void> InstrumentRegistry::load_instruments() {
         
         auto table = result.value();
         int rows_loaded = 0;
+
+        // Create a temporary map to hold all the instruments
+        std::unordered_map<std::string, std::shared_ptr<Instrument>> temp_instruments;
         
         for (int64_t i = 0; i < table->num_rows(); i++) {
             auto instrument = create_instrument_from_db(table, i);
             if (instrument) {
-                std::lock_guard<std::mutex> lock(mutex_);
-                instruments_[instrument->get_symbol()] = instrument;
+                temp_instruments[instrument->get_symbol()] = instrument;
                 rows_loaded++;
+                DEBUG("Loaded instrument: " + instrument->get_symbol());
             }
+        }
+        
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            instruments_ = std::move(temp_instruments); // Swap the temporary map with the main map
         }
         
         INFO("Loaded " + std::to_string(rows_loaded) + " instruments from database");
-        return Result<void>();
-        
-    } catch (const std::exception& e) {
-        return make_error<void>(
-            ErrorCode::DATABASE_ERROR,
-            std::string("Error loading instruments: ") + e.what(),
-            "InstrumentRegistry"
-        );
-    }
-}
 
-Result<void> InstrumentRegistry::load_instruments(AssetClass asset_class) {
-    if (!initialized_) {
-        return make_error<void>(
-            ErrorCode::NOT_INITIALIZED,
-            "InstrumentRegistry not initialized",
-            "InstrumentRegistry"
-        );
-    }
-    
-    try {
-        std::string asset_type_str;
-        switch (asset_class) {
-            case AssetClass::FUTURES: asset_type_str = "Futures"; break;
-            case AssetClass::EQUITIES: asset_type_str = "EQUITY"; break;
-            case AssetClass::CURRENCIES: asset_type_str = "FOREX"; break;
-            case AssetClass::COMMODITIES: asset_type_str = "COMMODITY"; break;
-            case AssetClass::CRYPTO: asset_type_str = "CRYPTO"; break;
-            default: asset_type_str = "";
-        }
-        
-        std::string query = "SELECT * FROM metadata.contract_metadata WHERE \"Asset Type\" = '" + asset_type_str + "'";
-        auto result = db_->execute_query(query);
-        
-        if (result.is_error()) {
-            return make_error<void>(
-                result.error()->code(),
-                "Failed to query contract metadata: " + std::string(result.error()->what()),
-                "InstrumentRegistry"
-            );
-        }
-        
-        auto table = result.value();
-        int rows_loaded = 0;
-        
-        for (int64_t i = 0; i < table->num_rows(); i++) {
-            auto instrument = create_instrument_from_db(table, i);
-            if (instrument) {
-                std::lock_guard<std::mutex> lock(mutex_);
-                instruments_[instrument->get_symbol()] = instrument;
-                rows_loaded++;
-            }
-        }
-        
-        INFO("Loaded " + std::to_string(rows_loaded) + " " + asset_type_str + " instruments from database");
         return Result<void>();
-        
+
     } catch (const std::exception& e) {
         return make_error<void>(
             ErrorCode::DATABASE_ERROR,
@@ -175,11 +145,13 @@ Result<void> InstrumentRegistry::load_instruments(AssetClass asset_class) {
 
 std::unordered_map<std::string, std::shared_ptr<Instrument>> InstrumentRegistry::get_all_instruments() const {
     std::lock_guard<std::mutex> lock(mutex_);
+
     return instruments_;
 }
 
 std::vector<std::shared_ptr<Instrument>> InstrumentRegistry::get_instruments_by_asset_class(AssetClass asset_class) const {
     std::lock_guard<std::mutex> lock(mutex_);
+
     std::vector<std::shared_ptr<Instrument>> result;
     
     AssetType target_type;
@@ -202,7 +174,9 @@ std::vector<std::shared_ptr<Instrument>> InstrumentRegistry::get_instruments_by_
 }
 
 bool InstrumentRegistry::has_instrument(const std::string& symbol) const {
+    
     std::lock_guard<std::mutex> lock(mutex_);
+
     return instruments_.find(symbol) != instruments_.end();
 }
 
@@ -272,7 +246,7 @@ std::shared_ptr<Instrument> InstrumentRegistry::create_instrument_from_db(
                 spec.trading_hours = get_string("Trading Hours (EST)");
                 
                 // We don't have expiry in the metadata, so leave it as std::nullopt
-                
+                DEBUG("Created futures instrument: " + symbol);
                 return std::make_shared<FuturesInstrument>(symbol, std::move(spec));
             }
             
@@ -306,7 +280,7 @@ std::shared_ptr<Instrument> InstrumentRegistry::create_instrument_from_db(
 }
 
 AssetType InstrumentRegistry::string_to_asset_type(const std::string& asset_type_str) const {
-    if (asset_type_str == "FUTURE" || asset_type_str == "FUT") {
+    if (asset_type_str == "FUTURE" || asset_type_str == "FUT" || asset_type_str == "Futures") {
         return AssetType::FUTURE;
     } else if (asset_type_str == "EQUITY" || asset_type_str == "STK") {
         return AssetType::EQUITY;

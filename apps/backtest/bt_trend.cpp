@@ -21,6 +21,8 @@ TO-DO:
     - Fix data access for strategies & TCA
     - Update all the configs to save / load to a file
     - Remove wait times in tests (if possible)
+    - Fix Arrow no discard attributes
+    - Fix weighting in position sizing
 */
 
 using namespace trade_ngin;
@@ -74,6 +76,7 @@ int main() {
         // Initialize instrument registry
         INFO("Initializing instrument registry...");
         auto& registry = InstrumentRegistry::instance();
+    
         auto instrument_registry_init_result = registry.initialize(db);
         if (instrument_registry_init_result.is_error()) {
             std::cerr << "Failed to initialize instrument registry: " << 
@@ -82,13 +85,18 @@ int main() {
         }
         
         // Load futures instruments
-        auto load_result = registry.load_instruments(AssetClass::FUTURES);
+        auto load_result = registry.load_instruments();
         if (load_result.is_error()) {
-            std::cerr << "Warning: Failed to load futures instruments: " << load_result.error()->what() << std::endl;
-            std::cerr << "Continuing with configuration-based contract specifications." << std::endl;
+            ERROR("Failed to load futures instruments: " + std::string(load_result.error()->what()));
+            return 1;
         } else {
             INFO("Successfully loaded futures instruments from database");
         }
+
+        // After loading instruments
+        DEBUG("Verifying instrument registry contents");
+        auto all_instruments = registry.get_all_instruments();
+        INFO("Registry contains " + std::to_string(all_instruments.size()) + " instruments");
         
         // Configure backtest parameters
         INFO("Loading configuration...");
@@ -219,7 +227,7 @@ int main() {
         std::cout << "Max leverage: " << tf_config.max_leverage << "x" << std::endl;
         
         auto tf_strategy = std::make_shared<trade_ngin::TrendFollowingStrategy>(
-            "TREND_FOLLOWING", tf_config, trend_config, db);
+            "TREND_FOLLOWING", tf_config, trend_config, db, &registry);
         
         auto init_result = tf_strategy->initialize();
         if (init_result.is_error()) {
@@ -350,41 +358,7 @@ int main() {
         std::cout << "  Total Costs: $" << (total_commission + total_spread_cost + total_market_impact + total_timing_cost) << std::endl;
         std::cout << "  % of Total Return: " << ((total_commission + total_spread_cost + total_market_impact + total_timing_cost) / 
                                                (backtest_results.total_return * config.portfolio_config.initial_capital)) * 100.0 << "%" << std::endl;
-        
-        // Analyze portfolio performance
-        std::cout << "\n======= Portfolio Analysis =======" << std::endl;
-        
-        // Get portfolio positions
-        auto portfolio_positions = portfolio->get_portfolio_positions();
-        
-        // Calculate portfolio metrics
-        double portfolio_value = config.portfolio_config.initial_capital;
-        for (const auto& [symbol, pos] : portfolio_positions) {
-            // Assume we use the last price from backtest results
-            double last_price = 0.0;
-            if (!backtest_results.executions.empty()) {
-                for (auto it = backtest_results.executions.rbegin(); it != backtest_results.executions.rend(); ++it) {
-                    if (it->symbol == symbol) {
-                        last_price = it->fill_price;
-                        break;
-                    }
-                }
-            }
-            
-            if (last_price > 0.0) {
-                portfolio_value += pos.quantity * last_price;
-                
-                std::cout << "Symbol: " << symbol << std::endl;
-                std::cout << "  Position: " << pos.quantity << " shares" << std::endl;
-                std::cout << "  Average Price: $" << pos.average_price << std::endl;
-                std::cout << "  Last Price: $" << last_price << std::endl;
-                std::cout << "  P&L: $" << (last_price - pos.average_price) * pos.quantity << std::endl;
-                std::cout << "  Weight: " << (pos.quantity * last_price / portfolio_value) * 100.0 << "%" << std::endl;
-            }
-        }
-        
-        std::cout << "\nFinal Portfolio Value: $" << portfolio_value << std::endl;
-        std::cout << "Total Return: " << ((portfolio_value / config.portfolio_config.initial_capital) - 1.0) * 100.0 << "%" << std::endl;
+    
         
         std::string results_dir = "apps/backtest/results";
 
@@ -401,70 +375,18 @@ int main() {
         std::string run_id = "TF_PORTFOLIO_" + std::to_string(
             std::chrono::system_clock::now().time_since_epoch().count());
             
-        auto save_result = engine->save_results(backtest_results, run_id);
-        if (save_result.is_error()) {
-            std::cerr << "Warning: Failed to save results to database: " << save_result.error()->what() << std::endl;
+        auto save_result_to_db = engine->save_results_to_db(backtest_results, run_id);
+        if (save_result_to_db.is_error()) {
+            std::cerr << "Warning: Failed to save results to database: " << save_result_to_db.error()->what() << std::endl;
         } else {
             std::cout << "Results saved to database with ID: " << run_id << std::endl;
         }
-        
-        // Save equity curve to CSV
-        std::string equity_curve_filename = results_dir + "/equity_curve_" + run_id + ".csv";
-        std::ofstream equity_curve_file(equity_curve_filename);
-        if (equity_curve_file.is_open()) {
-            equity_curve_file << "Date,Equity\n";
-            for (const auto& [timestamp, equity] : backtest_results.equity_curve) {
-                // Convert timestamp to string
-                auto time_t = std::chrono::system_clock::to_time_t(timestamp);
-                std::tm tm;
-                trade_ngin::core::safe_localtime(&time_t, &tm);
-                std::stringstream ss;
-                ss << std::put_time(&tm, "%Y-%m-%d");
-                
-                equity_curve_file << ss.str() << "," << equity << "\n";
-            }
-            equity_curve_file.close();
-            std::cout << "Equity curve saved to " << equity_curve_filename << std::endl;
-        }
-        
-        // Save trade list to CSV
-        std::string trades_filename = results_dir + "/trades_" + run_id + ".csv";
-        std::ofstream trades_file(trades_filename);
-        if (trades_file.is_open()) {
-            trades_file << "Symbol,Side,Quantity,Price,DateTime,Commission\n";
-            for (const auto& exec : backtest_results.executions) {
-                auto time_t = std::chrono::system_clock::to_time_t(exec.fill_time);
-                std::tm tm;
-                trade_ngin::core::safe_localtime(&time_t, &tm);
-                std::stringstream ss;
-                ss << std::put_time(&tm, "%Y-%m-%d %H:%M:%S");
-                
-                trades_file << exec.symbol << ","
-                          << (exec.side == trade_ngin::Side::BUY ? "BUY" : "SELL") << ","
-                          << exec.filled_quantity << ","
-                          << exec.fill_price << ","
-                          << ss.str() << ","
-                          << exec.commission << "\n";
-            }
-            trades_file.close();
-            std::cout << "Trade list saved to " << trades_filename << std::endl;
-        }
 
-        // Save performance metrics to CSV
-        std::string metrics_filename = results_dir + "/metrics_" + run_id + ".csv";
-        std::ofstream metrics_file(metrics_filename);
-        if (metrics_file.is_open()) {
-            metrics_file << "Metric,Value\n";
-            metrics_file << "Total Return," << backtest_results.total_return << "\n";
-            metrics_file << "Sharpe Ratio," << backtest_results.sharpe_ratio << "\n";
-            metrics_file << "Sortino Ratio," << backtest_results.sortino_ratio << "\n";
-            metrics_file << "Max Drawdown," << backtest_results.max_drawdown << "\n";
-            metrics_file << "Calmar Ratio," << backtest_results.calmar_ratio << "\n";
-            metrics_file << "Volatility," << backtest_results.volatility << "\n";
-            metrics_file << "Win Rate," << backtest_results.win_rate << "\n";
-            metrics_file << "Total Trades," << backtest_results.total_trades << "\n";
-            metrics_file.close();
-            std::cout << "Performance metrics saved to " << metrics_filename << std::endl;
+        auto save_result_to_csv = engine->save_results_to_csv(backtest_results, run_id);
+        if (save_result_to_csv.is_error()) {
+            std::cerr << "Warning: Failed to save results to CSV: " << save_result_to_csv.error()->what() << std::endl;
+        } else {
+            std::cout << "Results saved to CSV with ID: " << run_id << std::endl;
         }
         
         INFO("Backtest application completed successfully");
