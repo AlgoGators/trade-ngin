@@ -1631,9 +1631,11 @@ std::unordered_map<std::string, double> BacktestEngine::calculate_risk_metrics(
     return metrics;
 }
 
-Result<void> BacktestEngine::save_results(
+Result<void> BacktestEngine::save_results_to_db(
     const BacktestResults& results,
     const std::string& run_id) const {
+
+    if (!config_.store_trade_details) {return Result<void>();}
     
     try {
         std::string actual_run_id = run_id.empty() ? 
@@ -1649,14 +1651,25 @@ Result<void> BacktestEngine::save_results(
                 "BacktestEngine"
             );
         }
+
+        // Helper function to convert timestamps to PostgreSQL format
+        auto format_timestamp = [](const std::chrono::system_clock::time_point& tp) {
+            auto time_t = std::chrono::system_clock::to_time_t(tp);
+            std::stringstream ss;
+            ss << std::put_time(std::gmtime(&time_t), "%Y-%m-%d %H:%M:%S");
+            return ss.str();
+        };
             
         // Create SQL query to save results
         std::string query = 
-            "INSERT INTO " + config_.results_db_schema + ".backtest_results "
-            "(run_id, total_return, sharpe_ratio, sortino_ratio, max_drawdown, "
-            "calmar_ratio, volatility, total_trades, win_rate, profit_factor, "
-            "var_95, cvar_95, beta, correlation, start_date, end_date, config) VALUES "
-            "('" + actual_run_id + "', " +
+            "INSERT INTO " + config_.results_db_schema + ".results "
+            "(run_id, start_date, end_date, total_return, sharpe_ratio, sortino_ratio, max_drawdown, "
+            "calmar_ratio, volatility, total_trades, win_rate, profit_factor, avg_win, avg_loss, "
+            "max_win, max_loss, avg_holding_period, var_95, cvar_95, beta, correlation, "
+            "downside_volatility, config) VALUES "
+            "('" + actual_run_id + "', '" +
+            format_timestamp(config_.strategy_config.start_date) + "', '" +
+            format_timestamp(config_.strategy_config.end_date) + "', " +
             std::to_string(results.total_return) + ", " +
             std::to_string(results.sharpe_ratio) + ", " +
             std::to_string(results.sortino_ratio) + ", " +
@@ -1666,12 +1679,16 @@ Result<void> BacktestEngine::save_results(
             std::to_string(results.total_trades) + ", " +
             std::to_string(results.win_rate) + ", " +
             std::to_string(results.profit_factor) + ", " +
+            std::to_string(results.avg_win) + ", " +
+            std::to_string(results.avg_loss) + ", " +
+            std::to_string(results.max_win) + ", " +
+            std::to_string(results.max_loss) + ", " +
+            std::to_string(results.avg_holding_period) + ", " +
             std::to_string(results.var_95) + ", " +
             std::to_string(results.cvar_95) + ", " +
             std::to_string(results.beta) + ", " +
-            std::to_string(results.correlation) + ", '" +
-            std::to_string(std::chrono::system_clock::to_time_t(config_.strategy_config.start_date)) + "', '" +
-            std::to_string(std::chrono::system_clock::to_time_t(config_.strategy_config.end_date)) + "', ";
+            std::to_string(results.correlation) + ", " +
+            std::to_string(results.downside_volatility) + ", ";
 
             
         // Format the configuration as JSON for storage
@@ -1691,6 +1708,12 @@ Result<void> BacktestEngine::save_results(
         auto result = db_->execute_query(query);
         if (result.is_error()) {
             WARN("Failed to save backtest results: " + std::string(result.error()->what()));
+            // Return early if we can't save the main results - dependent tables won't work
+            return make_error<void>(
+                ErrorCode::DATABASE_ERROR,
+                "Failed to save main backtest results: " + std::string(result.error()->what()),
+                "BacktestEngine"
+            );
         }
 
         // Save equity curve if enabled
@@ -1698,7 +1721,7 @@ Result<void> BacktestEngine::save_results(
             // Prepare batch for equity curve points
             std::vector<std::string> equity_values;
             for (const auto& [timestamp, equity] : results.equity_curve) {
-                std::string timestamp_str = std::to_string(std::chrono::system_clock::to_time_t(timestamp));
+                std::string timestamp_str = format_timestamp(timestamp);
                 std::string value = "('" + actual_run_id + "', '" + timestamp_str + "', " + 
                                   std::to_string(equity) + ")";
                 equity_values.push_back(value);
@@ -1734,16 +1757,16 @@ Result<void> BacktestEngine::save_results(
             // Save trade executions in batches
             std::vector<std::string> execution_values;
             for (const auto& exec : results.executions) {
-                std::string timestamp_str = std::to_string(std::chrono::system_clock::to_time_t(exec.fill_time));
+                std::string timestamp_str = format_timestamp(exec.fill_time);
                 std::string side_str = exec.side == Side::BUY ? "BUY" : "SELL";
                 
                 std::string value = "('" + actual_run_id + "', '" + 
-                                  exec.order_id + "', '" + 
+                                  exec.exec_id + "', '" +
+                                  timestamp_str + "', '" + 
                                   exec.symbol + "', '" + 
                                   side_str + "', " + 
                                   std::to_string(exec.filled_quantity) + ", " + 
-                                  std::to_string(exec.fill_price) + ", '" + 
-                                  timestamp_str + "', " + 
+                                  std::to_string(exec.fill_price) + ", " + 
                                   std::to_string(exec.commission) + ")";
                                   
                 execution_values.push_back(value);
@@ -1751,7 +1774,7 @@ Result<void> BacktestEngine::save_results(
                 // Insert in batches of 1000
                 if (execution_values.size() >= 1000) {
                     query = "INSERT INTO " + config_.results_db_schema + ".trade_executions "
-                           "(run_id, order_id, symbol, side, quantity, price, timestamp, commission) "
+                           "(run_id, execution_id, timestamp, symbol, side, quantity, price, commission) "
                            "VALUES " + join(execution_values, ", ");
                            
                     auto exec_result = db_->execute_query(query);
@@ -1766,8 +1789,8 @@ Result<void> BacktestEngine::save_results(
             // Insert any remaining executions
             if (!execution_values.empty()) {
                 query = "INSERT INTO " + config_.results_db_schema + ".trade_executions "
-                       "(run_id, order_id, symbol, side, quantity, price, timestamp, commission) "
-                       "VALUES " + join(execution_values, ", ");
+                           "(run_id, execution_id, timestamp, symbol, side, quantity, price, commission) "
+                           "VALUES " + join(execution_values, ", ");
                        
                 auto exec_result = db_->execute_query(query);
                 if (exec_result.is_error()) {
@@ -1854,6 +1877,224 @@ Result<void> BacktestEngine::save_results(
         return make_error<void>(
             ErrorCode::DATABASE_ERROR,
             std::string("Error saving backtest results: ") + e.what(),
+            "BacktestEngine"
+        );
+    }
+}
+
+Result<void> BacktestEngine::save_results_to_csv(
+    const BacktestResults& results,
+    const std::string& run_id) const {
+
+    if (!config_.store_trade_details) {return Result<void>();}
+    
+    try {
+        std::string actual_run_id = run_id.empty() ? 
+            "BT_" + std::to_string(std::chrono::system_clock::now().time_since_epoch().count()) : 
+            run_id;
+            
+        INFO("Saving backtest results to CSV with ID: " + actual_run_id);
+
+        if (config_.csv_output_path.empty()) {
+            return make_error<void>(
+                ErrorCode::INVALID_ARGUMENT,
+                "CSV output path not specified in configuration",
+                "BacktestEngine"
+            );
+        }
+        
+        // Create directory if it doesn't exist
+        std::filesystem::path output_dir = std::filesystem::path(config_.csv_output_path) / actual_run_id;
+        std::filesystem::create_directories(output_dir);
+        
+        // Save main results
+        {
+            std::ofstream results_file(output_dir / "results.csv");
+            if (!results_file.is_open()) {
+                return make_error<void>(
+                    ErrorCode::CONVERSION_ERROR,
+                    "Failed to open results CSV file for writing",
+                    "BacktestEngine"
+                );
+            }
+            
+            // Write header
+            results_file << "run_id,start_date,end_date,total_return,sharpe_ratio,sortino_ratio,max_drawdown,"
+                         << "calmar_ratio,volatility,total_trades,win_rate,profit_factor,avg_win,avg_loss,"
+                         << "max_win,max_loss,avg_holding_period,var_95,cvar_95,beta,correlation,"
+                         << "downside_volatility,config\n";
+            
+            // Format the configuration as JSON for storage
+            std::string config_json = "{\"initial_capital\": " + std::to_string(config_.portfolio_config.initial_capital) + 
+                                     ", \"symbols\": [";
+                                     
+            for (size_t i = 0; i < config_.strategy_config.symbols.size(); ++i) {
+                if (i > 0) config_json += ", ";
+                config_json += "\"" + config_.strategy_config.symbols[i] + "\"";
+            }
+            
+            config_json += "]}";
+            
+            // Escape any commas in JSON
+            std::string escaped_config = config_json;
+            // Replace any double quotes with escaped double quotes
+            size_t pos = 0;
+            while ((pos = escaped_config.find("\"", pos)) != std::string::npos) {
+                escaped_config.replace(pos, 1, "\"\"");
+                pos += 2;
+            }
+            
+            // Format dates as ISO 8601 strings
+            auto to_iso_string = [](const std::chrono::system_clock::time_point& tp) {
+                auto time_t = std::chrono::system_clock::to_time_t(tp);
+                std::stringstream ss;
+                ss << std::put_time(std::gmtime(&time_t), "%Y-%m-%dT%H:%M:%SZ");
+                return ss.str();
+            };
+            
+            // Write data row
+            results_file << actual_run_id << ","
+                         << to_iso_string(config_.strategy_config.start_date) << ","
+                         << to_iso_string(config_.strategy_config.end_date) << ","
+                         << results.total_return << ","
+                         << results.sharpe_ratio << ","
+                         << results.sortino_ratio << ","
+                         << results.max_drawdown << ","
+                         << results.calmar_ratio << ","
+                         << results.volatility << ","
+                         << results.total_trades << ","
+                         << results.win_rate << ","
+                         << results.profit_factor << ","
+                         << results.avg_win << ","
+                         << results.avg_loss << ","
+                         << results.max_win << ","
+                         << results.max_loss << ","
+                         << results.avg_holding_period << ","
+                         << results.var_95 << ","
+                         << results.cvar_95 << ","
+                         << results.beta << ","
+                         << results.correlation << ","
+                         << results.downside_volatility << ","
+                         << "\"" << escaped_config << "\"" << "\n";
+        }
+        
+        // Save equity curve if enabled
+        if (config_.store_trade_details && !results.equity_curve.empty()) {
+            std::ofstream equity_file(output_dir / "equity_curve.csv");
+            if (!equity_file.is_open()) {
+                WARN("Failed to open equity curve CSV file for writing");
+            } else {
+                // Write header
+                equity_file << "run_id,timestamp,equity\n";
+                
+                // Write data rows
+                for (const auto& [timestamp, equity] : results.equity_curve) {
+                    auto time_t = std::chrono::system_clock::to_time_t(timestamp);
+                    std::stringstream time_ss;
+                    time_ss << std::put_time(std::gmtime(&time_t), "%Y-%m-%dT%H:%M:%SZ");
+                    
+                    equity_file << actual_run_id << ","
+                                << time_ss.str() << ","
+                                << equity << "\n";
+                }
+            }
+            
+            // Save trade executions
+            if (!results.executions.empty()) {
+                std::ofstream executions_file(output_dir / "trade_executions.csv");
+                if (!executions_file.is_open()) {
+                    WARN("Failed to open trade executions CSV file for writing");
+                } else {
+                    // Write header
+                    executions_file << "run_id,execution_id,timestamp,symbol,side,quantity,price,commission\n";
+                    
+                    // Write data rows
+                    for (const auto& exec : results.executions) {
+                        auto time_t = std::chrono::system_clock::to_time_t(exec.fill_time);
+                        std::stringstream time_ss;
+                        time_ss << std::put_time(std::gmtime(&time_t), "%Y-%m-%dT%H:%M:%SZ");
+                        
+                        std::string side_str = exec.side == Side::BUY ? "BUY" : "SELL";
+                        
+                        executions_file << actual_run_id << ","
+                                      << exec.exec_id << ","
+                                      << time_ss.str() << ","
+                                      << exec.symbol << ","
+                                      << side_str << ","
+                                      << exec.filled_quantity << ","
+                                      << exec.fill_price << ","
+                                      << exec.commission << "\n";
+                    }
+                }
+            }
+            
+            // Save final positions
+            if (!results.positions.empty()) {
+                std::ofstream positions_file(output_dir / "final_positions.csv");
+                if (!positions_file.is_open()) {
+                    WARN("Failed to open final positions CSV file for writing");
+                } else {
+                    // Write header
+                    positions_file << "run_id,symbol,quantity,average_price,unrealized_pnl,realized_pnl\n";
+                    
+                    // Write data rows
+                    for (const auto& pos : results.positions) {
+                        if (std::abs(pos.quantity) < 1e-6) continue; // Skip empty positions
+                        
+                        positions_file << actual_run_id << ","
+                                     << pos.symbol << ","
+                                     << pos.quantity << ","
+                                     << pos.average_price << ","
+                                     << pos.unrealized_pnl << ","
+                                     << pos.realized_pnl << "\n";
+                    }
+                }
+            }
+            
+            // Save monthly returns
+            if (!results.monthly_returns.empty()) {
+                std::ofstream monthly_file(output_dir / "monthly_returns.csv");
+                if (!monthly_file.is_open()) {
+                    WARN("Failed to open monthly returns CSV file for writing");
+                } else {
+                    // Write header
+                    monthly_file << "run_id,month,return\n";
+                    
+                    // Write data rows
+                    for (const auto& [month, ret] : results.monthly_returns) {
+                        monthly_file << actual_run_id << ","
+                                   << month << ","
+                                   << ret << "\n";
+                    }
+                }
+            }
+            
+            // Save symbol P&L
+            if (!results.symbol_pnl.empty()) {
+                std::ofstream symbol_pnl_file(output_dir / "symbol_pnl.csv");
+                if (!symbol_pnl_file.is_open()) {
+                    WARN("Failed to open symbol P&L CSV file for writing");
+                } else {
+                    // Write header
+                    symbol_pnl_file << "run_id,symbol,pnl\n";
+                    
+                    // Write data rows
+                    for (const auto& [symbol, pnl] : results.symbol_pnl) {
+                        symbol_pnl_file << actual_run_id << ","
+                                      << symbol << ","
+                                      << pnl << "\n";
+                    }
+                }
+            }
+        }
+
+        INFO("Successfully saved backtest results to CSV files in: " + output_dir.string());
+        return Result<void>();
+
+    } catch (const std::exception& e) {
+        return make_error<void>(
+            ErrorCode::CONVERSION_ERROR,
+            std::string("Error saving backtest results to CSV: ") + e.what(),
             "BacktestEngine"
         );
     }

@@ -44,12 +44,14 @@ public:
      * @param config Base strategy configuration
      * @param trend_config Trend following specific configuration
      * @param db Database interface
+     * @param registry Instrument registry for accessing instrument data
      */
     TrendFollowingStrategy(
         std::string id,
         StrategyConfig config,
         TrendFollowingConfig trend_config,
-        std::shared_ptr<DatabaseInterface> db);
+        std::shared_ptr<DatabaseInterface> db,
+        InstrumentRegistry* registry = nullptr);
 
     /**
      * @brief Process new market data
@@ -77,6 +79,8 @@ private:
     // Price and signal storage
     std::unordered_map<std::string, std::vector<double>> price_history_;
     std::unordered_map<std::string, std::vector<double>> volatility_history_;
+
+    InstrumentRegistry* registry_;
 
     /**
      * @brief Calculate EWMA for a price series

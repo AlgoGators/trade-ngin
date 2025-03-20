@@ -11,9 +11,11 @@ TrendFollowingStrategy::TrendFollowingStrategy(
     std::string id,
     StrategyConfig config,
     TrendFollowingConfig trend_config,
-    std::shared_ptr<DatabaseInterface> db)
-    : BaseStrategy(std::move(id), std::move(config), std::move(db)),
-    trend_config_(std::move(trend_config)) {
+    std::shared_ptr<DatabaseInterface> db, 
+    InstrumentRegistry* registry) :
+    BaseStrategy(std::move(id), std::move(config), std::move(db)),
+    trend_config_(std::move(trend_config)),
+    registry_(registry) {
         
     // Initialize logger
     LoggerConfig logger_config;
@@ -422,12 +424,15 @@ std::vector<double> TrendFollowingStrategy::ewma_standard_deviation(
         ewma_variance[t] = std::max(0.000001, ewma_variance[t]);
         
         ewma_stddev[t] = std::sqrt(ewma_variance[t]);
+
+        // Annualize the standard deviation
+        ewma_stddev[t] *= 16.0; // Multiply by sqrt(256) for 256 trading days
         
         // Final safety check - ensure stddev is positive
         if (ewma_stddev[t] <= 0.0 || std::isnan(ewma_stddev[t]) || std::isinf(ewma_stddev[t])) {
-            ewma_stddev[t] = 0.001;  // Use a small, positive default
-        } else if (ewma_stddev[t] > 0.5) {
-            ewma_stddev[t] = 0.5;  // Cap at 50%
+            ewma_stddev[t] = 0.005;  // Use a small, positive default
+        } else if (ewma_stddev[t] > 5.0) {
+            ewma_stddev[t] = 5.0;  // Cap at 500%
         }
 
     }
@@ -597,13 +602,13 @@ std::vector<double> TrendFollowingStrategy::get_raw_forecast(
         // Safety check for accessing elements
         if (i < short_ema.size() && i < long_ema.size() && i < blended_stddev.size() && i < prices.size()) {
             // Ensure no division by zero
-            double stddev_term = blended_stddev[i];
-            if (stddev_term <= 0.0) stddev_term = 0.01;  // Minimum value
+            double volatility = blended_stddev[i];
+            if (volatility <= 0.0) volatility = 0.01;  // Minimum value
             
-            double price_term = prices[i];
-            if (price_term <= 0.0) price_term = 1.0;  // Minimum value
+            double price = prices[i];
+            if (price <= 0.0) price = 1.0;  // Minimum value
             
-            raw_forecast[i] = (short_ema[i] - long_ema[i]) / (price_term * stddev_term / 16);
+            raw_forecast[i] = (short_ema[i] - long_ema[i]) / (price * volatility / 16);
             
             // Apply regime multiplier
             raw_forecast[i] *= vol_multiplier;
@@ -762,8 +767,6 @@ double TrendFollowingStrategy::calculate_position(
         WARN("Invalid volatility in position calculation for " + symbol + ": " + std::to_string(volatility));
         volatility = 0.01;  // Use safe default
     }
-
-    
     
     // Default parameters
     double contract_size = 1.0;
@@ -771,12 +774,24 @@ double TrendFollowingStrategy::calculate_position(
     double idm = std::max(0.1, trend_config_.idm);
     double risk_target = std::max(0.01, std::min(0.5, trend_config_.risk_target));
     double fx_rate = std::max(0.1, trend_config_.fx_rate);
-
-    auto instrument = InstrumentRegistry::instance().get_instrument(symbol);
-    if (!instrument) {
-        WARN("Invalid instrument for " + symbol + ", using default contract size");
-    } else {
-        contract_size = instrument->get_multiplier();
+    
+    try {
+        // Transform symbol to match what's in the registry
+        std::string lookup_symbol = symbol;
+        if (symbol.find(".v.") != std::string::npos) {
+            lookup_symbol = symbol.substr(0, symbol.find(".v."));
+        }
+        
+        // Get contract size from instrument registry
+        auto instrument = registry_ ? registry_->get_instrument(lookup_symbol) : 
+                        InstrumentRegistry::instance().get_instrument(lookup_symbol);
+        if (instrument) {
+            contract_size = instrument->get_multiplier();
+        } else {
+            WARN("Invalid instrument for " + symbol + ", using default contract size");
+        }
+    } catch (const std::exception& e) {
+        ERROR("Exception in calculate_position: " + std::string(e.what()) + " for symbol " + symbol);
     }
     
     // Cap forecast to reasonable values
@@ -850,13 +865,25 @@ double TrendFollowingStrategy::apply_position_buffer(
     
     // Get contract size from instrument registry
     double contract_size = 1.0;
-    auto instrument = InstrumentRegistry::instance().get_instrument(symbol);
-    if (instrument) {
-        contract_size = instrument->get_multiplier();
-    } else if (config_.trading_params.count(symbol) > 0) {
-        contract_size = config_.trading_params.at(symbol);
-    } else {
-        WARN("Invalid instrument for " + symbol + ", using default contract size");
+
+    try {
+        // Transform symbol to match what's in the registry
+        std::string lookup_symbol = symbol;
+        if (symbol.find(".v.") != std::string::npos) {
+            lookup_symbol = symbol.substr(0, symbol.find(".v."));
+        }
+        
+        // In calculate_position method
+        auto instrument = registry_ ? registry_->get_instrument(lookup_symbol) : 
+                        InstrumentRegistry::instance().get_instrument(lookup_symbol);
+        
+        if (instrument) {
+            contract_size = instrument->get_multiplier();
+        } else {
+            WARN("Invalid instrument for " + symbol + ", using default contract size");
+        }
+    } catch (const std::exception& e) {
+        ERROR("Exception in calculate_position: " + std::string(e.what()) + " for symbol " + symbol);
     }
 
     // Calculate buffer width as:

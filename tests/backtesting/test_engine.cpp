@@ -693,7 +693,7 @@ TEST_F(BacktestEngineTest, SaveAndLoadResults) {
         std::chrono::system_clock::now().time_since_epoch().count());
     
     // Save results
-    auto save_result = engine->save_results(original_results, test_run_id);
+    auto save_result = engine->save_results_to_db(original_results, test_run_id);
     
     // We can't actually test database persistence with mocks,
     // but we can verify the save operation doesn't fail

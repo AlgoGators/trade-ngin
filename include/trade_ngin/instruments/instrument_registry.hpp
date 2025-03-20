@@ -69,13 +69,6 @@ public:
     Result<void> load_instruments();
 
     /**
-     * @brief Load instruments of a specific asset class
-     * @param asset_class Asset class to load
-     * @return Result indicating success or failure
-     */
-    Result<void> load_instruments(AssetClass asset_class);
-
-    /**
      * @brief Get all loaded instruments
      * @return Map of symbols to instruments
      */
@@ -96,9 +89,11 @@ public:
     bool has_instrument(const std::string& symbol) const;
 
 private:
-    InstrumentRegistry() = default;
+    InstrumentRegistry() = default; // Private constructor for singleton pattern
     InstrumentRegistry(const InstrumentRegistry&) = delete;
     InstrumentRegistry& operator=(const InstrumentRegistry&) = delete;
+    InstrumentRegistry(InstrumentRegistry&&) = delete;
+    InstrumentRegistry& operator=(InstrumentRegistry&&) = delete;
 
     /**
      * @brief Create an instrument from database data
