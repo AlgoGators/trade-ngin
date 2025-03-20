@@ -140,8 +140,9 @@ struct PortfolioBacktestConfig : public ConfigBase {
 struct BacktestConfig : public ConfigBase {
     PortfolioBacktestConfig portfolio_config;
     StrategyBacktestConfig strategy_config;
-    std::string results_db_schema = "backtest_results";
+    std::string results_db_schema = "backtest";
     bool store_trade_details = true;
+    std::string csv_output_path = "apps/backtest/results";
 
     // Configuration metadata
     std::string version{"1.0.0"};
@@ -239,9 +240,20 @@ public:
      * @param run_id Optional identifier for this run
      * @return Result indicating success or failure
      */
-    Result<void> save_results(
+    Result<void> save_results_to_db(
         const BacktestResults& results,
         const std::string& run_id = "") const;
+
+    /**
+     * @brief Save backtest results to CSV
+     * @param results Results to save
+     * @param filename Output file name
+     * @return Result indicating success or failure
+     */
+    Result<void> save_results_to_csv(
+        const BacktestResults& results,
+        const std::string& run_id) const;
+
 
     /**
      * @brief Load historical results from database
