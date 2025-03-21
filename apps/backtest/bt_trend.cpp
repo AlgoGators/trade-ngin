@@ -122,20 +122,20 @@ int main() {
         config.strategy_config.commission_rate = 0.0005; // 5 basis points
         config.strategy_config.slippage_model = 1.0; // 1 basis point
         
-        // Set only one symbol for testing (comment this and uncomment below to load all symbols)
+        /* Set only one symbol for testing
         auto symbols = std::vector<std::string>{"6B.v.0"};
         config.strategy_config.symbols = symbols;
+        */
 
-        // UNCOMMENT TO LOAD SYMBOLS FROM DATABASE
-        /* 
         auto symbols = db->get_symbols(trade_ngin::AssetClass::FUTURES);
+
         if (symbols.is_ok()) {
             config.strategy_config.symbols = symbols.value();
         } else {
             // Detailed error logging
             ERROR("Failed to get symbols: " + std::string(symbols.error()->what()));
             throw std::runtime_error("Failed to get symbols: " + symbols.error()->to_string());
-        } */
+        } 
         
         std::cout << "Symbols: ";
         for (const auto& symbol : config.strategy_config.symbols) {
@@ -194,6 +194,9 @@ int main() {
         // Create trend following strategy configuration
         trade_ngin::StrategyConfig tf_config;
         tf_config.capital_allocation = config.portfolio_config.initial_capital;
+        tf_config.asset_classes = {trade_ngin::AssetClass::FUTURES};
+        tf_config.frequencies = {config.strategy_config.data_freq};
+        tf_config.max_drawdown = 0.4;  // 40% max drawdown
         tf_config.max_leverage = 4.0;
         tf_config.save_positions = false;
         tf_config.save_signals = false;
@@ -202,7 +205,6 @@ int main() {
         // Add position limits and contract sizes
         for (const auto& symbol : config.strategy_config.symbols) {
             tf_config.position_limits[symbol] = 1000.0;  // Max 1000 units per symbol
-            tf_config.trading_params[symbol] = 1.0;      // *CHANGE*: Contract size multiplier
             tf_config.costs[symbol] = config.strategy_config.commission_rate;
         }
         
@@ -289,105 +291,7 @@ int main() {
         std::cout << "Win Rate: " << (backtest_results.win_rate * 100.0) << "%" << std::endl;
         std::cout << "Total Trades: " << backtest_results.total_trades << std::endl;
 
-        // Perform transaction cost analysis
-        trade_ngin::backtest::TCAConfig tca_config;
-        tca_config.pre_trade_window = std::chrono::minutes(5);
-        tca_config.post_trade_window = std::chrono::minutes(5);
-        tca_config.spread_factor = 1.0;
-        tca_config.market_impact_coefficient = 1.0;
-        tca_config.volatility_multiplier = 1.5;
-        tca_config.use_arrival_price = true;
-        tca_config.use_vwap = true;
-        tca_config.use_twap = true;
-        tca_config.calculate_opportunity_costs = true;
-        tca_config.analyze_timing_costs = true;
         
-        auto tca = std::make_unique<trade_ngin::backtest::TransactionCostAnalyzer>(tca_config);
-        
-        std::cout << "\n======= Transaction Cost Analysis =======" << std::endl;
-        
-        // Calculate total transaction costs
-        double total_commission = 0.0;
-        double total_market_impact = 0.0;
-        double total_spread_cost = 0.0;
-        double total_timing_cost = 0.0;
-        
-        // Get another database connection for loading market data for TCA
-        auto tca_db_guard = DatabasePool::instance().acquire_connection();
-        auto tca_db = tca_db_guard.get();
-        
-        if (!tca_db || !tca_db->is_connected()) {
-            WARN("Failed to acquire database connection for TCA. Skipping detailed transaction cost analysis.");
-        } else {
-            // Load market data for TCA - simplified for this example
-            std::vector<trade_ngin::Bar> market_data;
-            
-            // Group executions by symbol for analysis
-            std::unordered_map<std::string, std::vector<trade_ngin::ExecutionReport>> executions_by_symbol;
-            for (const auto& exec : backtest_results.executions) {
-                executions_by_symbol[exec.symbol].push_back(exec);
-            }
-            
-            // Analyze executions by symbol
-            for (const auto& [symbol, executions] : executions_by_symbol) {
-                auto tca_result = tca->analyze_trade_sequence(executions, market_data);
-                if (tca_result.is_ok()) {
-                    const auto& metrics = tca_result.value();
-                    std::cout << "Symbol: " << symbol << std::endl;
-                    std::cout << "  Commission: $" << metrics.commission << std::endl;
-                    std::cout << "  Spread Cost: $" << metrics.spread_cost << std::endl;
-                    std::cout << "  Market Impact: $" << metrics.market_impact << std::endl;
-                    std::cout << "  Timing Cost: $" << metrics.timing_cost << std::endl;
-                    std::cout << "  Participation Rate: " << metrics.participation_rate * 100.0 << "%" << std::endl;
-                    std::cout << "  Execution Time: " << metrics.execution_time.count() << "ms" << std::endl;
-                    
-                    total_commission += metrics.commission;
-                    total_market_impact += metrics.market_impact;
-                    total_spread_cost += metrics.spread_cost;
-                    total_timing_cost += metrics.timing_cost;
-                }
-            }
-        }
-        
-        // Display total transaction costs
-        std::cout << "\nTotal Transaction Costs:" << std::endl;
-        std::cout << "  Total Commission: $" << total_commission << std::endl;
-        std::cout << "  Total Spread Cost: $" << total_spread_cost << std::endl;
-        std::cout << "  Total Market Impact: $" << total_market_impact << std::endl;
-        std::cout << "  Total Timing Cost: $" << total_timing_cost << std::endl;
-        std::cout << "  Total Costs: $" << (total_commission + total_spread_cost + total_market_impact + total_timing_cost) << std::endl;
-        std::cout << "  % of Total Return: " << ((total_commission + total_spread_cost + total_market_impact + total_timing_cost) / 
-                                               (backtest_results.total_return * config.portfolio_config.initial_capital)) * 100.0 << "%" << std::endl;
-    
-        
-        std::string results_dir = "apps/backtest/results";
-
-        // Create the directory if it doesn't exist (platform-specific)
-        #ifdef _WIN32
-            std::string mkdir_command = "mkdir " + results_dir + " 2> nul";
-        #else
-            std::string mkdir_command = "mkdir -p " + results_dir + " 2> /dev/null";
-        #endif
-        system(mkdir_command.c_str());
-
-        // Save results to database and CSV
-        INFO("Writing results to file...");
-        std::string run_id = "TF_PORTFOLIO_" + std::to_string(
-            std::chrono::system_clock::now().time_since_epoch().count());
-            
-        auto save_result_to_db = engine->save_results_to_db(backtest_results, run_id);
-        if (save_result_to_db.is_error()) {
-            std::cerr << "Warning: Failed to save results to database: " << save_result_to_db.error()->what() << std::endl;
-        } else {
-            std::cout << "Results saved to database with ID: " << run_id << std::endl;
-        }
-
-        auto save_result_to_csv = engine->save_results_to_csv(backtest_results, run_id);
-        if (save_result_to_csv.is_error()) {
-            std::cerr << "Warning: Failed to save results to CSV: " << save_result_to_csv.error()->what() << std::endl;
-        } else {
-            std::cout << "Results saved to CSV with ID: " << run_id << std::endl;
-        }
         
         INFO("Backtest application completed successfully");
         
