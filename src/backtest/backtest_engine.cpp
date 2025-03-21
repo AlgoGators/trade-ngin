@@ -404,6 +404,17 @@ Result<BacktestResults> BacktestEngine::run_portfolio(
             );
         }
 
+        // Pre-load market data into risk manager
+        if (risk_manager_) {
+            INFO("Pre-loading initial market data into risk manager");
+            auto update_result = risk_manager_->update_market_data(data_result.value());
+            if (update_result.is_error()) {
+                WARN("Failed to pre-load market data: " + 
+                    std::string(update_result.error()->what()) + 
+                    ". Risk calculations may not be accurate.");
+            }
+        }
+
         // Initialize tracking variables
         std::vector<ExecutionReport> executions;
         std::vector<std::pair<Timestamp, double>> equity_curve;
@@ -484,7 +495,6 @@ Result<BacktestResults> BacktestEngine::run_portfolio(
         results.executions = std::move(executions);
 
         // Get final portfolio positions
-        // Get final portfolio positions with error isolation
         try {
             auto portfolio_positions = portfolio->get_portfolio_positions();
             results.positions.reserve(portfolio_positions.size());
