@@ -379,6 +379,11 @@ Result<BacktestResults> BacktestEngine::run_portfolio(
                 "BacktestEngine"
             );
         }
+
+        // Share the risk manager with the portfolio manager if available
+        if (risk_manager_ && portfolio) {
+            portfolio->set_risk_manager(risk_manager_.get());
+        }
         
         // Load historical market data
         auto data_result = load_market_data();
@@ -1073,11 +1078,14 @@ Result<void> BacktestEngine::process_portfolio_data(
         // Update risk manager market data
         if (risk_manager_) {
             try {
+                INFO("Updating risk manager market data with " + std::to_string(bars.size()) + " bars");
                 auto update_result = risk_manager_->update_market_data(bars);
                 if (update_result.is_error()) {
                     WARN("Failed to update risk manager market data: " + 
                          std::string(update_result.error()->what()) + 
                          ". Continuing without market data update.");
+                } else {
+                    INFO("Successfully updated risk manager market data");
                 }
             } catch (const std::exception& e) {
                 WARN("Exception updating risk manager market data: " + std::string(e.what()) + 

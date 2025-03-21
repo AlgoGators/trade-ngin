@@ -32,7 +32,12 @@ Result<RiskResult> RiskManager::process_positions(
             result.leverage_multiplier = 1.0;
 
             if (positions.empty()) {
-                return Result<RiskResult>(result);  // Return default result for empty positions
+                ERROR("RiskManager: No positions provided for risk calculation");
+                return make_error<RiskResult>(
+                    ErrorCode::INVALID_DATA,
+                    "No positions provided",
+                    "RiskManager"
+                );
             }
 
             // Add mutex lock for thread safety
@@ -221,9 +226,6 @@ double RiskManager::calculate_leverage_multiplier(
 
 Result<void> RiskManager::update_market_data(const std::vector<Bar>& data) {
     try {
-        // Mutex lock for thread safety
-        std::lock_guard<std::mutex> lock(mutex_);
-
         // Check for empty data
         if(data.empty()) {
             return make_error<void>(
@@ -233,32 +235,41 @@ Result<void> RiskManager::update_market_data(const std::vector<Bar>& data) {
             );
         }
 
-        // Calculate returns and covariance with proper error handling
+        // Calculate returns and covariance
+        std::vector<std::vector<double>> new_returns;
+        std::vector<std::vector<double>> new_covariance;
+        std::unordered_map<std::string, size_t> new_symbol_indices;
+
         try {
-            std::vector<std::vector<double>> new_returns = calculate_returns(data);
-            
-            // Only update if we have valid returns
+            new_returns = calculate_returns(data);
             if (!new_returns.empty()) {
-                market_data_.returns = new_returns;
-                market_data_.covariance = calculate_covariance(market_data_.returns);
+                new_covariance = calculate_covariance(market_data_.returns);
             }
             
             // Update symbol indices mapping
-            market_data_.symbol_indices.clear();
             size_t idx = 0;
-            for(const auto& bar : data) {
-                if(market_data_.symbol_indices.find(bar.symbol) == 
-                   market_data_.symbol_indices.end()) {
-                    market_data_.symbol_indices[bar.symbol] = idx++;
+            for (const auto& bar : data) {
+                if(new_symbol_indices.find(bar.symbol) == new_symbol_indices.end()) {
+                    new_symbol_indices[bar.symbol] = idx++;
                 }
             }
-        } catch(const std::exception& e) {
+        } catch (const std::exception& e) {
             ERROR("Failed to calculate returns or covariance: " + std::string(e.what()));
             return make_error<void>(
                 ErrorCode::MARKET_DATA_ERROR,
                 "Failed to calculate returns or covariance: " + std::string(e.what()),
                 "RiskManager"
             );
+        }
+
+        // Only lock when updating shared data
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (!new_returns.empty()) {
+                market_data_.returns = new_returns;
+                market_data_.covariance = new_covariance;
+                market_data_.symbol_indices = new_symbol_indices;
+            }
         }
         
         return Result<void>();

@@ -252,11 +252,25 @@ public:
      */
     const PortfolioConfig& get_config() const { return config_; }
 
+    /**
+     * @brief Set external risk manager to use instead of internal one
+     * @param manager Pointer to an existing risk manager
+     */
+    void set_risk_manager(RiskManager* manager) {
+        if (manager) {
+            // Store the provided manager
+            external_risk_manager_ = manager;
+            // Disable the internal manager
+            risk_manager_.reset();
+        }
+    }
+
 private:
     PortfolioConfig config_;
     std::string id_;
     std::unique_ptr<DynamicOptimizer> optimizer_;
     std::unique_ptr<RiskManager> risk_manager_;
+    RiskManager* external_risk_manager_{nullptr};
 
     struct StrategyInfo {
         std::shared_ptr<StrategyInterface> strategy;
@@ -292,6 +306,12 @@ private:
     Result<void> validate_allocations(
         const std::unordered_map<std::string, double>& allocations
     ) const;
+
+    /**
+     * @brief Get positions from all strategies
+     * @return Map of symbol to position across all strategies
+     */
+    std::unordered_map<std::string, Position> get_positions_internal() const;
 };
 
 } // namespace trade_ngin
