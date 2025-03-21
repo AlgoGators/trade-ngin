@@ -243,7 +243,7 @@ Result<void> RiskManager::update_market_data(const std::vector<Bar>& data) {
         try {
             new_returns = calculate_returns(data);
             if (!new_returns.empty()) {
-                new_covariance = calculate_covariance(market_data_.returns);
+                new_covariance = calculate_covariance(new_returns);
             }
             
             // Update symbol indices mapping
@@ -253,6 +253,8 @@ Result<void> RiskManager::update_market_data(const std::vector<Bar>& data) {
                     new_symbol_indices[bar.symbol] = idx++;
                 }
             }
+
+
         } catch (const std::exception& e) {
             ERROR("Failed to calculate returns or covariance: " + std::string(e.what()));
             return make_error<void>(

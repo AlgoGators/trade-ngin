@@ -45,8 +45,21 @@ Result<void> InstrumentRegistry::initialize(std::shared_ptr<PostgresDatabase> db
 
 std::shared_ptr<Instrument> InstrumentRegistry::get_instrument(const std::string& symbol) const {
     std::lock_guard<std::mutex> lock(mutex_);
+
+    std::string cleaned_symbol;
+
+    // Handle special cases for micro futures
+    if (symbol == "ES") {
+        cleaned_symbol = "MES";
+    } else if (symbol == "YM") {
+        cleaned_symbol = "MYM";
+    } else if (symbol == "NQ") {
+        cleaned_symbol = "MNQ";
+    } else {
+        cleaned_symbol = symbol;
+    }
     
-    auto it = instruments_.find(symbol);
+    auto it = instruments_.find(cleaned_symbol);
     if (it != instruments_.end()) {
         return it->second;
     }
@@ -56,7 +69,7 @@ std::shared_ptr<Instrument> InstrumentRegistry::get_instrument(const std::string
         available_symbols += sym + ", ";
     } 
     
-    ERROR("Instrument not found: " + symbol + ". Available symbols: " + available_symbols);
+    ERROR("Instrument not found: " + cleaned_symbol + ". Available symbols: " + available_symbols);
     return nullptr;
 }
 
