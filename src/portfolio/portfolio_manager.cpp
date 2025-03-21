@@ -320,6 +320,9 @@ Result<void> PortfolioManager::optimize_positions() {
 }
 
 Result<void> PortfolioManager::apply_risk_management() {
+    // Use external risk manager if available, otherwise use internal manager
+    RiskManager* active_manager = external_risk_manager_ ? external_risk_manager_ : risk_manager_.get();
+
     if (!risk_manager_) {
         return Result<void>();
     }
@@ -336,7 +339,7 @@ Result<void> PortfolioManager::apply_risk_management() {
         
         // Apply risk management with proper error handling
         try {
-            auto result = risk_manager_->process_positions(portfolio_positions);
+            auto result = active_manager->process_positions(portfolio_positions);
             if (result.is_error()) {
                 WARN("Risk management calculation failed: " + 
                     std::string(result.error()->what()) + 
@@ -504,15 +507,19 @@ std::vector<std::shared_ptr<StrategyInterface>> PortfolioManager::get_strategies
     return result;
 }
 
-double PortfolioManager::get_portfolio_value(const std::unordered_map<std::string, double>& current_prices) const {
-    std::lock_guard<std::mutex> lock(mutex_);
-    
+double PortfolioManager::get_portfolio_value(const std::unordered_map<std::string, double>& current_prices) const {    
     // Start with available capital
     double portfolio_value = config_.total_capital - config_.reserve_capital;
+
+    // Acquire the mutex and get a copy of the portfolio positions
+    std::unordered_map<std::string, Position> positions_copy;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        positions_copy = get_positions_internal();
+    }
     
-    // Add value of positions
-    auto positions = get_portfolio_positions();
-    for (const auto& [symbol, pos] : positions) {
+    // Process the positions outside of the mutex lock
+    for (const auto& [symbol, pos] : positions_copy) {
         auto it = current_prices.find(symbol);
         if (it != current_prices.end()) {
             // Use the provided price
@@ -524,6 +531,24 @@ double PortfolioManager::get_portfolio_value(const std::unordered_map<std::strin
     }
     
     return portfolio_value;
+}
+
+std::unordered_map<std::string, Position> PortfolioManager::get_positions_internal() const {
+    // This method is called with the mutex already locked
+    std::unordered_map<std::string, Position> portfolio_positions;
+    
+    for (const auto& [_, info] : strategies_) {
+        for (const auto& [symbol, pos] : info.target_positions) {
+            if (portfolio_positions.count(symbol) == 0) {
+                portfolio_positions[symbol] = pos;
+                portfolio_positions[symbol].quantity *= info.allocation;
+            } else {
+                portfolio_positions[symbol].quantity += pos.quantity * info.allocation;
+            }
+        }
+    }
+    
+    return portfolio_positions;
 }
 
 } // namespace trade_ngin
