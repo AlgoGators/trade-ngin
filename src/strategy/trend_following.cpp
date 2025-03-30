@@ -795,21 +795,20 @@ double TrendFollowingStrategy::calculate_position(
 
         INFO("Looking up instrument for symbol " + symbol + " (normalized to " + lookup_symbol + ")");
 
-        if (registry_) {
+        if (registry_ && registry_->has_instrument(lookup_symbol)) {
+            INFO("Found instrument in registry for " + symbol);
             instrument = registry_->get_instrument(lookup_symbol);
-        }
-
-        if (!instrument) {
-            instrument = InstrumentRegistry::instance().get_instrument(lookup_symbol);
+        } else if (InstrumentRegistry::instance().has_instrument(lookup_symbol)) {
+            ERROR("Found instrument in global registry for " + symbol);
+        } else {
+            ERROR("Instrument not found in registry for " + symbol);
         }
 
         if (instrument) {
             contract_size = instrument->get_multiplier();
             INFO("Found instrument for " + symbol + ": contract size = " + std::to_string(contract_size));
         } else {
-            WARN("Instrument not found for " + symbol + ", using default values");
-            // Use safe defaults
-            contract_size = 1.0;
+            ERROR("Instrument not found for " + symbol + ", using default values");
         }
 
     } catch (const std::exception& e) {
@@ -910,18 +909,25 @@ double TrendFollowingStrategy::apply_position_buffer(
         if (symbol.find(".v.") != std::string::npos) {
             lookup_symbol = symbol.substr(0, symbol.find(".v."));
         }
-        
-        // Safer lookup with explicit null checking
+
+        INFO("Looking up instrument for symbol " + symbol + " (normalized to " + lookup_symbol + ")");
+
         if (registry_ && registry_->has_instrument(lookup_symbol)) {
+            INFO("Found instrument in registry for " + symbol);
             instrument = registry_->get_instrument(lookup_symbol);
         } else if (InstrumentRegistry::instance().has_instrument(lookup_symbol)) {
-            instrument = InstrumentRegistry::instance().get_instrument(lookup_symbol);
+            ERROR("Found instrument in global registry for " + symbol);
         } else {
-            // Log warning and use default values
-            WARN("Instrument not found for " + symbol + ", using default values");
-            // Use safe defaults
-            contract_size = 1.0;
+            ERROR("Instrument not found in registry for " + symbol);
         }
+
+        if (instrument) {
+            contract_size = instrument->get_multiplier();
+            INFO("Found instrument for " + symbol + ": contract size = " + std::to_string(contract_size));
+        } else {
+            ERROR("Instrument not found for " + symbol + ", using default values");
+        }
+
     } catch (const std::exception& e) {
         ERROR("Exception in calculate_position: " + std::string(e.what()) + " for symbol " + symbol);
         // Use safe defaults

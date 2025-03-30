@@ -131,11 +131,12 @@ int main() {
         config.strategy_config.commission_rate = 0.0005; // 5 basis points
         config.strategy_config.slippage_model = 1.0; // 1 basis point
         
-        /* Set only one symbol for testing
-        auto symbols = std::vector<std::string>{"6B.v.0"};
+        /*
+        auto symbols = std::vector<std::string>{"GC.v.0", "ES.v.0", "CL.v.0", "SI.v.0"};
         config.strategy_config.symbols = symbols;
-        */
 
+        */
+       
         auto symbols = db->get_symbols(trade_ngin::AssetClass::FUTURES);
 
         if (symbols.is_ok()) {
@@ -144,7 +145,7 @@ int main() {
             // Detailed error logging
             ERROR("Failed to get symbols: " + std::string(symbols.error()->what()));
             throw std::runtime_error("Failed to get symbols: " + symbols.error()->to_string());
-        } 
+        }
         
         std::cout << "Symbols: ";
         for (const auto& symbol : config.strategy_config.symbols) {
@@ -219,7 +220,7 @@ int main() {
         
         // Configure trend following parameters
         trade_ngin::TrendFollowingConfig trend_config;
-        trend_config.weight = 1.0 / (config.strategy_config.symbols.size());  // Equal weight for each symbol
+        trend_config.weight = 0.03;           // 3% weight per symbol
         trend_config.risk_target = 0.2;       // Target 20% annualized risk
         trend_config.idm = 2.5;               // Instrument diversification multiplier
         trend_config.use_position_buffering = true;
