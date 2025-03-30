@@ -16,7 +16,7 @@ RiskManager::RiskManager(RiskConfig config)
     logger_config.log_directory = "logs";
     logger_config.filename_prefix = "risk_manager";
     Logger::instance().initialize(logger_config);
-    }
+}
 
 Result<RiskResult> RiskManager::process_positions(
     const std::unordered_map<std::string, Position>& positions) {        

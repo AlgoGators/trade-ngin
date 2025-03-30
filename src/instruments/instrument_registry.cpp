@@ -124,6 +124,38 @@ Result<void> InstrumentRegistry::load_instruments() {
         }
         
         auto table = result.value();
+        INFO("Contract metadata table schema:");
+        for (int i = 0; i < table->num_columns(); i++) {
+            auto field = table->schema()->field(i);
+            INFO("  Column " + std::to_string(i) + ": " + field->name() + " (" + 
+            field->type()->ToString() + ")");
+        }
+        
+        // Check first row data for each column
+        if (table->num_rows() > 0) {
+            INFO("First row values:");
+            for (int i = 0; i < table->num_columns(); i++) {
+                auto field = table->schema()->field(i);
+                auto column = table->column(i);
+                if (column->num_chunks() > 0) {
+                    auto chunk = column->chunk(0);
+                    std::string value = "NULL";
+                    if (field->type()->id() == arrow::Type::DOUBLE) {
+                        auto array = std::static_pointer_cast<arrow::DoubleArray>(chunk);
+                        if (!array->IsNull(0)) {
+                            value = std::to_string(array->Value(0));
+                        }
+                    } else if (field->type()->id() == arrow::Type::STRING) {
+                        auto array = std::static_pointer_cast<arrow::StringArray>(chunk);
+                        if (!array->IsNull(0)) {
+                            value = array->GetString(0);
+                        }
+                    }
+                    INFO("    " + field->name() + ": " + value);
+                }
+            }
+        }
+        
         int rows_loaded = 0;
 
         // Create a temporary map to hold all the instruments
@@ -190,11 +222,26 @@ bool InstrumentRegistry::has_instrument(const std::string& symbol) const {
     
     std::lock_guard<std::mutex> lock(mutex_);
 
-    return instruments_.find(symbol) != instruments_.end();
+    std::string cleaned_symbol;
+
+    // Handle special cases for micro futures
+    if (symbol == "ES") {
+        cleaned_symbol = "MES";
+    } else if (symbol == "YM") {
+        cleaned_symbol = "MYM";
+    } else if (symbol == "NQ") {
+        cleaned_symbol = "MNQ";
+    } else {
+        cleaned_symbol = symbol;
+    }
+
+    return instruments_.find(cleaned_symbol) != instruments_.end();
 }
 
 std::shared_ptr<Instrument> InstrumentRegistry::create_instrument_from_db(
     const std::shared_ptr<arrow::Table>& table, int64_t row) {
+
+    INFO("Creating instrument from database row: " + std::to_string(row));
     
     try {
         // Helper to get string from table
@@ -235,8 +282,15 @@ std::shared_ptr<Instrument> InstrumentRegistry::create_instrument_from_db(
         
         std::string exchange = get_string("Exchange");
         double contract_size = get_double("Contract Size");
+        INFO("Contract Size for " + symbol + ": " + std::to_string(contract_size) + 
+        " (raw column value exists: " + 
+        (table->GetColumnByName("Contract Size") ? "yes" : "no") + ")");
+
         // Default to 1.0 if contract size is missing or zero
-        if (contract_size <= 0.0) contract_size = 1.0;
+        if (contract_size <= 0.0) {
+            WARN("Using default contract size (1.0) for " + symbol);
+            contract_size = 1.0;
+        }
         
         double min_tick = get_double("Minimum Price Fluctuation");
         std::string tick_size = get_string("Tick Size");

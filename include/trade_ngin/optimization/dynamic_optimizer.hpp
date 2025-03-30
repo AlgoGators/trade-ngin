@@ -4,6 +4,7 @@
 #include "trade_ngin/core/types.hpp"
 #include "trade_ngin/core/error.hpp"
 #include "trade_ngin/core/config_base.hpp"
+#include "trade_ngin/core/logger.hpp"
 #include <vector>
 #include <memory>
 #include <unordered_map>
