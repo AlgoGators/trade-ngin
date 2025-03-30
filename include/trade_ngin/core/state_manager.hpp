@@ -64,8 +64,9 @@ public:
         std::unique_lock<std::recursive_mutex> lock(inst.mutex_);
         inst.components_.clear();
         inst.cv_.notify_all();
-        inst.cv_.wait_for(lock, std::chrono::milliseconds(100));
     }
+
+    void shutdown();
 
 private:
     StateManager() = default;
