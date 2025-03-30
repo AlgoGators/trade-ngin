@@ -16,13 +16,21 @@
 TO-DO:
     - Check that risk management is working
     - Check that optimization is working
+        - Need to fix / check in backtest_engine.cpp (run_portfolio())
     - Visualize results (matplotlib?)
     - Check that slippage model is working
     - Fix data access for strategies & TCA
     - Update all the configs to save / load to a file
     - Remove wait times in tests (if possible)
-    - Fix Arrow no discard attributes
+    - Fix Arrow no discard attributes`
     - Fix weighting in position sizing
+        - Currently, the position sizing is based on the number of symbols in the strategy
+        - Need to change it to come from dyn opt
+    - Fix logging across system. For some reason, some of the logger files do not align
+    with their respective components. (i.e. the positions populate in the risk manager log file
+    but not in the strategy log file)
+        - Use a single logger instance across the system
+        - Use a single log file for each run
 */
 
 using namespace trade_ngin;
@@ -86,7 +94,8 @@ int main() {
         
         // Load futures instruments
         auto load_result = registry.load_instruments();
-        if (load_result.is_error()) {
+        if (load_result.is_error() || registry.get_all_instruments().empty()) {
+            std::cerr << "Failed to load futures instruments: " << load_result.error()->what() << std::endl;
             ERROR("Failed to load futures instruments: " + std::string(load_result.error()->what()));
             return 1;
         } else {
@@ -108,9 +117,9 @@ int main() {
         auto now_time_t = std::chrono::system_clock::to_time_t(now);
         std::tm* now_tm = std::localtime(&now_time_t);
 
-        // Set start date to 3 years ago
+        // Set start date to 2 years ago
         std::tm start_tm = *now_tm;
-        start_tm.tm_year -= 3; // 3 years ago
+        start_tm.tm_year -= 2; // 2 years ago
         auto start_time_t = std::mktime(&start_tm);
         config.strategy_config.start_date = std::chrono::system_clock::from_time_t(start_time_t);
 
@@ -260,11 +269,9 @@ int main() {
         INFO("Strategy added to portfolio successfully"); 
 
         // Run the backtest
-        INFO("Backtest engine initialized, starting backtest run...");
-        std::cout << "\n=== Starting Backtest Execution ===" << std::endl;
-        std::cout << "Time period: " << 
-            std::chrono::system_clock::to_time_t(config.strategy_config.start_date) << " to " <<
-            std::chrono::system_clock::to_time_t(config.strategy_config.end_date) << std::endl;
+        INFO("Running backtest for time period: " + 
+            std::to_string(std::chrono::system_clock::to_time_t(config.strategy_config.start_date)) + " to " + 
+            std::to_string(std::chrono::system_clock::to_time_t(config.strategy_config.end_date)));
         
         auto result = engine->run_portfolio(portfolio);
         

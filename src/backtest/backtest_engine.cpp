@@ -110,6 +110,19 @@ BacktestEngine::BacktestEngine(
          std::to_string(config_.portfolio_config.initial_capital) + " initial capital");
 }
 
+BacktestEngine::~BacktestEngine() {
+    // Unregister from state manager if we have a component ID
+    if (!backtest_component_id_.empty()) {
+        try {
+            StateManager::instance().unregister_component(backtest_component_id_);
+        }
+        catch (const std::exception& e) {
+            // Log but don't throw from destructor
+            std::cerr << "Error unregistering from StateManager: " << e.what() << std::endl;
+        }
+    }
+}
+
 // Run single strategy with portfolio-level constraints
 Result<BacktestResults> BacktestEngine::run(
     std::shared_ptr<StrategyInterface> strategy) {

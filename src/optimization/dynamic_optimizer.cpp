@@ -7,7 +7,15 @@
 namespace trade_ngin {
 
 DynamicOptimizer::DynamicOptimizer(DynamicOptConfig config)
-    : config_(std::move(config)) {}
+    : config_(std::move(config)) {
+    // Initialize logger
+    LoggerConfig logger_config;
+    logger_config.min_level = LogLevel::DEBUG;
+    logger_config.destination = LogDestination::BOTH;
+    logger_config.log_directory = "logs";
+    logger_config.filename_prefix = "dynamic_optimizer";
+    Logger::instance().initialize(logger_config);
+    }
 
 Result<void> DynamicOptimizer::validate_inputs(
     const std::vector<double>& current_positions,

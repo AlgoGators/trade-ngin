@@ -82,8 +82,18 @@ Result<void> TrendFollowingStrategy::initialize() {
     try {
         // Initialize price history containers for each symbol with proper capacity
         for (const auto& [symbol, _] : config_.trading_params) {
-            price_history_[symbol].reserve(std::max(trend_config_.vol_lookback_long, 2520));
-            volatility_history_[symbol].reserve(std::max(trend_config_.vol_lookback_long, 2520));
+            try {
+                price_history_[symbol].reserve(std::max(trend_config_.vol_lookback_long, 2520));
+                volatility_history_[symbol].reserve(std::max(trend_config_.vol_lookback_long, 2520));
+            } catch (const std::exception& e) {
+                std::cerr << "Failed to reserve price history for symbol " << symbol
+                    << ": " << e.what() << std::endl;
+                return make_error<void>(
+                    ErrorCode::INVALID_ARGUMENT,
+                    std::string("Failed to reserve price history for symbol ") + symbol,
+                    "TrendFollowingStrategy"
+                );
+            }
             
             // Initialize positions with zero quantity
             Position pos;
@@ -123,6 +133,8 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
         max_window = std::max(max_window, window_pair.second);
     }
     
+    const size_t MAX_HISTORY_SIZE = 2500; 
+
     try {
         // Group data by symbol and update price history
         std::unordered_map<std::string, std::vector<Bar>> bars_by_symbol;
@@ -159,18 +171,15 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
         
         // Process each symbol
         for (const auto& [symbol, symbol_bars] : bars_by_symbol) {
-            INFO("Processing symbol " + symbol + " with " + 
-                std::to_string(symbol_bars.size()) + " bar(s)");
-
             // Extract prices
             for (const auto& bar : symbol_bars) {
                 // Update price history for the symbol
+                if (price_history_[bar.symbol].size() >= MAX_HISTORY_SIZE) {
+                    ERROR("Price history for " + bar.symbol + " exceeds max size.");
+                }
                 price_history_[bar.symbol].push_back(bar.close);
             }
 
-            INFO("Symbol " + symbol + " now has " + 
-                std::to_string(price_history_[symbol].size()) + " price points");
-            
             // Wait for enough data before processing
             if (price_history_[symbol].size() < max_window) {
                 if (price_history_[symbol].size() % 50 == 0) {
@@ -200,12 +209,15 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
 
             // DEBUG: Print volatility values
             if (!volatility.empty()) {
-                INFO("Symbol " + symbol + " volatility: last=" + 
+                DEBUG("Symbol " + symbol + " volatility: last=" + 
                      std::to_string(volatility.back()) + ", min=" + 
                      std::to_string(*std::min_element(volatility.begin(), volatility.end())) + 
                      ", max=" + std::to_string(*std::max_element(volatility.begin(), volatility.end())));
             }
             
+            if (volatility.size() > MAX_HISTORY_SIZE) {
+                ERROR("Volatility history for " + symbol + " exceeds max size.");
+            }
             // Save volatility history
             volatility_history_[symbol] = volatility;
 
@@ -226,7 +238,7 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
 
             // DEBUG: Print raw forecast values
             if (!raw_forecasts.empty()) {
-                INFO("Symbol " + symbol + " raw forecast: last=" + 
+                DEBUG("Symbol " + symbol + " raw forecast: last=" + 
                      std::to_string(raw_forecasts.back()) + ", min=" + 
                      std::to_string(*std::min_element(raw_forecasts.begin(), raw_forecasts.end())) + 
                      ", max=" + std::to_string(*std::max_element(raw_forecasts.begin(), raw_forecasts.end())));
@@ -250,7 +262,8 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
             double raw_position = 0.0;
             double weight = trend_config_.weight;
             try {
-                if (!scaled_forecasts.empty() && !volatility.empty()) {
+                if (!scaled_forecasts.empty() && !volatility.empty() && !prices.empty()) {
+                    // Get latest forecast and volatility
                     double latest_forecast = scaled_forecasts.back();
                     double latest_volatility = volatility.back();
                     
@@ -271,7 +284,6 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
 
                     // Get latest price
                     double latest_price = prices.back();
-                    INFO ("Symbol " + symbol + " latest price: " + std::to_string(latest_price));
                     
                     raw_position = calculate_position(
                         symbol,
@@ -280,8 +292,6 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
                         latest_price,
                         latest_volatility
                     );
-
-                    INFO("Symbol " + symbol + " raw position: " + std::to_string(raw_position));
                 }
             } catch (const std::exception& e) {
                 WARN("Position calculation exception for " + symbol + ": " + e.what());
@@ -303,7 +313,7 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
                     final_position = raw_position;
                 }
 
-                INFO("Symbol " + symbol + " final position: " + std::to_string(final_position));
+                DEBUG("Symbol " + symbol + " final position: " + std::to_string(final_position));
                 
                 // Ensure position is reasonable (not NaN or infinite)
                 if (std::isnan(final_position) || std::isinf(final_position)) {
@@ -741,7 +751,7 @@ double TrendFollowingStrategy::calculate_position(
     double volatility) const {
 
     // Validation
-    if (std::isnan(forecast)) {
+    if (std::isnan(forecast) || std::isinf(forecast) || std::abs(forecast) > 20.0) {
         WARN("Invalid forecast in position calculation for " + symbol + ", using 0.0");
         return 0.0;
     }
@@ -775,37 +785,61 @@ double TrendFollowingStrategy::calculate_position(
     double risk_target = std::max(0.01, std::min(0.5, trend_config_.risk_target));
     double fx_rate = std::max(0.1, trend_config_.fx_rate);
     
+    std::shared_ptr<Instrument> instrument = nullptr;
     try {
         // Transform symbol to match what's in the registry
         std::string lookup_symbol = symbol;
         if (symbol.find(".v.") != std::string::npos) {
             lookup_symbol = symbol.substr(0, symbol.find(".v."));
         }
-        
-        // Get contract size from instrument registry
-        auto instrument = registry_ ? registry_->get_instrument(lookup_symbol) : 
-                        InstrumentRegistry::instance().get_instrument(lookup_symbol);
+
+        INFO("Looking up instrument for symbol " + symbol + " (normalized to " + lookup_symbol + ")");
+
+        if (registry_) {
+            instrument = registry_->get_instrument(lookup_symbol);
+        }
+
+        if (!instrument) {
+            instrument = InstrumentRegistry::instance().get_instrument(lookup_symbol);
+        }
+
         if (instrument) {
             contract_size = instrument->get_multiplier();
+            INFO("Found instrument for " + symbol + ": contract size = " + std::to_string(contract_size));
         } else {
-            WARN("Invalid instrument for " + symbol + ", using default contract size");
+            WARN("Instrument not found for " + symbol + ", using default values");
+            // Use safe defaults
+            contract_size = 1.0;
         }
+
     } catch (const std::exception& e) {
         ERROR("Exception in calculate_position: " + std::string(e.what()) + " for symbol " + symbol);
+        // Use safe defaults
+        contract_size = 1.0;
     }
-    
-    // Cap forecast to reasonable values
-    forecast = std::clamp(forecast, -20.0, 20.0);
     
     // Apply minimum value to volatility to avoid division by very small values
     volatility = std::clamp(volatility, 0.01, 1.0);
+
+    DEBUG("====== Position Calculation ===");
+    DEBUG("Symbol: " + symbol);
+    DEBUG("Forecast: " + std::to_string(forecast));
+    DEBUG("Weight: " + std::to_string(weight));
+    DEBUG("Price: " + std::to_string(price));
+    DEBUG("Volatility: " + std::to_string(volatility));
+    DEBUG("Contract Size: " + std::to_string(contract_size));
+    DEBUG("Capital: " + std::to_string(capital));
+    DEBUG("IDM: " + std::to_string(idm));
+    DEBUG("Risk Target: " + std::to_string(risk_target));
+    DEBUG("FX Rate: " + std::to_string(fx_rate));
+    DEBUG("================================\n");
     
     // Calculate position using volatility targeting formula with safeguards
     double denominator = 10.0 * contract_size * price * fx_rate * volatility;
     denominator = std::max(denominator, 1.0);  // Prevent division by zero or tiny values
     
     double position = (forecast * capital * weight * idm * risk_target) / denominator;
-    DEBUG("  Raw position: " + std::to_string(position));
+    DEBUG("Raw position: " + std::to_string(position));
     
     // Handle potential NaN or Inf results
     if (std::isnan(position) || std::isinf(position)) {
@@ -821,8 +855,11 @@ double TrendFollowingStrategy::calculate_position(
     
     // Round and limit position size
     double final_position = std::clamp(std::round(position), -position_limit, position_limit);
+    if (abs(final_position) == 1000.0) {
+        WARN("Position limit reached for " + symbol + ": " + std::to_string(final_position));
+    }
     
-    DEBUG("Final position after limits: " + std::to_string(final_position));
+    DEBUG("Final position after rounding: " + std::to_string(final_position));
     return final_position;
 }
 
@@ -866,6 +903,7 @@ double TrendFollowingStrategy::apply_position_buffer(
     // Get contract size from instrument registry
     double contract_size = 1.0;
 
+    std::shared_ptr<Instrument> instrument = nullptr;
     try {
         // Transform symbol to match what's in the registry
         std::string lookup_symbol = symbol;
@@ -873,17 +911,21 @@ double TrendFollowingStrategy::apply_position_buffer(
             lookup_symbol = symbol.substr(0, symbol.find(".v."));
         }
         
-        // In calculate_position method
-        auto instrument = registry_ ? registry_->get_instrument(lookup_symbol) : 
-                        InstrumentRegistry::instance().get_instrument(lookup_symbol);
-        
-        if (instrument) {
-            contract_size = instrument->get_multiplier();
+        // Safer lookup with explicit null checking
+        if (registry_ && registry_->has_instrument(lookup_symbol)) {
+            instrument = registry_->get_instrument(lookup_symbol);
+        } else if (InstrumentRegistry::instance().has_instrument(lookup_symbol)) {
+            instrument = InstrumentRegistry::instance().get_instrument(lookup_symbol);
         } else {
-            WARN("Invalid instrument for " + symbol + ", using default contract size");
+            // Log warning and use default values
+            WARN("Instrument not found for " + symbol + ", using default values");
+            // Use safe defaults
+            contract_size = 1.0;
         }
     } catch (const std::exception& e) {
         ERROR("Exception in calculate_position: " + std::string(e.what()) + " for symbol " + symbol);
+        // Use safe defaults
+        contract_size = 1.0;
     }
 
     // Calculate buffer width as:

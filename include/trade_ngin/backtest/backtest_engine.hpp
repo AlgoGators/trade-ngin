@@ -221,6 +221,11 @@ public:
     BacktestEngine(BacktestConfig config, std::shared_ptr<PostgresDatabase> db);
 
     /**
+     * @brief Destructor
+     */
+    ~BacktestEngine();
+
+    /**
      * @brief Run backtest simulation for a single strategy with portfolio-level constraints
      * @param strategy Strategy to test
      * @return Result containing backtest results

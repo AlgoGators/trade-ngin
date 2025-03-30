@@ -174,4 +174,11 @@ std::vector<std::string> StateManager::get_all_components() const {
     }
     return ids;
 }
+
+void StateManager::shutdown() {
+    std::unique_lock<std::recursive_mutex> lock(mutex_);
+    components_.clear();
+    cv_.notify_all();
+}
+
 }  // namespace trade_ngin
