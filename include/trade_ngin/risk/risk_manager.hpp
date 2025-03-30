@@ -131,6 +131,7 @@ private:
         std::vector<std::vector<double>> returns;
         std::vector<std::vector<double>> covariance;
         std::unordered_map<std::string, size_t> symbol_indices;
+        std::vector<std::string> ordered_symbols;
     };
     MarketData market_data_;
 

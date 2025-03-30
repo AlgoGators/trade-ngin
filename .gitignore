@@ -1,5 +1,6 @@
 .env
 .vscode/
 build/
+logs/
 config.json
 apps/backtest/results/
