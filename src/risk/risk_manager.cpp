@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <numeric>
 #include <map>
+#include <set>
 
 namespace trade_ngin {
 
@@ -20,71 +21,103 @@ RiskManager::RiskManager(RiskConfig config)
 
 Result<RiskResult> RiskManager::process_positions(
     const std::unordered_map<std::string, Position>& positions) {        
-        try {
-            RiskResult result;
+    try {
+        RiskResult result;
 
-            // Initialize with default values
-            result.risk_exceeded = false;
-            result.recommended_scale = 1.0;
-            result.portfolio_multiplier = 1.0;
-            result.jump_multiplier = 1.0;
-            result.correlation_multiplier = 1.0;
-            result.leverage_multiplier = 1.0;
+        // Initialize with default values
+        result.risk_exceeded = false;
+        result.recommended_scale = 1.0;
+        result.portfolio_multiplier = 1.0;
+        result.jump_multiplier = 1.0;
+        result.correlation_multiplier = 1.0;
+        result.leverage_multiplier = 1.0;
 
-            if (positions.empty()) {
-                ERROR("RiskManager: No positions provided for risk calculation");
-                return make_error<RiskResult>(
-                    ErrorCode::INVALID_DATA,
-                    "No positions provided",
-                    "RiskManager"
-                );
-            }
-
-            // Add mutex lock for thread safety
-            std::lock_guard<std::mutex> lock(mutex_);
-
-            // Check if we have market data available
-            if (market_data_.returns.empty() || market_data_.covariance.empty()) {
-                ERROR("RiskManager: Market data not available for risk calculation");
-                return make_error<RiskResult>(
-                    ErrorCode::MARKET_DATA_ERROR,
-                    "Market data not available for risk calculation",
-                    "RiskManager"
-                );
-            }
-
-            double total_value = 0.0;
-            for (const auto& [symbol, pos] : positions) {
-                total_value += std::abs(pos.quantity * pos.average_price);
-            }
-            const auto weights = calculate_weights(positions);
-            
-            // Calculate all risk multipliers and store metrics
-            result.portfolio_multiplier = calculate_portfolio_multiplier(weights, result);
-            result.jump_multiplier = calculate_jump_multiplier(weights, result);
-            result.correlation_multiplier = calculate_correlation_multiplier(weights, result);
-            result.leverage_multiplier = calculate_leverage_multiplier(weights, total_value, result);
-            
-            // Overall scale is minimum of all multipliers
-            result.recommended_scale = std::min({
-                result.portfolio_multiplier,
-                result.jump_multiplier,
-                result.correlation_multiplier,
-                result.leverage_multiplier
-            });
-            
-            result.risk_exceeded = result.recommended_scale < 1.0;
-            return Result<RiskResult>(result);
-            
-        } catch(const std::exception& e) {
-            ERROR("RiskManager: Risk calculation failed: " + std::string(e.what()));
+        if (positions.empty()) {
+            ERROR("RiskManager: No positions provided for risk calculation");
             return make_error<RiskResult>(
-                ErrorCode::INVALID_RISK_CALCULATION,
-                std::string("Risk calculation failed: ") + e.what(),
+                ErrorCode::INVALID_DATA,
+                "No positions provided",
                 "RiskManager"
             );
         }
+
+        // Add mutex lock for thread safety
+        std::lock_guard<std::mutex> lock(mutex_);
+
+        // Check if we have market data available
+        if (market_data_.returns.empty() || market_data_.covariance.empty() || 
+            market_data_.symbol_indices.empty() || market_data_.ordered_symbols.empty()) {
+            ERROR("RiskManager: Market data not available for risk calculation");
+            return make_error<RiskResult>(
+                ErrorCode::MARKET_DATA_ERROR,
+                "Market data not available for risk calculation",
+                "RiskManager"
+            );
+        }
+
+        // Map positions to ordered indices for risk calculations
+        std::vector<double> position_values;
+        std::vector<std::string> position_symbols;
+        double total_value = 0.0;
+        
+        // Create vectors that match the order in market_data_ structures
+        position_values.resize(market_data_.ordered_symbols.size(), 0.0);
+        
+        for (const auto& [symbol, pos] : positions) {
+            // Only include positions with symbols in our market data
+            auto it = market_data_.symbol_indices.find(symbol);
+            if (it != market_data_.symbol_indices.end()) {
+                size_t index = it->second;
+                if (index < position_values.size()) {
+                    double position_value = pos.quantity * pos.average_price;
+                    position_values[index] = position_value;
+                    total_value += std::abs(position_value);
+                    position_symbols.push_back(symbol);
+                }
+            }
+        }
+        
+        if (position_symbols.empty()) {
+            WARN("No positions mapped to market data symbols, skipping risk calculation");
+            return Result<RiskResult>(result);  // Return default result
+        }
+        
+        // Calculate position weights
+        std::vector<double> weights;
+        weights.resize(position_values.size(), 0.0);
+        
+        if (total_value > 0.0) {
+            for (size_t i = 0; i < position_values.size(); ++i) {
+                weights[i] = position_values[i] / total_value;
+            }
+        }
+        
+        // Calculate all risk multipliers and store metrics
+        result.portfolio_multiplier = calculate_portfolio_multiplier(weights, result);
+        result.jump_multiplier = calculate_jump_multiplier(weights, result);
+        result.correlation_multiplier = calculate_correlation_multiplier(weights, result);
+        result.leverage_multiplier = calculate_leverage_multiplier(weights, total_value, result);
+        
+        // Overall scale is minimum of all multipliers
+        result.recommended_scale = std::min({
+            result.portfolio_multiplier,
+            result.jump_multiplier,
+            result.correlation_multiplier,
+            result.leverage_multiplier
+        });
+        
+        result.risk_exceeded = result.recommended_scale < 1.0;
+        return Result<RiskResult>(result);
+        
+    } catch(const std::exception& e) {
+        ERROR("RiskManager: Risk calculation failed: " + std::string(e.what()));
+        return make_error<RiskResult>(
+            ErrorCode::INVALID_RISK_CALCULATION,
+            std::string("Risk calculation failed: ") + e.what(),
+            "RiskManager"
+        );
     }
+}
 
 std::vector<double> RiskManager::calculate_weights(
     const std::unordered_map<std::string, Position>& positions) const 
@@ -172,23 +205,73 @@ double RiskManager::calculate_correlation_multiplier(
     RiskResult& result) const 
 {
     double max_corr = 0.0;
-    const size_t n = weights.size();
+    // Need to have the positions and their corresponding symbols
+    // to correctly map to market data indices
+    if (weights.empty() || market_data_.ordered_symbols.empty() || 
+        weights.size() > market_data_.ordered_symbols.size()) {
+        // Not enough data to calculate correlations
+        result.correlation_risk = 0.0;
+        return 1.0;  // Safe default, no scaling
+    }
     
-    for(size_t i = 0; i < n; ++i) {
-        for(size_t j = i+1; j < n; ++j) {
-            double sum_ij = 0.0, sum_i2 = 0.0, sum_j2 = 0.0;
-            for(const auto& daily_ret : market_data_.returns) {
-                sum_ij += daily_ret[i] * daily_ret[j];
-                sum_i2 += daily_ret[i] * daily_ret[i];
-                sum_j2 += daily_ret[j] * daily_ret[j];
+    const size_t n = std::min(weights.size(), market_data_.ordered_symbols.size());
+    
+    if (market_data_.returns.empty() || market_data_.covariance.empty()) {
+        // No return data available
+        result.correlation_risk = 0.0;
+        return 1.0;  // Safe default, no scaling
+    }
+    
+    try {
+        // Calculate correlation from covariance matrix
+        for (size_t i = 0; i < n; ++i) {
+            // Skip positions with zero weight
+            if (std::abs(weights[i]) < 1e-10) continue;
+            
+            for (size_t j = i+1; j < n; ++j) {
+                // Skip positions with zero weight
+                if (std::abs(weights[j]) < 1e-10) continue;
+                
+                // Get standard deviations from diagonal of covariance matrix
+                double var_i = market_data_.covariance[i][i];
+                double var_j = market_data_.covariance[j][j];
+                
+                // Avoid division by zero
+                if (var_i <= 0.0 || var_j <= 0.0) continue;
+                
+                double std_i = std::sqrt(var_i);
+                double std_j = std::sqrt(var_j);
+                
+                // Calculate correlation coefficient
+                double cov_ij = market_data_.covariance[i][j];
+                double corr = cov_ij / (std_i * std_j);
+                
+                // Ensure correlation is valid
+                if (std::isnan(corr) || std::isinf(corr)) {
+                    continue;
+                }
+                
+                // Correlation must be between -1 and 1
+                corr = std::max(-1.0, std::min(1.0, corr));
+                
+                // We're concerned with absolute correlation
+                max_corr = std::max(max_corr, std::abs(corr));
             }
-            double corr = sum_ij / (std::sqrt(sum_i2) * std::sqrt(sum_j2));
-            max_corr = std::max(max_corr, corr);
         }
+    } catch (const std::exception& e) {
+        ERROR("Exception in correlation calculation: " + std::string(e.what()));
+        // Return safe value if calculation fails
+        return 1.0;
     }
     
     result.correlation_risk = max_corr;
-    return std::min(1.0, config_.max_correlation / max_corr);
+    
+    // If max correlation exceeds limit, scale positions down
+    if (max_corr > config_.max_correlation && max_corr > 0.0) {
+        return config_.max_correlation / max_corr;
+    }
+    
+    return 1.0;  // No scaling needed
 }
 
 double RiskManager::calculate_leverage_multiplier(
@@ -227,7 +310,7 @@ double RiskManager::calculate_leverage_multiplier(
 Result<void> RiskManager::update_market_data(const std::vector<Bar>& data) {
     try {
         // Check for empty data
-        if(data.empty()) {
+        if (data.empty()) {
             return make_error<void>(
                 ErrorCode::MARKET_DATA_ERROR,
                 "Empty market data provided",
@@ -235,42 +318,123 @@ Result<void> RiskManager::update_market_data(const std::vector<Bar>& data) {
             );
         }
 
-        // Calculate returns and covariance
-        std::vector<std::vector<double>> new_returns;
-        std::vector<std::vector<double>> new_covariance;
-        std::unordered_map<std::string, size_t> new_symbol_indices;
-
-        try {
-            new_returns = calculate_returns(data);
-            if (!new_returns.empty()) {
-                new_covariance = calculate_covariance(new_returns);
+        // Collect unique symbols in a deterministic order
+        std::set<std::string> unique_symbols;
+        for (const auto& bar : data) {
+            unique_symbols.insert(bar.symbol);
+        }
+        
+        // Create a stable ordering of symbols
+        std::vector<std::string> ordered_symbols(unique_symbols.begin(), unique_symbols.end());
+        std::sort(ordered_symbols.begin(), ordered_symbols.end()); // Sort for consistency
+        
+        // Organize data by symbol and timestamp
+        std::map<std::string, std::map<Timestamp, double>> prices_by_symbol;
+        
+        // Organize data by symbol and timestamp
+        for (const auto& bar : data) {
+            prices_by_symbol[bar.symbol][bar.timestamp] = bar.close;
+        }
+        
+        // Convert to chronologically ordered timeseries
+        std::map<Timestamp, std::map<std::string, double>> prices_by_time;
+        for (const auto& [symbol, prices] : prices_by_symbol) {
+            for (const auto& [ts, price] : prices) {
+                prices_by_time[ts][symbol] = price;
             }
+        }
+        
+        // Calculate returns between consecutive timestamps
+        std::vector<std::vector<double>> new_returns;
+        auto it = prices_by_time.begin();
+        
+        if (it != prices_by_time.end()) {
+            auto prev = it++;
             
-            // Update symbol indices mapping
-            size_t idx = 0;
-            for (const auto& bar : data) {
-                if(new_symbol_indices.find(bar.symbol) == new_symbol_indices.end()) {
-                    new_symbol_indices[bar.symbol] = idx++;
+            while (it != prices_by_time.end()) {
+                std::vector<double> daily_returns(ordered_symbols.size(), 0.0);
+                
+                for (size_t i = 0; i < ordered_symbols.size(); i++) {
+                    const std::string& symbol = ordered_symbols[i];
+                    
+                    if (it->second.count(symbol) && prev->second.count(symbol)) {
+                        double curr_price = it->second.at(symbol);
+                        double prev_price = prev->second.at(symbol);
+                        
+                        if (prev_price > 0.0) {
+                            daily_returns[i] = (curr_price - prev_price) / prev_price;
+                        } else {
+                            daily_returns[i] = 0.0;
+                        }
+                    } else {
+                        daily_returns[i] = 0.0;  // No data for this symbol
+                    }
+                }
+                
+                new_returns.push_back(daily_returns);
+                prev = it++;
+            }
+        }
+        
+        // Calculate covariance matrix
+        std::vector<std::vector<double>> new_covariance;
+        if (!new_returns.empty()) {
+            const size_t num_assets = ordered_symbols.size();
+            const size_t num_days = new_returns.size();
+            
+            // Calculate means
+            std::vector<double> means(num_assets, 0.0);
+            for (const auto& daily_returns : new_returns) {
+                for (size_t i = 0; i < num_assets; ++i) {
+                    means[i] += daily_returns[i];
                 }
             }
-
-
-        } catch (const std::exception& e) {
-            ERROR("Failed to calculate returns or covariance: " + std::string(e.what()));
-            return make_error<void>(
-                ErrorCode::MARKET_DATA_ERROR,
-                "Failed to calculate returns or covariance: " + std::string(e.what()),
-                "RiskManager"
-            );
+            
+            for (auto& mean : means) {
+                mean /= num_days;
+            }
+            
+            // Calculate covariance matrix
+            new_covariance.resize(num_assets, std::vector<double>(num_assets, 0.0));
+            
+            for (const auto& daily_returns : new_returns) {
+                for (size_t i = 0; i < num_assets; ++i) {
+                    for (size_t j = 0; j < num_assets; ++j) {
+                        double dev_i = daily_returns[i] - means[i];
+                        double dev_j = daily_returns[j] - means[j];
+                        new_covariance[i][j] += dev_i * dev_j;
+                    }
+                }
+            }
+            
+            // Normalize and annualize
+            const double annualization = 252.0;  // Trading days per year
+            for (auto& row : new_covariance) {
+                for (auto& val : row) {
+                    val = (val / (num_days - 1)) * annualization;
+                    
+                    // Ensure no NaN values
+                    if (std::isnan(val) || std::isinf(val)) {
+                        val = 0.0;
+                    }
+                }
+            }
+        }
+        
+        // Create symbol indices mapping
+        std::unordered_map<std::string, size_t> new_symbol_indices;
+        for (size_t i = 0; i < ordered_symbols.size(); ++i) {
+            new_symbol_indices[ordered_symbols[i]] = i;
         }
 
         // Only lock when updating shared data
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (!new_returns.empty()) {
-                market_data_.returns = new_returns;
-                market_data_.covariance = new_covariance;
-                market_data_.symbol_indices = new_symbol_indices;
+                market_data_.returns = std::move(new_returns);
+                market_data_.covariance = std::move(new_covariance);
+                market_data_.symbol_indices = std::move(new_symbol_indices);
+                market_data_.ordered_symbols = std::move(ordered_symbols);
             }
         }
         

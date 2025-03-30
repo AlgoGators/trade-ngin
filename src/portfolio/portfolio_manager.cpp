@@ -206,7 +206,8 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data)
                 if (result.is_error()) {
                     ERROR("Error processing data for strategy " + id + ": " + 
                           result.error()->what());
-                    continue;
+                    std::cerr << "Error processing data for strategy " << id << ": " 
+                        << result.error()->what() << std::endl;
                 }
                 
                 // Store target positions
