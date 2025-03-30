@@ -2,5 +2,4 @@
 .vscode/
 build/
 config.json
-logs/
 apps/backtest/results/

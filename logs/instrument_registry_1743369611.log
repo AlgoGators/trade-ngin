@@ -1,0 +1,161 @@
+2025-03-30 17:20:11 [INFO] Logger initialized successfully
+2025-03-30 17:20:11 [INFO] InstrumentRegistry initialized successfully
+2025-03-30 17:20:11 [DEBUG] Converting metadata result with 29 rows and 21 columns
+2025-03-30 17:20:11 [DEBUG] Available columns by index: [0]=Databento Symbol, [1]=IB Symbol, [2]=Name, [3]=Exchange, [4]=Intraday Initial Margin, [5]=Intraday Maintenance Margin, [6]=Overnight Initial Margin, [7]=Overnight Maintenance Margin, [8]=Asset Type, [9]=Sector, [10]=Contract Size, [11]=Units, [12]=Minimum Price Fluctuation, [13]=Tick Size, [14]=Settlement Type, [15]=Trading Hours (EST), [16]=Data Provider, [17]=Dataset, [18]=Newest Month Additions, [19]=Contract Months, [20]=Time of Expiry, 
+2025-03-30 17:20:11 [DEBUG] First row data: [0]=6B, [1]=M6B, [2]=GBP/USD, [3]=CME, [4]=2458.95, [5]=2458.95, [6]=2458.95, [7]=2138.21, [8]=Futures, [9]=FX, [10]=62500, [11]= British Pounds, [12]=6.25, [13]=0.0001, [14]=Deliverable, [15]=Sunday - Friday  6:00 p.m. - 5:00 p.m, [16]=Databento, [17]=GLOBEX, [18]=3 Consectutive Months, [19]=MAR, JUN, SEP, DEC, [20]=10:16 a.m, 2 business days prior to the third Wednesday of the contract month., 
+2025-03-30 17:20:11 [INFO] Contract metadata table schema:
+2025-03-30 17:20:11 [INFO]   Column 0: Name (string)
+2025-03-30 17:20:11 [INFO]   Column 1: Databento Symbol (string)
+2025-03-30 17:20:11 [INFO]   Column 2: IB Symbol (string)
+2025-03-30 17:20:11 [INFO]   Column 3: Asset Type (string)
+2025-03-30 17:20:11 [INFO]   Column 4: Sector (string)
+2025-03-30 17:20:11 [INFO]   Column 5: Exchange (string)
+2025-03-30 17:20:11 [INFO]   Column 6: Contract Size (double)
+2025-03-30 17:20:11 [INFO]   Column 7: Minimum Price Fluctuation (double)
+2025-03-30 17:20:11 [INFO]   Column 8: Tick Size (string)
+2025-03-30 17:20:11 [INFO]   Column 9: Trading Hours (EST) (string)
+2025-03-30 17:20:11 [INFO]   Column 10: Overnight Initial Margin (double)
+2025-03-30 17:20:11 [INFO]   Column 11: Overnight Maintenance Margin (double)
+2025-03-30 17:20:11 [INFO]   Column 12: Intraday Initial Margin (double)
+2025-03-30 17:20:11 [INFO]   Column 13: Intraday Maintenance Margin (double)
+2025-03-30 17:20:11 [INFO]   Column 14: Units (string)
+2025-03-30 17:20:11 [INFO]   Column 15: Data Provider (string)
+2025-03-30 17:20:11 [INFO]   Column 16: Dataset (string)
+2025-03-30 17:20:11 [INFO]   Column 17: Contract Months (string)
+2025-03-30 17:20:11 [INFO] First row values:
+2025-03-30 17:20:11 [INFO]     Name: GBP/USD
+2025-03-30 17:20:11 [INFO]     Databento Symbol: 6B
+2025-03-30 17:20:11 [INFO]     IB Symbol: M6B
+2025-03-30 17:20:11 [INFO]     Asset Type: Futures
+2025-03-30 17:20:11 [INFO]     Sector: FX
+2025-03-30 17:20:11 [INFO]     Exchange: CME
+2025-03-30 17:20:11 [INFO]     Contract Size: 62500.000000
+2025-03-30 17:20:11 [INFO]     Minimum Price Fluctuation: 6.250000
+2025-03-30 17:20:11 [INFO]     Tick Size: 0.0001
+2025-03-30 17:20:11 [INFO]     Trading Hours (EST): Sunday - Friday  6:00 p.m. - 5:00 p.m
+2025-03-30 17:20:11 [INFO]     Overnight Initial Margin: 2458.950000
+2025-03-30 17:20:11 [INFO]     Overnight Maintenance Margin: 2138.210000
+2025-03-30 17:20:11 [INFO]     Intraday Initial Margin: 2458.950000
+2025-03-30 17:20:11 [INFO]     Intraday Maintenance Margin: 2458.950000
+2025-03-30 17:20:11 [INFO]     Units:  British Pounds
+2025-03-30 17:20:11 [INFO]     Data Provider: Databento
+2025-03-30 17:20:11 [INFO]     Dataset: GLOBEX
+2025-03-30 17:20:11 [INFO]     Contract Months: MAR, JUN, SEP, DEC
+2025-03-30 17:20:11 [INFO] Creating instrument from database row: 0
+2025-03-30 17:20:11 [INFO] Contract Size for 6B: 62500.000000 (raw column value exists: yes)
+2025-03-30 17:20:11 [DEBUG] Created futures instrument: 6B
+2025-03-30 17:20:11 [DEBUG] Loaded instrument: 6B
+2025-03-30 17:20:11 [INFO] Creating instrument from database row: 1
+2025-03-30 17:20:11 [INFO] Contract Size for 6C: 100000.000000 (raw column value exists: yes)
+2025-03-30 17:20:11 [DEBUG] Created futures instrument: 6C
+2025-03-30 17:20:11 [DEBUG] Loaded instrument: 6C
+2025-03-30 17:20:11 [INFO] Creating instrument from database row: 2
+2025-03-30 17:20:11 [INFO] Contract Size for 6E: 125000.000000 (raw column value exists: yes)
+2025-03-30 17:20:11 [DEBUG] Created futures instrument: 6E
+2025-03-30 17:20:11 [DEBUG] Loaded instrument: 6E
+2025-03-30 17:20:11 [INFO] Creating instrument from database row: 3
+2025-03-30 17:20:11 [INFO] Contract Size for 6J: 12500000.000000 (raw column value exists: yes)
+2025-03-30 17:20:11 [DEBUG] Created futures instrument: 6J
+2025-03-30 17:20:11 [DEBUG] Loaded instrument: 6J
+2025-03-30 17:20:11 [INFO] Creating instrument from database row: 4
+2025-03-30 17:20:11 [INFO] Contract Size for 6M: 500000.000000 (raw column value exists: yes)
+2025-03-30 17:20:11 [DEBUG] Created futures instrument: 6M
+2025-03-30 17:20:11 [DEBUG] Loaded instrument: 6M
+2025-03-30 17:20:11 [INFO] Creating instrument from database row: 5
+2025-03-30 17:20:11 [INFO] Contract Size for 6N: 100000.000000 (raw column value exists: yes)
+2025-03-30 17:20:11 [DEBUG] Created futures instrument: 6N
+2025-03-30 17:20:11 [DEBUG] Loaded instrument: 6N
+2025-03-30 17:20:11 [INFO] Creating instrument from database row: 6
+2025-03-30 17:20:11 [INFO] Contract Size for 6S: 125000.000000 (raw column value exists: yes)
+2025-03-30 17:20:11 [DEBUG] Created futures instrument: 6S
+2025-03-30 17:20:11 [DEBUG] Loaded instrument: 6S
+2025-03-30 17:20:11 [INFO] Creating instrument from database row: 7
+2025-03-30 17:20:11 [INFO] Contract Size for CL: 1000.000000 (raw column value exists: yes)
+2025-03-30 17:20:11 [DEBUG] Created futures instrument: CL
+2025-03-30 17:20:11 [DEBUG] Loaded instrument: CL
+2025-03-30 17:20:11 [INFO] Creating instrument from database row: 8
+2025-03-30 17:20:11 [INFO] Contract Size for GC: 100.000000 (raw column value exists: yes)
+2025-03-30 17:20:11 [DEBUG] Created futures instrument: GC
+2025-03-30 17:20:11 [DEBUG] Loaded instrument: GC
+2025-03-30 17:20:11 [INFO] Creating instrument from database row: 9
+2025-03-30 17:20:11 [INFO] Contract Size for GF: 50000.000000 (raw column value exists: yes)
+2025-03-30 17:20:11 [DEBUG] Created futures instrument: GF
+2025-03-30 17:20:11 [DEBUG] Loaded instrument: GF
+2025-03-30 17:20:11 [INFO] Creating instrument from database row: 10
+2025-03-30 17:20:11 [INFO] Contract Size for HE: 40000.000000 (raw column value exists: yes)
+2025-03-30 17:20:11 [DEBUG] Created futures instrument: HE
+2025-03-30 17:20:11 [DEBUG] Loaded instrument: HE
+2025-03-30 17:20:11 [INFO] Creating instrument from database row: 11
+2025-03-30 17:20:11 [INFO] Contract Size for HG: 25000.000000 (raw column value exists: yes)
+2025-03-30 17:20:11 [DEBUG] Created futures instrument: HG
+2025-03-30 17:20:11 [DEBUG] Loaded instrument: HG
+2025-03-30 17:20:11 [INFO] Creating instrument from database row: 12
+2025-03-30 17:20:11 [INFO] Contract Size for KE: 5000.000000 (raw column value exists: yes)
+2025-03-30 17:20:11 [DEBUG] Created futures instrument: KE
+2025-03-30 17:20:11 [DEBUG] Loaded instrument: KE
+2025-03-30 17:20:11 [INFO] Creating instrument from database row: 13
+2025-03-30 17:20:11 [INFO] Contract Size for LE: 40000.000000 (raw column value exists: yes)
+2025-03-30 17:20:11 [DEBUG] Created futures instrument: LE
+2025-03-30 17:20:11 [DEBUG] Loaded instrument: LE
+2025-03-30 17:20:11 [INFO] Creating instrument from database row: 14
+2025-03-30 17:20:11 [INFO] Contract Size for MES: 5.000000 (raw column value exists: yes)
+2025-03-30 17:20:11 [DEBUG] Created futures instrument: MES
+2025-03-30 17:20:11 [DEBUG] Loaded instrument: MES
+2025-03-30 17:20:11 [INFO] Creating instrument from database row: 15
+2025-03-30 17:20:11 [INFO] Contract Size for MNQ: 2.000000 (raw column value exists: yes)
+2025-03-30 17:20:11 [DEBUG] Created futures instrument: MNQ
+2025-03-30 17:20:11 [DEBUG] Loaded instrument: MNQ
+2025-03-30 17:20:11 [INFO] Creating instrument from database row: 16
+2025-03-30 17:20:11 [INFO] Contract Size for MYM: 0.500000 (raw column value exists: yes)
+2025-03-30 17:20:11 [DEBUG] Created futures instrument: MYM
+2025-03-30 17:20:11 [DEBUG] Loaded instrument: MYM
+2025-03-30 17:20:11 [INFO] Creating instrument from database row: 17
+2025-03-30 17:20:11 [INFO] Contract Size for PL: 50.000000 (raw column value exists: yes)
+2025-03-30 17:20:11 [DEBUG] Created futures instrument: PL
+2025-03-30 17:20:11 [DEBUG] Loaded instrument: PL
+2025-03-30 17:20:11 [INFO] Creating instrument from database row: 18
+2025-03-30 17:20:11 [INFO] Contract Size for RB: 42000.000000 (raw column value exists: yes)
+2025-03-30 17:20:11 [DEBUG] Created futures instrument: RB
+2025-03-30 17:20:11 [DEBUG] Loaded instrument: RB
+2025-03-30 17:20:11 [INFO] Creating instrument from database row: 19
+2025-03-30 17:20:11 [INFO] Contract Size for RTY: 50.000000 (raw column value exists: yes)
+2025-03-30 17:20:11 [DEBUG] Created futures instrument: RTY
+2025-03-30 17:20:11 [DEBUG] Loaded instrument: RTY
+2025-03-30 17:20:11 [INFO] Creating instrument from database row: 20
+2025-03-30 17:20:11 [INFO] Contract Size for SI: 5000.000000 (raw column value exists: yes)
+2025-03-30 17:20:11 [DEBUG] Created futures instrument: SI
+2025-03-30 17:20:11 [DEBUG] Loaded instrument: SI
+2025-03-30 17:20:11 [INFO] Creating instrument from database row: 21
+2025-03-30 17:20:11 [INFO] Contract Size for UB: 100000.000000 (raw column value exists: yes)
+2025-03-30 17:20:11 [DEBUG] Created futures instrument: UB
+2025-03-30 17:20:11 [DEBUG] Loaded instrument: UB
+2025-03-30 17:20:11 [INFO] Creating instrument from database row: 22
+2025-03-30 17:20:11 [INFO] Contract Size for ZC: 5000.000000 (raw column value exists: yes)
+2025-03-30 17:20:11 [DEBUG] Created futures instrument: ZC
+2025-03-30 17:20:11 [DEBUG] Loaded instrument: ZC
+2025-03-30 17:20:11 [INFO] Creating instrument from database row: 23
+2025-03-30 17:20:11 [INFO] Contract Size for ZL: 60000.000000 (raw column value exists: yes)
+2025-03-30 17:20:11 [DEBUG] Created futures instrument: ZL
+2025-03-30 17:20:11 [DEBUG] Loaded instrument: ZL
+2025-03-30 17:20:11 [INFO] Creating instrument from database row: 24
+2025-03-30 17:20:11 [INFO] Contract Size for ZM: 100.000000 (raw column value exists: yes)
+2025-03-30 17:20:11 [DEBUG] Created futures instrument: ZM
+2025-03-30 17:20:11 [DEBUG] Loaded instrument: ZM
+2025-03-30 17:20:11 [INFO] Creating instrument from database row: 25
+2025-03-30 17:20:11 [INFO] Contract Size for ZN: 100000.000000 (raw column value exists: yes)
+2025-03-30 17:20:11 [DEBUG] Created futures instrument: ZN
+2025-03-30 17:20:11 [DEBUG] Loaded instrument: ZN
+2025-03-30 17:20:11 [INFO] Creating instrument from database row: 26
+2025-03-30 17:20:11 [INFO] Contract Size for ZR: 2000.000000 (raw column value exists: yes)
+2025-03-30 17:20:11 [DEBUG] Created futures instrument: ZR
+2025-03-30 17:20:11 [DEBUG] Loaded instrument: ZR
+2025-03-30 17:20:11 [INFO] Creating instrument from database row: 27
+2025-03-30 17:20:11 [INFO] Contract Size for ZS: 5000.000000 (raw column value exists: yes)
+2025-03-30 17:20:11 [DEBUG] Created futures instrument: ZS
+2025-03-30 17:20:11 [DEBUG] Loaded instrument: ZS
+2025-03-30 17:20:11 [INFO] Creating instrument from database row: 28
+2025-03-30 17:20:11 [INFO] Contract Size for ZW: 5000.000000 (raw column value exists: yes)
+2025-03-30 17:20:11 [DEBUG] Created futures instrument: ZW
+2025-03-30 17:20:11 [DEBUG] Loaded instrument: ZW
+2025-03-30 17:20:11 [INFO] Loaded 29 instruments from database
+2025-03-30 17:20:11 [DEBUG] Retrieved 29 symbols from futures_data.ohlcv_1d
