@@ -593,31 +593,7 @@ Result<std::shared_ptr<arrow::Table>> PostgresDatabase::convert_to_arrow_table(
 }
 
 Result<std::shared_ptr<arrow::Table>> PostgresDatabase::convert_metadata_to_arrow(
-    const pqxx::result& result) const {
-
-    // Log the number of rows and columns
-    DEBUG("Converting metadata result with " + std::to_string(result.size()) + " rows and " + 
-          std::to_string(result.columns()) + " columns");
-
-    // Log column names and their indices for debugging
-    std::string column_names_with_indices = "Available columns by index: ";
-    for (size_t i = 0; i < result.columns(); ++i) {
-        column_names_with_indices += "[" + std::to_string(i) + "]=" + 
-                                    std::string(result.column_name(i)) + ", ";
-    }
-    DEBUG(column_names_with_indices);
-
-    // Log the first row of data for debugging
-    if (!result.empty()) {
-        std::string first_row = "First row data: ";
-        const auto& row = result[0];
-        for (size_t i = 0; i < result.columns(); ++i) {
-            first_row += "[" + std::to_string(i) + "]=" + 
-                        (row[i].is_null() ? "NULL" : row[i].c_str()) + ", ";
-        }
-        DEBUG(first_row);
-    }
-    
+    const pqxx::result& result) const {    
     if (result.empty()) {
         // Return empty table with schema
         auto schema = arrow::schema({

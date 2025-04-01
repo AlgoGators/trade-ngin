@@ -19,6 +19,7 @@ struct FuturesSpec {
     double commission_per_contract;       // Commission per contract
     double initial_margin;                // Initial margin requirement
     double maintenance_margin;            // Maintenance margin requirement
+    double weight;                        // Weight for portfolio allocation
     std::string trading_hours;            // Trading hours specification
     std::optional<Timestamp> expiry;      // Contract expiration
     std::optional<std::string> underlying;// Underlying instrument
