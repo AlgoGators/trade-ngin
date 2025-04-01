@@ -4,6 +4,7 @@
 #include "trade_ngin/strategy/strategy_interface.hpp"
 #include "trade_ngin/strategy/types.hpp"
 #include "trade_ngin/data/database_interface.hpp"
+#include "trade_ngin/data/postgres_database.hpp"
 #include "trade_ngin/core/error.hpp"
 #include "trade_ngin/data/market_data_bus.hpp"
 #include "trade_ngin/core/logger.hpp"
@@ -25,7 +26,7 @@ public:
      */
     BaseStrategy(std::string id,
                 StrategyConfig config,
-                std::shared_ptr<DatabaseInterface> db);
+                std::shared_ptr<PostgresDatabase> db);
     
     /**
      * @brief Destructor
@@ -168,7 +169,7 @@ protected:
     std::unordered_map<std::string, double> last_signals_;
     RiskLimits risk_limits_;
     
-    std::shared_ptr<DatabaseInterface> db_;
+    std::shared_ptr<PostgresDatabase> db_;
     mutable std::mutex mutex_;
 
 private:

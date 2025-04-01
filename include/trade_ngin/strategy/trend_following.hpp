@@ -9,9 +9,6 @@
 #include <utility>
 #include <memory>
 
-// TO-DO: IMPLEMENT WEIGHT CALCULATION FROM DYN OPT 
-// INTO POSITION SIZING AND BUFFERING
-
 namespace trade_ngin {
 
 /**
@@ -50,7 +47,7 @@ public:
         std::string id,
         StrategyConfig config,
         TrendFollowingConfig trend_config,
-        std::shared_ptr<DatabaseInterface> db,
+        std::shared_ptr<PostgresDatabase> db,
         InstrumentRegistry* registry = nullptr);
 
     /**
@@ -169,7 +166,13 @@ private:
      * @param raw_combined_forecast Raw forecast values
      * @return Scaled forecast values
      */
-    std::vector<double> get_scaled_combined_forecast(const std::vector<double>& raw_combined_forecast) const; 
+    std::vector<double> get_scaled_combined_forecast(const std::vector<double>& raw_combined_forecast) const;
+
+    /**
+     * @brief Get weights for position sizing
+     * @return Map of symbol to weight
+     */
+    std::unordered_map<std::string, double> get_weights() const;
 
     /**
      * @brief Calculate position for a symbol
@@ -183,7 +186,6 @@ private:
     double calculate_position(
         const std::string& symbol,
         double forecast,
-        double weight,
         double price,
         double volatility) const;
 

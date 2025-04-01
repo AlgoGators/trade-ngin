@@ -131,12 +131,10 @@ int main() {
         config.strategy_config.commission_rate = 0.0005; // 5 basis points
         config.strategy_config.slippage_model = 1.0; // 1 basis point
         
-        /*
         auto symbols = std::vector<std::string>{"GC.v.0", "ES.v.0", "CL.v.0", "SI.v.0"};
         config.strategy_config.symbols = symbols;
-
-        */
        
+        /*
         auto symbols = db->get_symbols(trade_ngin::AssetClass::FUTURES);
 
         if (symbols.is_ok()) {
@@ -145,7 +143,7 @@ int main() {
             // Detailed error logging
             ERROR("Failed to get symbols: " + std::string(symbols.error()->what()));
             throw std::runtime_error("Failed to get symbols: " + symbols.error()->to_string());
-        }
+        }*/
         
         std::cout << "Symbols: ";
         for (const auto& symbol : config.strategy_config.symbols) {
