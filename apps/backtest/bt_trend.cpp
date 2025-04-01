@@ -22,7 +22,7 @@ TO-DO:
     - Fix data access for strategies & TCA
     - Update all the configs to save / load to a file
     - Remove wait times in tests (if possible)
-    - Fix Arrow no discard attributes`
+    - Fix Arrow no discard attributes
     - Fix weighting in position sizing
         - Currently, the position sizing is based on the number of symbols in the strategy
         - Need to change it to come from dyn opt
@@ -136,7 +136,7 @@ int main() {
         config.strategy_config.symbols = symbols;
 
         */
-       
+
         auto symbols = db->get_symbols(trade_ngin::AssetClass::FUTURES);
 
         if (symbols.is_ok()) {
