@@ -12,7 +12,7 @@ namespace trade_ngin {
 
 BaseStrategy::BaseStrategy(std::string id,
                          StrategyConfig config,
-                         std::shared_ptr<DatabaseInterface> db)
+                         std::shared_ptr<PostgresDatabase> db)
     : id_(std::move(id))
     , config_(std::move(config))
     , state_(StrategyState::INITIALIZED)

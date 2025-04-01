@@ -4,6 +4,7 @@
 #include <numeric>
 #include <algorithm>
 #include <iostream>
+#include <set>
 
 namespace trade_ngin {
 
@@ -11,7 +12,7 @@ TrendFollowingStrategy::TrendFollowingStrategy(
     std::string id,
     StrategyConfig config,
     TrendFollowingConfig trend_config,
-    std::shared_ptr<DatabaseInterface> db, 
+    std::shared_ptr<PostgresDatabase> db, 
     InstrumentRegistry* registry) :
     BaseStrategy(std::move(id), std::move(config), std::move(db)),
     trend_config_(std::move(trend_config)),
@@ -260,7 +261,6 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
 
             // Calculate position using the most recent forecast value
             double raw_position = 0.0;
-            double weight = trend_config_.weight;
             try {
                 if (!scaled_forecasts.empty() && !volatility.empty() && !prices.empty()) {
                     // Get latest forecast and volatility
@@ -288,7 +288,6 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
                     raw_position = calculate_position(
                         symbol,
                         latest_forecast,
-                        weight,
                         latest_price,
                         latest_volatility
                     );
@@ -743,10 +742,66 @@ double TrendFollowingStrategy::get_abs_value(const std::vector<double>& values) 
         [](double acc, double val) { return acc + std::abs(val); });
 }
 
+std::unordered_map<std::string, double> TrendFollowingStrategy::get_weights() const {
+    auto metadata_result = db_->get_contract_metadata();
+    if (!metadata_result.is_ok()) {
+        ERROR(std::string("Failed to get contract metadata: ").append(metadata_result.error()->what()));
+        return {};
+    }
+
+    auto metadata = metadata_result.value();
+    int sector_idx = metadata->schema()->GetFieldIndex("Sector");
+    int symbol_idx = metadata->schema()->GetFieldIndex("Databento Symbol");
+
+    if (sector_idx == -1 || symbol_idx == -1) {
+        ERROR("Sector or Databento Symbol column not found in metadata schema");
+        return {};
+    }
+
+    auto sector_col = metadata->column(sector_idx);
+    auto symbol_col = metadata->column(symbol_idx);
+
+    // Build map of sector -> list of symbols
+    std::unordered_map<std::string, std::vector<std::string>> sector_to_symbols;
+
+    for (int chunk_idx = 0; chunk_idx < sector_col->num_chunks(); ++chunk_idx) {
+        auto sector_array = std::static_pointer_cast<arrow::StringArray>(sector_col->chunk(chunk_idx));
+        auto symbol_array = std::static_pointer_cast<arrow::StringArray>(symbol_col->chunk(chunk_idx));
+
+        int64_t num_rows = sector_array->length();
+        for (int64_t i = 0; i < num_rows; ++i) {
+            if (!sector_array->IsNull(i) && !symbol_array->IsNull(i)) {
+                std::string sector = sector_array->GetString(i);
+                std::string symbol = symbol_array->GetString(i);
+                sector_to_symbols[sector].push_back(symbol);
+            }
+        }
+    }
+
+    // Compute weights
+    std::unordered_map<std::string, double> symbol_weights;
+    int total_sectors = static_cast<int>(sector_to_symbols.size());
+
+    if (total_sectors == 0) return symbol_weights;
+
+    double sector_weight = 1.0 / total_sectors;
+
+    for (const auto& [sector, symbols] : sector_to_symbols) {
+        int num_symbols = static_cast<int>(symbols.size());
+        if (num_symbols == 0) continue;
+
+        double per_symbol_weight = sector_weight / num_symbols;
+        for (const auto& symbol : symbols) {
+            symbol_weights[symbol] = per_symbol_weight;
+        }
+    }
+
+    return symbol_weights;
+}
+
 double TrendFollowingStrategy::calculate_position(
     const std::string& symbol,
     double forecast,
-    double weight,
     double price,
     double volatility) const {
 
@@ -754,11 +809,6 @@ double TrendFollowingStrategy::calculate_position(
     if (std::isnan(forecast) || std::isinf(forecast) || std::abs(forecast) > 20.0) {
         WARN("Invalid forecast in position calculation for " + symbol + ", using 0.0");
         return 0.0;
-    }
-
-    if (std::isnan(weight) || weight < 0.0) {
-        WARN("Invalid weight in position calculation for " + symbol + ": " + std::to_string(weight));
-        weight = 0.0;
     }
     
     if (std::isnan(price) || price <= 0.0) {
@@ -784,6 +834,26 @@ double TrendFollowingStrategy::calculate_position(
     double idm = std::max(0.1, trend_config_.idm);
     double risk_target = std::max(0.01, std::min(0.5, trend_config_.risk_target));
     double fx_rate = std::max(0.1, trend_config_.fx_rate);
+    double weight = 1.0; 
+
+    try{
+        // Transform symbol to match what's in the registry
+        std::string lookup_symbol = symbol;
+        if (symbol.find(".v.") != std::string::npos) {
+            lookup_symbol = symbol.substr(0, symbol.find(".v."));
+        }
+
+        // Get weight from weights map
+        if (get_weights().count(lookup_symbol) == 0) {
+            ERROR("Weight not found for symbol " + symbol + ", using default weight of 1.0");
+            weight = 1.0;  // Default weight
+        } else {
+            INFO("Found weight for symbol " + symbol + ": " + std::to_string(get_weights().at(lookup_symbol)));
+        }
+        weight = std::max(0.0, get_weights().at(lookup_symbol));
+    } catch (const std::exception& e) {
+        ERROR("Weight not found for symbol " + symbol + ": " + std::string(e.what()));
+    }
     
     std::shared_ptr<Instrument> instrument = nullptr;
     try {
@@ -819,19 +889,6 @@ double TrendFollowingStrategy::calculate_position(
     
     // Apply minimum value to volatility to avoid division by very small values
     volatility = std::clamp(volatility, 0.01, 1.0);
-
-    DEBUG("====== Position Calculation ===");
-    DEBUG("Symbol: " + symbol);
-    DEBUG("Forecast: " + std::to_string(forecast));
-    DEBUG("Weight: " + std::to_string(weight));
-    DEBUG("Price: " + std::to_string(price));
-    DEBUG("Volatility: " + std::to_string(volatility));
-    DEBUG("Contract Size: " + std::to_string(contract_size));
-    DEBUG("Capital: " + std::to_string(capital));
-    DEBUG("IDM: " + std::to_string(idm));
-    DEBUG("Risk Target: " + std::to_string(risk_target));
-    DEBUG("FX Rate: " + std::to_string(fx_rate));
-    DEBUG("================================\n");
     
     // Calculate position using volatility targeting formula with safeguards
     double denominator = 10.0 * contract_size * price * fx_rate * volatility;
