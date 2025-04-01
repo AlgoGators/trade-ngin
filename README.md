@@ -112,6 +112,20 @@ trade_ngin/
 │   │   ├── test_result.cpp
 │   │   └── test_state_manager.cpp
 │   └── CMakeLists.txt          # Build configuration for tests
+├── tools/                      # Utility tools and scripts
+│   ├── docker/                 # Docker configuration 
+│   │   ├── Dockerfile
+│   │   └── docker-compose.yml
+│   ├── docs/                   # Tool documentation
+│   │   ├── IMPLEMENTATION_STATUS.md
+│   │   └── README_*.md
+│   ├── testing/                # Test automation
+│   │   └── test_all_implementations.sh
+│   ├── visualization/          # Data visualization
+│   │   ├── generate_sample_data.py
+│   │   ├── visualize_backtest.py
+│   │   └── visualize_results.sh
+│   └── README.md               # Tools overview
 ├── CMakeLists.txt              # Main build configuration
 └── config_template.json        # Template for configuration files
 ```

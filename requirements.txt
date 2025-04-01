@@ -1,0 +1,5 @@
+# Python requirements for backtest visualizations
+pandas>=1.2.0
+matplotlib>=3.3.0
+seaborn>=0.11.0
+numpy>=1.19.0 

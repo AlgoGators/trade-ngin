@@ -1,0 +1,2 @@
+Visualizing results from: test_backtest_data
+/Library/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python: can't open file '/Users/ryanmathieu/Documents/GitHub/rebuild-trade-ngin/./visualize_backtest.py': [Errno 2] No such file or directory

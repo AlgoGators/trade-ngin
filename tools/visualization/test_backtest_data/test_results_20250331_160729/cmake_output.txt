@@ -1,0 +1,24 @@
+-- The CXX compiler identification is AppleClang 16.0.0.16000026
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: /Library/Developer/CommandLineTools/usr/bin/c++ - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- ==== DEPENDENCY SUMMARY ====
+-- ============================
+-- Found GTest: /usr/local/lib/cmake/GTest/GTestConfig.cmake (found suitable version "1.15.2", minimum required is "1.10.0")
+-- Found nlohmann_json: /usr/local/share/cmake/nlohmann_json/nlohmann_jsonConfig.cmake (found suitable version "3.11.3", minimum required is "3.10.0")
+CMake Error at CMakeLists.txt:45 (find_package):
+  Could not find a configuration file for package "Arrow" that is compatible
+  with requested version "6.0.0".
+
+  The following configuration files were considered but not accepted:
+
+    /usr/local/lib/cmake/Arrow/ArrowConfig.cmake, version: 19.0.1
+    /usr/local/lib/cmake/Arrow/arrow-config.cmake, version: unknown
+    /Users/ryanmathieu/anaconda3/lib/cmake/Arrow/ArrowConfig.cmake, version: 11.0.0
+    /Users/ryanmathieu/anaconda3/lib/cmake/Arrow/arrow-config.cmake, version: unknown
+
+
+
+-- Configuring incomplete, errors occurred!

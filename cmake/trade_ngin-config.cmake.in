@@ -1,0 +1,32 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+
+# Find dependencies
+find_dependency(nlohmann_json REQUIRED)
+find_dependency(Arrow REQUIRED)
+find_dependency(libpqxx REQUIRED)
+
+# Include targets file
+include("${CMAKE_CURRENT_LIST_DIR}/trade_ngin-targets.cmake")
+
+# Convenience variables
+set(TRADE_NGIN_INCLUDE_DIRS "@PACKAGE_INCLUDE_INSTALL_DIR@")
+set(TRADE_NGIN_LIBRARIES trade_ngin::trade_ngin)
+
+# Component libraries
+set(TRADE_NGIN_CORE_LIBRARIES trade_ngin::trade_ngin_core)
+set(TRADE_NGIN_DATA_LIBRARIES trade_ngin::trade_ngin_data)
+set(TRADE_NGIN_INSTRUMENTS_LIBRARIES trade_ngin::trade_ngin_instruments)
+set(TRADE_NGIN_ORDER_LIBRARIES trade_ngin::trade_ngin_order)
+set(TRADE_NGIN_RISK_LIBRARIES trade_ngin::trade_ngin_risk)
+set(TRADE_NGIN_OPTIMIZATION_LIBRARIES trade_ngin::trade_ngin_optimization)
+set(TRADE_NGIN_EXECUTION_LIBRARIES trade_ngin::trade_ngin_execution)
+set(TRADE_NGIN_PORTFOLIO_LIBRARIES trade_ngin::trade_ngin_portfolio)
+set(TRADE_NGIN_STRATEGY_LIBRARIES trade_ngin::trade_ngin_strategy)
+set(TRADE_NGIN_BACKTEST_LIBRARIES trade_ngin::trade_ngin_backtest)
+
+# Check if all requested components are available
+check_required_components(trade_ngin)
+
+message(STATUS "Found Trade-Ngin version @PROJECT_VERSION@") 

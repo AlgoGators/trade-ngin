@@ -1,5 +1,6 @@
 #include "trade_ngin/risk/risk_manager.hpp"
 #include "trade_ngin/core/logger.hpp"
+#include "trade_ngin/core/log_manager.hpp"
 #include <cmath>
 #include <algorithm>
 #include <numeric>
@@ -10,13 +11,8 @@ namespace trade_ngin {
 
 RiskManager::RiskManager(RiskConfig config)
     : config_(std::move(config)) {
-    // Initialize logger
-    LoggerConfig logger_config;
-    logger_config.min_level = LogLevel::DEBUG;
-    logger_config.destination = LogDestination::BOTH;
-    logger_config.log_directory = "logs";
-    logger_config.filename_prefix = "risk_manager";
-    Logger::instance().initialize(logger_config);
+    // Configure logger for risk manager component
+    LogManager::instance().configure_component_logger("risk_manager");
 }
 
 Result<RiskResult> RiskManager::process_positions(

@@ -9,10 +9,20 @@
 
 namespace trade_ngin {
 
-void Logger::initialize(const LoggerConfig& config) {
+bool Logger::initialize(const LoggerConfig& config) {
     std::lock_guard<std::mutex> lock(mutex_);
     
+    // Check if already initialized
     if (initialized_) {
+        // If reinitialization is not allowed, return false
+        if (!config.allow_reinitialize) {
+            // Still allow changing log level even if not reinitializing
+            config_.min_level = config.min_level;
+            
+            std::cout << "Logger already initialized. Only updating log level." << std::endl;
+            return false;
+        }
+        
         // Close existing file handles
         if (log_file_.is_open()) {
             log_file_.close();
@@ -41,13 +51,22 @@ void Logger::initialize(const LoggerConfig& config) {
         log_file_.open(log_path, std::ios::app);
         
         if (!log_file_.is_open()) {
-            throw std::runtime_error(
-                "Failed to open log file: " + log_path.string()
-            );
+            std::cerr << "Failed to open log file: " << log_path.string() << std::endl;
+            return false;
         }
     }
 
     initialized_ = true;
+    
+    // Log initialization success to the configured destination
+    std::string init_message = "Logger initialized with level=" + 
+        level_to_string(config_.min_level) + 
+        ", destination=" + log_destination_to_string(config_.destination) +
+        ", filename_prefix=" + config_.filename_prefix;
+    
+    log(LogLevel::INFO, init_message);
+    
+    return true;
 }
 
 Logger::~Logger() {
@@ -57,11 +76,16 @@ Logger::~Logger() {
 }
 
 void Logger::log(LogLevel level, const std::string& message) {
-    if (!initialized_) {
+    // Fast check without locking
+    if (level < config_.min_level) {
         return;
     }
 
-    if (level < config_.min_level) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    
+    if (!initialized_) {
+        // Write to console even if not initialized
+        std::cout << "[UNINIT][" << level_to_string(level) << "] " << message << std::endl;
         return;
     }
 
@@ -103,12 +127,12 @@ std::string Logger::format_message(LogLevel level, const std::string& message) {
 }
 
 void Logger::write_to_console(const std::string& message) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    // No need to lock here as the calling method already has the lock
     std::cout << message << std::endl;
 }
 
 void Logger::write_to_file(const std::string& message) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    // No need to lock here as the calling method already has the lock
     
     if (log_file_.is_open()) {
         log_file_ << message << std::endl;

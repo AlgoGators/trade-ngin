@@ -1,5 +1,6 @@
 // src/strategy/trend_following.cpp
 #include "trade_ngin/strategy/trend_following.hpp"
+#include "trade_ngin/core/log_manager.hpp"
 #include <cmath>
 #include <numeric>
 #include <algorithm>
@@ -17,14 +18,9 @@ TrendFollowingStrategy::TrendFollowingStrategy(
     trend_config_(std::move(trend_config)),
     registry_(registry) {
         
-    // Initialize logger
-    LoggerConfig logger_config;
-    logger_config.min_level = LogLevel::DEBUG;
-    logger_config.destination = LogDestination::BOTH;
-    logger_config.log_directory = "logs";
-    logger_config.filename_prefix = "trend_following";
-    Logger::instance().initialize(logger_config);
-
+    // Configure logger for trend following component
+    LogManager::instance().configure_component_logger("trend_following");
+    
     // Verify lengths of lookback periods
     if (trend_config_.vol_lookback_short <= 0) {
         trend_config_.vol_lookback_short = 22;
