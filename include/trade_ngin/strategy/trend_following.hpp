@@ -4,6 +4,7 @@
 #include "trade_ngin/strategy/base_strategy.hpp"
 #include "trade_ngin/core/types.hpp"
 #include "trade_ngin/core/error.hpp"
+#include "trade_ngin/core/config_base.hpp"
 #include "trade_ngin/instruments/instrument_registry.hpp"
 #include <vector>
 #include <utility>
@@ -17,7 +18,7 @@ namespace trade_ngin {
 /**
  * @brief Configuration specific to trend following strategy
  */
-struct TrendFollowingConfig {
+struct TrendFollowingConfig : public ConfigBase {
     double weight{1.0};               // Weight for position sizing
     double risk_target{0.2};          // Target annualized risk level
     double fx_rate{1.0};              // FX conversion rate
@@ -31,6 +32,79 @@ struct TrendFollowingConfig {
     std::vector<std::pair<int, double>> fdm {
         {1, 1.0}, {2, 1.03}, {3, 1.08}, {4, 1.13}, {5, 1.19}, {6, 1.26}
     };
+    
+    // Configuration metadata
+    std::string version{"1.0.0"};
+
+    // JSON serialization
+    nlohmann::json to_json() const override {
+        nlohmann::json j;
+        j["weight"] = weight;
+        j["risk_target"] = risk_target;
+        j["fx_rate"] = fx_rate;
+        j["idm"] = idm;
+        j["use_position_buffering"] = use_position_buffering;
+        j["vol_lookback_short"] = vol_lookback_short;
+        j["vol_lookback_long"] = vol_lookback_long;
+        
+        // Serialize EMA windows vector of pairs
+        nlohmann::json ema_windows_json = nlohmann::json::array();
+        for (const auto& [short_window, long_window] : ema_windows) {
+            nlohmann::json window_pair;
+            window_pair["short"] = short_window;
+            window_pair["long"] = long_window;
+            ema_windows_json.push_back(window_pair);
+        }
+        j["ema_windows"] = ema_windows_json;
+        
+        // Serialize FDM vector of pairs
+        nlohmann::json fdm_json = nlohmann::json::array();
+        for (const auto& [n_systems, multiplier] : fdm) {
+            nlohmann::json fdm_pair;
+            fdm_pair["n_systems"] = n_systems;
+            fdm_pair["multiplier"] = multiplier;
+            fdm_json.push_back(fdm_pair);
+        }
+        j["fdm"] = fdm_json;
+        
+        j["version"] = version;
+        return j;
+    }
+
+    void from_json(const nlohmann::json& j) override {
+        if (j.contains("weight")) weight = j.at("weight").get<double>();
+        if (j.contains("risk_target")) risk_target = j.at("risk_target").get<double>();
+        if (j.contains("fx_rate")) fx_rate = j.at("fx_rate").get<double>();
+        if (j.contains("idm")) idm = j.at("idm").get<double>();
+        if (j.contains("use_position_buffering")) use_position_buffering = j.at("use_position_buffering").get<bool>();
+        if (j.contains("vol_lookback_short")) vol_lookback_short = j.at("vol_lookback_short").get<int>();
+        if (j.contains("vol_lookback_long")) vol_lookback_long = j.at("vol_lookback_long").get<int>();
+        if (j.contains("version")) version = j.at("version").get<std::string>();
+        
+        // Deserialize EMA windows
+        if (j.contains("ema_windows") && j.at("ema_windows").is_array()) {
+            ema_windows.clear();
+            for (const auto& window_pair : j.at("ema_windows")) {
+                if (window_pair.contains("short") && window_pair.contains("long")) {
+                    int short_window = window_pair.at("short").get<int>();
+                    int long_window = window_pair.at("long").get<int>();
+                    ema_windows.emplace_back(short_window, long_window);
+                }
+            }
+        }
+        
+        // Deserialize FDM
+        if (j.contains("fdm") && j.at("fdm").is_array()) {
+            fdm.clear();
+            for (const auto& fdm_pair : j.at("fdm")) {
+                if (fdm_pair.contains("n_systems") && fdm_pair.contains("multiplier")) {
+                    int n_systems = fdm_pair.at("n_systems").get<int>();
+                    double multiplier = fdm_pair.at("multiplier").get<double>();
+                    fdm.emplace_back(n_systems, multiplier);
+                }
+            }
+        }
+    }
 };
 
 /**
