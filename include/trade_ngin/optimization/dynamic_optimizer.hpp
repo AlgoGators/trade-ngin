@@ -15,23 +15,28 @@ namespace trade_ngin {
  * @brief Configuration for dynamic optimization
  */
 struct DynamicOptConfig : public ConfigBase {
-    double tau{1.0};                    // Risk aversion parameter
-    double capital{0.0};                // Total capital
-    double asymmetric_risk_buffer{0.1}; // Risk buffer for asymmetric costs
-    int cost_penalty_scalar{10};        // Scalar for trading cost penalty
-    size_t max_iterations{1000};        // Maximum optimization iterations
-    double convergence_threshold{1e-6}; // Convergence threshold
+    double tau;                       // Risk aversion parameter
+    double capital;                    // Trading capital
+    double cost_penalty_scalar;        // Multiplier for cost penalty (e.g., 50)
+    double asymmetric_risk_buffer;     // Buffer for risk (e.g., 0.1)
+    int max_iterations;                // Maximum optimization iterations
+    double convergence_threshold;      // Convergence threshold
+    bool use_buffering;                // Whether to use position buffering
+    double buffer_size_factor;         // Factor for buffer size calculation (e.g., 0.05)
 
     // Configuration metadata
     std::string version{"1.0.0"};
 
-    DynamicOptConfig() = default;
-
-    DynamicOptConfig(double tau, double capital, double asymmetric_risk_buffer, 
-        int cost_penalty_scalar, size_t max_iterations, double convergence_threshold)
-        : tau(tau), capital(capital), asymmetric_risk_buffer(asymmetric_risk_buffer),
-          cost_penalty_scalar(cost_penalty_scalar), max_iterations(max_iterations),
-          convergence_threshold(convergence_threshold) {}
+    // Default constructor with reasonable values
+    DynamicOptConfig() 
+        : tau(1.0),
+          capital(500000.0),
+          cost_penalty_scalar(50.0),
+          asymmetric_risk_buffer(0.1),
+          max_iterations(100),
+          convergence_threshold(1e-6),
+          use_buffering(true),
+          buffer_size_factor(0.05) {}
 
     nlohmann::json to_json() const override {
         nlohmann::json j;
@@ -41,6 +46,8 @@ struct DynamicOptConfig : public ConfigBase {
         j["cost_penalty_scalar"] = cost_penalty_scalar;
         j["max_iterations"] = max_iterations;
         j["convergence_threshold"] = convergence_threshold;
+        j["use_buffering"] = use_buffering;
+        j["buffer_size_factor"] = buffer_size_factor;
         j["version"] = version;
         return j;
     }
@@ -60,6 +67,10 @@ struct DynamicOptConfig : public ConfigBase {
         if (j.contains("convergence_threshold")) {
             convergence_threshold = j.at("convergence_threshold").get<double>();
         }
+        if (j.contains("use_buffering")) use_buffering = j.at("use_buffering").get<bool>();
+        if (j.contains("buffer_size_factor")) {
+            buffer_size_factor = j.at("buffer_size_factor").get<double>();
+        }
         if (j.contains("version")) version = j.at("version").get<std::string>();
     }
 };
@@ -68,11 +79,11 @@ struct DynamicOptConfig : public ConfigBase {
  * @brief Result of dynamic optimization
  */
 struct OptimizationResult {
-    std::vector<double> optimized_positions;  // Optimized positions
-    double tracking_error;                    // Final tracking error
-    double trading_cost;                      // Total trading cost
-    int iterations;                           // Number of iterations used
-    bool converged;                          // Whether optimization converged
+    std::vector<double> positions;     // Optimized positions in weight terms
+    double tracking_error;             // Final tracking error
+    double cost_penalty;               // Cost penalty component
+    int iterations;                    // Number of iterations performed
+    bool converged;                    // Whether optimization converged
 };
 
 /**
@@ -87,6 +98,22 @@ public:
      * @param config Optimization configuration
      */
     explicit DynamicOptimizer(DynamicOptConfig config);
+
+    /**
+     * @brief Optimize positions for a single trading period with buffering
+     * @param current_positions Current positions held
+     * @param target_positions Target positions from strategy
+     * @param costs Transaction costs per contract
+     * @param weights_per_contract Asset weights for risk calculation
+     * @param covariance Covariance matrix for risk calculation
+     * @return Result containing optimized positions and metrics
+     */
+    Result<OptimizationResult> optimize(
+        const std::vector<double>& current_positions,
+        const std::vector<double>& target_positions,
+        const std::vector<double>& costs,
+        const std::vector<double>& weights_per_contract,
+        const std::vector<std::vector<double>>& covariance) const;
 
     /**
      * @brief Optimize positions for a single trading period
@@ -120,6 +147,36 @@ public:
 
 private:
     DynamicOptConfig config_;
+    
+    /**
+     * @brief Validate inputs for optimization
+     * @return Result indicating if inputs are valid
+     */
+    Result<void> validate_inputs(
+        const std::vector<double>& current_positions,
+        const std::vector<double>& target_positions,
+        const std::vector<double>& costs,
+        const std::vector<double>& weights,
+        const std::vector<std::vector<double>>& covariance
+    ) const;
+
+    /**
+     * @brief Apply position buffering to reduce trading costs
+     * @param current_positions Current positions held
+     * @param optimized_positions Optimized positions from strategy
+     * @param target_positions Target positions from strategy
+     * @param costs Transaction costs per contract
+     * @param weights_per_contract Asset weights for risk calculation
+     * @param covariance Covariance matrix for risk calculation
+     * @return Result containing optimized positions and metrics
+     */
+    Result<OptimizationResult> apply_buffering(
+        const std::vector<double>& current_positions,
+        const std::vector<double>& optimized_positions,
+        const std::vector<double>& target_positions,
+        const std::vector<double>& costs,
+        const std::vector<double>& weights_per_contract,
+        const std::vector<std::vector<double>>& covariance) const;
 
     /**
      * @brief Calculate trading cost penalty
@@ -133,6 +190,18 @@ private:
         const std::vector<double>& proposed_positions,
         const std::vector<double>& costs
     ) const;
+
+    /**
+     * @brief Calculate pure tracking error (without cost penalty)
+     * @param target_positions Target positions
+     * @param proposed_positions Proposed positions
+     * @param covariance Covariance matrix
+     * @return Pure tracking error
+     */
+    double calculate_pure_tracking_error(
+        const std::vector<double>& target_positions,
+        const std::vector<double>& proposed_positions,
+        const std::vector<std::vector<double>>& covariance) const;
 
     /**
      * @brief Calculate tracking error
@@ -150,22 +219,14 @@ private:
     ) const;
 
     /**
-     * @brief Round positions to integer values
-     * @param positions Raw positions
-     * @return Rounded positions
+     * @brief Convert weights to positions
+     * @param weights Asset weights
+     * @param weights_per_contract Weights per contract
+     * @return Positions calculated from weights
      */
-    std::vector<double> round_to_integer(const std::vector<double>& positions) const;
-
-    /**
-     * @brief Validate inputs for optimization
-     * @return Result indicating if inputs are valid
-     */
-    Result<void> validate_inputs(
-        const std::vector<double>& current_positions,
-        const std::vector<double>& target_positions,
-        const std::vector<double>& costs,
+    std::vector<double> weights_to_positions(
         const std::vector<double>& weights,
-        const std::vector<std::vector<double>>& covariance
+        const std::vector<double>& weights_per_contract
     ) const;
 };
 

@@ -7,6 +7,7 @@
 #include "trade_ngin/core/state_manager.hpp"
 #include "trade_ngin/data/market_data_bus.hpp"
 #include "trade_ngin/strategy/strategy_interface.hpp"
+#include "trade_ngin/instruments/instrument_registry.hpp"
 #include "trade_ngin/optimization/dynamic_optimizer.hpp"
 #include "trade_ngin/risk/risk_manager.hpp"
 #include <memory>
@@ -90,7 +91,9 @@ public:
      * @param config Portfolio configuration
      * @param id Optional identifier for this manager
      */
-    explicit PortfolioManager(PortfolioConfig config, std::string id = "PORTFOLIO_MANAGER");
+    explicit PortfolioManager(PortfolioConfig config, 
+        std::string id = "PORTFOLIO_MANAGER",
+        InstrumentRegistry* registry = nullptr);
 
     /**
      * @brief Add a strategy to the portfolio
@@ -184,6 +187,7 @@ private:
     std::unique_ptr<DynamicOptimizer> optimizer_;
     std::unique_ptr<RiskManager> risk_manager_;
     RiskManager* external_risk_manager_{nullptr};
+    InstrumentRegistry* registry_{nullptr};
 
     struct StrategyInfo {
         std::shared_ptr<StrategyInterface> strategy;
@@ -198,6 +202,44 @@ private:
     std::vector<ExecutionReport> recent_executions_;
     mutable std::mutex mutex_;
     const std::string instance_id_;
+    std::unordered_map<std::string, std::vector<double>> price_history_;
+    std::unordered_map<std::string, std::vector<double>> historical_returns_;
+    size_t max_history_length_ = 2520;  // Keep up to 1 year of return data
+
+    /**
+     * @brief Calculate weights per contract for each symbol
+     * @param symbols List of symbols to calculate weights for
+     * @param capital Total capital available for allocation
+     * @return Vector of weights per contract for each symbol
+     */
+    std::vector<double> calculate_weights_per_contract(
+        const std::vector<std::string>& symbols,
+        double capital) const;
+
+    /**
+     * @brief Calculate trading costs for each symbol
+     * @param symbols List of symbols to calculate costs for
+     * @param capital Total capital available for allocation
+     * @return Vector of trading costs for each symbol
+     */
+    std::vector<double> calculate_trading_costs(
+        const std::vector<std::string>& symbols,
+        double capital) const;
+
+    /**
+     * @brief Update historical returns for all symbols
+     * @param data New market data
+     */
+    void update_historical_returns(const std::vector<Bar>& data);
+
+    /**
+     * @brief Calculate covariance matrix from returns
+     * @param returns_by_symbol Map of symbol to returns
+     * @return Covariance matrix
+     */
+    std::vector<std::vector<double>> calculate_covariance_matrix(
+        const std::unordered_map<std::string, std::vector<double>>& returns_by_symbol
+    );
 
     /**
      * @brief Optimize positions for strategies that use optimization
