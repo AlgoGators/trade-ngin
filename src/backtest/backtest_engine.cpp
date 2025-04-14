@@ -735,7 +735,7 @@ Result<void> BacktestEngine::process_bar(
             }
             
             // Run optimization
-            auto opt_result = optimizer_->optimize_single_period(
+            auto opt_result = optimizer_->optimize(
                 current_pos, target_pos, costs, weights, covariance);
             
             if (opt_result.is_error()) {
@@ -743,7 +743,7 @@ Result<void> BacktestEngine::process_bar(
                      std::string(opt_result.error()->what()));
             } else {
                 // Apply optimized positions
-                const auto& optimized = opt_result.value().optimized_positions;
+                const auto& optimized = opt_result.value().positions;
                 for (size_t i = 0; i < symbols.size(); ++i) {
                     current_positions[symbols[i]].quantity = optimized[i];
                 }
@@ -958,7 +958,7 @@ Result<void> BacktestEngine::apply_portfolio_constraints(
             }
             
             // Run optimization
-            auto opt_result = optimizer_->optimize_single_period(
+            auto opt_result = optimizer_->optimize(
                 current_pos, target_pos, costs, weights, covariance);
             
             if (opt_result.is_error()) {
@@ -966,7 +966,7 @@ Result<void> BacktestEngine::apply_portfolio_constraints(
                      std::string(opt_result.error()->what()));
             } else {
                 // Apply optimized positions
-                const auto& optimized = opt_result.value().optimized_positions;
+                const auto& optimized = opt_result.value().positions;
                 for (size_t i = 0; i < symbols.size(); ++i) {
                     current_positions[symbols[i]].quantity = optimized[i];
                 }
