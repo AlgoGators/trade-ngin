@@ -31,6 +31,32 @@ struct TrendFollowingConfig {
 };
 
 /**
+ * @brief Data structure for storing instrument data
+ */
+struct InstrumentData {
+     // Static instrument properties (cached from registry)
+     double contract_size = 1.0;
+     double weight = 1.0;
+     
+     // Dynamic forecast data
+     std::vector<double> raw_forecasts;
+     std::vector<double> scaled_forecasts;
+     double current_forecast = 0.0;
+     
+     // Position data
+     double raw_position = 0.0;
+     double final_position = 0.0;
+     
+     // Market data 
+     std::vector<double> price_history;
+     std::vector<double> volatility_history;
+     double current_volatility = 0.01;
+     
+     // Timestamp of last update
+     Timestamp last_update;
+};
+
+/**
  * @brief Multi-timeframe trend following strategy using EMA crossovers
  */
 class TrendFollowingStrategy : public BaseStrategy {
@@ -63,6 +89,47 @@ public:
      */
     Result<void> initialize() override;
 
+    /**
+     * @brief Return price history for a symbol
+     * @param symbol Instrument symbol
+     */
+    std::unordered_map<std::string, std::vector<double>> get_price_history() const override {
+        std::unordered_map<std::string, std::vector<double>> history;
+        
+        // Convert from map of vectors to map of maps
+        for (const auto& [symbol, prices] : instrument_data_) {
+            history[symbol] = prices.price_history;
+        }
+        
+        return history;
+    }
+
+    /**
+     * @brief Return current forecast for a symbol
+     * @param symbol Instrument symbol
+     * @return Current forecast value
+     */
+    double get_forecast(const std::string& symbol) const {
+        auto it = instrument_data_.find(symbol);
+        if (it != instrument_data_.end()) {
+            return it->second.current_forecast;
+        }
+        return 0.0; // Default value if not found
+    }
+
+    /**
+     * @brief Return current position for a symbol
+     * @param symbol Instrument symbol
+     * @return Current position value
+     */
+    double get_position(const std::string& symbol) const {
+        auto it = instrument_data_.find(symbol);
+        if (it != instrument_data_.end()) {
+            return it->second.final_position;
+        }
+        return 0.0; // Default value if not found
+    }
+
 protected:
     /**
      * @brief Validate strategy configuration
@@ -78,6 +145,11 @@ private:
     std::unordered_map<std::string, std::vector<double>> volatility_history_;
 
     InstrumentRegistry* registry_;
+
+    std::unordered_map<std::string, double> contract_size_cache_;
+    std::unordered_map<std::string, double> weight_cache_;
+
+    std::unordered_map<std::string, InstrumentData> instrument_data_;
 
     /**
      * @brief Calculate EWMA for a price series

@@ -1,10 +1,11 @@
 // src/portfolio/portfolio_manager.cpp
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
+#include <set>
 
 namespace trade_ngin {
 
-PortfolioManager::PortfolioManager(PortfolioConfig config, std::string id)
-: config_(std::move(config)), id_(std::move(id)) {
+PortfolioManager::PortfolioManager(PortfolioConfig config, std::string id, InstrumentRegistry* registry)
+: config_(std::move(config)), id_(std::move(id)), registry_(std::move(registry)) {
     // Initialize logger
     LoggerConfig logger_config;
     logger_config.min_level = LogLevel::DEBUG;
@@ -180,6 +181,12 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data)
             );
         }
 
+        INFO("Calling update_historical_returns from process_market_data with " + 
+            std::to_string(data.size()) + " bars");
+
+        // Update historical returns for all symbols
+        update_historical_returns(data);
+
         // Store current positions for each strategy to detect changes
         std::unordered_map<std::string, std::unordered_map<std::string, Position>> prev_positions;
         for (const auto& [id, info] : strategies_) {
@@ -308,101 +315,407 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data)
     }
 }
 
+std::vector<double> PortfolioManager::calculate_weights_per_contract(
+    const std::vector<std::string>& symbols,
+    double capital) const {
+    
+    std::vector<double> weights_per_contract(symbols.size(), 0.0);
+    
+    for (size_t i = 0; i < symbols.size(); ++i) {
+        const std::string& symbol = symbols[i];
+        
+        // Get contract multiplier/size for this instrument
+        double contract_size = 1.0;  // Default
+        double price = 1.0;  // Default
+        double fx_rate = 1.0;  // Default exchange rate
+        
+        // Look up instrument details if available
+        if (registry_ && registry_->has_instrument(symbol)) {
+            auto instrument = registry_->get_instrument(symbol);
+            contract_size = instrument->get_multiplier();
+            
+            // Get latest price from positions or market data
+            auto pos_it = get_portfolio_positions().find(symbol);
+            if (pos_it != get_portfolio_positions().end()) {
+                price = pos_it->second.average_price;
+            }
+        }
+        
+        // Calculate weight per contract = (notional per contract) / capital
+        double notional_per_contract = contract_size * price * fx_rate;
+        weights_per_contract[i] = notional_per_contract / capital;
+        
+        // Ensure weight is positive and reasonable
+        if (weights_per_contract[i] <= 0.0 || std::isnan(weights_per_contract[i])) {
+            WARN("Invalid weight per contract for " + symbol + 
+                 ", using default of 0.01");
+            weights_per_contract[i] = 0.01;  // Reasonable default
+        }
+    }
+    
+    return weights_per_contract;
+}
+
+std::vector<double> PortfolioManager::calculate_trading_costs(
+    const std::vector<std::string>& symbols,
+    double capital) const {
+    
+    std::vector<double> costs(symbols.size(), 0.0);
+    
+    for (size_t i = 0; i < symbols.size(); ++i) {
+        const std::string& symbol = symbols[i];
+        
+        // Default cost as a proportion of capital (e.g., 5 basis points)
+        double cost_proportion = 0.0005;
+        
+        // Look up specific costs if available in strategy config
+        for (const auto& [strategy_id, info] : strategies_) {
+            const auto& strategy_config = info.strategy->get_config();
+            if (strategy_config.costs.count(symbol) > 0) {
+                cost_proportion = strategy_config.costs.at(symbol);
+                break;
+            }
+        }
+        
+        // Get contract details
+        double contract_size = 1.0;
+        double price = 1.0;
+        double fx_rate = 1.0;
+        
+        // Look up instrument details if available
+        if (registry_ && registry_->has_instrument(symbol)) {
+            auto instrument = registry_->get_instrument(symbol);
+            contract_size = instrument->get_multiplier();
+            
+            // Get latest price
+            auto pos_it = get_portfolio_positions().find(symbol);
+            if (pos_it != get_portfolio_positions().end()) {
+                price = pos_it->second.average_price;
+            }
+        }
+        
+        // Convert cost to weight terms
+        double cost_per_contract = cost_proportion * contract_size * price * fx_rate;
+        costs[i] = cost_per_contract / capital;
+    }
+    
+    return costs;
+}
+
+void PortfolioManager::update_historical_returns(const std::vector<Bar>& data) {
+    if (data.empty()) return;
+    
+    INFO("Updating historical returns with " + std::to_string(data.size()) + " bars");
+    
+    // Collect symbols from the data for lookup
+    std::set<std::string> data_symbols;
+    for (const auto& bar : data) {
+        data_symbols.insert(bar.symbol);
+    }
+    
+    // Get price history from strategies
+    bool got_history = false;
+    for (const auto& [id, info] : strategies_) {
+        // Try to get price history from this strategy
+        auto price_history = info.strategy->get_price_history();
+        
+        if (!price_history.empty()) {
+            INFO("Retrieved price history from strategy " + id + " for " 
+                 + std::to_string(price_history.size()) + " symbols");
+            
+            // For each symbol, update our price history
+            for (const auto& [symbol, prices] : price_history) {
+                // Only process if this symbol is in the current data (for efficiency)
+                if (data_symbols.count(symbol) > 0) {
+                    // Update our price history with the strategy's data
+                    price_history_[symbol] = prices;
+                    
+                    DEBUG("Updated price history for " + symbol + " with " 
+                          + std::to_string(prices.size()) + " points");
+                    
+                    got_history = true;
+                }
+            }
+        }
+    }
+    
+    // Now calculate returns for each symbol that has price history
+    for (const auto& [symbol, prices] : price_history_) {
+        // Need at least 2 prices to calculate a return
+        if (prices.size() < 2) {
+            DEBUG("Symbol " + symbol + " has only " + std::to_string(prices.size()) + 
+                 " prices, skipping return calculation");
+            continue;
+        }
+        
+        // Clear previous returns for this symbol
+        historical_returns_[symbol].clear();
+        
+        // Calculate returns - use all available history
+        for (size_t i = 1; i < prices.size(); ++i) {
+            double prev_price = prices[i-1];
+            double curr_price = prices[i];
+            
+            if (prev_price <= 0.0) continue;
+            
+            double ret = (curr_price - prev_price) / prev_price;
+            
+            if (std::isfinite(ret)) {
+                historical_returns_[symbol].push_back(ret);
+            }
+        }
+        
+        DEBUG("Calculated " + std::to_string(historical_returns_[symbol].size()) + 
+              " returns for symbol " + symbol + " from " + 
+              std::to_string(prices.size()) + " prices");
+        
+        // Limit history length if needed
+        if (historical_returns_[symbol].size() > max_history_length_) {
+            // Keep only the most recent returns
+            size_t excess = historical_returns_[symbol].size() - max_history_length_;
+            historical_returns_[symbol].erase(
+                historical_returns_[symbol].begin(), 
+                historical_returns_[symbol].begin() + excess
+            );
+        }
+    }
+    
+    // Log aggregate stats
+    size_t total_returns = 0;
+    for (const auto& [symbol, returns] : historical_returns_) {
+        total_returns += returns.size();
+    }
+    
+    INFO("Total historical data: " + std::to_string(total_returns) + 
+         " returns across " + std::to_string(historical_returns_.size()) + " symbols");
+}
+
+std::vector<std::vector<double>> PortfolioManager::calculate_covariance_matrix(
+    const std::unordered_map<std::string, std::vector<double>>& returns_by_symbol) {
+    
+    // Get all symbols in a consistent order
+    std::vector<std::string> ordered_symbols;
+    for (const auto& [symbol, _] : returns_by_symbol) {
+        ordered_symbols.push_back(symbol);
+    }
+    std::sort(ordered_symbols.begin(), ordered_symbols.end());
+    
+    size_t num_assets = ordered_symbols.size();
+
+    if (num_assets == 0) {
+        ERROR("No assets available for covariance calculation");
+    }
+
+    // Find minimum length of return series for all symbols
+    size_t min_periods = SIZE_MAX;
+    for (const auto& symbol : ordered_symbols) {
+        if (returns_by_symbol.at(symbol).empty()) {
+            // If any symbol has no returns, we can't calculate covariance
+            WARN("Symbol " + symbol + " has no return data");
+            continue;
+        }
+        min_periods = std::min(min_periods, returns_by_symbol.at(symbol).size());
+    }
+    
+    if (min_periods == SIZE_MAX) min_periods = 0;
+    
+    if (min_periods < 20) {  // Need sufficient data
+        WARN("Insufficient return data for covariance calculation: " + std::to_string(min_periods) + " periods");
+        // Return diagonal matrix with default variance
+        std::vector<std::vector<double>> default_cov(num_assets, std::vector<double>(num_assets, 0.0));
+        for (size_t i = 0; i < num_assets; ++i) {
+            default_cov[i][i] = 0.01;  // Default variance on diagonal
+        }
+        return default_cov;
+    }
+
+    // Create a matrix of aligned returns
+    std::vector<std::vector<double>> aligned_returns(min_periods, std::vector<double>(num_assets, 0.0));
+    
+    for (size_t i = 0; i < num_assets; ++i) {
+        const auto& symbol = ordered_symbols[i];
+        const auto& returns = returns_by_symbol.at(symbol);
+        
+        // Take the most recent min_periods returns
+        size_t start_idx = returns.size() - min_periods;
+        for (size_t j = 0; j < min_periods; ++j) {
+            aligned_returns[j][i] = returns[start_idx + j];
+        }
+    }
+    
+    // Calculate means for each asset
+    std::vector<double> means(num_assets, 0.0);
+    for (size_t i = 0; i < num_assets; ++i) {
+        const auto& returns = returns_by_symbol.at(ordered_symbols[i]);
+        for (size_t t = 0; t < min_periods; ++t) {
+            means[i] += returns[t];
+        }
+        means[i] /= min_periods;
+    }
+    
+    // Calculate covariance matrix
+    std::vector<std::vector<double>> covariance(num_assets, std::vector<double>(num_assets, 0.0));
+    for (size_t i = 0; i < num_assets; ++i) {
+        for (size_t j = 0; j < num_assets; ++j) {
+            double cov_sum = 0.0;
+            for (size_t t = 0; t < min_periods; ++t) {
+                cov_sum += (aligned_returns[t][i] - means[i]) * (aligned_returns[t][j] - means[j]);
+            }
+            
+            covariance[i][j] = cov_sum / (min_periods - 1);
+            
+            // Annualize the covariance (assuming daily data with 252 trading days)
+            covariance[i][j] *= 252.0;
+        }
+    }
+    
+    return covariance;
+}
+
 Result<void> PortfolioManager::optimize_positions() {
     try {
-        // Collect positions and parameters for optimization
-        std::vector<std::string> symbols;
-        std::unordered_map<std::string, std::vector<double>> strategy_positions;
-        std::unordered_map<std::string, double> costs;
-                
-        // First pass: collect unique symbols
-        for (const auto& [id, info] : strategies_) {      
-            if(!info.use_optimization) continue;
-
-            for (const auto& [symbol, pos] : info.target_positions) {
-                if (std::find(symbols.begin(), symbols.end(), symbol) == symbols.end()) {
-                    symbols.push_back(symbol);
-                    strategy_positions[symbol] = std::vector<double>();
-                    costs[symbol] = 0.0;
-                }
+        // Get unique symbols across all strategies
+        std::set<std::string> unique_symbols;
+        for (const auto& [_, info] : strategies_) {
+            if (!info.use_optimization) continue;
+            
+            for (const auto& [symbol, _] : info.target_positions) {
+                unique_symbols.insert(symbol);
             }
         }
+        
+        // Convert to ordered vector
+        std::vector<std::string> symbols(unique_symbols.begin(), unique_symbols.end());
         
         if (symbols.empty()) {
-            INFO("No symbols to optimize");
-            return Result<void>();  // Nothing to optimize
+            return Result<void>();
         }
-                
-        // Second pass: collect positions for optimization
+
+        int min_history_length = 20; // Minimum history length for covariance calculation
+        bool have_sufficient_data = true;
+
         for (const auto& symbol : symbols) {
-            std::vector<double> current_pos;
-            std::vector<double> target_pos;
-            std::vector<double> symbol_costs;
-            
-            for (const auto& [id, info] : strategies_) {
-                if (!info.use_optimization) continue;
-                
-                double curr = info.current_positions.count(symbol) ? 
-                             info.current_positions.at(symbol).quantity : 0.0;
-                double targ = info.target_positions.count(symbol) ?
-                             info.target_positions.at(symbol).quantity : 0.0;
-                
-                current_pos.push_back(curr * info.allocation);
-                target_pos.push_back(targ * info.allocation);
-                
-                const auto& strategy_config = info.strategy->get_config();
-                double cost = strategy_config.costs.count(symbol) ?
-                             strategy_config.costs.at(symbol) : 1.0;
-                symbol_costs.push_back(cost);
+            if (historical_returns_.find(symbol) == historical_returns_.end() ||
+                historical_returns_[symbol].size() < min_history_length) {
+                have_sufficient_data = false;
+                WARN("Insufficient historical returns for " + symbol + 
+                     ": " + std::to_string(historical_returns_[symbol].size()) + 
+                     " (need " + std::to_string(min_history_length) + ")");
             }
+        }
 
-            // Make sure we have valid data for this optimization
-            if (current_pos.empty() || target_pos.empty() || symbol_costs.empty()) {
-                ERROR("Invalid data for optimization: " + symbol);
-                return make_error<void>(
-                    ErrorCode::INVALID_ARGUMENT,
-                    "Invalid data for optimization",
-                    "PortfolioManager"
-                );
-            }
-
-            // Construct minimal covariance matrix
-            std::vector<std::vector<double>> covariance(
-                current_pos.size(),
-                std::vector<double>(current_pos.size(), 0.0)
-            );
-
-            // Set diagonal elements (variances) to a safe default value
-            for (size_t i = 0; i < current_pos.size(); ++i) {
-                covariance[i][i] = 0.01;  // Default variance value
-            }
-
-            // Run optimization 
-            try {
-                auto opt_result = optimizer_->optimize_single_period(
-                    current_pos,
-                    target_pos,
-                    symbol_costs,
-                    std::vector<double>(current_pos.size(), 1.0),
-                    covariance
-                );
-
-                if (opt_result.is_error()) {
-                    return make_error<void>(
-                        opt_result.error()->code(),
-                        "Optimization failed for " + symbol + ": " + opt_result.error()->what(),
-                        "PortfolioManager"
-                    );
-                }
-            } catch (const std::exception& e) {
-                return make_error<void>(
-                    ErrorCode::UNKNOWN_ERROR,
-                    "Optimization failed for " + symbol + ": " + e.what(),
-                    "PortfolioManager"
-                );
-            }
+        if (!have_sufficient_data) {
+            INFO("Not enough historical data yet for optimization. Using target positions directly.");
+            // Just apply target positions without optimization
+            return Result<void>();
         }
         
+        // Calculate weights per contract
+        std::vector<double> weights_per_contract = calculate_weights_per_contract(
+            symbols, config_.total_capital);
+            
+        // Calculate trading costs
+        std::vector<double> costs = calculate_trading_costs(
+            symbols, config_.total_capital);
+            
+        // Build current and target positions in weight terms
+        std::vector<double> current_positions(symbols.size(), 0.0);
+        std::vector<double> target_positions(symbols.size(), 0.0);
+        
+        for (size_t i = 0; i < symbols.size(); ++i) {
+            const std::string& symbol = symbols[i];
+            
+            // Aggregate across strategies
+            for (const auto& [_, info] : strategies_) {
+                if (!info.use_optimization) continue;
+                
+                // Get current position
+                if (info.current_positions.count(symbol) > 0) {
+                    current_positions[i] += info.current_positions.at(symbol).quantity * 
+                                           weights_per_contract[i] * info.allocation;
+                }
+                
+                // Get target position
+                if (info.target_positions.count(symbol) > 0) {
+                    target_positions[i] += info.target_positions.at(symbol).quantity * 
+                                          weights_per_contract[i] * info.allocation;
+                }
+            }
+        }
+
+        INFO("Position comparison for optimization:");
+        INFO("Current positions: " + std::to_string(std::accumulate(current_positions.begin(), current_positions.end(), 0.0)));
+        INFO("Target positions: " + std::to_string(std::accumulate(target_positions.begin(), target_positions.end(), 0.0)));
+        INFO("Difference: " + std::to_string(std::accumulate(target_positions.begin(), target_positions.end(), 0.0) - 
+                                             std::accumulate(current_positions.begin(), current_positions.end(), 0.0)));
+        
+        // Calculate covariance matrix
+        std::vector<std::vector<double>> covariance = calculate_covariance_matrix(historical_returns_);
+        
+        // Call the optimizer
+        if (!optimizer_) {
+            ERROR("Optimizer not initialized");
+            return make_error<void>(
+                ErrorCode::NOT_INITIALIZED,
+                "Optimizer not initialized",
+                "PortfolioManager"
+            );
+        }
+        
+        auto result = optimizer_->optimize(
+            current_positions,
+            target_positions,
+            costs,
+            weights_per_contract,
+            covariance
+        );
+        
+        if (result.is_error()) {
+            return make_error<void>(
+                result.error()->code(),
+                "Optimization failed: " + std::string(result.error()->what()),
+                "PortfolioManager"
+            );
+        }
+        
+        // Apply optimized positions back to strategies
+        const auto& optimized_positions = result.value().positions;
+        
+        for (size_t i = 0; i < symbols.size(); ++i) {
+            const std::string& symbol = symbols[i];
+            double optimized_weight = optimized_positions[i];
+            
+            // Convert weight back to contracts
+            double optimized_contracts = optimized_weight / weights_per_contract[i];
+            
+            // Distribute across strategies proportionally
+            double total_target = 0.0;
+            for (const auto& [_, info] : strategies_) {
+                if (!info.use_optimization) continue;
+                
+                if (info.target_positions.count(symbol) > 0) {
+                    total_target += std::abs(info.target_positions.at(symbol).quantity * info.allocation);
+                }
+            }
+            
+            if (total_target > 0.0) {
+                for (auto& [_, info] : strategies_) {
+                    if (!info.use_optimization) continue;
+                    
+                    if (info.target_positions.count(symbol) > 0) {
+                        double proportion = (info.target_positions.at(symbol).quantity * info.allocation) / total_target;
+                        double new_contracts = optimized_contracts * proportion;
+                        
+                        // Update target position
+                        info.target_positions[symbol].quantity = new_contracts / info.allocation;
+                    }
+                }
+            }
+            INFO("Optimized position for " + symbol + ": " + std::to_string(optimized_contracts) + 
+                 " contracts (weight: " + std::to_string(optimized_weight) + ")");
+        }
+        
+        INFO("Position optimization completed successfully");
         return Result<void>();
         
     } catch (const std::exception& e) {

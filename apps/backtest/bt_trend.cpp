@@ -131,19 +131,28 @@ int main() {
         config.strategy_config.commission_rate = 0.0005; // 5 basis points
         config.strategy_config.slippage_model = 1.0; // 1 basis point
         
-        auto symbols = std::vector<std::string>{"GC.v.0", "ES.v.0", "CL.v.0", "SI.v.0"};
-        config.strategy_config.symbols = symbols;
+        // auto symbols = std::vector<std::string>{"GC.v.0", "ES.v.0", "CL.v.0"};
+        // config.strategy_config.symbols = symbols;
        
-        /*
-        auto symbols = db->get_symbols(trade_ngin::AssetClass::FUTURES);
+        auto symbols_result = db->get_symbols(trade_ngin::AssetClass::FUTURES);
+        auto symbols = symbols_result.value();
 
-        if (symbols.is_ok()) {
-            config.strategy_config.symbols = symbols.value();
+        if (symbols_result.is_ok()) {
+            for (const auto& symbol : symbols) {
+                if (symbol.find(".c.0") != std::string::npos || symbol.find("MES.c.0") != std::string::npos) {
+                    symbols.erase(
+                        std::remove(symbols.begin(), 
+                                   symbols.end(), 
+                                   symbol),
+                        symbols.end());
+                }
+            }
+            config.strategy_config.symbols = symbols;
         } else {
             // Detailed error logging
-            ERROR("Failed to get symbols: " + std::string(symbols.error()->what()));
-            throw std::runtime_error("Failed to get symbols: " + symbols.error()->to_string());
-        }*/
+            ERROR("Failed to get symbols: " + std::string(symbols_result.error()->what()));
+            throw std::runtime_error("Failed to get symbols: " + symbols_result.error()->to_string());
+        }
         
         std::cout << "Symbols: ";
         for (const auto& symbol : config.strategy_config.symbols) {
@@ -152,7 +161,7 @@ int main() {
         std::cout << std::endl;
 
         // Configure portfolio settings
-        config.portfolio_config.initial_capital = 1000000.0;  // $1M
+        config.portfolio_config.initial_capital = 500000.0;  // $500k
         config.portfolio_config.use_risk_management = true;
         config.portfolio_config.use_optimization = true;
         
@@ -179,10 +188,12 @@ int main() {
         // Configure portfolio optimization
         config.portfolio_config.opt_config.tau = 1.0;
         config.portfolio_config.opt_config.capital = config.portfolio_config.initial_capital;
+        config.portfolio_config.opt_config.cost_penalty_scalar = 50.0;
         config.portfolio_config.opt_config.asymmetric_risk_buffer = 0.1;
-        config.portfolio_config.opt_config.cost_penalty_scalar = 10;
         config.portfolio_config.opt_config.max_iterations = 100;
         config.portfolio_config.opt_config.convergence_threshold = 1e-6;
+        config.portfolio_config.opt_config.use_buffering = true;
+        config.portfolio_config.opt_config.buffer_size_factor = 0.05;
         
         // Initialize backtest engine
         INFO("Initializing backtest engine...");
@@ -221,7 +232,7 @@ int main() {
         trend_config.weight = 0.03;           // 3% weight per symbol
         trend_config.risk_target = 0.2;       // Target 20% annualized risk
         trend_config.idm = 2.5;               // Instrument diversification multiplier
-        trend_config.use_position_buffering = true;
+        trend_config.use_position_buffering = false;
         trend_config.ema_windows = {
             {2, 8}, {4, 16}, {8, 32}, {16, 64}, {32, 128}, {64, 256}
         };

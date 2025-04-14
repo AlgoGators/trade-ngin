@@ -31,7 +31,7 @@ public:
     virtual const StrategyMetrics& get_metrics() const = 0;
     virtual const StrategyConfig& get_config() const = 0;
     virtual const StrategyMetadata& get_metadata() const = 0;
-    
+    virtual std::unordered_map<std::string, std::vector<double>> get_price_history() const = 0;    
     // Position management
     virtual const std::unordered_map<std::string, Position>& get_positions() const = 0;
     virtual Result<void> update_position(const std::string& symbol, 
