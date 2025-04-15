@@ -1,0 +1,28 @@
+FROM ubuntu:22.04
+
+RUN apt-get update && \
+    apt-get install -y build-essential cmake valgrind gdb libgtest-dev git pkg-config liblz4-dev libbrotli-dev nlohmann-json3-dev && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN useradd -m -s /bin/bash runner
+
+WORKDIR /app
+
+COPY trade-ngin/ /app/trade-ngin/
+COPY tests/signal_minimal/ /app/tests/signal_minimal/
+COPY test_memory_thread.sh /app/test_memory_thread.sh
+COPY valgrind.supp /app/valgrind.supp
+COPY tsan.supp /app/tsan.supp
+
+RUN chown -R runner:runner /app && chmod +x /app/test_memory_thread.sh
+
+USER runner
+
+RUN mkdir -p /app/build && cd /app/build && \
+    cmake /app/tests/signal_minimal && \
+    make -j$(nproc) signal_minimal_test && \
+    mkdir -p /app/build/bin && cp signal_minimal_test /app/build/bin/
+
+WORKDIR /app
+
+CMD ["bash", "/app/test_memory_thread.sh"] 

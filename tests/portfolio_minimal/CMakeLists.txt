@@ -1,0 +1,5 @@
+cmake_minimum_required(VERSION 3.10)
+project(portfolio_minimal_test)
+add_executable(portfolio_minimal_test portfolio_minimal_test.cpp)
+target_link_libraries(portfolio_minimal_test pthread)
+target_include_directories(portfolio_minimal_test PRIVATE ../../trade-ngin/include) 

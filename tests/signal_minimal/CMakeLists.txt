@@ -1,0 +1,5 @@
+cmake_minimum_required(VERSION 3.10)
+project(signal_minimal_test)
+add_executable(signal_minimal_test signal_minimal_test.cpp)
+target_link_libraries(signal_minimal_test pthread)
+target_include_directories(signal_minimal_test PRIVATE ../../trade-ngin/include) 

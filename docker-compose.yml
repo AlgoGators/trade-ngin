@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  tests:
+    build: .
+    volumes:
+      - ./trade-ngin:/app/trade-ngin
+      - ./tests:/app/tests
+      - ./valgrind.supp:/app/valgrind.supp
+      - ./tsan.supp:/app/tsan.supp
+      - ./test_memory_thread.sh:/app/test_memory_thread.sh
+    cap_add:
+      - SYS_PTRACE
+    security_opt:
+      - seccomp:unconfined
+    environment:
+      - TSAN_OPTIONS=suppressions=/app/tsan.supp
+    ulimits:
+      core:
+        soft: -1
+        hard: -1
+    command: bash -c "/app/test_memory_thread.sh" 

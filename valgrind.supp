@@ -1,0 +1,40 @@
+{
+   <gtest_internal>
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   fun:malloc
+   ...
+   obj:*/libgtest*
+}
+
+{
+   <cpp_memory_init>
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:__cxa_atexit
+   fun:_ZNSt8ios_base4InitC1Ev
+}
+
+{
+   <pthread_create_race>
+   Helgrind:Race
+   fun:pthread_create@@GLIBC*
+   ...
+}
+
+{
+   <std_thread_constructor>
+   Helgrind:Race
+   ...
+   fun:_ZNSt6thread15_M_start_threadESt10unique_ptrINS_6_StateESt14default_deleteIS1_EEPFvvE
+   ...
+}
+
+{
+   <memory_leak_in_gtest>
+   Memcheck:Leak
+   ...
+   fun:_ZN7testing*
+   ...
+} 

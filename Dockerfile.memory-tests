@@ -1,0 +1,55 @@
+FROM ubuntu:22.04
+
+# Avoid prompts during package installation
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install build essentials and dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    cmake \
+    git \
+    valgrind \
+    gdb \
+    linux-tools-common \
+    linux-tools-generic \
+    libgtest-dev \
+    libprotobuf-dev \
+    protobuf-compiler \
+    libssl-dev \
+    libboost-all-dev \
+    libpqxx-dev \
+    liblz4-dev \
+    libbrotli-dev \
+    libutf8proc-dev \
+    zlib1g-dev \
+    libbz2-dev \
+    nlohmann-json3-dev \
+    libgoogle-glog-dev \
+    libfmt-dev \
+    libcurl4-openssl-dev \
+    wget \
+    unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Arrow
+RUN apt-get update && apt-get install -y apt-transport-https lsb-release gnupg
+RUN wget -O - https://apt.llvm.org/llvm-snapshot.gpg.key | apt-key add -
+RUN echo "deb https://apt.llvm.org/focal/ llvm-toolchain-focal-13 main" >> /etc/apt/sources.list
+RUN wget https://apache.jfrog.io/artifactory/arrow/$(lsb_release --id --short | tr 'A-Z' 'a-z')/apache-arrow-apt-source-latest-$(lsb_release --codename --short).deb
+RUN apt-get install -y ./apache-arrow-apt-source-latest-$(lsb_release --codename --short).deb
+RUN apt-get update && apt-get install -y libarrow-dev libarrow-dataset-dev 
+
+# Copy the project code
+WORKDIR /app
+COPY . .
+
+# Build the project with debug information
+RUN mkdir -p build && cd build && \
+    cmake .. -DCMAKE_BUILD_TYPE=Debug -DENABLE_POSTGRESQL=OFF && \
+    make -j$(nproc)
+
+# Set the entrypoint to run the test script
+ENTRYPOINT ["/app/trade-ngin/run_tests.sh"]
+
+# Default command - can be overridden
+CMD ["debug"] 

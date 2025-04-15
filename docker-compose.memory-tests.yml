@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  memory-tests:
+    build:
+      context: .
+      dockerfile: Dockerfile.memory-tests
+    volumes:
+      - ./logs:/app/build/logs
+    environment:
+      - VALGRIND_OPTS=--leak-check=full --show-leak-kinds=all --track-origins=yes --suppressions=/app/trade-ngin/valgrind.supp
+      - TSAN_OPTIONS=suppressions=/app/trade-ngin/tsan.supp
+    # Can customize the command to run specific tests: debug or release
+    command: debug 

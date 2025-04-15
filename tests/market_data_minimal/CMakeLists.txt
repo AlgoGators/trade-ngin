@@ -1,0 +1,5 @@
+cmake_minimum_required(VERSION 3.10)
+project(market_data_minimal_test)
+add_executable(market_data_minimal_test market_data_minimal_test.cpp)
+target_link_libraries(market_data_minimal_test pthread)
+target_include_directories(market_data_minimal_test PRIVATE ../../trade-ngin/include) 

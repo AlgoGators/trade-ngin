@@ -1,0 +1,45 @@
+FROM ubuntu:22.04
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    cmake \
+    git \
+    libpq-dev \
+    postgresql-client \
+    libarrow-dev \
+    libparquet-dev \
+    libgtest-dev \
+    libgmock-dev \
+    valgrind \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set up the working directory
+WORKDIR /app
+
+# Copy the source code
+COPY . .
+
+# Build and install GTest
+RUN cd /usr/src/gtest && \
+    cmake CMakeLists.txt && \
+    make && \
+    cp lib/*.a /usr/lib
+
+# Create build directory and build the project
+RUN mkdir -p build && \
+    cd build && \
+    cmake .. && \
+    make
+
+# Set up the test environment
+ENV POSTGRES_HOST=localhost
+ENV POSTGRES_PORT=5432
+ENV POSTGRES_USER=postgres
+ENV POSTGRES_PASSWORD=postgres
+ENV POSTGRES_DB=test_db
+
+# Command to run the tests
+CMD ["/bin/bash", "-c", "cd build && \
+    valgrind --leak-check=full --track-origins=yes ./tests/threads-raii/valgrind_benchmark && \
+    valgrind --tool=helgrind ./tests/threads-raii/race_conditions"] 

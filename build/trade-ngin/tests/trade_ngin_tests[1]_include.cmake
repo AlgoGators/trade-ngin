@@ -1,0 +1,5 @@
+if(EXISTS "/Users/ryanmathieu/raii-opt/build/trade-ngin/tests/trade_ngin_tests[1]_tests.cmake")
+  include("/Users/ryanmathieu/raii-opt/build/trade-ngin/tests/trade_ngin_tests[1]_tests.cmake")
+else()
+  add_test(trade_ngin_tests_NOT_BUILT trade_ngin_tests_NOT_BUILT)
+endif()

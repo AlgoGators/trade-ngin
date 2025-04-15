@@ -1,0 +1,28 @@
+FROM ubuntu:22.04
+
+RUN apt-get update && \
+    apt-get install -y build-essential cmake valgrind gdb linux-tools-common && \
+    apt-get clean
+
+RUN useradd -m -s /bin/bash runner
+
+WORKDIR /app
+
+COPY tests/ /app/tests/
+COPY test_memory_thread.sh /app/test_memory_thread.sh
+COPY valgrind.supp /app/valgrind.supp
+COPY tsan.supp /app/tsan.supp
+COPY tests/minimal/ /app/tests/minimal/
+
+RUN chown -R runner:runner /app && chmod +x /app/test_memory_thread.sh
+
+USER runner
+
+RUN mkdir -p /app/build && cd /app/build && \
+    cmake /app/tests/minimal && \
+    make -j$(nproc) minimal_thread_test && \
+    mkdir -p /app/build/bin && cp minimal_thread_test /app/build/bin/
+
+WORKDIR /app
+
+CMD ["bash", "/app/test_memory_thread.sh"] 

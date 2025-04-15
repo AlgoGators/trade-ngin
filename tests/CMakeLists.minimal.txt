@@ -1,0 +1,5 @@
+cmake_minimum_required(VERSION 3.10)
+project(minimal_thread_test)
+
+add_executable(minimal_thread_test minimal_thread_test.cpp)
+target_link_libraries(minimal_thread_test pthread) 

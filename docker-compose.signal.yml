@@ -1,0 +1,16 @@
+services:
+  signal-test:
+    build:
+      context: .
+      dockerfile: Dockerfile.signal
+    volumes:
+      - ./valgrind.supp:/app/valgrind.supp
+      - ./tsan.supp:/app/tsan.supp
+      - ./test_memory_thread.sh:/app/test_memory_thread.sh
+    cap_add:
+      - SYS_PTRACE
+    security_opt:
+      - seccomp:unconfined
+    environment:
+      - TSAN_OPTIONS=suppressions=/app/tsan.supp
+    command: bash /app/test_memory_thread.sh 
