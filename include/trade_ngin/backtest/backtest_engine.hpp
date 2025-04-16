@@ -312,6 +312,7 @@ private:
      * @return Result indicating success or failure
      */
     Result<void> apply_portfolio_constraints(
+        const std::vector<Bar>& bars,
         std::unordered_map<std::string, Position>& current_positions,
         std::vector<std::pair<Timestamp, double>>& equity_curve,
         std::vector<RiskResult>& risk_metrics);
