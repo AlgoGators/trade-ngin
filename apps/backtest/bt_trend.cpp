@@ -37,18 +37,27 @@ using namespace trade_ngin;
 using namespace trade_ngin::backtest;
 
 int main() {
-    std::cout << "=== Starting Backtest Setup ===" << std::endl;
-    INFO("Starting trend following backtest application");
-
     try {
         // Initialize the logger
+        auto& logger = Logger::instance();
         LoggerConfig logger_config;
         logger_config.min_level = LogLevel::DEBUG;
         logger_config.destination = LogDestination::BOTH;
         logger_config.log_directory = "logs";
         logger_config.filename_prefix = "bt_trend";
-        Logger::instance().initialize(logger_config);
+        logger.initialize(logger_config);
+
+        std::atomic_thread_fence(std::memory_order_seq_cst);
+
+        if (!logger.is_initialized()) {
+            std::cerr << "ERROR: Logger initialization failed" << std::endl;
+            return 1;
+        }
+
         INFO("Logger initialized successfully");
+
+        std::cerr << "After Logger initialization: initialized=" 
+         << Logger::instance().is_initialized() << std::endl;
         
         // Setup database connection pool
         INFO("Initializing database connection pool...");
@@ -196,8 +205,14 @@ int main() {
         config.portfolio_config.opt_config.buffer_size_factor = 0.05;
         
         // Initialize backtest engine
+        // Right before creating BacktestEngine
+        std::cerr << "Before BacktestEngine: initialized=" 
+            << Logger::instance().is_initialized() << std::endl;
         INFO("Initializing backtest engine...");
         auto engine = std::make_unique<trade_ngin::backtest::BacktestEngine>(config, db);
+        // After creating BacktestEngine
+        std::cerr << "After BacktestEngine: initialized=" 
+            << Logger::instance().is_initialized() << std::endl;
 
         // Setup portfolio configuration
         trade_ngin::PortfolioConfig portfolio_config;
@@ -243,6 +258,9 @@ int main() {
         };
         
         // Create and initialize the strategies
+        // Before TrendFollowingStrategy
+        std::cerr << "Before TrendFollowingStrategy: initialized=" 
+            << Logger::instance().is_initialized() << std::endl;
         INFO("Initializing TrendFollowingStrategy...");
         std::cout << "Strategy capital allocation: $" << tf_config.capital_allocation << std::endl;
         std::cout << "Max leverage: " << tf_config.max_leverage << "x" << std::endl;
@@ -308,14 +326,20 @@ int main() {
         std::cout << "Win Rate: " << (backtest_results.win_rate * 100.0) << "%" << std::endl;
         std::cout << "Total Trades: " << backtest_results.total_trades << std::endl;
 
-        
-        
         INFO("Backtest application completed successfully");
+
+        std::cerr << "At end of main: initialized=" 
+         << Logger::instance().is_initialized() << std::endl;
         
         return 0;
         
     } catch (const std::exception& e) {
         std::cerr << "Unexpected error: " << e.what() << std::endl;
+        ERROR("Unexpected error: " + std::string(e.what()));
+        return 1;
+    } catch (...) {
+        std::cerr << "Unknown error occurred" << std::endl;
+        ERROR("Unknown error occurred");
         return 1;
     }
 }
