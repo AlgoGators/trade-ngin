@@ -8,14 +8,8 @@ namespace trade_ngin {
 
 DynamicOptimizer::DynamicOptimizer(DynamicOptConfig config)
     : config_(std::move(config)) {
-    // Initialize logger
-    LoggerConfig logger_config;
-    logger_config.min_level = LogLevel::DEBUG;
-    logger_config.destination = LogDestination::BOTH;
-    logger_config.log_directory = "logs";
-    logger_config.filename_prefix = "dynamic_optimizer";
-    Logger::instance().initialize(logger_config);
-}
+        Logger::register_component("DynamicOptimizer");
+    }
 
 Result<void> DynamicOptimizer::validate_inputs(
     const std::vector<double>& current_positions,
@@ -307,15 +301,6 @@ double DynamicOptimizer::calculate_pure_tracking_error(
     const std::vector<double>& target_positions,
     const std::vector<double>& proposed_positions,
     const std::vector<std::vector<double>>& covariance) const {
-
-    // Log input sizes
-    DEBUG("Tracking error calculation - target positions size: " + 
-        std::to_string(target_positions.size()) + 
-        ", proposed positions size: " + 
-        std::to_string(proposed_positions.size()) + 
-        ", covariance size: " + 
-        std::to_string(covariance.size()) + "x" + 
-        (covariance.empty() ? "0" : std::to_string(covariance[0].size())));
     
     // Calculate tracking error weights (e = w* - w)
     std::vector<double> tracking_error_weights(target_positions.size());
@@ -347,7 +332,6 @@ double DynamicOptimizer::calculate_pure_tracking_error(
     }
     
     double result = std::sqrt(std::max(0.0, tracking_error_squared));
-    DEBUG("Final tracking error calculation result: " + std::to_string(result));
     
     // Return standard deviation (square root of variance)
     return result;

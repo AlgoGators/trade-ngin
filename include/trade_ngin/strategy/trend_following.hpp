@@ -130,6 +130,27 @@ public:
         return 0.0; // Default value if not found
     }
 
+    /**
+     * @brief Get a copy of the instrument data for a symbol
+     * @param symbol Instrument symbol
+     * @return Copy of the instrument data
+     */
+    const InstrumentData* get_instrument_data(const std::string& symbol) const {
+        auto it = instrument_data_.find(symbol);
+        if (it != instrument_data_.end()) {
+            return &it->second;
+        }
+        return nullptr; // Default value if not found
+    }
+
+    /**
+     * @brief Get all instrument data
+     * @return Map of instrument data by symbol
+     */
+    std::unordered_map<std::string, InstrumentData> get_all_instrument_data() const {
+        return instrument_data_;
+    }
+
 protected:
     /**
      * @brief Validate strategy configuration

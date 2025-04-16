@@ -5,18 +5,12 @@ namespace trade_ngin {
 Result<void> DatabasePool::initialize(const std::string& connection_string, size_t pool_size) {
     std::lock_guard<std::mutex> lock(mutex_);
 
-    // Initialize logger
-    LoggerConfig logger_config;
-    logger_config.min_level = LogLevel::INFO;
-    logger_config.destination = LogDestination::BOTH;
-    logger_config.log_directory = "logs";
-    logger_config.filename_prefix = "database_pool";
-    Logger::instance().initialize(logger_config);
-
     if (initialized_) {
         WARN("Database pool already initialized");
         return Result<void>();
     }
+
+    Logger::register_component("DatabasePool");
 
     // Store connection string for later use
     default_connection_string_ = connection_string;

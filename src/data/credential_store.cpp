@@ -3,7 +3,9 @@
 #include <iostream>
 #include <cstdlib>
 
-trade_ngin::CredentialStore::CredentialStore(const std::string& path) : config_path(path) {
+namespace trade_ngin {
+
+CredentialStore::CredentialStore(const std::string& path) : config_path(path) {
     // Check for environment variable to override path
     const char* env_config = std::getenv("TRADING_CONFIG_PATH");
     if (env_config) {
@@ -13,7 +15,7 @@ trade_ngin::CredentialStore::CredentialStore(const std::string& path) : config_p
     loadConfig();
 }
 
-void trade_ngin::CredentialStore::loadConfig() {
+void CredentialStore::loadConfig() {
     std::ifstream config_file(config_path);
     if (!config_file.is_open()) {
         // Print error code
@@ -27,3 +29,4 @@ void trade_ngin::CredentialStore::loadConfig() {
         throw std::runtime_error("Failed to parse config file: " + std::string(e.what()));
     }
 }
+} // namespace trade_ngin

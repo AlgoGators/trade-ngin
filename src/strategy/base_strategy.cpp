@@ -26,6 +26,8 @@ BaseStrategy::BaseStrategy(std::string id,
     // Initialize risk limits from config
     risk_limits_.max_leverage = config_.max_leverage;
     risk_limits_.max_drawdown = config_.max_drawdown;
+
+    Logger::register_component("BaseStrategy");
 }
 
 Result<void> BaseStrategy::initialize() {
@@ -454,6 +456,7 @@ Result<void> BaseStrategy::check_risk_limits() {
             + std::to_string(leverage),
             "BaseStrategy"
         );
+        exit(1); // Exit if leverage exceeds limit
     }
     
     // Check drawdown

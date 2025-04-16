@@ -17,15 +17,9 @@ TrendFollowingStrategy::TrendFollowingStrategy(
     BaseStrategy(std::move(id), std::move(config), std::move(db)),
     trend_config_(std::move(trend_config)),
     registry_(registry) {
-        
-    // Initialize logger
-    LoggerConfig logger_config;
-    logger_config.min_level = LogLevel::DEBUG;
-    logger_config.destination = LogDestination::BOTH;
-    logger_config.log_directory = "logs";
-    logger_config.filename_prefix = "trend_following";
-    Logger::instance().initialize(logger_config);
 
+    Logger::register_component("TrendFollowing");
+        
     // Verify lengths of lookback periods
     if (trend_config_.vol_lookback_short <= 0) {
         trend_config_.vol_lookback_short = 22;

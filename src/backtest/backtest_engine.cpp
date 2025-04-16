@@ -36,18 +36,12 @@ BacktestEngine::BacktestEngine(
     : config_(std::move(config))
     , db_(std::move(db)) {
 
-    // Initialize logger
-    LoggerConfig logger_config;
-    logger_config.min_level = LogLevel::INFO;
-    logger_config.destination = LogDestination::BOTH;
-    logger_config.log_directory = "logs";
-    logger_config.filename_prefix = "backtest";
-    Logger::instance().initialize(logger_config);
-
     // Generate a unique component for the backtest engine
     std::string unique_id = "BACKTEST_ENGINE_" + std::to_string(
         std::chrono::system_clock::now().time_since_epoch().count()
     );
+
+    Logger::register_component("BacktestEngine");
 
     // Register component with state manager
     ComponentInfo info{

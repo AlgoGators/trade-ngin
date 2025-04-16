@@ -12,13 +12,8 @@ namespace trade_ngin {
 PostgresDatabase::PostgresDatabase(std::string connection_string)
     : connection_string_(std::move(connection_string)),
       connection_(nullptr) {
-        LoggerConfig logger_config;
-        logger_config.min_level = LogLevel::DEBUG;
-        logger_config.destination = LogDestination::BOTH;
-        logger_config.log_directory = "logs";
-        logger_config.filename_prefix = "postgres_db";
-        Logger::instance().initialize(logger_config);
-}
+        Logger::register_component("PostgresDatabase");
+      }
 
 PostgresDatabase::~PostgresDatabase() {
     disconnect();
