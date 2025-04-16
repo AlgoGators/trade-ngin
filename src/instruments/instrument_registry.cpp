@@ -8,15 +8,6 @@ namespace trade_ngin {
 
 Result<void> InstrumentRegistry::initialize(std::shared_ptr<PostgresDatabase> db) {
     std::lock_guard<std::mutex> lock(mutex_);
-
-    // Initialize the logger
-    LoggerConfig logger_config;
-    logger_config.min_level = LogLevel::DEBUG;
-    logger_config.destination = LogDestination::BOTH;
-    logger_config.log_directory = "logs";
-    logger_config.filename_prefix = "instrument_registry";
-    Logger::instance().initialize(logger_config);
-    INFO("Logger initialized successfully");
     
     // Add this line to detect multiple initializations
     if (initialized_) {

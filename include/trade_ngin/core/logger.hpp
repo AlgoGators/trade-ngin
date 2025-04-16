@@ -5,6 +5,9 @@
 #include <fstream>
 #include <memory>
 #include <mutex>
+#include <atomic>
+#include <iostream>
+#include <iomanip>
 #include <sstream>
 #include <unordered_map>
 #include <chrono>
@@ -124,10 +127,7 @@ public:
      * @brief Get the singleton instance
      * @return Reference to the logger instance
      */
-    static Logger& instance() {
-        static Logger instance;
-        return instance;
-    }
+    static Logger& instance();
 
     /**
      * @brief Initialize the logger with configuration
@@ -170,6 +170,18 @@ public:
         return config_.min_level;
     }
 
+    /**
+     * @brief Check if logger is initialized
+     * @return True if initialized, false otherwise
+     */
+    bool is_initialized() const {
+        return initialized_.load(std::memory_order_acquire);
+    }
+
+    static void register_component(const std::string& component) {
+        current_component_ = component;
+    }
+
 private:
     Logger() = default;
     ~Logger();
@@ -185,10 +197,12 @@ private:
     void write_to_console(const std::string& message);
     std::string format_message(LogLevel level, const std::string& message);
 
-    std::mutex mutex_;
+    mutable std::mutex mutex_;
     LoggerConfig config_;
     std::ofstream log_file_;
-    bool initialized_{false};
+    std::atomic<bool> initialized_{false};
+    bool locked_initialization_{false}; // Prevent re-initialization after first call
+    static thread_local std::string current_component_; // Thread-local component name
 };
 
 /**

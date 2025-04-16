@@ -10,14 +10,8 @@ namespace trade_ngin {
 
 RiskManager::RiskManager(RiskConfig config)
     : config_(std::move(config)) {
-    // Initialize logger
-    LoggerConfig logger_config;
-    logger_config.min_level = LogLevel::DEBUG;
-    logger_config.destination = LogDestination::BOTH;
-    logger_config.log_directory = "logs";
-    logger_config.filename_prefix = "risk_manager";
-    Logger::instance().initialize(logger_config);
-}
+        Logger::register_component("RiskManager");
+    }
 
 Result<RiskResult> RiskManager::process_positions(
     const std::unordered_map<std::string, Position>& positions) {        

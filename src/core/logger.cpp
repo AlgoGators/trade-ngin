@@ -9,17 +9,16 @@
 
 namespace trade_ngin {
 
+// Thread-local variable to store the current component name
+thread_local std::string Logger::current_component_;
+
+Logger& Logger::instance() {
+    static Logger instance;
+    return instance;
+}
+
 void Logger::initialize(const LoggerConfig& config) {
     std::lock_guard<std::mutex> lock(mutex_);
-    
-    if (initialized_) {
-        // Close existing file handles
-        if (log_file_.is_open()) {
-            log_file_.close();
-        }
-        initialized_ = false;
-    }
-
     config_ = config;
 
     if (config_.destination == LogDestination::FILE || 
@@ -47,7 +46,7 @@ void Logger::initialize(const LoggerConfig& config) {
         }
     }
 
-    initialized_ = true;
+    initialized_.store(true, std::memory_order_release);
 }
 
 Logger::~Logger() {
@@ -57,7 +56,9 @@ Logger::~Logger() {
 }
 
 void Logger::log(LogLevel level, const std::string& message) {
-    if (!initialized_) {
+    // Check if logger is initialized
+    if (!initialized_.load(std::memory_order_acquire)) {
+        std::cerr << "WARNING: Logger not initialized. Message: " << message << std::endl;
         return;
     }
 
@@ -75,12 +76,16 @@ void Logger::log(LogLevel level, const std::string& message) {
     if (config_.destination == LogDestination::FILE || 
         config_.destination == LogDestination::BOTH) {
         write_to_file(formatted_message);
+        if (log_file_.is_open()) {
+            log_file_.flush();
+        }
     }
 }
 
 std::string Logger::format_message(LogLevel level, const std::string& message) {
     std::ostringstream ss;
 
+    // Add timestamp if configured
     if (config_.include_timestamp) {
         auto now = std::chrono::system_clock::now();
         auto now_c = std::chrono::system_clock::to_time_t(now);
@@ -94,17 +99,26 @@ std::string Logger::format_message(LogLevel level, const std::string& message) {
         ss << time_str << " ";
     }
 
+    // Add log level if configured
     if (config_.include_level) {
         ss << "[" << level_to_string(level) << "] ";
     }
 
+    // Add component name if available
+    if (!current_component_.empty()) {
+        ss << "[" << current_component_ << "] ";
+    }
+
+    // Add the actual message
     ss << message;
+    
     return ss.str();
 }
 
 void Logger::write_to_console(const std::string& message) {
     std::lock_guard<std::mutex> lock(mutex_);
     std::cout << message << std::endl;
+    std::cout.flush();
 }
 
 void Logger::write_to_file(const std::string& message) {
