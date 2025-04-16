@@ -87,6 +87,16 @@ struct RiskResult {
 };
 
 /**
+ * @brief Market data for risk calculations
+ */
+struct MarketData {
+    std::vector<std::vector<double>> returns;
+    std::vector<std::vector<double>> covariance;
+    std::unordered_map<std::string, size_t> symbol_indices;
+    std::vector<std::string> ordered_symbols;
+};
+
+/**
  * @brief Risk management class
  */
 class RiskManager {
@@ -99,14 +109,8 @@ public:
      * @return Result containing risk calculations
      */
     Result<RiskResult> process_positions(
-        const std::unordered_map<std::string, Position>& positions);
-
-    /**
-     * @brief Update market data for risk calculations
-     * @param data New market data
-     * @return Result indicating success or failure
-     */
-    Result<void> update_market_data(const std::vector<Bar>& data);
+        const std::unordered_map<std::string, Position>& positions,
+        const MarketData& market_data);
 
     /**
      * @brief Update risk configuration
@@ -121,19 +125,15 @@ public:
      */
     const RiskConfig& get_config() const { return config_; }
 
+    /**
+     * @brief Create market data object from bar data
+     * @param data Bar data to convert
+     * @return MarketData object
+     */
+    MarketData create_market_data(const std::vector<Bar>& data);
+
 private:
     RiskConfig config_;
-
-    mutable std::mutex mutex_;
-    
-    // Market data storage
-    struct MarketData {
-        std::vector<std::vector<double>> returns;
-        std::vector<std::vector<double>> covariance;
-        std::unordered_map<std::string, size_t> symbol_indices;
-        std::vector<std::string> ordered_symbols;
-    };
-    MarketData market_data_;
 
     /**
      * @brief Calculate position weights
@@ -145,42 +145,50 @@ private:
 
     /**
      * @brief Calculate the portfolio multiplier based on position weights
+     * @param market_data Market data for calculations
      * @param weights Vector of position weights
      * @param result RiskResult object to store intermediate calculations
      * @return Portfolio multiplier
      */
     double calculate_portfolio_multiplier(
+        const MarketData& market_data,
         const std::vector<double>& weights,
         RiskResult& result) const;
 
     /**
      * @brief Calculate the jump multiplier based on position weights
+     * @param market_data Market data for calculations
      * @param weights Vector of position weights
      * @param result RiskResult object to store intermediate calculations
      * @return Jump multiplier
      */
     double calculate_jump_multiplier(
+        const MarketData& market_data,
         const std::vector<double>& weights,
         RiskResult& result) const;
     
     /**
      * @brief Calculate the correlation multiplier based on position weights
+     * @param market_data Market data for calculations
      * @param weights Vector of position weights
      * @param result RiskResult object to store intermediate calculations
      * @return Correlation multiplier
      */
     double calculate_correlation_multiplier(
+        const MarketData& market_data,
         const std::vector<double>& weights,
         RiskResult& result) const;
 
     /**
      * @brief Calculate the leverage multiplier based on position weights
+     * @param market_data Market data for calculations
      * @param weights Vector of position weights
      * @param total_value Total portfolio value
      * @param result RiskResult object to store intermediate calculations
      * @return Leverage multiplier
      */
     double calculate_leverage_multiplier(
+        const MarketData& market_data,
         const std::vector<double>& weights,
         double total_value,
         RiskResult& result) const;

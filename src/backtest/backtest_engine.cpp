@@ -238,15 +238,6 @@ Result<BacktestResults> BacktestEngine::run(
         
         // Process bars in chronological order
         for (const auto& [timestamp, bars] : bars_by_time) {
-            // Update market data in risk manager
-            if (risk_manager_) {
-                auto update_result = risk_manager_->update_market_data(bars);
-                if (update_result.is_error()) {
-                    WARN("Failed to update risk manager market data: " + 
-                         std::string(update_result.error()->what()));
-                }
-            }
-            
             // Update slippage model
             if (slippage_model_) {
                 for (const auto& bar : bars) {
@@ -280,7 +271,7 @@ Result<BacktestResults> BacktestEngine::run(
                 config_.portfolio_config.use_optimization) {
                 
                 auto constraint_result = apply_portfolio_constraints(
-                    current_positions, equity_curve, risk_metrics);
+                    bars, current_positions, equity_curve, risk_metrics);
                 
                 if (constraint_result.is_error()) {
                     ERROR("Portfolio constraint application failed: " + 
@@ -409,17 +400,6 @@ Result<BacktestResults> BacktestEngine::run_portfolio(
                 data_result.error()->what(),
                 "BacktestEngine"
             );
-        }
-
-        // Pre-load market data into risk manager
-        if (risk_manager_) {
-            INFO("Pre-loading initial market data into risk manager");
-            auto update_result = risk_manager_->update_market_data(data_result.value());
-            if (update_result.is_error()) {
-                WARN("Failed to pre-load market data: " + 
-                    std::string(update_result.error()->what()) + 
-                    ". Risk calculations may not be accurate.");
-            }
         }
 
         // Initialize tracking variables
@@ -674,7 +654,8 @@ Result<void> BacktestEngine::process_bar(
 
         // Apply risk management if enabled
         if (config_.portfolio_config.use_risk_management && risk_manager_) {
-            auto risk_result = risk_manager_->process_positions(current_positions);
+            MarketData market_data = risk_manager_->create_market_data(bars);
+            auto risk_result = risk_manager_->process_positions(current_positions, market_data);
             if (risk_result.is_error()) {
                 return make_error<void>(
                     risk_result.error()->code(),
@@ -890,6 +871,7 @@ Result<void> BacktestEngine::process_strategy_signals(
 
 // Apply portfolio-level constraints (risk management and optimization)
 Result<void> BacktestEngine::apply_portfolio_constraints(
+    const std::vector<Bar>& bars,
     std::unordered_map<std::string, Position>& current_positions,
     std::vector<std::pair<Timestamp, double>>& equity_curve,
     std::vector<RiskResult>& risk_metrics) {
@@ -897,7 +879,8 @@ Result<void> BacktestEngine::apply_portfolio_constraints(
     try {
         // Apply risk management if enabled
         if (config_.portfolio_config.use_risk_management && risk_manager_) {
-            auto risk_result = risk_manager_->process_positions(current_positions);
+            MarketData market_data = risk_manager_->create_market_data(bars);
+            auto risk_result = risk_manager_->process_positions(current_positions, market_data);
             if (risk_result.is_error()) {
                 return make_error<void>(
                     risk_result.error()->code(),
@@ -1091,24 +1074,6 @@ Result<void> BacktestEngine::process_portfolio_data(
                 "BacktestEngine"
             );
         }
-
-        // Update risk manager market data
-        if (risk_manager_) {
-            try {
-                INFO("Updating risk manager market data with " + std::to_string(bars.size()) + " bars");
-                auto update_result = risk_manager_->update_market_data(bars);
-                if (update_result.is_error()) {
-                    WARN("Failed to update risk manager market data: " + 
-                         std::string(update_result.error()->what()) + 
-                         ". Continuing without market data update.");
-                } else {
-                    INFO("Successfully updated risk manager market data");
-                }
-            } catch (const std::exception& e) {
-                WARN("Exception updating risk manager market data: " + std::string(e.what()) + 
-                     ". Continuing without market data update.");
-            }
-        }
         
         // Update slippage model
         if (slippage_model_) {
@@ -1217,7 +1182,8 @@ Result<void> BacktestEngine::process_portfolio_data(
                 auto portfolio_positions = portfolio->get_portfolio_positions();
                 
                 if (!portfolio_positions.empty()) {
-                    auto risk_result = risk_manager_->process_positions(portfolio_positions);
+                    MarketData market_data = risk_manager_->create_market_data(bars);
+                    auto risk_result = risk_manager_->process_positions(portfolio_positions, market_data);
                     
                     if (risk_result.is_ok()) {
                         risk_metrics.push_back(risk_result.value());

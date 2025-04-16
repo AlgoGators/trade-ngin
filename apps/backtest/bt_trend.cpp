@@ -15,22 +15,14 @@
 /*
 TO-DO:
     - Check that risk management is working
-    - Check that optimization is working
-        - Need to fix / check in backtest_engine.cpp (run_portfolio())
-    - Visualize results (matplotlib?)
     - Check that slippage model is working
-    - Fix data access for strategies & TCA
+    - Fix data access for TCA
     - Update all the configs to save / load to a file
-    - Remove wait times in tests (if possible)
-    - Fix Arrow no discard attributes`
-    - Fix weighting in position sizing
-        - Currently, the position sizing is based on the number of symbols in the strategy
-        - Need to change it to come from dyn opt
-    - Fix logging across system. For some reason, some of the logger files do not align
-    with their respective components. (i.e. the positions populate in the risk manager log file
-    but not in the strategy log file)
-        - Use a single logger instance across the system
-        - Use a single log file for each run
+    - Update unit tests
+        - Remove wait times (if possible)
+    - Fix Arrow no discard attributes
+    - Implement live_trend.cpp
+    - Use save feature of the backtest results
 */
 
 using namespace trade_ngin;

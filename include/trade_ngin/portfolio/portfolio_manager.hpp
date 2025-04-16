@@ -186,6 +186,7 @@ public:
 private:
     PortfolioConfig config_;
     std::string id_;
+
     std::unique_ptr<DynamicOptimizer> optimizer_;
     std::unique_ptr<RiskManager> risk_manager_;
     RiskManager* external_risk_manager_{nullptr};
@@ -202,11 +203,17 @@ private:
 
     std::unordered_map<std::string, StrategyInfo> strategies_;
     std::vector<ExecutionReport> recent_executions_;
+
     mutable std::mutex mutex_;
     const std::string instance_id_;
+
     std::unordered_map<std::string, std::vector<double>> price_history_;
     std::unordered_map<std::string, std::vector<double>> historical_returns_;
+    std::vector<Bar> risk_history_;
+    MarketData current_market_data_;
+
     size_t max_history_length_ = 2520;  // Keep up to 1 year of return data
+
 
     /**
      * @brief Calculate weights per contract for each symbol
@@ -253,7 +260,7 @@ private:
      * @brief Apply risk management to positions
      * @return Result indicating success or failure
      */
-    Result<void> apply_risk_management();
+    Result<void> apply_risk_management(const std::vector<Bar>& data);
 
     /**
      * @brief Validate allocations sum to 1
