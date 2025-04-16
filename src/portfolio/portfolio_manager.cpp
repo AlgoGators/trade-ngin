@@ -23,6 +23,7 @@ PortfolioManager::PortfolioManager(PortfolioConfig config, std::string id, Instr
             } else {
                 INFO("Risk manager initialized successfully with capital=" + 
                      std::to_string(config_.risk_config.capital));
+                Logger::register_component("PortfolioManager");
             }
         } catch (const std::exception& e) {
             ERROR("Failed to initialize risk manager: " + std::string(e.what()));
@@ -167,90 +168,94 @@ Result<void> PortfolioManager::add_strategy(
 }
 
 Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data) {
-    std::lock_guard<std::mutex> lock(mutex_);
     std::vector<std::string> processed_strategies;
     
     try {
-        // Validate market data
-        if (data.empty()) {
-            ERROR("Empty market data provided");
-            return make_error<void>(
-                ErrorCode::MARKET_DATA_ERROR,
-                "Empty market data provided",
-                "PortfolioManager"
-            );
-        }
-
-        // Update historical returns for all symbols
-        update_historical_returns(data);
-
-        // Store current positions for each strategy to detect changes
         std::unordered_map<std::string, std::unordered_map<std::string, Position>> prev_positions;
-        for (const auto& [id, info] : strategies_) {
-            prev_positions[id] = info.current_positions;
-        }
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
 
-        // Process data through each strategy
-        for (auto& [id, info] : strategies_) {
-            if (!info.strategy) {
-                ERROR("Null strategy pointer found for ID: " + id);
+            // Validate market data
+            if (data.empty()) {
+                ERROR("Empty market data provided");
                 return make_error<void>(
-                    ErrorCode::INVALID_ARGUMENT,
-                    "Null strategy pointer found for ID: " + id,
+                    ErrorCode::MARKET_DATA_ERROR,
+                    "Empty market data provided",
                     "PortfolioManager"
                 );
             }
 
-            try {
-                // Store current positions
-                info.current_positions = info.strategy->get_positions();
-                
-                // Process market data through strategy
-                auto result = info.strategy->on_data(data);
-                if (result.is_error()) {
-                    ERROR("Error processing data for strategy " + id + ": " + 
-                          result.error()->what());
-                    std::cerr << "Error processing data for strategy " << id << ": " 
-                        << result.error()->what() << std::endl;
+            // Update historical returns for all symbols
+            update_historical_returns(data);
+
+            // Store current positions for each strategy to detect changes
+            for (const auto& [id, info] : strategies_) {
+                prev_positions[id] = info.current_positions;
+            }
+
+            // Process data through each strategy
+            for (auto& [id, info] : strategies_) {
+                if (!info.strategy) {
+                    ERROR("Null strategy pointer found for ID: " + id);
+                    return make_error<void>(
+                        ErrorCode::INVALID_ARGUMENT,
+                        "Null strategy pointer found for ID: " + id,
+                        "PortfolioManager"
+                    );
                 }
-                
-                // Check if it's a TrendFollowingStrategy and use instrument data if available
-                auto trend_strategy = std::dynamic_pointer_cast<TrendFollowingStrategy>(info.strategy);
-                if (trend_strategy) {
-                    // Access the instrument data directly
-                    const auto& trading_data = trend_strategy->get_all_instrument_data();
+
+                try {
+                    // Store current positions
+                    info.current_positions = info.strategy->get_positions();
                     
-                    // Use final positions from instrument data
-                    for (const auto& [symbol, symbol_data] : trading_data) {
-                        Position pos;
-                        pos.symbol = symbol;
-                        pos.quantity = symbol_data.final_position;
-                        
-                        // Use the latest price
-                        pos.average_price = symbol_data.price_history.empty() ? 
-                            1.0 : symbol_data.price_history.back();
-                        
-                        // Use latest timestamp if available
-                        pos.last_update = symbol_data.last_update;
-                        
-                        info.target_positions[symbol] = pos;
+                    // Process market data through strategy
+                    Logger::register_component(info.strategy->get_metadata().name);
+                    auto result = info.strategy->on_data(data);
+                    if (result.is_error()) {
+                        ERROR("Error processing data for strategy " + id + ": " + 
+                            result.error()->what());
+                        std::cerr << "Error processing data for strategy " << id << ": " 
+                            << result.error()->what() << std::endl;
                     }
-                } else {
-                    // For non-trend strategies, use the regular positions
-                    info.target_positions = info.strategy->get_positions();
+                    
+                    // Check if it's a TrendFollowingStrategy and use instrument data if available
+                    auto trend_strategy = std::dynamic_pointer_cast<TrendFollowingStrategy>(info.strategy);
+                    if (trend_strategy) {
+                        // Access the instrument data directly
+                        const auto& trading_data = trend_strategy->get_all_instrument_data();
+                        
+                        // Use final positions from instrument data
+                        for (const auto& [symbol, symbol_data] : trading_data) {
+                            Position pos;
+                            pos.symbol = symbol;
+                            pos.quantity = symbol_data.final_position;
+                            
+                            // Use the latest price
+                            pos.average_price = symbol_data.price_history.empty() ? 
+                                1.0 : symbol_data.price_history.back();
+                            
+                            // Use latest timestamp if available
+                            pos.last_update = symbol_data.last_update;
+                            info.target_positions[symbol] = pos;
+                        }
+                    } else {
+                        // For non-trend strategies, use the regular positions
+                        info.target_positions = info.strategy->get_positions();
+                    }
+                    
+                    processed_strategies.push_back(id);
+                    
+                } catch (const std::exception& e) {
+                    ERROR("Exception processing strategy " + id + ": " + std::string(e.what()));
+                    continue;
                 }
-                
-                processed_strategies.push_back(id);
-                
-            } catch (const std::exception& e) {
-                ERROR("Exception processing strategy " + id + ": " + std::string(e.what()));
-                continue;
             }
         }
 
         // Log before potential optimization
         if (config_.use_optimization && optimizer_) {
             try {
+                Logger::register_component("DynamicOptimizer");
                 auto opt_result = optimize_positions();
                 if (opt_result.is_error()) {
                     WARN("Portfolio optimization failed: " + std::string(opt_result.error()->what()) + 
@@ -266,7 +271,8 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data)
         bool has_risk_manager = (external_risk_manager_ != nullptr) || (risk_manager_ != nullptr);
         if (config_.use_risk_management && has_risk_manager) {
             try {
-                auto risk_result = apply_risk_management();
+                Logger::register_component("RiskManager");
+                auto risk_result = apply_risk_management(data);
                 if (risk_result.is_error()) {
                     WARN("Portfolio risk management failed: " + std::string(risk_result.error()->what()) + 
                          ", continuing without risk management");
@@ -283,53 +289,59 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data)
             INFO("Risk manager check: " + std::to_string(risk_manager_ != nullptr));
         }
 
-        // Generate execution reports for position changes
-        for (auto& [id, info] : strategies_) {
-            for (const auto& [symbol, new_pos] : info.target_positions) {
-                double current_qty = 0.0;
-                
-                // Get previous position quantity
-                auto prev_pos_it = prev_positions[id].find(symbol);
-                if (prev_pos_it != prev_positions[id].end()) {
-                    current_qty = prev_pos_it->second.quantity;
-                }
-                
-                // If position changed, create execution report
-                if (std::abs(new_pos.quantity - current_qty) > 1e-6) {
-                    // Calculate trade size
-                    double trade_size = new_pos.quantity - current_qty;
-                    Side side = trade_size > 0 ? Side::BUY : Side::SELL;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+
+            // Generate execution reports for position changes
+            for (auto& [id, info] : strategies_) {
+                Logger::register_component(info.strategy->get_metadata().name);
+                for (const auto& [symbol, new_pos] : info.target_positions) {
+                    double current_qty = 0.0;
                     
-                    // Find latest price for symbol
-                    double latest_price = 0.0;
-                    for (const auto& bar : data) {
-                        if (bar.symbol == symbol) {
-                            latest_price = bar.close;
-                            break;
+                    // Get previous position quantity
+                    auto prev_pos_it = prev_positions[id].find(symbol);
+                    if (prev_pos_it != prev_positions[id].end()) {
+                        current_qty = prev_pos_it->second.quantity;
+                    }
+                    
+                    // If position changed, create execution report
+                    if (std::abs(new_pos.quantity - current_qty) > 1e-6) {
+                        // Calculate trade size
+                        double trade_size = new_pos.quantity - current_qty;
+                        Side side = trade_size > 0 ? Side::BUY : Side::SELL;
+                        
+                        // Find latest price for symbol
+                        double latest_price = 0.0;
+                        for (const auto& bar : data) {
+                            if (bar.symbol == symbol) {
+                                latest_price = bar.close;
+                                break;
+                            }
                         }
+                        
+                        if (latest_price == 0.0) {
+                            continue; // Skip if price not available
+                        }
+                        
+                        // Create execution report
+                        ExecutionReport exec;
+                        exec.order_id = "PM-" + id + "-" + std::to_string(recent_executions_.size());
+                        exec.exec_id = "EX-" + id + "-" + std::to_string(recent_executions_.size());
+                        exec.symbol = symbol;
+                        exec.side = side;
+                        exec.filled_quantity = std::abs(trade_size);
+                        exec.fill_price = latest_price;
+                        exec.fill_time = data.empty() ? std::chrono::system_clock::now() : data[0].timestamp;
+                        exec.commission = 0.0; // Commission calculation would be done by backtest engine
+                        exec.is_partial = false;
+                        
+                        // Add to recent executions
+                        recent_executions_.push_back(exec);
                     }
-                    
-                    if (latest_price == 0.0) {
-                        continue; // Skip if price not available
-                    }
-                    
-                    // Create execution report
-                    ExecutionReport exec;
-                    exec.order_id = "PM-" + id + "-" + std::to_string(recent_executions_.size());
-                    exec.exec_id = "EX-" + id + "-" + std::to_string(recent_executions_.size());
-                    exec.symbol = symbol;
-                    exec.side = side;
-                    exec.filled_quantity = std::abs(trade_size);
-                    exec.fill_price = latest_price;
-                    exec.fill_time = data.empty() ? std::chrono::system_clock::now() : data[0].timestamp;
-                    exec.commission = 0.0; // Commission calculation would be done by backtest engine
-                    exec.is_partial = false;
-                    
-                    // Add to recent executions
-                    recent_executions_.push_back(exec);
                 }
-            }
+            }   
         }
+        
         
         return Result<void>();
         
@@ -826,7 +838,8 @@ Result<void> PortfolioManager::optimize_positions() {
     }
 }
 
-Result<void> PortfolioManager::apply_risk_management() {
+Result<void> PortfolioManager::apply_risk_management(const std::vector<Bar>& data) {
+    Logger::register_component("RiskManager");
     // Use external risk manager if available, otherwise use internal manager
     RiskManager* active_manager = external_risk_manager_ ? external_risk_manager_ : risk_manager_.get();
 
@@ -838,6 +851,20 @@ Result<void> PortfolioManager::apply_risk_management() {
     }
     
     try {
+        for (auto const& bar: data) {
+            risk_history_.push_back(bar);
+        }
+        size_t lookback = config_.risk_config.lookback_period;
+        if (risk_history_.size() > lookback) {
+            // keep only the last 'lookback' bars
+            risk_history_.erase(
+                risk_history_.begin(),
+                risk_history_.end() - static_cast<long>(lookback)
+            );
+        }
+
+        MarketData market_data = active_manager->create_market_data(risk_history_);
+
         // Collect all positions
         auto portfolio_positions = get_portfolio_positions();
         
@@ -861,16 +888,11 @@ Result<void> PortfolioManager::apply_risk_management() {
         
         // Apply risk management with proper error handling
         try {
-            auto result = active_manager->process_positions(portfolio_positions);
+            auto result = active_manager->process_positions(portfolio_positions, market_data);
             if (result.is_error()) {
-                WARN("Risk management calculation failed: " + 
-                    std::string(result.error()->what()) + 
-                    ". Continuing without risk management.");
-                return make_error<void>(
-                    result.error()->code(),
-                    "Risk management calculation failed: " + std::string(result.error()->what()),
-                    "PortfolioManager"
-                );
+                ERROR("Risk management calculation failed: " + 
+                    std::string(result.error()->what()));
+                return Result<void>(); // Don't fail the entire operation
             }
                     
             // Apply risk scaling if necessary
@@ -897,8 +919,7 @@ Result<void> PortfolioManager::apply_risk_management() {
                 INFO("Risk limits not exceeded, no scaling needed");
             }
         } catch (const std::exception& e) {
-            WARN("Exception in risk management: " + std::string(e.what()) + 
-                ". Continuing without risk management.");
+            ERROR("Exception during risk management: " + std::string(e.what()));
             return Result<void>();  // Don't fail the entire operation
         }
 
