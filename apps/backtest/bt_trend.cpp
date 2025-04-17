@@ -23,6 +23,9 @@ TO-DO:
     - Fix Arrow no discard attributes
     - Implement live_trend.cpp
     - Use save feature of the backtest results
+    - Track capital (after daily returns)
+    - Reduce build time
+    - Make sure all instruments are being traded (not just 8 or 9 or so)
 */
 
 using namespace trade_ngin;

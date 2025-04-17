@@ -195,6 +195,7 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data)
 
             // Process data through each strategy
             for (auto& [id, info] : strategies_) {
+                Logger::register_component(info.strategy->get_metadata().name);
                 if (!info.strategy) {
                     ERROR("Null strategy pointer found for ID: " + id);
                     return make_error<void>(
@@ -207,9 +208,14 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data)
                 try {
                     // Store current positions
                     info.current_positions = info.strategy->get_positions();
+
+                    std::ostringstream oss;
+                    for (auto& [sym, pos] : info.current_positions) {
+                        oss << sym << ": " << pos.quantity << ", ";
+                    }
+                    DEBUG("Current positions for strategy " + id + ": " + oss.str());
                     
                     // Process market data through strategy
-                    Logger::register_component(info.strategy->get_metadata().name);
                     auto result = info.strategy->on_data(data);
                     if (result.is_error()) {
                         ERROR("Error processing data for strategy " + id + ": " + 
@@ -287,6 +293,15 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data)
             INFO("Risk management not enabled, skipping risk checks");
             INFO("Use risk manager check: " + std::to_string(config_.use_risk_management));
             INFO("Risk manager check: " + std::to_string(risk_manager_ != nullptr));
+        }
+
+        {
+            auto post_opt = get_portfolio_positions();
+            std::ostringstream oss3;
+            for (const auto& [symbol, pos] : post_opt) {
+                oss3 << symbol << ": " << pos.quantity << ", ";
+            }
+            DEBUG("Post-optimization positions: " + oss3.str());
         }
 
         {
@@ -714,14 +729,6 @@ Result<void> PortfolioManager::optimize_positions() {
                                           weights_per_contract[i] * info.allocation;
                 }
             }
-        }
-
-        // Debug log
-        DEBUG("Position comparison for optimization:");
-        for (size_t i = 0; i < symbols.size(); ++i) {
-            DEBUG(symbols[i] + ": current=" + std::to_string(current_positions[i]) + 
-                  ", target=" + std::to_string(target_positions[i]) + 
-                  ", diff=" + std::to_string(target_positions[i] - current_positions[i]));
         }
         
         // Calculate covariance matrix

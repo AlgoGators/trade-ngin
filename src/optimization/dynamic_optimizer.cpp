@@ -101,10 +101,16 @@ Result<OptimizationResult> DynamicOptimizer::optimize_single_period(
     }
 
     try {
-        // Start with all zeros as initial proposed solution (no positions)
+        // Initialize solution at current positions
         size_t num_assets = current_positions.size();
-        std::vector<double> current_best(num_assets, 0.0);
+        std::vector<double> current_best = current_positions;
         std::vector<double> proposed_solution = current_best;
+
+        for (size_t i = 0; i < num_assets; ++i) {
+            DEBUG("DynOpt INIT [" + std::to_string(i) + "] current=" 
+                  + std::to_string(current_positions[i]) 
+                  + ", target=" + std::to_string(target_positions[i]));
+        }
         
         // Calculate initial tracking error
         double cost_penalty = calculate_cost_penalty(current_positions, current_best, costs);
@@ -117,65 +123,61 @@ Result<OptimizationResult> DynamicOptimizer::optimize_single_period(
         // Main optimization loop - using greedy algorithm
         while (improved && iteration++ < config_.max_iterations) {
             improved = false;
+
+            std::vector<double> proposed = current_best;
+            double proposed_err = best_tracking_error;
             
             // Iterate through each asset
             for (size_t i = 0; i < num_assets; ++i) {
                 // Try adding one weight unit (one contract)
-                std::vector<double> increment_add = proposed_solution;
-                increment_add[i] += weights_per_contract[i];
-                
-                double add_cost = calculate_cost_penalty(current_positions, increment_add, costs);
-                double add_error = calculate_tracking_error(
-                    target_positions, increment_add, covariance, add_cost);
-                
-                // Try subtracting one weight unit (one contract)
-                std::vector<double> increment_subtract = proposed_solution;
-                increment_subtract[i] -= weights_per_contract[i];
-                
-                double subtract_cost = calculate_cost_penalty(current_positions, increment_subtract, costs);
-                double subtract_error = calculate_tracking_error(
-                    target_positions, increment_subtract, covariance, subtract_cost);
-                
-                // Update proposed solution if either increment improves tracking error
-                if (add_error < subtract_error && add_error < best_tracking_error - config_.convergence_threshold) {
-                    proposed_solution = increment_add;
-                    best_tracking_error = add_error;
-                    improved = true;
-                    break;  // We found an improvement, move to next iteration
-                } else if (subtract_error < add_error && subtract_error < best_tracking_error - config_.convergence_threshold) {
-                    proposed_solution = increment_subtract;
-                    best_tracking_error = subtract_error;
-                    improved = true;
-                    break;  // We found an improvement, move to next iteration
+
+                double raw_diff = target_positions[i] - current_best[i];
+                if (std::abs(raw_diff) < 1e-12) {
+                    continue;  // No need to adjust if already close to target
                 }
-            }
-            
-            // Update current best if improvement was found
-            if (improved) {
-                current_best = proposed_solution;
+
+                double step = weights_per_contract[i] * (raw_diff > 0 ? +1.0 : -1.0);
+
+                std::vector<double> candidate = current_best;
+                candidate[i] += step;
+
+            // Evaluate its cost & error
+            double c = calculate_cost_penalty(current_positions, candidate, costs);
+            double e = calculate_tracking_error(target_positions, candidate, covariance, c);
+
+            // If it strictly improves this pass’s proposed, keep it
+            if (e + config_.convergence_threshold < proposed_err) {
+                proposed      = std::move(candidate);
+                proposed_err  = e;
             }
         }
-        
-        // Calculate final metrics
-        double final_cost = calculate_cost_penalty(current_positions, current_best, costs);
-        double final_error = calculate_tracking_error(
-            target_positions, current_best, covariance, final_cost);
-        
-        OptimizationResult result{
-            current_best,  // Already in weight terms
-            final_error,
-            final_cost,
-            iteration,
-            !improved  // Converged if no further improvements found
-        };
 
-        // Debug: log final position
-        DEBUG("Final positions: " + std::to_string(current_best.size()) + 
-              ", tracking error: " + std::to_string(final_error) + 
-              ", cost: " + std::to_string(final_cost) + 
-              ", iterations: " + std::to_string(iteration));
-        
-        return Result<OptimizationResult>(result);
+        // 4) If the best candidate from this pass is better than our overall best, adopt it
+        if (proposed_err + config_.convergence_threshold < best_tracking_error) {
+            current_best = std::move(proposed);
+            best_tracking_error   = proposed_err;
+            improved     = true;
+        }
+    }
+
+    // Final metrics
+    double final_cost = calculate_cost_penalty(current_positions, current_best, costs);
+    double final_err  = calculate_tracking_error(target_positions, current_best, covariance, final_cost);
+
+    OptimizationResult result {
+        current_best,
+        final_err,
+        final_cost,
+        iteration,
+        !improved
+    };
+
+    DEBUG("Final positions: " + std::to_string(current_best.size()) +
+          ", tracking error: " + std::to_string(final_err) +
+          ", cost: " + std::to_string(final_cost) +
+          ", iterations: " + std::to_string(iteration));
+
+    return Result<OptimizationResult>(result);
         
     } catch (const std::exception& e) {
         return make_error<OptimizationResult>(
