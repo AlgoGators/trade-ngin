@@ -1083,6 +1083,8 @@ double TrendFollowingStrategy::calculate_vol_regime_multiplier(
             prev_ewma_vol_multiplier = ewma_vol_multiplier;
         }
 
+        INFO("EWMA volatility multiplier: " + std::to_string(ewma_vol_multiplier) + " with quantile: " + std::to_string(quantile));
+
         return ewma_vol_multiplier;
     }
 
