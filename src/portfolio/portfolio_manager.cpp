@@ -765,38 +765,27 @@ Result<void> PortfolioManager::optimize_positions() {
         ", cost=" + std::to_string(result.value().cost_penalty) + 
         ", iterations=" + std::to_string(result.value().iterations));
         
-        // Apply optimized positions back to strategies
         const auto& optimized_positions = result.value().positions;
-        
         for (size_t i = 0; i < symbols.size(); ++i) {
-            const std::string& symbol = symbols[i];
+            const auto& symbol = symbols[i];
             double optimized_weight = optimized_positions[i];
-            
-            // Convert weight back to contracts
-            double optimized_contracts = std::round(optimized_weight / weights_per_contract[i]);
-            
-            // Distribute across strategies proportionally
-            double total_target = 0.0;
-            for (const auto& [_, info] : strategies_) {
-                if (!info.use_optimization) continue;
-                
-                if (info.target_positions.count(symbol) > 0) {
-                    total_target += std::abs(info.target_positions.at(symbol).quantity * info.allocation);
-                }
-            }
-            
-            if (total_target > 0.0) {
-                for (auto& [_, info] : strategies_) {
-                    if (!info.use_optimization) continue;
-                    
-                    if (info.target_positions.count(symbol) > 0) {
-                        double proportion = (info.target_positions.at(symbol).quantity * info.allocation) / total_target;
-                        double new_contracts = optimized_contracts * proportion;
-                        
-                        // Update target position
-                        info.target_positions[symbol].quantity = new_contracts / info.allocation;
-                    }
-                }
+
+            // Compute raw contract count
+            double raw_contracts = optimized_weight / weights_per_contract[i];
+            // Round magnitude, then restore sign
+            int rounded_contracts = static_cast<int>(std::round(std::abs(raw_contracts)));
+            double signed_contracts = std::copysign(static_cast<double>(rounded_contracts), raw_contracts);
+
+            // Distribute into strategy target_positions
+            for (auto& [_, info] : strategies_) {
+                if (!info.use_optimization) 
+                    continue;
+                auto it = info.target_positions.find(symbol);
+                if (it == info.target_positions.end()) 
+                    continue;
+
+                // Divide by allocation to get per‑strategy quantity
+                it->second.quantity = signed_contracts / info.allocation;
             }
         }
 

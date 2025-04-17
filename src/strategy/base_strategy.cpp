@@ -110,18 +110,6 @@ Result<void> BaseStrategy::initialize() {
             }
         };
 
-        SubscriberInfo sub_info{
-            id_,
-            {MarketDataEventType::BAR},
-            {},  // Empty means subscribe to all symbols
-            callback
-        };
-
-        auto subscribe_result = MarketDataBus::instance().subscribe(sub_info);
-        if (subscribe_result.is_error()) {
-            return subscribe_result;
-        }
-
         is_initialized_ = true;
         
         INFO("Initialized strategy " + id_);

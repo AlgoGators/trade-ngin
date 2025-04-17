@@ -145,7 +145,7 @@ int main() {
 
         if (symbols_result.is_ok()) {
             for (const auto& symbol : symbols) {
-                if (symbol.find(".c.0") != std::string::npos || symbol.find("MES.c.0") != std::string::npos) {
+                if (symbol.find(".c.0") != std::string::npos || symbol.find("MES.c.0") != std::string::npos || symbol.find("ES.v.0") != std::string::npos) {
                     symbols.erase(
                         std::remove(symbols.begin(), 
                                    symbols.end(), 
