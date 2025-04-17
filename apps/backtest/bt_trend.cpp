@@ -26,6 +26,8 @@ TO-DO:
     - Track capital (after daily returns)
     - Reduce build time
     - Make sure all instruments are being traded (not just 8 or 9 or so)
+    - Check in on results (seem off)
+    - Make sure results are still rounded after the risk multiplier
 */
 
 using namespace trade_ngin;
