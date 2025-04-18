@@ -31,9 +31,15 @@ Result<void> DynamicOptimizer::validate_inputs(
         current_positions.size() != costs.size() ||
         current_positions.size() != weights_per_contract.size() ||
         current_positions.size() != covariance.size()) {
+        std::string size_error = "Input vectors must have the same size: "
+            + std::to_string(current_positions.size()) + ", "
+            + std::to_string(target_positions.size()) + ", "
+            + std::to_string(costs.size()) + ", "
+            + std::to_string(weights_per_contract.size()) + ", "
+            + std::to_string(covariance.size());
         return make_error<void>(
             ErrorCode::INVALID_ARGUMENT,
-            "Input vectors must have the same size",
+            size_error,
             "DynamicOptimizer"
         );
     }
@@ -101,9 +107,12 @@ Result<OptimizationResult> DynamicOptimizer::optimize_single_period(
     }
 
     try {
-        // Initialize solution at current positions
+        // Initialize solution at 0.0
+
+        const auto actual = current_positions;
+
         size_t num_assets = current_positions.size();
-        std::vector<double> current_best = current_positions;
+        std::vector<double> current_best(target_positions.size(), 0.0);
         std::vector<double> proposed_solution = current_best;
 
         for (size_t i = 0; i < num_assets; ++i) {
@@ -113,7 +122,7 @@ Result<OptimizationResult> DynamicOptimizer::optimize_single_period(
         }
         
         // Calculate initial tracking error
-        double cost_penalty = calculate_cost_penalty(current_positions, current_best, costs);
+        double cost_penalty = calculate_cost_penalty(actual, current_best, costs);
         double best_tracking_error = calculate_tracking_error(
             target_positions, current_best, covariance, cost_penalty);
         
@@ -127,10 +136,8 @@ Result<OptimizationResult> DynamicOptimizer::optimize_single_period(
             std::vector<double> proposed = current_best;
             double proposed_err = best_tracking_error;
             
-            // Iterate through each asset
             for (size_t i = 0; i < num_assets; ++i) {
                 // Try adding one weight unit (one contract)
-
                 double raw_diff = target_positions[i] - current_best[i];
                 if (std::abs(raw_diff) < 1e-12) {
                     continue;  // No need to adjust if already close to target
@@ -142,26 +149,26 @@ Result<OptimizationResult> DynamicOptimizer::optimize_single_period(
                 candidate[i] += step;
 
             // Evaluate its cost & error
-            double c = calculate_cost_penalty(current_positions, candidate, costs);
+            double c = calculate_cost_penalty(actual, candidate, costs);
             double e = calculate_tracking_error(target_positions, candidate, covariance, c);
 
             // If it strictly improves this pass’s proposed, keep it
             if (e + config_.convergence_threshold < proposed_err) {
-                proposed      = std::move(candidate);
-                proposed_err  = e;
+                proposed = std::move(candidate);
+                proposed_err = e;
             }
         }
 
         // 4) If the best candidate from this pass is better than our overall best, adopt it
         if (proposed_err + config_.convergence_threshold < best_tracking_error) {
             current_best = std::move(proposed);
-            best_tracking_error   = proposed_err;
-            improved     = true;
+            best_tracking_error = proposed_err;
+            improved = true;
         }
     }
 
     // Final metrics
-    double final_cost = calculate_cost_penalty(current_positions, current_best, costs);
+    double final_cost = calculate_cost_penalty(actual, current_best, costs);
     double final_err  = calculate_tracking_error(target_positions, current_best, covariance, final_cost);
 
     OptimizationResult result {

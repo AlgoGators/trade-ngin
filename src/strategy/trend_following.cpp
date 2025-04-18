@@ -268,11 +268,23 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
                     auto instrument = registry_->get_instrument(lookup_symbol);
                     if (instrument) {
                         instrument_data.contract_size = instrument->get_multiplier();
+                    } else {
+                        WARN("Instrument not found in registry for " + symbol);
+                    }
+
+                    if (lookup_symbol == "ES") {
+                        lookup_symbol = "MES";
+                    } else if (lookup_symbol == "NQ") {
+                        lookup_symbol = "MNQ";
+                    } else if (lookup_symbol == "YM") {
+                        lookup_symbol = "MYM";
                     }
                     
                     // Get weight
                     if (get_weights().count(lookup_symbol) > 0) {
                         instrument_data.weight = get_weights().at(lookup_symbol);
+                    } else {
+                        WARN("Weight not found for " + symbol);
                     }
                 }
             }
@@ -301,7 +313,7 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
 
                 // Get latest price
                 double latest_price = prices.back();
-                
+
                 raw_position = calculate_position(
                     symbol,
                     latest_forecast,
@@ -872,6 +884,16 @@ double TrendFollowingStrategy::calculate_position(
         // Apply minimum value to volatility to avoid division by very small values
         volatility = std::clamp(volatility, 0.01, 1.0);
 
+        DEBUG("Calculating position for " + symbol +
+              " with forecast=" + std::to_string(forecast) +
+              ", price=" + std::to_string(price) +
+              ", volatility=" + std::to_string(volatility) +
+              ", contract_size=" + std::to_string(contract_size) +
+              ", weight=" + std::to_string(weight) +
+              ", capital=" + std::to_string(capital) +
+              ", idm=" + std::to_string(idm) +
+              ", risk_target=" + std::to_string(risk_target) +
+              ", fx_rate=" + std::to_string(fx_rate));
     
         // Calculate position using volatility targeting formula with safeguards
         double denominator = 10.0 * contract_size * price * fx_rate * volatility;

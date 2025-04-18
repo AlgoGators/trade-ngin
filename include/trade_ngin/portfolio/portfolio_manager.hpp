@@ -12,6 +12,7 @@
 #include "trade_ngin/instruments/instrument_registry.hpp"
 #include "trade_ngin/optimization/dynamic_optimizer.hpp"
 #include "trade_ngin/risk/risk_manager.hpp"
+#include "trade_ngin/backtest/slippage_models.hpp"
 #include <memory>
 #include <unordered_map>
 #include <mutex>
