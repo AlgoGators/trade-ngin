@@ -12,25 +12,6 @@
 #include <iomanip>
 #include <fstream>
 
-/*
-TO-DO:
-    - Check that risk management is working
-    - Check that slippage model is working
-    - Fix data access for TCA
-    - Update all the configs to save / load to a file
-    - Update unit tests
-        - Remove wait times (if possible)
-    - Fix Arrow no discard attributes
-    - Implement live_trend.cpp
-    - Use save feature of the backtest results
-    - Track capital (after daily returns)
-    - Reduce build time
-    - Make sure all instruments are being traded (not just 8 or 9 or so)
-    - Check in on results (seem off)
-    - Make sure results are still rounded after the risk multiplier
-    - Fix weight for MES / MNQ / other micros
-*/
-
 using namespace trade_ngin;
 using namespace trade_ngin::backtest;
 
