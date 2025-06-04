@@ -332,8 +332,12 @@ double DynamicOptimizer::calculate_pure_tracking_error(
     
     // Calculate quadratic form e'Σe
     double tracking_error_squared = 0.0;
-    for (size_t i = 0; i < tracking_error_weights.size(); ++i) {
-        for (size_t j = 0; j < tracking_error_weights.size(); ++j) {
+    size_t matrix_size = std::min(tracking_error_weights.size(), covariance.size());
+    
+    for (size_t i = 0; i < matrix_size; ++i) {
+        if (i >= covariance.size()) break;
+        for (size_t j = 0; j < matrix_size; ++j) {
+            if (j >= covariance[i].size()) break;
             tracking_error_squared += tracking_error_weights[i] * 
                                     covariance[i][j] * 
                                     tracking_error_weights[j];

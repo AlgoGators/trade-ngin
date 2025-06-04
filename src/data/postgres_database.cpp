@@ -54,7 +54,7 @@ Result<void> PostgresDatabase::connect() {
         } else {
             // Store the generated ID for later use in disconnect()
             component_id_ = unique_id;
-            StateManager::instance().update_state(component_id_, ComponentState::RUNNING);
+            (void)StateManager::instance().update_state(component_id_, ComponentState::RUNNING);
             INFO("Successfully connected to PostgreSQL database with ID: " + component_id_);
         }
 
@@ -78,7 +78,7 @@ void PostgresDatabase::disconnect() {
         // Only attempt to unregister if we have a valid component ID
         if (!component_id_.empty()) {
             try {
-                StateManager::instance().unregister_component(component_id_);
+                (void)StateManager::instance().unregister_component(component_id_);
             } catch (const std::exception& e) {
                 WARN("Error unregistering database component: " + std::string(e.what()));
             }
@@ -752,25 +752,25 @@ Result<std::shared_ptr<arrow::Table>> PostgresDatabase::convert_metadata_to_arro
     // Populate the arrays
     for (const auto& row : result) {
         try {
-            // Append values using the index constants
-            append_string(name_builder, row, NAME_IDX);
-            append_string(databento_symbol_builder, row, DATABENTO_SYMBOL_IDX);
-            append_string(ib_symbol_builder, row, IB_SYMBOL_IDX);
-            append_string(asset_type_builder, row, ASSET_TYPE_IDX);
-            append_string(sector_builder, row, SECTOR_IDX);
-            append_string(exchange_builder, row, EXCHANGE_IDX);
-            append_double(contract_size_builder, row, CONTRACT_SIZE_IDX);
-            append_double(min_tick_builder, row, MIN_PRICE_FLUCTUATION_IDX);
-            append_string(tick_size_builder, row, TICK_SIZE_IDX);
-            append_string(trading_hours_builder, row, TRADING_HOURS_IDX);
-            append_double(overnight_initial_margin_builder, row, OVERNIGHT_INITIAL_MARGIN_IDX);
-            append_double(overnight_maintenance_margin_builder, row, OVERNIGHT_MAINTENANCE_MARGIN_IDX);
-            append_double(intraday_initial_margin_builder, row, INTRADAY_INITIAL_MARGIN_IDX);
-            append_double(intraday_maintenance_margin_builder, row, INTRADAY_MAINTENANCE_MARGIN_IDX);
-            append_string(units_builder, row, UNITS_IDX);
-            append_string(data_provider_builder, row, DATA_PROVIDER_IDX);
-            append_string(dataset_builder, row, DATASET_IDX);
-            append_string(contract_months_builder, row, CONTRACT_MONTHS_IDX);
+            // Append values using the index constants (explicitly ignore return values)
+            (void)append_string(name_builder, row, NAME_IDX);
+            (void)append_string(databento_symbol_builder, row, DATABENTO_SYMBOL_IDX);
+            (void)append_string(ib_symbol_builder, row, IB_SYMBOL_IDX);
+            (void)append_string(asset_type_builder, row, ASSET_TYPE_IDX);
+            (void)append_string(sector_builder, row, SECTOR_IDX);
+            (void)append_string(exchange_builder, row, EXCHANGE_IDX);
+            (void)append_double(contract_size_builder, row, CONTRACT_SIZE_IDX);
+            (void)append_double(min_tick_builder, row, MIN_PRICE_FLUCTUATION_IDX);
+            (void)append_string(tick_size_builder, row, TICK_SIZE_IDX);
+            (void)append_string(trading_hours_builder, row, TRADING_HOURS_IDX);
+            (void)append_double(overnight_initial_margin_builder, row, OVERNIGHT_INITIAL_MARGIN_IDX);
+            (void)append_double(overnight_maintenance_margin_builder, row, OVERNIGHT_MAINTENANCE_MARGIN_IDX);
+            (void)append_double(intraday_initial_margin_builder, row, INTRADAY_INITIAL_MARGIN_IDX);
+            (void)append_double(intraday_maintenance_margin_builder, row, INTRADAY_MAINTENANCE_MARGIN_IDX);
+            (void)append_string(units_builder, row, UNITS_IDX);
+            (void)append_string(data_provider_builder, row, DATA_PROVIDER_IDX);
+            (void)append_string(dataset_builder, row, DATASET_IDX);
+            (void)append_string(contract_months_builder, row, CONTRACT_MONTHS_IDX);
         } catch (const std::exception& e) {
             ERROR("Exception processing row: " + std::string(e.what()));
             // Continue to next row instead of failing completely

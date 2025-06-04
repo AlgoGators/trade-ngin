@@ -147,7 +147,7 @@ public:
      * @brief Get all instrument data
      * @return Map of instrument data by symbol
      */
-    std::unordered_map<std::string, InstrumentData> get_all_instrument_data() const {
+    const std::unordered_map<std::string, InstrumentData>& get_all_instrument_data() const {
         return instrument_data_;
     }
 
