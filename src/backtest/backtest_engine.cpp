@@ -642,8 +642,10 @@ Result<void> BacktestEngine::process_bar(
                 }
             }
             
-            if (latest_price > 0.0) {
-                portfolio_value += pos.quantity * latest_price;
+            if (latest_price > 0.0 && pos.average_price > 0.0) {
+                // Calculate P&L: quantity * (current_price - entry_price)
+                double pnl = pos.quantity * (latest_price - pos.average_price);
+                portfolio_value += pnl;
             }
         }
 
@@ -848,8 +850,10 @@ Result<void> BacktestEngine::process_strategy_signals(
                 }
             }
             
-            if (latest_price > 0.0) {
-                portfolio_value += pos.quantity * latest_price;
+            if (latest_price > 0.0 && pos.average_price > 0.0) {
+                // Calculate P&L: quantity * (current_price - entry_price)
+                double pnl = pos.quantity * (latest_price - pos.average_price);
+                portfolio_value += pnl;
             }
         }
 
