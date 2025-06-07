@@ -161,7 +161,7 @@ Result<BacktestResults> BacktestEngine::run(
             ERROR("Failed to load market data: " + 
                   std::string(data_result.error()->what()));
             
-            StateManager::instance().update_state(
+            (void)StateManager::instance().update_state(
                 backtest_component_id_, 
                 ComponentState::ERR_STATE,
                 data_result.error()->what()
@@ -191,7 +191,7 @@ Result<BacktestResults> BacktestEngine::run(
             ERROR("Strategy initialization failed: " + 
                   std::string(init_result.error()->what()));
             
-            StateManager::instance().update_state(
+            (void)StateManager::instance().update_state(
                 backtest_component_id_, 
                 ComponentState::ERR_STATE,
                 init_result.error()->what()
@@ -211,7 +211,7 @@ Result<BacktestResults> BacktestEngine::run(
             ERROR("Strategy start failed: " + 
                   std::string(start_result.error()->what()));
             
-            StateManager::instance().update_state(
+            (void)StateManager::instance().update_state(
                 backtest_component_id_, 
                 ComponentState::ERR_STATE,
                 start_result.error()->what()
@@ -253,7 +253,7 @@ Result<BacktestResults> BacktestEngine::run(
                 ERROR("Bar processing failed: " + 
                       std::string(signal_result.error()->what()));
                 
-                StateManager::instance().update_state(
+                (void)StateManager::instance().update_state(
                     backtest_component_id_, 
                     ComponentState::ERR_STATE,
                     signal_result.error()->what()
@@ -277,7 +277,7 @@ Result<BacktestResults> BacktestEngine::run(
                     ERROR("Portfolio constraint application failed: " + 
                           std::string(constraint_result.error()->what()));
                     
-                    StateManager::instance().update_state(
+                    (void)StateManager::instance().update_state(
                         backtest_component_id_, 
                         ComponentState::ERR_STATE,
                         constraint_result.error()->what()
@@ -329,7 +329,7 @@ Result<BacktestResults> BacktestEngine::run(
         }
 
         // Update final state
-        StateManager::instance().update_state(
+        (void)StateManager::instance().update_state(
             backtest_component_id_, 
             ComponentState::STOPPED
         );
@@ -341,7 +341,7 @@ Result<BacktestResults> BacktestEngine::run(
     } catch (const std::exception& e) {
         ERROR("Unexpected error during backtest: " + std::string(e.what()));
         
-        StateManager::instance().update_state(
+        (void)StateManager::instance().update_state(
             backtest_component_id_, 
             ComponentState::ERR_STATE,
             std::string("Unexpected error: ") + e.what()
@@ -389,7 +389,7 @@ Result<BacktestResults> BacktestEngine::run_portfolio(
             ERROR("Failed to load market data: " + 
                   std::string(data_result.error()->what()));
             
-            StateManager::instance().update_state(
+            (void)StateManager::instance().update_state(
                 backtest_component_id_, 
                 ComponentState::ERR_STATE,
                 data_result.error()->what()
@@ -509,7 +509,7 @@ Result<BacktestResults> BacktestEngine::run_portfolio(
         }
 
         // Update final state
-        StateManager::instance().update_state(
+        (void)StateManager::instance().update_state(
             backtest_component_id_, 
             ComponentState::STOPPED
         );
@@ -522,7 +522,7 @@ Result<BacktestResults> BacktestEngine::run_portfolio(
     } catch (const std::exception& e) {
         ERROR("Unexpected error during portfolio backtest: " + std::string(e.what()));
         
-        StateManager::instance().update_state(
+        (void)StateManager::instance().update_state(
             backtest_component_id_, 
             ComponentState::ERR_STATE,
             std::string("Unexpected error: ") + e.what()
@@ -642,8 +642,10 @@ Result<void> BacktestEngine::process_bar(
                 }
             }
             
-            if (latest_price > 0.0) {
-                portfolio_value += pos.quantity * latest_price;
+            if (latest_price > 0.0 && pos.average_price > 0.0) {
+                // Calculate P&L: quantity * (current_price - entry_price)
+                double pnl = pos.quantity * (latest_price - pos.average_price);
+                portfolio_value += pnl;
             }
         }
 
@@ -848,8 +850,10 @@ Result<void> BacktestEngine::process_strategy_signals(
                 }
             }
             
-            if (latest_price > 0.0) {
-                portfolio_value += pos.quantity * latest_price;
+            if (latest_price > 0.0 && pos.average_price > 0.0) {
+                // Calculate P&L: quantity * (current_price - entry_price)
+                double pnl = pos.quantity * (latest_price - pos.average_price);
+                portfolio_value += pnl;
             }
         }
 

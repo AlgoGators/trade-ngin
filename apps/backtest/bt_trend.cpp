@@ -152,6 +152,9 @@ int main() {
         config.portfolio_config.initial_capital = 500000.0;  // $500k
         config.portfolio_config.use_risk_management = true;
         config.portfolio_config.use_optimization = true;
+        // config.portfolio_config.use_risk_management = false;
+        // config.portfolio_config.use_optimization = false;
+
         
         std::cout << "Retrieved " << config.strategy_config.symbols.size() << " symbols" << std::endl;
         std::cout << "Initial capital: $" << config.portfolio_config.initial_capital << std::endl;

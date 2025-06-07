@@ -6,6 +6,7 @@
 #include <condition_variable>
 #include <memory>
 #include "trade_ngin/data/postgres_database.hpp"
+#include <thread>
 
 namespace trade_ngin {
 namespace utils {
