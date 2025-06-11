@@ -27,7 +27,22 @@ find_package(nlohmann_json CONFIG REQUIRED)
 #set(Arrow_DIR "C:/vcpkg/installed/x64-windows/share/arrow")
 find_package(Arrow REQUIRED)
 #set(libpqxx_DIR "C:/vcpkg/installed/x64-windows/share/libpqxx")
-find_package(libpqxx CONFIG REQUIRED)
+# find_package(libpqxx CONFIG REQUIRED)
+
+# Try to find libpqxx via pkg-config (works with Homebrew)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(PQXX REQUIRED libpqxx)
+
+add_library(libpqxx::pqxx UNKNOWN IMPORTED)
+set_target_properties(libpqxx::pqxx PROPERTIES
+    IMPORTED_LOCATION "${PQXX_LINK_LIBRARIES}"
+    INTERFACE_INCLUDE_DIRECTORIES "${PQXX_INCLUDE_DIRS}"
+    INTERFACE_LINK_LIBRARIES "${PQXX_LIBRARIES}"
+)
+
+link_directories(${PQXX_LIBRARY_DIRS})
+
+link_directories(/opt/homebrew/lib)
 
 # Add source files for the library
 set(TRADE_NGIN_SOURCES
