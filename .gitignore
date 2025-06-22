@@ -5,3 +5,4 @@ logs/
 config.json
 apps/backtest/results/
 .claude/
+src/.DS_Store

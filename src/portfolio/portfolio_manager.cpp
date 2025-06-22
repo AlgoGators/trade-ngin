@@ -273,41 +273,110 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data)
             }
         }
 
-        // Log before potential optimization
-        if (config_.use_optimization && optimizer_) {
-            try {
-                Logger::register_component("DynamicOptimizer");
-                auto opt_result = optimize_positions();
-                if (opt_result.is_error()) {
-                    WARN("Portfolio optimization failed: " + std::string(opt_result.error()->what()) + 
-                         ", continuing without optimization");
+
+        //  Iterative dynamic opt + risk management loop 
+        // Up to 5 iterations for convergence to fully integer positions. The final rounding step can cause minor tracking error/risk profile deviation
+
+        int max_iterations = 5;
+        int iteration = 0;
+        bool done = false;
+
+        while (!done && iteration++ < max_iterations) {
+            INFO("Iteration " + std::to_string(iteration) + " of dynamic optimization + risk loop");
+
+            // Dynamic Optimization step
+            if (config_.use_optimization && optimizer_) {
+                try {
+                    Logger::register_component("DynamicOptimizer");
+                    auto opt_result = optimize_positions();
+                    if (opt_result.is_error()) {
+                        WARN("Portfolio optimization failed in iteration " + std::to_string(iteration) + ": " +
+                            std::string(opt_result.error()->what()) +
+                            ", continuing without optimization");
+                    }
+                } catch (const std::exception& e) {
+                    WARN("Exception during portfolio optimization in iteration " + std::to_string(iteration) + ": " +
+                        std::string(e.what()) + ", continuing without optimization");
                 }
-            } catch (const std::exception& e) {
-                WARN("Exception during portfolio optimization: " + std::string(e.what()) + 
-                     ", continuing without optimization");
+            }
+
+            // Risk Management step
+            bool has_risk_manager = (external_risk_manager_ != nullptr) || (risk_manager_ != nullptr);
+            if (config_.use_risk_management && has_risk_manager) {
+                try {
+                    Logger::register_component("RiskManager");
+                    auto risk_result = apply_risk_management(data);
+                    if (risk_result.is_error()) {
+                        WARN("Portfolio risk management failed in iteration " + std::to_string(iteration) + ": " +
+                            std::string(risk_result.error()->what()) +
+                            ", continuing without risk management");
+                    } else {
+                        INFO("Portfolio risk management applied successfully in iteration " + std::to_string(iteration));
+                    }
+                } catch (const std::exception& e) {
+                    WARN("Exception during risk management in iteration " + std::to_string(iteration) + ": " +
+                        std::string(e.what()) + ", continuing without risk management");
+                }
+            } else {
+                INFO("Risk management not enabled, skipping risk checks in iteration " + std::to_string(iteration));
+            }
+
+            // Check for partial contracts in final positions
+            bool partials_found = false;
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                for (const auto& [id, info] : strategies_) {
+                    for (const auto& [symbol, pos] : info.target_positions) {
+                        double fractional = std::abs(pos.quantity - std::round(pos.quantity));
+                        if (fractional > 1e-6) {
+                            partials_found = true;
+                            INFO("Fractional contract detected in iteration " + std::to_string(iteration) + ": " +
+                                symbol + ", quantity=" + std::to_string(pos.quantity));
+                            break;
+                        }
+                    }
+                    if (partials_found) break;
+                }
+            }
+
+            if (!partials_found) {
+                INFO("No partial contracts after iteration " + std::to_string(iteration) + ". Converged!");
+                done = true;
             }
         }
-        
-        // Log before risk management
-        bool has_risk_manager = (external_risk_manager_ != nullptr) || (risk_manager_ != nullptr);
-        if (config_.use_risk_management && has_risk_manager) {
-            try {
-                Logger::register_component("RiskManager");
-                auto risk_result = apply_risk_management(data);
-                if (risk_result.is_error()) {
-                    WARN("Portfolio risk management failed: " + std::string(risk_result.error()->what()) + 
-                         ", continuing without risk management");
-                } else {
-                    INFO("Portfolio risk management applied successfully");
+
+        // This safeguard forcibly rounds all final positions to integers in case of conflicting rounding logic
+        if (!done) {
+            WARN("Max iterations reached (" + std::to_string(max_iterations) + "). Forcing final rounding to remove any partial contracts.");
+
+            std::lock_guard<std::mutex> lock(mutex_);
+            for (auto& [id, info] : strategies_) {
+                for (auto& [symbol, pos] : info.target_positions) {
+                    double original_quantity = pos.quantity;
+                    pos.quantity = std::round(pos.quantity); // Forcefully round to integer
+                    if (std::abs(original_quantity - pos.quantity) > 1e-6) {
+                        INFO("Final forced rounding for " + symbol + ": " +
+                            std::to_string(original_quantity) + " -> " + std::to_string(pos.quantity));
+                    }
                 }
-            } catch (const std::exception& e) {
-                WARN("Exception during risk management: " + std::string(e.what()) + 
-                     ", continuing without risk management");
             }
+            INFO("Final rounding completed. No partial contracts remain.");
         } else {
-            INFO("Risk management not enabled, skipping risk checks");
-            INFO("Use risk manager check: " + std::to_string(config_.use_risk_management));
-            INFO("Risk manager check: " + std::to_string(risk_manager_ != nullptr));
+            INFO("Final positions fully integer after " + std::to_string(iteration) + " iterations.");
+        }
+
+        // Final verification of all positions for partial contracts
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            for (const auto& [id, info] : strategies_) {
+                for (const auto& [symbol, pos] : info.target_positions) {
+                    double fractional = std::abs(pos.quantity - std::round(pos.quantity));
+                    if (fractional > 1e-6) {
+                        ERROR("FINAL CHECK: Fractional contract detected for " + symbol +
+                            " after all iterations. Quantity=" + std::to_string(pos.quantity));
+                    }
+                }
+            }
         }
 
         {
