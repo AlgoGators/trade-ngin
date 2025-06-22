@@ -52,4 +52,5 @@ set_target_properties(trade_ngin_tests
 
 # Enable test discovery
 include(GoogleTest)
-gtest_discover_tests(trade_ngin_tests)
+# gtest_discover_tests(trade_ngin_tests)
+add_test(NAME trade_ngin_tests COMMAND trade_ngin_tests)
