@@ -5,40 +5,44 @@
 
 ## 📖 Project Overview
 
-trade-ngin is a high-performance, modular quantitative trading system built in C++ designed for professional algorithmic traders and financial institutions. The system supports systematic trading strategies across multiple asset classes with a focus on futures, equities, and options markets.
+trade-ngin is a high-performance, modular quantitative trading system built in C++20 designed for professional algorithmic traders and financial institutions. The system supports systematic trading strategies with a focus on futures trading, featuring comprehensive risk management, portfolio optimization, and realistic backtesting capabilities.
 
 ### Core Capabilities
 
-- **Multi-strategy portfolio management** with dynamic capital allocation
-- **Comprehensive risk management** with position limits, drawdown control, and VaR constraints
-- **High-performance backtesting engine** with realistic execution simulation
-- **Transaction cost analysis** for strategy optimization
-- **Modular architecture** designed for extensibility and customization
-- **Professional-grade performance** with C++ efficiency
+- **Multi-strategy portfolio management** with dynamic capital allocation and optimization
+- **Comprehensive risk management** with VaR constraints, position limits, and drawdown control
+- **High-performance backtesting engine** with realistic execution simulation and slippage modeling
+- **Fixed-point arithmetic** using custom Decimal class for financial precision
+- **PostgreSQL integration** with Apache Arrow for efficient data processing
+- **Modular, component-based architecture** designed for extensibility and performance
+- **Professional-grade C++20 implementation** with comprehensive error handling
 
-trade-ngin is designed to handle both backtesting and live trading seamlessly, with a unified codebase that maintains consistency between simulation and production environments.
+The system is currently optimized for backtesting with a focus on futures trading strategies, featuring realistic execution simulation and comprehensive performance analytics. The architecture supports future live trading extensions with a unified codebase design.
 
-## 🚨 Recent Critical Updates (December 2024)
+## 🎯 Current System State
 
-### Database Query Ordering Fix
-**Issue Resolved**: Fixed critical SQL ORDER BY clause that was causing unrealistic backtest results
-- **Problem**: Data processed symbol-by-symbol instead of chronologically  
-- **Impact**: Portfolio values stuck at $500k, impossible metrics (0% drawdown, 999 Sortino)
-- **Solution**: Changed `ORDER BY symbol, time` to `ORDER BY time, symbol` in PostgreSQL queries
-- **Files Modified**: `src/data/postgres_database.cpp`
+### Implemented Features
+- ✅ **Multi-timeframe trend following strategy** with EMA crossovers across 6 timeframes
+- ✅ **28 futures contracts** support (ES, NQ, GC, CL, ZN, etc.)
+- ✅ **Fixed-point arithmetic** with custom Decimal class for financial precision
+- ✅ **PostgreSQL integration** with Apache Arrow for efficient data processing
+- ✅ **Comprehensive risk management** with VaR constraints and position limits
+- ✅ **Dynamic portfolio optimization** with transaction cost considerations
+- ✅ **Realistic backtesting** with slippage models and execution simulation
+- ✅ **Extensive logging and debugging** capabilities
 
-### Enhanced Debug Logging
-**New Features**: Comprehensive debug tracking for troubleshooting
-- **Portfolio Value Calculation**: Real-time P&L tracking with position breakdown
-- **Data Flow Analysis**: Cross-sectional data validation and missing data detection  
-- **Execution Monitoring**: Detailed logging of trade generation and position updates
-- **Performance Metrics**: Enhanced logging frequency for better visibility
+### Current Configuration
+- **Initial Capital**: $500,000
+- **Strategy**: Multi-timeframe trend following with volatility targeting (20% annualized)
+- **EMA Windows**: {2,8}, {4,16}, {8,32}, {16,64}, {32,128}, {64,256}
+- **Risk Parameters**: IDM=2.5, FDM=1.0-1.26, 3% weight per symbol
+- **Leverage Limits**: 4.0x gross, 2.0x net exposure
 
-### Type Safety Improvements  
-**Documentation Added**: `TYPE_CONVERSION_GUIDE.md` for proper handling of financial types
-- **Decimal/Price/Quantity**: Consistent fixed-point arithmetic for financial calculations
-- **Type Conversion**: Safe conversion patterns between C++ primitives and financial types
-- **Memory Safety**: RAII patterns and smart pointer usage throughout
+### Development Status
+- **Branch**: `refactor` (active development)
+- **Language**: C++20 with modern features
+- **Recent Focus**: Type safety improvements, fixed-point arithmetic, memory management
+- **Testing**: Comprehensive unit tests with GoogleTest framework
 
 ## 📂 Repository Structure & Organization
 
@@ -1035,7 +1039,7 @@ If backtests are running slowly:
 2. Check for inefficient loops or calculations in strategies  
 3. Optimize database queries to fetch data more efficiently
 4. Consider using release builds instead of debug builds
-5. **NEW**: Use automated build script `./build_and_test.sh` for optimized builds
+5. Use automated build script `./build_and_test.sh` for optimized builds
 
 #### Memory Management Issues
 
