@@ -1,11 +1,15 @@
 // src/portfolio/portfolio_manager.cpp
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
 #include <set>
+#include <algorithm>
+#include <sstream>
+#include <cmath>
+#include <climits>
 
 namespace trade_ngin {
 
-PortfolioManager::PortfolioManager(PortfolioConfig config, std::string id, InstrumentRegistry* registry)
-: config_(std::move(config)), id_(std::move(id)), registry_(std::move(registry)) {
+PortfolioManager::PortfolioManager(PortfolioConfig config, std::string id, std::shared_ptr<InstrumentRegistry> registry)
+: config_(std::move(config)), id_(std::move(id)), registry_(std::move(registry)), instance_id_(id_) {
 
     Logger::register_component("PortfolioManager");
 
@@ -41,8 +45,8 @@ PortfolioManager::PortfolioManager(PortfolioConfig config, std::string id, Instr
         "",
         std::chrono::system_clock::now(),
         {
-            {"total_capital", config_.total_capital},
-            {"reserve_capital", config_.reserve_capital}
+            {"total_capital", static_cast<double>(config_.total_capital)},
+            {"reserve_capital", static_cast<double>(config_.reserve_capital)}
         }
     };
 
@@ -172,6 +176,7 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data)
     
     try {
         std::unordered_map<std::string, std::unordered_map<std::string, Position>> prev_positions;
+        std::unordered_map<std::string, Position> prev_portfolio_positions;
         {
             std::lock_guard<std::mutex> lock(mutex_);
 
@@ -192,6 +197,9 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data)
             for (const auto& [id, info] : strategies_) {
                 prev_positions[id] = info.current_positions;
             }
+
+            // Store current portfolio positions to detect changes
+            prev_portfolio_positions = get_positions_internal();
 
             // Process data through each strategy
             for (auto& [id, info] : strategies_) {
@@ -310,8 +318,9 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data)
             INFO("Risk manager check: " + std::to_string(risk_manager_ != nullptr));
         }
 
+        // Get optimized positions (should be whole numbers after dynamic optimization)
+        auto post_opt = get_portfolio_positions();
         {
-            auto post_opt = get_portfolio_positions();
             std::ostringstream oss3;
             for (const auto& [symbol, pos] : post_opt) {
                 oss3 << symbol << ": " << pos.quantity << ", ";
@@ -322,57 +331,53 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data)
         {
             std::lock_guard<std::mutex> lock(mutex_);
 
-            // Generate execution reports for position changes
-            for (auto& [id, info] : strategies_) {
-                Logger::register_component(info.strategy->get_metadata().name);
-                for (const auto& [symbol, new_pos] : info.target_positions) {
+            // CRITICAL FIX: Generate execution reports using optimized positions (whole numbers)
+            // instead of fractional target_positions from strategies
+            for (const auto& [symbol, new_pos] : post_opt) {
                     double current_qty = 0.0;
                     
-                    // Get previous position quantity
-                    auto prev_pos_it = prev_positions[id].find(symbol);
-                    if (prev_pos_it != prev_positions[id].end()) {
-                        current_qty = prev_pos_it->second.quantity;
+                // Get previous portfolio position quantity for this symbol
+                auto prev_pos_it = prev_portfolio_positions.find(symbol);
+                if (prev_pos_it != prev_portfolio_positions.end()) {
+                    current_qty = static_cast<double>(prev_pos_it->second.quantity);
+                }
+                
+                // If position changed, create execution report
+                if (std::abs(static_cast<double>(new_pos.quantity) - current_qty) > 1e-6) {
+                    // Calculate trade size
+                    double trade_size = static_cast<double>(new_pos.quantity) - current_qty;
+                    Side side = trade_size > 0 ? Side::BUY : Side::SELL;
+                    
+                    // Find latest price for symbol
+                    double latest_price = 0.0;
+                    for (const auto& bar : data) {
+                        if (bar.symbol == symbol) {
+                            latest_price = static_cast<double>(bar.close);
+                            break;
+                        }
                     }
                     
-                    // If position changed, create execution report
-                    if (std::abs(new_pos.quantity - current_qty) > 1e-6) {
-                        // Calculate trade size
-                        double trade_size = new_pos.quantity - current_qty;
-                        Side side = trade_size > 0 ? Side::BUY : Side::SELL;
-                        
-                        // Find latest price for symbol
-                        double latest_price = 0.0;
-                        for (const auto& bar : data) {
-                            if (bar.symbol == symbol) {
-                                latest_price = bar.close;
-                                break;
-                            }
-                        }
-                        
-                        if (latest_price == 0.0) {
-                            continue; // Skip if price not available
-                        }
-                        
-                        // Create execution report
-                        ExecutionReport exec;
-                        exec.order_id = "PM-" + id + "-" + std::to_string(recent_executions_.size());
-                        exec.exec_id = "EX-" + id + "-" + std::to_string(recent_executions_.size());
-                        exec.symbol = symbol;
-                        exec.side = side;
-                        exec.filled_quantity = std::abs(trade_size);
-                        exec.fill_price = latest_price;
-                        exec.fill_time = data.empty() ? std::chrono::system_clock::now() : data[0].timestamp;
-                        exec.commission = 0.0; // Commission calculation would be done by backtest engine
-                        exec.is_partial = false;
-                        
-                        // Add to recent executions
-                        recent_executions_.push_back(exec);
+                    if (latest_price == 0.0) {
+                        continue; // Skip if price not available
                     }
+                    
+                    // Create execution report
+                    ExecutionReport exec;
+                    exec.order_id = "PM-" + id_ + "-" + std::to_string(recent_executions_.size());
+                    exec.exec_id = "EX-" + id_ + "-" + std::to_string(recent_executions_.size());
+                    exec.symbol = symbol;
+                    exec.side = side;
+                    exec.filled_quantity = std::abs(trade_size);
+                    exec.fill_price = latest_price;
+                    exec.fill_time = data.empty() ? std::chrono::system_clock::now() : data[0].timestamp;
+                    exec.commission = 0.0; // Commission calculation would be done by backtest engine
+                    exec.is_partial = false;
+                    
+                    // Add to recent executions
+                    recent_executions_.push_back(exec);
                 }
-            }   
+            }
         }
-        
-        
         return Result<void>();
         
     } catch (const std::exception& e) {
@@ -406,7 +411,7 @@ std::vector<double> PortfolioManager::calculate_weights_per_contract(
             // Get latest price from positions or market data
             auto pos_it = get_portfolio_positions().find(symbol);
             if (pos_it != get_portfolio_positions().end()) {
-                price = pos_it->second.average_price;
+                price = static_cast<double>(pos_it->second.average_price);
             }
         }
         
@@ -675,7 +680,7 @@ Result<void> PortfolioManager::optimize_positions() {
             }
 
             // Remove duplicates
-            sort(all_symbols.begin(), all_symbols.end());
+            std::sort(all_symbols.begin(), all_symbols.end());
             all_symbols.erase(std::unique(all_symbols.begin(), all_symbols.end()), all_symbols.end());
             
             if (all_symbols.empty()) {
@@ -726,7 +731,7 @@ Result<void> PortfolioManager::optimize_positions() {
 
                     // Calculate notional per contract
                     double notional_per_contract = contract_size * price * fx_rate;
-                    weights_per_contract.push_back(notional_per_contract / config_.total_capital);
+                    weights_per_contract.push_back(notional_per_contract / static_cast<double>(config_.total_capital));
                 } else {
                     WARN("Symbol " + symbol + " not found in trading data, using default weight");
                     weights_per_contract.push_back(0.01); // Reasonable default
@@ -746,18 +751,18 @@ Result<void> PortfolioManager::optimize_positions() {
                     
                     double allocation = info.allocation;
                     if (info.current_positions.count(symbol)) {
-                        current_weights[i] += info.current_positions.at(symbol).quantity * 
+                        current_weights[i] += static_cast<double>(info.current_positions.at(symbol).quantity) * 
                                               weights_per_contract[i] * allocation;
                     }
                     if (info.target_positions.count(symbol)) {
-                        target_weights[i] += info.target_positions.at(symbol).quantity * 
+                        target_weights[i] += static_cast<double>(info.target_positions.at(symbol).quantity) * 
                                              weights_per_contract[i] * allocation;
                     }
                 }
             }
             
             // Calculate trading costs (inside lock since it accesses strategies_)
-            costs = calculate_trading_costs(symbols, config_.total_capital);
+            costs = calculate_trading_costs(symbols, static_cast<double>(config_.total_capital));
         } // End of mutex lock scope
 
         // Calculate covariance matrix (outside lock, using copied data)
@@ -814,9 +819,9 @@ Result<void> PortfolioManager::optimize_positions() {
                     if (!info.use_optimization) 
                         continue;
                         if (info.target_positions.count(symbols[i])) {
-                            // undo the earlier allocation‑scale
+                            // undo the earlier allocation-scale
                             info.target_positions[symbols[i]].quantity
-                              = rounded_contracts / info.allocation;
+                              = static_cast<Decimal>(rounded_contracts / info.allocation);
                         }
                 }
             }
@@ -831,7 +836,7 @@ Result<void> PortfolioManager::optimize_positions() {
                 // Sum up positions across all strategies
                 for (const auto& [_, info] : strategies_) {
                     if (info.target_positions.count(symbol) > 0) {
-                        optimized_position += info.target_positions.at(symbol).quantity * info.allocation;
+                        optimized_position += static_cast<double>(info.target_positions.at(symbol).quantity) * info.allocation;
                     }
                 }
                 
@@ -870,7 +875,7 @@ Result<void> PortfolioManager::optimize_positions() {
 Result<void> PortfolioManager::apply_risk_management(const std::vector<Bar>& data) {
     Logger::register_component("RiskManager");
     // Use external risk manager if available, otherwise use internal manager
-    RiskManager* active_manager = external_risk_manager_ ? external_risk_manager_ : risk_manager_.get();
+    RiskManager* active_manager = external_risk_manager_ ? external_risk_manager_.get() : risk_manager_.get();
 
     if (!active_manager) {
         WARN("Risk manager not initialized, skipping risk management");
@@ -1024,9 +1029,9 @@ std::unordered_map<std::string, double> PortfolioManager::get_required_changes()
     for (const auto& [_, info] : strategies_) {
         for (const auto& [symbol, target] : info.target_positions) {
             double current = info.current_positions.count(symbol) ?
-                           info.current_positions.at(symbol).quantity : 0.0;
+                           static_cast<double>(info.current_positions.at(symbol).quantity) : 0.0;
             
-            changes[symbol] = (target.quantity - current) * info.allocation;
+            changes[symbol] = (static_cast<double>(target.quantity) - current) * info.allocation;
         }
     }
     
@@ -1101,8 +1106,9 @@ std::vector<std::shared_ptr<StrategyInterface>> PortfolioManager::get_strategies
 }
 
 double PortfolioManager::get_portfolio_value(const std::unordered_map<std::string, double>& current_prices) const {    
-    // Start with available capital
-    double portfolio_value = config_.total_capital - config_.reserve_capital;
+    // Start with initial capital (not reduced by reserves for portfolio value calculation)
+    double portfolio_value = static_cast<double>(config_.total_capital);
+    DEBUG("Portfolio value calculation starting with initial capital: $" + std::to_string(portfolio_value));
 
     // Acquire the mutex and get a copy of the portfolio positions
     std::unordered_map<std::string, Position> positions_copy;
@@ -1111,18 +1117,43 @@ double PortfolioManager::get_portfolio_value(const std::unordered_map<std::strin
         positions_copy = get_positions_internal();
     }
     
+    DEBUG("Found " + std::to_string(positions_copy.size()) + " positions for portfolio value calculation");
+    DEBUG("Available current prices for " + std::to_string(current_prices.size()) + " symbols");
+    
     // Process the positions outside of the mutex lock
+    int positions_with_prices = 0;
+    int positions_without_prices = 0;
+    
     for (const auto& [symbol, pos] : positions_copy) {
         auto it = current_prices.find(symbol);
         if (it != current_prices.end()) {
-            // Use the provided price
-            portfolio_value += pos.quantity * it->second;
+            // Calculate unrealized P&L using current market price
+            double current_price = it->second;
+            double avg_price = static_cast<double>(pos.average_price);
+            double quantity = static_cast<double>(pos.quantity);
+            
+            // For futures: unrealized_pnl = quantity * (current_price - avg_price)
+            double unrealized_pnl = quantity * (current_price - avg_price);
+            portfolio_value += unrealized_pnl;
+            positions_with_prices++;
         } else {
-            // Fall back to average price if current price not available
-            portfolio_value += pos.quantity * pos.average_price;
+            // If no current price available, use the stored unrealized P&L
+            WARN("No current price available for position " + symbol + ", using stored P&L: $" + 
+                 std::to_string(static_cast<double>(pos.unrealized_pnl)));
+            portfolio_value += static_cast<double>(pos.unrealized_pnl);
+            positions_without_prices++;
         }
+        
+        // Add realized P&L for this position
+        portfolio_value += static_cast<double>(pos.realized_pnl);
     }
     
+    if (positions_without_prices > 0) {
+        DEBUG("Portfolio valuation: " + std::to_string(positions_with_prices) + " positions with current prices, " +
+              std::to_string(positions_without_prices) + " positions using stored P&L");
+    }
+    
+    DEBUG("Final portfolio value: $" + std::to_string(portfolio_value));
     return portfolio_value;
 }
 
@@ -1131,12 +1162,18 @@ std::unordered_map<std::string, Position> PortfolioManager::get_positions_intern
     std::unordered_map<std::string, Position> portfolio_positions;
     
     for (const auto& [_, info] : strategies_) {
-        for (const auto& [symbol, pos] : info.target_positions) {
+        // CRITICAL FIX: Read positions directly from strategy (with P&L) instead of cached target_positions
+        const auto& strategy_positions = info.strategy->get_positions();
+        for (const auto& [symbol, pos] : strategy_positions) {
             if (portfolio_positions.count(symbol) == 0) {
                 portfolio_positions[symbol] = pos;
                 portfolio_positions[symbol].quantity *= info.allocation;
+                portfolio_positions[symbol].realized_pnl *= Decimal(info.allocation);
+                portfolio_positions[symbol].unrealized_pnl *= Decimal(info.allocation);
             } else {
                 portfolio_positions[symbol].quantity += pos.quantity * info.allocation;
+                portfolio_positions[symbol].realized_pnl += pos.realized_pnl * Decimal(info.allocation);
+                portfolio_positions[symbol].unrealized_pnl += pos.unrealized_pnl * Decimal(info.allocation);
             }
         }
     }
