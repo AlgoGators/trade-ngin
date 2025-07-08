@@ -255,47 +255,47 @@ Result<void> BaseStrategy::on_execution(const ExecutionReport& report) {
             (pos.quantity < 0 && report.side == Side::BUY)) {
             double realized_pnl = 0.0;
             if (report.side == Side::SELL) {
-                realized_pnl = (report.fill_price - pos.average_price) * 
-                             report.filled_quantity;
+                realized_pnl = (static_cast<double>(report.fill_price) - static_cast<double>(pos.average_price)) * 
+                             static_cast<double>(report.filled_quantity);
             } else {
-                realized_pnl = (pos.average_price - report.fill_price) * 
-                             report.filled_quantity;
+                realized_pnl = (static_cast<double>(pos.average_price) - static_cast<double>(report.fill_price)) * 
+                             static_cast<double>(report.filled_quantity);
             }
             
-            pos.realized_pnl += realized_pnl;
+            pos.realized_pnl += Decimal(realized_pnl);
             metrics_.realized_pnl += realized_pnl;
             metrics_.total_pnl += realized_pnl;
         }
         
         // Update position quantity and average price
         if (report.side == Side::BUY) {
-            double new_quantity = pos.quantity + report.filled_quantity;
-            if (pos.quantity >= 0) {
+            double new_quantity = static_cast<double>(pos.quantity) + static_cast<double>(report.filled_quantity);
+            if (static_cast<double>(pos.quantity) >= 0) {
                 // Adding to long position
-                pos.average_price = (pos.average_price * pos.quantity + 
-                                  report.fill_price * report.filled_quantity) / 
-                                  new_quantity;
+                pos.average_price = Decimal((static_cast<double>(pos.average_price) * static_cast<double>(pos.quantity) + 
+                                  static_cast<double>(report.fill_price) * static_cast<double>(report.filled_quantity)) / 
+                                  new_quantity);
             } else {
                 // Covering short position
                 if (new_quantity >= 0) {
                     pos.average_price = report.fill_price;
                 }
             }
-            pos.quantity = new_quantity;
+            pos.quantity = Quantity(new_quantity);
         } else {
-            double new_quantity = pos.quantity - report.filled_quantity;
-            if (pos.quantity <= 0) {
+            double new_quantity = static_cast<double>(pos.quantity) - static_cast<double>(report.filled_quantity);
+            if (static_cast<double>(pos.quantity) <= 0) {
                 // Adding to short position
-                pos.average_price = (pos.average_price * std::abs(pos.quantity) + 
-                                  report.fill_price * report.filled_quantity) / 
-                                  std::abs(new_quantity);
+                pos.average_price = Decimal((static_cast<double>(pos.average_price) * std::abs(static_cast<double>(pos.quantity)) + 
+                                  static_cast<double>(report.fill_price) * static_cast<double>(report.filled_quantity)) / 
+                                  std::abs(new_quantity));
             } else {
                 // Reducing long position
                 if (new_quantity <= 0) {
                     pos.average_price = report.fill_price;
                 }
             }
-            pos.quantity = new_quantity;
+            pos.quantity = Quantity(new_quantity);
         }
         
         pos.last_update = report.fill_time;
@@ -366,6 +366,12 @@ const StrategyMetadata& BaseStrategy::get_metadata() const {
     return metadata_;
 }
 
+std::unordered_map<std::string, std::vector<double>> BaseStrategy::get_price_history() const {
+    // BaseStrategy doesn't maintain price history by default
+    // Derived classes can override this to provide actual price history
+    return std::unordered_map<std::string, std::vector<double>>();
+}
+
 const std::unordered_map<std::string, Position>& BaseStrategy::get_positions() const {
     return positions_;
 }
@@ -376,7 +382,7 @@ Result<void> BaseStrategy::update_position(const std::string& symbol,
     
     // Validate position against limits
     if (config_.position_limits.count(symbol) > 0) {
-        if (std::abs(position.quantity) > config_.position_limits.at(symbol)) {
+        if (std::abs(static_cast<double>(position.quantity)) > config_.position_limits.at(symbol)) {
             return make_error<void>(
                 ErrorCode::POSITION_LIMIT_EXCEEDED,
                 "Position exceeds limit for " + symbol,
@@ -416,7 +422,7 @@ Result<void> BaseStrategy::check_risk_limits() {
 
         double contract_size = config_.trading_params.count(symbol) > 0 ? config_.trading_params.at(symbol) : 1.0;
         
-        double position_value = std::abs(position.quantity * position.average_price * contract_size);
+        double position_value = std::abs(static_cast<double>(position.quantity) * static_cast<double>(position.average_price) * contract_size);
         total_value += position_value;
     }
     
@@ -427,7 +433,7 @@ Result<void> BaseStrategy::check_risk_limits() {
     }
 
     // Make sure we have a valid leverage limit
-    double max_leverage = risk_limits_.max_leverage;
+    double max_leverage = static_cast<double>(risk_limits_.max_leverage);
     if (max_leverage <= 0.0) {
         // Use a reasonable default if not set
         max_leverage = config_.max_leverage > 0.0 ? config_.max_leverage : 2.0;
@@ -452,7 +458,7 @@ Result<void> BaseStrategy::check_risk_limits() {
     const double MIN_DRAWDOWN_THRESHOLD = 0.001; // Only trigger if drawdown is at least 0.1%
 
     // Only trigger error if drawdown exceeds limit AND is greater than minimum threshold
-    if (drawdown < -risk_limits_.max_drawdown && std::abs(drawdown) > MIN_DRAWDOWN_THRESHOLD) {
+    if (drawdown < -static_cast<double>(risk_limits_.max_drawdown) && std::abs(drawdown) > MIN_DRAWDOWN_THRESHOLD) {
         return make_error<void>(
             ErrorCode::RISK_LIMIT_EXCEEDED,
             "Drawdown exceeds limit: " + std::to_string(drawdown),
@@ -604,7 +610,7 @@ Result<void> BaseStrategy::update_metrics() {
     double total_unrealized = 0.0;
     for (const auto& [symbol, position] : positions_) {
         // Note: This is simplified - in reality we'd need current market prices
-        total_unrealized += position.unrealized_pnl;
+        total_unrealized += static_cast<double>(position.unrealized_pnl);
     }
     
     metrics_.unrealized_pnl = total_unrealized; 

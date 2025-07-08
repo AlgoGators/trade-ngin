@@ -66,7 +66,7 @@ Result<void> RegimeDetector::update(const std::vector<Bar>& data) {
 
         // Group data by symbol and update histories
         for (const auto& bar : data) {
-            price_history_[bar.symbol].push_back(bar.close);
+            price_history_[bar.symbol].push_back(static_cast<double>(bar.close));
             volume_history_[bar.symbol].push_back(bar.volume);
 
             // Maintain lookback window

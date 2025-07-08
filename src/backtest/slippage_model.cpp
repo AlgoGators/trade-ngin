@@ -69,7 +69,7 @@ void VolumeSlippageModel::update(const Bar& market_data) {
     // Update volatility estimate
     // Using simple high-low volatility measure
     auto& volatility = volatilities_[market_data.symbol];
-    double current_vol = (market_data.high - market_data.low) / market_data.close;
+    double current_vol = (market_data.high.as_double() - market_data.low.as_double()) / market_data.close.as_double();
     if (volatility == 0.0) {
         volatility = current_vol;
     } else {
@@ -116,8 +116,8 @@ double SpreadSlippageModel::calculate_slippage(
 void SpreadSlippageModel::update(const Bar& market_data) {
     // Estimate spread from high-low range
     // This is a simplified approach; in practice you might use bid-ask data
-    double estimated_spread = ((market_data.high - market_data.low) / 
-                             market_data.close) * 10000.0;  // Convert to bps
+    double estimated_spread = ((market_data.high.as_double() - market_data.low.as_double()) / 
+                             market_data.close.as_double()) * 10000.0;  // Convert to bps
     
     // Update spread estimate with exponential smoothing
     auto& current_spread = spread_estimates_[market_data.symbol];

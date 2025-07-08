@@ -6,6 +6,7 @@
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/core/time_utils.hpp"
 #include "trade_ngin/core/state_manager.hpp"
+#include "trade_ngin/core/config_base.hpp"
 #include "trade_ngin/data/market_data_bus.hpp"
 #include "trade_ngin/strategy/strategy_interface.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
@@ -13,11 +14,13 @@
 #include "trade_ngin/optimization/dynamic_optimizer.hpp"
 #include "trade_ngin/risk/risk_manager.hpp"
 #include "trade_ngin/backtest/slippage_models.hpp"
+#include "trade_ngin/data/postgres_database.hpp"
 #include <memory>
 #include <unordered_map>
 #include <mutex>
 #include <numeric>
 #include <iostream>
+#include <nlohmann/json.hpp>
 
 namespace trade_ngin {
 
@@ -25,10 +28,10 @@ namespace trade_ngin {
  * @brief Configuration for portfolio management
  */
 struct PortfolioConfig : public ConfigBase {
-    double total_capital{0.0};            // Total portfolio capital
-    double reserve_capital{0.0};          // Capital to keep in reserve
-    double max_strategy_allocation{1.0};   // Maximum allocation to any strategy
-    double min_strategy_allocation{0.0};   // Minimum allocation to any strategy
+    Decimal total_capital{Decimal(0.0)};            // Total portfolio capital
+    Decimal reserve_capital{Decimal(0.0)};          // Capital to keep in reserve
+    double max_strategy_allocation{1.0};   // Maximum allocation to any strategy (keep as double - it's a ratio)
+    double min_strategy_allocation{0.0};   // Minimum allocation to any strategy (keep as double - it's a ratio)
     bool use_optimization{false};         // Whether to use position optimization
     bool use_risk_management{false};      // Whether to use risk management
     DynamicOptConfig opt_config;          // Optimization configuration
@@ -38,7 +41,7 @@ struct PortfolioConfig : public ConfigBase {
 
     PortfolioConfig() = default;
 
-    PortfolioConfig(double total_capital, double reserve_capital,
+    PortfolioConfig(Decimal total_capital, Decimal reserve_capital,
         double max_strategy_allocation, double min_strategy_allocation,
         bool use_optimization, bool use_risk_management)
         : total_capital(total_capital), reserve_capital(reserve_capital),
@@ -50,8 +53,8 @@ struct PortfolioConfig : public ConfigBase {
     // JSON serialization
     nlohmann::json to_json() const override {
         nlohmann::json j;
-        j["total_capital"] = total_capital;
-        j["reserve_capital"] = reserve_capital;
+        j["total_capital"] = static_cast<double>(total_capital);
+        j["reserve_capital"] = static_cast<double>(reserve_capital);
         j["max_strategy_allocation"] = max_strategy_allocation;
         j["min_strategy_allocation"] = min_strategy_allocation;
         j["use_optimization"] = use_optimization;
@@ -63,8 +66,8 @@ struct PortfolioConfig : public ConfigBase {
     }
 
     void from_json(const nlohmann::json& j) override {
-        if (j.contains("total_capital")) total_capital = j.at("total_capital").get<double>();
-        if (j.contains("reserve_capital")) reserve_capital = j.at("reserve_capital").get<double>();
+        if (j.contains("total_capital")) total_capital = Decimal(j.at("total_capital").get<double>());
+        if (j.contains("reserve_capital")) reserve_capital = Decimal(j.at("reserve_capital").get<double>());
         if (j.contains("max_strategy_allocation")) {
             max_strategy_allocation = j.at("max_strategy_allocation").get<double>();
         }
@@ -96,7 +99,7 @@ public:
      */
     explicit PortfolioManager(PortfolioConfig config, 
         std::string id = "PORTFOLIO_MANAGER",
-        InstrumentRegistry* registry = nullptr);
+        std::shared_ptr<InstrumentRegistry> registry = nullptr);
 
     /**
      * @brief Add a strategy to the portfolio
@@ -173,9 +176,9 @@ public:
 
     /**
      * @brief Set external risk manager to use instead of internal one
-     * @param manager Pointer to an existing risk manager
+     * @param manager Shared pointer to an existing risk manager
      */
-    void set_risk_manager(RiskManager* manager) {
+    void set_risk_manager(std::shared_ptr<RiskManager> manager) {
         if (manager) {
             // Store the provided manager
             external_risk_manager_ = manager;
@@ -190,8 +193,8 @@ private:
 
     std::unique_ptr<DynamicOptimizer> optimizer_;
     std::unique_ptr<RiskManager> risk_manager_;
-    RiskManager* external_risk_manager_{nullptr};
-    InstrumentRegistry* registry_{nullptr};
+    std::shared_ptr<RiskManager> external_risk_manager_{nullptr};
+    std::shared_ptr<InstrumentRegistry> registry_{nullptr};
 
     struct StrategyInfo {
         std::shared_ptr<StrategyInterface> strategy;
