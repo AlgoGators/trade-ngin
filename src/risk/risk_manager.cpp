@@ -53,7 +53,7 @@ Result<RiskResult> RiskManager::process_positions(
             if (it != market_data.symbol_indices.end()) {
                 size_t index = it->second;
                 if (index < position_values.size()) {
-                    double position_value = pos.quantity * pos.average_price;
+                    double position_value = static_cast<double>(pos.quantity) * static_cast<double>(pos.average_price);
                     position_values[index] = position_value;
                     total_value += std::abs(position_value);
                     position_symbols.push_back(symbol);
@@ -113,13 +113,13 @@ std::vector<double> RiskManager::calculate_weights(
 
     // Calculate total portfolio value
     for(const auto& [symbol, pos] : positions) {
-        total_value += std::abs(pos.quantity * pos.average_price);
+        total_value += std::abs(static_cast<double>(pos.quantity) * static_cast<double>(pos.average_price));
     }
 
     // Calculate position weights
     if(total_value > 0.0) {
         for(const auto& [symbol, pos] : positions) {
-            weights.push_back((pos.quantity * pos.average_price) / total_value);
+            weights.push_back((static_cast<double>(pos.quantity) * static_cast<double>(pos.average_price)) / total_value);
         }
     } else {
         weights.resize(positions.size(), 0.0);
@@ -273,14 +273,14 @@ double RiskManager::calculate_leverage_multiplier(
     
     double net = std::accumulate(weights.begin(), weights.end(), 0.0) * total_value;
     
-    result.gross_leverage = gross / config_.capital;
-    result.net_leverage = std::abs(net) / config_.capital;
+    result.gross_leverage = gross / static_cast<double>(config_.capital);
+    result.net_leverage = std::abs(net) / static_cast<double>(config_.capital);
     
     // Historical leverage calculation
     std::vector<double> historical_leverage;
     for(const auto& daily_returns : market_data.returns) {
         double lev = std::accumulate(daily_returns.begin(), daily_returns.end(), 0.0);
-        historical_leverage.push_back(std::abs(lev) / config_.capital);
+        historical_leverage.push_back(std::abs(lev) / static_cast<double>(config_.capital));
     }
     
     result.max_leverage_risk = calculate_99th_percentile(historical_leverage);
@@ -345,7 +345,7 @@ MarketData RiskManager::create_market_data(const std::vector<Bar>& data) {
     // Organize Prices by Symbol and Timestamp
     std::map<std::string, std::map<Timestamp, double>> prices_by_symbol;
     for (const auto& bar : data) {
-        prices_by_symbol[bar.symbol][bar.timestamp] = bar.close;
+        prices_by_symbol[bar.symbol][bar.timestamp] = static_cast<double>(bar.close);
     }
 
     // Calculate Returns
@@ -413,7 +413,7 @@ std::vector<std::vector<double>> RiskManager::calculate_returns(
     
     // Organize data by symbol and timestamp
     for(const auto& bar : data) {
-        prices_by_symbol[bar.symbol][bar.timestamp] = bar.close;
+        prices_by_symbol[bar.symbol][bar.timestamp] = static_cast<double>(bar.close);
     }
     
     // Convert to chronologically ordered timeseries

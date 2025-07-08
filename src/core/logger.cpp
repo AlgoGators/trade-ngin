@@ -62,6 +62,9 @@ void Logger::log(LogLevel level, const std::string& message) {
         return;
     }
 
+    // Acquire lock early to ensure thread-safe access to config_
+    std::lock_guard<std::mutex> lock(mutex_);
+    
     if (level < config_.min_level) {
         return;
     }
@@ -70,12 +73,12 @@ void Logger::log(LogLevel level, const std::string& message) {
 
     if (config_.destination == LogDestination::CONSOLE || 
         config_.destination == LogDestination::BOTH) {
-        write_to_console(formatted_message);
+        write_to_console_unsafe(formatted_message);
     }
 
     if (config_.destination == LogDestination::FILE || 
         config_.destination == LogDestination::BOTH) {
-        write_to_file(formatted_message);
+        write_to_file_unsafe(formatted_message);
         if (log_file_.is_open()) {
             log_file_.flush();
         }
@@ -117,13 +120,22 @@ std::string Logger::format_message(LogLevel level, const std::string& message) {
 
 void Logger::write_to_console(const std::string& message) {
     std::lock_guard<std::mutex> lock(mutex_);
+    write_to_console_unsafe(message);
+}
+
+void Logger::write_to_console_unsafe(const std::string& message) {
+    // Assumes mutex is already held
     std::cout << message << std::endl;
     std::cout.flush();
 }
 
 void Logger::write_to_file(const std::string& message) {
     std::lock_guard<std::mutex> lock(mutex_);
-    
+    write_to_file_unsafe(message);
+}
+
+void Logger::write_to_file_unsafe(const std::string& message) {
+    // Assumes mutex is already held
     if (log_file_.is_open()) {
         log_file_ << message << std::endl;
         log_file_.flush();

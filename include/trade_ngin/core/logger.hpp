@@ -195,6 +195,8 @@ private:
     void rotate_log_files();
     void write_to_file(const std::string& message);
     void write_to_console(const std::string& message);
+    void write_to_file_unsafe(const std::string& message);
+    void write_to_console_unsafe(const std::string& message);
     std::string format_message(LogLevel level, const std::string& message);
 
     mutable std::mutex mutex_;

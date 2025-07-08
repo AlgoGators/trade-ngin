@@ -179,22 +179,86 @@ private:
     std::string side_to_string(Side side) const;
 
     /**
-     * @brief Build a query to retrieve market data
+     * @brief Execute market data query with proper parameterization
      * @param symbols List of symbols to retrieve
      * @param start_date Start date for data retrieval
      * @param end_date End date for data retrieval
      * @param asset_class Asset class for the data
      * @param freq Data frequency
      * @param data_type Type of data to retrieve
-     * @return SQL query string
+     * @param txn Database transaction
+     * @return Result containing the query result
      */
-    std::string build_market_data_query(
+    Result<pqxx::result> execute_market_data_query(
         const std::vector<std::string>& symbols,
         const Timestamp& start_date,
         const Timestamp& end_date,
         AssetClass asset_class,
         DataFrequency freq,
-        const std::string& data_type) const;
+        const std::string& data_type,
+        pqxx::work& txn) const;
+
+    /**
+     * @brief Validate table name components to prevent injection
+     * @param asset_class Asset class
+     * @param data_type Data type
+     * @param freq Data frequency
+     * @return Result indicating success or failure
+     */
+    Result<void> validate_table_name_components(
+        AssetClass asset_class,
+        const std::string& data_type,
+        DataFrequency freq) const;
+
+    /**
+     * @brief Validate table name for SQL injection prevention
+     * @param table_name Table name to validate
+     * @return Result indicating success or failure
+     */
+    Result<void> validate_table_name(const std::string& table_name) const;
+
+    /**
+     * @brief Validate symbol for SQL injection prevention
+     * @param symbol Symbol to validate
+     * @return Result indicating success or failure
+     */
+    Result<void> validate_symbol(const std::string& symbol) const;
+
+    /**
+     * @brief Validate symbols for SQL injection prevention
+     * @param symbols Symbols to validate
+     * @return Result indicating success or failure
+     */
+    Result<void> validate_symbols(const std::vector<std::string>& symbols) const;
+
+    /**
+     * @brief Validate strategy ID for SQL injection prevention
+     * @param strategy_id Strategy ID to validate
+     * @return Result indicating success or failure
+     */
+    Result<void> validate_strategy_id(const std::string& strategy_id) const;
+
+    /**
+     * @brief Validate execution report data
+     * @param exec Execution report to validate
+     * @return Result indicating success or failure
+     */
+    Result<void> validate_execution_report(const ExecutionReport& exec) const;
+
+    /**
+     * @brief Validate position data
+     * @param pos Position to validate
+     * @return Result indicating success or failure
+     */
+    Result<void> validate_position(const Position& pos) const;
+
+    /**
+     * @brief Validate signal data
+     * @param symbol Symbol for signal
+     * @param signal Signal value
+     * @return Result indicating success or failure
+     */
+    Result<void> validate_signal_data(const std::string& symbol, double signal) const;
 
     /**
      * @brief Convert a pqxx result to an Arrow table
