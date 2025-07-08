@@ -520,26 +520,26 @@ Result<void> ExecutionEngine::execute_vwap(const ExecutionJob& job) {
         auto& active_job = active_jobs_[job.job_id];
 
         // Initialize VWAP price with first fill price
-        active_job.metrics.vwap_price = parent_order.price;
-        active_job.metrics.average_fill_price = parent_order.price;
+        active_job.metrics.vwap_price = parent_order.price.as_double();
+        active_job.metrics.average_fill_price = parent_order.price.as_double();
 
         // Split order into time-weighted slices
         int num_slices = std::max(5, static_cast<int>(
             std::ceil(job.config.time_horizon.count() / 5.0)
         ));
 
-        double slice_size = parent_order.quantity / num_slices;
+        double slice_size = static_cast<double>(parent_order.quantity) / num_slices;
         double total_volume = 0.0;
         double volume_weighted_price = 0.0;
 
         // Generate child orders
         for (int i = 0; i < num_slices; ++i) {
             Order child = parent_order;
-            child.quantity = slice_size;
+            child.quantity = Quantity(slice_size);
             
             // Adjust price slightly around parent price to simulate market impact
             double price_adjustment = (static_cast<double>(rand()) / RAND_MAX - 0.5) * 0.001;
-            child.price = parent_order.price * (1.0 + price_adjustment);
+            child.price = Price(parent_order.price.as_double() * (1.0 + price_adjustment));
 
             auto submit_result = order_manager_->submit_order(child, "VWAP_" + job.job_id);
             if (submit_result.is_error()) {
@@ -554,8 +554,8 @@ Result<void> ExecutionEngine::execute_vwap(const ExecutionJob& job) {
             active_job.metrics.num_child_orders++;
 
             // Update VWAP calculations
-            total_volume += child.quantity;
-            volume_weighted_price += child.price * child.quantity;
+            total_volume += child.quantity.as_double();
+            volume_weighted_price += child.price.as_double() * child.quantity.as_double();
         }
 
         // Update final VWAP price
@@ -728,7 +728,7 @@ Result<void> ExecutionEngine::execute_adaptive_limit(const ExecutionJob& job) {
                 // Create new aggressive order
                 Order aggressive_order = parent_order_result.value().order;
                 aggressive_order.type = OrderType::LIMIT;
-                aggressive_order.price = is_buying ? ask_price : bid_price;
+                aggressive_order.price = Price(is_buying ? ask_price : bid_price);
 
                 auto order_result = order_manager_->submit_order(
                     aggressive_order,
@@ -812,17 +812,17 @@ Result<void> ExecutionEngine::execute_is(const ExecutionJob& job) {
         auto& active_job = active_jobs_[job.job_id];
 
         // Calculate initial market impact before execution
-        double notional = parent_order.quantity * parent_order.price;
+        double notional = parent_order.quantity.as_double() * parent_order.price.as_double();
         active_job.metrics.market_impact = 0.0002 * notional; // 2bp market impact
-        active_job.metrics.arrival_price = parent_order.price;
+        active_job.metrics.arrival_price = parent_order.price.as_double();
 
         // Create child order with price improvement
         Order child = parent_order;
-        child.quantity = parent_order.quantity * (job.config.urgency_level * 0.5 + 0.1);
+        child.quantity = Quantity(parent_order.quantity.as_double() * (job.config.urgency_level * 0.5 + 0.1));
         
         // Add a small price adjustment based on urgency
         double price_adjustment = job.config.urgency_level * 0.001; // 0.1% max price adjustment
-        child.price = parent_order.price * (1.0 + price_adjustment);
+        child.price = Price(parent_order.price.as_double() * (1.0 + price_adjustment));
 
         auto submit_result = order_manager_->submit_order(child, "IS_" + job.job_id);
         if (submit_result.is_error()) {
@@ -838,12 +838,12 @@ Result<void> ExecutionEngine::execute_is(const ExecutionJob& job) {
 
         // Calculate implementation shortfall based on price difference and market impact
         active_job.metrics.implementation_shortfall = 
-            std::abs((child.price - active_job.metrics.arrival_price) / 
+            std::abs((child.price.as_double() - active_job.metrics.arrival_price) / 
                     active_job.metrics.arrival_price) + 
             active_job.metrics.market_impact;
 
         // Update completion rate
-        active_job.metrics.completion_rate = child.quantity / parent_order.quantity;
+        active_job.metrics.completion_rate = child.quantity.as_double() / parent_order.quantity.as_double();
 
         return Result<void>();
 
@@ -920,28 +920,28 @@ Result<std::vector<Order>> ExecutionEngine::generate_child_orders(
         const auto& config = job.config;
 
         // Calculate slice size
-        double slice_size = parent_order.quantity / static_cast<double>(num_slices);
+        double slice_size = parent_order.quantity.as_double() / static_cast<double>(num_slices);
         
         // Ensure minimum child size is respected
         if (slice_size < config.min_child_size) {
             num_slices = static_cast<size_t>(
-                std::ceil(parent_order.quantity / config.min_child_size)
+                std::ceil(parent_order.quantity.as_double() / config.min_child_size)
             );
-            slice_size = parent_order.quantity / static_cast<double>(num_slices);
+            slice_size = parent_order.quantity.as_double() / static_cast<double>(num_slices);
         }
 
         // Generate child orders
         std::vector<Order> child_orders;
-        double remaining_qty = parent_order.quantity;
+        double remaining_qty = parent_order.quantity.as_double();
 
         for (size_t i = 0; i < num_slices && remaining_qty > 0; ++i) {
             Order child = parent_order;  // Copy basic properties
             
             // Last slice gets remaining quantity to handle rounding
             if (i == num_slices - 1) {
-                child.quantity = remaining_qty;
+                child.quantity = Quantity(remaining_qty);
             } else {
-                child.quantity = slice_size;
+                child.quantity = Quantity(slice_size);
             }
 
             child_orders.push_back(child);
@@ -989,8 +989,8 @@ Result<void> ExecutionEngine::update_metrics(
 
         // Sum up all fills
         for (const auto& fill : fills) {
-            total_qty += fill.filled_quantity;
-            total_value += fill.fill_price * fill.filled_quantity;
+            total_qty += fill.filled_quantity.as_double();
+            total_value += fill.fill_price.as_double() * fill.filled_quantity.as_double();
         }
 
         if (total_qty > 0) {
@@ -1000,9 +1000,9 @@ Result<void> ExecutionEngine::update_metrics(
             auto order_result = order_manager_->get_order_status(job.parent_order_id);
             if (order_result.is_ok()) {
                 const auto& parent_order = order_result.value().order;
-                metrics.completion_rate = total_qty / parent_order.quantity;
+                metrics.completion_rate = total_qty / parent_order.quantity.as_double();
                 // Estimate volume participation (can be refined based on actual market volume)
-                metrics.volume_participation = std::min(0.1, total_qty / (parent_order.quantity * 2.0));
+                metrics.volume_participation = std::min(0.1, total_qty / (parent_order.quantity.as_double() * 2.0));
             }
         }
 
@@ -1045,11 +1045,11 @@ Result<std::vector<std::pair<Timestamp, double>>> ExecutionEngine::calculate_sch
         }
 
         const auto& parent_order = order_result.value().order;
-        double remaining_qty = parent_order.quantity;
+        double remaining_qty = parent_order.quantity.as_double();
 
         for (size_t i = 0; i < market_data.size() && remaining_qty > 0; ++i) {
             double interval_ratio = volumes[i] / total_volume;
-            double interval_qty = parent_order.quantity * interval_ratio;
+            double interval_qty = parent_order.quantity.as_double() * interval_ratio;
             
             // Apply participation rate constraint
             if (config.max_participation_rate < 1.0) {

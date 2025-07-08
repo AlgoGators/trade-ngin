@@ -9,8 +9,192 @@
 #include <memory>
 #include <optional>
 #include <unordered_map>
+#include <cstdint>
+#include <ostream>
+#include <istream>
+#include <stdexcept>
+#include <cmath>
+#include <sstream>
+#include <climits>
+#include <algorithm>
 
 namespace trade_ngin {
+
+/**
+ * @brief Fixed-point decimal type for financial calculations
+ * Uses 8 decimal places to avoid floating-point precision issues
+ */
+class Decimal {
+private:
+    static constexpr int64_t SCALE = 100000000LL;  // 10^8 for 8 decimal places
+    int64_t value_;
+
+public:
+    // Constructors
+    constexpr Decimal() : value_(0) {}
+    constexpr explicit Decimal(int64_t raw_value) : value_(raw_value) {}
+    
+    Decimal(double d) {
+        if (std::isnan(d) || std::isinf(d)) {
+            throw std::invalid_argument("Cannot create Decimal from NaN or infinity");
+        }
+        if (d > (static_cast<double>(INT64_MAX) / SCALE) || 
+            d < (static_cast<double>(INT64_MIN) / SCALE)) {
+            throw std::overflow_error("Double value too large for Decimal");
+        }
+        value_ = static_cast<int64_t>(d * SCALE + (d >= 0 ? 0.5 : -0.5));
+    }
+    
+    Decimal(int i) : value_(static_cast<int64_t>(i) * SCALE) {}
+    Decimal(long l) : value_(static_cast<int64_t>(l) * SCALE) {}
+    
+    // Conversion operators
+    explicit operator double() const {
+        return static_cast<double>(value_) / SCALE;
+    }
+    
+    explicit operator float() const {
+        return static_cast<float>(value_) / SCALE;
+    }
+    
+    // Arithmetic operators
+    Decimal operator+(const Decimal& other) const {
+        int64_t result = value_ + other.value_;
+        // Check for overflow
+        if ((value_ > 0 && other.value_ > 0 && result < 0) ||
+            (value_ < 0 && other.value_ < 0 && result > 0)) {
+            throw std::overflow_error("Decimal addition overflow");
+        }
+        return Decimal(result);
+    }
+    
+    Decimal operator-(const Decimal& other) const {
+        int64_t result = value_ - other.value_;
+        // Check for overflow
+        if ((value_ > 0 && other.value_ < 0 && result < 0) ||
+            (value_ < 0 && other.value_ > 0 && result > 0)) {
+            throw std::overflow_error("Decimal subtraction overflow");
+        }
+        return Decimal(result);
+    }
+    
+    Decimal operator*(const Decimal& other) const {
+        // Check for overflow using double precision
+        double temp = static_cast<double>(value_) * static_cast<double>(other.value_);
+        temp /= SCALE;
+        if (temp > INT64_MAX || temp < INT64_MIN) {
+            throw std::overflow_error("Decimal multiplication overflow");
+        }
+        return Decimal(static_cast<int64_t>(temp));
+    }
+    
+    Decimal operator/(const Decimal& other) const {
+        if (other.value_ == 0) {
+            throw std::domain_error("Division by zero");
+        }
+        // Use double precision for division
+        double temp = static_cast<double>(value_) * SCALE;
+        temp /= other.value_;
+        if (temp > INT64_MAX || temp < INT64_MIN) {
+            throw std::overflow_error("Decimal division overflow");
+        }
+        return Decimal(static_cast<int64_t>(temp));
+    }
+    
+    // Compound assignment operators
+    Decimal& operator+=(const Decimal& other) {
+        *this = *this + other;
+        return *this;
+    }
+    
+    Decimal& operator-=(const Decimal& other) {
+        *this = *this - other;
+        return *this;
+    }
+    
+    Decimal& operator*=(const Decimal& other) {
+        *this = *this * other;
+        return *this;
+    }
+    
+    Decimal& operator/=(const Decimal& other) {
+        *this = *this / other;
+        return *this;
+    }
+    
+    // Comparison operators
+    bool operator==(const Decimal& other) const { return value_ == other.value_; }
+    bool operator!=(const Decimal& other) const { return value_ != other.value_; }
+    bool operator<(const Decimal& other) const { return value_ < other.value_; }
+    bool operator<=(const Decimal& other) const { return value_ <= other.value_; }
+    bool operator>(const Decimal& other) const { return value_ > other.value_; }
+    bool operator>=(const Decimal& other) const { return value_ >= other.value_; }
+    
+    // Unary operators
+    Decimal operator-() const {
+        if (value_ == INT64_MIN) {
+            throw std::overflow_error("Decimal negation overflow");
+        }
+        return Decimal(-value_);
+    }
+    
+    Decimal operator+() const { return *this; }
+    
+    // Utility functions
+    Decimal abs() const {
+        return value_ >= 0 ? *this : -*this;
+    }
+    
+    bool is_zero() const { return value_ == 0; }
+    bool is_positive() const { return value_ > 0; }
+    bool is_negative() const { return value_ < 0; }
+    
+    // Raw value access (for serialization)
+    int64_t raw_value() const { return value_; }
+    static Decimal from_raw(int64_t raw) { return Decimal(raw); }
+    
+    // String conversion
+    std::string to_string() const {
+        int64_t integer_part = value_ / SCALE;
+        int64_t fractional_part = std::abs(value_ % SCALE);
+        
+        std::string result = std::to_string(integer_part);
+        if (fractional_part > 0) {
+            std::string frac_str = std::to_string(fractional_part);
+            // Pad with leading zeros
+            while (frac_str.length() < 8) {
+                frac_str = "0" + frac_str;
+            }
+            // Remove trailing zeros
+            while (frac_str.back() == '0') {
+                frac_str.pop_back();
+            }
+            if (!frac_str.empty()) {
+                result += "." + frac_str;
+            }
+        }
+        return result;
+    }
+    
+    // Stream operators
+    friend std::ostream& operator<<(std::ostream& os, const Decimal& d) {
+        return os << d.to_string();
+    }
+    
+    // Helper functions for common operations
+    static Decimal from_double(double d) {
+        return Decimal(d);
+    }
+    
+    double to_double() const {
+        return static_cast<double>(*this);
+    }
+    
+    // Helper for metrics and other systems that expect double
+    double as_double() const {
+        return static_cast<double>(*this);
+    }
+};
 
 /**
  * @brief Timestamp type for consistent time representation
@@ -19,16 +203,16 @@ namespace trade_ngin {
 using Timestamp = std::chrono::system_clock::time_point;
 
 /**
- * @brief Price type with double precision
+ * @brief Price type using fixed-point decimal
  * Used for all price-related calculations
  */
-using Price = double;
+using Price = Decimal;
 
 /**
  * @brief Quantity type for order and position sizes
- * Double to support fractional quantities
+ * Using Decimal to support precise fractional quantities
  */
-using Quantity = double;
+using Quantity = Decimal;
 
 /**
  * @brief Trading side enumeration
@@ -86,12 +270,17 @@ struct Bar {
     Price high;
     Price low;
     Price close;
-    double volume;
+    double volume;  // Keep as double for now since volume is typically not a financial calculation
     std::string symbol;
 
     Bar() = default;
     Bar(Timestamp ts, Price o, Price h, Price l, Price c, double v, std::string s)
         : timestamp(ts), open(o), high(h), low(l), close(c), volume(v), symbol(std::move(s)) {}
+    
+    // Helper constructor that takes doubles for compatibility
+    Bar(Timestamp ts, double o, double h, double l, double c, double v, std::string s)
+        : timestamp(ts), open(Decimal(o)), high(Decimal(h)), low(Decimal(l)), close(Decimal(c)), 
+          volume(v), symbol(std::move(s)) {}
 };
 
 /**
@@ -103,9 +292,9 @@ struct ContractSpec {
     AssetType type;
     std::string exchange;
     std::string currency;
-    double multiplier;
-    double tick_size;
-    double commission_per_contract;
+    Decimal multiplier;
+    Decimal tick_size;
+    Decimal commission_per_contract;
     std::optional<Timestamp> expiry;
     std::optional<std::string> underlying;
 };
@@ -143,12 +332,12 @@ struct Position {
     std::string symbol;
     Quantity quantity;
     Price average_price;
-    double unrealized_pnl;
-    double realized_pnl;
+    Decimal unrealized_pnl;
+    Decimal realized_pnl;
     Timestamp last_update;
 
     // Constructors
-    Position(std::string sym, Quantity qty, Price avg_price, double unreal_pnl, double real_pnl, Timestamp ts)
+    Position(std::string sym, Quantity qty, Price avg_price, Decimal unreal_pnl, Decimal real_pnl, Timestamp ts)
         : symbol(std::move(sym)), 
         quantity(qty), 
         average_price(avg_price), 
@@ -159,12 +348,12 @@ struct Position {
     Position() : quantity(0), average_price(0), unrealized_pnl(0), realized_pnl(0) {}
     
     // Helper method to check if position exists
-    bool has_position() const { return quantity != 0; }
+    bool has_position() const { return !quantity.is_zero(); }
     
     // Helper method to get position side
     Side get_side() const {
-        if (quantity > 0) return Side::BUY;
-        if (quantity < 0) return Side::SELL;
+        if (quantity.is_positive()) return Side::BUY;
+        if (quantity.is_negative()) return Side::SELL;
         return Side::NONE;
     }
 };
@@ -181,7 +370,7 @@ struct ExecutionReport {
     Quantity filled_quantity;
     Price fill_price;
     Timestamp fill_time;
-    double commission;
+    Decimal commission;
     bool is_partial;
 };
 
@@ -201,12 +390,12 @@ enum class MarketRegime {
  * Holds all risk-related limits for a strategy or portfolio
  */
 struct RiskLimits {
-    double max_position_size;
-    double max_notional_value;
-    double max_drawdown;
-    double max_leverage;
-    double var_limit;
-    double max_correlation;
+    Decimal max_position_size;
+    Decimal max_notional_value;
+    Decimal max_drawdown;
+    Decimal max_leverage;
+    Decimal var_limit;
+    Decimal max_correlation;
 };
 
 /**
@@ -300,6 +489,12 @@ inline std::string build_table_name(
 
 } 
 
+// Specialization for std::to_string to work with Decimal
+namespace std {
+    inline string to_string(const trade_ngin::Decimal& d) {
+        return d.to_string();
+    }
+}
 
 namespace std {
     template <>

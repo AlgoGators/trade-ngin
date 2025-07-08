@@ -13,6 +13,7 @@
 #include "trade_ngin/core/time_utils.hpp"
 #include <memory>
 #include <vector>
+#include <nlohmann/json.hpp>
 #include <unordered_map>
 #include <chrono>
 
@@ -43,9 +44,9 @@ struct StrategyBacktestConfig : public ConfigBase {
     std::string data_type = "ohlcv";
     Timestamp start_date;
     Timestamp end_date;
-    double initial_capital = 1000000.0;  // $1M for strategy allocation
-    double commission_rate = 0.0005;     // 5 basis points
-    double slippage_model = 1.0;         // 1 bp
+    Decimal initial_capital = Decimal(1000000.0);  // $1M for strategy allocation
+    Decimal commission_rate = Decimal(0.0005);     // 5 basis points
+    Decimal slippage_model = Decimal(1.0);         // 1 bp
     bool store_trade_details = true;
 
     // Configuration metadata
@@ -65,9 +66,9 @@ struct StrategyBacktestConfig : public ConfigBase {
         j["data_type"] = data_type;
         j["start_date"] = format_timestamp(start_date);
         j["end_date"] = format_timestamp(end_date);
-        j["initial_capital"] = initial_capital;
-        j["commission_rate"] = commission_rate;
-        j["slippage_model"] = slippage_model;
+        j["initial_capital"] = static_cast<double>(initial_capital);
+        j["commission_rate"] = static_cast<double>(commission_rate);
+        j["slippage_model"] = static_cast<double>(slippage_model);
         j["store_trade_details"] = store_trade_details;
         j["version"] = version;
         return j;
@@ -80,9 +81,9 @@ struct StrategyBacktestConfig : public ConfigBase {
         if (j.contains("data_type")) data_type = j.at("data_type").get<std::string>();
         if (j.contains("start_date")) start_date = Timestamp(std::chrono::seconds(j.at("start_date").get<int64_t>()));
         if (j.contains("end_date")) end_date = Timestamp(std::chrono::seconds(j.at("end_date").get<int64_t>()));
-        if (j.contains("initial_capital")) initial_capital = j.at("initial_capital").get<double>();
-        if (j.contains("commission_rate")) commission_rate = j.at("commission_rate").get<double>();
-        if (j.contains("slippage_model")) slippage_model = j.at("slippage_model").get<double>();
+        if (j.contains("initial_capital")) initial_capital = Decimal(j.at("initial_capital").get<double>());
+        if (j.contains("commission_rate")) commission_rate = Decimal(j.at("commission_rate").get<double>());
+        if (j.contains("slippage_model")) slippage_model = Decimal(j.at("slippage_model").get<double>());
         if (j.contains("store_trade_details")) store_trade_details = j.at("store_trade_details").get<bool>();
         if (j.contains("version")) version = j.at("version").get<std::string>();
     }
@@ -92,7 +93,7 @@ struct StrategyBacktestConfig : public ConfigBase {
  * @brief Portfolio configuration for backtest simulation
  */
 struct PortfolioBacktestConfig : public ConfigBase {
-    double initial_capital{1000000.0}; // Initial capital for portfolio
+    Decimal initial_capital{Decimal(1000000.0)}; // Initial capital for portfolio
     bool use_risk_management{false};   // Enable risk management
     bool use_optimization{false};      // Enable optimization
     RiskConfig risk_config;
@@ -109,7 +110,7 @@ struct PortfolioBacktestConfig : public ConfigBase {
     // JSON serialization
     nlohmann::json to_json() const override {
         nlohmann::json j;
-        j["initial_capital"] = initial_capital;
+        j["initial_capital"] = static_cast<double>(initial_capital);
         j["use_risk_management"] = use_risk_management;
         j["use_optimization"] = use_optimization;
         j["risk_config"] = risk_config.to_json();
@@ -122,7 +123,7 @@ struct PortfolioBacktestConfig : public ConfigBase {
     }
 
     void from_json(const nlohmann::json& j) override {
-        if (j.contains("initial_capital")) initial_capital = j.at("initial_capital").get<double>();
+        if (j.contains("initial_capital")) initial_capital = Decimal(j.at("initial_capital").get<double>());
         if (j.contains("use_risk_management")) use_risk_management = j.at("use_risk_management").get<bool>();
         if (j.contains("use_optimization")) use_optimization = j.at("use_optimization").get<bool>();
         if (j.contains("risk_config")) risk_config.from_json(j.at("risk_config"));

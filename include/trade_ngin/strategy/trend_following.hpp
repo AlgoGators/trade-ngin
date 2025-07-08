@@ -74,7 +74,7 @@ public:
         StrategyConfig config,
         TrendFollowingConfig trend_config,
         std::shared_ptr<PostgresDatabase> db,
-        InstrumentRegistry* registry = nullptr);
+        std::shared_ptr<InstrumentRegistry> registry = nullptr);
 
     /**
      * @brief Process new market data
@@ -165,7 +165,7 @@ private:
     std::unordered_map<std::string, std::vector<double>> price_history_;
     std::unordered_map<std::string, std::vector<double>> volatility_history_;
 
-    InstrumentRegistry* registry_;
+    std::shared_ptr<InstrumentRegistry> registry_;
 
     std::unordered_map<std::string, double> contract_size_cache_;
     std::unordered_map<std::string, double> weight_cache_;

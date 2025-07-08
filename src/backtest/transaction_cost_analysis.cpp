@@ -38,7 +38,7 @@ Result<TransactionCostMetrics> TransactionCostAnalyzer::analyze_trade(
             });
 
         if (market_volume_it != market_data.end()) {
-            metrics.participation_rate = execution.filled_quantity / 
+            metrics.participation_rate = execution.filled_quantity.as_double() / 
                                       market_volume_it->volume;
         }
 
@@ -54,8 +54,8 @@ Result<TransactionCostMetrics> TransactionCostAnalyzer::analyze_trade(
 
             if (post_trade_it != market_data.end()) {
                 metrics.price_reversion = 
-                    (post_trade_it->close - execution.fill_price) / 
-                    execution.fill_price;
+                    (post_trade_it->close.as_double() - execution.fill_price.as_double()) / 
+                    execution.fill_price.as_double();
             }
         }
 
@@ -85,8 +85,8 @@ Result<TransactionCostMetrics> TransactionCostAnalyzer::analyze_trade_sequence(
                 return result;
             }
 
-            double trade_value = std::abs(execution.filled_quantity * 
-                                        execution.fill_price);
+            double trade_value = std::abs(execution.filled_quantity.as_double() * 
+                                        execution.fill_price.as_double());
             total_value += trade_value;
 
             const auto& metrics = result.value();
@@ -143,7 +143,7 @@ Result<TransactionCostMetrics> TransactionCostAnalyzer::calculate_implementation
                 });
 
             if (it != market_data.end()) {
-                arrival_price = it->close;
+                arrival_price = it->close.as_double();
             }
         }
 
@@ -153,28 +153,28 @@ Result<TransactionCostMetrics> TransactionCostAnalyzer::calculate_implementation
             double total_quantity = 0.0;
             
             for (const auto& exec : actual_executions) {
-                total_value += exec.fill_price * exec.filled_quantity;
-                total_quantity += exec.filled_quantity;
+                total_value += exec.fill_price.as_double() * exec.filled_quantity.as_double();
+                total_quantity += exec.filled_quantity.as_double();
             }
 
             double vwap = total_quantity > 0.0 ? 
                          total_value / total_quantity : 0.0;
 
             // Calculate implementation shortfall components
-            if (target_position.quantity > 0) {  // Buying
+            if (target_position.quantity.as_double() > 0) {  // Buying
                 metrics.delay_cost = vwap - arrival_price;
             } else {  // Selling
                 metrics.delay_cost = arrival_price - vwap;
             }
 
             // Calculate opportunity cost for unfilled portion
-            double unfilled_quantity = target_position.quantity;
+            double unfilled_quantity = target_position.quantity.as_double();
             for (const auto& exec : actual_executions) {
-                unfilled_quantity -= exec.filled_quantity;
+                unfilled_quantity -= exec.filled_quantity.as_double();
             }
 
             if (std::abs(unfilled_quantity) > 0.0 && !market_data.empty()) {
-                double final_price = market_data.back().close;
+                double final_price = market_data.back().close.as_double();
                 if (unfilled_quantity > 0) {  // Missed buy
                     metrics.opportunity_cost = final_price - arrival_price;
                 } else {  // Missed sell
@@ -212,8 +212,8 @@ TransactionCostAnalyzer::analyze_benchmark_performance(
         double total_quantity = 0.0;
         
         for (const auto& exec : executions) {
-            total_value += exec.fill_price * exec.filled_quantity;
-            total_quantity += exec.filled_quantity;
+            total_value += exec.fill_price.as_double() * exec.filled_quantity.as_double();
+            total_quantity += exec.filled_quantity.as_double();
         }
 
         double execution_vwap = total_quantity > 0.0 ? 
@@ -230,7 +230,7 @@ TransactionCostAnalyzer::analyze_benchmark_performance(
             
             for (const auto& bar : market_data) {
                 if (bar.timestamp >= start_time && bar.timestamp <= end_time) {
-                    market_value += bar.close * bar.volume;
+                    market_value += bar.close.as_double() * bar.volume;
                     market_volume += bar.volume;
                 }
             }
@@ -250,7 +250,7 @@ TransactionCostAnalyzer::analyze_benchmark_performance(
             for (const auto& bar : market_data) {
                 if (bar.timestamp >= executions.front().fill_time &&
                     bar.timestamp <= executions.back().fill_time) {
-                    twap += bar.close;
+                    twap += bar.close.as_double();
                     count++;
                 }
             }
@@ -264,7 +264,7 @@ TransactionCostAnalyzer::analyze_benchmark_performance(
 
         // Calculate arrival price performance
         if (config_.use_arrival_price) {
-            auto arrival_price = market_data.front().close;  // First price in window
+            auto arrival_price = market_data.front().close.as_double();  // First price in window
             benchmark_metrics["arrival_price_performance"] = 
                 (execution_vwap - arrival_price) / arrival_price;
         }
@@ -305,9 +305,9 @@ double TransactionCostAnalyzer::calculate_spread_cost(
         --it;
     }
 
-    double spread_estimate = (it->high - it->low) / it->close;
-    return spread_estimate * 0.5 * execution.fill_price * 
-           std::abs(execution.filled_quantity);
+    double spread_estimate = (it->high.as_double() - it->low.as_double()) / it->close.as_double();
+    return spread_estimate * 0.5 * execution.fill_price.as_double() * 
+           std::abs(execution.filled_quantity.as_double());
 }
 
 double TransactionCostAnalyzer::calculate_market_impact(
@@ -324,20 +324,20 @@ double TransactionCostAnalyzer::calculate_market_impact(
     }
     --it; // Move to the last bar before execution
 
-    double pre_price = it->close;
+    double pre_price = it->close.as_double();
     double market_move = 0.0;
 
     // Get the next bar to determine natural market movement
     auto next_it = it + 1;
     if (next_it != market_data.end()) {
-        market_move = (next_it->close - pre_price) / pre_price;
+        market_move = (next_it->close.as_double() - pre_price) / pre_price;
     }
 
     // Calculate market-adjusted price (price without the trade's impact)
     double market_adjusted_price = pre_price * (1 + market_move);
     
     // Compute price impact relative to market-adjusted price
-    double price_impact = (execution.fill_price - market_adjusted_price) / pre_price;
+    double price_impact = (execution.fill_price.as_double() - market_adjusted_price) / pre_price;
 
     // For BUY orders: Adverse impact if execution price > market-adjusted price
     // For SELL orders: Adverse impact if execution price < market-adjusted price
@@ -347,7 +347,7 @@ double TransactionCostAnalyzer::calculate_market_impact(
         price_impact = std::max(-price_impact, 0.0); // Convert negative impacts to positive
     }
 
-    return price_impact * execution.fill_price * std::abs(execution.filled_quantity);
+    return price_impact * execution.fill_price.as_double() * std::abs(execution.filled_quantity.as_double());
 }
 
 double TransactionCostAnalyzer::calculate_timing_cost(
@@ -360,22 +360,22 @@ double TransactionCostAnalyzer::calculate_timing_cost(
     auto window_end = execution.fill_time + 
                      config_.post_trade_window;
 
-    double best_price = execution.fill_price;  // Default to actual price
+    double best_price = execution.fill_price.as_double();  // Default to actual price
     
     for (const auto& bar : market_data) {
         if (bar.timestamp >= window_start && 
             bar.timestamp <= window_end) {
             if (execution.side == Side::BUY) {
-                best_price = std::min(best_price, bar.low);
+                best_price = std::min(best_price, bar.low.as_double());
             } else {
-                best_price = std::max(best_price, bar.high);
+                best_price = std::max(best_price, bar.high.as_double());
             }
         }
     }
 
     // Calculate timing cost as difference from optimal price
-    return std::abs((execution.fill_price - best_price) * 
-                    execution.filled_quantity);
+    return std::abs((execution.fill_price.as_double() - best_price) * 
+                    execution.filled_quantity.as_double());
 }
 
 double TransactionCostAnalyzer::calculate_opportunity_cost(
@@ -384,9 +384,9 @@ double TransactionCostAnalyzer::calculate_opportunity_cost(
     const std::vector<Bar>& market_data) const {
     
     // Calculate unfilled quantity
-    double unfilled = target_position.quantity;
+    double unfilled = target_position.quantity.as_double();
     for (const auto& exec : actual_executions) {
-        unfilled -= exec.filled_quantity;
+        unfilled -= exec.filled_quantity.as_double();
     }
 
     if (std::abs(unfilled) < 1e-6 || market_data.empty()) {
@@ -394,8 +394,8 @@ double TransactionCostAnalyzer::calculate_opportunity_cost(
     }
 
     // Calculate price movement since decision
-    double start_price = market_data.front().close;
-    double end_price = market_data.back().close;
+    double start_price = market_data.front().close.as_double();
+    double end_price = market_data.back().close.as_double();
     
     // Cost is the price movement on unfilled quantity
     if (unfilled > 0) {  // Missed buy

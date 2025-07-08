@@ -9,6 +9,7 @@
 #include <vector>
 #include <unordered_map>
 #include <chrono>
+#include <nlohmann/json.hpp>
 
 namespace trade_ngin {
 

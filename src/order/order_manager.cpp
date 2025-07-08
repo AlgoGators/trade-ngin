@@ -175,22 +175,22 @@ bool OrderManager::validate_order(const Order& order, std::string& error_msg) co
         return false;
     }
 
-    if (order.quantity <= 0) {
+    if (static_cast<double>(order.quantity) <= 0) {
         error_msg = "Quantity must be positive";
         return false;
     }
 
-    if (order.type == OrderType::LIMIT && order.price <= 0) {
+    if (order.type == OrderType::LIMIT && static_cast<double>(order.price) <= 0) {
         error_msg = "Limit price must be positive";
         return false;
     }
 
-    if (order.quantity > config_.max_order_size) {
+    if (static_cast<double>(order.quantity) > config_.max_order_size) {
         error_msg = "Order size exceeds maximum";
         return false;
     }
 
-    double notional = order.quantity * order.price;
+    double notional = static_cast<double>(order.quantity) * static_cast<double>(order.price);
     if (notional > config_.max_notional_value) {
         error_msg = "Notional value exceeds maximum";
         return false;
@@ -216,12 +216,12 @@ Result<void> OrderManager::process_execution(const ExecutionReport& report) {
 
     auto& entry = it->second;
     double old_qty = entry.filled_quantity;
-    double new_qty = old_qty + report.filled_quantity;
+    double new_qty = old_qty + static_cast<double>(report.filled_quantity);
 
     entry.average_fill_price = (entry.average_fill_price * old_qty + 
-                              report.fill_price * report.filled_quantity) / new_qty;
+                              static_cast<double>(report.fill_price) * static_cast<double>(report.filled_quantity)) / new_qty;
     entry.filled_quantity = new_qty;
-    entry.status = std::abs(new_qty >= (entry.order.quantity - 1e-6)) ? 
+    entry.status = std::abs(new_qty >= (static_cast<double>(entry.order.quantity) - 1e-6)) ? 
                   OrderStatus::FILLED : OrderStatus::PARTIALLY_FILLED;
     entry.last_update = report.fill_time;
 
@@ -242,7 +242,7 @@ Result<void> OrderManager::send_to_broker(const std::string& order_id) {
             entry.order.quantity,
             entry.order.price,
             std::chrono::system_clock::now(),
-            0.0,
+            Decimal(0.0),
             false
         };
         return process_execution(report);
