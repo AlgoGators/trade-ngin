@@ -41,11 +41,41 @@ int main() {
         // Setup database connection pool
         INFO("Initializing database connection pool...");
         auto credentials = std::make_shared<trade_ngin::CredentialStore>("./config.json");
-        std::string username = credentials->get<std::string>("database", "username");
-        std::string password = credentials->get<std::string>("database", "password");
-        std::string host = credentials->get<std::string>("database", "host");
-        std::string port = credentials->get<std::string>("database", "port");
-        std::string db_name = credentials->get<std::string>("database", "name");
+        
+        auto username_result = credentials->get<std::string>("database", "username");
+        if (username_result.is_error()) {
+            std::cerr << "Failed to get username: " << username_result.error()->what() << std::endl;
+            return 1;
+        }
+        std::string username = username_result.value();
+        
+        auto password_result = credentials->get<std::string>("database", "password");
+        if (password_result.is_error()) {
+            std::cerr << "Failed to get password: " << password_result.error()->what() << std::endl;
+            return 1;
+        }
+        std::string password = password_result.value();
+        
+        auto host_result = credentials->get<std::string>("database", "host");
+        if (host_result.is_error()) {
+            std::cerr << "Failed to get host: " << host_result.error()->what() << std::endl;
+            return 1;
+        }
+        std::string host = host_result.value();
+        
+        auto port_result = credentials->get<std::string>("database", "port");
+        if (port_result.is_error()) {
+            std::cerr << "Failed to get port: " << port_result.error()->what() << std::endl;
+            return 1;
+        }
+        std::string port = port_result.value();
+        
+        auto db_name_result = credentials->get<std::string>("database", "name");
+        if (db_name_result.is_error()) {
+            std::cerr << "Failed to get database name: " << db_name_result.error()->what() << std::endl;
+            return 1;
+        }
+        std::string db_name = db_name_result.value();
 
         std::string conn_string = "postgresql://" + username + ":" + password + "@" + host + ":" + port + "/" + db_name;
 
@@ -178,7 +208,7 @@ int main() {
         
         // Configure portfolio optimization
         config.portfolio_config.opt_config.tau = 1.0;
-        config.portfolio_config.opt_config.capital = config.portfolio_config.initial_capital;
+        config.portfolio_config.opt_config.capital = config.portfolio_config.initial_capital.as_double();
         config.portfolio_config.opt_config.cost_penalty_scalar = 50.0;
         config.portfolio_config.opt_config.asymmetric_risk_buffer = 0.1;
         config.portfolio_config.opt_config.max_iterations = 100;
@@ -209,7 +239,7 @@ int main() {
         
         // Create trend following strategy configuration
         trade_ngin::StrategyConfig tf_config;
-        tf_config.capital_allocation = config.portfolio_config.initial_capital;
+        tf_config.capital_allocation = config.portfolio_config.initial_capital.as_double();
         tf_config.asset_classes = {trade_ngin::AssetClass::FUTURES};
         tf_config.frequencies = {config.strategy_config.data_freq};
         tf_config.max_drawdown = 0.4;  // 40% max drawdown
@@ -221,7 +251,7 @@ int main() {
         // Add position limits and contract sizes
         for (const auto& symbol : config.strategy_config.symbols) {
             tf_config.position_limits[symbol] = 1000.0;  // Max 1000 units per symbol
-            tf_config.costs[symbol] = config.strategy_config.commission_rate;
+            tf_config.costs[symbol] = config.strategy_config.commission_rate.as_double();
         }
         
         // Configure trend following parameters
@@ -247,8 +277,11 @@ int main() {
         std::cout << "Strategy capital allocation: $" << tf_config.capital_allocation << std::endl;
         std::cout << "Max leverage: " << tf_config.max_leverage << "x" << std::endl;
         
+        // Create a shared_ptr that doesn't own the singleton registry
+        auto registry_ptr = std::shared_ptr<InstrumentRegistry>(&registry, [](InstrumentRegistry*){});
+        
         auto tf_strategy = std::make_shared<trade_ngin::TrendFollowingStrategy>(
-            "TREND_FOLLOWING", tf_config, trend_config, db, &registry);
+            "TREND_FOLLOWING", tf_config, trend_config, db, registry_ptr);
         
         auto init_result = tf_strategy->initialize();
         if (init_result.is_error()) {

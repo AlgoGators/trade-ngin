@@ -1,6 +1,6 @@
 # trade-ngin
 [![Build Status](https://img.shields.io/badge/build-passing-brightgreen)]()
-[![C++](https://img.shields.io/badge/C++-17-blue.svg)]()
+[![C++](https://img.shields.io/badge/C++-20-blue.svg)]()
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 
 ## 📖 Project Overview
@@ -18,6 +18,28 @@ trade-ngin is a high-performance, modular quantitative trading system built in C
 
 trade-ngin is designed to handle both backtesting and live trading seamlessly, with a unified codebase that maintains consistency between simulation and production environments.
 
+## 🚨 Recent Critical Updates (December 2024)
+
+### Database Query Ordering Fix
+**Issue Resolved**: Fixed critical SQL ORDER BY clause that was causing unrealistic backtest results
+- **Problem**: Data processed symbol-by-symbol instead of chronologically  
+- **Impact**: Portfolio values stuck at $500k, impossible metrics (0% drawdown, 999 Sortino)
+- **Solution**: Changed `ORDER BY symbol, time` to `ORDER BY time, symbol` in PostgreSQL queries
+- **Files Modified**: `src/data/postgres_database.cpp`
+
+### Enhanced Debug Logging
+**New Features**: Comprehensive debug tracking for troubleshooting
+- **Portfolio Value Calculation**: Real-time P&L tracking with position breakdown
+- **Data Flow Analysis**: Cross-sectional data validation and missing data detection  
+- **Execution Monitoring**: Detailed logging of trade generation and position updates
+- **Performance Metrics**: Enhanced logging frequency for better visibility
+
+### Type Safety Improvements  
+**Documentation Added**: `TYPE_CONVERSION_GUIDE.md` for proper handling of financial types
+- **Decimal/Price/Quantity**: Consistent fixed-point arithmetic for financial calculations
+- **Type Conversion**: Safe conversion patterns between C++ primitives and financial types
+- **Memory Safety**: RAII patterns and smart pointer usage throughout
+
 ## 📂 Repository Structure & Organization
 
 ```
@@ -25,7 +47,11 @@ trade_ngin/
 ├── apps/                       # Application executables
 │   ├── backtest/               # Backtesting applications
 │   │   ├── bt_trend.cpp        # Trend following strategy backtest
+│   │   ├── results/            # Backtest result outputs
 │   │   └── CMakeLists.txt      # Build configuration for backtests
+│   ├── strategies/             # Live trading applications
+│   │   ├── live_trend.cpp      # Live trend following strategy
+│   │   └── CMakeLists.txt      # Build configuration for live strategies
 │   └── CMakeLists.txt          # Build configuration for applications
 ├── include/                    # Public header files
 │   └── trade_ngin/             # Main include directory
@@ -40,11 +66,13 @@ trade_ngin/
 │       │   ├── error.hpp
 │       │   ├── logger.hpp
 │       │   ├── state_manager.hpp
+│       │   ├── time_utils.hpp
 │       │   └── types.hpp
 │       ├── data/               # Data management
 │       │   ├── conversion_utils.hpp
 │       │   ├── credential_store.hpp
 │       │   ├── database_interface.hpp
+│       │   ├── database_pooling.hpp
 │       │   ├── market_data_bus.hpp
 │       │   └── postgres_database.hpp
 │       ├── execution/          # Order execution
@@ -53,6 +81,7 @@ trade_ngin/
 │       │   ├── equity.hpp
 │       │   ├── futures.hpp
 │       │   ├── instrument.hpp
+│       │   ├── instrument_registry.hpp
 │       │   └── option.hpp
 │       ├── optimization/       # Portfolio optimization
 │       │   └── dynamic_optimizer.hpp
@@ -64,7 +93,6 @@ trade_ngin/
 │       │   └── risk_manager.hpp
 │       └── strategy/           # Strategy components
 │           ├── base_strategy.hpp
-│           ├── database_handler.hpp
 │           ├── regime_detector.hpp
 │           ├── strategy_interface.hpp
 │           ├── trend_following.hpp
@@ -83,6 +111,7 @@ trade_ngin/
 │   ├── data/                   # Data management implementations
 │   │   ├── conversion_utils.cpp
 │   │   ├── credential_store.cpp
+│   │   ├── database_pooling.cpp
 │   │   ├── market_data_bus.cpp
 │   │   └── postgres_database.cpp
 │   ├── execution/              # Order execution implementations
@@ -90,6 +119,7 @@ trade_ngin/
 │   ├── instruments/            # Financial instruments implementations
 │   │   ├── equity.cpp
 │   │   ├── futures.cpp
+│   │   ├── instrument_registry.cpp
 │   │   └── option.cpp
 │   ├── optimization/           # Portfolio optimization implementations
 │   │   └── dynamic_optimizer.cpp
@@ -104,16 +134,63 @@ trade_ngin/
 │       ├── regime_detector.cpp
 │       └── trend_following.cpp
 ├── tests/                      # Unit and integration tests
+│   ├── backtesting/            # Backtest component tests
+│   │   ├── test_engine.cpp
+│   │   └── test_transaction_cost_analysis.cpp
 │   ├── core/                   # Core component tests
+│   │   ├── test_base.hpp
 │   │   ├── test_config_base.cpp
 │   │   ├── test_config_manager.cpp
 │   │   ├── test_config_version.cpp
 │   │   ├── test_logger.cpp
 │   │   ├── test_result.cpp
 │   │   └── test_state_manager.cpp
+│   ├── data/                   # Data component tests
+│   │   ├── test_credential_store.cpp
+│   │   ├── test_database_pooling.cpp
+│   │   ├── test_db_utils.cpp
+│   │   ├── test_db_utils.hpp
+│   │   ├── test_market_data_bus.cpp
+│   │   └── test_postgres_database.cpp
+│   ├── execution/              # Execution component tests
+│   │   └── test_execution_engine.cpp
+│   ├── optimization/           # Optimization component tests
+│   │   └── test_dynamic_optimizer.cpp
+│   ├── order/                  # Order component tests
+│   │   ├── test_order_manager.cpp
+│   │   ├── test_utils.cpp
+│   │   └── test_utils.hpp
+│   ├── portfolio/              # Portfolio component tests
+│   │   ├── mock_strategy.hpp
+│   │   └── test_portfolio_manager.cpp
+│   ├── risk/                   # Risk component tests
+│   │   └── test_risk_manager.cpp
+│   ├── strategy/               # Strategy component tests
+│   │   ├── test_base_strategy.cpp
+│   │   └── test_trend_following.cpp
 │   └── CMakeLists.txt          # Build configuration for tests
+├── build/                      # Build directory (generated)
+├── linting/                    # Code quality and linting tools
+│   ├── auto_fix_lint.sh
+│   ├── lint_runner.sh
+│   └── lint_report_*.txt       # Generated lint reports
+├── logs/                       # Application logs (generated)
+├── cmake/                      # CMake modules and configurations
+│   └── modules/
+│       └── Findlibpqxx.cmake
+├── config/                     # Environment-specific configurations
+│   ├── development/
+│   └── production/
+├── externals/                  # Third-party dependencies (GoogleTest)
+├── build_and_test.sh           # Automated build and test script
+├── build_docker.sh             # Docker build script
 ├── CMakeLists.txt              # Main build configuration
-└── config_template.json        # Template for configuration files
+├── config.json                 # Active configuration file
+├── config_template.json        # Template for configuration files
+├── TYPE_CONVERSION_GUIDE.md    # Guide for Decimal/Price/Quantity types
+├── README.Docker.md            # Docker setup documentation
+├── Dockerfile                  # Docker container configuration
+└── CLAUDE.md                   # Project knowledge base and current state
 ```
 
 ## ⚙️ System Architecture & Component Breakdown
@@ -562,13 +639,22 @@ sequenceDiagram
 
 ### Prerequisites
 
-- C++17 compatible compiler (GCC 8+, Clang 7+, MSVC 2019+)
-- CMake 3.17 or higher
-- Required libraries:
-  - nlohmann_json (for configuration handling)
-  - Arrow C++ (for data processing)
-  - libpqxx (for PostgreSQL connectivity)
-  - GoogleTest (for testing)
+- **C++20 compatible compiler** (GCC 10+, Clang 10+, MSVC 2019+)
+- **CMake 3.17 or higher**
+- **PostgreSQL 12+** (for market data storage)
+- **Docker** (optional, for containerized deployment)
+- **Required libraries**:
+  - nlohmann_json (JSON configuration handling)
+  - Apache Arrow C++ (efficient data processing and columnar storage)
+  - libpqxx (PostgreSQL connectivity)
+  - GoogleTest (included in `externals/` - testing framework)
+
+### System Requirements
+
+- **Memory**: Minimum 8GB RAM for typical backtests (28 contracts, 2 years data)
+- **Storage**: SSD recommended for database performance
+- **Database**: PostgreSQL instance with market data properly indexed
+- **OS**: Linux (preferred), Windows (WSL2 recommended), macOS
 
 ### Clone the Repository
 
@@ -589,6 +675,7 @@ cd trade_ngin
 
 ### Building with CMake
 
+#### Option 1: Manual Build
 ```bash
 # Create build directory
 mkdir build && cd build
@@ -601,6 +688,22 @@ cmake --build . --config Release
 
 # Run tests
 ctest -C Release
+```
+
+#### Option 2: Automated Build Script
+```bash
+# Use the provided build and test script
+./build_and_test.sh
+```
+
+#### Option 3: Docker Build
+```bash
+# Build Docker container
+./build_docker.sh
+
+# Or manually with Docker
+docker build -t trade-ngin .
+docker run -it trade-ngin
 ```
 
 ### Building with Visual Studio
@@ -624,6 +727,32 @@ ctest -C Release
 ```bash
 # From the build directory
 ./bin/Release/bt_trend
+
+# Or from project root
+./build/apps/backtest/bt_trend
+```
+
+### Running Live Trading
+
+```bash
+# From the build directory  
+./bin/Release/live_trend
+
+# Or from project root
+./build/apps/strategies/live_trend
+```
+
+### Monitoring and Logs
+
+```bash
+# View real-time logs
+tail -f logs/bt_trend_*.log
+
+# Run linting checks
+./linting/lint_runner.sh
+
+# View lint reports
+cat linting/lint_report_*.txt
 ```
 
 ### Configuration Parameters
@@ -877,14 +1006,36 @@ If a strategy fails to initialize:
 3. Look for specific error messages in the initialization chain
 4. Examine the strategy's `initialize()` method
 
+#### Unrealistic Backtest Results (FIXED - Dec 2024)
+
+**If you see static portfolio values or impossible metrics**:
+
+1. **Static $500k Portfolio Value**:
+   - **Cause**: Data ordering issue (symbol-first vs time-first)
+   - **Check**: Look for "Available current prices for X symbols" in logs
+   - **Expected**: Should show 28 symbols, not 8-13
+   - **Status**: FIXED in latest version
+
+2. **Impossible Metrics** (Sortino=999, MaxDD=0%):
+   - **Cause**: No position changes or P&L calculation errors  
+   - **Check**: Monitor "Period executions count" and position updates
+   - **Expected**: Should see varying execution counts (8-28 per period)
+   - **Status**: FIXED in latest version
+
+3. **Missing Data Warnings**:
+   - **Message**: "No current price available for position X"
+   - **Cause**: Normal for holidays/weekends, concerning if frequent
+   - **Action**: Monitor frequency - occasional is normal
+
 #### Backtesting Performance Issues
 
 If backtests are running slowly:
 
 1. Reduce the number of symbols or date range
-2. Check for inefficient loops or calculations in strategies
+2. Check for inefficient loops or calculations in strategies  
 3. Optimize database queries to fetch data more efficiently
 4. Consider using release builds instead of debug builds
+5. **NEW**: Use automated build script `./build_and_test.sh` for optimized builds
 
 #### Memory Management Issues
 
@@ -986,6 +1137,15 @@ Result<void> MyComponent::doSomething() {
 - Document preconditions and postconditions
 - Document error conditions and handling
 
+## 📚 Additional Documentation
+
+- **CLAUDE.md** - Comprehensive project knowledge base with current system state, recent fixes, and development priorities
+- **TYPE_CONVERSION_GUIDE.md** - Guide for proper handling of Decimal, Price, and Quantity types
+- **README.Docker.md** - Docker setup and deployment instructions  
+- **linting/** - Code quality tools and style guides
+
+For detailed information about recent changes, debugging procedures, and development workflows, consult **CLAUDE.md** which is actively maintained with the latest project status.
+
 ## 📖 License & Usage Terms
 
 trade-ngin is licensed under the [GPL v3](https://www.gnu.org/licenses/gpl-3.0) License. See LICENSE file for details.
@@ -994,4 +1154,4 @@ Third-party dependencies:
 - nlohmann_json: MIT License
 - Apache Arrow: Apache License 2.0
 - libpqxx: BSD License
-- GoogleTest: BSD 3-Clause License
+- GoogleTest: BSD 3-Clause License (included in externals/)

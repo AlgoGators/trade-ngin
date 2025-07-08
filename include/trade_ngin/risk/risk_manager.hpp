@@ -9,6 +9,7 @@
 #include <map>
 #include <iostream>
 #include <mutex>
+#include <nlohmann/json.hpp>
 
 namespace trade_ngin {
 
@@ -26,7 +27,7 @@ struct RiskConfig : public ConfigBase {
     // Calculation parameters
     double confidence_level{0.99};   // Confidence level for risk calcs
     int lookback_period{252};        // Historical lookback period
-    double capital{1e6};             // Portfolio capital
+    Decimal capital{Decimal(1e6)};             // Portfolio capital
 
     // Configuration metadata
     std::string version{"1.0.0"};    // Configuration version
@@ -41,7 +42,7 @@ struct RiskConfig : public ConfigBase {
         j["max_net_leverage"] = max_net_leverage;
         j["confidence_level"] = confidence_level;
         j["lookback_period"] = lookback_period;
-        j["capital"] = capital;
+        j["capital"] = static_cast<double>(capital);
         j["version"] = version;
         
         return j;
@@ -55,7 +56,7 @@ struct RiskConfig : public ConfigBase {
         if (j.contains("max_net_leverage")) max_net_leverage = j.at("max_net_leverage").get<double>();
         if (j.contains("confidence_level")) confidence_level = j.at("confidence_level").get<double>();
         if (j.contains("lookback_period")) lookback_period = j.at("lookback_period").get<int>();
-        if (j.contains("capital")) capital = j.at("capital").get<double>();
+        if (j.contains("capital")) capital = Decimal(j.at("capital").get<double>());
         if (j.contains("version")) version = j.at("version").get<std::string>();
     }
 };

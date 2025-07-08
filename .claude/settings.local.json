@@ -2,7 +2,20 @@
   "permissions": {
     "allow": [
       "Bash(grep:*)",
-      "Bash(rg:*)"
+      "Bash(rg:*)",
+      "Bash(mkdir:*)",
+      "Bash(cmake:*)",
+      "Bash(g++:*)",
+      "Bash(./build_and_test.sh)",
+      "Bash(ls:*)",
+      "Bash(/usr/local/lib/node_modules/@anthropic-ai/claude-code/vendor/ripgrep/x64-linux/rg -n \"unrealized_pnl.*=\" --type cpp)",
+      "Bash(/usr/local/lib/node_modules/@anthropic-ai/claude-code/vendor/ripgrep/x64-linux/rg -A 10 -B 5 \"mark.*to.*market|Position.*close.*average_price\" --type cpp)",
+      "Bash(/usr/local/lib/node_modules/@anthropic-ai/claude-code/vendor/ripgrep/x64-linux/rg -A 10 -B 5 \"close.*-.*average_price\" src/backtest/backtest_engine.cpp)",
+      "Bash(/usr/local/lib/node_modules/@anthropic-ai/claude-code/vendor/ripgrep/x64-linux/rg -n \"Position.*=\" --type cpp -A 5)",
+      "Bash(/usr/local/lib/node_modules/@anthropic-ai/claude-code/vendor/ripgrep/x64-linux/rg -n -A 5 -B 2 \"Position.*{|Position.*(\" src/strategy/base_strategy.cpp)",
+      "Bash(./build/bin/Release/bt_trend.exe)",
+      "Bash(timeout:*)",
+      "Bash(find:*)"
     ],
     "deny": []
   }
