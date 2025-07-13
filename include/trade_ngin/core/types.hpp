@@ -2,21 +2,21 @@
 
 #pragma once
 
-#include <string>
+#include <algorithm>
 #include <chrono>
-#include <vector>
-#include <variant>
+#include <climits>
+#include <cmath>
+#include <cstdint>
+#include <istream>
 #include <memory>
 #include <optional>
-#include <unordered_map>
-#include <cstdint>
 #include <ostream>
-#include <istream>
-#include <stdexcept>
-#include <cmath>
 #include <sstream>
-#include <climits>
-#include <algorithm>
+#include <stdexcept>
+#include <string>
+#include <unordered_map>
+#include <variant>
+#include <vector>
 
 namespace trade_ngin {
 
@@ -33,30 +33,30 @@ public:
     // Constructors
     constexpr Decimal() : value_(0) {}
     constexpr explicit Decimal(int64_t raw_value) : value_(raw_value) {}
-    
+
     Decimal(double d) {
         if (std::isnan(d) || std::isinf(d)) {
             throw std::invalid_argument("Cannot create Decimal from NaN or infinity");
         }
-        if (d > (static_cast<double>(INT64_MAX) / SCALE) || 
+        if (d > (static_cast<double>(INT64_MAX) / SCALE) ||
             d < (static_cast<double>(INT64_MIN) / SCALE)) {
             throw std::overflow_error("Double value too large for Decimal");
         }
         value_ = static_cast<int64_t>(d * SCALE + (d >= 0 ? 0.5 : -0.5));
     }
-    
+
     Decimal(int i) : value_(static_cast<int64_t>(i) * SCALE) {}
     Decimal(long l) : value_(static_cast<int64_t>(l) * SCALE) {}
-    
+
     // Conversion operators
     explicit operator double() const {
         return static_cast<double>(value_) / SCALE;
     }
-    
+
     explicit operator float() const {
         return static_cast<float>(value_) / SCALE;
     }
-    
+
     // Arithmetic operators
     Decimal operator+(const Decimal& other) const {
         int64_t result = value_ + other.value_;
@@ -67,7 +67,7 @@ public:
         }
         return Decimal(result);
     }
-    
+
     Decimal operator-(const Decimal& other) const {
         int64_t result = value_ - other.value_;
         // Check for overflow
@@ -77,7 +77,7 @@ public:
         }
         return Decimal(result);
     }
-    
+
     Decimal operator*(const Decimal& other) const {
         // Check for overflow using double precision
         double temp = static_cast<double>(value_) * static_cast<double>(other.value_);
@@ -87,7 +87,7 @@ public:
         }
         return Decimal(static_cast<int64_t>(temp));
     }
-    
+
     Decimal operator/(const Decimal& other) const {
         if (other.value_ == 0) {
             throw std::domain_error("Division by zero");
@@ -100,36 +100,48 @@ public:
         }
         return Decimal(static_cast<int64_t>(temp));
     }
-    
+
     // Compound assignment operators
     Decimal& operator+=(const Decimal& other) {
         *this = *this + other;
         return *this;
     }
-    
+
     Decimal& operator-=(const Decimal& other) {
         *this = *this - other;
         return *this;
     }
-    
+
     Decimal& operator*=(const Decimal& other) {
         *this = *this * other;
         return *this;
     }
-    
+
     Decimal& operator/=(const Decimal& other) {
         *this = *this / other;
         return *this;
     }
-    
+
     // Comparison operators
-    bool operator==(const Decimal& other) const { return value_ == other.value_; }
-    bool operator!=(const Decimal& other) const { return value_ != other.value_; }
-    bool operator<(const Decimal& other) const { return value_ < other.value_; }
-    bool operator<=(const Decimal& other) const { return value_ <= other.value_; }
-    bool operator>(const Decimal& other) const { return value_ > other.value_; }
-    bool operator>=(const Decimal& other) const { return value_ >= other.value_; }
-    
+    bool operator==(const Decimal& other) const {
+        return value_ == other.value_;
+    }
+    bool operator!=(const Decimal& other) const {
+        return value_ != other.value_;
+    }
+    bool operator<(const Decimal& other) const {
+        return value_ < other.value_;
+    }
+    bool operator<=(const Decimal& other) const {
+        return value_ <= other.value_;
+    }
+    bool operator>(const Decimal& other) const {
+        return value_ > other.value_;
+    }
+    bool operator>=(const Decimal& other) const {
+        return value_ >= other.value_;
+    }
+
     // Unary operators
     Decimal operator-() const {
         if (value_ == INT64_MIN) {
@@ -137,27 +149,39 @@ public:
         }
         return Decimal(-value_);
     }
-    
-    Decimal operator+() const { return *this; }
-    
+
+    Decimal operator+() const {
+        return *this;
+    }
+
     // Utility functions
     Decimal abs() const {
         return value_ >= 0 ? *this : -*this;
     }
-    
-    bool is_zero() const { return value_ == 0; }
-    bool is_positive() const { return value_ > 0; }
-    bool is_negative() const { return value_ < 0; }
-    
+
+    bool is_zero() const {
+        return value_ == 0;
+    }
+    bool is_positive() const {
+        return value_ > 0;
+    }
+    bool is_negative() const {
+        return value_ < 0;
+    }
+
     // Raw value access (for serialization)
-    int64_t raw_value() const { return value_; }
-    static Decimal from_raw(int64_t raw) { return Decimal(raw); }
-    
+    int64_t raw_value() const {
+        return value_;
+    }
+    static Decimal from_raw(int64_t raw) {
+        return Decimal(raw);
+    }
+
     // String conversion
     std::string to_string() const {
         int64_t integer_part = value_ / SCALE;
         int64_t fractional_part = std::abs(value_ % SCALE);
-        
+
         std::string result = std::to_string(integer_part);
         if (fractional_part > 0) {
             std::string frac_str = std::to_string(fractional_part);
@@ -175,21 +199,21 @@ public:
         }
         return result;
     }
-    
+
     // Stream operators
     friend std::ostream& operator<<(std::ostream& os, const Decimal& d) {
         return os << d.to_string();
     }
-    
+
     // Helper functions for common operations
     static Decimal from_double(double d) {
         return Decimal(d);
     }
-    
+
     double to_double() const {
         return static_cast<double>(*this);
     }
-    
+
     // Helper for metrics and other systems that expect double
     double as_double() const {
         return static_cast<double>(*this);
@@ -226,39 +250,26 @@ enum class Side {
 /**
  * @brief Order type enumeration
  */
-enum class OrderType {
-    MARKET,
-    LIMIT,
-    STOP,
-    STOP_LIMIT,
-    NONE
-};
+enum class OrderType { MARKET, LIMIT, STOP, STOP_LIMIT, NONE };
 
 /**
  * @brief Time in force enumeration
  */
 enum class TimeInForce {
     DAY,
-    GTC,     // Good Till Cancel
-    IOC,     // Immediate or Cancel
-    FOK,     // Fill or Kill
-    GTD,     // Good Till Date
-    MOC,     // Market on Close
-    MOO,     // Market on Open
+    GTC,  // Good Till Cancel
+    IOC,  // Immediate or Cancel
+    FOK,  // Fill or Kill
+    GTD,  // Good Till Date
+    MOC,  // Market on Close
+    MOO,  // Market on Open
     NONE
 };
 
 /**
  * @brief Asset type enumeration
  */
-enum class AssetType {
-    FUTURE,
-    EQUITY,
-    OPTION,
-    FOREX,
-    CRYPTO,
-    NONE
-};
+enum class AssetType { FUTURE, EQUITY, OPTION, FOREX, CRYPTO, NONE };
 
 /**
  * @brief Market data bar structure
@@ -276,11 +287,16 @@ struct Bar {
     Bar() = default;
     Bar(Timestamp ts, Price o, Price h, Price l, Price c, double v, std::string s)
         : timestamp(ts), open(o), high(h), low(l), close(c), volume(v), symbol(std::move(s)) {}
-    
+
     // Helper constructor that takes doubles for compatibility
     Bar(Timestamp ts, double o, double h, double l, double c, double v, std::string s)
-        : timestamp(ts), open(Decimal(o)), high(Decimal(h)), low(Decimal(l)), close(Decimal(c)), 
-          volume(v), symbol(std::move(s)) {}
+        : timestamp(ts),
+          open(Decimal(o)),
+          high(Decimal(h)),
+          low(Decimal(l)),
+          close(Decimal(c)),
+          volume(v),
+          symbol(std::move(s)) {}
 };
 
 /**
@@ -313,15 +329,19 @@ struct Order {
     TimeInForce time_in_force;
     Timestamp timestamp;
     std::string strategy_id;  // ID of the strategy that generated this order
-    
+
     // Optional fields
     std::optional<Price> stop_price;
     std::optional<Timestamp> good_till_date;
-    
+
     Order() = default;
     Order(std::string symbol, Side side, OrderType type, Quantity qty, Price price)
-        : symbol(std::move(symbol)), side(side), type(type), 
-          quantity(qty), price(price), time_in_force(TimeInForce::DAY) {}
+        : symbol(std::move(symbol)),
+          side(side),
+          type(type),
+          quantity(qty),
+          price(price),
+          time_in_force(TimeInForce::DAY) {}
 };
 
 /**
@@ -337,23 +357,28 @@ struct Position {
     Timestamp last_update;
 
     // Constructors
-    Position(std::string sym, Quantity qty, Price avg_price, Decimal unreal_pnl, Decimal real_pnl, Timestamp ts)
-        : symbol(std::move(sym)), 
-        quantity(qty), 
-        average_price(avg_price), 
-        unrealized_pnl(unreal_pnl), 
-        realized_pnl(real_pnl), 
-        last_update(ts) {}
-    
+    Position(std::string sym, Quantity qty, Price avg_price, Decimal unreal_pnl, Decimal real_pnl,
+             Timestamp ts)
+        : symbol(std::move(sym)),
+          quantity(qty),
+          average_price(avg_price),
+          unrealized_pnl(unreal_pnl),
+          realized_pnl(real_pnl),
+          last_update(ts) {}
+
     Position() : quantity(0), average_price(0), unrealized_pnl(0), realized_pnl(0) {}
-    
+
     // Helper method to check if position exists
-    bool has_position() const { return !quantity.is_zero(); }
-    
+    bool has_position() const {
+        return !quantity.is_zero();
+    }
+
     // Helper method to get position side
     Side get_side() const {
-        if (quantity.is_positive()) return Side::BUY;
-        if (quantity.is_negative()) return Side::SELL;
+        if (quantity.is_positive())
+            return Side::BUY;
+        if (quantity.is_negative())
+            return Side::SELL;
         return Side::NONE;
     }
 };
@@ -377,13 +402,7 @@ struct ExecutionReport {
 /**
  * @brief Market state enumeration for regime detection
  */
-enum class MarketRegime {
-    TRENDING_UP,
-    TRENDING_DOWN,
-    MEAN_REVERTING,
-    VOLATILE,
-    UNDEFINED
-};
+enum class MarketRegime { TRENDING_UP, TRENDING_DOWN, MEAN_REVERTING, VOLATILE, UNDEFINED };
 
 /**
  * @brief Risk limits structure
@@ -478,30 +497,25 @@ inline std::string get_schema_name(AssetClass asset_class) {
  * @param freq Data frequency
  * @return Full table name (e.g., "futures_data.ohlcv_1d")
  */
-inline std::string build_table_name(
-    AssetClass asset_class, 
-    const std::string& data_type,
-    DataFrequency freq) {
-    return get_schema_name(asset_class) + "." + 
-           data_type + "_" + 
-           get_table_suffix(freq);
+inline std::string build_table_name(AssetClass asset_class, const std::string& data_type,
+                                    DataFrequency freq) {
+    return get_schema_name(asset_class) + "." + data_type + "_" + get_table_suffix(freq);
 }
 
-} 
+}  // namespace trade_ngin
 
 // Specialization for std::to_string to work with Decimal
 namespace std {
-    inline string to_string(const trade_ngin::Decimal& d) {
-        return d.to_string();
-    }
+inline string to_string(const trade_ngin::Decimal& d) {
+    return d.to_string();
 }
+}  // namespace std
 
 namespace std {
-    template <>
-    struct less<trade_ngin::Timestamp> {
-        bool operator()(const trade_ngin::Timestamp& lhs, 
-                        const trade_ngin::Timestamp& rhs) const {
-            return lhs < rhs;
-        }
-    };
+template <>
+struct less<trade_ngin::Timestamp> {
+    bool operator()(const trade_ngin::Timestamp& lhs, const trade_ngin::Timestamp& rhs) const {
+        return lhs < rhs;
+    }
+};
 }  // namespace std
