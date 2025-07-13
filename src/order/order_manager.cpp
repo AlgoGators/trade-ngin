@@ -19,63 +19,41 @@ Result<void> OrderManager::initialize() {
         instance_id_ = generate_instance_id();
     }
 
-    ComponentInfo info{
-        ComponentType::ORDER_MANAGER,
-        ComponentState::INITIALIZED,
-        instance_id_,
-        "",
-        std::chrono::system_clock::now(),
-        {}
-    };
+    ComponentInfo info{ComponentType::ORDER_MANAGER,
+                       ComponentState::INITIALIZED,
+                       instance_id_,
+                       "",
+                       std::chrono::system_clock::now(),
+                       {}};
 
     auto register_result = StateManager::instance().register_component(info);
     if (register_result.is_error()) {
         return register_result;
     }
 
-    auto state_result = StateManager::instance().update_state(
-        instance_id_,
-        ComponentState::RUNNING
-    );
+    auto state_result =
+        StateManager::instance().update_state(instance_id_, ComponentState::RUNNING);
 
     return state_result;
 }
 
-Result<std::string> OrderManager::submit_order(
-    const Order& order,
-    const std::string& strategy_id) {
-    
+Result<std::string> OrderManager::submit_order(const Order& order, const std::string& strategy_id) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     std::string error_msg;
     if (!validate_order(order, error_msg)) {
-        return make_error<std::string>(
-            ErrorCode::INVALID_ORDER,
-            error_msg,
-            "OrderManager"
-        );
+        return make_error<std::string>(ErrorCode::INVALID_ORDER, error_msg, "OrderManager");
     }
 
     if (pending_orders_.size() >= config_.max_pending_orders) {
-        return make_error<std::string>(
-            ErrorCode::ORDER_REJECTED,
-            "Maximum pending orders reached",
-            "OrderManager"
-        );
+        return make_error<std::string>(ErrorCode::ORDER_REJECTED, "Maximum pending orders reached",
+                                       "OrderManager");
     }
 
     std::string order_id = generate_order_id();
     OrderBookEntry entry{
-        order_id,
-        order,
-        OrderStatus::NEW,
-        0.0,
-        0.0,
-        "",
-        "",
-        std::chrono::system_clock::now(),
-        strategy_id
-    };
+        order_id,   order, OrderStatus::NEW, 0.0, 0.0, "", "", std::chrono::system_clock::now(),
+        strategy_id};
 
     order_book_[order_id] = entry;
     pending_orders_.push(order_id);
@@ -85,11 +63,8 @@ Result<std::string> OrderManager::submit_order(
         order_book_[order_id].status = OrderStatus::REJECTED;
         order_book_[order_id].error_message = send_result.error()->what();
         pending_orders_.pop();
-        return make_error<std::string>(
-            send_result.error()->code(),
-            send_result.error()->what(),
-            "OrderManager"
-        );
+        return make_error<std::string>(send_result.error()->code(), send_result.error()->what(),
+                                       "OrderManager");
     }
 
     return Result<std::string>(order_id);
@@ -100,21 +75,15 @@ Result<void> OrderManager::cancel_order(const std::string& order_id) {
 
     auto it = order_book_.find(order_id);
     if (it == order_book_.end()) {
-        return make_error<void>(
-            ErrorCode::INVALID_ORDER,
-            "Order not found",
-            "OrderManager"
-        );
+        return make_error<void>(ErrorCode::INVALID_ORDER, "Order not found", "OrderManager");
     }
 
-    if (it->second.status == OrderStatus::FILLED ||
-        it->second.status == OrderStatus::CANCELLED) {
+    if (it->second.status == OrderStatus::FILLED || it->second.status == OrderStatus::CANCELLED) {
         return make_error<void>(
             ErrorCode::INVALID_ORDER,
-            "Order already " + 
-            std::string((it->second.status == OrderStatus::FILLED ? "filled" : "cancelled")),
-            "OrderManager"
-        );
+            "Order already " +
+                std::string((it->second.status == OrderStatus::FILLED ? "filled" : "cancelled")),
+            "OrderManager");
     }
 
     it->second.status = OrderStatus::CANCELLED;
@@ -122,18 +91,13 @@ Result<void> OrderManager::cancel_order(const std::string& order_id) {
     return Result<void>();
 }
 
-Result<OrderBookEntry> OrderManager::get_order_status(
-    const std::string& order_id) const {
-    
+Result<OrderBookEntry> OrderManager::get_order_status(const std::string& order_id) const {
     std::lock_guard<std::mutex> lock(mutex_);
 
     auto it = order_book_.find(order_id);
     if (it == order_book_.end()) {
-        return make_error<OrderBookEntry>(
-            ErrorCode::INVALID_ORDER,
-            "Order not found",
-            "OrderManager"
-        );
+        return make_error<OrderBookEntry>(ErrorCode::INVALID_ORDER, "Order not found",
+                                          "OrderManager");
     }
 
     return Result<OrderBookEntry>(it->second);
@@ -141,7 +105,6 @@ Result<OrderBookEntry> OrderManager::get_order_status(
 
 Result<std::vector<OrderBookEntry>> OrderManager::get_strategy_orders(
     const std::string& strategy_id) const {
-    
     std::lock_guard<std::mutex> lock(mutex_);
     std::vector<OrderBookEntry> orders;
 
@@ -159,8 +122,7 @@ Result<std::vector<OrderBookEntry>> OrderManager::get_active_orders() const {
     std::vector<OrderBookEntry> active_orders;
 
     for (const auto& [_, entry] : order_book_) {
-        if (entry.status != OrderStatus::FILLED &&
-            entry.status != OrderStatus::CANCELLED &&
+        if (entry.status != OrderStatus::FILLED && entry.status != OrderStatus::CANCELLED &&
             entry.status != OrderStatus::REJECTED) {
             active_orders.push_back(entry);
         }
@@ -207,22 +169,21 @@ std::string OrderManager::generate_order_id() const {
 Result<void> OrderManager::process_execution(const ExecutionReport& report) {
     auto it = order_book_.find(report.order_id);
     if (it == order_book_.end()) {
-        return make_error<void>(
-            ErrorCode::INVALID_ORDER,
-            "Order not found",
-            "OrderManager"
-        );
+        return make_error<void>(ErrorCode::INVALID_ORDER, "Order not found", "OrderManager");
     }
 
     auto& entry = it->second;
     double old_qty = entry.filled_quantity;
     double new_qty = old_qty + static_cast<double>(report.filled_quantity);
 
-    entry.average_fill_price = (entry.average_fill_price * old_qty + 
-                              static_cast<double>(report.fill_price) * static_cast<double>(report.filled_quantity)) / new_qty;
+    entry.average_fill_price =
+        (entry.average_fill_price * old_qty +
+         static_cast<double>(report.fill_price) * static_cast<double>(report.filled_quantity)) /
+        new_qty;
     entry.filled_quantity = new_qty;
-    entry.status = std::abs(new_qty >= (static_cast<double>(entry.order.quantity) - 1e-6)) ? 
-                  OrderStatus::FILLED : OrderStatus::PARTIALLY_FILLED;
+    entry.status = std::abs(new_qty >= (static_cast<double>(entry.order.quantity) - 1e-6))
+                       ? OrderStatus::FILLED
+                       : OrderStatus::PARTIALLY_FILLED;
     entry.last_update = report.fill_time;
 
     return Result<void>();
@@ -230,25 +191,23 @@ Result<void> OrderManager::process_execution(const ExecutionReport& report) {
 
 Result<void> OrderManager::send_to_broker(const std::string& order_id) {
     auto& entry = order_book_[order_id];
-    entry.status = OrderStatus::ACCEPTED; // Always mark as ACCEPTED
+    entry.status = OrderStatus::ACCEPTED;  // Always mark as ACCEPTED
 
     if (config_.simulate_fills) {
         // Simulate an immediate fill (original logic)
-        ExecutionReport report{
-            order_id,
-            "SIM_" + order_id,
-            entry.order.symbol,
-            entry.order.side,
-            entry.order.quantity,
-            entry.order.price,
-            std::chrono::system_clock::now(),
-            Decimal(0.0),
-            false
-        };
+        ExecutionReport report{order_id,
+                               "SIM_" + order_id,
+                               entry.order.symbol,
+                               entry.order.side,
+                               entry.order.quantity,
+                               entry.order.price,
+                               std::chrono::system_clock::now(),
+                               Decimal(0.0),
+                               false};
         return process_execution(report);
     }
 
     return Result<void>();
 }
 
-} // namespace trade_ngin
+}  // namespace trade_ngin

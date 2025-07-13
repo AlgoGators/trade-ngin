@@ -1,15 +1,15 @@
 // include/trade_ngin/strategy/base_strategy.hpp
 #pragma once
 
-#include "trade_ngin/strategy/strategy_interface.hpp"
-#include "trade_ngin/strategy/types.hpp"
-#include "trade_ngin/data/database_interface.hpp"
-#include "trade_ngin/data/postgres_database.hpp"
-#include "trade_ngin/core/error.hpp"
-#include "trade_ngin/data/market_data_bus.hpp"
-#include "trade_ngin/core/logger.hpp"
 #include <atomic>
 #include <mutex>
+#include "trade_ngin/core/error.hpp"
+#include "trade_ngin/core/logger.hpp"
+#include "trade_ngin/data/database_interface.hpp"
+#include "trade_ngin/data/market_data_bus.hpp"
+#include "trade_ngin/data/postgres_database.hpp"
+#include "trade_ngin/strategy/strategy_interface.hpp"
+#include "trade_ngin/strategy/types.hpp"
 
 namespace trade_ngin {
 
@@ -24,10 +24,8 @@ public:
      * @param config Strategy configuration
      * @param db Database interface
      */
-    BaseStrategy(std::string id,
-                StrategyConfig config,
-                std::shared_ptr<PostgresDatabase> db);
-    
+    BaseStrategy(std::string id, StrategyConfig config, std::shared_ptr<PostgresDatabase> db);
+
     /**
      * @brief Destructor
      */
@@ -85,7 +83,7 @@ public:
      * @return Result indicating success or failure
      */
     Result<void> on_signal(const std::string& symbol, double signal) override;
-    
+
     /**
      * @brief Get the current state of the strategy
      * @return Strategy state
@@ -109,13 +107,13 @@ public:
      * @return Strategy metadata
      */
     const StrategyMetadata& get_metadata() const override;
-    
+
     /**
      * @brief Get the price history for all symbols
      * @return Price history by symbol
      */
     std::unordered_map<std::string, std::vector<double>> get_price_history() const override;
-    
+
     /**
      * @brief Get the current positions for the strategy
      * @return Map of positions by symbol
@@ -128,9 +126,8 @@ public:
      * @param position New position
      * @return Result indicating success or failure
      */
-    Result<void> update_position(const std::string& symbol, 
-                               const Position& position) override;
-    
+    Result<void> update_position(const std::string& symbol, const Position& position) override;
+
     /**
      * @brief Update risk limits for the strategy
      * @param limits New risk limits
@@ -163,18 +160,18 @@ protected:
     virtual Result<void> save_signals(const std::unordered_map<std::string, double>& signals);
     virtual Result<void> save_positions();
     virtual Result<void> save_executions(const ExecutionReport& exec);
-    
+
     // Data members
     std::string id_;
     StrategyConfig config_;
     StrategyMetadata metadata_;
     StrategyMetrics metrics_;
     std::atomic<StrategyState> state_;
-    
+
     std::unordered_map<std::string, Position> positions_;
     std::unordered_map<std::string, double> last_signals_;
     RiskLimits risk_limits_;
-    
+
     std::shared_ptr<PostgresDatabase> db_;
     mutable std::mutex mutex_;
 
@@ -185,10 +182,10 @@ private:
      * @return Result indicating success or failure
      */
     Result<void> validate_state_transition(StrategyState new_state) const;
-    
+
     std::string registered_component_id_;
     bool is_initialized_{false};
     std::atomic<bool> running_{false};
 };
 
-} // namespace trade_ngin
+}  // namespace trade_ngin

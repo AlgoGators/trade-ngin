@@ -7,21 +7,15 @@ Result<void> StateManager::register_component(const ComponentInfo& info) {
     std::unique_lock<std::recursive_mutex> lock(mutex_);
 
     if (info.id.empty()) {
-        return make_error<void>(
-            ErrorCode::INVALID_ARGUMENT,
-            "Component ID cannot be empty",
-            "StateManager"
-        );
+        return make_error<void>(ErrorCode::INVALID_ARGUMENT, "Component ID cannot be empty",
+                                "StateManager");
     }
 
     if (components_.count(info.id)) {
-        return make_error<void>(
-            ErrorCode::INVALID_ARGUMENT,
-            "Component already registered: " + info.id,
-            "StateManager"
-        );
+        return make_error<void>(ErrorCode::INVALID_ARGUMENT,
+                                "Component already registered: " + info.id, "StateManager");
     }
-    
+
     components_[info.id] = info;
     cv_.notify_all();
     return Result<void>();
@@ -32,11 +26,8 @@ Result<void> StateManager::unregister_component(const std::string& component_id)
 
     auto it = components_.find(component_id);
     if (it == components_.end()) {
-        return make_error<void>(
-            ErrorCode::INVALID_ARGUMENT,
-            "Component not found: " + component_id,
-            "StateManager"
-        );
+        return make_error<void>(ErrorCode::INVALID_ARGUMENT, "Component not found: " + component_id,
+                                "StateManager");
     }
 
     components_.erase(it);
@@ -49,30 +40,21 @@ Result<ComponentInfo> StateManager::get_state(const std::string& component_id) c
 
     auto it = components_.find(component_id);
     if (it == components_.end()) {
-        return make_error<ComponentInfo>(
-            ErrorCode::INVALID_ARGUMENT,
-            "Component not found: " + component_id,
-            "StateManager"
-        );
+        return make_error<ComponentInfo>(ErrorCode::INVALID_ARGUMENT,
+                                         "Component not found: " + component_id, "StateManager");
     }
 
     return Result<ComponentInfo>(it->second);
 }
 
-Result<void> StateManager::update_state(
-    const std::string& component_id,
-    ComponentState new_state,
-    const std::string& error_message) {
-    
+Result<void> StateManager::update_state(const std::string& component_id, ComponentState new_state,
+                                        const std::string& error_message) {
     std::unique_lock<std::recursive_mutex> lock(mutex_);
 
     auto it = components_.find(component_id);
     if (it == components_.end()) {
-        return make_error<void>(
-            ErrorCode::INVALID_ARGUMENT,
-            "Component not found: " + component_id,
-            "StateManager"
-        );
+        return make_error<void>(ErrorCode::INVALID_ARGUMENT, "Component not found: " + component_id,
+                                "StateManager");
     }
 
     auto validation = validate_transition(it->second.state, new_state);
@@ -92,29 +74,25 @@ Result<void> StateManager::update_state(
     return Result<void>();
 }
 
-Result<void> StateManager::validate_transition(
-    ComponentState current_state,
-    ComponentState new_state) const {
-    
+Result<void> StateManager::validate_transition(ComponentState current_state,
+                                               ComponentState new_state) const {
     bool valid = false;
     switch (current_state) {
         case ComponentState::INITIALIZED:
-            valid = (new_state == ComponentState::RUNNING ||
-                    new_state == ComponentState::ERR_STATE);
+            valid =
+                (new_state == ComponentState::RUNNING || new_state == ComponentState::ERR_STATE);
             break;
         case ComponentState::RUNNING:
-            valid = (new_state == ComponentState::PAUSED ||
-                    new_state == ComponentState::STOPPED ||
-                    new_state == ComponentState::ERR_STATE);
+            valid = (new_state == ComponentState::PAUSED || new_state == ComponentState::STOPPED ||
+                     new_state == ComponentState::ERR_STATE);
             break;
         case ComponentState::PAUSED:
-            valid = (new_state == ComponentState::RUNNING ||
-                    new_state == ComponentState::STOPPED ||
-                    new_state == ComponentState::ERR_STATE);
+            valid = (new_state == ComponentState::RUNNING || new_state == ComponentState::STOPPED ||
+                     new_state == ComponentState::ERR_STATE);
             break;
         case ComponentState::ERR_STATE:
-            valid = (new_state == ComponentState::INITIALIZED ||
-                    new_state == ComponentState::STOPPED);
+            valid =
+                (new_state == ComponentState::INITIALIZED || new_state == ComponentState::STOPPED);
             break;
         case ComponentState::STOPPED:
             valid = new_state == ComponentState::INITIALIZED;
@@ -122,11 +100,8 @@ Result<void> StateManager::validate_transition(
     }
 
     if (!valid) {
-        return make_error<void>(
-            ErrorCode::INVALID_ARGUMENT,
-            "Invalid state transition",
-            "StateManager"
-        );
+        return make_error<void>(ErrorCode::INVALID_ARGUMENT, "Invalid state transition",
+                                "StateManager");
     }
 
     return Result<void>();
@@ -134,30 +109,25 @@ Result<void> StateManager::validate_transition(
 
 bool StateManager::is_healthy() const {
     std::unique_lock<std::recursive_mutex> lock(mutex_);
-    if (components_.empty()) return false;
+    if (components_.empty())
+        return false;
 
     for (const auto& [_, info] : components_) {
-        if (info.state != ComponentState::INITIALIZED &&
-            info.state != ComponentState::RUNNING) {
+        if (info.state != ComponentState::INITIALIZED && info.state != ComponentState::RUNNING) {
             return false;
         }
     }
     return true;
 }
 
-Result<void> StateManager::update_metrics(
-    const std::string& component_id,
-    const std::unordered_map<std::string, double>& metrics) {
-    
+Result<void> StateManager::update_metrics(const std::string& component_id,
+                                          const std::unordered_map<std::string, double>& metrics) {
     std::unique_lock<std::recursive_mutex> lock(mutex_);
 
     auto it = components_.find(component_id);
     if (it == components_.end()) {
-        return make_error<void>(
-            ErrorCode::INVALID_ARGUMENT,
-            "Component not found: " + component_id,
-            "StateManager"
-        );
+        return make_error<void>(ErrorCode::INVALID_ARGUMENT, "Component not found: " + component_id,
+                                "StateManager");
     }
 
     it->second.metrics = metrics;

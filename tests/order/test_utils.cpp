@@ -37,11 +37,8 @@ Order create_test_order() {
     return order;
 }
 
-ExecutionReport create_test_execution(
-    const std::string& order_id,
-    double filled_qty,
-    bool is_partial) {
-    
+ExecutionReport create_test_execution(const std::string& order_id, double filled_qty,
+                                      bool is_partial) {
     ExecutionReport exec;
     exec.order_id = order_id;
     exec.exec_id = "EXEC_" + order_id;
@@ -68,5 +65,5 @@ OrderManagerConfig create_test_config() {
     return config;
 }
 
-} // namespace testing
-} // namespace trade_ngin
+}  // namespace testing
+}  // namespace trade_ngin
