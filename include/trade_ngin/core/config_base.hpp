@@ -1,10 +1,10 @@
 // include/trade_ngin/core/config_base.hpp
 #pragma once
 
-#include "trade_ngin/core/error.hpp"
+#include <fstream>
 #include <nlohmann/json.hpp>
 #include <string>
-#include <fstream>
+#include "trade_ngin/core/error.hpp"
 
 namespace trade_ngin {
 
@@ -40,7 +40,7 @@ public:
      * @brief Load configuration from JSON
      * @param json JSON object to load from
      */
-    virtual void from_json(const nlohmann::json& j) = 0; 
+    virtual void from_json(const nlohmann::json& j) = 0;
 };
- 
-} // namespace trade_ngin
+
+}  // namespace trade_ngin

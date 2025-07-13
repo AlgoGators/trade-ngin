@@ -1,15 +1,15 @@
 // include/trade_ngin/execution/execution_engine.hpp
 #pragma once
 
-#include "trade_ngin/core/types.hpp"
-#include "trade_ngin/core/error.hpp"
-#include "trade_ngin/order/order_manager.hpp"
-#include "trade_ngin/core/config_base.hpp"
-#include <memory>
-#include <vector>
-#include <unordered_map>
 #include <chrono>
+#include <memory>
 #include <nlohmann/json.hpp>
+#include <unordered_map>
+#include <vector>
+#include "trade_ngin/core/config_base.hpp"
+#include "trade_ngin/core/error.hpp"
+#include "trade_ngin/core/types.hpp"
+#include "trade_ngin/order/order_manager.hpp"
 
 namespace trade_ngin {
 
@@ -31,35 +31,35 @@ enum class ExecutionAlgo {
  * @brief Execution metrics for analysis
  */
 struct ExecutionMetrics {
-    double participation_rate{0.0};     // Actual participation rate achieved
-    double market_impact{0.0};          // Estimated market impact
-    double implementation_shortfall{0.0}; // Implementation shortfall cost
-    double arrival_price{0.0};          // Price at order arrival
-    double vwap_price{0.0};             // VWAP during execution
-    double twap_price{0.0};             // TWAP during execution
-    double average_fill_price{0.0};     // Average execution price
-    double volume_participation{0.0};    // Volume participation achieved
-    std::chrono::milliseconds total_time{0}; // Total execution time
-    int num_child_orders{0};            // Number of child orders generated
-    double completion_rate{0.0};        // Percentage of order completed
+    double participation_rate{0.0};           // Actual participation rate achieved
+    double market_impact{0.0};                // Estimated market impact
+    double implementation_shortfall{0.0};     // Implementation shortfall cost
+    double arrival_price{0.0};                // Price at order arrival
+    double vwap_price{0.0};                   // VWAP during execution
+    double twap_price{0.0};                   // TWAP during execution
+    double average_fill_price{0.0};           // Average execution price
+    double volume_participation{0.0};         // Volume participation achieved
+    std::chrono::milliseconds total_time{0};  // Total execution time
+    int num_child_orders{0};                  // Number of child orders generated
+    double completion_rate{0.0};              // Percentage of order completed
 };
 
 /**
  * @brief Configuration for execution algorithms
  */
 struct ExecutionConfig : public ConfigBase {
-    double max_participation_rate{0.3};  // Maximum participation in volume
-    double urgency_level{0.5};          // Urgency factor (0-1)
-    std::chrono::minutes time_horizon{60}; // Time horizon for completion
-    bool allow_cross_venue{true};       // Allow cross-venue execution
-    bool dark_pool_only{false};         // Restrict to dark pools
-    int max_child_orders{100};          // Maximum number of child orders
-    double min_child_size{100.0};       // Minimum child order size
-    std::vector<std::string> venues;    // Allowed execution venues
-    std::unordered_map<std::string, double> venue_weights; // Venue routing weights
+    double max_participation_rate{0.3};                     // Maximum participation in volume
+    double urgency_level{0.5};                              // Urgency factor (0-1)
+    std::chrono::minutes time_horizon{60};                  // Time horizon for completion
+    bool allow_cross_venue{true};                           // Allow cross-venue execution
+    bool dark_pool_only{false};                             // Restrict to dark pools
+    int max_child_orders{100};                              // Maximum number of child orders
+    double min_child_size{100.0};                           // Minimum child order size
+    std::vector<std::string> venues;                        // Allowed execution venues
+    std::unordered_map<std::string, double> venue_weights;  // Venue routing weights
 
     // Configuration metadata
-    std::string version{"1.0.0"};       // Configuration version
+    std::string version{"1.0.0"};  // Configuration version
 
     // Implement serialization methods
     nlohmann::json to_json() const override {
@@ -79,16 +79,26 @@ struct ExecutionConfig : public ConfigBase {
     }
 
     void from_json(const nlohmann::json& j) override {
-        if (j.contains("max_participation_rate")) max_participation_rate = j.at("max_participation_rate").get<double>();
-        if (j.contains("urgency_level")) urgency_level = j.at("urgency_level").get<double>();
-        if (j.contains("time_horizon")) time_horizon = std::chrono::minutes(j.at("time_horizon").get<int>());
-        if (j.contains("allow_cross_venue")) allow_cross_venue = j.at("allow_cross_venue").get<bool>();
-        if (j.contains("dark_pool_only")) dark_pool_only = j.at("dark_pool_only").get<bool>();
-        if (j.contains("max_child_orders")) max_child_orders = j.at("max_child_orders").get<int>();
-        if (j.contains("min_child_size")) min_child_size = j.at("min_child_size").get<double>();
-        if (j.contains("venues")) venues = j.at("venues").get<std::vector<std::string>>();
-        if (j.contains("venue_weights")) venue_weights = j.at("venue_weights").get<std::unordered_map<std::string, double>>();
-        if (j.contains("version")) version = j.at("version").get<std::string>();
+        if (j.contains("max_participation_rate"))
+            max_participation_rate = j.at("max_participation_rate").get<double>();
+        if (j.contains("urgency_level"))
+            urgency_level = j.at("urgency_level").get<double>();
+        if (j.contains("time_horizon"))
+            time_horizon = std::chrono::minutes(j.at("time_horizon").get<int>());
+        if (j.contains("allow_cross_venue"))
+            allow_cross_venue = j.at("allow_cross_venue").get<bool>();
+        if (j.contains("dark_pool_only"))
+            dark_pool_only = j.at("dark_pool_only").get<bool>();
+        if (j.contains("max_child_orders"))
+            max_child_orders = j.at("max_child_orders").get<int>();
+        if (j.contains("min_child_size"))
+            min_child_size = j.at("min_child_size").get<double>();
+        if (j.contains("venues"))
+            venues = j.at("venues").get<std::vector<std::string>>();
+        if (j.contains("venue_weights"))
+            venue_weights = j.at("venue_weights").get<std::unordered_map<std::string, double>>();
+        if (j.contains("version"))
+            version = j.at("version").get<std::string>();
     }
 };
 
@@ -135,10 +145,8 @@ public:
      * @param config Execution configuration
      * @return Result containing job ID if successful
      */
-    Result<std::string> submit_execution(
-        const Order& order,
-        ExecutionAlgo algo,
-        const ExecutionConfig& config);
+    Result<std::string> submit_execution(const Order& order, ExecutionAlgo algo,
+                                         const ExecutionConfig& config);
 
     /**
      * @brief Cancel execution job
@@ -166,9 +174,8 @@ public:
      * @param algo Algorithm implementation
      * @return Result indicating success or failure
      */
-    Result<void> register_custom_algo(
-        const std::string& name,
-        std::function<Result<void>(const ExecutionJob&)> algo);
+    Result<void> register_custom_algo(const std::string& name,
+                                      std::function<Result<void>(const ExecutionJob&)> algo);
 
 private:
     std::shared_ptr<OrderManager> order_manager_;
@@ -231,9 +238,7 @@ private:
      * @param num_slices Number of slices
      * @return Result containing vector of child orders
      */
-    Result<std::vector<Order>> generate_child_orders(
-        const ExecutionJob& job,
-        size_t num_slices);
+    Result<std::vector<Order>> generate_child_orders(const ExecutionJob& job, size_t num_slices);
 
     /**
      * @brief Update execution metrics
@@ -241,9 +246,8 @@ private:
      * @param fills Vector of execution reports
      * @return Result indicating success or failure
      */
-    Result<void> update_metrics(
-        const std::string& job_id,
-        const std::vector<ExecutionReport>& fills);
+    Result<void> update_metrics(const std::string& job_id,
+                                const std::vector<ExecutionReport>& fills);
 
     /**
      * @brief Calculate optimal schedule
@@ -252,8 +256,7 @@ private:
      * @return Result containing vector of scheduled times and quantities
      */
     Result<std::vector<std::pair<Timestamp, double>>> calculate_schedule(
-        const ExecutionJob& job,
-        const std::vector<Bar>& market_data);
+        const ExecutionJob& job, const std::vector<Bar>& market_data);
 
     /**
      * @brief Generate unique job ID
@@ -262,4 +265,4 @@ private:
     std::string generate_job_id() const;
 };
 
-} // namespace trade_ngin
+}  // namespace trade_ngin

@@ -1,105 +1,63 @@
 #include <gtest/gtest.h>
 #include <atomic>
+#include <cmath>
 #include <thread>
-#include "trade_ngin/strategy/base_strategy.hpp"
-#include "trade_ngin/data/database_interface.hpp"
-#include "trade_ngin/strategy/types.hpp"
 #include "trade_ngin/core/state_manager.hpp"
-
+#include "trade_ngin/data/database_interface.hpp"
+#include "trade_ngin/strategy/base_strategy.hpp"
+#include "trade_ngin/strategy/types.hpp"
 
 using namespace trade_ngin;
 
 // --- Mock Database with Failure Simulation ---
-class MockDatabase : public DatabaseInterface {
+class MockPostgresDatabase : public PostgresDatabase {
 public:
-    // Implement required pure virtual functions
+    MockPostgresDatabase() : PostgresDatabase("mock://testdb") {}
     Result<void> connect() override {
         connected = true;
         return Result<void>();
     }
-
     void disconnect() override {
         connected = false;
     }
-
     bool is_connected() const override {
         return connected;
     }
-
-    Result<std::shared_ptr<arrow::Table>> get_market_data(
-        const std::vector<std::string>& symbols,
-        const Timestamp& start_date,
-        const Timestamp& end_date,
-        AssetClass asset_class,
-        DataFrequency freq = DataFrequency::DAILY,
-        const std::string& data_type = "ohlcv") override {
+    Result<std::shared_ptr<arrow::Table>> get_market_data(const std::vector<std::string>&,
+                                                          const Timestamp&, const Timestamp&,
+                                                          AssetClass,
+                                                          DataFrequency = DataFrequency::DAILY,
+                                                          const std::string& = "ohlcv") override {
         return Result<std::shared_ptr<arrow::Table>>(nullptr);
     }
-
-    Result<void> store_executions(
-        const std::vector<ExecutionReport>& executions,
-        const std::string& table_name) override {
-        if (simulate_failure) {
-            return make_error<void>(
-                ErrorCode::DATABASE_ERROR,
-                "Simulated DB failure",
-                "MockDatabase"
-            );
-        }
+    Result<void> store_executions(const std::vector<ExecutionReport>& executions,
+                                  const std::string&) override {
         executions_stored = executions;
         return Result<void>();
     }
-
-    Result<void> store_positions(
-        const std::vector<Position>& positions,
-        const std::string& table_name) override {
-        if (simulate_failure) {
-            return make_error<void>(
-                ErrorCode::DATABASE_ERROR,
-                "Simulated DB failure",
-                "MockDatabase"
-            );
-        }
+    Result<void> store_positions(const std::vector<Position>& positions,
+                                 const std::string&) override {
         positions_stored = positions;
         return Result<void>();
     }
-
-    Result<void> store_signals(
-        const std::unordered_map<std::string, double>& signals,
-        const std::string& strategy_id,
-        const Timestamp& timestamp,
-        const std::string& table_name) override {
-        if (simulate_failure) {
-            return make_error<void>(
-                ErrorCode::DATABASE_ERROR,
-                "Simulated DB failure",
-                "MockDatabase"
-            );
-        }
+    Result<void> store_signals(const std::unordered_map<std::string, double>& signals,
+                               const std::string&, const Timestamp&, const std::string&) override {
         signals_stored = signals;
         return Result<void>();
     }
-
-    Result<std::vector<std::string>> get_symbols(
-        AssetClass asset_class,
-        DataFrequency freq = DataFrequency::DAILY,
-        const std::string& table_name = "ohlcv") override {
+    Result<std::vector<std::string>> get_symbols(AssetClass, DataFrequency = DataFrequency::DAILY,
+                                                 const std::string& = "ohlcv") override {
         return Result<std::vector<std::string>>(std::vector<std::string>{});
     }
-
-    Result<std::shared_ptr<arrow::Table>> execute_query(
-        const std::string& query) override {
+    Result<std::shared_ptr<arrow::Table>> execute_query(const std::string&) override {
         return Result<std::shared_ptr<arrow::Table>>(nullptr);
     }
-
     void clear() {
         executions_stored.clear();
         positions_stored.clear();
         signals_stored.clear();
         simulate_failure = false;
     }
-
-    // Test controls
     bool simulate_failure{false};
     bool connected{false};
     std::vector<ExecutionReport> executions_stored;
@@ -115,10 +73,10 @@ protected:
     }
 
     std::unique_ptr<BaseStrategy> createInitializedStrategy(
-        StrategyConfig config = StrategyConfig{}, 
-        std::shared_ptr<DatabaseInterface> db = std::make_shared<MockDatabase>()
-    ) {
-        config.capital_allocation = (config.capital_allocation > 0) ? config.capital_allocation : 100000;
+        StrategyConfig config = StrategyConfig{},
+        std::shared_ptr<PostgresDatabase> db = std::make_shared<MockPostgresDatabase>()) {
+        config.capital_allocation =
+            (config.capital_allocation > 0) ? config.capital_allocation : 100000;
         config.max_leverage = (config.max_leverage > 0) ? config.max_leverage : 10;
         auto strategy = std::make_unique<BaseStrategy>("test_strategy", config, db);
         strategy->initialize();
@@ -127,8 +85,7 @@ protected:
 
     std::unique_ptr<BaseStrategy> createRunningStrategy(
         StrategyConfig config = StrategyConfig{},
-        std::shared_ptr<DatabaseInterface> db = std::make_shared<MockDatabase>()
-    ) {
+        std::shared_ptr<PostgresDatabase> db = std::make_shared<MockPostgresDatabase>()) {
         // Set reasonable defaults if not provided
         if (config.capital_allocation <= 0) {
             config.capital_allocation = 1000000.0;  // $1M default capital
@@ -145,37 +102,40 @@ protected:
 
         // Initialize with error checking
         auto init_result = strategy->initialize();
-        EXPECT_TRUE(init_result.is_ok()) << "Initialization failed: " << 
-            (init_result.error() ? init_result.error()->what() : "Unknown error");
-        
+        EXPECT_TRUE(init_result.is_ok())
+            << "Initialization failed: "
+            << (init_result.error() ? init_result.error()->what() : "Unknown error");
+
         if (init_result.is_error()) {
-            throw std::runtime_error("Strategy initialization failed: " + 
-                std::string(init_result.error()->what()));
+            throw std::runtime_error("Strategy initialization failed: " +
+                                     std::string(init_result.error()->what()));
         }
 
         // Initialize risk limits with reasonable values
         RiskLimits limits;
-        limits.max_leverage = 4.0;          // Allow up to 4x leverage
-        limits.max_drawdown = 0.25;         // 25% max drawdown
-        limits.max_position_size = 100000;  // $100K max position
+        limits.max_leverage = 4.0;              // Allow up to 4x leverage
+        limits.max_drawdown = 0.25;             // 25% max drawdown
+        limits.max_position_size = 100000;      // $100K max position
         limits.max_notional_value = 1000000.0;  // $1M max notional
-        
+
         strategy->update_risk_limits(limits);
 
         // Start with error checking
         auto start_result = strategy->start();
-        EXPECT_TRUE(start_result.is_ok()) << "Start failed: " << 
-            (start_result.error() ? start_result.error()->what() : "Unknown error");
-        
+        EXPECT_TRUE(start_result.is_ok())
+            << "Start failed: "
+            << (start_result.error() ? start_result.error()->what() : "Unknown error");
+
         if (start_result.is_error()) {
-            throw std::runtime_error("Strategy start failed: " + 
-                std::string(start_result.error()->what()));
+            throw std::runtime_error("Strategy start failed: " +
+                                     std::string(start_result.error()->what()));
         }
 
         return strategy;
     }
 
-    ExecutionReport createExecution(Side side, const std::string& symbol, double qty, double price) {
+    ExecutionReport createExecution(Side side, const std::string& symbol, double qty,
+                                    double price) {
         ExecutionReport report;
         report.symbol = symbol;
         report.side = side;
@@ -199,8 +159,9 @@ protected:
 
 // --- State Management ---
 TEST_F(BaseStrategyTest, Start_FailsIfNotInitialized) {
-    BaseStrategy strategy("test_strategy", StrategyConfig{}, std::make_shared<MockDatabase>());
-    auto result = strategy.start(); // Not initialized
+    auto db = std::make_shared<MockPostgresDatabase>();
+    BaseStrategy strategy("test_strategy", StrategyConfig{}, db);
+    auto result = strategy.start();  // Not initialized
     EXPECT_TRUE(result.is_error());
     EXPECT_EQ(result.error()->code(), ErrorCode::NOT_INITIALIZED);
 }
@@ -214,25 +175,25 @@ TEST_F(BaseStrategyTest, Pause_TransitionsFromRunningToPaused) {
 
 TEST_F(BaseStrategyTest, Resume_FailsIfNotPaused) {
     auto strategy = createRunningStrategy();
-    auto result = strategy->resume(); // Already running
+    auto result = strategy->resume();  // Already running
     EXPECT_TRUE(result.is_error());
     EXPECT_EQ(result.error()->code(), ErrorCode::INVALID_ARGUMENT);
 }
 
 TEST_F(BaseStrategyTest, Stop_SavesPositionsOnlyWhenEnabled) {
-    auto db = std::make_shared<MockDatabase>();
-    
+    auto db = std::make_shared<MockPostgresDatabase>();
+
     // First test with saving enabled
     StrategyConfig config;
     config.save_positions = true;
     auto strategy = createRunningStrategy(config, db);
-    
+
     // Add a test position
     Position pos;
     pos.symbol = "TEST";
     pos.quantity = 100;
     ASSERT_TRUE(strategy->update_position("TEST", pos).is_ok());
-    
+
     // Stop strategy and verify position was saved
     strategy->stop();
     EXPECT_EQ(db->positions_stored.size(), 1);
@@ -248,8 +209,8 @@ TEST_F(BaseStrategyTest, Stop_SavesPositionsOnlyWhenEnabled) {
 
 // --- Database & Error Handling ---
 TEST_F(BaseStrategyTest, SaveSignals_WhenEnabledAndDisabled) {
-    auto db = std::make_shared<MockDatabase>();
-    
+    auto db = std::make_shared<MockPostgresDatabase>();
+
     // Test with saving enabled
     StrategyConfig config;
     config.save_signals = true;
@@ -266,13 +227,13 @@ TEST_F(BaseStrategyTest, SaveSignals_WhenEnabledAndDisabled) {
 }
 
 TEST_F(BaseStrategyTest, SaveExecution_FailurePropagatesError) {
-    auto db = std::make_shared<MockDatabase>();
+    auto db = std::make_shared<MockPostgresDatabase>();
     db->simulate_failure = true;
-    
+
     StrategyConfig config;
     config.save_executions = true;
     auto strategy = createRunningStrategy(config, db);
-    
+
     auto report = createExecution(Side::BUY, "AAPL", 100, 150.0);
     auto result = strategy->on_execution(report);
     EXPECT_TRUE(result.is_error());
@@ -285,7 +246,7 @@ TEST_F(BaseStrategyTest, UpdatePosition_FailsIfExceedsLimit) {
     config.position_limits["AAPL"] = 100;
     auto strategy = createRunningStrategy(config);
     Position pos;
-    pos.quantity = 200; // Exceeds limit
+    pos.quantity = 200;  // Exceeds limit
     auto result = strategy->update_position("AAPL", pos);
     EXPECT_TRUE(result.is_error());
     EXPECT_EQ(result.error()->code(), ErrorCode::POSITION_LIMIT_EXCEEDED);
@@ -295,14 +256,15 @@ TEST_F(BaseStrategyTest, CheckRiskLimits_FailsOnMaxDrawdown) {
     StrategyConfig config;
     config.capital_allocation = 100000;
     auto strategy = createRunningStrategy(config);
-    
+
     // Simulate a large loss
-    strategy->on_execution(createExecution(Side::SELL, "AAPL", 1000, 50.0)); // Short 1000 shares
-    strategy->on_execution(createExecution(Side::BUY, "AAPL", 1000, 200.0)); // Buy back at higher price
+    strategy->on_execution(createExecution(Side::SELL, "AAPL", 1000, 50.0));  // Short 1000 shares
+    strategy->on_execution(
+        createExecution(Side::BUY, "AAPL", 1000, 200.0));  // Buy back at higher price
     // Realized PnL: (50 - 200) * 1000 = -150,000 → Drawdown = -150%
 
     RiskLimits limits;
-    limits.max_drawdown = 0.5; // 50% max drawdown
+    limits.max_drawdown = 0.5;  // 50% max drawdown
     strategy->update_risk_limits(limits);
     auto result = strategy->check_risk_limits();
     EXPECT_TRUE(result.is_error());
@@ -315,8 +277,8 @@ TEST_F(BaseStrategyTest, ThreadSafety_OnDataAndExecution) {
     StrategyConfig config;
     config.capital_allocation = 1000000.0;  // $1M capital
     config.max_leverage = 4.0;              // 4x max leverage
-    
-    auto db = std::make_shared<MockDatabase>();
+
+    auto db = std::make_shared<MockPostgresDatabase>();
     auto strategy = createRunningStrategy(config, db);
 
     // Add a small initial position to avoid errors with first update
@@ -330,7 +292,7 @@ TEST_F(BaseStrategyTest, ThreadSafety_OnDataAndExecution) {
     std::atomic<bool> test_passed{true};
     std::atomic<int> data_processed{0};
     std::atomic<int> executions_processed{0};
-    
+
     std::mutex start_mutex;
     std::condition_variable start_cv;
     bool ready = false;
@@ -348,9 +310,9 @@ TEST_F(BaseStrategyTest, ThreadSafety_OnDataAndExecution) {
         try {
             {
                 std::unique_lock<std::mutex> lock(start_mutex);
-                start_cv.wait(lock, [&ready]{ return ready; });
+                start_cv.wait(lock, [&ready] { return ready; });
             }
-            
+
             for (int i = 0; i < 100 && test_passed; ++i) {
                 test_data[0].timestamp = std::chrono::system_clock::now();
                 // Small price changes to avoid triggering risk limits
@@ -378,9 +340,9 @@ TEST_F(BaseStrategyTest, ThreadSafety_OnDataAndExecution) {
 
             {
                 std::unique_lock<std::mutex> lock(start_mutex);
-                start_cv.wait(lock, [&ready]{ return ready; });
+                start_cv.wait(lock, [&ready] { return ready; });
             }
-            
+
             for (int i = 0; i < 100 && test_passed; ++i) {
                 report.fill_time = std::chrono::system_clock::now();
                 report.fill_price = 150.0 + (i % 5);  // Small price changes
@@ -412,8 +374,8 @@ TEST_F(BaseStrategyTest, ThreadSafety_OnDataAndExecution) {
     data_thread.join();
     exec_thread.join();
 
-    EXPECT_TRUE(test_passed) << "Data processed: " << data_processed 
-                            << ", Executions processed: " << executions_processed;
+    EXPECT_TRUE(test_passed) << "Data processed: " << data_processed
+                             << ", Executions processed: " << executions_processed;
     EXPECT_GT(data_processed, 0);
     EXPECT_GT(executions_processed, 0);
 }
@@ -431,8 +393,8 @@ TEST_F(BaseStrategyTest, UpdateMetrics_CalculatesUnrealizedPnl) {
 // --- Edge Cases ---
 TEST_F(BaseStrategyTest, Initialize_FailsWithZeroCapital) {
     StrategyConfig config;
-    config.capital_allocation = 0; // Invalid
-    BaseStrategy strategy("test_strategy", config, std::make_shared<MockDatabase>());
+    config.capital_allocation = 0;  // Invalid
+    BaseStrategy strategy("test_strategy", config, std::make_shared<MockPostgresDatabase>());
     auto result = strategy.initialize();
     EXPECT_TRUE(result.is_error());
     EXPECT_EQ(result.error()->code(), ErrorCode::INVALID_ARGUMENT);
@@ -441,7 +403,7 @@ TEST_F(BaseStrategyTest, Initialize_FailsWithZeroCapital) {
 TEST_F(BaseStrategyTest, OnData_IgnoresNonBarEvents) {
     auto strategy = createRunningStrategy();
     MarketDataEvent event;
-    event.type = MarketDataEventType::TRADE; // Not BAR
+    event.type = MarketDataEventType::TRADE;  // Not BAR
     // Verify callback ignores non-BAR events (no crash/error)
 }
 

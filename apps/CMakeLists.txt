@@ -4,4 +4,4 @@
 
 # Add subdirectories for applications
 add_subdirectory(backtest)
-# add_subdirectory(strategies)
+add_subdirectory(strategies)

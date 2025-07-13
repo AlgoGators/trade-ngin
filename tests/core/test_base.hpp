@@ -10,7 +10,7 @@
 
 namespace trade_ngin {
 namespace testing {
-    
+
 class TestBase : public ::testing::Test {
 protected:
     void SetUp() override {
