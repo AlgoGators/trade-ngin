@@ -25,7 +25,7 @@ jobs:
               repo: context.repo.repo
             });
             
-            const protectedBranches = ['main', 'develop'];
+            const protectedBranches = ['main', 'develop', 'main-hd'];
             
             for (const branch of protectedBranches) {
               if (branches.some(b => b.name === branch)) {
