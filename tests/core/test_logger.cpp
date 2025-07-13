@@ -1,10 +1,10 @@
 #include <gtest/gtest.h>
-#include "trade_ngin/core/logger.hpp"
-#include <sstream>
-#include <fstream>
-#include <filesystem>
-#include <vector>
 #include <algorithm>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
+#include <vector>
+#include "trade_ngin/core/logger.hpp"
 
 using namespace trade_ngin;
 
@@ -54,7 +54,8 @@ protected:
     // Helper to read file content
     std::string read_file(const std::filesystem::path& path) {
         std::ifstream file(path);
-        if (!file.is_open()) return "";
+        if (!file.is_open())
+            return "";
         std::stringstream buffer;
         buffer << file.rdbuf();
         return buffer.str();
@@ -78,7 +79,7 @@ protected:
             return std::string("Error listing directory: ") + e.what();
         }
     }
-    
+
     std::streambuf* original_cout;
     std::stringstream cout_buffer;
     const std::string test_log_dir = "test_logs";
@@ -90,10 +91,10 @@ TEST_F(LoggerTest, FileHandlesClosedAfterReset) {
     config.destination = LogDestination::FILE;
     config.log_directory = test_log_dir;
     Logger::instance().initialize(config);
-    
+
     // Explicit reset
     Logger::reset_for_tests();
-    
+
     // Verify directory can be deleted
     std::error_code ec;
     std::filesystem::remove_all(test_log_dir, ec);
@@ -188,22 +189,22 @@ TEST_F(LoggerTest, MessageFormatting) {
     auto content = read_file(get_log_files(test_log_dir)[0]);
     EXPECT_TRUE(content.find("[INFO]") != std::string::npos);
     EXPECT_TRUE(content.find("Formatted") != std::string::npos);
-    EXPECT_GE(content.size(), 20); // Basic timestamp check
+    EXPECT_GE(content.size(), 20);  // Basic timestamp check
 }
 
 TEST_F(LoggerTest, FileRotation) {
     LoggerConfig config;
     config.destination = LogDestination::FILE;
     config.log_directory = test_log_dir;
-    config.max_file_size = 10; // 10 bytes
+    config.max_file_size = 10;  // 10 bytes
     config.max_files = 2;
     config.include_timestamp = false;
     config.include_level = false;
     Logger::instance().initialize(config);
 
     // Each message is 9 bytes ("12345678\n")
-    Logger::instance().log(LogLevel::INFO, "12345678"); // 9 bytes
-    Logger::instance().log(LogLevel::INFO, "12345678"); // Triggers rotation
+    Logger::instance().log(LogLevel::INFO, "12345678");  // 9 bytes
+    Logger::instance().log(LogLevel::INFO, "12345678");  // Triggers rotation
 
     auto files = get_log_files(test_log_dir);
     ASSERT_EQ(files.size(), 2);
@@ -213,7 +214,7 @@ TEST_F(LoggerTest, MaxFilesEnforced) {
     LoggerConfig config;
     config.destination = LogDestination::FILE;
     config.log_directory = test_log_dir;
-    config.max_file_size = 1; // Rotate every message
+    config.max_file_size = 1;  // Rotate every message
     config.max_files = 2;
     config.include_timestamp = false;
     config.include_level = false;
@@ -224,14 +225,14 @@ TEST_F(LoggerTest, MaxFilesEnforced) {
     }
 
     auto files = get_log_files(test_log_dir);
-    EXPECT_EQ(files.size(), 2); // Oldest file should be deleted
+    EXPECT_EQ(files.size(), 2);  // Oldest file should be deleted
 }
 
 TEST_F(LoggerTest, LogBeforeInitializationSilent) {
-    Logger::reset_for_tests(); // Ensure uninitialized
+    Logger::reset_for_tests();  // Ensure uninitialized
 
     Logger::instance().log(LogLevel::INFO, "Test");
-    
+
     EXPECT_TRUE(cout_buffer.str().empty());
     EXPECT_TRUE(get_log_files(test_log_dir).empty());
 }
@@ -250,13 +251,13 @@ TEST_F(LoggerTest, ReinitializationSwitchesFile) {
     config1.destination = LogDestination::FILE;
     config1.log_directory = dir1.string();
     config1.filename_prefix = "test1";
-    
+
     std::cout << "Initializing logger with dir1: " << dir1.string() << std::endl;
     Logger::instance().initialize(config1);
-    
+
     // Write to first log
     Logger::instance().log(LogLevel::INFO, "Dir1");
-    
+
     // Verify first directory
     auto dir1_files = get_log_files(dir1.string());
     std::cout << "Files in dir1: " << list_files(dir1.string()) << std::endl;
@@ -273,17 +274,16 @@ TEST_F(LoggerTest, ReinitializationSwitchesFile) {
     config2.destination = LogDestination::FILE;
     config2.log_directory = dir2.string();
     config2.filename_prefix = "test2";
-    
+
     std::cout << "Reinitializing logger with dir2: " << dir2.string() << std::endl;
     Logger::instance().initialize(config2);
 
     // Verify directory exists
-    ASSERT_TRUE(std::filesystem::exists(dir2)) 
-        << "Directory not created: " << dir2.string();
+    ASSERT_TRUE(std::filesystem::exists(dir2)) << "Directory not created: " << dir2.string();
 
     // Write to second log and flush
     Logger::instance().log(LogLevel::INFO, "Dir2");
-    
+
     // Explicitly reset to ensure file is closed
     Logger::reset_for_tests();
 
@@ -294,9 +294,8 @@ TEST_F(LoggerTest, ReinitializationSwitchesFile) {
 
     // Verify files in dir2
     auto dir2_files = get_log_files(dir2.string());
-    ASSERT_EQ(dir2_files.size(), 1) 
-        << "Files in dir2: " << list_files(dir2.string()) 
-        << "\nDirectory exists: " << std::filesystem::exists(dir2);
+    ASSERT_EQ(dir2_files.size(), 1) << "Files in dir2: " << list_files(dir2.string())
+                                    << "\nDirectory exists: " << std::filesystem::exists(dir2);
 
     // Verify dir1 still has its file
     EXPECT_EQ(get_log_files(dir1.string()).size(), 1);

@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
-#include "trade_ngin/core/config_version.hpp"
 #include <string>
+#include "trade_ngin/core/config_version.hpp"
 
 using namespace trade_ngin;
 
@@ -23,10 +23,7 @@ TEST_F(ConfigVersionManagerTest, VersionParsing) {
         EXPECT_EQ(version.patch, 3);
     });
 
-    EXPECT_THROW(
-        ConfigVersion::from_string("invalid"),
-        std::runtime_error
-    );
+    EXPECT_THROW(ConfigVersion::from_string("invalid"), std::runtime_error);
 }
 
 TEST_F(ConfigVersionManagerTest, VersionComparison) {
@@ -50,30 +47,26 @@ TEST_F(ConfigVersionManagerTest, VersionComparison) {
 TEST_F(ConfigVersionManagerTest, RegisterMigration) {
     ConfigVersion from{1, 0, 0};
     ConfigVersion to{1, 1, 0};
-    
+
     auto migration = [](const nlohmann::json& config) -> Result<nlohmann::json> {
         nlohmann::json new_config = config;
         new_config["migrated"] = true;
         return Result<nlohmann::json>(new_config);
     };
 
-    auto result = manager->register_migration(
-        from, to, migration, "Test migration"
-    );
+    auto result = manager->register_migration(from, to, migration, "Test migration");
     EXPECT_TRUE(result.is_ok());
 }
 
 TEST_F(ConfigVersionManagerTest, InvalidMigrationRegistration) {
     ConfigVersion from{1, 0, 0};
     ConfigVersion to{1, 0, 0};  // Same version
-    
+
     auto migration = [](const nlohmann::json& config) -> Result<nlohmann::json> {
         return Result<nlohmann::json>(config);
     };
 
-    auto result = manager->register_migration(
-        from, to, migration, "Invalid migration"
-    );
+    auto result = manager->register_migration(from, to, migration, "Invalid migration");
     EXPECT_TRUE(result.is_error());
     EXPECT_EQ(result.error()->code(), ErrorCode::INVALID_ARGUMENT);
 }
@@ -93,7 +86,7 @@ TEST_F(ConfigVersionManagerTest, CreateMigrationPlan) {
 
     auto plan_result = manager->create_migration_plan(v1, v3);
     ASSERT_TRUE(plan_result.is_ok());
-    
+
     const auto& plan = plan_result.value();
     EXPECT_EQ(plan.steps.size(), 2);
     EXPECT_EQ(plan.start_version.to_string(), "1.0.0");
@@ -114,17 +107,14 @@ TEST_F(ConfigVersionManagerTest, ExecuteMigration) {
     manager->register_migration(v1, v2, migration, "Add field");
 
     // Create initial config
-    nlohmann::json config = {
-        {"version", "1.0.0"},
-        {"existing_field", "value"}
-    };
+    nlohmann::json config = {{"version", "1.0.0"}, {"existing_field", "value"}};
 
     auto plan_result = manager->create_migration_plan(v1, v2);
     ASSERT_TRUE(plan_result.is_ok());
 
     auto result = manager->execute_migration(config, plan_result.value());
     ASSERT_TRUE(result.is_ok());
-    
+
     const auto& migrated = result.value();
     EXPECT_TRUE(migrated.success);
     EXPECT_EQ(migrated.original_version.to_string(), "1.0.0");
@@ -146,28 +136,21 @@ TEST_F(ConfigVersionManagerTest, AutoMigrate) {
     manager->register_migration(v1, v2, migration, "Auto migration");
 
     // Create config needing migration
-    nlohmann::json config = {
-        {"version", "1.0.0"},
-        {"field", "value"}
-    };
+    nlohmann::json config = {{"version", "1.0.0"}, {"field", "value"}};
 
     auto result = manager->auto_migrate(config, ConfigType::STRATEGY);
     ASSERT_TRUE(result.is_ok());
-    
+
     const auto& migrated = result.value();
     EXPECT_TRUE(migrated.success);
     EXPECT_TRUE(config.contains("auto_migrated"));
-    ASSERT_TRUE(config["auto_migrated"].is_boolean()); // Ensure type is correct
+    ASSERT_TRUE(config["auto_migrated"].is_boolean());  // Ensure type is correct
 }
 
 TEST_F(ConfigVersionManagerTest, NeedsMigration) {
-    nlohmann::json old_config = {
-        {"version", "1.0.0"}
-    };
+    nlohmann::json old_config = {{"version", "1.0.0"}};
 
-    nlohmann::json current_config = {
-        {"version", "1.1.0"}
-    };
+    nlohmann::json current_config = {{"version", "1.1.0"}};
 
     // Set latest version to 1.1.0
     ConfigVersion v1{1, 0, 0};

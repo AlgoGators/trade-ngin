@@ -1,11 +1,11 @@
 // include/trade_ngin/instruments/instrument.hpp
 #pragma once
 
-#include "trade_ngin/core/types.hpp"
-#include "trade_ngin/core/error.hpp"
-#include <string>
 #include <memory>
 #include <optional>
+#include <string>
+#include "trade_ngin/core/error.hpp"
+#include "trade_ngin/core/types.hpp"
 
 namespace trade_ngin {
 
@@ -105,4 +105,4 @@ protected:
     Instrument() = default;
 };
 
-} // namespace trade_ngin
+}  // namespace trade_ngin

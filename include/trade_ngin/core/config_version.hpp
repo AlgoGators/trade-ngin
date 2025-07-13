@@ -1,14 +1,14 @@
 #pragma once
 
-#include "trade_ngin/core/types.hpp"
-#include "trade_ngin/core/error.hpp"
-#include "trade_ngin/core/config_manager.hpp"
-#include <nlohmann/json.hpp>
 #include <functional>
 #include <memory>
+#include <nlohmann/json.hpp>
+#include <regex>
 #include <string>
 #include <unordered_map>
-#include <regex>
+#include "trade_ngin/core/config_manager.hpp"
+#include "trade_ngin/core/error.hpp"
+#include "trade_ngin/core/types.hpp"
 
 namespace trade_ngin {
 
@@ -21,37 +21,37 @@ struct ConfigVersion {
     int patch{0};
 
     std::string to_string() const {
-        return std::to_string(major) + "." + 
-               std::to_string(minor) + "." + 
-               std::to_string(patch);
+        return std::to_string(major) + "." + std::to_string(minor) + "." + std::to_string(patch);
     }
-    
+
     static ConfigVersion from_string(const std::string& version_str) {
         std::regex version_regex(R"((\d+)\.(\d+)\.(\d+))");
         std::smatch matches;
-        
+
         if (!std::regex_match(version_str, matches, version_regex)) {
             throw std::runtime_error("Invalid version format: " + version_str);
         }
-        
+
         ConfigVersion version;
         version.major = std::stoi(matches[1]);
         version.minor = std::stoi(matches[2]);
         version.patch = std::stoi(matches[3]);
-        
+
         return version;
     }
 
     bool operator<(const ConfigVersion& other) const {
-        if (major != other.major) return major < other.major;
-        if (minor != other.minor) return minor < other.minor;
+        if (major != other.major)
+            return major < other.major;
+        if (minor != other.minor)
+            return minor < other.minor;
         return patch < other.patch;
     }
-    
+
     bool operator==(const ConfigVersion& other) const {
         return major == other.major && minor == other.minor && patch == other.patch;
     }
-    
+
     bool operator<=(const ConfigVersion& other) const {
         return *this < other || *this == other;
     }
@@ -113,11 +113,9 @@ public:
      * @param description Description of changes
      * @return Result indicating success or failure
      */
-    Result<void> register_migration(
-        const ConfigVersion& from_version,
-        const ConfigVersion& to_version,
-        MigrationFunction migration,
-        const std::string& description);
+    Result<void> register_migration(const ConfigVersion& from_version,
+                                    const ConfigVersion& to_version, MigrationFunction migration,
+                                    const std::string& description);
 
     /**
      * @brief Get latest version for a component
@@ -132,9 +130,7 @@ public:
      * @param component_type Component type
      * @return true if migration needed
      */
-    bool needs_migration(
-        const nlohmann::json& config,
-        ConfigType component_type) const;
+    bool needs_migration(const nlohmann::json& config, ConfigType component_type) const;
 
     /**
      * @brief Create migration plan
@@ -142,9 +138,8 @@ public:
      * @param to_version Target version
      * @return Migration plan or error
      */
-    Result<MigrationPlan> create_migration_plan(
-        const ConfigVersion& from_version,
-        const ConfigVersion& to_version) const;
+    Result<MigrationPlan> create_migration_plan(const ConfigVersion& from_version,
+                                                const ConfigVersion& to_version) const;
 
     /**
      * @brief Execute migration plan
@@ -152,9 +147,8 @@ public:
      * @param plan Migration plan to execute
      * @return Migration result
      */
-    Result<MigrationResult> execute_migration(
-        nlohmann::json& config,
-        const MigrationPlan& plan) const;
+    Result<MigrationResult> execute_migration(nlohmann::json& config,
+                                              const MigrationPlan& plan) const;
 
     /**
      * @brief Automatically migrate config to latest version
@@ -162,9 +156,7 @@ public:
      * @param component_type Component type
      * @return Migration result
      */
-    Result<MigrationResult> auto_migrate(
-        nlohmann::json& config,
-        ConfigType component_type) const;
+    Result<MigrationResult> auto_migrate(nlohmann::json& config, ConfigType component_type) const;
 
     /**
      * @brief Reset the manager's state (for testing)
@@ -176,15 +168,12 @@ public:
 
 private:
     ConfigVersionManager() = default;
-    
+
     // Store migrations by component type and version pair
-    std::unordered_map<
-        ConfigType,
-        std::unordered_map<
-            std::string,  // version pair string "from_to"
-            MigrationStep
-        >
-    > migrations_;
+    std::unordered_map<ConfigType,
+                       std::unordered_map<std::string,  // version pair string "from_to"
+                                          MigrationStep>>
+        migrations_;
 
     // Latest version by component type
     std::unordered_map<ConfigType, ConfigVersion> latest_versions_;
@@ -194,16 +183,14 @@ private:
      * @param config Configuration to check
      * @return Version or error
      */
-    Result<ConfigVersion> get_config_version(
-        const nlohmann::json& config) const;
+    Result<ConfigVersion> get_config_version(const nlohmann::json& config) const;
 
     /**
      * @brief Validate migration step
      * @param step Step to validate
      * @return Result indicating success or failure
      */
-    Result<void> validate_migration_step(
-        const MigrationStep& step) const;
+    Result<void> validate_migration_step(const MigrationStep& step) const;
 
     /**
      * @brief Create version pair key
@@ -211,9 +198,8 @@ private:
      * @param to_version Target version
      * @return String key for migrations map
      */
-    static std::string make_version_key(
-        const ConfigVersion& from_version,
-        const ConfigVersion& to_version);
+    static std::string make_version_key(const ConfigVersion& from_version,
+                                        const ConfigVersion& to_version);
 };
 
-} // namespace trade_ngin
+}  // namespace trade_ngin

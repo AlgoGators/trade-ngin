@@ -1,12 +1,12 @@
 // include/trade_ngin/strategy/regime_detector.hpp
 #pragma once
 
-#include "trade_ngin/core/types.hpp"
-#include "trade_ngin/core/error.hpp"
-#include <vector>
-#include <unordered_map>
 #include <memory>
 #include <mutex>
+#include <unordered_map>
+#include <vector>
+#include "trade_ngin/core/error.hpp"
+#include "trade_ngin/core/types.hpp"
 
 namespace trade_ngin {
 
@@ -19,32 +19,32 @@ enum class DetailedMarketRegime {
     WEAK_UPTREND,
     STRONG_DOWNTREND,
     WEAK_DOWNTREND,
-    
+
     // Mean reversion regimes
     HIGH_MEAN_REVERSION,
     LOW_MEAN_REVERSION,
-    
+
     // Volatility regimes
     HIGH_VOLATILITY,
     LOW_VOLATILITY,
     VOLATILITY_EXPANSION,
     VOLATILITY_CONTRACTION,
-    
+
     // Correlation regimes
     HIGH_CORRELATION,
     LOW_CORRELATION,
     CORRELATION_BREAKDOWN,
-    
+
     // Liquidity regimes
     HIGH_LIQUIDITY,
     LOW_LIQUIDITY,
     LIQUIDITY_CRISIS,
-    
+
     // Market stress regimes
     NORMAL,
     STRESS,
     CRISIS,
-    
+
     UNDEFINED
 };
 
@@ -52,35 +52,35 @@ enum class DetailedMarketRegime {
  * @brief Market regime features
  */
 struct RegimeFeatures {
-    double trend_strength{0.0};           // Measured by directional movement
-    double mean_reversion_strength{0.0};  // Measured by variance ratio
-    double volatility{0.0};               // Realized volatility
-    double volatility_of_volatility{0.0}; // Vol of vol measure
-    double correlation{0.0};              // Average pairwise correlation
-    double liquidity{0.0};                // Market depth/resilience
-    double market_stress{0.0};            // Composite stress indicator
-    
+    double trend_strength{0.0};            // Measured by directional movement
+    double mean_reversion_strength{0.0};   // Measured by variance ratio
+    double volatility{0.0};                // Realized volatility
+    double volatility_of_volatility{0.0};  // Vol of vol measure
+    double correlation{0.0};               // Average pairwise correlation
+    double liquidity{0.0};                 // Market depth/resilience
+    double market_stress{0.0};             // Composite stress indicator
+
     // Additional indicators
-    double hurst_exponent{0.0};          // Long memory indicator
-    double rsi{0.0};                     // Relative Strength Index
-    double volume_profile{0.0};          // Volume distribution metric
-    double bid_ask_spread{0.0};          // Average spread
-    double order_flow_imbalance{0.0};    // Order flow metric
+    double hurst_exponent{0.0};        // Long memory indicator
+    double rsi{0.0};                   // Relative Strength Index
+    double volume_profile{0.0};        // Volume distribution metric
+    double bid_ask_spread{0.0};        // Average spread
+    double order_flow_imbalance{0.0};  // Order flow metric
 };
 
 /**
  * @brief Configuration for regime detection
  */
 struct RegimeDetectorConfig {
-    int lookback_period{252};            // Historical lookback
-    double confidence_threshold{0.75};    // Required confidence for regime change
-    int min_regime_duration{5};          // Minimum days for regime
-    bool use_machine_learning{false};     // Use ML models
-    double var_ratio_threshold{2.0};      // Variance ratio threshold
-    double correlation_threshold{0.7};    // High correlation threshold
-    double volatility_threshold{0.3};     // High volatility threshold
-    std::vector<std::string> features;    // Features to use
-    std::string model_path;              // Path to ML models
+    int lookback_period{252};           // Historical lookback
+    double confidence_threshold{0.75};  // Required confidence for regime change
+    int min_regime_duration{5};         // Minimum days for regime
+    bool use_machine_learning{false};   // Use ML models
+    double var_ratio_threshold{2.0};    // Variance ratio threshold
+    double correlation_threshold{0.7};  // High correlation threshold
+    double volatility_threshold{0.3};   // High volatility threshold
+    std::vector<std::string> features;  // Features to use
+    std::string model_path;             // Path to ML models
 };
 
 /**
@@ -149,8 +149,7 @@ public:
      * @param symbol Instrument symbol
      * @return Result containing vector of past regimes
      */
-    Result<std::vector<RegimeDetectionResult>> get_regime_history(
-        const std::string& symbol) const;
+    Result<std::vector<RegimeDetectionResult>> get_regime_history(const std::string& symbol) const;
 
 private:
     RegimeDetectorConfig config_;
@@ -194,9 +193,8 @@ private:
      * @param lags Vector of lags to use
      * @return Variance ratio statistic
      */
-    double calculate_variance_ratio(
-        const std::vector<double>& prices,
-        const std::vector<int>& lags) const;
+    double calculate_variance_ratio(const std::vector<double>& prices,
+                                    const std::vector<int>& lags) const;
 
     /**
      * @brief Detect regime changes
@@ -204,9 +202,8 @@ private:
      * @param symbol Instrument symbol
      * @return New regime classification
      */
-    DetailedMarketRegime detect_regime_change(
-        const RegimeFeatures& features,
-        const std::string& symbol) const;
+    DetailedMarketRegime detect_regime_change(const RegimeFeatures& features,
+                                              const std::string& symbol) const;
 
     /**
      * @brief Calculate regime change probability
@@ -214,9 +211,8 @@ private:
      * @param current_regime Current regime
      * @return Probability of regime change
      */
-    double calculate_change_probability(
-        const RegimeFeatures& features,
-        DetailedMarketRegime current_regime) const;
+    double calculate_change_probability(const RegimeFeatures& features,
+                                        DetailedMarketRegime current_regime) const;
 
     /**
      * @brief Validate regime change
@@ -225,10 +221,8 @@ private:
      * @param features Current features
      * @return true if change is valid
      */
-    bool validate_regime_change(
-        const std::string& symbol,
-        DetailedMarketRegime new_regime,
-        const RegimeFeatures& features) const;
+    bool validate_regime_change(const std::string& symbol, DetailedMarketRegime new_regime,
+                                const RegimeFeatures& features) const;
 };
 
-} // namespace trade_ngin
+}  // namespace trade_ngin
