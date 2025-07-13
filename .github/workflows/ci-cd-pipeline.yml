@@ -71,7 +71,19 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential cmake libgtest-dev nlohmann-json3-dev libarrow-dev libpqxx-dev
+          sudo apt-get install -y build-essential cmake libgtest-dev nlohmann-json3-dev libpqxx-dev
+          # Install Arrow from source if not available in package manager
+          if ! dpkg -l | grep -q libarrow; then
+            echo "Installing Arrow from source..."
+            wget https://archive.apache.org/dist/arrow/arrow-14.0.2/apache-arrow-14.0.2.tar.gz
+            tar -xzf apache-arrow-14.0.2.tar.gz
+            cd apache-arrow-14.0.2/cpp
+            mkdir build && cd build
+            cmake .. -DARROW_COMPUTE=ON -DARROW_CSV=ON -DARROW_DATASET=ON -DARROW_FILESYSTEM=ON -DARROW_JSON=ON -DARROW_PARQUET=ON
+            make -j$(nproc)
+            sudo make install
+            sudo ldconfig
+          fi
 
       - name: Configure CMake with Coverage
         run: |
