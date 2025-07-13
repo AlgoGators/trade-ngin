@@ -1,24 +1,18 @@
 //===== state_manager.hpp =====
 #pragma once
 
-#include "trade_ngin/core/types.hpp"
-#include "trade_ngin/core/error.hpp"
+#include <chrono>
+#include <condition_variable>
 #include <memory>
 #include <mutex>
-#include <unordered_map>
-#include <chrono>
 #include <string>
-#include <condition_variable>
+#include <unordered_map>
+#include "trade_ngin/core/error.hpp"
+#include "trade_ngin/core/types.hpp"
 
 namespace trade_ngin {
 
-enum class ComponentState {
-    INITIALIZED,
-    RUNNING,
-    PAUSED,
-    ERR_STATE,
-    STOPPED
-};
+enum class ComponentState { INITIALIZED, RUNNING, PAUSED, ERR_STATE, STOPPED };
 
 enum class ComponentType {
     STRATEGY,
@@ -50,12 +44,11 @@ public:
 
     Result<ComponentInfo> get_state(const std::string& component_id) const;
     Result<void> update_metrics(const std::string& component_id,
-                              const std::unordered_map<std::string, double>& metrics);
+                                const std::unordered_map<std::string, double>& metrics);
     Result<void> register_component(const ComponentInfo& info);
     Result<void> unregister_component(const std::string& component_id);
-    Result<void> update_state(const std::string& component_id,
-                            ComponentState new_state,
-                            const std::string& error_message = "");
+    Result<void> update_state(const std::string& component_id, ComponentState new_state,
+                              const std::string& error_message = "");
     bool is_healthy() const;
     std::vector<std::string> get_all_components() const;
 
@@ -73,8 +66,7 @@ private:
     StateManager(const StateManager&) = delete;
     StateManager& operator=(const StateManager&) = delete;
 
-    Result<void> validate_transition(ComponentState current_state, 
-                                   ComponentState new_state) const;
+    Result<void> validate_transition(ComponentState current_state, ComponentState new_state) const;
 
     std::unordered_map<std::string, ComponentInfo> components_;
     mutable std::recursive_mutex mutex_;
@@ -82,4 +74,4 @@ private:
 
     std::chrono::steady_clock::time_point last_reset_;
 };
-} // namespace trade_ngin
+}  // namespace trade_ngin

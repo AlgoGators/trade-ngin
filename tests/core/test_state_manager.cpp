@@ -20,28 +20,24 @@ protected:
 };
 
 TEST_F(StateManagerTest, RegisterComponentSuccess) {
-    ComponentInfo info{
-        ComponentType::STRATEGY,
-        ComponentState::INITIALIZED,
-        "test_component",
-        "",
-        std::chrono::system_clock::now(),
-        {}
-    };
+    ComponentInfo info{ComponentType::STRATEGY,
+                       ComponentState::INITIALIZED,
+                       "test_component",
+                       "",
+                       std::chrono::system_clock::now(),
+                       {}};
 
     auto result = StateManager::instance().register_component(info);
     EXPECT_TRUE(result.is_ok());
 }
 
 TEST_F(StateManagerTest, RegisterDuplicateComponent) {
-    ComponentInfo info{
-        ComponentType::STRATEGY,
-        ComponentState::INITIALIZED,
-        "test_component",
-        "",
-        std::chrono::system_clock::now(),
-        {}
-    };
+    ComponentInfo info{ComponentType::STRATEGY,
+                       ComponentState::INITIALIZED,
+                       "test_component",
+                       "",
+                       std::chrono::system_clock::now(),
+                       {}};
 
     ASSERT_TRUE(StateManager::instance().register_component(info).is_ok());
     auto result = StateManager::instance().register_component(info);
@@ -49,50 +45,39 @@ TEST_F(StateManagerTest, RegisterDuplicateComponent) {
 }
 
 TEST_F(StateManagerTest, StateTransitions) {
-    ComponentInfo info{
-        ComponentType::STRATEGY,
-        ComponentState::INITIALIZED,
-        "test_component",
-        "",
-        std::chrono::system_clock::now(),
-        {}
-    };
+    ComponentInfo info{ComponentType::STRATEGY,
+                       ComponentState::INITIALIZED,
+                       "test_component",
+                       "",
+                       std::chrono::system_clock::now(),
+                       {}};
 
     ASSERT_TRUE(StateManager::instance().register_component(info).is_ok());
 
     // Valid transition
-    auto result1 = StateManager::instance().update_state(
-        "test_component",
-        ComponentState::RUNNING
-    );
+    auto result1 = StateManager::instance().update_state("test_component", ComponentState::RUNNING);
     EXPECT_TRUE(result1.is_ok());
 
     // Invalid transition
-    auto result2 = StateManager::instance().update_state(
-        "test_component",
-        ComponentState::INITIALIZED
-    );
+    auto result2 =
+        StateManager::instance().update_state("test_component", ComponentState::INITIALIZED);
     EXPECT_TRUE(result2.is_error());
 }
 
 TEST_F(StateManagerTest, ComponentHealth) {
-    ComponentInfo info1{
-        ComponentType::STRATEGY,
-        ComponentState::INITIALIZED,
-        "component1",
-        "",
-        std::chrono::system_clock::now(),
-        {}
-    };
+    ComponentInfo info1{ComponentType::STRATEGY,
+                        ComponentState::INITIALIZED,
+                        "component1",
+                        "",
+                        std::chrono::system_clock::now(),
+                        {}};
 
-    ComponentInfo info2{
-        ComponentType::MARKET_DATA,
-        ComponentState::RUNNING,
-        "component2",
-        "",
-        std::chrono::system_clock::now(),
-        {}
-    };
+    ComponentInfo info2{ComponentType::MARKET_DATA,
+                        ComponentState::RUNNING,
+                        "component2",
+                        "",
+                        std::chrono::system_clock::now(),
+                        {}};
 
     ASSERT_TRUE(StateManager::instance().register_component(info1).is_ok());
     ASSERT_TRUE(StateManager::instance().register_component(info2).is_ok());

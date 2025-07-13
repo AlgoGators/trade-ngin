@@ -1,17 +1,17 @@
 // include/trade_ngin/instruments/instrument_registry.hpp
 #pragma once
 
-#include "trade_ngin/instruments/instrument.hpp"
-#include "trade_ngin/instruments/futures.hpp"
-#include "trade_ngin/instruments/equity.hpp"
-#include "trade_ngin/instruments/option.hpp"
-#include "trade_ngin/core/types.hpp"
-#include "trade_ngin/core/error.hpp"
-#include "trade_ngin/data/postgres_database.hpp"
 #include <memory>
 #include <mutex>
-#include <unordered_map>
 #include <string>
+#include <unordered_map>
+#include "trade_ngin/core/error.hpp"
+#include "trade_ngin/core/types.hpp"
+#include "trade_ngin/data/postgres_database.hpp"
+#include "trade_ngin/instruments/equity.hpp"
+#include "trade_ngin/instruments/futures.hpp"
+#include "trade_ngin/instruments/instrument.hpp"
+#include "trade_ngin/instruments/option.hpp"
 
 namespace trade_ngin {
 
@@ -79,7 +79,8 @@ public:
      * @param asset_class Asset class to filter by
      * @return Vector of instruments of the specified asset class
      */
-    std::vector<std::shared_ptr<Instrument>> get_instruments_by_asset_class(AssetClass asset_class) const;
+    std::vector<std::shared_ptr<Instrument>> get_instruments_by_asset_class(
+        AssetClass asset_class) const;
 
     /**
      * @brief Check if an instrument is loaded
@@ -89,7 +90,7 @@ public:
     bool has_instrument(const std::string& symbol) const;
 
 private:
-    InstrumentRegistry() = default; // Private constructor for singleton pattern
+    InstrumentRegistry() = default;  // Private constructor for singleton pattern
     InstrumentRegistry(const InstrumentRegistry&) = delete;
     InstrumentRegistry& operator=(const InstrumentRegistry&) = delete;
     InstrumentRegistry(InstrumentRegistry&&) = delete;
@@ -100,7 +101,8 @@ private:
      * @param row Database result row
      * @return Shared pointer to the created instrument
      */
-    std::shared_ptr<Instrument> create_instrument_from_db(const std::shared_ptr<arrow::Table>& table, int64_t row);
+    std::shared_ptr<Instrument> create_instrument_from_db(
+        const std::shared_ptr<arrow::Table>& table, int64_t row);
 
     /**
      * @brief Convert asset type string to AssetType enum
@@ -115,4 +117,4 @@ private:
     bool initialized_{false};
 };
 
-} // namespace trade_ngin
+}  // namespace trade_ngin

@@ -1,13 +1,13 @@
 // include/trade_ngin/data/market_data_bus.hpp
 #pragma once
 
-#include "trade_ngin/core/types.hpp"
-#include "trade_ngin/core/error.hpp"
 #include <functional>
 #include <memory>
-#include <unordered_map>
 #include <mutex>
+#include <unordered_map>
 #include <vector>
+#include "trade_ngin/core/error.hpp"
+#include "trade_ngin/core/types.hpp"
 
 namespace trade_ngin {
 
@@ -85,7 +85,7 @@ public:
 
 private:
     MarketDataBus() = default;
-    
+
     struct Subscription {
         std::vector<MarketDataEventType> event_types;
         std::vector<std::string> symbols;
@@ -96,9 +96,7 @@ private:
     std::unordered_map<std::string, Subscription> subscriptions_;
     mutable std::mutex mutex_;
 
-    bool should_notify(
-        const Subscription& sub,
-        const MarketDataEvent& event) const;
+    bool should_notify(const Subscription& sub, const MarketDataEvent& event) const;
 };
 
-} // namespace trade_ngin
+}  // namespace trade_ngin

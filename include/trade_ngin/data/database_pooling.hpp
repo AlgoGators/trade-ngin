@@ -1,52 +1,51 @@
 #pragma once
 
-#include <mutex>
-#include <vector>
-#include <deque>
 #include <condition_variable>
+#include <deque>
 #include <memory>
-#include "trade_ngin/data/postgres_database.hpp"
+#include <mutex>
 #include <thread>
+#include <vector>
+#include "trade_ngin/data/postgres_database.hpp"
 
 namespace trade_ngin {
 namespace utils {
 
 // Retry function with exponential backoff
-template<typename Func>
+template <typename Func>
 auto retry_with_backoff(Func func, int max_retries = 3) -> decltype(func()) {
     using ReturnType = decltype(func());
-    
+
     int attempt = 0;
     std::chrono::milliseconds delay(30);  // Start with 30ms delay
-    
+
     while (attempt < max_retries) {
         auto result = func();
-        
+
         // Check if success or non-retryable error
-        if (!result.is_error() || 
-            (result.is_error() && 
-            result.error()->code() != ErrorCode::CONNECTION_ERROR)) {
+        if (!result.is_error() ||
+            (result.is_error() && result.error()->code() != ErrorCode::CONNECTION_ERROR)) {
             return result;
         }
-        
+
         // Log retry attempt
-        WARN("Database operation failed, retrying (attempt " + std::to_string(attempt + 1) + 
+        WARN("Database operation failed, retrying (attempt " + std::to_string(attempt + 1) +
              " of " + std::to_string(max_retries) + "): " + result.error()->what());
-        
+
         // Wait before retry
         std::this_thread::sleep_for(delay);
-        
+
         // Exponential backoff with jitter
         delay *= 2;
         delay += std::chrono::milliseconds(rand() % 100);
-        
+
         attempt++;
     }
-    
+
     // All retries failed, execute one last time and return the result
     return func();
 }
-} // namespace utils
+}  // namespace utils
 
 /**
  * @brief Database connection pool for managing multiple connections
@@ -83,7 +82,7 @@ public:
          * @param pool Pointer to the database pool
          */
         ConnectionGuard(std::shared_ptr<PostgresDatabase> connection, DatabasePool* pool)
-        : connection_(connection), pool_(pool) {}
+            : connection_(connection), pool_(pool) {}
 
         /**
          * @brief Destructor
@@ -107,7 +106,7 @@ public:
         ConnectionGuard& operator=(const ConnectionGuard&) = delete;
 
         // Allow moving
-        ConnectionGuard(ConnectionGuard&& other) noexcept 
+        ConnectionGuard(ConnectionGuard&& other) noexcept
             : connection_(std::move(other.connection_)), pool_(other.pool_) {
             other.pool_ = nullptr;
         }
@@ -118,7 +117,7 @@ public:
                 if (connection_ && pool_) {
                     pool_->return_connection(connection_);
                 }
-                
+
                 // Take ownership of other's connection
                 connection_ = std::move(other.connection_);
                 pool_ = other.pool_;
@@ -138,8 +137,8 @@ public:
      * @param timeout Timeout for acquiring a connection
      * @return ConnectionGuard object containing the acquired connection
      */
-    ConnectionGuard acquire_connection(int max_retries= 3, 
-        std::chrono::milliseconds timeout = std::chrono::seconds(5));
+    ConnectionGuard acquire_connection(int max_retries = 3,
+                                       std::chrono::milliseconds timeout = std::chrono::seconds(5));
 
     /**
      * @brief Return a connection to the pool
@@ -157,7 +156,7 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         return available_connections_.size() + (total_connections_ - available_connections_.size());
     }
-    
+
 private:
     DatabasePool() : initialized_(false), total_connections_(0), max_pool_size_(20) {}
     ~DatabasePool() = default;
@@ -173,4 +172,4 @@ private:
     std::shared_ptr<PostgresDatabase> create_new_connection();
 };
 
-} // namespace trade_ngin
+}  // namespace trade_ngin

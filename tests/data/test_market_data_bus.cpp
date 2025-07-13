@@ -1,9 +1,9 @@
 #include <gtest/gtest.h>
-#include "trade_ngin/data/market_data_bus.hpp"
-#include "../core/test_base.hpp"
 #include <atomic>
-#include <thread>
 #include <map>
+#include <thread>
+#include "../core/test_base.hpp"
+#include "trade_ngin/data/market_data_bus.hpp"
 
 using namespace trade_ngin;
 using namespace trade_ngin::testing;
@@ -24,30 +24,20 @@ protected:
         TestBase::TearDown();
     }
 
-    MarketDataEvent create_test_event(
-        const std::string& symbol,
-        MarketDataEventType type = MarketDataEventType::BAR,
-        double price = 100.0) {
-        
+    MarketDataEvent create_test_event(const std::string& symbol,
+                                      MarketDataEventType type = MarketDataEventType::BAR,
+                                      double price = 100.0) {
         MarketDataEvent event;
         event.type = type;
         event.symbol = symbol;
         event.timestamp = std::chrono::system_clock::now();
-        
+
         // Set numeric fields based on price
-        event.numeric_fields = {
-            {"open", price},
-            {"high", price * 1.01},
-            {"low", price * 0.99},
-            {"close", price * 1.005},
-            {"volume", 10000.0},
-            {"vwap", price * 1.002}
-        };
-        
-        event.string_fields = {
-            {"exchange", "NYSE"},
-            {"condition", "Regular"}
-        };
+        event.numeric_fields = {{"open", price},       {"high", price * 1.01},
+                                {"low", price * 0.99}, {"close", price * 1.005},
+                                {"volume", 10000.0},   {"vwap", price * 1.002}};
+
+        event.string_fields = {{"exchange", "NYSE"}, {"condition", "Regular"}};
 
         return event;
     }
@@ -58,17 +48,12 @@ protected:
 
 TEST_F(MarketDataBusTest, BasicSubscription) {
     std::atomic<int> callback_count{0};
-    
+
     MarketDataCallback callback = [&callback_count](const MarketDataEvent& event) {
         callback_count++;
     };
 
-    SubscriberInfo info{
-        "test_subscriber",
-        {MarketDataEventType::BAR},
-        {"AAPL"},
-        callback
-    };
+    SubscriberInfo info{"test_subscriber", {MarketDataEventType::BAR}, {"AAPL"}, callback};
 
     auto result = bus_->subscribe(info);
     ASSERT_TRUE(result.is_ok());
@@ -90,7 +75,7 @@ TEST_F(MarketDataBusTest, BasicSubscription) {
 TEST_F(MarketDataBusTest, MultipleEventTypes) {
     std::atomic<int> bar_count{0};
     std::atomic<int> trade_count{0};
-    
+
     MarketDataCallback callback = [&](const MarketDataEvent& event) {
         if (event.type == MarketDataEventType::BAR) {
             bar_count++;
@@ -99,12 +84,10 @@ TEST_F(MarketDataBusTest, MultipleEventTypes) {
         }
     };
 
-    SubscriberInfo info{
-        "multi_type_subscriber",
-        {MarketDataEventType::BAR, MarketDataEventType::TRADE},
-        {"AAPL"},
-        callback
-    };
+    SubscriberInfo info{"multi_type_subscriber",
+                        {MarketDataEventType::BAR, MarketDataEventType::TRADE},
+                        {"AAPL"},
+                        callback};
 
     ASSERT_TRUE(bus_->subscribe(info).is_ok());
     subscriber_ids_.push_back("multi_type_subscriber");
@@ -121,17 +104,12 @@ TEST_F(MarketDataBusTest, MultipleEventTypes) {
 
 TEST_F(MarketDataBusTest, UnsubscribeTest) {
     std::atomic<int> callback_count{0};
-    
+
     MarketDataCallback callback = [&callback_count](const MarketDataEvent& event) {
         callback_count++;
     };
 
-    SubscriberInfo info{
-        "temp_subscriber",
-        {MarketDataEventType::BAR},
-        {"AAPL"},
-        callback
-    };
+    SubscriberInfo info{"temp_subscriber", {MarketDataEventType::BAR}, {"AAPL"}, callback};
 
     ASSERT_TRUE(bus_->subscribe(info).is_ok());
 
@@ -152,20 +130,16 @@ TEST_F(MarketDataBusTest, UnsubscribeTest) {
 TEST_F(MarketDataBusTest, MultipleSubscribers) {
     std::atomic<int> count1{0};
     std::atomic<int> count2{0};
-    
+
     SubscriberInfo info1{
-        "subscriber1",
-        {MarketDataEventType::BAR},
-        {"AAPL"},
-        [&count1](const MarketDataEvent&) { count1++; }
-    };
+        "subscriber1", {MarketDataEventType::BAR}, {"AAPL"}, [&count1](const MarketDataEvent&) {
+            count1++;
+        }};
 
     SubscriberInfo info2{
-        "subscriber2",
-        {MarketDataEventType::BAR},
-        {"AAPL"},
-        [&count2](const MarketDataEvent&) { count2++; }
-    };
+        "subscriber2", {MarketDataEventType::BAR}, {"AAPL"}, [&count2](const MarketDataEvent&) {
+            count2++;
+        }};
 
     ASSERT_TRUE(bus_->subscribe(info1).is_ok());
     ASSERT_TRUE(bus_->subscribe(info2).is_ok());
@@ -174,20 +148,18 @@ TEST_F(MarketDataBusTest, MultipleSubscribers) {
 
     bus_->publish(create_test_event("AAPL"));
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    
+
     EXPECT_EQ(count1, 1);
     EXPECT_EQ(count2, 1);
 }
 
 TEST_F(MarketDataBusTest, EmptySymbolListSubscription) {
     std::atomic<int> callback_count{0};
-    
-    SubscriberInfo info{
-        "wildcard_subscriber",
-        {MarketDataEventType::BAR},
-        {},  // Empty symbol list means subscribe to all
-        [&callback_count](const MarketDataEvent&) { callback_count++; }
-    };
+
+    SubscriberInfo info{"wildcard_subscriber",
+                        {MarketDataEventType::BAR},
+                        {},  // Empty symbol list means subscribe to all
+                        [&callback_count](const MarketDataEvent&) { callback_count++; }};
 
     ASSERT_TRUE(bus_->subscribe(info).is_ok());
     subscriber_ids_.push_back("wildcard_subscriber");
@@ -221,14 +193,12 @@ TEST_F(MarketDataBusTest, ConcurrentOperations) {
     const int num_publishers = 5;
     const int events_per_publisher = 100;
     std::atomic<int> total_callbacks{0};
-    
+
     // Subscribe to all events
-    SubscriberInfo info{
-        "concurrent_test",
-        {MarketDataEventType::BAR},
-        {},  // All symbols
-        [&total_callbacks](const MarketDataEvent&) { total_callbacks++; }
-    };
+    SubscriberInfo info{"concurrent_test",
+                        {MarketDataEventType::BAR},
+                        {},  // All symbols
+                        [&total_callbacks](const MarketDataEvent&) { total_callbacks++; }};
 
     ASSERT_TRUE(bus_->subscribe(info).is_ok());
     subscriber_ids_.push_back("concurrent_test");
@@ -238,11 +208,8 @@ TEST_F(MarketDataBusTest, ConcurrentOperations) {
     for (int i = 0; i < num_publishers; ++i) {
         publishers.emplace_back([this, i, events_per_publisher]() {
             for (int j = 0; j < events_per_publisher; ++j) {
-                auto event = create_test_event(
-                    "SYM" + std::to_string(i),
-                    MarketDataEventType::BAR,
-                    100.0 + j
-                );
+                auto event = create_test_event("SYM" + std::to_string(i), MarketDataEventType::BAR,
+                                               100.0 + j);
                 bus_->publish(event);
             }
         });
@@ -260,16 +227,14 @@ TEST_F(MarketDataBusTest, ConcurrentOperations) {
 
 TEST_F(MarketDataBusTest, ExceptionHandling) {
     std::atomic<int> successful_callbacks{0};
-    
-    SubscriberInfo info{
-        "exception_test",
-        {MarketDataEventType::BAR},
-        {"AAPL"},
-        [&successful_callbacks](const MarketDataEvent&) {
-            successful_callbacks++;
-            throw std::runtime_error("Intentional test exception");
-        }
-    };
+
+    SubscriberInfo info{"exception_test",
+                        {MarketDataEventType::BAR},
+                        {"AAPL"},
+                        [&successful_callbacks](const MarketDataEvent&) {
+                            successful_callbacks++;
+                            throw std::runtime_error("Intentional test exception");
+                        }};
 
     ASSERT_TRUE(bus_->subscribe(info).is_ok());
     subscriber_ids_.push_back("exception_test");
@@ -287,24 +252,18 @@ TEST_F(MarketDataBusTest, ExceptionHandling) {
 TEST_F(MarketDataBusTest, HighVolumeTest) {
     std::atomic<int> processed_count{0};
     const int num_events = 10000;
-    
-    SubscriberInfo info{
-        "high_volume_test",
-        {MarketDataEventType::BAR},
-        {"AAPL"},
-        [&processed_count](const MarketDataEvent&) { processed_count++; }
-    };
+
+    SubscriberInfo info{"high_volume_test",
+                        {MarketDataEventType::BAR},
+                        {"AAPL"},
+                        [&processed_count](const MarketDataEvent&) { processed_count++; }};
 
     ASSERT_TRUE(bus_->subscribe(info).is_ok());
     subscriber_ids_.push_back("high_volume_test");
 
     // Publish many events rapidly
     for (int i = 0; i < num_events; ++i) {
-        bus_->publish(create_test_event(
-            "AAPL",
-            MarketDataEventType::BAR,
-            100.0 + (i % 100)
-        ));
+        bus_->publish(create_test_event("AAPL", MarketDataEventType::BAR, 100.0 + (i % 100)));
     }
 
     // Allow time for processing

@@ -1,28 +1,22 @@
 #pragma once
 
-#include "trade_ngin/core/types.hpp"
-#include "trade_ngin/core/error.hpp"
-#include "trade_ngin/core/config_base.hpp"
+#include <filesystem>
+#include <iostream>
+#include <memory>
+#include <mutex>
 #include <nlohmann/json.hpp>
 #include <string>
-#include <memory>
-#include <filesystem>
 #include <unordered_map>
-#include <mutex>
-#include <iostream>
-
+#include "trade_ngin/core/config_base.hpp"
+#include "trade_ngin/core/error.hpp"
+#include "trade_ngin/core/types.hpp"
 
 namespace trade_ngin {
 
 /**
  * @brief Environment types for configuration
  */
-enum class Environment {
-    DEVELOPMENT,
-    STAGING,
-    PRODUCTION,
-    BACKTEST
-};
+enum class Environment { DEVELOPMENT, STAGING, PRODUCTION, BACKTEST };
 
 /**
  * @brief Configuration validation error
@@ -35,13 +29,7 @@ struct ConfigValidationError {
 /**
  * @brief Configuration type enumeration
  */
-enum class ConfigType {
-    STRATEGY,
-    RISK,
-    EXECUTION,
-    DATABASE,
-    LOGGING
-};
+enum class ConfigType { STRATEGY, RISK, EXECUTION, DATABASE, LOGGING };
 
 /**
  * @brief Base configuration validator interface
@@ -49,8 +37,7 @@ enum class ConfigType {
 class ConfigValidator {
 public:
     virtual ~ConfigValidator() = default;
-    virtual std::vector<ConfigValidationError> validate(
-        const nlohmann::json& config) const = 0;
+    virtual std::vector<ConfigValidationError> validate(const nlohmann::json& config) const = 0;
     virtual ConfigType get_type() const = 0;
 };
 
@@ -59,18 +46,17 @@ public:
  */
 class StrategyValidator : public ConfigValidator {
 public:
-    std::vector<ConfigValidationError> validate(
-        const nlohmann::json& config) const override;
-    ConfigType get_type() const override { return ConfigType::STRATEGY; }
+    std::vector<ConfigValidationError> validate(const nlohmann::json& config) const override;
+    ConfigType get_type() const override {
+        return ConfigType::STRATEGY;
+    }
 
 private:
     bool validate_ema_windows(const nlohmann::json& windows,
-                            std::vector<ConfigValidationError>& errors) const;
-    bool validate_numeric_range(const nlohmann::json& value,
-                              const std::string& field,
-                              double min_val,
-                              double max_val,
                               std::vector<ConfigValidationError>& errors) const;
+    bool validate_numeric_range(const nlohmann::json& value, const std::string& field,
+                                double min_val, double max_val,
+                                std::vector<ConfigValidationError>& errors) const;
 };
 
 /**
@@ -78,13 +64,14 @@ private:
  */
 class RiskValidator : public ConfigValidator {
 public:
-    std::vector<ConfigValidationError> validate(
-        const nlohmann::json& config) const override;
-    ConfigType get_type() const override { return ConfigType::RISK; }
+    std::vector<ConfigValidationError> validate(const nlohmann::json& config) const override;
+    ConfigType get_type() const override {
+        return ConfigType::RISK;
+    }
 
 private:
     bool validate_risk_limits(const nlohmann::json& config,
-                            std::vector<ConfigValidationError>& errors) const;
+                              std::vector<ConfigValidationError>& errors) const;
 };
 
 /**
@@ -92,15 +79,16 @@ private:
  */
 class ExecutionValidator : public ConfigValidator {
 public:
-    std::vector<ConfigValidationError> validate(
-        const nlohmann::json& config) const override;
-    ConfigType get_type() const override { return ConfigType::EXECUTION; }
+    std::vector<ConfigValidationError> validate(const nlohmann::json& config) const override;
+    ConfigType get_type() const override {
+        return ConfigType::EXECUTION;
+    }
 
 private:
     bool validate_slippage_model(const nlohmann::json& model,
-                               std::vector<ConfigValidationError>& errors) const;
-    bool validate_commission_model(const nlohmann::json& model,
                                  std::vector<ConfigValidationError>& errors) const;
+    bool validate_commission_model(const nlohmann::json& model,
+                                   std::vector<ConfigValidationError>& errors) const;
 };
 
 /**
@@ -108,9 +96,10 @@ private:
  */
 class DatabaseValidator : public ConfigValidator {
 public:
-    std::vector<ConfigValidationError> validate(
-        const nlohmann::json& config) const override;
-    ConfigType get_type() const override { return ConfigType::DATABASE; }
+    std::vector<ConfigValidationError> validate(const nlohmann::json& config) const override;
+    ConfigType get_type() const override {
+        return ConfigType::DATABASE;
+    }
 };
 
 /**
@@ -132,16 +121,15 @@ public:
      * @param env Environment to load
      * @return Result indicating success or failure
      */
-    Result<void> initialize(
-        const std::filesystem::path& base_path,
-        Environment env = Environment::DEVELOPMENT);
+    Result<void> initialize(const std::filesystem::path& base_path,
+                            Environment env = Environment::DEVELOPMENT);
 
     /**
      * @brief Get configuration for a component
      * @param component_type Type of component
      * @return Configuration object
      */
-    template<typename T>
+    template <typename T>
     Result<T> get_config(ConfigType component_type) const;
 
     /**
@@ -150,9 +138,7 @@ public:
      * @param config New configuration
      * @return Result indicating success or failure
      */
-    Result<void> update_config(
-        ConfigType component_type,
-        const nlohmann::json& config);
+    Result<void> update_config(ConfigType component_type, const nlohmann::json& config);
 
     /**
      * @brief Save entire configuration to files
@@ -170,13 +156,15 @@ public:
     /**
      * @brief Get current environment
      */
-    Environment get_environment() const { return current_env_; }
+    Environment get_environment() const {
+        return current_env_;
+    }
 
     /**
      * @brief Check if in production environment
      */
-    bool is_production() const { 
-        return current_env_ == Environment::PRODUCTION; 
+    bool is_production() const {
+        return current_env_ == Environment::PRODUCTION;
     }
 
     /**
@@ -223,9 +211,7 @@ private:
      * @param config Configuration to validate
      * @return Result indicating success or failure
      */
-    Result<void> validate_config(
-        ConfigType component_type,
-        const nlohmann::json& config) const;
+    Result<void> validate_config(ConfigType component_type, const nlohmann::json& config) const;
 
     /**
      * @brief Apply environment overrides
@@ -263,22 +249,18 @@ private:
     nlohmann::json create_default_logging_config() const;
 };
 
-
 // Template implementation
-template<typename T>
+template <typename T>
 Result<T> ConfigManager::get_config(ConfigType component_type) const {
     std::lock_guard<std::mutex> lock(mutex_);
-    
+
     try {
         std::string component = get_component_name(component_type);
-        
+
         // Check if component exists
         if (!config_.contains(component)) {
-            return make_error<T>(
-                ErrorCode::INVALID_ARGUMENT,
-                "Component not found: " + component,
-                "ConfigManager"
-            );
+            return make_error<T>(ErrorCode::INVALID_ARGUMENT, "Component not found: " + component,
+                                 "ConfigManager");
         }
 
         // Get config JSON
@@ -287,11 +269,8 @@ Result<T> ConfigManager::get_config(ConfigType component_type) const {
         // Validate config
         auto validation = validate_config(component_type, component_config);
         if (validation.is_error()) {
-            return make_error<T>(
-                validation.error()->code(),
-                validation.error()->what(),
-                "ConfigManager"
-            );
+            return make_error<T>(validation.error()->code(), validation.error()->what(),
+                                 "ConfigManager");
         }
 
         T config;
@@ -308,12 +287,9 @@ Result<T> ConfigManager::get_config(ConfigType component_type) const {
         return Result<T>(config);
 
     } catch (const std::exception& e) {
-        return make_error<T>(
-            ErrorCode::CONVERSION_ERROR,
-            std::string("Error getting config: ") + e.what(),
-            "ConfigManager"
-        );
+        return make_error<T>(ErrorCode::CONVERSION_ERROR,
+                             std::string("Error getting config: ") + e.what(), "ConfigManager");
     }
 }
 
-} // namespace trade_ngin
+}  // namespace trade_ngin

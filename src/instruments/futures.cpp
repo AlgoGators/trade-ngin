@@ -8,8 +8,7 @@
 namespace trade_ngin {
 
 FuturesInstrument::FuturesInstrument(std::string symbol, FuturesSpec spec)
-    : symbol_(std::move(symbol))
-    , spec_(std::move(spec)) {}
+    : symbol_(std::move(symbol)), spec_(std::move(spec)) {}
 
 bool FuturesInstrument::is_tradeable() const {
     // Check if contract is expired
@@ -27,7 +26,7 @@ bool FuturesInstrument::is_market_open(const Timestamp& timestamp) const {
         std::time_t time = std::chrono::system_clock::to_time_t(timestamp);
         std::tm local_time_buffer;
         std::tm* local_time = trade_ngin::core::safe_localtime(&time, &local_time_buffer);
-        
+
         // Early return for weekends
         if (local_time->tm_wday == 0 || local_time->tm_wday == 6) {
             return false;
@@ -59,7 +58,7 @@ bool FuturesInstrument::is_market_open(const Timestamp& timestamp) const {
         return current_minutes >= start_minutes && current_minutes <= end_minutes;
 
     } catch (const std::exception&) {
-        return false; // Default to closed on any error
+        return false;  // Default to closed on any error
     }
 }
 
@@ -94,11 +93,11 @@ bool FuturesInstrument::is_expired(const Timestamp& timestamp) const {
 std::pair<int, int> FuturesInstrument::parse_time(const std::string& timestr) const {
     std::istringstream iss(timestr);
     std::string hour_str, minute_str;
-    
+
     std::getline(iss, hour_str, ':');
     std::getline(iss, minute_str);
-    
+
     return {std::stoi(hour_str), std::stoi(minute_str)};
 }
 
-} // namespace trade_ngin
+}  // namespace trade_ngin

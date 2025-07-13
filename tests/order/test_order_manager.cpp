@@ -1,7 +1,8 @@
 //===== test_order_manager.cpp =====
 #include <gtest/gtest.h>
-#include "trade_ngin/order/order_manager.hpp"
+#include <thread>
 #include "test_utils.hpp"
+#include "trade_ngin/order/order_manager.hpp"
 
 using namespace trade_ngin;
 using namespace trade_ngin::testing;
@@ -41,7 +42,7 @@ TEST_F(OrderManagerTest, SubmitOrderSuccess) {
     Order order = create_test_order();
     auto result = order_manager_->submit_order(order, "TEST_STRATEGY");
     ASSERT_TRUE(result.is_ok());
-    
+
     std::string order_id = result.value();
     EXPECT_FALSE(order_id.empty());
 
@@ -53,7 +54,7 @@ TEST_F(OrderManagerTest, SubmitOrderSuccess) {
 TEST_F(OrderManagerTest, InvalidOrder) {
     Order order = create_test_order();
     order.quantity = -100;  // Invalid quantity
-    
+
     auto result = order_manager_->submit_order(order, "TEST_STRATEGY");
     EXPECT_TRUE(result.is_error());
     EXPECT_EQ(result.error()->code(), ErrorCode::INVALID_ORDER);
@@ -64,11 +65,11 @@ TEST_F(OrderManagerTest, OrderCancellation) {
     config_.simulate_fills = false;
     order_manager_ = std::make_unique<OrderManager>(config_);
     ASSERT_TRUE(order_manager_->initialize().is_ok());
-    
+
     Order order = create_test_order();
     auto submit_result = order_manager_->submit_order(order, "TEST_STRATEGY");
     ASSERT_TRUE(submit_result.is_ok());
-    
+
     auto cancel_result = order_manager_->cancel_order(submit_result.value());
     EXPECT_TRUE(cancel_result.is_ok());
 
@@ -85,10 +86,10 @@ TEST_F(OrderManagerTest, PartialFills) {
 
     Order order = create_test_order();
     order.quantity = 200;
-    
+
     auto submit_result = order_manager_->submit_order(order, "TEST_STRATEGY");
     ASSERT_TRUE(submit_result.is_ok());
-    
+
     std::string order_id = submit_result.value();
 
     ExecutionReport exec1 = create_test_execution(order_id, 100, true);
@@ -97,7 +98,7 @@ TEST_F(OrderManagerTest, PartialFills) {
     auto status1 = order_manager_->get_order_status(order_id);
     ASSERT_TRUE(status1.is_ok());
     EXPECT_EQ(status1.value().status, OrderStatus::PARTIALLY_FILLED);
-    EXPECT_NEAR(status1.value().filled_quantity, 100, 1e-6); // Use tolerance
+    EXPECT_NEAR(status1.value().filled_quantity, 100, 1e-6);  // Use tolerance
 
     ExecutionReport exec2 = create_test_execution(order_id, 100, false);
     ASSERT_TRUE(order_manager_->process_execution(exec2).is_ok());
@@ -105,7 +106,7 @@ TEST_F(OrderManagerTest, PartialFills) {
     auto status2 = order_manager_->get_order_status(order_id);
     ASSERT_TRUE(status2.is_ok());
     EXPECT_EQ(status2.value().status, OrderStatus::FILLED);
-    EXPECT_NEAR(status2.value().filled_quantity, 200, 1e-6); // Use tolerance
+    EXPECT_NEAR(status2.value().filled_quantity, 200, 1e-6);  // Use tolerance
 }
 
 TEST_F(OrderManagerTest, GetStrategyOrders) {
@@ -135,7 +136,7 @@ TEST_F(OrderManagerTest, GetActiveOrders) {
     ASSERT_TRUE(order_manager_->initialize().is_ok());
 
     std::vector<std::string> order_ids;
-    
+
     // Submit 3 orders
     for (int i = 0; i < 3; ++i) {
         auto result = order_manager_->submit_order(create_test_order(), "TEST_STRATEGY");

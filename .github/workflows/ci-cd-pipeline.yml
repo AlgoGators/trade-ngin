@@ -1,0 +1,203 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+env:
+  COVERAGE_THRESHOLD: 75
+
+jobs:
+  lint:
+    name: Code Linting
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-format cpplint
+
+      - name: Run Clang Format Check
+        run: |
+          echo "Checking code formatting..."
+          find src include -name "*.cpp" -o -name "*.hpp" | xargs clang-format --dry-run --Werror
+          echo "✅ Code formatting is correct"
+
+      - name: Run Cpplint
+        run: |
+          echo "Running cpplint..."
+          cpplint --recursive --filter=-legal/copyright,-build/include_order src include || true
+          echo "✅ Linting completed"
+
+      - name: Create Linting Report
+        run: |
+          mkdir -p linting
+          TIMESTAMP=$(date +%Y-%m-%d_%H-%M-%S)
+          REPORT_FILE="linting/lint_report_$TIMESTAMP.txt"
+          
+          echo "Linting Report - $(date)" > $REPORT_FILE
+          echo "=================================" >> $REPORT_FILE
+          
+          echo "Clang Format Check:" >> $REPORT_FILE
+          find src include -name "*.cpp" -o -name "*.hpp" | xargs clang-format --dry-run 2>&1 >> $REPORT_FILE || echo "No formatting issues found" >> $REPORT_FILE
+          
+          echo "" >> $REPORT_FILE
+          echo "Cpplint Results:" >> $REPORT_FILE
+          cpplint --recursive --filter=-legal/copyright,-build/include_order src include 2>&1 >> $REPORT_FILE || echo "Linting completed" >> $REPORT_FILE
+
+      - name: Upload Linting Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: linting-report-${{ github.run_number }}
+          path: linting/
+
+  build:
+    name: Build and Test
+    runs-on: ubuntu-latest
+    needs: lint
+    strategy:
+      matrix:
+        build-type: [Debug, Release]
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake libgtest-dev nlohmann-json3-dev libarrow-dev libpqxx-dev
+
+      - name: Configure CMake with Coverage
+        run: |
+          mkdir -p build
+          cd build
+          cmake .. \
+            -DCMAKE_BUILD_TYPE=${{ matrix.build-type }} \
+            -DCMAKE_CXX_FLAGS="${{ matrix.build-type == 'Debug' && '-g -O0 -fprofile-arcs -ftest-coverage' || '-O3' }}" \
+            -DCMAKE_EXE_LINKER_FLAGS="${{ matrix.build-type == 'Debug' && '-fprofile-arcs -ftest-coverage' || '' }}"
+
+      - name: Build Project
+        run: |
+          cd build
+          make -j$(nproc)
+
+      - name: Run Tests
+        run: |
+          cd build
+          ctest --output-on-failure --verbose
+
+      - name: Generate Coverage Report
+        if: matrix.build-type == 'Debug'
+        run: |
+          cd build
+          # Generate coverage data
+          lcov --capture --directory . --output-file coverage.info
+          
+          # Remove external files from coverage
+          lcov --remove coverage.info '/usr/*' '/opt/*' '*/tests/*' '*/externals/*' --output-file coverage.info
+          
+          # Generate HTML report
+          genhtml coverage.info --output-directory coverage_html
+          
+          # Generate XML report for GitHub
+          gcovr --root .. --exclude tests --exclude externals --xml --output coverage.xml
+
+      - name: Check Coverage Threshold
+        if: matrix.build-type == 'Debug'
+        run: |
+          cd build
+          # Extract coverage percentage
+          COVERAGE_PERCENT=$(lcov --summary coverage.info | grep "lines......:" | awk '{print $3}' | sed 's/%//')
+          echo "Coverage: $COVERAGE_PERCENT%"
+          
+          # Check if coverage meets threshold
+          if (( $(echo "$COVERAGE_PERCENT < ${{ env.COVERAGE_THRESHOLD }}" | bc -l) )); then
+            echo "❌ Coverage ($COVERAGE_PERCENT%) is below threshold (${{ env.COVERAGE_THRESHOLD }}%)"
+            exit 1
+          else
+            echo "✅ Coverage ($COVERAGE_PERCENT%) meets threshold (${{ env.COVERAGE_THRESHOLD }}%)"
+          fi
+
+      - name: Upload Coverage Reports
+        if: matrix.build-type == 'Debug'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-reports-${{ github.run_number }}
+          path: |
+            build/coverage_html/
+            build/coverage.xml
+            build/coverage.info
+
+      - name: Upload Test Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ github.run_number }}-${{ matrix.build-type }}
+          path: build/Testing/
+
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Run Security Scan
+        run: |
+          echo "Running basic security checks..."
+          # Check for common security issues in C++ code
+          find src include -name "*.cpp" -o -name "*.hpp" | xargs grep -l "strcpy\|strcat\|sprintf" || echo "No obvious security issues found"
+          
+          # Check for hardcoded credentials
+          grep -r "password\|secret\|key" src include || echo "No obvious hardcoded credentials found"
+
+  report:
+    name: Generate Summary Report
+    runs-on: ubuntu-latest
+    needs: [lint, build, security-scan]
+    if: always()
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Download Coverage Reports
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-reports-${{ github.run_number }}
+          path: coverage-reports/
+
+      - name: Download Linting Reports
+        uses: actions/download-artifact@v4
+        with:
+          name: linting-report-${{ github.run_number }}
+          path: linting-reports/
+
+      - name: Generate Summary
+        run: |
+          echo "# CI/CD Pipeline Summary" > summary.md
+          echo "## Build Status" >> summary.md
+          echo "- Linting: ${{ needs.lint.result }}" >> summary.md
+          echo "- Build: ${{ needs.build.result }}" >> summary.md
+          echo "- Security: ${{ needs.security-scan.result }}" >> summary.md
+          
+          if [ -f "coverage-reports/coverage.xml" ]; then
+            echo "## Coverage Report" >> summary.md
+            echo "Coverage report is available in the artifacts." >> summary.md
+          fi
+          
+          if [ -d "linting-reports/" ]; then
+            echo "## Linting Report" >> summary.md
+            echo "Linting report is available in the artifacts." >> summary.md
+          fi
+
+      - name: Upload Summary Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: summary-report-${{ github.run_number }}
+          path: summary.md 

@@ -2,12 +2,12 @@
 
 #pragma once
 
+#include <arrow/api.h>
 #include <memory>
 #include <string>
 #include <vector>
-#include <arrow/api.h>
-#include "trade_ngin/core/types.hpp"
 #include "trade_ngin/core/error.hpp"
+#include "trade_ngin/core/types.hpp"
 
 namespace trade_ngin {
 
@@ -45,13 +45,9 @@ public:
      * @return Result containing Arrow table with market data
      */
     virtual Result<std::shared_ptr<arrow::Table>> get_market_data(
-        const std::vector<std::string>& symbols,
-        const Timestamp& start_date,
-        const Timestamp& end_date,
-        AssetClass asset_class,
-        DataFrequency freq = DataFrequency::DAILY,
-        const std::string& table_name = "ohlcv"
-    ) = 0;
+        const std::vector<std::string>& symbols, const Timestamp& start_date,
+        const Timestamp& end_date, AssetClass asset_class,
+        DataFrequency freq = DataFrequency::DAILY, const std::string& table_name = "ohlcv") = 0;
 
     /**
      * @brief Store trade execution data
@@ -59,10 +55,8 @@ public:
      * @param table_name Name of the table to insert into
      * @return Result indicating success or failure
      */
-    virtual Result<void> store_executions(
-        const std::vector<ExecutionReport>& executions,
-        const std::string& table_name = "trading.executions"
-    ) = 0;
+    virtual Result<void> store_executions(const std::vector<ExecutionReport>& executions,
+                                          const std::string& table_name = "trading.executions") = 0;
 
     /**
      * @brief Store position data
@@ -70,10 +64,8 @@ public:
      * @param table_name Name of the table to insert into
      * @return Result indicating success or failure
      */
-    virtual Result<void> store_positions(
-        const std::vector<Position>& positions,
-        const std::string& table_name = "trading.positions"
-    ) = 0;
+    virtual Result<void> store_positions(const std::vector<Position>& positions,
+                                         const std::string& table_name = "trading.positions") = 0;
 
     /**
      * @brief Store strategy signals
@@ -83,12 +75,9 @@ public:
      * @param table_name Name of the table to insert into
      * @return Result indicating success or failure
      */
-    virtual Result<void> store_signals(
-        const std::unordered_map<std::string, double>& signals,
-        const std::string& strategy_id,
-        const Timestamp& timestamp,
-        const std::string& table_name = "trading.signals"
-    ) = 0;
+    virtual Result<void> store_signals(const std::unordered_map<std::string, double>& signals,
+                                       const std::string& strategy_id, const Timestamp& timestamp,
+                                       const std::string& table_name = "trading.signals") = 0;
 
     /**
      * @brief Get list of available symbols
@@ -96,19 +85,15 @@ public:
      * @return Result containing vector of symbols
      */
     virtual Result<std::vector<std::string>> get_symbols(
-        AssetClass asset_class,
-        DataFrequency freq = DataFrequency::DAILY,
-        const std::string& table_name = "ohlcv"
-    ) = 0;
+        AssetClass asset_class, DataFrequency freq = DataFrequency::DAILY,
+        const std::string& table_name = "ohlcv") = 0;
 
     /**
      * @brief Execute a custom SQL query
      * @param query SQL query to execute
      * @return Result containing Arrow table with query results
      */
-    virtual Result<std::shared_ptr<arrow::Table>> execute_query(
-        const std::string& query
-    ) = 0;
+    virtual Result<std::shared_ptr<arrow::Table>> execute_query(const std::string& query) = 0;
 
 protected:
     /**
@@ -117,19 +102,13 @@ protected:
      * @param end_date End date
      * @return Result indicating if date range is valid
      */
-    Result<void> validate_date_range(
-        const Timestamp& start_date, 
-        const Timestamp& end_date
-    ) {
+    Result<void> validate_date_range(const Timestamp& start_date, const Timestamp& end_date) {
         if (end_date < start_date) {
-            return make_error<void>(
-                ErrorCode::INVALID_ARGUMENT,
-                "End date must be after start date",
-                "DatabaseInterface"
-            );
+            return make_error<void>(ErrorCode::INVALID_ARGUMENT,
+                                    "End date must be after start date", "DatabaseInterface");
         }
         return Result<void>();
     }
 };
 
-} // namespace trade_ngin
+}  // namespace trade_ngin

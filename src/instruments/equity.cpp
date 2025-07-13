@@ -1,21 +1,18 @@
 // src/instruments/equity.cpp
 #include "trade_ngin/instruments/equity.hpp"
+#include <algorithm>
 #include <cmath>
 #include <regex>
-#include <algorithm>
 #include "trade_ngin/core/time_utils.hpp"
 
 namespace trade_ngin {
 
 EquityInstrument::EquityInstrument(std::string symbol, EquitySpec spec)
-    : symbol_(std::move(symbol))
-    , spec_(std::move(spec)) {}
+    : symbol_(std::move(symbol)), spec_(std::move(spec)) {}
 
 bool EquityInstrument::is_tradeable() const {
     // Basic checks for trading eligibility
-    return !symbol_.empty() && 
-           !spec_.exchange.empty() &&
-           spec_.tick_size > 0.0 &&
+    return !symbol_.empty() && !spec_.exchange.empty() && spec_.tick_size > 0.0 &&
            spec_.lot_size > 0.0;
 }
 
@@ -25,7 +22,7 @@ bool EquityInstrument::is_market_open(const Timestamp& timestamp) const {
         std::time_t time = std::chrono::system_clock::to_time_t(timestamp);
         std::tm local_time_buffer;
         std::tm* local_time = trade_ngin::core::safe_localtime(&time, &local_time_buffer);
-        
+
         // Check for weekdays only
         if (local_time->tm_wday == 0 || local_time->tm_wday == 6) {
             return false;
@@ -68,16 +65,9 @@ double EquityInstrument::calculate_commission(double quantity) const {
     return std::abs(quantity) * spec_.commission_per_share;
 }
 
-std::optional<DividendInfo> EquityInstrument::get_next_dividend(
-    const Timestamp& from) const {
-    
-    auto it = std::find_if(
-        spec_.dividends.begin(),
-        spec_.dividends.end(),
-        [&from](const DividendInfo& div) {
-            return div.ex_date > from;
-        }
-    );
+std::optional<DividendInfo> EquityInstrument::get_next_dividend(const Timestamp& from) const {
+    auto it = std::find_if(spec_.dividends.begin(), spec_.dividends.end(),
+                           [&from](const DividendInfo& div) { return div.ex_date > from; });
 
     if (it != spec_.dividends.end()) {
         return *it;
@@ -86,4 +76,4 @@ std::optional<DividendInfo> EquityInstrument::get_next_dividend(
     return std::nullopt;
 }
 
-} // namespace trade_ngin
+}  // namespace trade_ngin

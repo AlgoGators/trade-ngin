@@ -1,30 +1,27 @@
 // src/execution/execution_engine.cpp
 
 #include "trade_ngin/execution/execution_engine.hpp"
+#include <algorithm>
+#include <cmath>
+#include <iomanip>
+#include <iostream>
+#include <numeric>
+#include <sstream>
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/core/state_manager.hpp"
 #include "trade_ngin/data/market_data_bus.hpp"
-#include <algorithm>
-#include <numeric>
-#include <sstream>
-#include <iomanip>
-#include <iostream>
-#include <cmath>
 
 namespace trade_ngin {
 
 ExecutionEngine::ExecutionEngine(std::shared_ptr<OrderManager> order_manager)
     : order_manager_(std::move(order_manager)) {
-    
     // Register with state manager
-    ComponentInfo info{
-        ComponentType::EXECUTION_ENGINE,
-        ComponentState::INITIALIZED,
-        "EXECUTION_ENGINE",
-        "",
-        std::chrono::system_clock::now(),
-        {}
-    };
+    ComponentInfo info{ComponentType::EXECUTION_ENGINE,
+                       ComponentState::INITIALIZED,
+                       "EXECUTION_ENGINE",
+                       "",
+                       std::chrono::system_clock::now(),
+                       {}};
 
     auto register_result = StateManager::instance().register_component(info);
     if (register_result.is_error()) {
@@ -48,7 +45,7 @@ ExecutionEngine::~ExecutionEngine() {
             try {
                 auto cancel_result = cancel_execution(job_id);
                 if (cancel_result.is_error()) {
-                    std::cerr << "Error cancelling job " << job_id << ": " 
+                    std::cerr << "Error cancelling job " << job_id << ": "
                               << cancel_result.error()->what() << std::endl;
                 }
             } catch (const std::exception& e) {
@@ -63,7 +60,7 @@ ExecutionEngine::~ExecutionEngine() {
         try {
             auto unreg_result = StateManager::instance().unregister_component("EXECUTION_ENGINE");
             if (unreg_result.is_error()) {
-                std::cerr << "Error unregistering from StateManager: " 
+                std::cerr << "Error unregistering from StateManager: "
                           << unreg_result.error()->what() << std::endl;
             }
         } catch (const std::exception& e) {
@@ -78,7 +75,7 @@ ExecutionEngine::~ExecutionEngine() {
 Result<void> ExecutionEngine::initialize() {
     // Add initialization log
     INFO("Initializing execution engine");
-    
+
     try {
         // Subscribe to market data for execution analysis
         MarketDataCallback callback = [this](const MarketDataEvent& event) {
@@ -88,12 +85,10 @@ Result<void> ExecutionEngine::initialize() {
             }
         };
 
-        SubscriberInfo sub_info{
-            "EXECUTION_ENGINE",
-            {MarketDataEventType::TRADE, MarketDataEventType::BAR},
-            {},  // Subscribe to all symbols
-            callback
-        };
+        SubscriberInfo sub_info{"EXECUTION_ENGINE",
+                                {MarketDataEventType::TRADE, MarketDataEventType::BAR},
+                                {},  // Subscribe to all symbols
+                                callback};
 
         auto subscribe_result = MarketDataBus::instance().subscribe(sub_info);
         if (subscribe_result.is_error()) {
@@ -101,10 +96,8 @@ Result<void> ExecutionEngine::initialize() {
         }
 
         // Update state
-        auto state_result = StateManager::instance().update_state(
-            "EXECUTION_ENGINE",
-            ComponentState::RUNNING
-        );
+        auto state_result =
+            StateManager::instance().update_state("EXECUTION_ENGINE", ComponentState::RUNNING);
 
         if (state_result.is_error()) {
             return state_result;
@@ -114,54 +107,59 @@ Result<void> ExecutionEngine::initialize() {
         return Result<void>();
 
     } catch (const std::exception& e) {
-        return make_error<void>(
-            ErrorCode::NOT_INITIALIZED,
-            std::string("Failed to initialize execution engine: ") + e.what(),
-            "ExecutionEngine"
-        );
+        return make_error<void>(ErrorCode::NOT_INITIALIZED,
+                                std::string("Failed to initialize execution engine: ") + e.what(),
+                                "ExecutionEngine");
     }
 }
 
-Result<std::string> ExecutionEngine::submit_execution(
-    const Order& order,
-    ExecutionAlgo algo,
-    const ExecutionConfig& config) {
-    
+Result<std::string> ExecutionEngine::submit_execution(const Order& order, ExecutionAlgo algo,
+                                                      const ExecutionConfig& config) {
     std::string algo_name;
     switch (algo) {
-        case ExecutionAlgo::MARKET: algo_name = "MARKET"; break;
-        case ExecutionAlgo::TWAP: algo_name = "TWAP"; break;
-        case ExecutionAlgo::VWAP: algo_name = "VWAP"; break;
-        case ExecutionAlgo::IS: algo_name = "IS"; break;
-        case ExecutionAlgo::POV: algo_name = "POV"; break;
-        case ExecutionAlgo::DARK_POOL: algo_name = "DARK_POOL"; break;
-        case ExecutionAlgo::ADAPTIVE_LIMIT: algo_name = "ADAPTIVE_LIMIT"; break;
-        case ExecutionAlgo::CUSTOM: algo_name = "CUSTOM"; break;
-        default: algo_name = "UNKNOWN";
+        case ExecutionAlgo::MARKET:
+            algo_name = "MARKET";
+            break;
+        case ExecutionAlgo::TWAP:
+            algo_name = "TWAP";
+            break;
+        case ExecutionAlgo::VWAP:
+            algo_name = "VWAP";
+            break;
+        case ExecutionAlgo::IS:
+            algo_name = "IS";
+            break;
+        case ExecutionAlgo::POV:
+            algo_name = "POV";
+            break;
+        case ExecutionAlgo::DARK_POOL:
+            algo_name = "DARK_POOL";
+            break;
+        case ExecutionAlgo::ADAPTIVE_LIMIT:
+            algo_name = "ADAPTIVE_LIMIT";
+            break;
+        case ExecutionAlgo::CUSTOM:
+            algo_name = "CUSTOM";
+            break;
+        default:
+            algo_name = "UNKNOWN";
     }
-    
-    INFO("Submitting " << algo_name << " execution for order " << order.order_id 
-         << ", symbol: " << order.symbol 
-         << ", quantity: " << order.quantity);
-    
+
+    INFO("Submitting " << algo_name << " execution for order " << order.order_id
+                       << ", symbol: " << order.symbol << ", quantity: " << order.quantity);
+
     try {
         std::lock_guard<std::mutex> lock(mutex_);
 
         // Validate config
         if (config.max_participation_rate <= 0.0 || config.max_participation_rate > 1.0) {
-            return make_error<std::string>(
-                ErrorCode::INVALID_ARGUMENT,
-                "Invalid participation rate",
-                "ExecutionEngine"
-            );
+            return make_error<std::string>(ErrorCode::INVALID_ARGUMENT,
+                                           "Invalid participation rate", "ExecutionEngine");
         }
 
         if (config.time_horizon.count() <= 0) {
-            return make_error<std::string>(
-                ErrorCode::INVALID_ARGUMENT,
-                "Invalid time horizon",
-                "ExecutionEngine"
-            );
+            return make_error<std::string>(ErrorCode::INVALID_ARGUMENT, "Invalid time horizon",
+                                           "ExecutionEngine");
         }
 
         // Generate job ID and create execution job
@@ -175,10 +173,10 @@ Result<std::string> ExecutionEngine::submit_execution(
             config,
             {},  // child_order_ids
             ExecutionMetrics{},
-            false,  // is_complete
+            false,                             // is_complete
             std::chrono::system_clock::now(),  // start_time
-            {},  // end_time
-            ""   // error_message
+            {},                                // end_time
+            ""                                 // error_message
         };
 
         job.metrics.total_time = std::chrono::milliseconds(1);
@@ -190,18 +188,15 @@ Result<std::string> ExecutionEngine::submit_execution(
         auto order_result = order_manager_->submit_order(order, "EXEC_" + job_id);
         if (order_result.is_error()) {
             active_jobs_.erase(job_id);
-            return make_error<std::string>(
-                order_result.error()->code(),
-                order_result.error()->what(),
-                "ExecutionEngine"
-            );
+            return make_error<std::string>(order_result.error()->code(),
+                                           order_result.error()->what(), "ExecutionEngine");
         }
 
         active_jobs_[job_id].parent_order_id = order_result.value();
 
         // Log the job creation
         INFO("Created execution job " << job_id << " for order " << order.order_id);
-        
+
         // Start execution based on algorithm
         Result<void> exec_result;
         switch (algo) {
@@ -230,72 +225,58 @@ Result<std::string> ExecutionEngine::submit_execution(
                 if (auto it = custom_algos_.find(job_id); it != custom_algos_.end()) {
                     exec_result = it->second(active_jobs_[job_id]);
                 } else {
-                    exec_result = make_error<void>(
-                        ErrorCode::INVALID_ARGUMENT,
-                        "Custom algorithm not registered",
-                        "ExecutionEngine"
-                    );
+                    exec_result =
+                        make_error<void>(ErrorCode::INVALID_ARGUMENT,
+                                         "Custom algorithm not registered", "ExecutionEngine");
                 }
                 break;
             default:
-                exec_result = make_error<void>(
-                    ErrorCode::INVALID_ARGUMENT,
-                    "Unsupported execution algorithm",
-                    "ExecutionEngine"
-                );
+                exec_result =
+                    make_error<void>(ErrorCode::INVALID_ARGUMENT, "Unsupported execution algorithm",
+                                     "ExecutionEngine");
                 break;
         }
 
         // Log the execution start attempt
         INFO("Starting execution for job " << job_id << " using " << algo_name << " algorithm");
-        
+
         if (exec_result.is_error()) {
             active_jobs_.erase(job_id);
-            ERROR("Execution job " << job_id << " failed to start: " << exec_result.error()->what());
-            return make_error<std::string>(
-                exec_result.error()->code(),
-                exec_result.error()->what(),
-                "ExecutionEngine"
-            );
+            ERROR("Execution job " << job_id
+                                   << " failed to start: " << exec_result.error()->what());
+            return make_error<std::string>(exec_result.error()->code(), exec_result.error()->what(),
+                                           "ExecutionEngine");
         }
-        
+
         INFO("Execution job " << job_id << " started successfully");
         return Result<std::string>(job_id);
 
     } catch (const std::exception& e) {
-        return make_error<std::string>(
-            ErrorCode::UNKNOWN_ERROR,
-            std::string("Error submitting execution: ") + e.what(),
-            "ExecutionEngine"
-        );
+        return make_error<std::string>(ErrorCode::UNKNOWN_ERROR,
+                                       std::string("Error submitting execution: ") + e.what(),
+                                       "ExecutionEngine");
     }
 }
 
 Result<void> ExecutionEngine::cancel_execution(const std::string& job_id) {
     INFO("Attempting to cancel execution job " << job_id);
-    
+
     std::lock_guard<std::mutex> lock(mutex_);
 
     auto it = active_jobs_.find(job_id);
     if (it == active_jobs_.end()) {
         std::string error = "Job not found: " + job_id;
         WARN("Cancel execution failed: " << error);
-        return make_error<void>(
-            ErrorCode::INVALID_ARGUMENT,
-            error,
-            "ExecutionEngine"
-        );
+        return make_error<void>(ErrorCode::INVALID_ARGUMENT, error, "ExecutionEngine");
     }
 
     auto& job = it->second;
-
 
     // Cancel all child orders
     for (const auto& child_id : job.child_order_ids) {
         auto cancel_result = order_manager_->cancel_order(child_id);
         if (cancel_result.is_error()) {
-            WARN("Failed to cancel child order " + child_id + ": " + 
-                 cancel_result.error()->what());
+            WARN("Failed to cancel child order " + child_id + ": " + cancel_result.error()->what());
         }
     }
 
@@ -303,16 +284,15 @@ Result<void> ExecutionEngine::cancel_execution(const std::string& job_id) {
     if (!job.parent_order_id.empty()) {
         auto cancel_result = order_manager_->cancel_order(job.parent_order_id);
         if (cancel_result.is_error()) {
-            WARN("Failed to cancel parent order " + it->second.parent_order_id + 
-                 ": " + cancel_result.error()->what());
+            WARN("Failed to cancel parent order " + it->second.parent_order_id + ": " +
+                 cancel_result.error()->what());
         }
     }
 
     // Update metrics before removing
     job.metrics.total_time = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::system_clock::now() - job.start_time
-    );
-    
+        std::chrono::system_clock::now() - job.start_time);
+
     // Mark as complete
     job.is_complete = true;
     job.end_time = std::chrono::system_clock::now();
@@ -324,18 +304,13 @@ Result<void> ExecutionEngine::cancel_execution(const std::string& job_id) {
     return Result<void>();
 }
 
-Result<ExecutionMetrics> ExecutionEngine::get_metrics(
-    const std::string& job_id) const {
-    
+Result<ExecutionMetrics> ExecutionEngine::get_metrics(const std::string& job_id) const {
     std::lock_guard<std::mutex> lock(mutex_);
 
     auto it = active_jobs_.find(job_id);
     if (it == active_jobs_.end()) {
-        return make_error<ExecutionMetrics>(
-            ErrorCode::INVALID_ARGUMENT,
-            "Job not found: " + job_id,
-            "ExecutionEngine"
-        );
+        return make_error<ExecutionMetrics>(ErrorCode::INVALID_ARGUMENT, "Job not found: " + job_id,
+                                            "ExecutionEngine");
     }
 
     return Result<ExecutionMetrics>(it->second.metrics);
@@ -357,17 +332,13 @@ Result<std::vector<ExecutionJob>> ExecutionEngine::get_active_jobs() const {
 
     } catch (const std::exception& e) {
         return make_error<std::vector<ExecutionJob>>(
-            ErrorCode::UNKNOWN_ERROR,
-            std::string("Error getting active jobs: ") + e.what(),
-            "ExecutionEngine"
-        );
+            ErrorCode::UNKNOWN_ERROR, std::string("Error getting active jobs: ") + e.what(),
+            "ExecutionEngine");
     }
 }
 
 Result<void> ExecutionEngine::register_custom_algo(
-    const std::string& name,
-    std::function<Result<void>(const ExecutionJob&)> algo) {
-    
+    const std::string& name, std::function<Result<void>(const ExecutionJob&)> algo) {
     std::lock_guard<std::mutex> lock(mutex_);
     custom_algos_[name] = std::move(algo);
     return Result<void>();
@@ -375,16 +346,13 @@ Result<void> ExecutionEngine::register_custom_algo(
 
 Result<void> ExecutionEngine::execute_market(const ExecutionJob& job) {
     INFO("Executing market order algorithm for job " << job.job_id);
-    
+
     try {
         // Get order details
         auto order_result = order_manager_->get_order_status(job.parent_order_id);
         if (order_result.is_error()) {
-            return make_error<void>(
-                order_result.error()->code(),
-                order_result.error()->what(),
-                "ExecutionEngine"
-            );
+            return make_error<void>(order_result.error()->code(), order_result.error()->what(),
+                                    "ExecutionEngine");
         }
 
         const auto& parent_order = order_result.value().order;
@@ -393,17 +361,11 @@ Result<void> ExecutionEngine::execute_market(const ExecutionJob& job) {
         auto& active_job = active_jobs_[job.job_id];
 
         // Submit parent order directly
-        auto submit_result = order_manager_->submit_order(
-            parent_order,
-            "MARKET_" + job.job_id
-        );
+        auto submit_result = order_manager_->submit_order(parent_order, "MARKET_" + job.job_id);
 
         if (submit_result.is_error()) {
-            return make_error<void>(
-                submit_result.error()->code(),
-                submit_result.error()->what(),
-                "ExecutionEngine"
-            );
+            return make_error<void>(submit_result.error()->code(), submit_result.error()->what(),
+                                    "ExecutionEngine");
         }
 
         // Update job with child order ID
@@ -419,15 +381,13 @@ Result<void> ExecutionEngine::execute_market(const ExecutionJob& job) {
 
         // Add logs for child order generation
         DEBUG("Generating child orders for job " << job.job_id);
-        
+
         return Result<void>();
 
     } catch (const std::exception& e) {
-        return make_error<void>(
-            ErrorCode::STRATEGY_ERROR,
-            std::string("Market execution error: ") + e.what(),
-            "ExecutionEngine"
-        );
+        return make_error<void>(ErrorCode::STRATEGY_ERROR,
+                                std::string("Market execution error: ") + e.what(),
+                                "ExecutionEngine");
     }
 }
 
@@ -436,11 +396,8 @@ Result<void> ExecutionEngine::execute_twap(const ExecutionJob& job) {
         // Get order details
         auto order_result = order_manager_->get_order_status(job.parent_order_id);
         if (order_result.is_error()) {
-            return make_error<void>(
-                order_result.error()->code(),
-                order_result.error()->what(),
-                "ExecutionEngine"
-            );
+            return make_error<void>(order_result.error()->code(), order_result.error()->what(),
+                                    "ExecutionEngine");
         }
 
         const auto& parent_order = order_result.value().order;
@@ -460,28 +417,19 @@ Result<void> ExecutionEngine::execute_twap(const ExecutionJob& job) {
         // Generate child orders
         auto child_orders_result = generate_child_orders(job, num_slices);
         if (child_orders_result.is_error()) {
-            return make_error<void>(
-                child_orders_result.error()->code(),
-                child_orders_result.error()->what(),
-                "ExecutionEngine"
-            );
+            return make_error<void>(child_orders_result.error()->code(),
+                                    child_orders_result.error()->what(), "ExecutionEngine");
         }
 
         auto child_orders = child_orders_result.value();
-        
+
         // Submit child orders
         for (const auto& child_order : child_orders) {
-            auto submit_result = order_manager_->submit_order(
-                child_order,
-                "TWAP_" + job.job_id
-            );
-            
+            auto submit_result = order_manager_->submit_order(child_order, "TWAP_" + job.job_id);
+
             if (submit_result.is_error()) {
-                return make_error<void>(
-                    submit_result.error()->code(),
-                    submit_result.error()->what(),
-                    "ExecutionEngine"
-                );
+                return make_error<void>(submit_result.error()->code(),
+                                        submit_result.error()->what(), "ExecutionEngine");
             }
 
             // Store child order ID
@@ -490,17 +438,14 @@ Result<void> ExecutionEngine::execute_twap(const ExecutionJob& job) {
         }
 
         // Update participation rate
-        active_jobs_[job.job_id].metrics.participation_rate = 
-            1.0 / static_cast<double>(num_slices);
+        active_jobs_[job.job_id].metrics.participation_rate = 1.0 / static_cast<double>(num_slices);
 
         return Result<void>();
 
     } catch (const std::exception& e) {
-        return make_error<void>(
-            ErrorCode::STRATEGY_ERROR,
-            std::string("TWAP execution error: ") + e.what(),
-            "ExecutionEngine"
-        );
+        return make_error<void>(ErrorCode::STRATEGY_ERROR,
+                                std::string("TWAP execution error: ") + e.what(),
+                                "ExecutionEngine");
     }
 }
 
@@ -509,11 +454,8 @@ Result<void> ExecutionEngine::execute_vwap(const ExecutionJob& job) {
         // Get order details
         auto order_status = order_manager_->get_order_status(job.parent_order_id);
         if (order_status.is_error()) {
-            return make_error<void>(
-                order_status.error()->code(),
-                order_status.error()->what(),
-                "ExecutionEngine"
-            );
+            return make_error<void>(order_status.error()->code(), order_status.error()->what(),
+                                    "ExecutionEngine");
         }
 
         const auto& parent_order = order_status.value().order;
@@ -524,9 +466,8 @@ Result<void> ExecutionEngine::execute_vwap(const ExecutionJob& job) {
         active_job.metrics.average_fill_price = parent_order.price.as_double();
 
         // Split order into time-weighted slices
-        int num_slices = std::max(5, static_cast<int>(
-            std::ceil(job.config.time_horizon.count() / 5.0)
-        ));
+        int num_slices =
+            std::max(5, static_cast<int>(std::ceil(job.config.time_horizon.count() / 5.0)));
 
         double slice_size = static_cast<double>(parent_order.quantity) / num_slices;
         double total_volume = 0.0;
@@ -536,18 +477,15 @@ Result<void> ExecutionEngine::execute_vwap(const ExecutionJob& job) {
         for (int i = 0; i < num_slices; ++i) {
             Order child = parent_order;
             child.quantity = Quantity(slice_size);
-            
+
             // Adjust price slightly around parent price to simulate market impact
             double price_adjustment = (static_cast<double>(rand()) / RAND_MAX - 0.5) * 0.001;
             child.price = Price(parent_order.price.as_double() * (1.0 + price_adjustment));
 
             auto submit_result = order_manager_->submit_order(child, "VWAP_" + job.job_id);
             if (submit_result.is_error()) {
-                return make_error<void>(
-                    submit_result.error()->code(),
-                    submit_result.error()->what(),
-                    "ExecutionEngine"
-                );
+                return make_error<void>(submit_result.error()->code(),
+                                        submit_result.error()->what(), "ExecutionEngine");
             }
 
             active_job.child_order_ids.push_back(submit_result.value());
@@ -566,11 +504,9 @@ Result<void> ExecutionEngine::execute_vwap(const ExecutionJob& job) {
         return Result<void>();
 
     } catch (const std::exception& e) {
-        return make_error<void>(
-            ErrorCode::STRATEGY_ERROR,
-            std::string("VWAP execution error: ") + e.what(),
-            "ExecutionEngine"
-        );
+        return make_error<void>(ErrorCode::STRATEGY_ERROR,
+                                std::string("VWAP execution error: ") + e.what(),
+                                "ExecutionEngine");
     }
 }
 
@@ -579,11 +515,8 @@ Result<void> ExecutionEngine::execute_pov(const ExecutionJob& job) {
         // Get order details
         auto order_status = order_manager_->get_order_status(job.parent_order_id);
         if (order_status.is_error()) {
-            return make_error<void>(
-                order_status.error()->code(),
-                order_status.error()->what(),
-                "ExecutionEngine"
-            );
+            return make_error<void>(order_status.error()->code(), order_status.error()->what(),
+                                    "ExecutionEngine");
         }
 
         const auto& parent_order = order_status.value().order;
@@ -591,14 +524,11 @@ Result<void> ExecutionEngine::execute_pov(const ExecutionJob& job) {
 
         // Generate at least 2 child orders
         int num_slices = std::max(2, static_cast<int>(1.0 / config.max_participation_rate));
-        
+
         auto child_orders_result = generate_child_orders(job, num_slices);
         if (child_orders_result.is_error()) {
-            return make_error<void>(
-                child_orders_result.error()->code(),
-                child_orders_result.error()->what(),
-                "ExecutionEngine"
-            );
+            return make_error<void>(child_orders_result.error()->code(),
+                                    child_orders_result.error()->what(), "ExecutionEngine");
         }
 
         auto child_orders = child_orders_result.value();
@@ -606,17 +536,11 @@ Result<void> ExecutionEngine::execute_pov(const ExecutionJob& job) {
 
         // Submit initial child orders
         for (const auto& child_order : child_orders) {
-            auto submit_result = order_manager_->submit_order(
-                child_order,
-                "POV_" + job.job_id
-            );
-            
+            auto submit_result = order_manager_->submit_order(child_order, "POV_" + job.job_id);
+
             if (submit_result.is_error()) {
-                return make_error<void>(
-                    submit_result.error()->code(),
-                    submit_result.error()->what(),
-                    "ExecutionEngine"
-                );
+                return make_error<void>(submit_result.error()->code(),
+                                        submit_result.error()->what(), "ExecutionEngine");
             }
 
             active_job.child_order_ids.push_back(submit_result.value());
@@ -629,11 +553,8 @@ Result<void> ExecutionEngine::execute_pov(const ExecutionJob& job) {
         return Result<void>();
 
     } catch (const std::exception& e) {
-        return make_error<void>(
-            ErrorCode::STRATEGY_ERROR,
-            std::string("POV execution error: ") + e.what(),
-            "ExecutionEngine"
-        );
+        return make_error<void>(ErrorCode::STRATEGY_ERROR,
+                                std::string("POV execution error: ") + e.what(), "ExecutionEngine");
     }
 }
 
@@ -642,11 +563,8 @@ Result<void> ExecutionEngine::execute_adaptive_limit(const ExecutionJob& job) {
         // Get order details
         auto order_status = order_manager_->get_order_status(job.parent_order_id);
         if (order_status.is_error()) {
-            return make_error<void>(
-                order_status.error()->code(),
-                order_status.error()->what(),
-                "ExecutionEngine"
-            );
+            return make_error<void>(order_status.error()->code(), order_status.error()->what(),
+                                    "ExecutionEngine");
         }
 
         const auto& parent_order = order_status.value().order;
@@ -657,7 +575,8 @@ Result<void> ExecutionEngine::execute_adaptive_limit(const ExecutionJob& job) {
 
         // Subscribe to order book updates for this symbol
         MarketDataCallback callback = [this, job_id](const MarketDataEvent& event) {
-            if (event.type != MarketDataEventType::QUOTE) return;
+            if (event.type != MarketDataEventType::QUOTE)
+                return;
 
             // Find the job in active_jobs_
             auto job_it = active_jobs_.find(job_id);
@@ -669,16 +588,18 @@ Result<void> ExecutionEngine::execute_adaptive_limit(const ExecutionJob& job) {
             auto& current_job = job_it->second;
 
             // Get the original order to determine side
-            auto parent_order_result = order_manager_->get_order_status(current_job.parent_order_id);
+            auto parent_order_result =
+                order_manager_->get_order_status(current_job.parent_order_id);
             if (parent_order_result.is_error()) {
-                ERROR("Failed to get parent order: " + std::string(parent_order_result.error()->what()));
+                ERROR("Failed to get parent order: " +
+                      std::string(parent_order_result.error()->what()));
                 return;
             }
 
             bool is_buying = parent_order_result.value().order.side == Side::BUY;
 
-            static constexpr double IMBALANCE_THRESHOLD = 5.0; // 5x imbalance threshold
-            static constexpr std::chrono::minutes TIMEOUT{5};  // 5-minute timeout
+            static constexpr double IMBALANCE_THRESHOLD = 5.0;  // 5x imbalance threshold
+            static constexpr std::chrono::minutes TIMEOUT{5};   // 5-minute timeout
 
             double bid_size = event.numeric_fields.at("bid_size");
             double ask_size = event.numeric_fields.at("ask_size");
@@ -716,10 +637,10 @@ Result<void> ExecutionEngine::execute_adaptive_limit(const ExecutionJob& job) {
             if (switch_to_aggressive) {
                 // Cancel existing passive order
                 if (!current_job.child_order_ids.empty()) {
-                    auto cancel_result = order_manager_->cancel_order(
-                        current_job.child_order_ids.back());
+                    auto cancel_result =
+                        order_manager_->cancel_order(current_job.child_order_ids.back());
                     if (cancel_result.is_error()) {
-                        ERROR("Failed to cancel passive order: " + 
+                        ERROR("Failed to cancel passive order: " +
                               std::string(cancel_result.error()->what()));
                         return;
                     }
@@ -730,13 +651,11 @@ Result<void> ExecutionEngine::execute_adaptive_limit(const ExecutionJob& job) {
                 aggressive_order.type = OrderType::LIMIT;
                 aggressive_order.price = Price(is_buying ? ask_price : bid_price);
 
-                auto order_result = order_manager_->submit_order(
-                    aggressive_order,
-                    "ADAPTIVE_" + current_job.job_id
-                );
+                auto order_result = order_manager_->submit_order(aggressive_order,
+                                                                 "ADAPTIVE_" + current_job.job_id);
 
                 if (order_result.is_error()) {
-                    ERROR("Failed to submit aggressive order: " + 
+                    ERROR("Failed to submit aggressive order: " +
                           std::string(order_result.error()->what()));
                     return;
                 }
@@ -746,39 +665,31 @@ Result<void> ExecutionEngine::execute_adaptive_limit(const ExecutionJob& job) {
         };
 
         // Register for market data updates
-        SubscriberInfo sub_info{
-            "ADAPTIVE_" + job.job_id,
-            {MarketDataEventType::QUOTE},
-            {parent_order.symbol},
-            callback
-        };
+        SubscriberInfo sub_info{"ADAPTIVE_" + job.job_id,
+                                {MarketDataEventType::QUOTE},
+                                {parent_order.symbol},
+                                callback};
 
         // Place initial passive order
         Order passive_order = parent_order;
         passive_order.type = OrderType::LIMIT;
-        passive_order.price = parent_order.side == Side::BUY ? 
-            parent_order.price :  // Use current best bid
-            parent_order.price;   // Use current best ask
+        passive_order.price = parent_order.side == Side::BUY ? parent_order.price
+                                                             :  // Use current best bid
+                                  parent_order.price;           // Use current best ask
 
         auto& active_job = active_jobs_[job.job_id];
 
-        auto order_result = order_manager_->submit_order(
-            passive_order,
-            "ADAPTIVE_" + job.job_id
-        );
+        auto order_result = order_manager_->submit_order(passive_order, "ADAPTIVE_" + job.job_id);
 
         if (order_result.is_error()) {
-            return make_error<void>(
-                order_result.error()->code(),
-                order_result.error()->what(),
-                "ExecutionEngine"
-            );
+            return make_error<void>(order_result.error()->code(), order_result.error()->what(),
+                                    "ExecutionEngine");
         }
 
         // Update metrics after successful order placement
         active_job.child_order_ids.emplace_back(order_result.value());
-        active_job.metrics.num_child_orders++; // Increment child order count
-        active_job.metrics.completion_rate = 0.1; // Initial progress estimate
+        active_job.metrics.num_child_orders++;     // Increment child order count
+        active_job.metrics.completion_rate = 0.1;  // Initial progress estimate
 
         auto subscribe_result = MarketDataBus::instance().subscribe(sub_info);
         if (subscribe_result.is_error()) {
@@ -788,11 +699,9 @@ Result<void> ExecutionEngine::execute_adaptive_limit(const ExecutionJob& job) {
         return Result<void>();
 
     } catch (const std::exception& e) {
-        return make_error<void>(
-            ErrorCode::STRATEGY_ERROR,
-            std::string("Adaptive limit execution error: ") + e.what(),
-            "ExecutionEngine"
-        );
+        return make_error<void>(ErrorCode::STRATEGY_ERROR,
+                                std::string("Adaptive limit execution error: ") + e.what(),
+                                "ExecutionEngine");
     }
 }
 
@@ -801,11 +710,8 @@ Result<void> ExecutionEngine::execute_is(const ExecutionJob& job) {
         // Get order details
         auto order_status = order_manager_->get_order_status(job.parent_order_id);
         if (order_status.is_error()) {
-            return make_error<void>(
-                order_status.error()->code(),
-                order_status.error()->what(),
-                "ExecutionEngine"
-            );
+            return make_error<void>(order_status.error()->code(), order_status.error()->what(),
+                                    "ExecutionEngine");
         }
 
         const auto& parent_order = order_status.value().order;
@@ -813,46 +719,42 @@ Result<void> ExecutionEngine::execute_is(const ExecutionJob& job) {
 
         // Calculate initial market impact before execution
         double notional = parent_order.quantity.as_double() * parent_order.price.as_double();
-        active_job.metrics.market_impact = 0.0002 * notional; // 2bp market impact
+        active_job.metrics.market_impact = 0.0002 * notional;  // 2bp market impact
         active_job.metrics.arrival_price = parent_order.price.as_double();
 
         // Create child order with price improvement
         Order child = parent_order;
-        child.quantity = Quantity(parent_order.quantity.as_double() * (job.config.urgency_level * 0.5 + 0.1));
-        
+        child.quantity =
+            Quantity(parent_order.quantity.as_double() * (job.config.urgency_level * 0.5 + 0.1));
+
         // Add a small price adjustment based on urgency
-        double price_adjustment = job.config.urgency_level * 0.001; // 0.1% max price adjustment
+        double price_adjustment = job.config.urgency_level * 0.001;  // 0.1% max price adjustment
         child.price = Price(parent_order.price.as_double() * (1.0 + price_adjustment));
 
         auto submit_result = order_manager_->submit_order(child, "IS_" + job.job_id);
         if (submit_result.is_error()) {
-            return make_error<void>(
-                submit_result.error()->code(),
-                submit_result.error()->what(),
-                "ExecutionEngine"
-            );
+            return make_error<void>(submit_result.error()->code(), submit_result.error()->what(),
+                                    "ExecutionEngine");
         }
 
         active_job.child_order_ids.push_back(submit_result.value());
         active_job.metrics.num_child_orders++;
 
         // Calculate implementation shortfall based on price difference and market impact
-        active_job.metrics.implementation_shortfall = 
-            std::abs((child.price.as_double() - active_job.metrics.arrival_price) / 
-                    active_job.metrics.arrival_price) + 
+        active_job.metrics.implementation_shortfall =
+            std::abs((child.price.as_double() - active_job.metrics.arrival_price) /
+                     active_job.metrics.arrival_price) +
             active_job.metrics.market_impact;
 
         // Update completion rate
-        active_job.metrics.completion_rate = child.quantity.as_double() / parent_order.quantity.as_double();
+        active_job.metrics.completion_rate =
+            child.quantity.as_double() / parent_order.quantity.as_double();
 
         return Result<void>();
 
     } catch (const std::exception& e) {
-        return make_error<void>(
-            ErrorCode::STRATEGY_ERROR,
-            std::string("IS execution error: ") + e.what(),
-            "ExecutionEngine"
-        );
+        return make_error<void>(ErrorCode::STRATEGY_ERROR,
+                                std::string("IS execution error: ") + e.what(), "ExecutionEngine");
     }
 }
 
@@ -860,11 +762,8 @@ Result<void> ExecutionEngine::execute_dark_pool(const ExecutionJob& job) {
     try {
         auto order_status = order_manager_->get_order_status(job.parent_order_id);
         if (order_status.is_error()) {
-            return make_error<void>(
-                order_status.error()->code(),
-                order_status.error()->what(),
-                "ExecutionEngine"
-            );
+            return make_error<void>(order_status.error()->code(), order_status.error()->what(),
+                                    "ExecutionEngine");
         }
 
         auto& active_job = active_jobs_[job.job_id];
@@ -874,17 +773,11 @@ Result<void> ExecutionEngine::execute_dark_pool(const ExecutionJob& job) {
         Order child_order = parent_order;
         child_order.quantity = parent_order.quantity;  // Start with full size
 
-        auto submit_result = order_manager_->submit_order(
-            child_order,
-            "DARK_" + job.job_id
-        );
+        auto submit_result = order_manager_->submit_order(child_order, "DARK_" + job.job_id);
 
         if (submit_result.is_error()) {
-            return make_error<void>(
-                submit_result.error()->code(),
-                submit_result.error()->what(),
-                "ExecutionEngine"
-            );
+            return make_error<void>(submit_result.error()->code(), submit_result.error()->what(),
+                                    "ExecutionEngine");
         }
 
         active_job.child_order_ids.push_back(submit_result.value());
@@ -894,26 +787,19 @@ Result<void> ExecutionEngine::execute_dark_pool(const ExecutionJob& job) {
         return Result<void>();
 
     } catch (const std::exception& e) {
-        return make_error<void>(
-            ErrorCode::STRATEGY_ERROR,
-            std::string("Dark pool execution error: ") + e.what(),
-            "ExecutionEngine"
-        );
+        return make_error<void>(ErrorCode::STRATEGY_ERROR,
+                                std::string("Dark pool execution error: ") + e.what(),
+                                "ExecutionEngine");
     }
 }
 
-Result<std::vector<Order>> ExecutionEngine::generate_child_orders(
-    const ExecutionJob& job,
-    size_t num_slices) {
-    
+Result<std::vector<Order>> ExecutionEngine::generate_child_orders(const ExecutionJob& job,
+                                                                  size_t num_slices) {
     try {
         auto order_result = order_manager_->get_order_status(job.parent_order_id);
         if (order_result.is_error()) {
-            return make_error<std::vector<Order>>(
-                order_result.error()->code(),
-                order_result.error()->what(),
-                "ExecutionEngine"
-            );
+            return make_error<std::vector<Order>>(order_result.error()->code(),
+                                                  order_result.error()->what(), "ExecutionEngine");
         }
 
         const auto& parent_order = order_result.value().order;
@@ -921,12 +807,11 @@ Result<std::vector<Order>> ExecutionEngine::generate_child_orders(
 
         // Calculate slice size
         double slice_size = parent_order.quantity.as_double() / static_cast<double>(num_slices);
-        
+
         // Ensure minimum child size is respected
         if (slice_size < config.min_child_size) {
             num_slices = static_cast<size_t>(
-                std::ceil(parent_order.quantity.as_double() / config.min_child_size)
-            );
+                std::ceil(parent_order.quantity.as_double() / config.min_child_size));
             slice_size = parent_order.quantity.as_double() / static_cast<double>(num_slices);
         }
 
@@ -936,7 +821,7 @@ Result<std::vector<Order>> ExecutionEngine::generate_child_orders(
 
         for (size_t i = 0; i < num_slices && remaining_qty > 0; ++i) {
             Order child = parent_order;  // Copy basic properties
-            
+
             // Last slice gets remaining quantity to handle rounding
             if (i == num_slices - 1) {
                 child.quantity = Quantity(remaining_qty);
@@ -952,27 +837,20 @@ Result<std::vector<Order>> ExecutionEngine::generate_child_orders(
 
     } catch (const std::exception& e) {
         return make_error<std::vector<Order>>(
-            ErrorCode::UNKNOWN_ERROR,
-            std::string("Error generating child orders: ") + e.what(),
-            "ExecutionEngine"
-        );
+            ErrorCode::UNKNOWN_ERROR, std::string("Error generating child orders: ") + e.what(),
+            "ExecutionEngine");
     }
 }
 
-Result<void> ExecutionEngine::update_metrics(
-    const std::string& job_id,
-    const std::vector<ExecutionReport>& fills) {
-    
+Result<void> ExecutionEngine::update_metrics(const std::string& job_id,
+                                             const std::vector<ExecutionReport>& fills) {
     try {
         std::lock_guard<std::mutex> lock(mutex_);
-        
+
         auto it = active_jobs_.find(job_id);
         if (it == active_jobs_.end()) {
-            return make_error<void>(
-                ErrorCode::INVALID_ARGUMENT,
-                "Job not found: " + job_id,
-                "ExecutionEngine"
-            );
+            return make_error<void>(ErrorCode::INVALID_ARGUMENT, "Job not found: " + job_id,
+                                    "ExecutionEngine");
         }
 
         auto& job = it->second;
@@ -980,8 +858,7 @@ Result<void> ExecutionEngine::update_metrics(
 
         // Always update execution time
         metrics.total_time = std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::system_clock::now() - job.start_time
-        );
+            std::chrono::system_clock::now() - job.start_time);
 
         // Calculate execution metrics
         double total_qty = 0.0;
@@ -1002,32 +879,29 @@ Result<void> ExecutionEngine::update_metrics(
                 const auto& parent_order = order_result.value().order;
                 metrics.completion_rate = total_qty / parent_order.quantity.as_double();
                 // Estimate volume participation (can be refined based on actual market volume)
-                metrics.volume_participation = std::min(0.1, total_qty / (parent_order.quantity.as_double() * 2.0));
+                metrics.volume_participation =
+                    std::min(0.1, total_qty / (parent_order.quantity.as_double() * 2.0));
             }
         }
 
-    return Result<void>();
+        return Result<void>();
 
     } catch (const std::exception& e) {
-        return make_error<void>(
-            ErrorCode::UNKNOWN_ERROR,
-            std::string("Error updating metrics: ") + e.what(),
-            "ExecutionEngine"
-        );
+        return make_error<void>(ErrorCode::UNKNOWN_ERROR,
+                                std::string("Error updating metrics: ") + e.what(),
+                                "ExecutionEngine");
     }
 }
 
 Result<std::vector<std::pair<Timestamp, double>>> ExecutionEngine::calculate_schedule(
-    const ExecutionJob& job,
-    const std::vector<Bar>& market_data) {
-    
+    const ExecutionJob& job, const std::vector<Bar>& market_data) {
     try {
         const auto& config = job.config;
-        
+
         // Calculate total market volume and volume profile
         std::vector<double> volumes;
         double total_volume = 0.0;
-        
+
         for (const auto& bar : market_data) {
             volumes.push_back(bar.volume);
             total_volume += bar.volume;
@@ -1038,10 +912,7 @@ Result<std::vector<std::pair<Timestamp, double>>> ExecutionEngine::calculate_sch
         auto order_result = order_manager_->get_order_status(job.parent_order_id);
         if (order_result.is_error()) {
             return make_error<std::vector<std::pair<Timestamp, double>>>(
-                order_result.error()->code(),
-                order_result.error()->what(),
-                "ExecutionEngine"
-            );
+                order_result.error()->code(), order_result.error()->what(), "ExecutionEngine");
         }
 
         const auto& parent_order = order_result.value().order;
@@ -1050,13 +921,10 @@ Result<std::vector<std::pair<Timestamp, double>>> ExecutionEngine::calculate_sch
         for (size_t i = 0; i < market_data.size() && remaining_qty > 0; ++i) {
             double interval_ratio = volumes[i] / total_volume;
             double interval_qty = parent_order.quantity.as_double() * interval_ratio;
-            
+
             // Apply participation rate constraint
             if (config.max_participation_rate < 1.0) {
-                interval_qty = std::min(
-                    interval_qty,
-                    volumes[i] * config.max_participation_rate
-                );
+                interval_qty = std::min(interval_qty, volumes[i] * config.max_participation_rate);
             }
 
             // Ensure minimum child size
@@ -1078,22 +946,19 @@ Result<std::vector<std::pair<Timestamp, double>>> ExecutionEngine::calculate_sch
 
     } catch (const std::exception& e) {
         return make_error<std::vector<std::pair<Timestamp, double>>>(
-            ErrorCode::UNKNOWN_ERROR,
-            std::string("Error calculating schedule: ") + e.what(),
-            "ExecutionEngine"
-        );
+            ErrorCode::UNKNOWN_ERROR, std::string("Error calculating schedule: ") + e.what(),
+            "ExecutionEngine");
     }
 }
 
 std::string ExecutionEngine::generate_job_id() const {
     auto now = std::chrono::system_clock::now();
-    auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-        now.time_since_epoch()).count();
-    
+    auto now_ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+
     std::stringstream ss;
-    ss << "EXEC_" << std::hex << std::uppercase << std::setfill('0') 
-       << std::setw(16) << now_ms;
+    ss << "EXEC_" << std::hex << std::uppercase << std::setfill('0') << std::setw(16) << now_ms;
     return ss.str();
 }
 
-} // namespace trade_ngin
+}  // namespace trade_ngin

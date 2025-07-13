@@ -2,17 +2,17 @@
 
 #pragma once
 
+#include <arrow/api.h>
 #include <memory>
 #include <mutex>
-#include <string>
-#include <vector>
 #include <optional>
 #include <pqxx/pqxx>
-#include <arrow/api.h>
-#include "trade_ngin/data/database_interface.hpp"
-#include "trade_ngin/core/types.hpp"
+#include <string>
+#include <vector>
 #include "trade_ngin/core/error.hpp"
 #include "trade_ngin/core/logger.hpp"
+#include "trade_ngin/core/types.hpp"
+#include "trade_ngin/data/database_interface.hpp"
 
 namespace trade_ngin {
 
@@ -66,12 +66,9 @@ public:
      * @return Result containing the market data
      */
     Result<std::shared_ptr<arrow::Table>> get_market_data(
-        const std::vector<std::string>& symbols,
-        const Timestamp& start_date,
-        const Timestamp& end_date,
-        AssetClass asset_class,
-        DataFrequency freq = DataFrequency::DAILY,
-        const std::string& data_type = "ohlcv") override;
+        const std::vector<std::string>& symbols, const Timestamp& start_date,
+        const Timestamp& end_date, AssetClass asset_class,
+        DataFrequency freq = DataFrequency::DAILY, const std::string& data_type = "ohlcv") override;
 
     /**
      * @brief Store execution reports in the database
@@ -79,9 +76,8 @@ public:
      * @param table_name Name of the table to store data
      * @return Result indicating success or failure
      */
-    Result<void> store_executions(
-        const std::vector<ExecutionReport>& executions,
-        const std::string& table_name) override;
+    Result<void> store_executions(const std::vector<ExecutionReport>& executions,
+                                  const std::string& table_name) override;
 
     /**
      * @brief Store positions in the database
@@ -89,9 +85,8 @@ public:
      * @param table_name Name of the table to store data
      * @return Result indicating success or failure
      */
-    Result<void> store_positions(
-        const std::vector<Position>& positions,
-        const std::string& table_name) override;
+    Result<void> store_positions(const std::vector<Position>& positions,
+                                 const std::string& table_name) override;
 
     /**
      * @brief Store signals in the database
@@ -101,11 +96,9 @@ public:
      * @param table_name Name of the table to store data
      * @return Result indicating success or failure
      */
-    Result<void> store_signals(
-        const std::unordered_map<std::string, double>& signals,
-        const std::string& strategy_id,
-        const Timestamp& timestamp,
-        const std::string& table_name) override;
+    Result<void> store_signals(const std::unordered_map<std::string, double>& signals,
+                               const std::string& strategy_id, const Timestamp& timestamp,
+                               const std::string& table_name) override;
 
     /**
      * @brief Get a list of symbols from the database
@@ -114,18 +107,16 @@ public:
      * @param data_type Type of data to retrieve
      * @return Result containing the list of symbols
      */
-    Result<std::vector<std::string>> get_symbols(
-        AssetClass asset_class,
-        DataFrequency freq = DataFrequency::DAILY,
-        const std::string& data_type = "ohlcv") override;
+    Result<std::vector<std::string>> get_symbols(AssetClass asset_class,
+                                                 DataFrequency freq = DataFrequency::DAILY,
+                                                 const std::string& data_type = "ohlcv") override;
 
     /**
      * @brief Execute a query and return the result as an Arrow table
      * @param query SQL query to execute
      * @return Result containing the Arrow table
      */
-    Result<std::shared_ptr<arrow::Table>> execute_query(
-        const std::string& query) override;
+    Result<std::shared_ptr<arrow::Table>> execute_query(const std::string& query) override;
 
     /**
      * @brief Get contract metadata for trading instruments
@@ -139,18 +130,22 @@ public:
      * @return String representation for database queries
      */
     std::string asset_class_to_string(AssetClass asset_class) const;
-    
+
     /**
      * @brief Get the connection string
      * @return Connection string
      */
-    std::string get_connection_string() const { return connection_string_; }
-    
+    std::string get_connection_string() const {
+        return connection_string_;
+    }
+
     /**
      * @brief Get the component ID
      * @return Component ID
      */
-    const std::string& get_component_id() const { return component_id_; }
+    const std::string& get_component_id() const {
+        return component_id_;
+    }
 
 private:
     std::string connection_string_;
@@ -189,14 +184,12 @@ private:
      * @param txn Database transaction
      * @return Result containing the query result
      */
-    Result<pqxx::result> execute_market_data_query(
-        const std::vector<std::string>& symbols,
-        const Timestamp& start_date,
-        const Timestamp& end_date,
-        AssetClass asset_class,
-        DataFrequency freq,
-        const std::string& data_type,
-        pqxx::work& txn) const;
+    Result<pqxx::result> execute_market_data_query(const std::vector<std::string>& symbols,
+                                                   const Timestamp& start_date,
+                                                   const Timestamp& end_date,
+                                                   AssetClass asset_class, DataFrequency freq,
+                                                   const std::string& data_type,
+                                                   pqxx::work& txn) const;
 
     /**
      * @brief Validate table name components to prevent injection
@@ -205,10 +198,9 @@ private:
      * @param freq Data frequency
      * @return Result indicating success or failure
      */
-    Result<void> validate_table_name_components(
-        AssetClass asset_class,
-        const std::string& data_type,
-        DataFrequency freq) const;
+    Result<void> validate_table_name_components(AssetClass asset_class,
+                                                const std::string& data_type,
+                                                DataFrequency freq) const;
 
     /**
      * @brief Validate table name for SQL injection prevention
@@ -265,8 +257,7 @@ private:
      * @param result pqxx result to convert
      * @return Result containing the Arrow table
      */
-    Result<std::shared_ptr<arrow::Table>> convert_to_arrow_table(
-        const pqxx::result& result) const;
+    Result<std::shared_ptr<arrow::Table>> convert_to_arrow_table(const pqxx::result& result) const;
 
     /**
      * @brief Convert contract metadata result to Arrow table
@@ -283,10 +274,8 @@ private:
      * @param data_type Type of data to retrieve
      * @return Result containing the latest data time
      */
-    Result<Timestamp> get_latest_data_time(
-        AssetClass asset_class,
-        DataFrequency freq,
-        const std::string& data_type = "ohlcv") const;
+    Result<Timestamp> get_latest_data_time(AssetClass asset_class, DataFrequency freq,
+                                           const std::string& data_type = "ohlcv") const;
 
     /**
      * @brief Get the time range for data in the database
@@ -296,9 +285,7 @@ private:
      * @return Result containing the time range
      */
     Result<std::pair<Timestamp, Timestamp>> get_data_time_range(
-        AssetClass asset_class,
-        DataFrequency freq,
-        const std::string& data_type = "ohlcv") const;
+        AssetClass asset_class, DataFrequency freq, const std::string& data_type = "ohlcv") const;
 
     /**
      * @brief Get the number of data points in the database
@@ -308,11 +295,9 @@ private:
      * @param data_type Type of data to retrieve
      * @return Result containing the number of data points
      */
-    Result<size_t> get_data_count(
-        AssetClass asset_class,
-        DataFrequency freq,
-        const std::string& symbol,
-        const std::string& data_type = "ohlcv") const;
+    Result<size_t> get_data_count(AssetClass asset_class, DataFrequency freq,
+                                  const std::string& symbol,
+                                  const std::string& data_type = "ohlcv") const;
 };
 
-} // namespace trade_ngin
+}  // namespace trade_ngin

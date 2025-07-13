@@ -1,13 +1,13 @@
 // include/trade_ngin/strategy/trend_following.hpp
 #pragma once
 
-#include "trade_ngin/strategy/base_strategy.hpp"
-#include "trade_ngin/core/types.hpp"
-#include "trade_ngin/core/error.hpp"
-#include "trade_ngin/instruments/instrument_registry.hpp"
-#include <vector>
-#include <utility>
 #include <memory>
+#include <utility>
+#include <vector>
+#include "trade_ngin/core/error.hpp"
+#include "trade_ngin/core/types.hpp"
+#include "trade_ngin/instruments/instrument_registry.hpp"
+#include "trade_ngin/strategy/base_strategy.hpp"
 
 namespace trade_ngin {
 
@@ -15,45 +15,44 @@ namespace trade_ngin {
  * @brief Configuration specific to trend following strategy
  */
 struct TrendFollowingConfig {
-    double weight{1.0};               // Weight for position sizing
-    double risk_target{0.2};          // Target annualized risk level
-    double fx_rate{1.0};              // FX conversion rate
-    double idm{2.5};                  // Instrument diversification multiplier
-    bool use_position_buffering{true}; // Whether to use position buffers to reduce trading
-    std::vector<std::pair<int, int>> ema_windows{ // EMA window pairs for crossovers
-        {2, 8}, {4, 16}, {8, 32}, {16, 64}, {32, 128}, {64, 256}
-    };
-    int vol_lookback_short{32};    // Short lookback for volatility calculation
-    int vol_lookback_long{2520};   // Long lookback for volatility calculation
-    std::vector<std::pair<int, double>> fdm {
-        {1, 1.0}, {2, 1.03}, {3, 1.08}, {4, 1.13}, {5, 1.19}, {6, 1.26}
-    };
+    double weight{1.0};                 // Weight for position sizing
+    double risk_target{0.2};            // Target annualized risk level
+    double fx_rate{1.0};                // FX conversion rate
+    double idm{2.5};                    // Instrument diversification multiplier
+    bool use_position_buffering{true};  // Whether to use position buffers to reduce trading
+    std::vector<std::pair<int, int>> ema_windows{
+        // EMA window pairs for crossovers
+        {2, 8}, {4, 16}, {8, 32}, {16, 64}, {32, 128}, {64, 256}};
+    int vol_lookback_short{32};   // Short lookback for volatility calculation
+    int vol_lookback_long{2520};  // Long lookback for volatility calculation
+    std::vector<std::pair<int, double>> fdm{{1, 1.0},  {2, 1.03}, {3, 1.08},
+                                            {4, 1.13}, {5, 1.19}, {6, 1.26}};
 };
 
 /**
  * @brief Data structure for storing instrument data
  */
 struct InstrumentData {
-     // Static instrument properties (cached from registry)
-     double contract_size = 1.0;
-     double weight = 1.0;
-     
-     // Dynamic forecast data
-     std::vector<double> raw_forecasts;
-     std::vector<double> scaled_forecasts;
-     double current_forecast = 0.0;
-     
-     // Position data
-     double raw_position = 0.0;
-     double final_position = 0.0;
-     
-     // Market data 
-     std::vector<double> price_history;
-     std::vector<double> volatility_history;
-     double current_volatility = 0.01;
-     
-     // Timestamp of last update
-     Timestamp last_update;
+    // Static instrument properties (cached from registry)
+    double contract_size = 1.0;
+    double weight = 1.0;
+
+    // Dynamic forecast data
+    std::vector<double> raw_forecasts;
+    std::vector<double> scaled_forecasts;
+    double current_forecast = 0.0;
+
+    // Position data
+    double raw_position = 0.0;
+    double final_position = 0.0;
+
+    // Market data
+    std::vector<double> price_history;
+    std::vector<double> volatility_history;
+    double current_volatility = 0.01;
+
+    // Timestamp of last update
+    Timestamp last_update;
 };
 
 /**
@@ -69,12 +68,9 @@ public:
      * @param db Database interface
      * @param registry Instrument registry for accessing instrument data
      */
-    TrendFollowingStrategy(
-        std::string id,
-        StrategyConfig config,
-        TrendFollowingConfig trend_config,
-        std::shared_ptr<PostgresDatabase> db,
-        std::shared_ptr<InstrumentRegistry> registry = nullptr);
+    TrendFollowingStrategy(std::string id, StrategyConfig config, TrendFollowingConfig trend_config,
+                           std::shared_ptr<PostgresDatabase> db,
+                           std::shared_ptr<InstrumentRegistry> registry = nullptr);
 
     /**
      * @brief Process new market data
@@ -95,12 +91,12 @@ public:
      */
     std::unordered_map<std::string, std::vector<double>> get_price_history() const override {
         std::unordered_map<std::string, std::vector<double>> history;
-        
+
         // Convert from map of vectors to map of maps
         for (const auto& [symbol, prices] : instrument_data_) {
             history[symbol] = prices.price_history;
         }
-        
+
         return history;
     }
 
@@ -114,7 +110,7 @@ public:
         if (it != instrument_data_.end()) {
             return it->second.current_forecast;
         }
-        return 0.0; // Default value if not found
+        return 0.0;  // Default value if not found
     }
 
     /**
@@ -127,7 +123,7 @@ public:
         if (it != instrument_data_.end()) {
             return it->second.final_position;
         }
-        return 0.0; // Default value if not found
+        return 0.0;  // Default value if not found
     }
 
     /**
@@ -140,7 +136,7 @@ public:
         if (it != instrument_data_.end()) {
             return &it->second;
         }
-        return nullptr; // Default value if not found
+        return nullptr;  // Default value if not found
     }
 
     /**
@@ -160,7 +156,7 @@ protected:
 
 private:
     TrendFollowingConfig trend_config_;
-    
+
     // Price and signal storage
     std::unordered_map<std::string, std::vector<double>> price_history_;
     std::unordered_map<std::string, std::vector<double>> volatility_history_;
@@ -178,12 +174,11 @@ private:
      * @param window EWMA window
      * @return Vector of EWMA values
      */
-    std::vector<double> calculate_ewma(
-        const std::vector<double>& prices,
-        int window) const;
+    std::vector<double> calculate_ewma(const std::vector<double>& prices, int window) const;
 
     /**
-     * @brief Computes the blended EWMA standard deviation using short-term and long-term components.
+     * @brief Computes the blended EWMA standard deviation using short-term and long-term
+     * components.
      * @param prices Vector of price data.
      * @param N Lookback period for short-term EWMA std dev.
      * @param weight_short Weight for short-term EWMA (default: 70%).
@@ -191,12 +186,9 @@ private:
      * @param max_history Maximum historical records (default: 10 years).
      * @return Vector of blended EWMA standard deviation.
      */
-    std::vector<double> blended_ewma_stddev(
-        const std::vector<double>& prices,
-        int N,
-        double weight_short = 0.7,
-        double weight_long = 0.3,
-        size_t max_history = 2520) const;
+    std::vector<double> blended_ewma_stddev(const std::vector<double>& prices, int N,
+                                            double weight_short = 0.7, double weight_long = 0.3,
+                                            size_t max_history = 2520) const;
 
     /**
      * @brief Computes the EWMA standard deviation using a lambda-based approach.
@@ -204,9 +196,7 @@ private:
      * @param N Lookback period for EWMA.
      * @return Vector of EWMA standard deviation values.
      */
-    std::vector<double> ewma_standard_deviation(
-        const std::vector<double>& prices,
-        int N) const;
+    std::vector<double> ewma_standard_deviation(const std::vector<double>& prices, int N) const;
 
     /**
      * @brief Computes the long-term average of EWMA standard deviations.
@@ -214,21 +204,18 @@ private:
      * @param max_history Maximum number of historical periods (default: 10 years).
      * @return Long-term average EWMA standard deviation.
      */
-    double compute_long_term_avg(
-        const std::vector<double>& history,
-        size_t max_history = 2520) const;
+    double compute_long_term_avg(const std::vector<double>& history,
+                                 size_t max_history = 2520) const;
 
-    /** 
-    * @brief Calculate EMA crossover signals and scale by volatility
-    * @param prices Price history for a symbol
-    * @param short_window Shorter EMA window
-    * @param long_window Longer EMA window
-    * @return Vector of crossover signals
-    */
-    std::vector<double> get_raw_forecast(
-        const std::vector<double>& prices,
-        int short_window,
-        int long_window) const;
+    /**
+     * @brief Calculate EMA crossover signals and scale by volatility
+     * @param prices Price history for a symbol
+     * @param short_window Shorter EMA window
+     * @param long_window Longer EMA window
+     * @return Vector of crossover signals
+     */
+    std::vector<double> get_raw_forecast(const std::vector<double>& prices, int short_window,
+                                         int long_window) const;
 
     /**
      * @brief Scale raw forecasts by volatility
@@ -236,9 +223,8 @@ private:
      * @param blended_stddev Blended EWMA standard deviation
      * @return Scaled forecast values
      */
-    std::vector<double> get_scaled_forecast(
-        const std::vector<double>& raw_forecasts,
-        const std::vector<double>& blended_stddev) const;
+    std::vector<double> get_scaled_forecast(const std::vector<double>& raw_forecasts,
+                                            const std::vector<double>& blended_stddev) const;
 
     /**
      * @brief Generate raw forecast from EMA crossovers
@@ -259,7 +245,8 @@ private:
      * @param raw_combined_forecast Raw forecast values
      * @return Scaled forecast values
      */
-    std::vector<double> get_scaled_combined_forecast(const std::vector<double>& raw_combined_forecast) const;
+    std::vector<double> get_scaled_combined_forecast(
+        const std::vector<double>& raw_combined_forecast) const;
 
     /**
      * @brief Get weights for position sizing
@@ -276,11 +263,8 @@ private:
      * @param volatility Current volatility
      * @return Target position
      */
-    double calculate_position(
-        const std::string& symbol,
-        double forecast,
-        double price,
-        double volatility) const;
+    double calculate_position(const std::string& symbol, double forecast, double price,
+                              double volatility) const;
 
     /**
      * @brief Apply position buffering
@@ -290,11 +274,8 @@ private:
      * @param volatility Current volatility
      * @return Buffered position
      */
-    double apply_position_buffer(
-        const std::string& symbol,
-        double raw_position,
-        double price, 
-        double volatility) const;
+    double apply_position_buffer(const std::string& symbol, double raw_position, double price,
+                                 double volatility) const;
 
     /**
      * @brief Calculate volatility regime multiplier
@@ -302,9 +283,8 @@ private:
      * @param volatility Pre-calculated volatility series
      * @return Volatility regime multiplier
      */
-    double calculate_vol_regime_multiplier(
-        const std::vector<double>& prices,
-        const std::vector<double>& volatility) const;
+    double calculate_vol_regime_multiplier(const std::vector<double>& prices,
+                                           const std::vector<double>& volatility) const;
 };
 
-} // namespace trade_ngin
+}  // namespace trade_ngin

@@ -1,10 +1,10 @@
 #include <gtest/gtest.h>
-#include "trade_ngin/data/postgres_database.hpp"
-#include "test_db_utils.hpp"
-#include "../core/test_base.hpp"
-#include <thread>
-#include <future>
 #include <atomic>
+#include <future>
+#include <thread>
+#include "../core/test_base.hpp"
+#include "test_db_utils.hpp"
+#include "trade_ngin/data/postgres_database.hpp"
 
 using namespace trade_ngin;
 using namespace trade_ngin::testing;
@@ -14,12 +14,10 @@ protected:
     void SetUp() override {
         TestBase::SetUp();
         pool_size_ = 5;  // Define the size of the pool for testing
-        
+
         // Create a pool of mock databases
         for (int i = 0; i < pool_size_; ++i) {
-            auto db = std::make_shared<MockPostgresDatabase>(
-                "mock://testdb" + std::to_string(i)
-            );
+            auto db = std::make_shared<MockPostgresDatabase>("mock://testdb" + std::to_string(i));
             auto result = db->connect();
             ASSERT_TRUE(result.is_ok()) << "Failed to connect database " << i;
             connection_pool_.push_back(db);
@@ -43,7 +41,7 @@ protected:
 
 TEST_F(DatabasePoolTest, ConnectionPoolBasics) {
     ASSERT_EQ(connection_pool_.size(), pool_size_);
-    
+
     // Verify all connections are active
     for (const auto& db : connection_pool_) {
         EXPECT_TRUE(db->is_connected());
@@ -60,21 +58,16 @@ TEST_F(DatabasePoolTest, ParallelQueries) {
     std::vector<QueryResult> results(pool_size_ * 2);
     std::vector<std::thread> threads;
     std::mutex results_mutex;
-    
+
     auto start_time = std::chrono::system_clock::now() - std::chrono::hours(24);
     auto end_time = std::chrono::system_clock::now();
-    
+
     // Run multiple market data queries in parallel
     for (int i = 0; i < pool_size_ * 2; ++i) {
         threads.emplace_back([&, i]() {
             auto db = connection_pool_[i % pool_size_];
-            auto query_result = db->get_market_data(
-                {"AAPL", "MSFT"},
-                start_time,
-                end_time,
-                AssetClass::EQUITIES,
-                DataFrequency::DAILY
-            );
+            auto query_result = db->get_market_data({"AAPL", "MSFT"}, start_time, end_time,
+                                                    AssetClass::EQUITIES, DataFrequency::DAILY);
 
             QueryResult thread_result;
             if (query_result.is_ok()) {
@@ -126,15 +119,11 @@ TEST_F(DatabasePoolTest, LoadBalancing) {
         threads.emplace_back([this, &query_counts, i]() {
             int conn_idx = i % pool_size_;
             auto db = connection_pool_[conn_idx];
-            
+
             auto result = db->get_market_data(
-                {"AAPL"},
-                std::chrono::system_clock::now() - std::chrono::hours(24),
-                std::chrono::system_clock::now(),
-                AssetClass::EQUITIES,
-                DataFrequency::DAILY
-            );
-            
+                {"AAPL"}, std::chrono::system_clock::now() - std::chrono::hours(24),
+                std::chrono::system_clock::now(), AssetClass::EQUITIES, DataFrequency::DAILY);
+
             if (result.is_ok()) {
                 query_counts[conn_idx]++;
             }
@@ -166,7 +155,7 @@ TEST_F(DatabasePoolTest, ConcurrentStateChanges) {
     for (int i = 0; i < num_threads; ++i) {
         threads.emplace_back([this, &success_count, i]() {
             auto db = connection_pool_[i % pool_size_];
-            
+
             // Randomly disconnect and reconnect
             if (i % 2 == 0) {
                 db->disconnect();
@@ -176,12 +165,8 @@ TEST_F(DatabasePoolTest, ConcurrentStateChanges) {
                 }
             } else {
                 auto result = db->get_market_data(
-                    {"AAPL"},
-                    std::chrono::system_clock::now() - std::chrono::hours(24),
-                    std::chrono::system_clock::now(),
-                    AssetClass::EQUITIES,
-                    DataFrequency::DAILY
-                );
+                    {"AAPL"}, std::chrono::system_clock::now() - std::chrono::hours(24),
+                    std::chrono::system_clock::now(), AssetClass::EQUITIES, DataFrequency::DAILY);
                 if (result.is_ok()) {
                     success_count++;
                 }
@@ -207,7 +192,7 @@ TEST_F(DatabasePoolTest, ErrorPropagation) {
     std::vector<ErrorTestResult> results(pool_size_);
     std::vector<std::thread> threads;
     std::mutex results_mutex;
-    
+
     for (int i = 0; i < pool_size_; ++i) {
         threads.emplace_back([&, i]() {
             auto db = connection_pool_[i];
@@ -215,8 +200,7 @@ TEST_F(DatabasePoolTest, ErrorPropagation) {
                 {"INVALID_SYMBOL"},  // Should trigger an error
                 std::chrono::system_clock::now(),
                 std::chrono::system_clock::now() - std::chrono::hours(24),  // Invalid time range
-                AssetClass::EQUITIES
-            );
+                AssetClass::EQUITIES);
 
             ErrorTestResult thread_result;
             thread_result.is_error = result.is_error();
@@ -238,8 +222,7 @@ TEST_F(DatabasePoolTest, ErrorPropagation) {
 
     // Verify all errors are properly propagated
     for (const auto& result : results) {
-        EXPECT_TRUE(result.is_error) 
-            << "Expected error but got success";
+        EXPECT_TRUE(result.is_error) << "Expected error but got success";
         if (result.is_error) {
             EXPECT_EQ(result.error_code, ErrorCode::INVALID_ARGUMENT)
                 << "Unexpected error code: " << static_cast<int>(result.error_code)
@@ -258,12 +241,10 @@ TEST_F(DatabasePoolTest, MixedOperations) {
         threads.emplace_back([this, &success_count]() {
             auto db = connection_pool_[rand() % pool_size_];
             auto result = db->get_market_data(
-                {"AAPL"},
-                std::chrono::system_clock::now() - std::chrono::hours(24),
-                std::chrono::system_clock::now(),
-                AssetClass::EQUITIES
-            );
-            if (result.is_ok()) success_count++;
+                {"AAPL"}, std::chrono::system_clock::now() - std::chrono::hours(24),
+                std::chrono::system_clock::now(), AssetClass::EQUITIES);
+            if (result.is_ok())
+                success_count++;
         });
     }
 
@@ -271,11 +252,9 @@ TEST_F(DatabasePoolTest, MixedOperations) {
     for (int i = 0; i < operations_per_type; ++i) {
         threads.emplace_back([this, &success_count]() {
             auto db = connection_pool_[rand() % pool_size_];
-            auto result = db->store_executions(
-                create_test_executions(),
-                "trading.executions"
-            );
-            if (result.is_ok()) success_count++;
+            auto result = db->store_executions(create_test_executions(), "trading.executions");
+            if (result.is_ok())
+                success_count++;
         });
     }
 
@@ -283,11 +262,9 @@ TEST_F(DatabasePoolTest, MixedOperations) {
     for (int i = 0; i < operations_per_type; ++i) {
         threads.emplace_back([this, &success_count]() {
             auto db = connection_pool_[rand() % pool_size_];
-            auto result = db->store_positions(
-                create_test_positions(),
-                "trading.positions"
-            );
-            if (result.is_ok()) success_count++;
+            auto result = db->store_positions(create_test_positions(), "trading.positions");
+            if (result.is_ok())
+                success_count++;
         });
     }
 
