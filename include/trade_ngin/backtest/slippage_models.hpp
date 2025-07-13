@@ -47,6 +47,28 @@ public:
         double quantity,
         Side side,
         const std::optional<Bar>& market_data = std::nullopt) const = 0;
+    
+    /**
+     * @brief Calculate price with slippage (Decimal overload)
+     * @param price Original price
+     * @param quantity Trade quantity
+     * @param side Trade side
+     * @param market_data Optional market data for context
+     * @return Adjusted price with slippage
+     */
+    virtual Decimal calculate_slippage(
+        const Decimal& price,
+        const Decimal& quantity,
+        Side side,
+        const std::optional<Bar>& market_data = std::nullopt) const {
+        double result = calculate_slippage(
+            static_cast<double>(price),
+            static_cast<double>(quantity),
+            side,
+            market_data
+        );
+        return Decimal(result);
+    }
 
     /**
      * @brief Update model parameters based on market data
