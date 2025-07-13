@@ -8,6 +8,7 @@
 #include <vector>
 #include <memory>
 #include <unordered_map>
+#include <nlohmann/json.hpp>
 
 namespace trade_ngin {
 

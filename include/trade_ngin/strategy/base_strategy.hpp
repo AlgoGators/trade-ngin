@@ -111,6 +111,12 @@ public:
     const StrategyMetadata& get_metadata() const override;
     
     /**
+     * @brief Get the price history for all symbols
+     * @return Price history by symbol
+     */
+    std::unordered_map<std::string, std::vector<double>> get_price_history() const override;
+    
+    /**
      * @brief Get the current positions for the strategy
      * @return Map of positions by symbol
      */

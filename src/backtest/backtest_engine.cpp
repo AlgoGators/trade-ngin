@@ -13,6 +13,7 @@
 #include <sstream>
 #include <iomanip>
 #include <chrono>
+#include <set>
 
 namespace {
 std::string join(const std::vector<std::string>& elements, const std::string& delimiter) {
@@ -50,7 +51,7 @@ BacktestEngine::BacktestEngine(
         unique_id,
         "",
         std::chrono::system_clock::now(),
-        {{"total_capital", config_.portfolio_config.initial_capital}}
+        {{"total_capital", static_cast<double>(config_.portfolio_config.initial_capital)}}
     };
 
     auto register_result = StateManager::instance().register_component(info);
@@ -90,9 +91,9 @@ BacktestEngine::BacktestEngine(
     }
 
     // Initialize slippage model
-    if (config_.strategy_config.slippage_model > 0.0) {
+    if (static_cast<double>(config_.strategy_config.slippage_model) > 0.0) {
         SpreadSlippageConfig slippage_config;
-        slippage_config.min_spread_bps = config_.strategy_config.slippage_model;
+        slippage_config.min_spread_bps = static_cast<double>(config_.strategy_config.slippage_model);
         slippage_config.spread_multiplier = 1.2;
         slippage_config.market_impact_multiplier = 1.5;
         
@@ -101,7 +102,7 @@ BacktestEngine::BacktestEngine(
 
     INFO("Backtest engine initialized successfully with " + 
          std::to_string(config_.strategy_config.symbols.size()) + " symbols and " +
-         std::to_string(config_.portfolio_config.initial_capital) + " initial capital");
+         config_.portfolio_config.initial_capital.to_string() + " initial capital");
 }
 
 BacktestEngine::~BacktestEngine() {
@@ -131,7 +132,7 @@ Result<BacktestResults> BacktestEngine::run(
             backtest_component_id_,
             "",
             std::chrono::system_clock::now(),
-            {{"total_capital", config_.portfolio_config.initial_capital}}
+            {{"total_capital", static_cast<double>(config_.portfolio_config.initial_capital)}}
         };
 
         auto register_result = StateManager::instance().register_component(info);
@@ -179,7 +180,7 @@ Result<BacktestResults> BacktestEngine::run(
         std::unordered_map<std::string, Position> current_positions;
         std::vector<std::pair<Timestamp, double>> equity_curve;
         std::vector<RiskResult> risk_metrics;
-        double current_equity = config_.portfolio_config.initial_capital;
+        double current_equity = static_cast<double>(config_.portfolio_config.initial_capital);
 
         // Initialize equity curve with starting point
         equity_curve.emplace_back(config_.strategy_config.start_date, current_equity);
@@ -232,9 +233,34 @@ Result<BacktestResults> BacktestEngine::run(
         
         // Group bars by timestamp for realistic simulation
         std::map<Timestamp, std::vector<Bar>> bars_by_time;
+        std::unordered_map<std::string, int> symbol_counts;
+        std::map<Timestamp, std::set<std::string>> symbols_per_timestamp;
+        
         for (const auto& bar : data_result.value()) {
             bars_by_time[bar.timestamp].push_back(bar);
+            symbol_counts[bar.symbol]++;
+            symbols_per_timestamp[bar.timestamp].insert(bar.symbol);
         }
+        
+        // Debug: Log data organization
+        INFO("Data grouping results: " + std::to_string(bars_by_time.size()) + " unique timestamps");
+        for (const auto& [symbol, count] : symbol_counts) {
+            DEBUG("Symbol " + symbol + " has " + std::to_string(count) + " bars");
+        }
+        
+        // Check if we have proper cross-sectional data
+        int perfect_timestamps = 0;
+        int expected_symbols = symbol_counts.size();
+        for (const auto& [timestamp, symbols] : symbols_per_timestamp) {
+            if (symbols.size() == expected_symbols) {
+                perfect_timestamps++;
+            }
+            if (symbols_per_timestamp.size() <= 5) { // Only log first 5 to avoid spam
+                DEBUG("Timestamp " + std::to_string(std::chrono::duration_cast<std::chrono::seconds>(timestamp.time_since_epoch()).count()) + 
+                      " has " + std::to_string(symbols.size()) + " symbols");
+            }
+        }
+        INFO("Perfect cross-sectional timestamps: " + std::to_string(perfect_timestamps) + "/" + std::to_string(bars_by_time.size()));
         
         // Process bars in chronological order
         for (const auto& [timestamp, bars] : bars_by_time) {
@@ -380,7 +406,7 @@ Result<BacktestResults> BacktestEngine::run_portfolio(
 
         // Share the risk manager with the portfolio manager if available
         if (risk_manager_ && portfolio) {
-            portfolio->set_risk_manager(risk_manager_.get());
+            portfolio->set_risk_manager(std::shared_ptr<RiskManager>(risk_manager_.get(), [](RiskManager*){}));
         }
         
         // Load historical market data
@@ -409,7 +435,7 @@ Result<BacktestResults> BacktestEngine::run_portfolio(
         
         // Get initial portfolio config
         const auto& portfolio_config = portfolio->get_config();
-        double initial_capital = portfolio_config.total_capital - portfolio_config.reserve_capital;
+        double initial_capital = static_cast<double>(portfolio_config.total_capital - portfolio_config.reserve_capital);
 
         // Initialize equity curve with starting point
         equity_curve.emplace_back(config_.strategy_config.start_date, initial_capital);
@@ -558,14 +584,14 @@ Result<void> BacktestEngine::process_bar(
         for (const auto& [symbol, new_pos] : new_positions) {
             const auto current_it = current_positions.find(symbol);
             double current_qty = (current_it != current_positions.end()) ? 
-            current_it->second.quantity : 0.0;
+            static_cast<double>(current_it->second.quantity) : 0.0;
             
-            if (std::abs(new_pos.quantity - current_qty) > 1e-6) {
+            if (std::abs(static_cast<double>(new_pos.quantity) - current_qty) > 1e-6) {
                 // Find latest price for symbol
                 double latest_price = 0.0;
                 for (const auto& bar : bars) {
                     if (bar.symbol == symbol) {
-                        latest_price = bar.close;
+                        latest_price = static_cast<double>(bar.close);
                         break;
                     }
                 }
@@ -575,7 +601,7 @@ Result<void> BacktestEngine::process_bar(
                 }
                 
                 // Calculate trade size
-                double trade_size = new_pos.quantity - current_qty;
+                double trade_size = static_cast<double>(new_pos.quantity) - current_qty;
                 Side side = trade_size > 0 ? Side::BUY : Side::SELL;
                 
                 // Apply slippage to price
@@ -598,7 +624,7 @@ Result<void> BacktestEngine::process_bar(
                     );
                 } else {
                     // Apply basic slippage model
-                    double slip_factor = config_.strategy_config.slippage_model / 10000.0;  // bps to decimal
+                    double slip_factor = static_cast<double>(config_.strategy_config.slippage_model) / 10000.0;  // bps to decimal
                     fill_price = side == Side::BUY ? 
                                latest_price * (1.0 + slip_factor) : 
                                latest_price * (1.0 - slip_factor);
@@ -610,10 +636,10 @@ Result<void> BacktestEngine::process_bar(
                 exec.exec_id = "EX-" + std::to_string(equity_curve.size());
                 exec.symbol = symbol;
                 exec.side = side;
-                exec.filled_quantity = std::abs(trade_size);
+                exec.filled_quantity = Quantity(std::abs(trade_size));
                 exec.fill_price = fill_price;
                 exec.fill_time = bars[0].timestamp; // Use timestamp of current batch
-                exec.commission = calculate_transaction_costs(exec);
+                exec.commission = Decimal(calculate_transaction_costs(exec));
                 exec.is_partial = false;
 
                 // Update position
@@ -631,20 +657,20 @@ Result<void> BacktestEngine::process_bar(
         }
 
         // Calculate current portfolio value
-        double portfolio_value = config_.portfolio_config.initial_capital;
+        double portfolio_value = static_cast<double>(config_.portfolio_config.initial_capital);
         for (const auto& [symbol, pos] : current_positions) {
             // Find latest price for symbol
             double latest_price = 0.0;
             for (const auto& bar : bars) {
                 if (bar.symbol == symbol) {
-                    latest_price = bar.close;
+                    latest_price = static_cast<double>(bar.close);
                     break;
                 }
             }
             
-            if (latest_price > 0.0 && pos.average_price > 0.0) {
+            if (latest_price > 0.0 && static_cast<double>(pos.average_price) > 0.0) {
                 // Calculate P&L: quantity * (current_price - entry_price)
-                double pnl = pos.quantity * (latest_price - pos.average_price);
+                double pnl = static_cast<double>(pos.quantity) * (latest_price - static_cast<double>(pos.average_price));
                 portfolio_value += pnl;
             }
         }
@@ -675,7 +701,7 @@ Result<void> BacktestEngine::process_bar(
                 WARN("Risk limits exceeded: scaling positions by " + std::to_string(scale));
                 
                 for (auto& [symbol, pos] : current_positions) {
-                    pos.quantity *= scale;
+                    pos.quantity = Quantity(static_cast<double>(pos.quantity) * scale);
                 }
             }
         }
@@ -689,8 +715,8 @@ Result<void> BacktestEngine::process_bar(
             // Extract positions and costs
             for (const auto& [symbol, pos] : current_positions) {
                 symbols.push_back(symbol);
-                current_pos.push_back(pos.quantity);
-                target_pos.push_back(pos.quantity); // Use current as starting point
+                current_pos.push_back(static_cast<double>(pos.quantity));
+                target_pos.push_back(static_cast<double>(pos.quantity)); // Use current as starting point
                 
                 // Default cost is 1.0, can be refined with specific costs per symbol
                 costs.push_back(1.0);
@@ -722,7 +748,7 @@ Result<void> BacktestEngine::process_bar(
                 // Apply optimized positions
                 const auto& optimized = opt_result.value().positions;
                 for (size_t i = 0; i < symbols.size(); ++i) {
-                    current_positions[symbols[i]].quantity = optimized[i];
+                    current_positions[symbols[i]].quantity = Quantity(optimized[i]);
                 }
                 
                 DEBUG("Positions optimized with tracking error: " + 
@@ -765,14 +791,14 @@ Result<void> BacktestEngine::process_strategy_signals(
         for (const auto& [symbol, new_pos] : new_positions) {
             const auto current_it = current_positions.find(symbol);
             double current_qty = (current_it != current_positions.end()) ? 
-            current_it->second.quantity : 0.0;
+            static_cast<double>(current_it->second.quantity) : 0.0;
             
-            if (std::abs(new_pos.quantity - current_qty) > 1e-6) {
+            if (std::abs(static_cast<double>(new_pos.quantity) - current_qty) > 1e-6) {
                 // Find latest price for symbol
                 double latest_price = 0.0;
                 for (const auto& bar : bars) {
                     if (bar.symbol == symbol) {
-                        latest_price = bar.close;
+                        latest_price = static_cast<double>(bar.close);
                         break;
                     }
                 }
@@ -782,7 +808,7 @@ Result<void> BacktestEngine::process_strategy_signals(
                 }
                 
                 // Calculate trade size
-                double trade_size = new_pos.quantity - current_qty;
+                double trade_size = static_cast<double>(new_pos.quantity) - current_qty;
                 Side side = trade_size > 0 ? Side::BUY : Side::SELL;
                 
                 // Apply slippage to price
@@ -805,7 +831,7 @@ Result<void> BacktestEngine::process_strategy_signals(
                     );
                 } else {
                     // Apply basic slippage model
-                    double slip_factor = config_.strategy_config.slippage_model / 10000.0;  // bps to decimal
+                    double slip_factor = static_cast<double>(config_.strategy_config.slippage_model) / 10000.0;  // bps to decimal
                     fill_price = side == Side::BUY ? 
                                latest_price * (1.0 + slip_factor) : 
                                latest_price * (1.0 - slip_factor);
@@ -817,10 +843,10 @@ Result<void> BacktestEngine::process_strategy_signals(
                 exec.exec_id = "EX-" + std::to_string(equity_curve.size());
                 exec.symbol = symbol;
                 exec.side = side;
-                exec.filled_quantity = std::abs(trade_size);
+                exec.filled_quantity = Quantity(std::abs(trade_size));
                 exec.fill_price = fill_price;
                 exec.fill_time = bars[0].timestamp; // Use timestamp of current batch
-                exec.commission = calculate_transaction_costs(exec);
+                exec.commission = Decimal(calculate_transaction_costs(exec));
                 exec.is_partial = false;
 
                 // Update position
@@ -839,20 +865,20 @@ Result<void> BacktestEngine::process_strategy_signals(
         }
 
         // Calculate current portfolio value
-        double portfolio_value = config_.portfolio_config.initial_capital;
+        double portfolio_value = static_cast<double>(config_.portfolio_config.initial_capital);
         for (const auto& [symbol, pos] : current_positions) {
             // Find latest price for symbol
             double latest_price = 0.0;
             for (const auto& bar : bars) {
                 if (bar.symbol == symbol) {
-                    latest_price = bar.close;
+                    latest_price = static_cast<double>(bar.close);
                     break;
                 }
             }
             
-            if (latest_price > 0.0 && pos.average_price > 0.0) {
+            if (latest_price > 0.0 && static_cast<double>(pos.average_price) > 0.0) {
                 // Calculate P&L: quantity * (current_price - entry_price)
-                double pnl = pos.quantity * (latest_price - pos.average_price);
+                double pnl = static_cast<double>(pos.quantity) * (latest_price - static_cast<double>(pos.average_price));
                 portfolio_value += pnl;
             }
         }
@@ -902,7 +928,7 @@ Result<void> BacktestEngine::apply_portfolio_constraints(
                 WARN("Risk limits exceeded: scaling positions by " + std::to_string(scale));
                 
                 for (auto& [symbol, pos] : current_positions) {
-                    pos.quantity *= scale;
+                    pos.quantity = Quantity(static_cast<double>(pos.quantity) * scale);
                 }
             }
         }
@@ -916,8 +942,8 @@ Result<void> BacktestEngine::apply_portfolio_constraints(
             // Extract positions and costs
             for (const auto& [symbol, pos] : current_positions) {
                 symbols.push_back(symbol);
-                current_pos.push_back(pos.quantity);
-                target_pos.push_back(pos.quantity); // Use current as starting point
+                current_pos.push_back(static_cast<double>(pos.quantity));
+                target_pos.push_back(static_cast<double>(pos.quantity)); // Use current as starting point
                 
                 // Default cost is 1.0, can be refined with specific costs per symbol
                 costs.push_back(1.0);
@@ -949,7 +975,7 @@ Result<void> BacktestEngine::apply_portfolio_constraints(
                 // Apply optimized positions
                 const auto& optimized = opt_result.value().positions;
                 for (size_t i = 0; i < symbols.size(); ++i) {
-                    current_positions[symbols[i]].quantity = optimized[i];
+                    current_positions[symbols[i]].quantity = Quantity(optimized[i]);
                 }
                 
                 DEBUG("Positions optimized with tracking error: " + 
@@ -987,11 +1013,11 @@ void BacktestEngine::combine_strategy_positions(
                 portfolio_positions[symbol].quantity += pos.quantity;
                 
                 // Update average price based on quantities
-                double total_quantity = portfolio_positions[symbol].quantity;
+                double total_quantity = static_cast<double>(portfolio_positions[symbol].quantity);
                 if (std::abs(total_quantity) > 1e-6) {
                     portfolio_positions[symbol].average_price = 
-                        (portfolio_positions[symbol].average_price * (total_quantity - pos.quantity) +
-                         pos.average_price * pos.quantity) / total_quantity;
+                        Decimal((static_cast<double>(portfolio_positions[symbol].average_price) * (total_quantity - static_cast<double>(pos.quantity)) +
+                         static_cast<double>(pos.average_price) * static_cast<double>(pos.quantity)) / total_quantity);
                 }
             }
         }
@@ -1008,7 +1034,7 @@ void BacktestEngine::redistribute_positions(
     std::unordered_map<std::string, double> total_quantities;
     for (const auto& strategy_pos_map : strategy_positions) {
         for (const auto& [symbol, pos] : strategy_pos_map) {
-            total_quantities[symbol] += std::abs(pos.quantity);
+            total_quantities[symbol] += std::abs(static_cast<double>(pos.quantity));
         }
     }
     
@@ -1020,23 +1046,23 @@ void BacktestEngine::redistribute_positions(
             // Calculate the original ratio this strategy had of this symbol
             double original_ratio = 0.0;
             if (total_quantities[symbol] > 1e-6) {
-                original_ratio = std::abs(pos.quantity) / total_quantities[symbol];
+                original_ratio = std::abs(static_cast<double>(pos.quantity)) / total_quantities[symbol];
             }
             
             // Get the new portfolio position
             auto portfolio_it = portfolio_positions.find(symbol);
             if (portfolio_it != portfolio_positions.end()) {
                 // Update the strategy position based on the ratio
-                double new_quantity = portfolio_it->second.quantity * original_ratio;
-                if (pos.quantity < 0) {
+                double new_quantity = static_cast<double>(portfolio_it->second.quantity) * original_ratio;
+                if (static_cast<double>(pos.quantity) < 0) {
                     // Maintain original direction (long/short)
                     new_quantity = -std::abs(new_quantity);
                 }
                 
-                pos.quantity = new_quantity;
+                pos.quantity = Quantity(new_quantity);
             } else {
                 // Symbol no longer in portfolio, zero out
-                pos.quantity = 0.0;
+                pos.quantity = Quantity(0.0);
             }
         }
         
@@ -1093,8 +1119,16 @@ Result<void> BacktestEngine::process_portfolio_data(
         
         // Process market data through portfolio manager
         try {
+            DEBUG("Processing market data for " + std::to_string(bars.size()) + " symbols at timestamp " + 
+                  std::to_string(std::chrono::duration_cast<std::chrono::seconds>(timestamp.time_since_epoch()).count()));
+            for (const auto& bar : bars) {
+                DEBUG("Market data: " + bar.symbol + " close=" + std::to_string(static_cast<double>(bar.close)) +
+                      " volume=" + std::to_string(static_cast<double>(bar.volume)));
+            }
+            
             auto data_result = portfolio->process_market_data(bars);
             if (data_result.is_error()) {
+                ERROR("Portfolio process_market_data failed: " + std::string(data_result.error()->what()));
                 return data_result;
             }
         } catch (const std::exception& e) {
@@ -1109,6 +1143,14 @@ Result<void> BacktestEngine::process_portfolio_data(
         std::vector<ExecutionReport> period_executions;
         try {
             period_executions = portfolio->get_recent_executions();
+            DEBUG("Period executions count: " + std::to_string(period_executions.size()));
+            for (const auto& exec : period_executions) {
+                DEBUG("Execution: symbol=" + exec.symbol + ", side=" + (exec.side == Side::BUY ? "BUY" : "SELL") + 
+                      ", qty=" + std::to_string(static_cast<double>(exec.filled_quantity)) +
+                      ", price=" + std::to_string(static_cast<double>(exec.fill_price)));
+            }
+            // CRITICAL FIX: Clear executions immediately after retrieval to prevent accumulation
+            portfolio->clear_execution_history();
         } catch (const std::exception& e) {
             WARN("Exception getting recent executions: " + std::string(e.what()) + 
                  ". Continuing with empty executions list.");
@@ -1130,23 +1172,23 @@ Result<void> BacktestEngine::process_portfolio_data(
                     }
                     
                     double adjusted_price = slippage_model_->calculate_slippage(
-                        exec.fill_price, 
-                        exec.filled_quantity, 
+                        static_cast<double>(exec.fill_price), 
+                        static_cast<double>(exec.filled_quantity), 
                         exec.side,
                         symbol_bar
                     );
                     
-                    exec.fill_price = adjusted_price;
+                    exec.fill_price = Price(adjusted_price);
                 } else {
                     // Apply basic slippage model
-                    double slip_factor = config_.strategy_config.slippage_model / 10000.0;
+                    double slip_factor = static_cast<double>(config_.strategy_config.slippage_model) / 10000.0;
                     exec.fill_price = exec.side == Side::BUY ? 
-                                   exec.fill_price * (1.0 + slip_factor) : 
-                                   exec.fill_price * (1.0 - slip_factor);
+                                   Price(static_cast<double>(exec.fill_price) * (1.0 + slip_factor)) : 
+                                   Price(static_cast<double>(exec.fill_price) * (1.0 - slip_factor));
                 }
                 
                 // Calculate and add commission
-                exec.commission = calculate_transaction_costs(exec);
+                exec.commission = Decimal(calculate_transaction_costs(exec));
                 
                 // Add to overall executions list
                 executions.push_back(exec);
@@ -1157,10 +1199,32 @@ Result<void> BacktestEngine::process_portfolio_data(
             }
         }
         
+        // CRITICAL FIX: Feed executions back to strategies to update position P&L
+        for (const auto& exec : period_executions) {
+            try {
+                
+                // Get strategies from portfolio manager and update their positions
+                auto strategies = portfolio->get_strategies();
+                for (auto strategy_ptr : strategies) {
+                    auto execution_result = strategy_ptr->on_execution(exec);
+                    if (execution_result.is_error()) {
+                        WARN("Failed to process execution for strategy, symbol " + exec.symbol + 
+                             ": " + execution_result.error()->to_string());
+                    }
+                }
+            } catch (const std::exception& e) {
+                WARN("Exception feeding execution back to strategies for symbol " + exec.symbol + 
+                     ": " + std::string(e.what()));
+            }
+        }
+        
+        // Note: Portfolio manager will now read positions directly from strategies 
+        // via the modified get_positions_internal() method
+        
         // Create price map for portfolio value calculation
         std::unordered_map<std::string, double> current_prices;
         for (const auto& bar : bars) {
-            current_prices[bar.symbol] = bar.close;
+            current_prices[bar.symbol] = static_cast<double>(bar.close);
         }
         
         // Calculate portfolio value and update equity curve
@@ -1168,13 +1232,30 @@ Result<void> BacktestEngine::process_portfolio_data(
         try {
             portfolio_value = portfolio->get_portfolio_value(current_prices);
             equity_curve.emplace_back(timestamp, portfolio_value);
+            
+            // Debug: Log portfolio value periodically (every 10 periods)
+            static int debug_counter = 0;
+            if (++debug_counter % 10 == 0) {
+                auto portfolio_positions = portfolio->get_portfolio_positions();
+                DEBUG("Portfolio value at period " + std::to_string(debug_counter) + ": $" + 
+                      std::to_string(portfolio_value) + ", positions: " + 
+                      std::to_string(portfolio_positions.size()));
+                
+                // Log detailed position information
+                for (const auto& [symbol, pos] : portfolio_positions) {
+                    DEBUG("Position " + symbol + ": qty=" + std::to_string(static_cast<double>(pos.quantity)) + 
+                          ", avg_price=" + std::to_string(static_cast<double>(pos.average_price)) +
+                          ", realized_pnl=" + std::to_string(static_cast<double>(pos.realized_pnl)) +
+                          ", unrealized_pnl=" + std::to_string(static_cast<double>(pos.unrealized_pnl)));
+                }
+            }
         } catch (const std::exception& e) {
             WARN("Exception calculating portfolio value: " + std::string(e.what()) + 
                  ". Using previous value for equity curve.");
                  
             // Use previous value if available, otherwise use initial capital
             double last_value = equity_curve.empty() ? 
-                config_.portfolio_config.initial_capital : 
+                static_cast<double>(config_.portfolio_config.initial_capital) : 
                 equity_curve.back().second;
                 
             equity_curve.emplace_back(timestamp, last_value);
@@ -1199,13 +1280,7 @@ Result<void> BacktestEngine::process_portfolio_data(
             }
         }
 
-        // Clear the portfolio's execution history to prevent duplicate processing
-        try {
-            portfolio->clear_execution_history();
-        } catch (const std::exception& e) {
-            WARN("Exception clearing execution history: " + std::string(e.what()));
-            // Non-critical error, can continue
-        }
+        // Execution history already cleared after retrieval to prevent accumulation
         
         return Result<void>();
         
@@ -1326,10 +1401,21 @@ Result<std::vector<Bar>> BacktestEngine::load_market_data() const {
                     );
                 }
 
-                all_bars.insert(all_bars.end(), batch_bars.begin(), batch_bars.end());
-                
+                // Debug: Log first few bars to understand data ordering
                 INFO("Loaded " + std::to_string(batch_bars.size()) + " bars for symbols batch " + 
                      std::to_string(i) + "-" + std::to_string(end_idx));
+                
+                if (!batch_bars.empty()) {
+                    DEBUG("First 3 bars from this batch:");
+                    for (size_t j = 0; j < std::min(size_t(3), batch_bars.size()); ++j) {
+                        const auto& bar = batch_bars[j];
+                        DEBUG("  Bar " + std::to_string(j) + ": " + bar.symbol + " at " + 
+                              std::to_string(std::chrono::duration_cast<std::chrono::seconds>(bar.timestamp.time_since_epoch()).count()) +
+                              " close=" + std::to_string(static_cast<double>(bar.close)));
+                    }
+                }
+
+                all_bars.insert(all_bars.end(), batch_bars.begin(), batch_bars.end());
             }
             catch (const std::exception& e) {
                 WARN("Exception loading data for symbols batch " + std::to_string(i) + "-" + 
@@ -1354,11 +1440,11 @@ Result<std::vector<Bar>> BacktestEngine::load_market_data() const {
         
         for (const auto& bar : all_bars) {
             if (min_prices.find(bar.symbol) == min_prices.end()) {
-                min_prices[bar.symbol] = bar.close;
-                max_prices[bar.symbol] = bar.close;
+                min_prices[bar.symbol] = static_cast<double>(bar.close);
+                max_prices[bar.symbol] = static_cast<double>(bar.close);
             } else {
-                min_prices[bar.symbol] = std::min(min_prices[bar.symbol], bar.close);
-                max_prices[bar.symbol] = std::max(max_prices[bar.symbol], bar.close);
+                min_prices[bar.symbol] = std::min(min_prices[bar.symbol], static_cast<double>(bar.close));
+                max_prices[bar.symbol] = std::max(max_prices[bar.symbol], static_cast<double>(bar.close));
             }
         }
         
@@ -1397,12 +1483,12 @@ double BacktestEngine::calculate_transaction_costs(
     const ExecutionReport& execution) const {
     
     // Base commission
-    double commission = execution.filled_quantity * 
-                       config_.strategy_config.commission_rate;
+    double commission = static_cast<double>(execution.filled_quantity) * 
+                       static_cast<double>(config_.strategy_config.commission_rate);
 
     // Add market impact based on size (simplified model)
-    double market_impact = execution.filled_quantity * 
-                          execution.fill_price * 
+    double market_impact = static_cast<double>(execution.filled_quantity) * 
+                          static_cast<double>(execution.fill_price) * 
                           0.0005;  // 5 basis points
 
     double fixed_cost = 1.0;  // Fixed cost per trade
@@ -1416,7 +1502,7 @@ double BacktestEngine::apply_slippage(
     Side side) const {
     
     // Apply basic slippage model
-    double slip_factor = config_.strategy_config.slippage_model / 10000.0;  // Convert bps to decimal
+    double slip_factor = static_cast<double>(config_.strategy_config.slippage_model) / 10000.0;  // Convert bps to decimal
     
     if (side == Side::BUY) {
         return price * (1.0 + slip_factor);
@@ -1432,6 +1518,11 @@ BacktestResults BacktestEngine::calculate_metrics(
     BacktestResults results;
     
     if (equity_curve.empty()) return results;
+    
+    // Debug: Log equity curve info
+    DEBUG("Equity curve size: " + std::to_string(equity_curve.size()) + 
+          ", start value: $" + std::to_string(equity_curve.front().second) + 
+          ", end value: $" + std::to_string(equity_curve.back().second));
 
     // Calculate returns
     std::vector<double> returns;
@@ -1471,32 +1562,71 @@ BacktestResults BacktestEngine::calculate_metrics(
         }
     }
 
-    double downside_dev = downside_count > 0 ? 
-        std::sqrt(downside_sum / downside_count) * std::sqrt(252.0) : 1e-6;
+    if (downside_count > 0) {
+        double downside_dev = std::sqrt(downside_sum / downside_count) * std::sqrt(252.0);
+        results.sortino_ratio = (mean_return * 252.0) / downside_dev;
+    } else {
+        // No negative returns means infinite Sortino ratio, but cap it at a reasonable value
+        results.sortino_ratio = (mean_return * 252.0) >= 0 ? 999.0 : 0.0;
+    }
 
-    results.sortino_ratio = (mean_return * 252.0) / downside_dev;
-
-    // Trading metrics
-    results.total_trades = static_cast<int>(executions.size());
+    // Trading metrics - track positions to calculate proper P&L
+    std::unordered_map<std::string, double> positions; // symbol -> net position
+    std::unordered_map<std::string, double> avg_prices; // symbol -> average entry price
+    std::vector<double> trade_pnls; // individual trade P&Ls
     
     double total_profit = 0.0;
     double total_loss = 0.0;
     int winning_trades = 0;
     
     for (const auto& exec : executions) {
-        double pnl = exec.side == Side::BUY ? 
-            -exec.fill_price * exec.filled_quantity - exec.commission :
-            exec.fill_price * exec.filled_quantity - exec.commission;
-
-        if (pnl > 0) {
-            total_profit += pnl;
-            winning_trades++;
-            results.max_win = std::max(results.max_win, pnl);
+        const std::string& symbol = exec.symbol;
+        double fill_price = static_cast<double>(exec.fill_price);
+        double quantity = static_cast<double>(exec.filled_quantity);
+        double commission = static_cast<double>(exec.commission);
+        
+        // Adjust quantity based on side (BUY = positive, SELL = negative)
+        double signed_qty = (exec.side == Side::BUY) ? quantity : -quantity;
+        
+        double current_pos = positions[symbol];
+        double trade_pnl = -commission; // Start with commission cost
+        
+        if (current_pos == 0.0) {
+            // Opening new position
+            positions[symbol] = signed_qty;
+            avg_prices[symbol] = fill_price;
+        } else if ((current_pos > 0 && signed_qty > 0) || (current_pos < 0 && signed_qty < 0)) {
+            // Adding to existing position - calculate new average price
+            double total_value = current_pos * avg_prices[symbol] + signed_qty * fill_price;
+            positions[symbol] = current_pos + signed_qty;
+            if (positions[symbol] != 0.0) {
+                avg_prices[symbol] = total_value / positions[symbol];
+            }
         } else {
-            total_loss -= pnl;
-            results.max_loss = std::max(results.max_loss, -pnl);
+            // Reducing or closing position - realize P&L
+            double close_qty = std::min(std::abs(signed_qty), std::abs(current_pos));
+            trade_pnl += close_qty * (fill_price - avg_prices[symbol]) * (current_pos > 0 ? 1.0 : -1.0);
+            
+            positions[symbol] = current_pos + signed_qty;
+            // Keep same average price for remaining position
+        }
+        
+        // Count all trades that close positions (have realized P&L)
+        if (std::abs(signed_qty) > 1e-6 && current_pos != 0.0 && 
+            ((current_pos > 0 && signed_qty < 0) || (current_pos < 0 && signed_qty > 0))) {
+            trade_pnls.push_back(trade_pnl);
+            if (trade_pnl > 0) {
+                total_profit += trade_pnl;
+                winning_trades++;
+                results.max_win = std::max(results.max_win, trade_pnl);
+            } else {
+                total_loss -= trade_pnl; // total_loss is positive
+                results.max_loss = std::max(results.max_loss, -trade_pnl);
+            }
         }
     }
+    
+    results.total_trades = static_cast<int>(trade_pnls.size());
 
     if (results.total_trades > 0) {
         results.win_rate = static_cast<double>(winning_trades) / results.total_trades;
@@ -1517,6 +1647,9 @@ BacktestResults BacktestEngine::calculate_metrics(
             drawdowns.end(),
             [](const auto& a, const auto& b) { return a.second < b.second; }
         )->second;
+        results.drawdown_curve = drawdowns;
+    } else {
+        results.max_drawdown = 0.0;
     }
 
     // Calculate Calmar ratio
@@ -1551,14 +1684,44 @@ BacktestResults BacktestEngine::calculate_metrics(
         results.monthly_returns[month] = ret;
     }
     
-    // Calculate per-symbol P&L
+    // Calculate per-symbol P&L using the same position tracking logic
+    std::unordered_map<std::string, double> symbol_positions; // symbol -> net position
+    std::unordered_map<std::string, double> symbol_avg_prices; // symbol -> average entry price
     std::map<std::string, double> symbol_pnl_map;
+    
     for (const auto& exec : executions) {
-        double trade_pnl = exec.side == Side::BUY ? 
-            -exec.fill_price * exec.filled_quantity - exec.commission :
-            exec.fill_price * exec.filled_quantity - exec.commission;
+        const std::string& symbol = exec.symbol;
+        double fill_price = static_cast<double>(exec.fill_price);
+        double quantity = static_cast<double>(exec.filled_quantity);
+        double commission = static_cast<double>(exec.commission);
+        
+        // Adjust quantity based on side (BUY = positive, SELL = negative)
+        double signed_qty = (exec.side == Side::BUY) ? quantity : -quantity;
+        
+        double current_pos = symbol_positions[symbol];
+        double trade_pnl = -commission; // Start with commission cost
+        
+        if (current_pos == 0.0) {
+            // Opening new position
+            symbol_positions[symbol] = signed_qty;
+            symbol_avg_prices[symbol] = fill_price;
+        } else if ((current_pos > 0 && signed_qty > 0) || (current_pos < 0 && signed_qty < 0)) {
+            // Adding to existing position - calculate new average price
+            double total_value = current_pos * symbol_avg_prices[symbol] + signed_qty * fill_price;
+            symbol_positions[symbol] = current_pos + signed_qty;
+            if (symbol_positions[symbol] != 0.0) {
+                symbol_avg_prices[symbol] = total_value / symbol_positions[symbol];
+            }
+        } else {
+            // Reducing or closing position - realize P&L
+            double close_qty = std::min(std::abs(signed_qty), std::abs(current_pos));
+            trade_pnl += close_qty * (fill_price - symbol_avg_prices[symbol]) * (current_pos > 0 ? 1.0 : -1.0);
             
-        symbol_pnl_map[exec.symbol] += trade_pnl;
+            symbol_positions[symbol] = current_pos + signed_qty;
+            // Keep same average price for remaining position
+        }
+        
+        symbol_pnl_map[symbol] += trade_pnl;
     }
     
     for (const auto& [symbol, pnl] : symbol_pnl_map) {
@@ -1687,7 +1850,7 @@ Result<void> BacktestEngine::save_results_to_db(
 
             
         // Format the configuration as JSON for storage
-        std::string config_json = "{\"initial_capital\": " + std::to_string(config_.portfolio_config.initial_capital) + 
+        std::string config_json = "{\"initial_capital\": " + std::to_string(static_cast<double>(config_.portfolio_config.initial_capital)) + 
                                  ", \"symbols\": [";
                                  
         for (size_t i = 0; i < config_.strategy_config.symbols.size(); ++i) {
@@ -1797,14 +1960,14 @@ Result<void> BacktestEngine::save_results_to_db(
             // Save final positions
             std::vector<std::string> position_values;
             for (const auto& pos : results.positions) {
-                if (std::abs(pos.quantity) < 1e-6) continue; // Skip empty positions
+                if (std::abs(static_cast<double>(pos.quantity)) < 1e-6) continue; // Skip empty positions
                 
                 std::string value = "('" + actual_run_id + "', '" + 
                                   pos.symbol + "', " + 
-                                  std::to_string(pos.quantity) + ", " + 
-                                  std::to_string(pos.average_price) + ", " + 
-                                  std::to_string(pos.unrealized_pnl) + ", " + 
-                                  std::to_string(pos.realized_pnl) + ")";
+                                  std::to_string(static_cast<double>(pos.quantity)) + ", " + 
+                                  std::to_string(static_cast<double>(pos.average_price)) + ", " + 
+                                  std::to_string(static_cast<double>(pos.unrealized_pnl)) + ", " + 
+                                  std::to_string(static_cast<double>(pos.realized_pnl)) + ")";
                                   
                 position_values.push_back(value);
             }
@@ -1920,7 +2083,7 @@ Result<void> BacktestEngine::save_results_to_csv(
                          << "downside_volatility,config\n";
             
             // Format the configuration as JSON for storage
-            std::string config_json = "{\"initial_capital\": " + std::to_string(config_.portfolio_config.initial_capital) + 
+            std::string config_json = "{\"initial_capital\": " + std::to_string(static_cast<double>(config_.portfolio_config.initial_capital)) + 
                                      ", \"symbols\": [";
                                      
             for (size_t i = 0; i < config_.strategy_config.symbols.size(); ++i) {
@@ -2034,7 +2197,7 @@ Result<void> BacktestEngine::save_results_to_csv(
                     
                     // Write data rows
                     for (const auto& pos : results.positions) {
-                        if (std::abs(pos.quantity) < 1e-6) continue; // Skip empty positions
+                        if (std::abs(static_cast<double>(pos.quantity)) < 1e-6) continue; // Skip empty positions
                         
                         positions_file << actual_run_id << ","
                                      << pos.symbol << ","

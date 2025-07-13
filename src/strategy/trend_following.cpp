@@ -13,7 +13,7 @@ TrendFollowingStrategy::TrendFollowingStrategy(
     StrategyConfig config,
     TrendFollowingConfig trend_config,
     std::shared_ptr<PostgresDatabase> db, 
-    InstrumentRegistry* registry) :
+    std::shared_ptr<InstrumentRegistry> registry) :
     BaseStrategy(std::move(id), std::move(config), std::move(db)),
     trend_config_(std::move(trend_config)),
     registry_(registry) {
@@ -170,7 +170,7 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
 
             // Update price history
             for (const auto& bar : symbol_bars) {
-                instrument_data.price_history.push_back(bar.close);
+                instrument_data.price_history.push_back(static_cast<double>(bar.close));
             }
 
             // Wait for enough data before processing
@@ -357,14 +357,14 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
                     
                     // Use previous position or zero
                     auto pos_it = positions_.find(symbol);
-                    final_position = (pos_it != positions_.end()) ? pos_it->second.quantity : 0.0;
+                    final_position = (pos_it != positions_.end()) ? static_cast<double>(pos_it->second.quantity) : 0.0;
                 }                
             } catch (const std::exception& e) {
                 WARN("Position buffering exception for " + symbol + ": " + e.what());
                 
                 // Use previous position or zero as fallback
                 auto pos_it = positions_.find(symbol);
-                final_position = (pos_it != positions_.end()) ? pos_it->second.quantity : 0.0;
+                final_position = (pos_it != positions_.end()) ? static_cast<double>(pos_it->second.quantity) : 0.0;
             }
 
             instrument_data.final_position = final_position;
@@ -955,7 +955,7 @@ double TrendFollowingStrategy::apply_position_buffer(
     double current_position = 0.0;
     auto pos_it = positions_.find(symbol);
     if (pos_it != positions_.end()) {
-        current_position = pos_it->second.quantity;
+        current_position = static_cast<double>(pos_it->second.quantity);
         
         // Sanity check on current position
         if (std::isnan(current_position) || std::isinf(current_position)) {

@@ -48,6 +48,18 @@ enum class ErrorCode {
     // Market data errors
     MARKET_DATA_ERROR = 19,
     
+    // File and I/O errors
+    FILE_NOT_FOUND = 20,
+    FILE_IO_ERROR = 21,
+    PERMISSION_ERROR = 22,
+    
+    // JSON and parsing errors
+    JSON_PARSE_ERROR = 23,
+    
+    // Security and encryption errors
+    ENCRYPTION_ERROR = 24,
+    DECRYPTION_ERROR = 25,
+    
     // Custom error range
     CUSTOM_ERROR_START = 1000
 };

@@ -116,11 +116,18 @@ Result<std::shared_ptr<arrow::Table>> PostgresDatabase::get_market_data(
         }
 
         try {
-            std::string query = build_market_data_query(
-                symbols, start_date, end_date, asset_class, freq, data_type);
-
             pqxx::work txn(*connection_);
-            auto result = txn.exec(query);
+            auto query_result = execute_market_data_query(
+                symbols, start_date, end_date, asset_class, freq, data_type, txn);
+            
+            if (query_result.is_error()) {
+                return make_error<std::shared_ptr<arrow::Table>>(
+                    query_result.error()->code(),
+                    query_result.error()->what()
+                );
+            }
+            
+            auto result = query_result.value();
             txn.commit();
 
             // Convert to Arrow table
@@ -175,20 +182,34 @@ Result<void> PostgresDatabase::store_executions(
     try {
         pqxx::work txn(*connection_);
         
+        // Validate table name
+        auto table_validation = validate_table_name(table_name);
+        if (table_validation.is_error()) {
+            return table_validation;
+        }
+        
         for (const auto& exec : executions) {
-            txn.exec_params(
-                "INSERT INTO " + table_name + 
+            // Validate execution data
+            auto exec_validation = validate_execution_report(exec);
+            if (exec_validation.is_error()) {
+                return exec_validation;
+            }
+            
+            std::string query = "INSERT INTO " + table_name + 
                 " (order_id, exec_id, symbol, side, quantity, price, "
                 "execution_time, commission, is_partial) VALUES "
-                "($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+                "($1, $2, $3, $4, $5, $6, $7, $8, $9)";
+            
+            txn.exec_params(
+                query,
                 exec.order_id,
                 exec.exec_id,
                 exec.symbol,
                 side_to_string(exec.side),
-                exec.filled_quantity,
-                exec.fill_price,
+                static_cast<double>(exec.filled_quantity),
+                static_cast<double>(exec.fill_price),
                 format_timestamp(exec.fill_time),
-                exec.commission,
+                static_cast<double>(exec.commission),
                 exec.is_partial
             );
         }
@@ -234,24 +255,39 @@ Result<void> PostgresDatabase::store_positions(
     try {
         pqxx::work txn(*connection_);
         
+        // Validate table name
+        auto table_validation = validate_table_name(table_name);
+        if (table_validation.is_error()) {
+            return table_validation;
+        }
+        
         // Begin transaction
         txn.exec("BEGIN");
         
-        // Clear existing positions
-        txn.exec("DELETE FROM " + table_name);
+        // Clear existing positions using parameterized query
+        std::string delete_query = "DELETE FROM " + table_name;
+        txn.exec(delete_query);
         
         // Insert new positions
         for (const auto& pos : positions) {
-            txn.exec_params(
-                "INSERT INTO " + table_name + 
+            // Validate position data
+            auto pos_validation = validate_position(pos);
+            if (pos_validation.is_error()) {
+                return pos_validation;
+            }
+            
+            std::string query = "INSERT INTO " + table_name + 
                 " (symbol, quantity, average_price, unrealized_pnl, "
                 "realized_pnl, last_update) VALUES "
-                "($1, $2, $3, $4, $5, $6)",
+                "($1, $2, $3, $4, $5, $6)";
+            
+            txn.exec_params(
+                query,
                 pos.symbol,
-                pos.quantity,
-                pos.average_price,
-                pos.unrealized_pnl,
-                pos.realized_pnl,
+                static_cast<double>(pos.quantity),
+                static_cast<double>(pos.average_price),
+                static_cast<double>(pos.unrealized_pnl),
+                static_cast<double>(pos.realized_pnl),
                 format_timestamp(pos.last_update)
             );
         }
@@ -281,13 +317,32 @@ Result<void> PostgresDatabase::store_signals(
     try {
         pqxx::work txn(*connection_);
         
+        // Validate table name and strategy ID
+        auto table_validation = validate_table_name(table_name);
+        if (table_validation.is_error()) {
+            return table_validation;
+        }
+        
+        auto strategy_validation = validate_strategy_id(strategy_id);
+        if (strategy_validation.is_error()) {
+            return strategy_validation;
+        }
+        
         for (const auto& [symbol, signal] : signals) {
-            txn.exec_params(
-                "INSERT INTO " + table_name + 
+            // Validate signal data
+            auto signal_validation = validate_signal_data(symbol, signal);
+            if (signal_validation.is_error()) {
+                return signal_validation;
+            }
+            
+            std::string query = "INSERT INTO " + table_name + 
                 " (strategy_id, symbol, signal_value, timestamp) VALUES "
                 "($1, $2, $3, $4) "
                 "ON CONFLICT (strategy_id, symbol, timestamp) "
-                "DO UPDATE SET signal_value = EXCLUDED.signal_value",
+                "DO UPDATE SET signal_value = EXCLUDED.signal_value";
+            
+            txn.exec_params(
+                query,
                 strategy_id,
                 symbol,
                 signal,
@@ -325,16 +380,25 @@ Result<std::vector<std::string>> PostgresDatabase::get_symbols(
         std::string full_table_name = build_table_name(asset_class, data_type, freq);
         pqxx::work txn(*connection_);
         
-        auto result = txn.exec(
-            "WITH latest_data AS ("
+        // Validate table name components
+        auto table_validation = validate_table_name_components(asset_class, data_type, freq);
+        if (table_validation.is_error()) {
+            return make_error<std::vector<std::string>>(
+                table_validation.error()->code(),
+                table_validation.error()->what()
+            );
+        }
+        
+        std::string query = "WITH latest_data AS ("
             "   SELECT DISTINCT ON (symbol) symbol, time "
             "   FROM " + full_table_name + " "
             "   ORDER BY symbol, time DESC"
             ") "
             "SELECT symbol "
             "FROM latest_data "
-            "ORDER BY symbol"
-        );
+            "ORDER BY symbol";
+        
+        auto result = txn.exec(query);
         
         std::vector<std::string> symbols;
         symbols.reserve(result.size());
@@ -433,33 +497,67 @@ std::string PostgresDatabase::asset_class_to_string(AssetClass asset_class) cons
     }
 }
 
-std::string PostgresDatabase::build_market_data_query(
+Result<pqxx::result> PostgresDatabase::execute_market_data_query(
     const std::vector<std::string>& symbols,
     const Timestamp& start_date,
     const Timestamp& end_date,
     AssetClass asset_class,
     DataFrequency freq,
-    const std::string& data_type) const {
+    const std::string& data_type,
+    pqxx::work& txn) const {
+    
+    // Validate table name components to prevent injection
+    auto table_validation = validate_table_name_components(asset_class, data_type, freq);
+    if (table_validation.is_error()) {
+        return make_error<pqxx::result>(
+            table_validation.error()->code(),
+            table_validation.error()->what()
+        );
+    }
     
     std::string full_table_name = build_table_name(asset_class, data_type, freq);
     
-    std::ostringstream query;
-    query << "SELECT time, symbol, open, high, low, close, volume "
-          << "FROM " << full_table_name
-          << " WHERE time BETWEEN '" << format_timestamp(start_date)
-          << "' AND '" << format_timestamp(end_date) << "'";
-
-    if (!symbols.empty()) {
-        query << " AND symbol IN (";
-        for (size_t i = 0; i < symbols.size(); ++i) {
-            if (i > 0) query << ",";
-            query << "'" << pqxx::to_string(symbols[i]) << "'";
+    // Base query with parameterized timestamps
+    std::string base_query = "SELECT time, symbol, open, high, low, close, volume "
+                            "FROM " + full_table_name + " "
+                            "WHERE time BETWEEN $1 AND $2";
+    
+    std::string start_ts = format_timestamp(start_date);
+    std::string end_ts = format_timestamp(end_date);
+    
+    if (symbols.empty()) {
+        // No symbol filter
+        std::string query = base_query + " ORDER BY time, symbol";
+        try {
+            return Result<pqxx::result>(txn.exec_params(query, start_ts, end_ts));
+        } catch (const std::exception& e) {
+            return make_error<pqxx::result>(
+                ErrorCode::DATABASE_ERROR,
+                "Query execution failed: " + std::string(e.what())
+            );
         }
-        query << ")";
+    } else {
+        // With symbol filter - validate symbols first
+        auto symbol_validation = validate_symbols(symbols);
+        if (symbol_validation.is_error()) {
+            return make_error<pqxx::result>(
+                symbol_validation.error()->code(),
+                symbol_validation.error()->what()
+            );
+        }
+        
+        // Build parameterized query for symbols
+        std::string query = base_query + " AND symbol = ANY($3) ORDER BY time, symbol";
+        
+        try {
+            return Result<pqxx::result>(txn.exec_params(query, start_ts, end_ts, symbols));
+        } catch (const std::exception& e) {
+            return make_error<pqxx::result>(
+                ErrorCode::DATABASE_ERROR,
+                "Query execution failed: " + std::string(e.what())
+            );
+        }
     }
-
-    query << " ORDER BY symbol, time";
-    return query.str();
 }
 
 Result<std::shared_ptr<arrow::Table>> PostgresDatabase::convert_to_arrow_table(
@@ -1024,9 +1122,17 @@ Result<Timestamp> PostgresDatabase::get_latest_data_time(
         std::string full_table_name = build_table_name(asset_class, data_type, freq);
         pqxx::work txn(*connection_);
         
-        auto result = txn.exec1(
-            "SELECT MAX(time) FROM " + full_table_name
-        );
+        // Validate table name components
+        auto table_validation = validate_table_name_components(asset_class, data_type, freq);
+        if (table_validation.is_error()) {
+            return make_error<Timestamp>(
+                table_validation.error()->code(),
+                table_validation.error()->what()
+            );
+        }
+        
+        std::string query = "SELECT MAX(time) FROM " + full_table_name;
+        auto result = txn.exec1(query);
         
         if (result[0].is_null()) {
             return make_error<Timestamp>(
@@ -1071,9 +1177,17 @@ Result<std::pair<Timestamp, Timestamp>> PostgresDatabase::get_data_time_range(
         std::string full_table_name = build_table_name(asset_class, data_type, freq);
         pqxx::work txn(*connection_);
         
-        auto result = txn.exec1(
-            "SELECT MIN(time), MAX(time) FROM " + full_table_name
-        );
+        // Validate table name components
+        auto table_validation = validate_table_name_components(asset_class, data_type, freq);
+        if (table_validation.is_error()) {
+            return make_error<std::pair<Timestamp, Timestamp>>(
+                table_validation.error()->code(),
+                table_validation.error()->what()
+            );
+        }
+        
+        std::string query = "SELECT MIN(time), MAX(time) FROM " + full_table_name;
+        auto result = txn.exec1(query);
         
         if (result[0].is_null() || result[1].is_null()) {
             return make_error<std::pair<Timestamp, Timestamp>>(
@@ -1126,10 +1240,25 @@ Result<size_t> PostgresDatabase::get_data_count(
         std::string full_table_name = build_table_name(asset_class, data_type, freq);
         pqxx::work txn(*connection_);
         
-        auto result = txn.exec1(
-            "SELECT COUNT(*) FROM " + full_table_name +
-            " WHERE symbol = " + txn.quote(symbol)
-        );
+        // Validate table name components and symbol
+        auto table_validation = validate_table_name_components(asset_class, data_type, freq);
+        if (table_validation.is_error()) {
+            return make_error<size_t>(
+                table_validation.error()->code(),
+                table_validation.error()->what()
+            );
+        }
+        
+        auto symbol_validation = validate_symbol(symbol);
+        if (symbol_validation.is_error()) {
+            return make_error<size_t>(
+                symbol_validation.error()->code(),
+                symbol_validation.error()->what()
+            );
+        }
+        
+        std::string query = "SELECT COUNT(*) FROM " + full_table_name + " WHERE symbol = $1";
+        auto result = txn.exec_params1(query, symbol);
         
         return Result<size_t>(result[0].as<size_t>());
 
@@ -1140,6 +1269,271 @@ Result<size_t> PostgresDatabase::get_data_count(
             "PostgresDatabase"
         );
     }
+}
+
+Result<void> PostgresDatabase::validate_table_name_components(
+    AssetClass asset_class,
+    const std::string& data_type,
+    DataFrequency freq) const {
+    
+    // Validate data_type contains only alphanumeric and underscore
+    if (data_type.empty() || data_type.size() > 50) {
+        return make_error<void>(
+            ErrorCode::INVALID_ARGUMENT,
+            "Invalid data_type: must be 1-50 characters",
+            "PostgresDatabase"
+        );
+    }
+    
+    for (char c : data_type) {
+        if (!std::isalnum(c) && c != '_') {
+            return make_error<void>(
+                ErrorCode::INVALID_ARGUMENT,
+                "Invalid data_type: contains non-alphanumeric characters",
+                "PostgresDatabase"
+            );
+        }
+    }
+    
+    // Validate enum values are within range
+    if (static_cast<int>(asset_class) < 0 || static_cast<int>(asset_class) > 10) {
+        return make_error<void>(
+            ErrorCode::INVALID_ARGUMENT,
+            "Invalid asset_class value",
+            "PostgresDatabase"
+        );
+    }
+    
+    if (static_cast<int>(freq) < 0 || static_cast<int>(freq) > 10) {
+        return make_error<void>(
+            ErrorCode::INVALID_ARGUMENT,
+            "Invalid frequency value",
+            "PostgresDatabase"
+        );
+    }
+    
+    return Result<void>();
+}
+
+Result<void> PostgresDatabase::validate_table_name(const std::string& table_name) const {
+    if (table_name.empty() || table_name.size() > 100) {
+        return make_error<void>(
+            ErrorCode::INVALID_ARGUMENT,
+            "Invalid table_name: must be 1-100 characters",
+            "PostgresDatabase"
+        );
+    }
+    
+    // Allow only alphanumeric, underscore, and dot for schema.table format
+    for (char c : table_name) {
+        if (!std::isalnum(c) && c != '_' && c != '.') {
+            return make_error<void>(
+                ErrorCode::INVALID_ARGUMENT,
+                "Invalid table_name: contains invalid characters",
+                "PostgresDatabase"
+            );
+        }
+    }
+    
+    // Prevent SQL injection patterns
+    std::string lower_name = table_name;
+    std::transform(lower_name.begin(), lower_name.end(), lower_name.begin(), ::tolower);
+    
+    std::vector<std::string> forbidden = {
+        "drop", "delete", "insert", "update", "alter", "create", "exec",
+        "union", "select", "script", "--", "/*", "*/"
+    };
+    
+    for (const auto& forbidden_word : forbidden) {
+        if (lower_name.find(forbidden_word) != std::string::npos) {
+            return make_error<void>(
+                ErrorCode::INVALID_ARGUMENT,
+                "Invalid table_name: contains forbidden SQL keywords",
+                "PostgresDatabase"
+            );
+        }
+    }
+    
+    return Result<void>();
+}
+
+Result<void> PostgresDatabase::validate_symbol(const std::string& symbol) const {
+    if (symbol.empty() || symbol.size() > 20) {
+        return make_error<void>(
+            ErrorCode::INVALID_ARGUMENT,
+            "Invalid symbol: must be 1-20 characters",
+            "PostgresDatabase"
+        );
+    }
+    
+    // Allow alphanumeric, underscore, dot, and dash for symbols
+    for (char c : symbol) {
+        if (!std::isalnum(c) && c != '_' && c != '.' && c != '-') {
+            return make_error<void>(
+                ErrorCode::INVALID_ARGUMENT,
+                "Invalid symbol: contains invalid characters",
+                "PostgresDatabase"
+            );
+        }
+    }
+    
+    return Result<void>();
+}
+
+Result<void> PostgresDatabase::validate_symbols(const std::vector<std::string>& symbols) const {
+    if (symbols.size() > 1000) {
+        return make_error<void>(
+            ErrorCode::INVALID_ARGUMENT,
+            "Too many symbols: maximum 1000 allowed",
+            "PostgresDatabase"
+        );
+    }
+    
+    for (const auto& symbol : symbols) {
+        auto validation = validate_symbol(symbol);
+        if (validation.is_error()) {
+            return validation;
+        }
+    }
+    
+    return Result<void>();
+}
+
+Result<void> PostgresDatabase::validate_strategy_id(const std::string& strategy_id) const {
+    if (strategy_id.empty() || strategy_id.size() > 50) {
+        return make_error<void>(
+            ErrorCode::INVALID_ARGUMENT,
+            "Invalid strategy_id: must be 1-50 characters",
+            "PostgresDatabase"
+        );
+    }
+    
+    // Allow alphanumeric, underscore, and dash
+    for (char c : strategy_id) {
+        if (!std::isalnum(c) && c != '_' && c != '-') {
+            return make_error<void>(
+                ErrorCode::INVALID_ARGUMENT,
+                "Invalid strategy_id: contains invalid characters",
+                "PostgresDatabase"
+            );
+        }
+    }
+    
+    return Result<void>();
+}
+
+Result<void> PostgresDatabase::validate_execution_report(const ExecutionReport& exec) const {
+    // Validate symbol
+    auto symbol_validation = validate_symbol(exec.symbol);
+    if (symbol_validation.is_error()) {
+        return symbol_validation;
+    }
+    
+    // Validate order_id and exec_id
+    if (exec.order_id.empty() || exec.order_id.size() > 50) {
+        return make_error<void>(
+            ErrorCode::INVALID_ARGUMENT,
+            "Invalid order_id: must be 1-50 characters",
+            "PostgresDatabase"
+        );
+    }
+    
+    if (exec.exec_id.empty() || exec.exec_id.size() > 50) {
+        return make_error<void>(
+            ErrorCode::INVALID_ARGUMENT,
+            "Invalid exec_id: must be 1-50 characters",
+            "PostgresDatabase"
+        );
+    }
+    
+    // Validate financial values
+    if (exec.filled_quantity.is_negative() || static_cast<double>(exec.filled_quantity) > 1e12) {
+        return make_error<void>(
+            ErrorCode::INVALID_ARGUMENT,
+            "Invalid filled_quantity: must be between 0 and 1e12",
+            "PostgresDatabase"
+        );
+    }
+    
+    if (exec.fill_price.is_negative() || static_cast<double>(exec.fill_price) > 1e12) {
+        return make_error<void>(
+            ErrorCode::INVALID_ARGUMENT,
+            "Invalid fill_price: must be between 0 and 1e12",
+            "PostgresDatabase"
+        );
+    }
+    
+    if (exec.commission.is_negative() || static_cast<double>(exec.commission) > 1e12) {
+        return make_error<void>(
+            ErrorCode::INVALID_ARGUMENT,
+            "Invalid commission: must be between 0 and 1e12",
+            "PostgresDatabase"
+        );
+    }
+    
+    return Result<void>();
+}
+
+Result<void> PostgresDatabase::validate_position(const Position& pos) const {
+    // Validate symbol
+    auto symbol_validation = validate_symbol(pos.symbol);
+    if (symbol_validation.is_error()) {
+        return symbol_validation;
+    }
+    
+    // Validate financial values
+    if (pos.quantity.abs() > Decimal(1e12)) {
+        return make_error<void>(
+            ErrorCode::INVALID_ARGUMENT,
+            "Invalid quantity: absolute value must be less than 1e12",
+            "PostgresDatabase"
+        );
+    }
+    
+    if (pos.average_price.is_negative() || pos.average_price > Decimal(1e12)) {
+        return make_error<void>(
+            ErrorCode::INVALID_ARGUMENT,
+            "Invalid average_price: must be between 0 and 1e12",
+            "PostgresDatabase"
+        );
+    }
+    
+    if (pos.unrealized_pnl.abs() > Decimal(1e12) || pos.realized_pnl.abs() > Decimal(1e12)) {
+        return make_error<void>(
+            ErrorCode::INVALID_ARGUMENT,
+            "Invalid PnL values: absolute value must be less than 1e12",
+            "PostgresDatabase"
+        );
+    }
+    
+    return Result<void>();
+}
+
+Result<void> PostgresDatabase::validate_signal_data(const std::string& symbol, double signal) const {
+    // Validate symbol
+    auto symbol_validation = validate_symbol(symbol);
+    if (symbol_validation.is_error()) {
+        return symbol_validation;
+    }
+    
+    // Validate signal value
+    if (std::isnan(signal) || std::isinf(signal)) {
+        return make_error<void>(
+            ErrorCode::INVALID_ARGUMENT,
+            "Invalid signal: contains NaN or infinity value",
+            "PostgresDatabase"
+        );
+    }
+    
+    if (std::abs(signal) > 1e6) {
+        return make_error<void>(
+            ErrorCode::INVALID_ARGUMENT,
+            "Invalid signal: absolute value must be less than 1e6",
+            "PostgresDatabase"
+        );
+    }
+    
+    return Result<void>();
 }
 
 } // namespace trade_ngin
