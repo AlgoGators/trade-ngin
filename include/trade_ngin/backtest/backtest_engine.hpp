@@ -224,7 +224,8 @@ struct BacktestResults {
     double downside_volatility{0.0};
 
     // Trade details
-    std::vector<ExecutionReport> executions;
+    std::vector<ExecutionReport> executions;  // All position changes (8000 number)
+    std::vector<ExecutionReport> actual_trades;  // Only actual trades that close positions (2000 number)
     std::vector<Position> positions;
     std::vector<std::pair<Timestamp, double>> equity_curve;
     std::vector<std::pair<Timestamp, double>> drawdown_curve;
@@ -233,6 +234,9 @@ struct BacktestResults {
     std::unordered_map<std::string, double> monthly_returns;
     std::unordered_map<std::string, double> symbol_pnl;
     std::vector<std::pair<Timestamp, RiskResult>> risk_metrics;
+    
+    // Strategy signals collected during backtest
+    std::map<std::pair<Timestamp, std::string>, double> signals;  // (timestamp, symbol) -> signal
 };
 
 /**
@@ -315,38 +319,38 @@ private:
 
     /**
      * @brief Process single market data update
-     * @param bars Market data bar
+     * @param bar Market data bar
      * @param strategy Strategy being tested
      * @param current_positions Current portfolio positions
      * @param equity_curve Equity curve to update
      * @return Result indicating success or failure
      */
-    Result<void> process_strategy_signals(
-        const std::vector<Bar>& bars, std::shared_ptr<StrategyInterface> strategy,
-        std::unordered_map<std::string, Position>& current_positions,
-        std::vector<ExecutionReport>& executions,
-        std::vector<std::pair<Timestamp, double>>& equity_curve);
+    Result<void> process_bar(const std::vector<Bar>& bars,
+                             std::shared_ptr<StrategyInterface> strategy,
+                             std::map<std::string, Position>& current_positions,
+                             std::vector<std::pair<Timestamp, double>>& equity_curve,
+                             std::vector<RiskResult>& risk_metrics);
 
     /**
-     * @brief Apply portfolio constraints to current positions
+     * @brief Apply portfolio-level constraints (risk management and optimization)
      * @param current_positions Current portfolio positions
      * @param equity_curve Equity curve points
      * @param risk_metrics Risk metrics to update
      * @return Result indicating success or failure
      */
     Result<void> apply_portfolio_constraints(
-        const std::vector<Bar>& bars, std::unordered_map<std::string, Position>& current_positions,
+        const std::vector<Bar>& bars, std::map<std::string, Position>& current_positions,
         std::vector<std::pair<Timestamp, double>>& equity_curve,
         std::vector<RiskResult>& risk_metrics);
 
     /**
-     * @brief Combine strategy positions into a single portfolio
+     * @brief Helper methods for portfolio backtesting
      * @param strategy_positions Vector of strategy positions
      * @param portfolio_positions Combined portfolio positions
      */
-    void combine_strategy_positions(
-        const std::vector<std::unordered_map<std::string, Position>>& strategy_positions,
-        std::unordered_map<std::string, Position>& portfolio_positions);
+    void combine_positions(
+        const std::vector<std::map<std::string, Position>>& strategy_positions,
+        std::map<std::string, Position>& portfolio_positions);
 
     /**
      * @brief Redistribute positions based on strategy weights
@@ -355,8 +359,8 @@ private:
      * @param strategies Vector of strategy instances
      */
     void redistribute_positions(
-        const std::unordered_map<std::string, Position>& portfolio_positions,
-        std::vector<std::unordered_map<std::string, Position>>& strategy_positions,
+        const std::map<std::string, Position>& portfolio_positions,
+        std::vector<std::map<std::string, Position>>& strategy_positions,
         const std::vector<std::shared_ptr<StrategyInterface>>& strategies);
 
     /**
@@ -376,18 +380,21 @@ private:
                                         std::vector<RiskResult>& risk_metrics);
 
     /**
-     * @brief Process single market data update
-     * @param bar Market data bar
+     * @brief Process strategy signals and generate executions
+     * @param bars Market data bars
      * @param strategy Strategy being tested
      * @param current_positions Current portfolio positions
+     * @param executions Vector to store generated executions
      * @param equity_curve Equity curve to update
+     * @param signals Map to store strategy signals with timestamps
      * @return Result indicating success or failure
      */
-    Result<void> process_bar(const std::vector<Bar>& bars,
-                             std::shared_ptr<StrategyInterface> strategy,
-                             std::unordered_map<std::string, Position>& current_positions,
-                             std::vector<std::pair<Timestamp, double>>& equity_curve,
-                             std::vector<RiskResult>& risk_metrics);
+    Result<void> process_strategy_signals(
+        const std::vector<Bar>& bars, std::shared_ptr<StrategyInterface> strategy,
+        std::map<std::string, Position>& current_positions,
+        std::vector<ExecutionReport>& executions,
+        std::vector<std::pair<Timestamp, double>>& equity_curve,
+        std::map<std::pair<Timestamp, std::string>, double>& signals);
 
     /**
      * @brief Calculate transaction costs

@@ -5,6 +5,7 @@
 #include <arrow/api.h>
 #include <memory>
 #include <mutex>
+#include <nlohmann/json.hpp>
 #include <optional>
 #include <pqxx/pqxx>
 #include <string>
@@ -117,6 +118,122 @@ public:
      * @return Result containing the Arrow table
      */
     Result<std::shared_ptr<arrow::Table>> execute_query(const std::string& query) override;
+
+    /**
+     * @brief Execute a direct SQL query without Arrow table conversion
+     * @param query SQL query to execute
+     * @return Result indicating success or failure
+     */
+    Result<void> execute_direct_query(const std::string& query);
+
+    // ============================================================================
+    // BACKTEST DATA STORAGE METHODS
+    // ============================================================================
+
+    /**
+     * @brief Store backtest execution data
+     * @param executions Vector of execution reports
+     * @param run_id Backtest run identifier
+     * @param table_name Name of the table to insert into
+     * @return Result indicating success or failure
+     */
+    Result<void> store_backtest_executions(const std::vector<ExecutionReport>& executions,
+                                           const std::string& run_id,
+                                           const std::string& table_name = "backtest.executions") override;
+
+    /**
+     * @brief Store backtest signals
+     * @param signals Map of symbol to signal value
+     * @param strategy_id ID of the strategy generating signals
+     * @param run_id Backtest run identifier
+     * @param timestamp Timestamp of signals
+     * @param table_name Name of the table to insert into
+     * @return Result indicating success or failure
+     */
+    Result<void> store_backtest_signals(const std::unordered_map<std::string, double>& signals,
+                                        const std::string& strategy_id, const std::string& run_id,
+                                        const Timestamp& timestamp,
+                                        const std::string& table_name = "backtest.signals") override;
+
+    /**
+     * @brief Store backtest run metadata
+     * @param run_id Backtest run identifier
+     * @param name Run name
+     * @param description Run description
+     * @param start_date Start date
+     * @param end_date End date
+     * @param hyperparameters JSON configuration
+     * @param table_name Name of the table to insert into
+     * @return Result indicating success or failure
+     */
+    Result<void> store_backtest_metadata(const std::string& run_id, const std::string& name,
+                                         const std::string& description, const Timestamp& start_date,
+                                         const Timestamp& end_date, const nlohmann::json& hyperparameters,
+                                         const std::string& table_name = "backtest.run_metadata") override;
+
+    // ============================================================================
+    // LIVE TRADING DATA STORAGE METHODS
+    // ============================================================================
+
+    /**
+     * @brief Store live trading daily results
+     * @param strategy_id Strategy identifier
+     * @param date Trading date
+     * @param total_return Total return for the day
+     * @param sharpe_ratio Sharpe ratio
+     * @param sortino_ratio Sortino ratio
+     * @param max_drawdown Maximum drawdown
+     * @param calmar_ratio Calmar ratio
+     * @param volatility Volatility
+     * @param total_trades Total number of trades
+     * @param win_rate Win rate
+     * @param profit_factor Profit factor
+     * @param avg_win Average win
+     * @param avg_loss Average loss
+     * @param max_win Maximum win
+     * @param max_loss Maximum loss
+     * @param avg_holding_period Average holding period
+     * @param var_95 Value at Risk (95%)
+     * @param cvar_95 Conditional Value at Risk (95%)
+     * @param beta Beta
+     * @param correlation Correlation
+     * @param downside_volatility Downside volatility
+     * @param config Additional configuration JSON
+     * @param table_name Name of the table to insert into
+     * @return Result indicating success or failure
+     */
+    Result<void> store_trading_results(const std::string& strategy_id, const Timestamp& date,
+                                       double total_return, double sharpe_ratio, double sortino_ratio,
+                                       double max_drawdown, double calmar_ratio, double volatility,
+                                       int total_trades, double win_rate, double profit_factor,
+                                       double avg_win, double avg_loss, double max_win, double max_loss,
+                                       double avg_holding_period, double var_95, double cvar_95,
+                                       double beta, double correlation, double downside_volatility,
+                                       const nlohmann::json& config,
+                                       const std::string& table_name = "trading.results") override;
+
+    /**
+     * @brief Store live trading equity curve point
+     * @param strategy_id Strategy identifier
+     * @param timestamp Timestamp of the equity point
+     * @param equity Equity value
+     * @param table_name Name of the table to insert into
+     * @return Result indicating success or failure
+     */
+    Result<void> store_trading_equity_curve(const std::string& strategy_id, const Timestamp& timestamp,
+                                             double equity,
+                                             const std::string& table_name = "trading.equity_curve") override;
+
+    /**
+     * @brief Store multiple live trading equity curve points
+     * @param strategy_id Strategy identifier
+     * @param equity_points Vector of timestamp-equity pairs
+     * @param table_name Name of the table to insert into
+     * @return Result indicating success or failure
+     */
+    Result<void> store_trading_equity_curve_batch(const std::string& strategy_id,
+                                                  const std::vector<std::pair<Timestamp, double>>& equity_points,
+                                                  const std::string& table_name = "trading.equity_curve") override;
 
     /**
      * @brief Get contract metadata for trading instruments

@@ -17,7 +17,11 @@ using namespace trade_ngin::backtest;
 
 int main() {
     try {
-        // Initialize the logger
+        // Reset all singletons to ensure clean state between runs
+        StateManager::reset_instance();
+        Logger::reset_for_tests();
+        
+        // Initialize logger
         auto& logger = Logger::instance();
         LoggerConfig logger_config;
         logger_config.min_level = LogLevel::DEBUG;
@@ -268,7 +272,7 @@ int main() {
         trend_config.weight = 0.03;      // 3% weight per symbol
         trend_config.risk_target = 0.2;  // Target 20% annualized risk
         trend_config.idm = 2.5;          // Instrument diversification multiplier
-        trend_config.use_position_buffering = false;
+        trend_config.use_position_buffering = true;
         trend_config.ema_windows = {{2, 8}, {4, 16}, {8, 32}, {16, 64}, {32, 128}, {64, 256}};
         trend_config.vol_lookback_short = 32;  // Short vol lookback
         trend_config.vol_lookback_long = 252;  // Long vol lookback
@@ -353,6 +357,25 @@ int main() {
         std::cout << "Win Rate: " << (backtest_results.win_rate * 100.0) << "%" << std::endl;
         std::cout << "Total Trades: " << backtest_results.total_trades << std::endl;
 
+        // Save results to database with enhanced error handling
+        INFO("Saving backtest results to database...");
+        try {
+            auto save_result = engine->save_results_to_db(backtest_results);
+            if (save_result.is_error()) {
+                std::cerr << "Failed to save backtest results to database: " << save_result.error()->what() << std::endl;
+                ERROR("Failed to save backtest results to database: " + std::string(save_result.error()->what()));
+            } else {
+                INFO("Successfully saved backtest results to database");
+            }
+        } catch (const std::exception& e) {
+            std::cerr << "Exception during database save: " << e.what() << std::endl;
+            ERROR("Exception during database save: " + std::string(e.what()));
+        }
+
+        // Explicitly reset the engine to trigger cleanup before program exit
+        INFO("Cleaning up backtest engine...");
+        engine.reset();
+        
         INFO("Backtest application completed successfully");
 
         std::cerr << "At end of main: initialized=" << Logger::instance().is_initialized()
