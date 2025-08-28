@@ -1,42 +1,22 @@
-#include <signal.h>
-#include <atomic>
-#include <chrono>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
-#include <thread>
+#include <chrono>
+#include <ctime>
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/core/time_utils.hpp"
 #include "trade_ngin/data/credential_store.hpp"
 #include "trade_ngin/data/database_pooling.hpp"
-#include "trade_ngin/data/market_data_bus.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
-#include "trade_ngin/execution/execution_engine.hpp"
+#include "trade_ngin/data/conversion_utils.hpp"
 #include "trade_ngin/instruments/instrument_registry.hpp"
-#include "trade_ngin/order/order_manager.hpp"
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
-#include "trade_ngin/risk/risk_manager.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
 
 using namespace trade_ngin;
 
-// Global flag for graceful shutdown
-std::atomic<bool> shutdown_requested{false};
-
-// Signal handler for graceful shutdown
-void signal_handler(int signal) {
-    if (signal == SIGINT || signal == SIGTERM) {
-        INFO("Received shutdown signal, initiating graceful shutdown...");
-        shutdown_requested = true;
-    }
-}
-
 int main() {
     try {
-        // Set up signal handlers for graceful shutdown
-        signal(SIGINT, signal_handler);
-        signal(SIGTERM, signal_handler);
-
         // Initialize the logger
         auto& logger = Logger::instance();
         LoggerConfig logger_config;
@@ -54,7 +34,9 @@ int main() {
         }
 
         INFO("Logger initialized successfully");
-        INFO("Starting Live Trend Following Trading System");
+
+        std::cerr << "After Logger initialization: initialized="
+                  << Logger::instance().is_initialized() << std::endl;
 
         // Setup database connection pool
         INFO("Initializing database connection pool...");
@@ -99,8 +81,8 @@ int main() {
         std::string conn_string =
             "postgresql://" + username + ":" + password + "@" + host + ":" + port + "/" + db_name;
 
-        // Initialize connection pool with sufficient connections for live trading
-        size_t num_connections = 10;  // More connections for live trading
+        // Initialize only the connection pool with sufficient connections
+        size_t num_connections = 5;
         auto pool_result = DatabasePool::instance().initialize(conn_string, num_connections);
         if (pool_result.is_error()) {
             std::cerr << "Failed to initialize connection pool: " << pool_result.error()->what()
@@ -148,12 +130,28 @@ int main() {
         auto all_instruments = registry.get_all_instruments();
         INFO("Registry contains " + std::to_string(all_instruments.size()) + " instruments");
 
-        // Get trading symbols
+        // Configure daily position generation parameters
+        INFO("Loading configuration...");
+
+        // Get current date for daily processing
+        auto now = std::chrono::system_clock::now();
+        auto now_time_t = std::chrono::system_clock::to_time_t(now);
+        std::tm* now_tm = std::localtime(&now_time_t);
+
+        // Set start date to 300 days ago for sufficient historical data
+        auto start_date = now - std::chrono::hours(24 * 300);  // 300 days ago
+
+        // Set end date to today
+        auto end_date = now;
+
+        double initial_capital = 500000.0;  // $500k
+        double commission_rate = 0.0005;    // 5 basis points
+        double slippage_model = 1.0;       // 1 basis point
+
         auto symbols_result = db->get_symbols(trade_ngin::AssetClass::FUTURES);
         auto symbols = symbols_result.value();
 
         if (symbols_result.is_ok()) {
-            // Filter out unwanted symbols for live trading
             for (const auto& symbol : symbols) {
                 if (symbol.find(".c.0") != std::string::npos ||
                     symbol.find("MES.c.0") != std::string::npos ||
@@ -163,61 +161,30 @@ int main() {
                 }
             }
         } else {
+            // Detailed error logging
             ERROR("Failed to get symbols: " + std::string(symbols_result.error()->what()));
             throw std::runtime_error("Failed to get symbols: " +
                                      symbols_result.error()->to_string());
         }
 
-        std::cout << "Live Trading Symbols: ";
+        std::cout << "Symbols: ";
         for (const auto& symbol : symbols) {
             std::cout << symbol << " ";
         }
         std::cout << std::endl;
 
-        // Live trading configuration
-        double initial_capital = 500000.0;  // $500k
-        double commission_rate = 0.0005;    // 5 basis points
-        double slippage_model = 1.0;        // 1 basis point
+        std::cout << "Retrieved " << symbols.size() << " symbols" << std::endl;
+        std::cout << "Initial capital: $" << initial_capital << std::endl;
+        std::cout << "Commission rate: " << (commission_rate * 100) << " bps" << std::endl;
+        std::cout << "Slippage model: " << slippage_model << " bps" << std::endl;
 
-        INFO("Live Trading Configuration:");
-        INFO("Initial Capital: $" + std::to_string(initial_capital));
-        INFO("Commission Rate: " + std::to_string(commission_rate * 100) + " bps");
-        INFO("Slippage Model: " + std::to_string(slippage_model) + " bps");
-        INFO("Number of Symbols: " + std::to_string(symbols.size()));
+        INFO("Configuration loaded successfully. Processing " +
+             std::to_string(symbols.size()) + " symbols from " +
+             std::to_string(std::chrono::system_clock::to_time_t(start_date)) +
+             " to " +
+             std::to_string(std::chrono::system_clock::to_time_t(end_date)));
 
-        // Initialize Order Manager for live trading
-        INFO("Initializing Order Manager...");
-        OrderManagerConfig order_config;
-        order_config.max_orders_per_second = 50;  // Conservative for live trading
-        order_config.max_pending_orders = 500;
-        order_config.max_order_size = 10000.0;  // Smaller max order size for safety
-        order_config.max_notional_value = 500000.0;
-        order_config.simulate_fills = false;  // Real fills for live trading
-        order_config.retry_attempts = 3;
-        order_config.retry_delay_ms = 200.0;  // Longer delay for live trading
-
-        auto order_manager = std::make_shared<OrderManager>(order_config, "LIVE_ORDER_MANAGER");
-        auto order_init_result = order_manager->initialize();
-        if (order_init_result.is_error()) {
-            std::cerr << "Failed to initialize order manager: " << order_init_result.error()->what()
-                      << std::endl;
-            return 1;
-        }
-        INFO("Order Manager initialized successfully");
-
-        // Initialize Execution Engine
-        INFO("Initializing Execution Engine...");
-        auto execution_engine = std::make_shared<ExecutionEngine>(order_manager);
-        auto exec_init_result = execution_engine->initialize();
-        if (exec_init_result.is_error()) {
-            std::cerr << "Failed to initialize execution engine: "
-                      << exec_init_result.error()->what() << std::endl;
-            return 1;
-        }
-        INFO("Execution Engine initialized successfully");
-
-        // Initialize Risk Manager
-        INFO("Initializing Risk Manager...");
+        // Configure portfolio risk management
         RiskConfig risk_config;
         risk_config.capital = Decimal(initial_capital);
         risk_config.confidence_level = 0.99;
@@ -228,66 +195,61 @@ int main() {
         risk_config.max_gross_leverage = 4.0;
         risk_config.max_net_leverage = 2.0;
 
-        auto risk_manager = std::make_shared<RiskManager>(risk_config);
-        INFO("Risk Manager initialized successfully");
+        // Configure portfolio optimization
+        DynamicOptConfig opt_config;
+        opt_config.tau = 1.0;
+        opt_config.capital = initial_capital;
+        opt_config.cost_penalty_scalar = 50.0;
+        opt_config.asymmetric_risk_buffer = 0.1;
+        opt_config.max_iterations = 100;
+        opt_config.convergence_threshold = 1e-6;
+        opt_config.use_buffering = true;
+        opt_config.buffer_size_factor = 0.05;
 
-        // Setup portfolio configuration for live trading
-        INFO("Setting up Portfolio Manager...");
+        // Setup portfolio configuration
         trade_ngin::PortfolioConfig portfolio_config;
         portfolio_config.total_capital = initial_capital;
-        portfolio_config.reserve_capital = initial_capital * 0.15;  // 15% reserve for live trading
-        portfolio_config.max_strategy_allocation = 1.0;
+        portfolio_config.reserve_capital = initial_capital * 0.10;  // 10% reserve (match bt)
+        portfolio_config.max_strategy_allocation = 1.0;     // Only have one strategy currently
         portfolio_config.min_strategy_allocation = 0.1;
         portfolio_config.use_optimization = true;
         portfolio_config.use_risk_management = true;
-
-        // Configure portfolio optimization
-        portfolio_config.opt_config.tau = 1.0;
-        portfolio_config.opt_config.capital = initial_capital;
-        portfolio_config.opt_config.cost_penalty_scalar = 50.0;
-        portfolio_config.opt_config.asymmetric_risk_buffer = 0.1;
-        portfolio_config.opt_config.max_iterations = 100;
-        portfolio_config.opt_config.convergence_threshold = 1e-6;
-        portfolio_config.opt_config.use_buffering = true;
-        portfolio_config.opt_config.buffer_size_factor = 0.05;
-
-        // Configure portfolio risk management
+        portfolio_config.opt_config = opt_config;
         portfolio_config.risk_config = risk_config;
 
-        auto portfolio = std::make_shared<trade_ngin::PortfolioManager>(portfolio_config);
-        INFO("Portfolio Manager configured successfully");
-
-        // Create trend following strategy configuration for live trading
-        INFO("Configuring Trend Following Strategy for live trading...");
+        // Create trend following strategy configuration
         trade_ngin::StrategyConfig tf_config;
         tf_config.capital_allocation = initial_capital * 0.85;  // Use 85% of capital
         tf_config.asset_classes = {trade_ngin::AssetClass::FUTURES};
         tf_config.frequencies = {trade_ngin::DataFrequency::DAILY};
-        tf_config.max_drawdown = 0.35;  // More conservative for live trading
-        tf_config.max_leverage = 3.0;   // Lower leverage for live trading
-        tf_config.save_positions = true;
-        tf_config.save_signals = true;
-        tf_config.save_executions = true;
+        tf_config.max_drawdown = 0.4;   // Match backtest defaults
+        tf_config.max_leverage = 4.0;
+        tf_config.save_positions = false;
+        tf_config.save_signals = false;
+        tf_config.save_executions = false;  // No executions in daily mode
 
-        // Add position limits and contract sizes for live trading
+        // Add position limits and contract sizes
         for (const auto& symbol : symbols) {
-            tf_config.position_limits[symbol] = 500.0;  // More conservative limits
+            tf_config.position_limits[symbol] = 500.0;  // Conservative limits
             tf_config.costs[symbol] = commission_rate;
         }
 
-        // Configure trend following parameters for live trading
+        // Configure trend following parameters
         trade_ngin::TrendFollowingConfig trend_config;
-        trend_config.weight = 0.025;      // 2.5% weight per symbol (more conservative)
-        trend_config.risk_target = 0.15;  // Target 15% annualized risk (more conservative)
+        trend_config.weight = 0.03;       // Match backtest defaults
+        trend_config.risk_target = 0.2;
         trend_config.idm = 2.5;           // Instrument diversification multiplier
-        trend_config.use_position_buffering = true;  // Use buffering for live trading
+        trend_config.use_position_buffering = true;  // Use buffering for daily trading
         trend_config.ema_windows = {{2, 8}, {4, 16}, {8, 32}, {16, 64}, {32, 128}, {64, 256}};
         trend_config.vol_lookback_short = 32;
         trend_config.vol_lookback_long = 252;
         trend_config.fdm = {{1, 1.0}, {2, 1.03}, {3, 1.08}, {4, 1.13}, {5, 1.19}, {6, 1.26}};
 
-        // Create and initialize the trend following strategy
-        INFO("Initializing Trend Following Strategy...");
+        // Create and initialize the strategies
+        // Before TrendFollowingStrategy
+        std::cerr << "Before TrendFollowingStrategy: initialized="
+                  << Logger::instance().is_initialized() << std::endl;
+        INFO("Initializing TrendFollowingStrategy...");
         std::cout << "Strategy capital allocation: $" << tf_config.capital_allocation << std::endl;
         std::cout << "Max leverage: " << tf_config.max_leverage << "x" << std::endl;
 
@@ -315,8 +277,9 @@ int main() {
         }
         INFO("Strategy started successfully");
 
-        // Add strategy to portfolio
-        INFO("Adding strategy to portfolio...");
+        // Create portfolio manager and add strategy
+        INFO("Creating portfolio manager...");
+        auto portfolio = std::make_shared<trade_ngin::PortfolioManager>(portfolio_config);
         auto add_result =
             portfolio->add_strategy(tf_strategy, 1.0, portfolio_config.use_optimization,
                                     portfolio_config.use_risk_management);
@@ -327,162 +290,174 @@ int main() {
         }
         INFO("Strategy added to portfolio successfully");
 
-        // Set up market data bus subscription for live data
-        INFO("Setting up market data subscriptions...");
-        auto& market_data_bus = MarketDataBus::instance();
-
-        // Subscribe to market data events for all symbols
-        SubscriberInfo strategy_subscriber;
-        strategy_subscriber.id = "LIVE_TREND_STRATEGY";
-        strategy_subscriber.event_types = {MarketDataEventType::TRADE, MarketDataEventType::QUOTE,
-                                           MarketDataEventType::BAR};
-        strategy_subscriber.symbols = symbols;
-        strategy_subscriber.callback = [&tf_strategy](const MarketDataEvent& event) {
-            // Convert market data event to strategy data format
-            if (event.type == MarketDataEventType::BAR) {
-                // Process bar data
-                Bar bar;
-                bar.symbol = event.symbol;
-                bar.timestamp = event.timestamp;
-
-                auto open_it = event.numeric_fields.find("open");
-                auto high_it = event.numeric_fields.find("high");
-                auto low_it = event.numeric_fields.find("low");
-                auto close_it = event.numeric_fields.find("close");
-                auto volume_it = event.numeric_fields.find("volume");
-
-                if (open_it != event.numeric_fields.end())
-                    bar.open = open_it->second;
-                if (high_it != event.numeric_fields.end())
-                    bar.high = high_it->second;
-                if (low_it != event.numeric_fields.end())
-                    bar.low = low_it->second;
-                if (close_it != event.numeric_fields.end())
-                    bar.close = close_it->second;
-                if (volume_it != event.numeric_fields.end())
-                    bar.volume = volume_it->second;
-
-                std::vector<Bar> bars{bar};
-                auto result = tf_strategy->on_data(bars);
-                if (result.is_error()) {
-                    ERROR("Failed to process market data for " + event.symbol + ": " +
-                          result.error()->what());
-                }
-            }
-        };
-
-        auto subscribe_result = market_data_bus.subscribe(strategy_subscriber);
-        if (subscribe_result.is_error()) {
-            std::cerr << "Failed to subscribe to market data: " << subscribe_result.error()->what()
-                      << std::endl;
+        // Load market data for daily processing
+        INFO("Loading market data for daily processing...");
+        auto market_data_result = db->get_market_data(
+            symbols, start_date, end_date, 
+            trade_ngin::AssetClass::FUTURES,
+            trade_ngin::DataFrequency::DAILY, "ohlcv");
+        
+        if (market_data_result.is_error()) {
+            ERROR("Failed to load market data: " + std::string(market_data_result.error()->what()));
             return 1;
         }
-        INFO("Market data subscription successful");
-
-        // Subscribe to order updates
-        SubscriberInfo order_subscriber;
-        order_subscriber.id = "LIVE_ORDER_UPDATES";
-        order_subscriber.event_types = {MarketDataEventType::ORDER_UPDATE};
-        order_subscriber.symbols = symbols;
-        order_subscriber.callback = [&tf_strategy](const MarketDataEvent& event) {
-            // Process order updates
-            auto order_id_it = event.string_fields.find("order_id");
-            auto status_it = event.string_fields.find("status");
-            auto filled_qty_it = event.numeric_fields.find("filled_quantity");
-            auto avg_price_it = event.numeric_fields.find("average_price");
-
-            if (order_id_it != event.string_fields.end() &&
-                status_it != event.string_fields.end()) {
-                ExecutionReport report;
-                report.order_id = order_id_it->second;
-                // Set basic execution report fields
-                if (filled_qty_it != event.numeric_fields.end()) {
-                    report.filled_quantity = Quantity(filled_qty_it->second);
-                }
-                if (avg_price_it != event.numeric_fields.end()) {
-                    report.fill_price = Price(avg_price_it->second);
-                }
-
-                auto result = tf_strategy->on_execution(report);
-                if (result.is_error()) {
-                    ERROR("Failed to process execution report: " +
-                          std::string(result.error()->what()));
-                }
-            }
-        };
-
-        auto order_subscribe_result = market_data_bus.subscribe(order_subscriber);
-        if (order_subscribe_result.is_error()) {
-            std::cerr << "Failed to subscribe to order updates: "
-                      << order_subscribe_result.error()->what() << std::endl;
+        
+        // Convert Arrow table to Bars using the same conversion as backtest
+        auto conversion_result = trade_ngin::DataConversionUtils::arrow_table_to_bars(market_data_result.value());
+        if (conversion_result.is_error()) {
+            ERROR("Failed to convert market data to bars: " + std::string(conversion_result.error()->what()));
             return 1;
         }
-        INFO("Order update subscription successful");
+        
+        auto all_bars = conversion_result.value();
+        INFO("Loaded " + std::to_string(all_bars.size()) + " total bars");
 
-        // Main live trading loop
-        INFO("Entering main live trading loop...");
-        std::cout << "Live trading system is now running. Press Ctrl+C to stop." << std::endl;
-
-        auto last_risk_check = std::chrono::steady_clock::now();
-        auto last_portfolio_update = std::chrono::steady_clock::now();
-        auto last_metrics_log = std::chrono::steady_clock::now();
-
-        while (!shutdown_requested) {
-            auto now = std::chrono::steady_clock::now();
-
-            // Periodic risk checks (every 5 minutes)
-            if (now - last_risk_check > std::chrono::minutes(5)) {
-                INFO("Performing periodic risk check...");
-                // Process current positions for risk check
-                auto current_positions = tf_strategy->get_positions();
-                auto market_data =
-                    risk_manager->create_market_data(std::vector<Bar>{});  // Empty for now
-                auto risk_result = risk_manager->process_positions(current_positions, market_data);
-                if (risk_result.is_error()) {
-                    ERROR("Risk check failed: " + std::string(risk_result.error()->what()));
-                }
-                last_risk_check = now;
-            }
-
-            // Periodic portfolio updates (every 15 minutes)
-            if (now - last_portfolio_update > std::chrono::minutes(15)) {
-                INFO("Performing periodic portfolio update...");
-                // Update portfolio allocations and risk metrics
-                // Get portfolio positions and calculate value
-                auto portfolio_positions = portfolio->get_portfolio_positions();
-                double total_value = 0.0;
-                double total_pnl = 0.0;
-
-                // Calculate total value and P&L (simplified)
-                for (const auto& [symbol, position] : portfolio_positions) {
-                    total_value +=
-                        position.quantity.as_double() * position.average_price.as_double();
-                    total_pnl +=
-                        position.realized_pnl.as_double() + position.unrealized_pnl.as_double();
-                }
-
-                INFO("Portfolio State - Total Value: $" + std::to_string(total_value) + ", P&L: $" +
-                     std::to_string(total_pnl));
-                last_portfolio_update = now;
-            }
-
-            // Periodic metrics logging (every hour)
-            if (now - last_metrics_log > std::chrono::hours(1)) {
-                INFO("Logging periodic metrics...");
-                auto strategy_metrics = tf_strategy->get_metrics();
-                INFO(
-                    "Strategy Metrics - Total P&L: $" + std::to_string(strategy_metrics.total_pnl) +
-                    ", Sharpe Ratio: " + std::to_string(strategy_metrics.sharpe_ratio) +
-                    ", Max Drawdown: " + std::to_string(strategy_metrics.max_drawdown * 100) + "%");
-                last_metrics_log = now;
-            }
-
-            // Sleep for a short interval to prevent excessive CPU usage
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        if (all_bars.empty()) {
+            ERROR("No historical data loaded. Cannot calculate positions.");
+            return 1;
         }
 
-        // Graceful shutdown
-        INFO("Initiating graceful shutdown...");
+        // Pre-warm strategy state so portfolio can pull price history for optimization/risk
+        INFO("Preprocessing data in strategy to populate price history...");
+        auto strat_prewarm = tf_strategy->on_data(all_bars);
+        if (strat_prewarm.is_error()) {
+            std::cerr << "Failed to preprocess data in strategy: "
+                      << strat_prewarm.error()->what() << std::endl;
+            return 1;
+        }
+
+        // Process data through portfolio pipeline (optimization + risk), mirroring backtest
+        INFO("Processing data through portfolio manager (optimization + risk)...");
+        auto port_process_result = portfolio->process_market_data(all_bars);
+        if (port_process_result.is_error()) {
+            std::cerr << "Failed to process data in portfolio manager: "
+                      << port_process_result.error()->what() << std::endl;
+            return 1;
+        }
+        INFO("Portfolio processing completed");
+
+        // Get optimized portfolio positions (integer-rounded after optimization/risk)
+        INFO("Retrieving optimized portfolio positions...");
+        auto positions = portfolio->get_portfolio_positions();
+        
+        std::cout << "\n======= Daily Position Report =======" << std::endl;
+        std::cout << "Date: " << (now_tm->tm_year + 1900) << "-" 
+                  << std::setfill('0') << std::setw(2) << (now_tm->tm_mon + 1) << "-"
+                  << std::setfill('0') << std::setw(2) << now_tm->tm_mday << std::endl;
+        std::cout << "Total Positions: " << positions.size() << std::endl;
+        std::cout << std::endl;
+
+        double total_notional = 0.0;
+        int active_positions = 0;
+
+        for (const auto& [symbol, position] : positions) {
+            if (position.quantity.as_double() != 0.0) {
+                active_positions++;
+                double notional = position.quantity.as_double() * position.average_price.as_double();
+                total_notional += notional;
+                
+                std::cout << std::setw(10) << symbol << " | "
+                          << std::setw(10) << std::fixed << std::setprecision(2) 
+                          << position.quantity.as_double() << " | "
+                          << std::setw(10) << std::fixed << std::setprecision(2) 
+                          << position.average_price.as_double() << " | "
+                          << std::setw(12) << std::fixed << std::setprecision(2) 
+                          << notional << " | "
+                          << std::setw(10) << std::fixed << std::setprecision(2) 
+                          << position.unrealized_pnl.as_double() << std::endl;
+            }
+        }
+
+        std::cout << std::endl;
+        std::cout << "Active Positions: " << active_positions << std::endl;
+        std::cout << "Total Notional: $" << std::fixed << std::setprecision(2) << total_notional << std::endl;
+        std::cout << "Portfolio Leverage: " << std::fixed << std::setprecision(2) 
+                  << (total_notional / initial_capital) << "x" << std::endl;
+
+        // Compute portfolio-level snapshot metrics using RiskManager on today's state
+        INFO("Retrieving strategy metrics...");
+        trade_ngin::RiskManager snapshot_rm(risk_config);
+        auto market_data_snapshot = snapshot_rm.create_market_data(all_bars);
+        auto risk_eval = snapshot_rm.process_positions(positions, market_data_snapshot);
+
+        std::cout << "\n======= Strategy Metrics =======" << std::endl;
+        if (risk_eval.is_ok()) {
+            const auto& r = risk_eval.value();
+            // Use portfolio_var as annualized volatility proxy
+            std::cout << "Volatility: " << std::fixed << std::setprecision(2)
+                      << (r.portfolio_var * 100.0) << "%" << std::endl;
+            std::cout << "Gross Leverage: " << std::fixed << std::setprecision(2)
+                      << r.gross_leverage << std::endl;
+            std::cout << "Net Leverage: " << std::fixed << std::setprecision(2)
+                      << r.net_leverage << std::endl;
+            std::cout << "Max Correlation: " << std::fixed << std::setprecision(2)
+                      << r.correlation_risk << std::endl;
+            std::cout << "Jump Risk (99th): " << std::fixed << std::setprecision(2)
+                      << r.jump_risk << std::endl;
+            std::cout << "Risk Scale: " << std::fixed << std::setprecision(2)
+                      << r.recommended_scale << std::endl;
+        } else {
+            std::cout << "Volatility: N/A" << std::endl;
+            std::cout << "Gross Leverage: N/A" << std::endl;
+            std::cout << "Net Leverage: N/A" << std::endl;
+            std::cout << "Max Correlation: N/A" << std::endl;
+            std::cout << "Jump Risk (99th): N/A" << std::endl;
+            std::cout << "Risk Scale: N/A" << std::endl;
+        }
+        // Placeholders to match backtest-style section layout
+        std::cout << "Total P&L: $" << std::fixed << std::setprecision(2) << 0.0 << std::endl;
+        std::cout << "Realized P&L: $" << std::fixed << std::setprecision(2) << 0.0 << std::endl;
+        std::cout << "Unrealized P&L: $" << std::fixed << std::setprecision(2) << 0.0 << std::endl;
+        std::cout << "Sharpe Ratio: " << std::fixed << std::setprecision(3) << 0.0 << std::endl;
+        std::cout << "Sortino Ratio: " << std::fixed << std::setprecision(3) << 0.0 << std::endl;
+        std::cout << "Max Drawdown: " << std::fixed << std::setprecision(2) << 0.0 << "%" << std::endl;
+        std::cout << "Win Rate: " << std::fixed << std::setprecision(2) << 0.0 << "%" << std::endl;
+        std::cout << "Total Trades: " << 0 << std::endl;
+
+        // Get forecasts for all symbols
+        INFO("Retrieving current forecasts...");
+        std::cout << "\n======= Current Forecasts =======" << std::endl;
+        std::cout << std::setw(10) << "Symbol" << " | "
+                  << std::setw(12) << "Forecast" << " | "
+                  << std::setw(12) << "Position" << std::endl;
+        std::cout << std::string(40, '-') << std::endl;
+
+        for (const auto& symbol : symbols) {
+            double forecast = tf_strategy->get_forecast(symbol);
+            double position = tf_strategy->get_position(symbol);
+            
+            std::cout << std::setw(10) << symbol << " | "
+                      << std::setw(12) << std::fixed << std::setprecision(4) << forecast << " | "
+                      << std::setw(12) << std::fixed << std::setprecision(2) << position << std::endl;
+        }
+
+        // Save positions to file for external consumption
+        INFO("Saving positions to file...");
+        std::string filename = "daily_positions_" + 
+                              std::to_string(now_tm->tm_year + 1900) + 
+                              std::string(2 - std::to_string(now_tm->tm_mon + 1).length(), '0') + 
+                              std::to_string(now_tm->tm_mon + 1) + 
+                              std::string(2 - std::to_string(now_tm->tm_mday).length(), '0') + 
+                              std::to_string(now_tm->tm_mday) + ".csv";
+        
+        std::ofstream position_file(filename);
+        if (position_file.is_open()) {
+            position_file << "symbol,quantity,avg_price,notional,unrealized_pnl,forecast\n";
+            for (const auto& [symbol, position] : positions) {
+                double notional = position.quantity.as_double() * position.average_price.as_double();
+                double forecast = tf_strategy->get_forecast(symbol);
+                position_file << symbol << ","
+                             << position.quantity.as_double() << ","
+                             << position.average_price.as_double() << ","
+                             << notional << ","
+                             << position.unrealized_pnl.as_double() << ","
+                             << forecast << "\n";
+            }
+            position_file.close();
+            INFO("Positions saved to " + filename);
+        } else {
+            ERROR("Failed to open position file for writing");
+        }
 
         // Stop the strategy
         INFO("Stopping strategy...");
@@ -493,35 +468,15 @@ int main() {
             INFO("Strategy stopped successfully");
         }
 
-        // Unsubscribe from market data
-        INFO("Unsubscribing from market data...");
-        market_data_bus.unsubscribe("LIVE_TREND_STRATEGY");
-        market_data_bus.unsubscribe("LIVE_ORDER_UPDATES");
-        INFO("Market data unsubscription complete");
+        std::cout << "\n======= Daily Processing Complete =======" << std::endl;
+        std::cout << "Positions file: " << filename << std::endl;
+        std::cout << "Total processing time: " << std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now() - now).count() << "ms" << std::endl;
 
-        // Final portfolio state
-        auto final_portfolio_positions = portfolio->get_portfolio_positions();
-        auto final_strategy_metrics = tf_strategy->get_metrics();
+        INFO("Daily trend following position generation completed successfully");
 
-        double final_total_value = 0.0;
-        double final_total_pnl = 0.0;
-
-        for (const auto& [symbol, position] : final_portfolio_positions) {
-            final_total_value += position.quantity.as_double() * position.average_price.as_double();
-            final_total_pnl +=
-                position.realized_pnl.as_double() + position.unrealized_pnl.as_double();
-        }
-
-        std::cout << "\n======= Live Trading Session Summary =======" << std::endl;
-        std::cout << "Final Portfolio Value: $" << final_total_value << std::endl;
-        std::cout << "Total P&L: $" << final_total_pnl << std::endl;
-        std::cout << "Strategy P&L: $" << final_strategy_metrics.total_pnl << std::endl;
-        std::cout << "Strategy Sharpe Ratio: " << final_strategy_metrics.sharpe_ratio << std::endl;
-        std::cout << "Strategy Max Drawdown: " << (final_strategy_metrics.max_drawdown * 100.0)
-                  << "%" << std::endl;
-        std::cout << "Total Trades: " << final_strategy_metrics.total_trades << std::endl;
-
-        INFO("Live trading session completed successfully");
+        std::cerr << "At end of main: initialized=" << Logger::instance().is_initialized()
+                  << std::endl;
 
         return 0;
 
