@@ -19,6 +19,10 @@ trade-ngin is a high-performance, modular quantitative trading system built in C
 
 The system is currently optimized for backtesting with a focus on futures trading strategies, featuring realistic execution simulation and comprehensive performance analytics. The architecture supports future live trading extensions with a unified codebase design.
 
+## 🚦 Quick Ops Docs
+- Performance & upkeep (CI/CD, testing, cron): `docs/performance_upkeep.md`
+- Live pipeline specification: `docs/live_pipeline_spec.md`
+
 ## 🎯 Current System State
 
 ### Implemented Features

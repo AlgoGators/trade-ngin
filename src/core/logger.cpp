@@ -40,6 +40,23 @@ void Logger::initialize(const LoggerConfig& config) {
         std::filesystem::path log_dir = std::filesystem::absolute(config_.log_directory);
         std::filesystem::create_directories(log_dir);
 
+        // Enforce retention before creating a new file so total never exceeds max_files
+        {
+            std::vector<std::filesystem::path> log_files;
+            for (const auto& entry : std::filesystem::directory_iterator(log_dir)) {
+                if (std::filesystem::is_regular_file(entry.path())) {
+                    log_files.push_back(entry.path());
+                }
+            }
+            std::sort(log_files.begin(), log_files.end(), [](const auto& a, const auto& b) {
+                return std::filesystem::last_write_time(a) < std::filesystem::last_write_time(b);
+            });
+            while (log_files.size() >= config_.max_files) {
+                std::filesystem::remove(log_files.front());
+                log_files.erase(log_files.begin());
+            }
+        }
+
         // Generate session timestamp and reset part number
         current_session_timestamp_ = generate_session_timestamp();
         current_part_number_ = 1;
@@ -165,7 +182,7 @@ void Logger::rotate_log_files() {
 
     std::vector<std::filesystem::path> log_files;
     for (const auto& entry : std::filesystem::directory_iterator(log_dir)) {
-        if (entry.path().filename().string().find(config_.filename_prefix) != std::string::npos) {
+        if (std::filesystem::is_regular_file(entry.path())) {
             log_files.push_back(entry.path());
         }
     }

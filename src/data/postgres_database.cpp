@@ -384,6 +384,25 @@ Result<std::shared_ptr<arrow::Table>> PostgresDatabase::execute_query(const std:
     }
 }
 
+Result<void> PostgresDatabase::execute_direct_query(const std::string& query) {
+    auto validation = validate_connection();
+    if (validation.is_error()) {
+        return make_error<void>(validation.error()->code(), validation.error()->what());
+    }
+
+    try {
+        pqxx::work txn(*connection_);
+        txn.exec(query);
+        txn.commit();
+        return Result<void>();
+
+    } catch (const std::exception& e) {
+        return make_error<void>(
+            ErrorCode::DATABASE_ERROR, "Failed to execute direct query: " + std::string(e.what()),
+            "PostgresDatabase");
+    }
+}
+
 Result<std::shared_ptr<arrow::Table>> PostgresDatabase::get_contract_metadata() const {
     auto validation = validate_connection();
     if (validation.is_error()) {
@@ -1297,6 +1316,236 @@ Result<void> PostgresDatabase::validate_signal_data(const std::string& symbol,
     }
 
     return Result<void>();
+}
+
+// ============================================================================
+// BACKTEST DATA STORAGE IMPLEMENTATIONS
+// ============================================================================
+
+Result<void> PostgresDatabase::store_backtest_executions(const std::vector<ExecutionReport>& executions,
+                                                         const std::string& run_id,
+                                                         const std::string& table_name) {
+    auto validation = validate_connection();
+    if (validation.is_error())
+        return validation;
+
+    try {
+        pqxx::work txn(*connection_);
+
+        // Use batch insert for better performance with large execution sets
+        if (executions.size() > 100) {
+            // Build a single multi-value INSERT for large batches
+            std::string query = "INSERT INTO " + table_name +
+                                " (run_id, execution_id, order_id, timestamp, symbol, side, quantity, price, commission, is_partial) VALUES ";
+            
+            std::vector<std::string> value_strings;
+            value_strings.reserve(executions.size());
+            
+            for (const auto& exec : executions) {
+                std::string values = "('" + run_id + "', '" + exec.exec_id + "', '" + exec.order_id + "', '" + 
+                                   format_timestamp(exec.fill_time) + "', '" + exec.symbol + "', '" + 
+                                   side_to_string(exec.side) + "', " + std::to_string(static_cast<double>(exec.filled_quantity)) + 
+                                   ", " + std::to_string(static_cast<double>(exec.fill_price)) + ", " + 
+                                   std::to_string(static_cast<double>(exec.commission)) + ", " + 
+                                   (exec.is_partial ? "true" : "false") + ")";
+                value_strings.push_back(values);
+            }
+            
+            query += pqxx::separated_list(",", value_strings.begin(), value_strings.end());
+            txn.exec(query);
+        } else {
+            // Use parameterized queries for smaller batches
+            for (const auto& exec : executions) {
+                std::string query = "INSERT INTO " + table_name +
+                                    " (run_id, execution_id, order_id, timestamp, symbol, side, quantity, price, commission, is_partial) "
+                                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)";
+
+                txn.exec_params(query, run_id, exec.exec_id, exec.order_id, format_timestamp(exec.fill_time),
+                                exec.symbol, side_to_string(exec.side), static_cast<double>(exec.filled_quantity),
+                                static_cast<double>(exec.fill_price), static_cast<double>(exec.commission), exec.is_partial);
+            }
+        }
+
+        txn.commit();
+        INFO("Successfully stored " + std::to_string(executions.size()) + " backtest executions for run: " + run_id);
+        return Result<void>();
+    } catch (const std::exception& e) {
+        return make_error<void>(ErrorCode::DATABASE_ERROR,
+                                "Failed to store backtest executions: " + std::string(e.what()),
+                                "PostgresDatabase");
+    }
+}
+
+Result<void> PostgresDatabase::store_backtest_signals(const std::unordered_map<std::string, double>& signals,
+                                                      const std::string& strategy_id, const std::string& run_id,
+                                                      const Timestamp& timestamp,
+                                                      const std::string& table_name) {
+    auto validation = validate_connection();
+    if (validation.is_error())
+        return validation;
+
+    try {
+        pqxx::work txn(*connection_);
+
+        for (const auto& [symbol, signal_value] : signals) {
+            std::string query = "INSERT INTO " + table_name +
+                                " (run_id, strategy_id, symbol, signal_value, timestamp) "
+                                "VALUES ($1, $2, $3, $4, $5) "
+                                "ON CONFLICT (run_id, strategy_id, symbol, timestamp) "
+                                "DO UPDATE SET signal_value = EXCLUDED.signal_value";
+
+            txn.exec_params(query, run_id, strategy_id, symbol, signal_value, format_timestamp(timestamp));
+        }
+
+        txn.commit();
+        INFO("Successfully stored " + std::to_string(signals.size()) + " backtest signals for strategy: " + strategy_id);
+        return Result<void>();
+    } catch (const std::exception& e) {
+        return make_error<void>(ErrorCode::DATABASE_ERROR,
+                                "Failed to store backtest signals: " + std::string(e.what()),
+                                "PostgresDatabase");
+    }
+}
+
+Result<void> PostgresDatabase::store_backtest_metadata(const std::string& run_id, const std::string& name,
+                                                       const std::string& description, const Timestamp& start_date,
+                                                       const Timestamp& end_date, const nlohmann::json& hyperparameters,
+                                                       const std::string& table_name) {
+    auto validation = validate_connection();
+    if (validation.is_error())
+        return validation;
+
+    try {
+        pqxx::work txn(*connection_);
+
+        std::string query = "INSERT INTO " + table_name +
+                            " (run_id, name, description, start_date, end_date, hyperparameters) "
+                            "VALUES ($1, $2, $3, $4, $5, $6) "
+                            "ON CONFLICT (run_id) "
+                            "DO UPDATE SET name = EXCLUDED.name, description = EXCLUDED.description, "
+                            "start_date = EXCLUDED.start_date, end_date = EXCLUDED.end_date, "
+                            "hyperparameters = EXCLUDED.hyperparameters";
+
+        txn.exec_params(query, run_id, name, description, format_timestamp(start_date), format_timestamp(end_date),
+                        hyperparameters.dump());
+
+        txn.commit();
+        INFO("Successfully stored backtest metadata for run: " + run_id);
+        return Result<void>();
+    } catch (const std::exception& e) {
+        return make_error<void>(ErrorCode::DATABASE_ERROR,
+                                "Failed to store backtest metadata: " + std::string(e.what()),
+                                "PostgresDatabase");
+    }
+}
+
+// ============================================================================
+// LIVE TRADING DATA STORAGE IMPLEMENTATIONS
+// ============================================================================
+
+Result<void> PostgresDatabase::store_trading_results(const std::string& strategy_id, const Timestamp& date,
+                                                     double total_return, double sharpe_ratio, double sortino_ratio,
+                                                     double max_drawdown, double calmar_ratio, double volatility,
+                                                     int total_trades, double win_rate, double profit_factor,
+                                                     double avg_win, double avg_loss, double max_win, double max_loss,
+                                                     double avg_holding_period, double var_95, double cvar_95,
+                                                     double beta, double correlation, double downside_volatility,
+                                                     const nlohmann::json& config,
+                                                     const std::string& table_name) {
+    auto validation = validate_connection();
+    if (validation.is_error())
+        return validation;
+
+    try {
+        pqxx::work txn(*connection_);
+
+        std::string query = "INSERT INTO " + table_name +
+                            " (strategy_id, date, total_return, sharpe_ratio, sortino_ratio, max_drawdown, "
+                            "calmar_ratio, volatility, total_trades, win_rate, profit_factor, avg_win, avg_loss, "
+                            "max_win, max_loss, avg_holding_period, var_95, cvar_95, beta, correlation, "
+                            "downside_volatility, config) "
+                            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22) "
+                            "ON CONFLICT (strategy_id, date) "
+                            "DO UPDATE SET total_return = EXCLUDED.total_return, sharpe_ratio = EXCLUDED.sharpe_ratio, "
+                            "sortino_ratio = EXCLUDED.sortino_ratio, max_drawdown = EXCLUDED.max_drawdown, "
+                            "calmar_ratio = EXCLUDED.calmar_ratio, volatility = EXCLUDED.volatility, "
+                            "total_trades = EXCLUDED.total_trades, win_rate = EXCLUDED.win_rate, "
+                            "profit_factor = EXCLUDED.profit_factor, avg_win = EXCLUDED.avg_win, "
+                            "avg_loss = EXCLUDED.avg_loss, max_win = EXCLUDED.max_win, max_loss = EXCLUDED.max_loss, "
+                            "avg_holding_period = EXCLUDED.avg_holding_period, var_95 = EXCLUDED.var_95, "
+                            "cvar_95 = EXCLUDED.cvar_95, beta = EXCLUDED.beta, correlation = EXCLUDED.correlation, "
+                            "downside_volatility = EXCLUDED.downside_volatility, config = EXCLUDED.config";
+
+        txn.exec_params(query, strategy_id, format_timestamp(date), total_return, sharpe_ratio, sortino_ratio,
+                        max_drawdown, calmar_ratio, volatility, total_trades, win_rate, profit_factor,
+                        avg_win, avg_loss, max_win, max_loss, avg_holding_period, var_95, cvar_95,
+                        beta, correlation, downside_volatility, config.dump());
+
+        txn.commit();
+        INFO("Successfully stored trading results for strategy: " + strategy_id + " on " + format_timestamp(date));
+        return Result<void>();
+    } catch (const std::exception& e) {
+        return make_error<void>(ErrorCode::DATABASE_ERROR,
+                                "Failed to store trading results: " + std::string(e.what()),
+                                "PostgresDatabase");
+    }
+}
+
+Result<void> PostgresDatabase::store_trading_equity_curve(const std::string& strategy_id, const Timestamp& timestamp,
+                                                          double equity,
+                                                          const std::string& table_name) {
+    auto validation = validate_connection();
+    if (validation.is_error())
+        return validation;
+
+    try {
+        pqxx::work txn(*connection_);
+
+        std::string query = "INSERT INTO " + table_name +
+                            " (strategy_id, timestamp, equity) "
+                            "VALUES ($1, $2, $3) "
+                            "ON CONFLICT (strategy_id, timestamp) "
+                            "DO UPDATE SET equity = EXCLUDED.equity";
+
+        txn.exec_params(query, strategy_id, format_timestamp(timestamp), equity);
+
+        txn.commit();
+        return Result<void>();
+    } catch (const std::exception& e) {
+        return make_error<void>(ErrorCode::DATABASE_ERROR,
+                                "Failed to store trading equity curve: " + std::string(e.what()),
+                                "PostgresDatabase");
+    }
+}
+
+Result<void> PostgresDatabase::store_trading_equity_curve_batch(const std::string& strategy_id,
+                                                                const std::vector<std::pair<Timestamp, double>>& equity_points,
+                                                                const std::string& table_name) {
+    auto validation = validate_connection();
+    if (validation.is_error())
+        return validation;
+
+    try {
+        pqxx::work txn(*connection_);
+
+        for (const auto& [timestamp, equity] : equity_points) {
+            std::string query = "INSERT INTO " + table_name +
+                                " (strategy_id, timestamp, equity) "
+                                "VALUES ($1, $2, $3) "
+                                "ON CONFLICT (strategy_id, timestamp) "
+                                "DO UPDATE SET equity = EXCLUDED.equity";
+
+            txn.exec_params(query, strategy_id, format_timestamp(timestamp), equity);
+        }
+
+        txn.commit();
+        INFO("Successfully stored " + std::to_string(equity_points.size()) + " equity curve points for strategy: " + strategy_id);
+        return Result<void>();
+    } catch (const std::exception& e) {
+        return make_error<void>(ErrorCode::DATABASE_ERROR,
+                                "Failed to store trading equity curve batch: " + std::string(e.what()),
+                                "PostgresDatabase");
+    }
 }
 
 }  // namespace trade_ngin

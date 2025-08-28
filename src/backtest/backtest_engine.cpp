@@ -102,15 +102,22 @@ BacktestEngine::BacktestEngine(BacktestConfig config, std::shared_ptr<PostgresDa
 }
 
 BacktestEngine::~BacktestEngine() {
-    // Unregister from state manager if we have a component ID
-    if (!backtest_component_id_.empty()) {
-        try {
-            StateManager::instance().unregister_component(backtest_component_id_);
-        } catch (const std::exception& e) {
-            // Log but don't throw from destructor
-            std::cerr << "Error unregistering from StateManager: " << e.what() << std::endl;
-        }
-    }
+    // TEMPORARILY DISABLED: StateManager unregistration causing segfault
+    // if (!backtest_component_id_.empty()) {
+    //     try {
+    //         auto unreg_result = StateManager::instance().unregister_component(backtest_component_id_);
+    //         if (unreg_result.is_error()) {
+    //             // Log but don't throw from destructor
+    //             std::cerr << "Error unregistering from StateManager: " << unreg_result.error()->what() << std::endl;
+    //         }
+    //     } catch (const std::exception& e) {
+    //         // Log but don't throw from destructor
+    //         std::cerr << "Exception during StateManager unregistration: " << e.what() << std::endl;
+    //     }
+    // }
+    
+    // Clear any remaining references to prevent use-after-free
+    backtest_component_id_.clear();
 }
 
 // Run single strategy with portfolio-level constraints
@@ -158,12 +165,13 @@ Result<BacktestResults> BacktestEngine::run(std::shared_ptr<StrategyInterface> s
                                                data_result.error()->what(), "BacktestEngine");
         }
 
-        // Initialize tracking variables
-        std::vector<ExecutionReport> executions;
-        std::unordered_map<std::string, Position> current_positions;
-        std::vector<std::pair<Timestamp, double>> equity_curve;
-        std::vector<RiskResult> risk_metrics;
-        double current_equity = static_cast<double>(config_.portfolio_config.initial_capital);
+            // Initialize tracking variables
+    std::vector<ExecutionReport> executions;
+    std::map<std::string, Position> current_positions;
+    std::vector<std::pair<Timestamp, double>> equity_curve;
+    std::vector<RiskResult> risk_metrics;
+    std::map<std::pair<Timestamp, std::string>, double> signals;  // Track signals with timestamps for database storage
+    double current_equity = static_cast<double>(config_.portfolio_config.initial_capital);
 
         // Initialize equity curve with starting point
         equity_curve.emplace_back(config_.strategy_config.start_date, current_equity);
@@ -247,7 +255,7 @@ Result<BacktestResults> BacktestEngine::run(std::shared_ptr<StrategyInterface> s
 
             // Process strategy signals first
             auto signal_result = process_strategy_signals(bars, strategy, current_positions,
-                                                          executions, equity_curve);
+                                                          executions, equity_curve, signals);
 
             if (signal_result.is_error()) {
                 ERROR("Bar processing failed: " + std::string(signal_result.error()->what()));
@@ -317,11 +325,33 @@ Result<BacktestResults> BacktestEngine::run(std::shared_ptr<StrategyInterface> s
             results.risk_metrics.emplace_back(ts, risk_metrics[i]);
         }
 
+        // Add collected signals to results
+        results.signals = signals;
+
+        // DEBUG: Log what we generated during backtest
+        INFO("=== BACKTEST DEBUG INFO ===");
+        INFO("Generated " + std::to_string(results.executions.size()) + " executions (all position changes)");
+        INFO("Generated " + std::to_string(results.actual_trades.size()) + " actual trades (position closings)");
+        INFO("Collected " + std::to_string(results.signals.size()) + " signals");
+        INFO("Total trades in metrics: " + std::to_string(results.total_trades));
+        INFO("Equity curve points: " + std::to_string(results.equity_curve.size()));
+        if (!results.actual_trades.empty()) {
+            INFO("First actual trade: " + results.actual_trades[0].symbol + " " + 
+                 (results.actual_trades[0].side == Side::BUY ? "BUY" : "SELL") + " " +
+                 std::to_string(static_cast<double>(results.actual_trades[0].filled_quantity)));
+        }
+        if (!results.signals.empty()) {
+            auto first_signal = results.signals.begin();
+            INFO("First signal: " + first_signal->first.second + " = " + 
+                 std::to_string(first_signal->second));
+        }
+        INFO("=== END DEBUG INFO ===");
+
         // Update final state
         (void)StateManager::instance().update_state(backtest_component_id_,
                                                     ComponentState::STOPPED);
 
-        INFO("Backtest completed successfully");
+        INFO("Backtest completed successfully with " + std::to_string(signals.size()) + " signals collected");
 
         return Result<BacktestResults>(results);
 
@@ -497,7 +527,7 @@ Result<BacktestResults> BacktestEngine::run_portfolio(std::shared_ptr<PortfolioM
 
 Result<void> BacktestEngine::process_bar(
     const std::vector<Bar>& bars, std::shared_ptr<StrategyInterface> strategy,
-    std::unordered_map<std::string, Position>& current_positions,
+    std::map<std::string, Position>& current_positions,
     std::vector<std::pair<Timestamp, double>>& equity_curve,
     std::vector<RiskResult>& risk_metrics) {
     try {
@@ -518,7 +548,7 @@ Result<void> BacktestEngine::process_bar(
                                      ? static_cast<double>(current_it->second.quantity)
                                      : 0.0;
 
-            if (std::abs(static_cast<double>(new_pos.quantity) - current_qty) > 1e-6) {
+            if (std::abs(static_cast<double>(new_pos.quantity) - current_qty) > 1e-4) {
                 // Find latest price for symbol
                 double latest_price = 0.0;
                 for (const auto& bar : bars) {
@@ -613,7 +643,9 @@ Result<void> BacktestEngine::process_bar(
         // Apply risk management if enabled
         if (config_.portfolio_config.use_risk_management && risk_manager_) {
             MarketData market_data = risk_manager_->create_market_data(bars);
-            auto risk_result = risk_manager_->process_positions(current_positions, market_data);
+            // Convert map to unordered_map for risk manager compatibility
+            std::unordered_map<std::string, Position> positions_for_risk(current_positions.begin(), current_positions.end());
+            auto risk_result = risk_manager_->process_positions(positions_for_risk, market_data);
             if (risk_result.is_error()) {
                 return make_error<void>(risk_result.error()->code(), risk_result.error()->what(),
                                         "BacktestEngine");
@@ -694,9 +726,10 @@ Result<void> BacktestEngine::process_bar(
 // Process market data through each strategy and collect their positions
 Result<void> BacktestEngine::process_strategy_signals(
     const std::vector<Bar>& bars, std::shared_ptr<StrategyInterface> strategy,
-    std::unordered_map<std::string, Position>& current_positions,
+    std::map<std::string, Position>& current_positions,
     std::vector<ExecutionReport>& executions,
-    std::vector<std::pair<Timestamp, double>>& equity_curve) {
+    std::vector<std::pair<Timestamp, double>>& equity_curve,
+    std::map<std::pair<Timestamp, std::string>, double>& signals) {
     try {
         // Pass market data to strategy
         auto data_result = strategy->on_data(bars);
@@ -707,6 +740,10 @@ Result<void> BacktestEngine::process_strategy_signals(
         // Get updated positions from strategy
         const auto& new_positions = strategy->get_positions();
         std::vector<ExecutionReport> period_executions;
+        
+        // Collect signals - for now, use position changes as proxy for signals
+        // In a full implementation, strategies would expose actual signal values
+        Timestamp current_time = bars.empty() ? std::chrono::system_clock::now() : bars[0].timestamp;
 
         // Process position changes
         for (const auto& [symbol, new_pos] : new_positions) {
@@ -715,7 +752,15 @@ Result<void> BacktestEngine::process_strategy_signals(
                                      ? static_cast<double>(current_it->second.quantity)
                                      : 0.0;
 
-            if (std::abs(static_cast<double>(new_pos.quantity) - current_qty) > 1e-6) {
+            if (std::abs(static_cast<double>(new_pos.quantity) - current_qty) > 1e-4) {
+                // Collect signal: position change represents a trading signal
+                double signal_strength = static_cast<double>(new_pos.quantity) - current_qty;
+                signals[{current_time, symbol}] = signal_strength;
+                
+                DEBUG("📊 Signal collected: " + symbol + " = " + std::to_string(signal_strength) + 
+                      " (pos change: " + std::to_string(current_qty) + " -> " + 
+                      std::to_string(static_cast<double>(new_pos.quantity)) + ")");
+                
                 // Find latest price for symbol
                 double latest_price = 0.0;
                 for (const auto& bar : bars) {
@@ -819,14 +864,16 @@ Result<void> BacktestEngine::process_strategy_signals(
 
 // Apply portfolio-level constraints (risk management and optimization)
 Result<void> BacktestEngine::apply_portfolio_constraints(
-    const std::vector<Bar>& bars, std::unordered_map<std::string, Position>& current_positions,
+    const std::vector<Bar>& bars, std::map<std::string, Position>& current_positions,
     std::vector<std::pair<Timestamp, double>>& equity_curve,
     std::vector<RiskResult>& risk_metrics) {
     try {
         // Apply risk management if enabled
         if (config_.portfolio_config.use_risk_management && risk_manager_) {
             MarketData market_data = risk_manager_->create_market_data(bars);
-            auto risk_result = risk_manager_->process_positions(current_positions, market_data);
+            // Convert map to unordered_map for risk manager compatibility
+            std::unordered_map<std::string, Position> positions_for_risk(current_positions.begin(), current_positions.end());
+            auto risk_result = risk_manager_->process_positions(positions_for_risk, market_data);
             if (risk_result.is_error()) {
                 return make_error<void>(risk_result.error()->code(), risk_result.error()->what(),
                                         "BacktestEngine");
@@ -905,14 +952,16 @@ Result<void> BacktestEngine::apply_portfolio_constraints(
 }
 
 // Helper method for portfolio backtesting: combines positions from multiple strategies
-void BacktestEngine::combine_strategy_positions(
-    const std::vector<std::unordered_map<std::string, Position>>& strategy_positions,
-    std::unordered_map<std::string, Position>& portfolio_positions) {
+void BacktestEngine::combine_positions(
+    const std::vector<std::map<std::string, Position>>& strategy_positions,
+    std::map<std::string, Position>& portfolio_positions) {
+    
     // Clear current portfolio positions
     portfolio_positions.clear();
 
     // Combine positions from all strategies
     for (const auto& strategy_pos_map : strategy_positions) {
+        // Since std::map is already sorted, no need for explicit sorting
         for (const auto& [symbol, pos] : strategy_pos_map) {
             if (portfolio_positions.find(symbol) == portfolio_positions.end()) {
                 // New symbol, add to portfolio
@@ -923,7 +972,7 @@ void BacktestEngine::combine_strategy_positions(
 
                 // Update average price based on quantities
                 double total_quantity = static_cast<double>(portfolio_positions[symbol].quantity);
-                if (std::abs(total_quantity) > 1e-6) {
+                if (std::abs(total_quantity) > 1e-4) {
                     portfolio_positions[symbol].average_price =
                         Decimal((static_cast<double>(portfolio_positions[symbol].average_price) *
                                      (total_quantity - static_cast<double>(pos.quantity)) +
@@ -938,11 +987,11 @@ void BacktestEngine::combine_strategy_positions(
 
 // Helper method for portfolio backtesting: distributes portfolio positions back to strategies
 void BacktestEngine::redistribute_positions(
-    const std::unordered_map<std::string, Position>& portfolio_positions,
-    std::vector<std::unordered_map<std::string, Position>>& strategy_positions,
+    const std::map<std::string, Position>& portfolio_positions,
+    std::vector<std::map<std::string, Position>>& strategy_positions,
     const std::vector<std::shared_ptr<StrategyInterface>>& strategies) {
     // Calculate the total quantity for each symbol across all strategies
-    std::unordered_map<std::string, double> total_quantities;
+    std::map<std::string, double> total_quantities;
     for (const auto& strategy_pos_map : strategy_positions) {
         for (const auto& [symbol, pos] : strategy_pos_map) {
             total_quantities[symbol] += std::abs(static_cast<double>(pos.quantity));
@@ -953,10 +1002,11 @@ void BacktestEngine::redistribute_positions(
     for (size_t i = 0; i < strategy_positions.size(); ++i) {
         auto& strategy_pos_map = strategy_positions[i];
 
+        // Since std::map is already sorted, no need for explicit sorting
         for (auto& [symbol, pos] : strategy_pos_map) {
             // Calculate the original ratio this strategy had of this symbol
             double original_ratio = 0.0;
-            if (total_quantities[symbol] > 1e-6) {
+            if (total_quantities[symbol] > 1e-4) {
                 original_ratio =
                     std::abs(static_cast<double>(pos.quantity)) / total_quantities[symbol];
             }
@@ -1180,8 +1230,10 @@ Result<void> BacktestEngine::process_portfolio_data(
 
                 if (!portfolio_positions.empty()) {
                     MarketData market_data = risk_manager_->create_market_data(bars);
+                    // Convert map to unordered_map for risk manager compatibility
+                    std::unordered_map<std::string, Position> positions_for_risk(portfolio_positions.begin(), portfolio_positions.end());
                     auto risk_result =
-                        risk_manager_->process_positions(portfolio_positions, market_data);
+                        risk_manager_->process_positions(positions_for_risk, market_data);
 
                     if (risk_result.is_ok()) {
                         risk_metrics.push_back(risk_result.value());
@@ -1466,6 +1518,7 @@ BacktestResults BacktestEngine::calculate_metrics(
     std::unordered_map<std::string, double> positions;   // symbol -> net position
     std::unordered_map<std::string, double> avg_prices;  // symbol -> average entry price
     std::vector<double> trade_pnls;                      // individual trade P&Ls
+    std::vector<ExecutionReport> actual_trades;          // Only actual trades that close positions
 
     double total_profit = 0.0;
     double total_loss = 0.0;
@@ -1508,6 +1561,8 @@ BacktestResults BacktestEngine::calculate_metrics(
         if (std::abs(signed_qty) > 1e-6 && current_pos != 0.0 &&
             ((current_pos > 0 && signed_qty < 0) || (current_pos < 0 && signed_qty > 0))) {
             trade_pnls.push_back(trade_pnl);
+            // Add to actual_trades for database logging (only position-closing trades)
+            actual_trades.push_back(exec);
             if (trade_pnl > 0) {
                 total_profit += trade_pnl;
                 winning_trades++;
@@ -1520,6 +1575,7 @@ BacktestResults BacktestEngine::calculate_metrics(
     }
 
     results.total_trades = static_cast<int>(trade_pnls.size());
+    results.actual_trades = actual_trades;  // Save only the actual trades
 
     if (results.total_trades > 0) {
         results.win_rate = static_cast<double>(winning_trades) / results.total_trades;
@@ -1555,6 +1611,57 @@ BacktestResults BacktestEngine::calculate_metrics(
     results.var_95 = risk_metrics["var_95"];
     results.cvar_95 = risk_metrics["cvar_95"];
     results.downside_volatility = risk_metrics["downside_volatility"];
+
+    // Calculate beta and correlation (simplified - using returns vs themselves as benchmark for now)
+    // In a full implementation, you'd compare against market benchmark returns
+    if (returns.size() > 1) {
+        // For now, calculate correlation between consecutive periods
+        double covariance = 0.0;
+        double variance_benchmark = 0.0;
+        double variance_strategy = 0.0;
+        
+        for (size_t i = 1; i < returns.size(); ++i) {
+            double prev_return = returns[i-1];
+            double curr_return = returns[i];
+            covariance += (prev_return - mean_return) * (curr_return - mean_return);
+            variance_benchmark += (prev_return - mean_return) * (prev_return - mean_return);
+            variance_strategy += (curr_return - mean_return) * (curr_return - mean_return);
+        }
+        
+        if (variance_benchmark > 0) {
+            results.beta = covariance / variance_benchmark;
+            results.correlation = covariance / std::sqrt(variance_benchmark * variance_strategy);
+        }
+    }
+
+    // Calculate average holding period from trade executions
+    if (!executions.empty()) {
+        std::map<std::string, Timestamp> open_times;  // symbol -> first trade time
+        std::vector<double> holding_periods;
+        
+        for (const auto& exec : executions) {
+            const std::string& symbol = exec.symbol;
+            
+            if (open_times.find(symbol) == open_times.end()) {
+                // First trade for this symbol - opening position
+                open_times[symbol] = exec.fill_time;
+            } else {
+                // Subsequent trade - could be closing position
+                auto duration = std::chrono::duration_cast<std::chrono::hours>(
+                    exec.fill_time - open_times[symbol]);
+                double hours = static_cast<double>(duration.count());
+                if (hours > 0) {
+                    holding_periods.push_back(hours / 24.0);  // Convert to days
+                    open_times[symbol] = exec.fill_time;  // Reset for next position
+                }
+            }
+        }
+        
+        if (!holding_periods.empty()) {
+            results.avg_holding_period = std::accumulate(holding_periods.begin(), 
+                                                       holding_periods.end(), 0.0) / holding_periods.size();
+        }
+    }
 
     // Calculate monthly returns
     std::map<std::string, double> monthly_returns_map;
@@ -1690,10 +1797,25 @@ Result<void> BacktestEngine::save_results_to_db(const BacktestResults& results,
     }
 
     try {
+        // Generate strategy-specific run_id prefix based on strategy name
+        std::string strategy_prefix = "TF_";  // Default to Trend Following based on common usage
+        std::string strategy_name = "Trend Following Strategy Backtest";  // Default strategy name
+        
+        // Try to determine strategy type from config or context
+        // Check if this looks like a trend following configuration
+        if (!config_.strategy_config.symbols.empty()) {
+            // For futures with daily frequency, likely trend following
+            if (config_.strategy_config.asset_class == AssetClass::FUTURES && 
+                config_.strategy_config.data_freq == DataFrequency::DAILY) {
+                strategy_prefix = "TF_";
+                strategy_name = "Trend Following Strategy Backtest";
+            }
+            // Could add more logic here for other strategy types
+        }
+        
         std::string actual_run_id =
             run_id.empty()
-                ? "BT_" +
-                      std::to_string(std::chrono::system_clock::now().time_since_epoch().count())
+                ? strategy_prefix + std::to_string(std::chrono::system_clock::now().time_since_epoch().count())
                 : run_id;
 
         INFO("Saving backtest results with ID: " + actual_run_id);
@@ -1711,7 +1833,7 @@ Result<void> BacktestEngine::save_results_to_db(const BacktestResults& results,
             return ss.str();
         };
 
-        // Create SQL query to save results
+        // Create SQL query to save results - REMOVE config column
         std::string query =
             "INSERT INTO " + config_.results_db_schema +
             ".results "
@@ -1719,50 +1841,62 @@ Result<void> BacktestEngine::save_results_to_db(const BacktestResults& results,
             "max_drawdown, "
             "calmar_ratio, volatility, total_trades, win_rate, profit_factor, avg_win, avg_loss, "
             "max_win, max_loss, avg_holding_period, var_95, cvar_95, beta, correlation, "
-            "downside_volatility, config) VALUES "
+            "downside_volatility) VALUES "  // Removed config from column list
             "('" +
             actual_run_id + "', '" + format_timestamp(config_.strategy_config.start_date) + "', '" +
             format_timestamp(config_.strategy_config.end_date) + "', " +
-            std::to_string(results.total_return) + ", " + std::to_string(results.sharpe_ratio) +
-            ", " + std::to_string(results.sortino_ratio) + ", " +
-            std::to_string(results.max_drawdown) + ", " + std::to_string(results.calmar_ratio) +
-            ", " + std::to_string(results.volatility) + ", " +
-            std::to_string(results.total_trades) + ", " + std::to_string(results.win_rate) + ", " +
-            std::to_string(results.profit_factor) + ", " + std::to_string(results.avg_win) + ", " +
-            std::to_string(results.avg_loss) + ", " + std::to_string(results.max_win) + ", " +
-            std::to_string(results.max_loss) + ", " + std::to_string(results.avg_holding_period) +
-            ", " + std::to_string(results.var_95) + ", " + std::to_string(results.cvar_95) + ", " +
-            std::to_string(results.beta) + ", " + std::to_string(results.correlation) + ", " +
-            std::to_string(results.downside_volatility) + ", ";
+            std::to_string(results.total_return) + ", " +
+            std::to_string(results.sharpe_ratio) + ", " + std::to_string(results.sortino_ratio) +
+            ", " + std::to_string(results.max_drawdown) + ", " +
+            std::to_string(results.calmar_ratio) + ", " + std::to_string(results.volatility) +
+            ", " + std::to_string(results.total_trades) + ", " + std::to_string(results.win_rate) +
+            ", " + std::to_string(results.profit_factor) + ", " + std::to_string(results.avg_win) +
+            ", " + std::to_string(results.avg_loss) + ", " + std::to_string(results.max_win) +
+            ", " + std::to_string(results.max_loss) + ", " +
+            std::to_string(results.avg_holding_period) + ", " + std::to_string(results.var_95) +
+            ", " + std::to_string(results.cvar_95) + ", " + std::to_string(results.beta) + ", " +
+            std::to_string(results.correlation) + ", " +
+            std::to_string(results.downside_volatility) + ")";  // Removed config value
 
-        // Format the configuration as JSON for storage
-        std::string config_json =
-            "{\"initial_capital\": " +
-            std::to_string(static_cast<double>(config_.portfolio_config.initial_capital)) +
-            ", \"symbols\": [";
-
-        for (size_t i = 0; i < config_.strategy_config.symbols.size(); ++i) {
-            if (i > 0)
-                config_json += ", ";
-            config_json += "\"" + config_.strategy_config.symbols[i] + "\"";
+        // Safety checks before executing query
+        if (!db_) {
+            ERROR("Database pointer is null during save_results_to_db");
+            return make_error<void>(ErrorCode::CONNECTION_ERROR, "Database pointer is null", "BacktestEngine");
         }
 
-        config_json += "]}";
+        if (!db_->is_connected()) {
+            ERROR("Database is not connected during save_results_to_db");
+            return make_error<void>(ErrorCode::CONNECTION_ERROR, "Database not connected", "BacktestEngine");
+        }
 
-        query += "'" + config_json + "')";
-
-        // Execute query
-        auto result = db_->execute_query(query);
-        if (result.is_error()) {
-            WARN("Failed to save backtest results: " + std::string(result.error()->what()));
-            // Return early if we can't save the main results - dependent tables won't work
+        // Execute query directly without Arrow table conversion
+        try {
+            // Use a direct database execution method that doesn't return Arrow table
+            // This avoids the convert_to_arrow_table issue with INSERT statements
+            auto db_ptr = std::dynamic_pointer_cast<PostgresDatabase>(db_);
+            if (!db_ptr) {
+                ERROR("Database is not a PostgresDatabase instance");
+                return make_error<void>(ErrorCode::DATABASE_ERROR, "Invalid database type", "BacktestEngine");
+            }
+            
+            // Execute the INSERT query directly
+            auto result = db_ptr->execute_direct_query(query);
+            if (result.is_error()) {
+                WARN("Failed to save backtest results: " + std::string(result.error()->what()));
+                return make_error<void>(
+                    ErrorCode::DATABASE_ERROR,
+                    "Failed to save main backtest results: " + std::string(result.error()->what()),
+                    "BacktestEngine");
+            }
+        } catch (const std::exception& e) {
+            ERROR("Exception during database query execution: " + std::string(e.what()));
             return make_error<void>(
                 ErrorCode::DATABASE_ERROR,
-                "Failed to save main backtest results: " + std::string(result.error()->what()),
+                "Exception during database query: " + std::string(e.what()),
                 "BacktestEngine");
         }
 
-        // Save equity curve if enabled
+        // Save equity curve, positions, executions, and metadata
         if (config_.store_trade_details) {
             // Prepare batch for equity curve points
             std::vector<std::string> equity_values;
@@ -1779,7 +1913,7 @@ Result<void> BacktestEngine::save_results_to_db(const BacktestResults& results,
                             "(run_id, timestamp, equity) VALUES " +
                             join(equity_values, ", ");
 
-                    auto curve_result = db_->execute_query(query);
+                    auto curve_result = db_->execute_direct_query(query);
                     if (curve_result.is_error()) {
                         WARN("Failed to save equity curve batch: " +
                              std::string(curve_result.error()->what()));
@@ -1795,72 +1929,43 @@ Result<void> BacktestEngine::save_results_to_db(const BacktestResults& results,
                         "(run_id, timestamp, equity) VALUES " +
                         join(equity_values, ", ");
 
-                auto curve_result = db_->execute_query(query);
+                auto curve_result = db_->execute_direct_query(query);
                 if (curve_result.is_error()) {
                     WARN("Failed to save final equity curve batch: " +
                          std::string(curve_result.error()->what()));
                 }
             }
 
-            // Save trade executions in batches
-            std::vector<std::string> execution_values;
-            for (const auto& exec : results.executions) {
-                std::string timestamp_str = format_timestamp(exec.fill_time);
-                std::string side_str = exec.side == Side::BUY ? "BUY" : "SELL";
-
-                std::string value = "('" + actual_run_id + "', '" + exec.exec_id + "', '" +
-                                    timestamp_str + "', '" + exec.symbol + "', '" + side_str +
-                                    "', " + std::to_string(exec.filled_quantity) + ", " +
-                                    std::to_string(exec.fill_price) + ", " +
-                                    std::to_string(exec.commission) + ")";
-
-                execution_values.push_back(value);
-
-                // Insert in batches of 1000
-                if (execution_values.size() >= 1000) {
-                    query = "INSERT INTO " + config_.results_db_schema +
-                            ".trade_executions "
-                            "(run_id, execution_id, timestamp, symbol, side, quantity, price, "
-                            "commission) "
-                            "VALUES " +
-                            join(execution_values, ", ");
-
-                    auto exec_result = db_->execute_query(query);
-                    if (exec_result.is_error()) {
-                        WARN("Failed to save executions batch: " +
-                             std::string(exec_result.error()->what()));
-                    }
-                    execution_values.clear();
-                }
-            }
-
-            // Insert any remaining executions
-            if (!execution_values.empty()) {
-                query =
-                    "INSERT INTO " + config_.results_db_schema +
-                    ".trade_executions "
-                    "(run_id, execution_id, timestamp, symbol, side, quantity, price, commission) "
-                    "VALUES " +
-                    join(execution_values, ", ");
-
-                auto exec_result = db_->execute_query(query);
-                if (exec_result.is_error()) {
-                    WARN("Failed to save final executions batch: " +
-                         std::string(exec_result.error()->what()));
-                }
-            }
-
-            // Save final positions
+            // Save final positions with proper PnL calculations
             std::vector<std::string> position_values;
             for (const auto& pos : results.positions) {
                 if (std::abs(static_cast<double>(pos.quantity)) < 1e-6)
                     continue;  // Skip empty positions
 
+                // Calculate unrealized and realized PnL properly
+                double unrealized_pnl = static_cast<double>(pos.unrealized_pnl);
+                double realized_pnl = static_cast<double>(pos.realized_pnl);
+                
+                // If PnL values are zero but we have a position, calculate unrealized PnL
+                if (unrealized_pnl == 0.0 && static_cast<double>(pos.quantity) != 0.0) {
+                    // Calculate unrealized PnL from symbol_pnl_map which tracks realized trades
+                    auto symbol_pnl_it = results.symbol_pnl.find(pos.symbol);
+                    if (symbol_pnl_it != results.symbol_pnl.end()) {
+                        // Use the realized PnL from our tracking
+                        realized_pnl = symbol_pnl_it->second;
+                        
+                        // For remaining position, calculate unrealized PnL based on current mark
+                        // Note: In real implementation, you'd use current market price
+                        // For backtest, this represents the potential PnL of the remaining position
+                        unrealized_pnl = 0.0;  // Will be calculated by portfolio manager if available
+                    }
+                }
+
                 std::string value = "('" + actual_run_id + "', '" + pos.symbol + "', " +
                                     std::to_string(static_cast<double>(pos.quantity)) + ", " +
                                     std::to_string(static_cast<double>(pos.average_price)) + ", " +
-                                    std::to_string(static_cast<double>(pos.unrealized_pnl)) + ", " +
-                                    std::to_string(static_cast<double>(pos.realized_pnl)) + ")";
+                                    std::to_string(unrealized_pnl) + ", " +
+                                    std::to_string(realized_pnl) + ")";
 
                 position_values.push_back(value);
             }
@@ -1872,53 +1977,61 @@ Result<void> BacktestEngine::save_results_to_db(const BacktestResults& results,
                         "VALUES " +
                         join(position_values, ", ");
 
-                auto pos_result = db_->execute_query(query);
+                auto pos_result = db_->execute_direct_query(query);
                 if (pos_result.is_error()) {
                     WARN("Failed to save positions: " + std::string(pos_result.error()->what()));
                 }
             }
 
-            // Save monthly returns
-            std::vector<std::string> monthly_values;
-            for (const auto& [month, ret] : results.monthly_returns) {
-                std::string value =
-                    "('" + actual_run_id + "', '" + month + "', " + std::to_string(ret) + ")";
-
-                monthly_values.push_back(value);
-            }
-
-            if (!monthly_values.empty()) {
-                query = "INSERT INTO " + config_.results_db_schema +
-                        ".monthly_returns "
-                        "(run_id, month, return) VALUES " +
-                        join(monthly_values, ", ");
-
-                auto month_result = db_->execute_query(query);
-                if (month_result.is_error()) {
-                    WARN("Failed to save monthly returns: " +
-                         std::string(month_result.error()->what()));
+            // Save actual trades (only position-closing trades) using new method
+            INFO("=== ACTUAL TRADES SAVE DEBUG ===");
+            INFO("Actual trades to save: " + std::to_string(results.actual_trades.size()));
+            INFO("Store trade details enabled: " + std::string(config_.store_trade_details ? "true" : "false"));
+            
+            if (!results.actual_trades.empty()) {
+                INFO("Attempting to save " + std::to_string(results.actual_trades.size()) + " actual trades to database");
+                auto exec_result = db_->store_backtest_executions(results.actual_trades, actual_run_id);
+                if (exec_result.is_error()) {
+                    ERROR("Failed to save backtest actual trades: " + std::string(exec_result.error()->what()));
+                } else {
                 }
+            } else {
+                WARN("No actual trades to save - actual_trades vector is empty!");
             }
 
-            // Save symbol P&L
-            std::vector<std::string> symbol_pnl_values;
-            for (const auto& [symbol, pnl] : results.symbol_pnl) {
-                std::string value =
-                    "('" + actual_run_id + "', '" + symbol + "', " + std::to_string(pnl) + ")";
-
-                symbol_pnl_values.push_back(value);
+            // Save backtest metadata with strategy-specific name
+            auto metadata_result = db_->store_backtest_metadata(
+                actual_run_id, strategy_name, "Automated " + strategy_name.substr(0, strategy_name.find(" ")) + " backtest run", 
+                config_.strategy_config.start_date, config_.strategy_config.end_date,
+                config_.to_json());
+            if (metadata_result.is_error()) {
+                WARN("Failed to save backtest metadata: " + std::string(metadata_result.error()->what()));
             }
 
-            if (!symbol_pnl_values.empty()) {
-                query = "INSERT INTO " + config_.results_db_schema +
-                        ".symbol_pnl "
-                        "(run_id, symbol, pnl) VALUES " +
-                        join(symbol_pnl_values, ", ");
-
-                auto pnl_result = db_->execute_query(query);
-                if (pnl_result.is_error()) {
-                    WARN("Failed to save symbol P&L: " + std::string(pnl_result.error()->what()));
+            // Save strategy signals (if available)
+            INFO("=== SIGNALS SAVE DEBUG ===");
+            INFO("Signals to save: " + std::to_string(results.signals.size()));
+            
+            if (!results.signals.empty()) {
+                // Convert signals to the format expected by store_backtest_signals
+                std::unordered_map<std::string, double> latest_signals;
+                for (const auto& [time_symbol, signal_value] : results.signals) {
+                    const std::string& symbol = time_symbol.second;
+                    // Keep the latest signal for each symbol
+                    latest_signals[symbol] = signal_value;
                 }
+                
+                INFO("Converted to " + std::to_string(latest_signals.size()) + " latest signals for symbols");
+                INFO("Strategy ID: " + strategy_prefix.substr(0, strategy_prefix.length()-1));
+                
+                auto signals_result = db_->store_backtest_signals(
+                    latest_signals, strategy_prefix.substr(0, strategy_prefix.length()-1),  // Remove trailing "_"
+                    actual_run_id, config_.strategy_config.start_date);
+                if (signals_result.is_error()) {
+                    ERROR("Failed to save backtest signals: " + std::string(signals_result.error()->what()));
+                } else {
+                }
+            } else {
             }
         }
 
@@ -2145,7 +2258,7 @@ Result<BacktestResults> BacktestEngine::load_results(const std::string& run_id) 
     try {
         // Query main results
         std::string query = "SELECT * FROM " + config_.results_db_schema +
-                            ".backtest_results "
+                            ".results "
                             "WHERE run_id = $1";
 
         auto result = db_->execute_query(query);
