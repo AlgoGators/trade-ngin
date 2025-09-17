@@ -33,6 +33,9 @@ find_package(Arrow REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(PQXX REQUIRED libpqxx)
 
+# Find curl for email functionality
+find_package(CURL REQUIRED)
+
 add_library(libpqxx::pqxx UNKNOWN IMPORTED)
 set_target_properties(libpqxx::pqxx PROPERTIES
     IMPORTED_LOCATION "${PQXX_LINK_LIBRARIES}"
@@ -51,6 +54,7 @@ set(TRADE_NGIN_SOURCES
     src/core/config_version.cpp
     src/core/config_base.cpp 
     src/core/logger.cpp
+    src/core/email_sender.cpp
     src/data/postgres_database.cpp
     src/data/market_data_bus.cpp
     src/data/conversion_utils.cpp
@@ -81,6 +85,7 @@ target_link_libraries(trade_ngin
         nlohmann_json::nlohmann_json
         libpqxx::pqxx
         Arrow::arrow_shared
+        CURL::libcurl
 )
 
 # Windows-specific settings

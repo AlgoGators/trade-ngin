@@ -13,7 +13,9 @@ RiskManager::RiskManager(RiskConfig config) : config_(std::move(config)) {
 }
 
 Result<RiskResult> RiskManager::process_positions(
-    const std::unordered_map<std::string, Position>& positions, const MarketData& market_data) {
+    const std::unordered_map<std::string, Position>& positions, 
+    const MarketData& market_data,
+    const std::unordered_map<std::string, double>& current_prices) {
     try {
         RiskResult result;
 
@@ -51,8 +53,21 @@ Result<RiskResult> RiskManager::process_positions(
             if (it != market_data.symbol_indices.end()) {
                 size_t index = it->second;
                 if (index < position_values.size()) {
+                    // Calculate position values for leverage
+                    // For backtest: use average price (original logic)
+                    // For live: use current price if available
+                    double price_for_leverage = static_cast<double>(pos.average_price);
+                    
+                    if (!current_prices.empty()) {
+                        // Live trading: use current market price if available
+                        auto price_it = current_prices.find(symbol);
+                        if (price_it != current_prices.end()) {
+                            price_for_leverage = price_it->second;
+                        }
+                    }
+                    
                     double position_value =
-                        static_cast<double>(pos.quantity) * static_cast<double>(pos.average_price);
+                        static_cast<double>(pos.quantity) * price_for_leverage;
                     position_values[index] = position_value;
                     total_value += std::abs(position_value);
                     position_symbols.push_back(symbol);
@@ -81,7 +96,7 @@ Result<RiskResult> RiskManager::process_positions(
         result.correlation_multiplier =
             calculate_correlation_multiplier(market_data, weights, result);
         result.leverage_multiplier =
-            calculate_leverage_multiplier(market_data, weights, total_value, result);
+            calculate_leverage_multiplier(market_data, weights, position_values, total_value, result);
 
         // Overall scale is minimum of all multipliers
         result.recommended_scale =
@@ -257,11 +272,17 @@ double RiskManager::calculate_correlation_multiplier(const MarketData& market_da
 
 double RiskManager::calculate_leverage_multiplier(const MarketData& market_data,
                                                   const std::vector<double>& weights,
+                                                  const std::vector<double>& position_values,
                                                   double total_value, RiskResult& result) const {
     // Calculate gross and net leverage
     double gross = total_value;
 
-    double net = std::accumulate(weights.begin(), weights.end(), 0.0) * total_value;
+    // Net leverage should be the sum of signed position values (net exposure)
+    // Calculate net from the position_values array (which preserves signs)
+    double net = 0.0;
+    for (size_t i = 0; i < position_values.size(); ++i) {
+        net += position_values[i];  // This preserves the sign (long/short)
+    }
 
     result.gross_leverage = gross / static_cast<double>(config_.capital);
     result.net_leverage = std::abs(net) / static_cast<double>(config_.capital);
