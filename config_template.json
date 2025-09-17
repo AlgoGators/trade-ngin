@@ -18,6 +18,17 @@
     "secret": "SET_USING_CREDENTIAL_STORE_ENCRYPTED", 
     "secret_encrypted": true
   },
+  "email": {
+    "_comment": "Email notification settings - use store_credential() to set these securely",
+    "smtp_host": "smtp.gmail.com",
+    "smtp_port": 587,
+    "username": "SET_USING_CREDENTIAL_STORE",
+    "password": "SET_USING_CREDENTIAL_STORE_ENCRYPTED",
+    "password_encrypted": true,
+    "from_email": "SET_USING_CREDENTIAL_STORE",
+    "to_emails": ["SET_USING_CREDENTIAL_STORE"],
+    "use_tls": true
+  },
   "security": {
     "_comment": "Security settings",
     "use_encryption": true,

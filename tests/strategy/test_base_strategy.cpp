@@ -36,7 +36,7 @@ public:
         return Result<void>();
     }
     Result<void> store_positions(const std::vector<Position>& positions,
-                                 const std::string&) override {
+                                 const std::string&, const std::string&) override {
         positions_stored = positions;
         return Result<void>();
     }

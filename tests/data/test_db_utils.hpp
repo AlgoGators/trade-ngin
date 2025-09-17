@@ -116,6 +116,7 @@ public:
 
     // Position storage
     Result<void> store_positions(const std::vector<Position>& positions,
+                                 const std::string& strategy_id,
                                  const std::string& table_name) override {
         if (!connected_)
             return make_error<void>(ErrorCode::DATABASE_ERROR, "Not connected");

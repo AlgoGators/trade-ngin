@@ -109,6 +109,14 @@ TEST_F(LoggerTest, InitializationCreatesLogDirectory) {
     EXPECT_TRUE(std::filesystem::exists(config.log_directory));
 }
 
+TEST_F(LoggerTest, jjj) {
+    LoggerConfig config;
+    config.destination = LogDestination::FILE;
+    config.log_directory = test_log_dir + "/subdir";
+    ASSERT_NO_THROW(Logger::instance().initialize(config));
+    EXPECT_TRUE(std::filesystem::exists(config.log_directory));
+}
+
 TEST_F(LoggerTest, LogsToConsoleWhenConfigured) {
     LoggerConfig config;
     config.destination = LogDestination::CONSOLE;

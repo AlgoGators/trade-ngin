@@ -119,7 +119,8 @@ public:
      * @return Result containing risk calculations
      */
     Result<RiskResult> process_positions(const std::unordered_map<std::string, Position>& positions,
-                                         const MarketData& market_data);
+                                         const MarketData& market_data,
+                                         const std::unordered_map<std::string, double>& current_prices = {});
 
     /**
      * @brief Update risk configuration
@@ -195,8 +196,9 @@ private:
      * @return Leverage multiplier
      */
     double calculate_leverage_multiplier(const MarketData& market_data,
-                                         const std::vector<double>& weights, double total_value,
-                                         RiskResult& result) const;
+                                         const std::vector<double>& weights, 
+                                         const std::vector<double>& position_values,
+                                         double total_value, RiskResult& result) const;
 
     /**
      * @brief Calculate historical returns from market data
