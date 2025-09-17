@@ -83,7 +83,7 @@ TEST_F(PostgresDatabaseTest, StorePositions) {
     ASSERT_TRUE(connect_result.is_ok());
 
     auto positions = create_test_positions();
-    auto result = db->store_positions(positions, "trading.positions");
+    auto result = db->store_positions(positions, "TEST_STRATEGY", "trading.positions");
 
     ASSERT_TRUE(result.is_ok());
 }
@@ -184,7 +184,7 @@ TEST_F(PostgresDatabaseTest, ConcurrentAccess) {
                 }
                 case 1: {
                     auto positions = create_test_positions();
-                    auto result = db->store_positions(positions, "trading.positions");
+                    auto result = db->store_positions(positions, "TEST_STRATEGY", "trading.positions");
                     if (result.is_ok())
                         success_count++;
                     break;
@@ -268,7 +268,7 @@ TEST_F(PostgresDatabaseTest, TransactionRollback) {
 
     // First store some valid positions
     auto positions = create_test_positions();
-    auto result = db->store_positions(positions, "trading.positions");
+    auto result = db->store_positions(positions, "TEST_STRATEGY", "trading.positions");
     ASSERT_TRUE(result.is_ok());
 
     // Try to store invalid positions (create a position with invalid values)
@@ -276,7 +276,7 @@ TEST_F(PostgresDatabaseTest, TransactionRollback) {
     invalid_pos.symbol = std::string(1000, 'A');  // Too long for DB column
     positions.push_back(invalid_pos);
 
-    result = db->store_positions(positions, "trading.positions");
+    result = db->store_positions(positions, "TEST_STRATEGY", "trading.positions");
     EXPECT_TRUE(result.is_error());
     EXPECT_EQ(result.error()->code(), ErrorCode::DATABASE_ERROR);
 

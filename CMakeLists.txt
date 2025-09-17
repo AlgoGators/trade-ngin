@@ -7,7 +7,7 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 # Set C++ standard
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
@@ -24,25 +24,28 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/bin/Release")
 find_package(GTest CONFIG REQUIRED)
 #set(nlohmann_json_DIR "C:/vcpkg/installed/x64-windows/share/nlohmann_json")
 find_package(nlohmann_json CONFIG REQUIRED)
-set(Arrow_DIR "C:/Users/herre/AlgoGator2025/trade-ngin/build/vcpkg/installed/x64-windows/share/arrow")
+#set(Arrow_DIR "C:/vcpkg/installed/x64-windows/share/arrow")
 find_package(Arrow REQUIRED)
 #set(libpqxx_DIR "C:/vcpkg/installed/x64-windows/share/libpqxx")
-# find_package(libpqxx CONFIG REQUIRED)  # Temporarily commented out - takes time to install
+# find_package(libpqxx CONFIG REQUIRED)
 
 # Try to find libpqxx via pkg-config (works with Homebrew)
-# find_package(PkgConfig REQUIRED)
-# pkg_check_modules(PQXX REQUIRED libpqxx)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(PQXX REQUIRED libpqxx)
 
-# add_library(libpqxx::pqxx UNKNOWN IMPORTED)
-# set_target_properties(libpqxx::pqxx PROPERTIES
-#     IMPORTED_LOCATION "${PQXX_LINK_LIBRARIES}"
-#     INTERFACE_INCLUDE_DIRECTORIES "${PQXX_INCLUDE_DIRS}"
-#     INTERFACE_LINK_LIBRARIES "${PQXX_LIBRARIES}"
-# )
+# Find curl for email functionality
+find_package(CURL REQUIRED)
 
-# link_directories(${PQXX_LIBRARY_DIRS})
+add_library(libpqxx::pqxx UNKNOWN IMPORTED)
+set_target_properties(libpqxx::pqxx PROPERTIES
+    IMPORTED_LOCATION "${PQXX_LINK_LIBRARIES}"
+    INTERFACE_INCLUDE_DIRECTORIES "${PQXX_INCLUDE_DIRS}"
+    INTERFACE_LINK_LIBRARIES "${PQXX_LIBRARIES}"
+)
 
-# link_directories(/opt/homebrew/lib)
+link_directories(${PQXX_LIBRARY_DIRS})
+
+link_directories(/opt/homebrew/lib)
 
 # Add source files for the library
 set(TRADE_NGIN_SOURCES
@@ -51,6 +54,7 @@ set(TRADE_NGIN_SOURCES
     src/core/config_version.cpp
     src/core/config_base.cpp 
     src/core/logger.cpp
+    src/core/email_sender.cpp
     src/data/postgres_database.cpp
     src/data/market_data_bus.cpp
     src/data/conversion_utils.cpp
@@ -79,8 +83,9 @@ add_library(trade_ngin SHARED ${TRADE_NGIN_SOURCES})
 target_link_libraries(trade_ngin
     PUBLIC
         nlohmann_json::nlohmann_json
-        # libpqxx::pqxx  # Temporarily commented out
+        libpqxx::pqxx
         Arrow::arrow_shared
+        CURL::libcurl
 )
 
 # Windows-specific settings
