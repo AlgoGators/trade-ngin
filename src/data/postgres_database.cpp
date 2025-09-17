@@ -5,6 +5,19 @@
 #include <sstream>
 #include "trade_ngin/core/state_manager.hpp"
 #include "trade_ngin/core/time_utils.hpp"
+
+namespace {
+std::string join(const std::vector<std::string>& elements, const std::string& delimiter) {
+    std::ostringstream os;
+    if (!elements.empty()) {
+        os << elements[0];
+        for (size_t i = 1; i < elements.size(); ++i) {
+            os << delimiter << elements[i];
+        }
+    }
+    return os.str();
+}
+}
 #include "trade_ngin/data/market_data_bus.hpp"
 
 namespace trade_ngin {
@@ -212,6 +225,7 @@ Result<void> PostgresDatabase::validate_connection() const {
 }
 
 Result<void> PostgresDatabase::store_positions(const std::vector<Position>& positions,
+                                               const std::string& strategy_id,
                                                const std::string& table_name) {
     auto validation = validate_connection();
     if (validation.is_error())
@@ -229,27 +243,98 @@ Result<void> PostgresDatabase::store_positions(const std::vector<Position>& posi
         // Begin transaction
         txn.exec("BEGIN");
 
-        // Clear existing positions using parameterized query
-        std::string delete_query = "DELETE FROM " + table_name;
-        txn.exec(delete_query);
+        // Clear existing positions for this strategy and the date of the positions being inserted
+        try {
+            // Get the date from the first position being inserted (all positions should be from the same date)
+            if (!positions.empty()) {
+                auto time_t = std::chrono::system_clock::to_time_t(positions[0].last_update);
+                std::stringstream ss;
+                ss << std::put_time(std::gmtime(&time_t), "%Y-%m-%d");
+                std::string position_date = ss.str();
+                
+                std::string delete_query = "DELETE FROM " + table_name + 
+                    " WHERE strategy_id = '" + strategy_id + "' AND DATE(last_update) = '" + position_date + "'";
+                txn.exec(delete_query);
+            }
+        } catch (const std::exception& e) {
+            // If strategy_id column doesn't exist, clear all positions for the position date only
+            WARN("strategy_id column may not exist, clearing all positions for position date: " + std::string(e.what()));
+            
+            if (!positions.empty()) {
+                auto time_t = std::chrono::system_clock::to_time_t(positions[0].last_update);
+                std::stringstream ss;
+                ss << std::put_time(std::gmtime(&time_t), "%Y-%m-%d");
+                std::string position_date = ss.str();
+                
+                std::string delete_query = "DELETE FROM " + table_name + " WHERE DATE(last_update) = '" + position_date + "'";
+                txn.exec(delete_query);
+            }
+        }
 
-        // Insert new positions
+        // Insert new positions using direct SQL like backtest does
+        std::vector<std::string> position_values;
         for (const auto& pos : positions) {
+            // Debug: Show position values before validation
+            DEBUG("Position before validation: " + pos.symbol + 
+                  " qty=" + std::to_string(static_cast<double>(pos.quantity)) +
+                  " avg_price=" + std::to_string(static_cast<double>(pos.average_price)) +
+                  " unrealized=" + std::to_string(static_cast<double>(pos.unrealized_pnl)) +
+                  " realized=" + std::to_string(static_cast<double>(pos.realized_pnl)));
+            
             // Validate position data
             auto pos_validation = validate_position(pos);
             if (pos_validation.is_error()) {
+                ERROR("Position validation failed for " + pos.symbol + ": " + pos_validation.error()->what());
                 return pos_validation;
             }
 
-            std::string query = "INSERT INTO " + table_name +
-                                " (symbol, quantity, average_price, unrealized_pnl, "
-                                "realized_pnl, last_update) VALUES "
-                                "($1, $2, $3, $4, $5, $6)";
+            // Build position value string matching the trading.positions table schema
+            // Schema: symbol, quantity, average_price, unrealized_pnl, realized_pnl, last_update, updated_at, strategy_id
+            std::string value = "('" + pos.symbol + "', " +
+                               std::to_string(static_cast<double>(pos.quantity)) + ", " +
+                               std::to_string(static_cast<double>(pos.average_price)) + ", " +
+                               std::to_string(static_cast<double>(pos.unrealized_pnl)) + ", " +
+                               std::to_string(static_cast<double>(pos.realized_pnl)) + ", " +
+                               "'" + format_timestamp(pos.last_update) + "', " +
+                               "'" + format_timestamp(pos.last_update) + "', " +  // updated_at
+                               "'" + strategy_id + "')";
 
-            txn.exec_params(
-                query, pos.symbol, static_cast<double>(pos.quantity),
-                static_cast<double>(pos.average_price), static_cast<double>(pos.unrealized_pnl),
-                static_cast<double>(pos.realized_pnl), format_timestamp(pos.last_update));
+            position_values.push_back(value);
+        }
+
+        if (!position_values.empty()) {
+            // Try with strategy_id column first
+            try {
+                std::string query = "INSERT INTO " + table_name +
+                                    " (symbol, quantity, average_price, unrealized_pnl, realized_pnl, last_update, updated_at, strategy_id) VALUES " +
+                                    join(position_values, ", ");
+
+                DEBUG("Executing position insert query: " + query);
+                txn.exec(query);
+            } catch (const std::exception& e) {
+                // If strategy_id column doesn't exist, try without it
+                WARN("strategy_id column may not exist, trying without it: " + std::string(e.what()));
+                
+                // Rebuild position values without strategy_id
+                std::vector<std::string> position_values_no_strategy;
+                for (const auto& pos : positions) {
+                    std::string value = "('" + pos.symbol + "', " +
+                                       std::to_string(static_cast<double>(pos.quantity)) + ", " +
+                                       std::to_string(static_cast<double>(pos.average_price)) + ", " +
+                                       std::to_string(static_cast<double>(pos.unrealized_pnl)) + ", " +
+                                       std::to_string(static_cast<double>(pos.realized_pnl)) + ", " +
+                                       "'" + format_timestamp(pos.last_update) + "', " +
+                                       "'" + format_timestamp(pos.last_update) + "')";
+                    position_values_no_strategy.push_back(value);
+                }
+                
+                std::string query = "INSERT INTO " + table_name +
+                                    " (symbol, quantity, average_price, unrealized_pnl, realized_pnl, last_update, updated_at) VALUES " +
+                                    join(position_values_no_strategy, ", ");
+
+                DEBUG("Executing position insert query without strategy_id: " + query);
+                txn.exec(query);
+            }
         }
 
         txn.commit();
@@ -360,6 +445,118 @@ Result<std::vector<std::string>> PostgresDatabase::get_symbols(AssetClass asset_
     } catch (const std::exception& e) {
         return make_error<std::vector<std::string>>(
             ErrorCode::DATABASE_ERROR, "Failed to get symbols: " + std::string(e.what()),
+            "PostgresDatabase");
+    }
+}
+
+Result<std::unordered_map<std::string, double>> PostgresDatabase::get_latest_prices(
+    const std::vector<std::string>& symbols, AssetClass asset_class,
+    DataFrequency freq, const std::string& data_type) {
+    auto validation = validate_connection();
+    if (validation.is_error()) {
+        return make_error<std::unordered_map<std::string, double>>(validation.error()->code(),
+                                                                   validation.error()->what());
+    }
+
+    try {
+        std::string full_table_name = build_table_name(asset_class, data_type, freq);
+        pqxx::work txn(*connection_);
+
+        // Validate table name components
+        auto table_validation = validate_table_name_components(asset_class, data_type, freq);
+        if (table_validation.is_error()) {
+            return make_error<std::unordered_map<std::string, double>>(table_validation.error()->code(),
+                                                                       table_validation.error()->what());
+        }
+
+        // Validate symbols
+        auto symbol_validation = validate_symbols(symbols);
+        if (symbol_validation.is_error()) {
+            return make_error<std::unordered_map<std::string, double>>(symbol_validation.error()->code(),
+                                                                       symbol_validation.error()->what());
+        }
+
+        // Query to get latest close price for each symbol
+        std::string query = 
+            "SELECT DISTINCT ON (symbol) symbol, close "
+            "FROM " + full_table_name + " "
+            "WHERE symbol = ANY($1) "
+            "ORDER BY symbol, time DESC";
+
+        auto result = txn.exec_params(query, symbols);
+        txn.commit();
+
+        std::unordered_map<std::string, double> prices;
+        for (const auto& row : result) {
+            std::string symbol = row[0].as<std::string>();
+            double price = row[1].as<double>();
+            prices[symbol] = price;
+        }
+
+        DEBUG("Retrieved latest prices for " + std::to_string(prices.size()) + " symbols from " + full_table_name);
+        return Result<std::unordered_map<std::string, double>>(prices);
+
+    } catch (const std::exception& e) {
+        return make_error<std::unordered_map<std::string, double>>(
+            ErrorCode::DATABASE_ERROR, "Failed to get latest prices: " + std::string(e.what()),
+            "PostgresDatabase");
+    }
+}
+
+Result<std::unordered_map<std::string, Position>> PostgresDatabase::load_positions_by_date(
+    const std::string& strategy_id, const Timestamp& date,
+    const std::string& table_name) {
+    auto validation = validate_connection();
+    if (validation.is_error()) {
+        return make_error<std::unordered_map<std::string, Position>>(validation.error()->code(),
+                                                                     validation.error()->what());
+    }
+
+    try {
+        pqxx::work txn(*connection_);
+        
+        // Query to get positions for a specific strategy and date
+        std::string query = 
+            "SELECT symbol, quantity, average_price, unrealized_pnl, realized_pnl, last_update "
+            "FROM " + table_name + " "
+            "WHERE strategy_id = $1 AND DATE(last_update) = DATE($2)";
+
+        std::string date_str = format_timestamp(date);
+        DEBUG("Querying positions for strategy_id: " + strategy_id + ", date: " + date_str);
+        DEBUG("Full query: " + query);
+        auto result = txn.exec_params(query, strategy_id, date_str);
+        txn.commit();
+
+        DEBUG("Query returned " + std::to_string(result.size()) + " rows");
+        std::unordered_map<std::string, Position> positions;
+        for (const auto& row : result) {
+            std::string symbol = row[0].as<std::string>();
+            double quantity = row[1].as<double>();
+            double avg_price = row[2].as<double>();
+            double unrealized_pnl = row[3].as<double>();
+            double realized_pnl = row[4].as<double>();
+            std::string last_update_str = row[5].as<std::string>();
+            
+            // Parse timestamp - for now just use current time
+            auto last_update = std::chrono::system_clock::now();
+            
+            Position pos;
+            pos.symbol = symbol;
+            pos.quantity = Decimal(quantity);
+            pos.average_price = Decimal(avg_price);
+            pos.unrealized_pnl = Decimal(unrealized_pnl);
+            pos.realized_pnl = Decimal(realized_pnl);
+            pos.last_update = last_update;
+            
+            positions[symbol] = pos;
+        }
+
+        DEBUG("Loaded " + std::to_string(positions.size()) + " positions for strategy " + strategy_id + " on " + date_str);
+        return Result<std::unordered_map<std::string, Position>>(positions);
+
+    } catch (const std::exception& e) {
+        return make_error<std::unordered_map<std::string, Position>>(
+            ErrorCode::DATABASE_ERROR, "Failed to load positions by date: " + std::string(e.what()),
             "PostgresDatabase");
     }
 }
@@ -1273,21 +1470,21 @@ Result<void> PostgresDatabase::validate_position(const Position& pos) const {
     }
 
     // Validate financial values
-    if (pos.quantity.abs() > Decimal(1e12)) {
+    if (pos.quantity.abs() > Decimal(1e9)) {
         return make_error<void>(ErrorCode::INVALID_ARGUMENT,
-                                "Invalid quantity: absolute value must be less than 1e12",
+                                "Invalid quantity: absolute value must be less than 1e9",
                                 "PostgresDatabase");
     }
 
-    if (pos.average_price.is_negative() || pos.average_price > Decimal(1e12)) {
+    if (pos.average_price.is_negative() || pos.average_price > Decimal(1e9)) {
         return make_error<void>(ErrorCode::INVALID_ARGUMENT,
-                                "Invalid average_price: must be between 0 and 1e12",
+                                "Invalid average_price: must be between 0 and 1e9",
                                 "PostgresDatabase");
     }
 
-    if (pos.unrealized_pnl.abs() > Decimal(1e12) || pos.realized_pnl.abs() > Decimal(1e12)) {
+    if (pos.unrealized_pnl.abs() > Decimal(1e9) || pos.realized_pnl.abs() > Decimal(1e9)) {
         return make_error<void>(ErrorCode::INVALID_ARGUMENT,
-                                "Invalid PnL values: absolute value must be less than 1e12",
+                                "Invalid PnL values: absolute value must be less than 1e9",
                                 "PostgresDatabase");
     }
 
@@ -1487,6 +1684,51 @@ Result<void> PostgresDatabase::store_trading_results(const std::string& strategy
     } catch (const std::exception& e) {
         return make_error<void>(ErrorCode::DATABASE_ERROR,
                                 "Failed to store trading results: " + std::string(e.what()),
+                                "PostgresDatabase");
+    }
+}
+
+Result<void> PostgresDatabase::store_live_results(const std::string& strategy_id, const Timestamp& date,
+                                                 double total_return, double volatility, double total_pnl,
+                                                 double unrealized_pnl, double realized_pnl, double current_portfolio_value,
+                                                 double portfolio_var, double gross_leverage, double net_leverage,
+                                                 double portfolio_leverage, double max_correlation, double jump_risk,
+                                                 double risk_scale, double total_notional, int active_positions,
+                                                 const nlohmann::json& config,
+                                                 const std::string& table_name) {
+    auto validation = validate_connection();
+    if (validation.is_error())
+        return validation;
+
+    try {
+        pqxx::work txn(*connection_);
+
+        std::string query = "INSERT INTO " + table_name +
+                            " (strategy_id, date, total_return, volatility, total_pnl, unrealized_pnl, realized_pnl, "
+                            "current_portfolio_value, portfolio_var, gross_leverage, net_leverage, portfolio_leverage, "
+                            "max_correlation, jump_risk, risk_scale, total_notional, active_positions, config) "
+                            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18) "
+                            "ON CONFLICT (strategy_id, date) "
+                            "DO UPDATE SET total_return = EXCLUDED.total_return, volatility = EXCLUDED.volatility, "
+                            "total_pnl = EXCLUDED.total_pnl, unrealized_pnl = EXCLUDED.unrealized_pnl, "
+                            "realized_pnl = EXCLUDED.realized_pnl, current_portfolio_value = EXCLUDED.current_portfolio_value, "
+                            "portfolio_var = EXCLUDED.portfolio_var, gross_leverage = EXCLUDED.gross_leverage, "
+                            "net_leverage = EXCLUDED.net_leverage, portfolio_leverage = EXCLUDED.portfolio_leverage, "
+                            "max_correlation = EXCLUDED.max_correlation, jump_risk = EXCLUDED.jump_risk, "
+                            "risk_scale = EXCLUDED.risk_scale, total_notional = EXCLUDED.total_notional, "
+                            "active_positions = EXCLUDED.active_positions, config = EXCLUDED.config";
+
+        txn.exec_params(query, strategy_id, format_timestamp(date), total_return, volatility, total_pnl,
+                        unrealized_pnl, realized_pnl, current_portfolio_value, portfolio_var, gross_leverage,
+                        net_leverage, portfolio_leverage, max_correlation, jump_risk, risk_scale,
+                        total_notional, active_positions, config.dump());
+
+        txn.commit();
+        INFO("Successfully stored live results for strategy: " + strategy_id + " on " + format_timestamp(date));
+        return Result<void>();
+    } catch (const std::exception& e) {
+        return make_error<void>(ErrorCode::DATABASE_ERROR,
+                                "Failed to store live results: " + std::string(e.what()),
                                 "PostgresDatabase");
     }
 }

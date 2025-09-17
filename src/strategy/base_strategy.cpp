@@ -500,7 +500,7 @@ Result<void> BaseStrategy::save_positions() {
                                         "BaseStrategy");
             }
 
-            auto result = db->store_positions(pos_vec, "trading.positions");
+            auto result = db->store_positions(pos_vec, id_, "trading.positions");
             if (result.is_ok()) {
                 return result;
             }
