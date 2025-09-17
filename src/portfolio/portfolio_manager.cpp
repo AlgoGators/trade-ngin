@@ -993,7 +993,7 @@ Result<void> PortfolioManager::apply_risk_management(const std::vector<Bar>& dat
 
         // Apply risk management with proper error handling
         try {
-            auto result = active_manager->process_positions(portfolio_positions, market_data);
+            auto result = active_manager->process_positions(portfolio_positions, market_data, {});
             if (result.is_error()) {
                 ERROR("Risk management calculation failed: " + std::string(result.error()->what()));
                 return Result<void>();  // Don't fail the entire operation
