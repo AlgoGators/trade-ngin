@@ -66,7 +66,31 @@ public:
      * @return Result indicating success or failure
      */
     virtual Result<void> store_positions(const std::vector<Position>& positions,
+                                         const std::string& strategy_id,
                                          const std::string& table_name = "trading.positions") = 0;
+
+    /**
+     * @brief Get latest market prices for symbols
+     * @param symbols Vector of symbols to get prices for
+     * @param asset_class Asset class of the symbols
+     * @param freq Data frequency
+     * @param data_type Type of data (ohlcv, etc.)
+     * @return Result containing map of symbol to latest price
+     */
+    virtual Result<std::unordered_map<std::string, double>> get_latest_prices(
+        const std::vector<std::string>& symbols, AssetClass asset_class,
+        DataFrequency freq = DataFrequency::DAILY, const std::string& data_type = "ohlcv") = 0;
+
+    /**
+     * @brief Load positions by date and strategy
+     * @param strategy_id Strategy identifier
+     * @param date Date to load positions for
+     * @param table_name Name of the positions table
+     * @return Result containing map of symbol to position
+     */
+    virtual Result<std::unordered_map<std::string, Position>> load_positions_by_date(
+        const std::string& strategy_id, const Timestamp& date,
+        const std::string& table_name = "trading.positions") = 0;
 
     /**
      * @brief Store strategy signals
@@ -181,6 +205,38 @@ public:
                                                double beta, double correlation, double downside_volatility,
                                                const nlohmann::json& config,
                                                const std::string& table_name = "trading.results") = 0;
+
+    /**
+     * @brief Store live trading results with new schema
+     * @param strategy_id Strategy identifier
+     * @param date Trading date
+     * @param total_return Total return for the day
+     * @param volatility Portfolio volatility
+     * @param total_pnl Total P&L
+     * @param unrealized_pnl Unrealized P&L
+     * @param realized_pnl Realized P&L
+     * @param current_portfolio_value Current portfolio value
+     * @param portfolio_var Portfolio VaR
+     * @param gross_leverage Gross leverage
+     * @param net_leverage Net leverage
+     * @param portfolio_leverage Portfolio leverage
+     * @param max_correlation Max correlation risk
+     * @param jump_risk Jump risk (99th percentile)
+     * @param risk_scale Risk scale factor
+     * @param total_notional Total notional exposure
+     * @param active_positions Number of active positions
+     * @param config Strategy configuration JSON
+     * @param table_name Name of the table to insert into
+     * @return Result indicating success or failure
+     */
+    virtual Result<void> store_live_results(const std::string& strategy_id, const Timestamp& date,
+                                           double total_return, double volatility, double total_pnl,
+                                           double unrealized_pnl, double realized_pnl, double current_portfolio_value,
+                                           double portfolio_var, double gross_leverage, double net_leverage,
+                                           double portfolio_leverage, double max_correlation, double jump_risk,
+                                           double risk_scale, double total_notional, int active_positions,
+                                           const nlohmann::json& config,
+                                           const std::string& table_name = "trading.live_results") = 0;
 
     /**
      * @brief Store live trading equity curve point
