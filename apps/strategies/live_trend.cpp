@@ -338,6 +338,21 @@ int main() {
         }
         INFO("Portfolio processing completed");
 
+        // Get executions that were automatically generated during portfolio processing
+        INFO("Retrieving portfolio executions...");
+        auto portfolio_executions = portfolio->get_recent_executions();
+        if (!portfolio_executions.empty()) {
+            INFO("Storing " + std::to_string(portfolio_executions.size()) + " portfolio executions to database...");
+            auto executions_result = db->store_executions(portfolio_executions, "trading.executions");
+            if (executions_result.is_error()) {
+                ERROR("Failed to store portfolio executions: " + std::string(executions_result.error()->what()));
+            } else {
+                INFO("Successfully stored " + std::to_string(portfolio_executions.size()) + " portfolio executions to database");
+            }
+        } else {
+            INFO("No portfolio executions generated (no position changes during optimization)");
+        }
+
         // Get optimized portfolio positions (integer-rounded after optimization/risk)
         INFO("Retrieving optimized portfolio positions...");
         auto positions = portfolio->get_portfolio_positions();
@@ -659,13 +674,31 @@ int main() {
                   << std::setw(12) << "Position" << std::endl;
         std::cout << std::string(40, '-') << std::endl;
 
+        // Collect signals for database storage
+        std::unordered_map<std::string, double> signals_to_store;
+
         for (const auto& symbol : symbols) {
             double forecast = tf_strategy->get_forecast(symbol);
             double position = tf_strategy->get_position(symbol);
-            
+
+            signals_to_store[symbol] = forecast;
+
             std::cout << std::setw(10) << symbol << " | "
                       << std::setw(12) << std::fixed << std::setprecision(4) << forecast << " | "
                       << std::setw(12) << std::fixed << std::setprecision(2) << position << std::endl;
+        }
+
+        // Store signals in database
+        if (!signals_to_store.empty()) {
+            INFO("Storing " + std::to_string(signals_to_store.size()) + " signals to database...");
+            auto signals_result = db->store_signals(signals_to_store, "LIVE_TREND_FOLLOWING", now, "trading.signals");
+            if (signals_result.is_error()) {
+                ERROR("Failed to store signals: " + std::string(signals_result.error()->what()));
+            } else {
+                INFO("Successfully stored " + std::to_string(signals_to_store.size()) + " signals to database");
+            }
+        } else {
+            INFO("No signals to store (all forecasts are zero)");
         }
 
         // Save trading results to results table
@@ -809,6 +842,15 @@ int main() {
             INFO("Positions saved to " + filename);
         } else {
             ERROR("Failed to open position file for writing");
+        }
+
+        // Store equity curve in database
+        INFO("Storing equity curve in database...");
+        auto store_equity_result = db->store_trading_equity_curve("LIVE_TREND_FOLLOWING", now, current_portfolio_value, "trading.equity_curve");
+        if (store_equity_result.is_error()) {
+            ERROR("Failed to store equity curve: " + std::string(store_equity_result.error()->what()));
+        } else {
+            INFO("Equity curve stored successfully");
         }
 
         // Stop the strategy

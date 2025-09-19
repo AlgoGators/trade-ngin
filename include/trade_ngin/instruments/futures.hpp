@@ -104,6 +104,13 @@ public:
     }
 
     /**
+     * @brief Get weight per contract for portfolio allocation
+     */
+    double get_weight() const {
+        return spec_.weight;
+    }
+
+    /**
      * @brief Calculate days to expiry
      * @param from Reference timestamp
      * @return Days to expiry or nullopt if no expiry
