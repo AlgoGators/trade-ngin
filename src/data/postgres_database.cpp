@@ -188,11 +188,11 @@ Result<void> PostgresDatabase::store_executions(const std::vector<ExecutionRepor
             }
 
             std::string query = "INSERT INTO " + table_name +
-                                " (order_id, exec_id, symbol, side, quantity, price, "
+                                " (order_id, symbol, side, quantity, price, "
                                 "execution_time, commission, is_partial) VALUES "
-                                "($1, $2, $3, $4, $5, $6, $7, $8, $9)";
+                                "($1, $2, $3, $4, $5, $6, $7, $8)";
 
-            txn.exec_params(query, exec.order_id, exec.exec_id, exec.symbol,
+            txn.exec_params(query, exec.order_id, exec.symbol,
                             side_to_string(exec.side), static_cast<double>(exec.filled_quantity),
                             static_cast<double>(exec.fill_price), format_timestamp(exec.fill_time),
                             static_cast<double>(exec.commission), exec.is_partial);
