@@ -4,13 +4,13 @@ on:
   push:
     branches: [ main, develop, main-hd ]
   pull_request:
-    branches: [ main, develop, main-hd ]
+    branches: [ main, develop, main-hd,  ]
 
 jobs:
   coverage:
     name: Code Coverage Analysis
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -56,7 +56,7 @@ jobs:
           cd build
           # Generate coverage data
           lcov --capture --directory . --output-file coverage.info
-          
+
           # Remove external files from coverage
           lcov --remove coverage.info '/usr/*' '/opt/*' '*/tests/*' '*/externals/*' '*/build/*' --output-file coverage.info
 
@@ -65,10 +65,10 @@ jobs:
           cd build
           # Generate HTML report
           genhtml coverage.info --output-directory coverage_html --title "Trade Ngin Coverage Report"
-          
+
           # Generate XML report for GitHub
           gcovr --root .. --exclude tests --exclude externals --exclude build --xml --output coverage.xml
-          
+
           # Generate detailed HTML report
           gcovr --root .. --exclude tests --exclude externals --exclude build --html --html-details --output coverage_detailed.html
 
@@ -78,10 +78,10 @@ jobs:
           # Extract coverage percentage
           COVERAGE_PERCENT=$(lcov --summary coverage.info | grep "lines......:" | awk '{print $3}' | sed 's/%//')
           echo "Coverage: $COVERAGE_PERCENT%"
-          
+
           # Set coverage as output for other jobs
           echo "coverage_percent=$COVERAGE_PERCENT" >> $GITHUB_OUTPUT
-          
+
           # Check if coverage meets threshold
           if (( $(echo "$COVERAGE_PERCENT < 75" | bc -l) )); then
             echo "❌ Coverage ($COVERAGE_PERCENT%) is below threshold (75%)"
@@ -116,20 +116,20 @@ jobs:
           script: |
             const coveragePercent = '${{ steps.coverage.outputs.coverage_percent }}';
             const coverageStatus = '${{ steps.coverage.outputs.coverage_status }}';
-            
+
             const statusIcon = coverageStatus === 'passed' ? '✅' : '❌';
             const statusText = coverageStatus === 'passed' ? 'PASSED' : 'FAILED';
-            
+
             const comment = `## Code Coverage Report
-            
+
             ${statusIcon} **Coverage: ${coveragePercent}%** (Status: ${statusText})
-            
+
             - Coverage threshold: 75%
             - Detailed reports available in artifacts
             - Coverage reports generated for all source files
-            
+
             ${coverageStatus === 'failed' ? '⚠️ Please add more tests to improve coverage.' : '🎉 Coverage requirements met!'}`;
-            
+
             github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,
@@ -141,10 +141,10 @@ jobs:
         run: |
           cd build
           COVERAGE_PERCENT=$(lcov --summary coverage.info | grep "lines......:" | awk '{print $3}' | sed 's/%//')
-          
+
           # Create a simple badge (you can replace this with a proper badge service)
           echo "Coverage: $COVERAGE_PERCENT%" > coverage_badge.txt
-          
+
           # For a proper badge, you would typically use a service like shields.io
           # echo "![Coverage](https://img.shields.io/badge/coverage-${COVERAGE_PERCENT}%25-brightgreen)" > coverage_badge.md
 
@@ -152,4 +152,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: coverage-badge-${{ github.run_number }}
-          path: build/coverage_badge.txt 
+          path: build/coverage_badge.txt

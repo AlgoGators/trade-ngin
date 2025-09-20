@@ -186,9 +186,11 @@ protected:
                 std::cout << "Error code: " << static_cast<int>(result.error()->code())
                           << std::endl;
 
-                // If we have many bars, try processing one by one to find the problematic bar
+                // If we have many bars, try processing one by one to find the
+                // problematic bar
                 if (chunk.size() > 1) {
-                    std::cout << "Attempting to process bars individually to isolate the problem..."
+                    std::cout << "Attempting to process bars individually to isolate the "
+                                 "problem..."
                               << std::endl;
                     for (size_t j = 0; j < chunk.size(); j++) {
                         std::vector<Bar> single_bar = {chunk[j]};
@@ -257,14 +259,14 @@ TEST_F(TrendFollowingTest, SignalGeneration) {
     std::vector<Bar> invalid_data = {Bar()};
     auto result = strategy_->on_data(invalid_data);
     EXPECT_TRUE(result.is_error()) << "Expected an error for invalid data, but got success";
-    
+
     // Test with empty data - should be handled gracefully
-    
+
     std::vector<Bar> empty_data;
     result = strategy_->on_data(empty_data);
     EXPECT_TRUE(result.is_ok()) << "Failed to process empty data: "
                                 << (result.is_error() ? result.error()->what() : "Unknown error");
-    
+
     // Test with missing fields (only symbol set)
     Bar missing_fields;
     missing_fields.symbol = "ES";
@@ -279,7 +281,7 @@ TEST_F(TrendFollowingTest, InvalidBar_TimestampZero_ReturnsInvalidData) {
 
     Bar bar;
     bar.symbol = "ES";
-    bar.timestamp = Timestamp{};  
+    bar.timestamp = Timestamp{};
     bar.open = 100.0;
     bar.high = 101.0;
     bar.low = 99.0;
@@ -298,7 +300,7 @@ TEST_F(TrendFollowingTest, InvalidBar_NonPositivePrices_ReturnsInvalidData) {
         Bar bar;
         bar.symbol = "ES";
         bar.timestamp = std::chrono::system_clock::now();
-        bar.open = 0.0; 
+        bar.open = 0.0;
         bar.high = 101.0;
         bar.low = 99.0;
         bar.close = 100.5;
@@ -316,7 +318,7 @@ TEST_F(TrendFollowingTest, InvalidBar_NonPositivePrices_ReturnsInvalidData) {
         bar.open = 100.0;
         bar.high = 101.0;
         bar.low = 99.0;
-        bar.close = 0.0;  
+        bar.close = 0.0;
         bar.volume = 1000.0;
 
         auto result = strategy_->on_data({bar});
@@ -332,7 +334,7 @@ TEST_F(TrendFollowingTest, InvalidBar_HighLessThanLow_ReturnsInvalidData) {
     bar.symbol = "ES";
     bar.timestamp = std::chrono::system_clock::now();
     bar.open = 100.0;
-    bar.high = 98.0; 
+    bar.high = 98.0;
     bar.low = 99.0;
     bar.close = 99.5;
     bar.volume = 1000.0;
@@ -345,14 +347,14 @@ TEST_F(TrendFollowingTest, InvalidBar_HighLessThanLow_ReturnsInvalidData) {
 TEST_F(TrendFollowingTest, InvalidBar_InconsistentOHLCRelationships_ReturnsInvalidData) {
     ASSERT_TRUE(strategy_->start().is_ok());
 
-    
+
     {
         Bar bar;
         bar.symbol = "ES";
         bar.timestamp = std::chrono::system_clock::now();
         bar.open = 100.0;
         bar.close = 100.2;
-        bar.high = 99.9;   // 
+        bar.high = 99.9;   //
         bar.low = 99.0;
         bar.volume = 1000.0;
         auto result = strategy_->on_data({bar});
@@ -368,7 +370,7 @@ TEST_F(TrendFollowingTest, InvalidBar_InconsistentOHLCRelationships_ReturnsInval
         bar.open = 100.0;
         bar.close = 100.2;
         bar.high = 101.0;
-        bar.low = 100.3;  
+        bar.low = 100.3;
         bar.volume = 1000.0;
         auto result = strategy_->on_data({bar});
         EXPECT_TRUE(result.is_error());
@@ -386,7 +388,7 @@ TEST_F(TrendFollowingTest, InvalidBar_NegativeVolume_ReturnsInvalidData) {
     bar.high = 101.0;
     bar.low = 99.0;
     bar.close = 100.5;
-    bar.volume = -1.0;  
+    bar.volume = -1.0;
 
     auto result = strategy_->on_data({bar});
     EXPECT_TRUE(result.is_error());
@@ -439,14 +441,14 @@ TEST_F(TrendFollowingTest, ConcurrentSymbolUpdates) {
         es_bar.open  = es_bar.close * 0.999;
         es_bar.high  = std::max(es_bar.open.as_double(), es_bar.close.as_double()) * 1.002;
         es_bar.low   = std::min(es_bar.open.as_double(), es_bar.close.as_double()) * 0.998;
-    
+
         Bar nq_bar = nq_data.back();
         nq_bar.timestamp = now + std::chrono::seconds(i * 2);
         nq_bar.close = nq_bar.close + i;
         nq_bar.open  = nq_bar.close * 0.999;
         nq_bar.high  = std::max(nq_bar.open.as_double(), nq_bar.close.as_double()) * 1.002;
         nq_bar.low   = std::min(nq_bar.open.as_double(), nq_bar.close.as_double()) * 0.998;
-    
+
         interleaved_data.push_back(es_bar);
         interleaved_data.push_back(nq_bar);
     }

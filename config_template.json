@@ -1,41 +1,44 @@
 {
-  "_comment": "Secure configuration template for Trade-ngin",
-  "_comment2": "Copy this file to config.json and use the secure credential store",
-  "_comment3": "Set TRADING_ENCRYPTION_KEY environment variable for encryption",
-  "database": {
-    "_comment": "PostgreSQL database settings - use store_credential() to set these securely",
-    "host": "SET_USING_CREDENTIAL_STORE",
-    "port": 5432,
-    "username": "SET_USING_CREDENTIAL_STORE",
-    "password": "SET_USING_CREDENTIAL_STORE_ENCRYPTED",
-    "password_encrypted": true,
-    "name": "SET_USING_CREDENTIAL_STORE"
-  },
-  "api": {
-    "_comment": "API credentials - always encrypted",
-    "key": "SET_USING_CREDENTIAL_STORE_ENCRYPTED",
-    "key_encrypted": true,
-    "secret": "SET_USING_CREDENTIAL_STORE_ENCRYPTED", 
-    "secret_encrypted": true
-  },
-  "email": {
-    "_comment": "Email notification settings - use store_credential() to set these securely",
-    "smtp_host": "smtp.gmail.com",
-    "smtp_port": 587,
-    "username": "SET_USING_CREDENTIAL_STORE",
-    "password": "SET_USING_CREDENTIAL_STORE_ENCRYPTED",
-    "password_encrypted": true,
-    "from_email": "SET_USING_CREDENTIAL_STORE",
-    "to_emails": ["SET_USING_CREDENTIAL_STORE"],
-    "use_tls": true
-  },
-  "security": {
-    "_comment": "Security settings",
-    "use_encryption": true,
-    "validate_inputs": true,
-    "log_sensitive_data": false,
-    "max_config_file_size": 1048576,
-    "required_permissions": "600"
-  },
-  "_security_notice": "This configuration file should have 600 permissions (owner read/write only)"
+    "_comment": "Secure configuration template for Trade-ngin",
+    "_comment2": "Copy this file to config.json and use the secure credential store",
+    "_comment3": "Set TRADING_ENCRYPTION_KEY environment variable for encryption",
+    "database": {
+        "_comment": "PostgreSQL database settings - use store_credential() to set these securely",
+        "host": "SET_USING_CREDENTIAL_STORE",
+        "port": 5432,
+        "username": "SET_USING_CREDENTIAL_STORE",
+        "password": "SET_USING_CREDENTIAL_STORE_ENCRYPTED",
+        "password_encrypted": true,
+        "name": "SET_USING_CREDENTIAL_STORE"
+    },
+    "api": {
+        "_comment": "API credentials - always encrypted",
+        "key": "SET_USING_CREDENTIAL_STORE_ENCRYPTED",
+        "key_encrypted": true,
+        "secret": "SET_USING_CREDENTIAL_STORE_ENCRYPTED",
+        "secret_encrypted": true
+    },
+    "email": {
+        "_comment": "Email notification settings - use store_credential() to set these securely",
+        "smtp_host": "smtp.gmail.com",
+        "smtp_port": 587,
+        "username": "SET_USING_CREDENTIAL_STORE",
+        "password": "SET_USING_CREDENTIAL_STORE_ENCRYPTED",
+        "password_encrypted": true,
+        "from_email": "SET_USING_CREDENTIAL_STORE",
+        "to_emails": [
+            "SET_USING_CREDENTIAL_STORE"
+        ],
+        "use_tls": true
+    },
+    "security": {
+        "_comment": "Security settings",
+        "use_encryption": true,
+        "validate_inputs": true,
+        "log_sensitive_data": false,
+        "max_config_file_size": 1048576,
+        "required_permissions": "600"
+    },
+    "_security_notice":
+        "This configuration file should have 600 permissions (owner read/write only)"
 }

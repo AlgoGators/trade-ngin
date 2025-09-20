@@ -25,7 +25,7 @@ ctest --output-on-failure
 - Framework: GoogleTest
 - All tests in `tests/` must pass on PRs and `main`
 - Run subset: `ctest -R trend_following`
-- DB tests require reachable PostgreSQL 
+- DB tests require reachable PostgreSQL
 
 ## CI/CD
 #See CI/CD README and current implementation under .github/workflows
@@ -39,7 +39,7 @@ Expected Stages:
 
 ## Daily cron (live pipeline)
 We schedule `apps/strategies/live_trend` to run daily, produce positions/metrics, write logs, and send summary email.
-See cron template setup under scripts. 
+See cron template setup under scripts.
 
 Cron (Example):
 ```cron

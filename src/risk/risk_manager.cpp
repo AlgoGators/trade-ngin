@@ -13,8 +13,7 @@ RiskManager::RiskManager(RiskConfig config) : config_(std::move(config)) {
 }
 
 Result<RiskResult> RiskManager::process_positions(
-    const std::unordered_map<std::string, Position>& positions, 
-    const MarketData& market_data,
+    const std::unordered_map<std::string, Position>& positions, const MarketData& market_data,
     const std::unordered_map<std::string, double>& current_prices) {
     try {
         RiskResult result;
@@ -57,7 +56,7 @@ Result<RiskResult> RiskManager::process_positions(
                     // For backtest: use average price (original logic)
                     // For live: use current price if available
                     double price_for_leverage = static_cast<double>(pos.average_price);
-                    
+
                     if (!current_prices.empty()) {
                         // Live trading: use current market price if available
                         auto price_it = current_prices.find(symbol);
@@ -65,9 +64,8 @@ Result<RiskResult> RiskManager::process_positions(
                             price_for_leverage = price_it->second;
                         }
                     }
-                    
-                    double position_value =
-                        static_cast<double>(pos.quantity) * price_for_leverage;
+
+                    double position_value = static_cast<double>(pos.quantity) * price_for_leverage;
                     position_values[index] = position_value;
                     total_value += std::abs(position_value);
                     position_symbols.push_back(symbol);
@@ -76,7 +74,9 @@ Result<RiskResult> RiskManager::process_positions(
         }
 
         if (position_symbols.empty()) {
-            WARN("No positions mapped to market data symbols, skipping risk calculation");
+            WARN(
+                "No positions mapped to market data symbols, skipping risk "
+                "calculation");
             return Result<RiskResult>(result);  // Return default result
         }
 
@@ -95,8 +95,8 @@ Result<RiskResult> RiskManager::process_positions(
         result.jump_multiplier = calculate_jump_multiplier(market_data, weights, result);
         result.correlation_multiplier =
             calculate_correlation_multiplier(market_data, weights, result);
-        result.leverage_multiplier =
-            calculate_leverage_multiplier(market_data, weights, position_values, total_value, result);
+        result.leverage_multiplier = calculate_leverage_multiplier(
+            market_data, weights, position_values, total_value, result);
 
         // Overall scale is minimum of all multipliers
         result.recommended_scale =

@@ -225,7 +225,8 @@ struct BacktestResults {
 
     // Trade details
     std::vector<ExecutionReport> executions;  // All position changes (8000 number)
-    std::vector<ExecutionReport> actual_trades;  // Only actual trades that close positions (2000 number)
+    std::vector<ExecutionReport>
+        actual_trades;  // Only actual trades that close positions (2000 number)
     std::vector<Position> positions;
     std::vector<std::pair<Timestamp, double>> equity_curve;
     std::vector<std::pair<Timestamp, double>> drawdown_curve;
@@ -234,7 +235,7 @@ struct BacktestResults {
     std::unordered_map<std::string, double> monthly_returns;
     std::unordered_map<std::string, double> symbol_pnl;
     std::vector<std::pair<Timestamp, RiskResult>> risk_metrics;
-    
+
     // Strategy signals collected during backtest
     std::map<std::pair<Timestamp, std::string>, double> signals;  // (timestamp, symbol) -> signal
 };
@@ -257,7 +258,8 @@ public:
     ~BacktestEngine();
 
     /**
-     * @brief Run backtest simulation for a single strategy with portfolio-level constraints
+     * @brief Run backtest simulation for a single strategy with portfolio-level
+     * constraints
      * @param strategy Strategy to test
      * @return Result containing backtest results
      */
@@ -348,9 +350,8 @@ private:
      * @param strategy_positions Vector of strategy positions
      * @param portfolio_positions Combined portfolio positions
      */
-    void combine_positions(
-        const std::vector<std::map<std::string, Position>>& strategy_positions,
-        std::map<std::string, Position>& portfolio_positions);
+    void combine_positions(const std::vector<std::map<std::string, Position>>& strategy_positions,
+                           std::map<std::string, Position>& portfolio_positions);
 
     /**
      * @brief Redistribute positions based on strategy weights
@@ -358,10 +359,9 @@ private:
      * @param strategy_positions Vector of strategy positions
      * @param strategies Vector of strategy instances
      */
-    void redistribute_positions(
-        const std::map<std::string, Position>& portfolio_positions,
-        std::vector<std::map<std::string, Position>>& strategy_positions,
-        const std::vector<std::shared_ptr<StrategyInterface>>& strategies);
+    void redistribute_positions(const std::map<std::string, Position>& portfolio_positions,
+                                std::vector<std::map<std::string, Position>>& strategy_positions,
+                                const std::vector<std::shared_ptr<StrategyInterface>>& strategies);
 
     /**
      * @brief Process portfolio data for a single time step

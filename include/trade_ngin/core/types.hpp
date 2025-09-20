@@ -46,10 +46,10 @@ public:
     }
 
     Decimal(int i) : value_(static_cast<int64_t>(i) * SCALE) {}
-    
+
     // Only define long constructor if long is different from int64_t
-    template<typename T = long>
-    Decimal(T l, typename std::enable_if<!std::is_same<T, int64_t>::value>::type* = nullptr) 
+    template <typename T = long>
+    Decimal(T l, typename std::enable_if<!std::is_same<T, int64_t>::value>::type* = nullptr)
         : value_(static_cast<int64_t>(l) * SCALE) {}
 
     // Conversion operators
@@ -285,7 +285,8 @@ struct Bar {
     Price high;
     Price low;
     Price close;
-    double volume;  // Keep as double for now since volume is typically not a financial calculation
+    double volume;  // Keep as double for now since volume is typically not a
+                    // financial calculation
     std::string symbol;
 
     Bar() = default;

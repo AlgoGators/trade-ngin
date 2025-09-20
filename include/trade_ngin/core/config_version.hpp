@@ -171,7 +171,8 @@ private:
 
     // Store migrations by component type and version pair
     std::unordered_map<ConfigType,
-                       std::unordered_map<std::string,  // version pair string "from_to"
+                       std::unordered_map<std::string,  // version pair string
+                                                        // "from_to"
                                           MigrationStep>>
         migrations_;
 

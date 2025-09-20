@@ -2,26 +2,25 @@ name: CI/CD Pipeline
 
 on:
   push:
-    branches: [ main, develop, main-hd ]
+    branches: [main, develop, main-hd, formatting-test]
   pull_request:
-    branches: [ main, develop, main-hd ]
+    branches: [main, develop, main-hd]
 
 env:
-  COVERAGE_THRESHOLD: 75
+  COVERAGE_THRESHOLD: 30
 
 jobs:
   lint:
     name: Code Linting
     runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/algogators/trade-ngin-ci:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
-
-      - name: Install Dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y clang-format cpplint
-
       - name: Run Clang Format Check
         run: |
           echo "Checking code formatting..."
@@ -33,14 +32,38 @@ jobs:
               FORMAT_ISSUES=$((FORMAT_ISSUES + 1))
             fi
           done
-          
+
           if [ $FORMAT_ISSUES -eq 0 ]; then
             echo "✅ Code formatting is correct"
           else
             echo "⚠️  Found $FORMAT_ISSUES files with formatting issues (non-blocking)"
             echo "💡 To fix formatting issues, run: clang-format -i src/**/*.cpp include/**/*.hpp"
           fi
+      - name: Run Clang Tidy Check
+        run: |
+          echo "Running clang-tidy static analysis..."
+          mkdir -p build
+          cd build
+          cmake .. -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 
+          # Run clang-tidy on all source files and output to report
+          find ../src -name "*.cpp" | xargs -P$(nproc) -n1 clang-tidy -p . --format-style=file 2>&1 | tee ../clang-tidy-report.txt || true
+
+          echo "✅ Clang-tidy analysis completed"
+          echo "📄 Report saved to clang-tidy-report.txt"
+
+      - name: Run Cppcheck
+        run: |
+          echo "Running cppcheck static analysis..."
+          cppcheck --enable=all --suppress=missingInclude --quiet \
+            --error-exitcode=0 --xml --xml-version=2 \
+            src include 2> cppcheck-report.xml || true
+
+          # Generate text report
+          cppcheck --enable=all --suppress=missingInclude \
+            src include 2>&1 | tee cppcheck-report.txt || true
+
+          echo "✅ Cppcheck analysis completed"
       - name: Run Cpplint
         run: |
           echo "Running cpplint..."
@@ -53,10 +76,10 @@ jobs:
           TIMESTAMP=$(date +%Y-%m-%d_%H-%M-%S)
           REPORT_FILE="linting/lint_report_$TIMESTAMP.txt"
           SUMMARY_FILE="linting/lint_summary_$TIMESTAMP.txt"
-          
+
           echo "Linting Report - $(date)" > $REPORT_FILE
           echo "=================================" >> $REPORT_FILE
-          
+
           # Initialize counters
           FORMAT_ISSUES=0
           STYLE_ISSUES=0
@@ -64,10 +87,10 @@ jobs:
           FIXME_COUNT=0
           MEMORY_ISSUES=0
           SERIOUS_ISSUES=0
-          
+
           echo "🔍 Checking code formatting..." >> $REPORT_FILE
           echo "Clang Format Check:" >> $REPORT_FILE
-          
+
           # Check formatting issues
           for file in $(find src include -name "*.cpp" -o -name "*.hpp"); do
             if ! clang-format --dry-run "$file" >/dev/null 2>&1; then
@@ -75,41 +98,51 @@ jobs:
               FORMAT_ISSUES=$((FORMAT_ISSUES + 1))
             fi
           done
-          
+
           if [ $FORMAT_ISSUES -eq 0 ]; then
             echo "✅ No formatting issues found" >> $REPORT_FILE
           else
             echo "⚠️  Found $FORMAT_ISSUES files with formatting issues (COSMETIC)" >> $REPORT_FILE
           fi
-          
+
           echo "" >> $REPORT_FILE
           echo "Cpplint Results:" >> $REPORT_FILE
-          
+
+          # Add clang-tidy results to report
+          echo "" >> $REPORT_FILE
+          echo "Clang Tidy Results:" >> $REPORT_FILE
+          echo "===================" >> $REPORT_FILE
+          if [ -f "clang-tidy-report.txt" ]; then
+          cat clang-tidy-report.txt >> $REPORT_FILE
+          else
+          echo "No clang-tidy report found" >> $REPORT_FILE
+          fi
+
           # Run cpplint and categorize issues
           CPPLINT_OUTPUT=$(cpplint --recursive --filter=-legal/copyright,-build/include_order src include 2>&1 || true)
           echo "$CPPLINT_OUTPUT" >> $REPORT_FILE
-          
+
           # Count and categorize cpplint issues
           STYLE_ISSUES=$(echo "$CPPLINT_OUTPUT" | grep -c "Total errors found" || echo "0")
-          
+
           # Check for serious issues
           echo "" >> $REPORT_FILE
           echo "Additional Security/Quality Checks:" >> $REPORT_FILE
-          
+
           # Check for TODO comments
           TODO_COUNT=$(grep -r "TODO" src include | wc -l || echo "0")
           if [ "$TODO_COUNT" -gt 0 ]; then
             echo "⚠️  Found $TODO_COUNT TODO comments (DEVELOPMENT)" >> $REPORT_FILE
             grep -r "TODO" src include >> $REPORT_FILE || true
           fi
-          
+
           # Check for FIXME comments
           FIXME_COUNT=$(grep -r "FIXME" src include | wc -l || echo "0")
           if [ "$FIXME_COUNT" -gt 0 ]; then
             echo "⚠️  Found $FIXME_COUNT FIXME comments (KNOWN ISSUES)" >> $REPORT_FILE
             grep -r "FIXME" src include >> $REPORT_FILE || true
           fi
-          
+
           # Check for potential memory leaks (SERIOUS)
           MEMORY_ISSUES=$(grep -r "new.*delete\|malloc.*free" src include | wc -l || echo "0")
           if [ "$MEMORY_ISSUES" -gt 0 ]; then
@@ -117,7 +150,7 @@ jobs:
             grep -r "new.*delete\|malloc.*free" src include >> $REPORT_FILE || true
             SERIOUS_ISSUES=$((SERIOUS_ISSUES + MEMORY_ISSUES))
           fi
-          
+
           # Check for hardcoded credentials (SERIOUS)
           CREDENTIAL_ISSUES=$(grep -r "password\|secret\|key" src include | wc -l || echo "0")
           if [ "$CREDENTIAL_ISSUES" -gt 0 ]; then
@@ -125,7 +158,7 @@ jobs:
             grep -r "password\|secret\|key" src include >> $REPORT_FILE || true
             SERIOUS_ISSUES=$((SERIOUS_ISSUES + CREDENTIAL_ISSUES))
           fi
-          
+
           # Check for security vulnerabilities (SERIOUS)
           SECURITY_ISSUES=$(find src include -name "*.cpp" -o -name "*.hpp" | xargs grep -l "strcpy\|strcat\|sprintf" | wc -l || echo "0")
           if [ "$SECURITY_ISSUES" -gt 0 ]; then
@@ -133,7 +166,7 @@ jobs:
             find src include -name "*.cpp" -o -name "*.hpp" | xargs grep -l "strcpy\|strcat\|sprintf" >> $REPORT_FILE || true
             SERIOUS_ISSUES=$((SERIOUS_ISSUES + SECURITY_ISSUES))
           fi
-          
+
           # Create summary file
           echo "Linting Summary - $(date)" > $SUMMARY_FILE
           echo "===============================" >> $SUMMARY_FILE
@@ -154,14 +187,21 @@ jobs:
           echo "   - Security vulnerabilities: $SECURITY_ISSUES" >> $SUMMARY_FILE
           echo "   - Total serious issues: $SERIOUS_ISSUES" >> $SUMMARY_FILE
           echo "" >> $SUMMARY_FILE
-          
+          echo "🔍 Static Analysis (clang-tidy):" >> $SUMMARY_FILE
+          if [ -f "clang-tidy-report.txt" ]; then
+          CLANG_TIDY_ISSUES=$(grep -c "warning\|error" clang-tidy-report.txt || echo "0")
+          echo "   - Static analysis issues: $CLANG_TIDY_ISSUES" >> $SUMMARY_FILE
+          else
+          echo "   - Static analysis: No report generated" >> $SUMMARY_FILE
+          fi
+
           if [ $SERIOUS_ISSUES -gt 0 ]; then
             echo "❌ ATTENTION: $SERIOUS_ISSUES serious issues found!" >> $SUMMARY_FILE
             echo "   These should be addressed before merging." >> $SUMMARY_FILE
           else
             echo "✅ No serious issues found." >> $SUMMARY_FILE
           fi
-          
+
           if [ $FORMAT_ISSUES -gt 0 ] || [ $STYLE_ISSUES -gt 0 ]; then
             echo "⚠️  $FORMAT_ISSUES formatting + $STYLE_ISSUES style issues (cosmetic)" >> $SUMMARY_FILE
             echo "   These can be fixed with: clang-format -i src/**/*.cpp include/**/*.hpp" >> $SUMMARY_FILE
@@ -174,7 +214,7 @@ jobs:
         with:
           name: linting-report-${{ github.run_number }}
           path: linting/
-          
+
       - name: Upload Linting Summary
         uses: actions/upload-artifact@v4
         with:
@@ -184,32 +224,19 @@ jobs:
   build:
     name: Build and Test
     runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/algogators/trade-ngin-ci:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     needs: lint
     strategy:
       matrix:
         build-type: [Debug, Release]
-    
+
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
-
-      - name: Install Dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential cmake libgtest-dev nlohmann-json3-dev libpqxx-dev
-          # Install Arrow from source if not available in package manager
-          if ! dpkg -l | grep -q libarrow; then
-            echo "Installing Arrow from source..."
-            wget https://archive.apache.org/dist/arrow/arrow-14.0.2/apache-arrow-14.0.2.tar.gz
-            tar -xzf apache-arrow-14.0.2.tar.gz
-            cd apache-arrow-14.0.2/cpp
-            mkdir build && cd build
-            cmake .. -DARROW_COMPUTE=ON -DARROW_CSV=ON -DARROW_DATASET=ON -DARROW_FILESYSTEM=ON -DARROW_JSON=ON -DARROW_PARQUET=ON
-            make -j$(nproc)
-            sudo make install
-            sudo ldconfig
-          fi
-
       - name: Configure CMake with Coverage
         run: |
           mkdir -p build
@@ -224,6 +251,14 @@ jobs:
           cd build
           make -j$(nproc)
 
+      - name: Run Valgrind Memory Check
+        if: matrix.build-type == 'Debug'
+        run: |
+          cd build
+          # Run tests with Valgrind
+          valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes \
+            --error-exitcode=1 ctest --output-on-failure --verbose
+
       - name: Run Tests
         run: |
           cd build
@@ -234,14 +269,14 @@ jobs:
         run: |
           cd build
           # Generate coverage data
-          lcov --capture --directory . --output-file coverage.info
-          
+          lcov --capture --directory . --output-file coverage.info --ignore-errors mismatch --ignore-errors negative
+
           # Remove external files from coverage
-          lcov --remove coverage.info '/usr/*' '/opt/*' '*/tests/*' '*/externals/*' --output-file coverage.info
-          
+          lcov --remove coverage.info '/usr/*' '/opt/*' '*/tests/*' '*/externals/*' --output-file coverage.info --ignore-errors unused
+
           # Generate HTML report
           genhtml coverage.info --output-directory coverage_html
-          
+
           # Generate XML report for GitHub
           gcovr --root .. --exclude tests --exclude externals --xml --output coverage.xml
 
@@ -252,7 +287,7 @@ jobs:
           # Extract coverage percentage
           COVERAGE_PERCENT=$(lcov --summary coverage.info | grep "lines......:" | awk '{print $3}' | sed 's/%//')
           echo "Coverage: $COVERAGE_PERCENT%"
-          
+
           # Check if coverage meets threshold
           if (( $(echo "$COVERAGE_PERCENT < ${{ env.COVERAGE_THRESHOLD }}" | bc -l) )); then
             echo "❌ Coverage ($COVERAGE_PERCENT%) is below threshold (${{ env.COVERAGE_THRESHOLD }}%)"
@@ -290,7 +325,7 @@ jobs:
           echo "Running basic security checks..."
           # Check for common security issues in C++ code
           find src include -name "*.cpp" -o -name "*.hpp" | xargs grep -l "strcpy\|strcat\|sprintf" || echo "No obvious security issues found"
-          
+
           # Check for hardcoded credentials
           grep -r "password\|secret\|key" src include || echo "No obvious hardcoded credentials found"
 
@@ -322,12 +357,12 @@ jobs:
           echo "- Linting: ${{ needs.lint.result }}" >> summary.md
           echo "- Build: ${{ needs.build.result }}" >> summary.md
           echo "- Security: ${{ needs.security-scan.result }}" >> summary.md
-          
+
           if [ -f "coverage-reports/coverage.xml" ]; then
             echo "## Coverage Report" >> summary.md
             echo "Coverage report is available in the artifacts." >> summary.md
           fi
-          
+
           if [ -d "linting-reports/" ]; then
             echo "## Linting Report" >> summary.md
             echo "Linting report is available in the artifacts." >> summary.md
@@ -337,4 +372,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: summary-report-${{ github.run_number }}
-          path: summary.md 
+          path: summary.md

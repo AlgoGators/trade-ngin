@@ -422,7 +422,8 @@ Result<void> BaseStrategy::check_risk_limits() {
     double drawdown = (metrics_.total_pnl / config_.capital_allocation);
     const double MIN_DRAWDOWN_THRESHOLD = 0.001;  // Only trigger if drawdown is at least 0.1%
 
-    // Only trigger error if drawdown exceeds limit AND is greater than minimum threshold
+    // Only trigger error if drawdown exceeds limit AND is greater than minimum
+    // threshold
     if (drawdown < -static_cast<double>(risk_limits_.max_drawdown) &&
         std::abs(drawdown) > MIN_DRAWDOWN_THRESHOLD) {
         return make_error<void>(ErrorCode::RISK_LIMIT_EXCEEDED,

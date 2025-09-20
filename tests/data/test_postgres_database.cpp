@@ -50,7 +50,8 @@ TEST_F(PostgresDatabaseTest, GetMarketData) {
     ASSERT_TRUE(result.is_ok());
     auto table = result.value();
     EXPECT_GT(table->num_rows(), 0);
-    EXPECT_EQ(table->num_columns(), 7);  // time, symbol, open, high, low, close, volume
+    EXPECT_EQ(table->num_columns(),
+              7);  // time, symbol, open, high, low, close, volume
 }
 
 TEST_F(PostgresDatabaseTest, GetMarketDataInvalidDateRange) {
@@ -184,7 +185,8 @@ TEST_F(PostgresDatabaseTest, ConcurrentAccess) {
                 }
                 case 1: {
                     auto positions = create_test_positions();
-                    auto result = db->store_positions(positions, "TEST_STRATEGY", "trading.positions");
+                    auto result =
+                        db->store_positions(positions, "TEST_STRATEGY", "trading.positions");
                     if (result.is_ok())
                         success_count++;
                     break;

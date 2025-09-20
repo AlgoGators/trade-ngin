@@ -40,6 +40,7 @@ target_link_libraries(trade_ngin_tests
     trade_ngin
     GTest::gtest
     GTest::gtest_main
+    libpqxx::pqxx
     Arrow::arrow_shared
 )
 

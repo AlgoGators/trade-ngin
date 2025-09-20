@@ -20,7 +20,7 @@ int main() {
         // Reset all singletons to ensure clean state between runs
         StateManager::reset_instance();
         Logger::reset_for_tests();
-        
+
         // Initialize logger
         auto& logger = Logger::instance();
         LoggerConfig logger_config;
@@ -362,8 +362,10 @@ int main() {
         try {
             auto save_result = engine->save_results_to_db(backtest_results);
             if (save_result.is_error()) {
-                std::cerr << "Failed to save backtest results to database: " << save_result.error()->what() << std::endl;
-                ERROR("Failed to save backtest results to database: " + std::string(save_result.error()->what()));
+                std::cerr << "Failed to save backtest results to database: "
+                          << save_result.error()->what() << std::endl;
+                ERROR("Failed to save backtest results to database: " +
+                      std::string(save_result.error()->what()));
             } else {
                 INFO("Successfully saved backtest results to database");
             }
@@ -375,7 +377,7 @@ int main() {
         // Explicitly reset the engine to trigger cleanup before program exit
         INFO("Cleaning up backtest engine...");
         engine.reset();
-        
+
         INFO("Backtest application completed successfully");
 
         std::cerr << "At end of main: initialized=" << Logger::instance().is_initialized()

@@ -298,38 +298,38 @@ flowchart TD
     A[Receive market data] --> B{Enough history?}
     B -->|No| C[Store price in history]
     B -->|Yes| D[Calculate volatility]
-    
+
     D --> E[Calculate EMA crossovers for multiple timeframes]
     E --> F[Generate raw forecasts]
     F --> G[Scale forecasts by volatility]
     G --> H[Combine forecasts with FDM]
-    
+
     H --> I[Calculate position size based on volatility-targeting formula]
     I --> J{Use position buffering?}
-    
+
     J -->|Yes| K[Apply position buffer to reduce trading]
     J -->|No| L[Use raw position]
-    
+
     K --> M[Update position]
     L --> M
-    
+
     M --> N[Emit position signal]
-    
+
     subgraph Volatility Calculation
         D1[Calculate returns] --> D2[Calculate EWMA std deviation]
         D2 --> D3[Blend short and long-term volatility]
         D3 --> D4[Apply volatility regime multiplier]
     end
-    
+
     D -.-> D1
     D4 -.-> D
-    
+
     subgraph Position Sizing
         I1[Calculate target risk] --> I2[Apply IDM factor]
         I2 --> I3[Scale by forecast strength]
         I3 --> I4[Divide by price * volatility * point value]
     end
-    
+
     I -.-> I1
     I4 -.-> I
 ```
@@ -387,7 +387,7 @@ classDiagram
         +to_json() json
         +from_json(json) void
     }
-    
+
     class StrategyConfig {
         +capital_allocation double
         +max_leverage double
@@ -397,7 +397,7 @@ classDiagram
         +to_json() json
         +from_json(json) void
     }
-    
+
     class PortfolioConfig {
         +total_capital double
         +reserve_capital double
@@ -414,7 +414,7 @@ classDiagram
         +to_json() json
         +from_json(json) void
     }
-    
+
     class DynamicOptConfig {
         +tau double
         +capital double
@@ -422,7 +422,7 @@ classDiagram
         +to_json() json
         +from_json(json) void
     }
-    
+
     class BacktestConfig {
         +strategy_config StrategyConfig
         +portfolio_config PortfolioConfig
@@ -430,7 +430,7 @@ classDiagram
         +to_json() json
         +from_json(json) void
     }
-    
+
     class DatabaseInterface {
         <<interface>>
         +connect() Result~void~
@@ -442,7 +442,7 @@ classDiagram
         +store_signals(...) Result~void~
         +get_symbols(...) Result~string[]~
     }
-    
+
     class PostgresDatabase {
         -connection_string string
         -connection pqxx::connection
@@ -451,7 +451,7 @@ classDiagram
         +is_connected() bool
         +get_market_data(...) Result~Table~
     }
-    
+
     class StrategyInterface {
         <<interface>>
         +initialize() Result~void~
@@ -464,7 +464,7 @@ classDiagram
         +on_signal(symbol, signal) Result~void~
         +get_positions() Position[]
     }
-    
+
     class BaseStrategy {
         #id_ string
         #config_ StrategyConfig
@@ -474,7 +474,7 @@ classDiagram
         +on_data(data) Result~void~
         +check_risk_limits() Result~void~
     }
-    
+
     class TrendFollowingStrategy {
         -trend_config_ TrendFollowingConfig
         -price_history_ map
@@ -484,7 +484,7 @@ classDiagram
         -get_raw_forecast(...) vector~double~
         -calculate_position(...) double
     }
-    
+
     class Instrument {
         <<interface>>
         +get_symbol() string
@@ -493,24 +493,24 @@ classDiagram
         +get_margin_requirement() double
         +round_price(price) double
     }
-    
+
     class SlippageModel {
         <<interface>>
         +calculate_slippage(...) double
         +update(market_data) void
     }
-    
+
     ConfigBase <|-- StrategyConfig
     ConfigBase <|-- PortfolioConfig
     ConfigBase <|-- RiskConfig
     ConfigBase <|-- DynamicOptConfig
     ConfigBase <|-- BacktestConfig
-    
+
     DatabaseInterface <|-- PostgresDatabase
-    
+
     StrategyInterface <|-- BaseStrategy
     BaseStrategy <|-- TrendFollowingStrategy
-    
+
     SlippageModel <|-- VolumeSlippageModel
     SlippageModel <|-- SpreadSlippageModel
 ```
@@ -573,33 +573,33 @@ sequenceDiagram
     User->>BE: run_portfolio()
     BE->>DB: load_market_data()
     DB-->>BE: historical market data
-    
+
     loop For each timestamp
         BE->>PM: process_market_data(bars)
         PM->>SI: on_data(bars)
         SI-->>PM: target_positions
-        
+
         opt If risk management enabled
             PM->>RM: process_positions(positions)
             RM-->>PM: risk_result
         end
-        
+
         opt If optimization enabled
             PM->>DO: optimize_single_period(positions)
             DO-->>PM: optimized_positions
         end
-        
+
         PM-->>BE: updated positions & executions
-        
+
         BE->>BE: apply_slippage(executions)
         BE->>BE: calculate_transaction_costs(executions)
         BE->>BE: update_equity_curve()
     end
-    
+
     BE->>BE: calculate_metrics()
     BE->>TCA: analyze_trade_sequence()
     TCA-->>BE: transaction_cost_metrics
-    
+
     BE-->>User: backtest_results
 ```
 ### Live Trading Workflow
@@ -743,7 +743,7 @@ docker run -it trade-ngin
 ### Running Live Trading
 
 ```bash
-# From the build directory  
+# From the build directory
 ./bin/Release/live_trend
 
 # Or from project root
@@ -946,7 +946,7 @@ classDiagram
         +value() T
         +error() TradeError*
     }
-    
+
     class TradeError {
         -code_ ErrorCode
         -component_ string
@@ -955,7 +955,7 @@ classDiagram
         +component() string
         +to_string() string
     }
-    
+
     class ErrorCode {
         <<enumeration>>
         NONE
@@ -973,10 +973,10 @@ classDiagram
         STRATEGY_ERROR
         RISK_LIMIT_EXCEEDED
     }
-    
+
     Result~T~ o-- TradeError
     TradeError o-- ErrorCode
-    
+
     note for Result~T~ "Result<T>: Pattern for error propagation"
     note for TradeError "TradeError: Extends std::runtime_error and provides error context"
 ```
@@ -1025,7 +1025,7 @@ If a strategy fails to initialize:
    - **Status**: FIXED in latest version
 
 2. **Impossible Metrics** (Sortino=999, MaxDD=0%):
-   - **Cause**: No position changes or P&L calculation errors  
+   - **Cause**: No position changes or P&L calculation errors
    - **Check**: Monitor "Period executions count" and position updates
    - **Expected**: Should see varying execution counts (8-28 per period)
    - **Status**: FIXED in latest version
@@ -1040,7 +1040,7 @@ If a strategy fails to initialize:
 If backtests are running slowly:
 
 1. Reduce the number of symbols or date range
-2. Check for inefficient loops or calculations in strategies  
+2. Check for inefficient loops or calculations in strategies
 3. Optimize database queries to fetch data more efficiently
 4. Consider using release builds instead of debug builds
 5. Use automated build script `./build_and_test.sh` for optimized builds
@@ -1091,7 +1091,7 @@ To profile trade-ngin performance:
    ```bash
    # Linux
    valgrind --tool=callgrind ./bin/bt_trend
-   
+
    # Windows
    Visual Studio Profiler
    ```
@@ -1125,7 +1125,7 @@ Result<void> MyComponent::doSomething() {
             "MyComponent"
         );
     }
-    
+
     // Continue with operation
     return Result<void>();
 }
@@ -1149,7 +1149,7 @@ Result<void> MyComponent::doSomething() {
 
 - **CLAUDE.md** - Comprehensive project knowledge base with current system state, recent fixes, and development priorities
 - **TYPE_CONVERSION_GUIDE.md** - Guide for proper handling of Decimal, Price, and Quantity types
-- **README.Docker.md** - Docker setup and deployment instructions  
+- **README.Docker.md** - Docker setup and deployment instructions
 - **linting/** - Code quality tools and style guides
 
 For detailed information about recent changes, debugging procedures, and development workflows, consult **CLAUDE.md** which is actively maintained with the latest project status.

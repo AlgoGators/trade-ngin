@@ -89,9 +89,9 @@ TEST_F(DynamicOptimizerTest, PositionRounding) {
     std::vector<double> positions = {1.0, 3.0, -1.0};
 
     for (size_t i = 0; i < positions.size(); ++i) {
-        EXPECT_NEAR(positions[i], positions[i], 1e-6); 
+        EXPECT_NEAR(positions[i], positions[i], 1e-6);
     }
-    
+
 }
 
 // Test configuration updates

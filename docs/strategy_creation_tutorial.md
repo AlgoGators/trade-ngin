@@ -135,13 +135,13 @@ if (instrument) {
 ```cpp
 struct YourStrategyConfig : public ConfigBase {
     // Your parameters here
-    
+
     nlohmann::json to_json() const override {
         nlohmann::json j;
         // Serialize your parameters
         return j;
     }
-    
+
     void from_json(const nlohmann::json& j) override {
         // Deserialize your parameters
     }
@@ -367,12 +367,12 @@ struct YourStrategyConfig {
     double weight{1.0};                 // Position weight
     double risk_target{0.2};            // Annualized risk target (20%)
     double fx_rate{1.0};                // FX conversion rate
-    
+
     // Strategy-specific parameters (add what you need)
     int lookback_period{20};            // Your lookback period
     double threshold{0.5};              // Your signal threshold
     bool use_volatility_scaling{true};  // Your volatility option
-    
+
     // Add more parameters as needed for your strategy
 };
 ```
@@ -383,16 +383,16 @@ struct YourInstrumentData {
     // Static properties (from instrument registry)
     double contract_size = 1.0;
     double weight = 1.0;
-    
+
     // Your strategy's data storage
     std::vector<double> price_history;      // Price data
     std::vector<double> your_indicator;     // Your calculated indicator
     double current_signal = 0.0;            // Current signal value
-    
+
     // Position data
     double raw_position = 0.0;              // Calculated position
     double final_position = 0.0;            // After risk adjustments
-    
+
     // Market data
     double current_volatility = 0.01;       // Current volatility
     Timestamp last_update;                  // Last update time
@@ -404,7 +404,7 @@ struct YourInstrumentData {
 class YourStrategyName : public BaseStrategy {
 public:
     // Constructor - you MUST have this signature
-    YourStrategyName(std::string id, StrategyConfig config, 
+    YourStrategyName(std::string id, StrategyConfig config,
                     YourStrategyConfig your_config,
                     std::shared_ptr<PostgresDatabase> db,
                     std::shared_ptr<InstrumentRegistry> registry = nullptr);
@@ -425,17 +425,17 @@ protected:
 private:
     // Your strategy's configuration
     YourStrategyConfig your_config_;
-    
+
     // External components you'll use
     std::shared_ptr<InstrumentRegistry> registry_;
-    
+
     // Your data storage
     std::unordered_map<std::string, YourInstrumentData> instrument_data_;
-    
+
     // Your calculation methods (declare these)
     std::vector<double> calculate_your_indicator(const std::vector<double>& prices) const;
     double calculate_your_signal(const std::vector<double>& indicator) const;
-    double calculate_position(const std::string& symbol, double signal, 
+    double calculate_position(const std::string& symbol, double signal,
                             double price, double volatility) const;
     double apply_risk_controls(const std::string& symbol, double position) const;
 };
@@ -463,10 +463,10 @@ YourStrategyName::YourStrategyName(std::string id, StrategyConfig config,
     : BaseStrategy(std::move(id), std::move(config), std::move(db)),
       your_config_(std::move(your_config)),
       registry_(registry) {
-    
+
     // Register your logging component
     Logger::register_component("YourStrategyName");
-    
+
     // Set your metadata
     metadata_.name = "Your Strategy Name";
     metadata_.description = "Description of what your strategy does";
@@ -480,20 +480,20 @@ Result<void> YourStrategyName::validate_config() const {
     auto result = BaseStrategy::validate_config();
     if (result.is_error())
         return result;
-    
+
     // Validate your specific parameters
     if (your_config_.risk_target <= 0.0 || your_config_.risk_target > 1.0) {
-        return make_error<void>(ErrorCode::INVALID_ARGUMENT, 
+        return make_error<void>(ErrorCode::INVALID_ARGUMENT,
                                "Risk target must be between 0 and 1",
                                "YourStrategyName");
     }
-    
+
     if (your_config_.lookback_period <= 0) {
         return make_error<void>(ErrorCode::INVALID_ARGUMENT,
                                "Lookback period must be positive",
                                "YourStrategyName");
     }
-    
+
     return Result<void>();
 }
 ```
@@ -504,17 +504,17 @@ Result<void> YourStrategyName::initialize() {
     // Always call base initialization first
     auto base_result = BaseStrategy::initialize();
     if (base_result.is_error()) {
-        std::cerr << "Base strategy initialization failed: " 
+        std::cerr << "Base strategy initialization failed: "
                   << base_result.error()->what() << std::endl;
         return base_result;
     }
-    
+
     try {
         // Initialize your data containers for each symbol
         for (const auto& [symbol, _] : config_.trading_params) {
             // Reserve memory for your data
             instrument_data_[symbol].price_history.reserve(1000);
-            
+
             // Initialize positions (you get this from base class)
             Position pos;
             pos.symbol = symbol;
@@ -523,9 +523,9 @@ Result<void> YourStrategyName::initialize() {
             pos.last_update = std::chrono::system_clock::now();
             positions_[symbol] = pos;  // This updates the base class positions
         }
-        
+
         return Result<void>();
-        
+
     } catch (const std::exception& e) {
         std::cerr << "Error in YourStrategyName::initialize: " << e.what() << std::endl;
         return make_error<void>(ErrorCode::STRATEGY_ERROR,
@@ -542,12 +542,12 @@ Result<void> YourStrategyName::on_data(const std::vector<Bar>& data) {
     if (data.empty()) {
         return Result<void>();
     }
-    
+
     // Always call base class data processing first
     auto base_result = BaseStrategy::on_data(data);
     if (base_result.is_error())
         return base_result;
-    
+
     try {
         // Group data by symbol
         std::unordered_map<std::string, std::vector<Bar>> bars_by_symbol;
@@ -555,68 +555,68 @@ Result<void> YourStrategyName::on_data(const std::vector<Bar>& data) {
             // Validate bar data
             if (bar.symbol.empty() || bar.timestamp == Timestamp{} ||
                 bar.close <= 0.0) {
-                return make_error<void>(ErrorCode::INVALID_DATA, 
+                return make_error<void>(ErrorCode::INVALID_DATA,
                                       "Invalid bar data",
                                       "YourStrategyName");
             }
             bars_by_symbol[bar.symbol].push_back(bar);
         }
-        
+
         // Process each symbol
         for (const auto& [symbol, symbol_bars] : bars_by_symbol) {
             auto& instrument_data = instrument_data_[symbol];
-            
+
             // Update price history
             for (const auto& bar : symbol_bars) {
                 instrument_data.price_history.push_back(static_cast<double>(bar.close));
             }
-            
+
             // Wait for enough data
             if (instrument_data.price_history.size() < your_config_.lookback_period) {
                 continue;
             }
-            
+
             // Calculate your indicator
             auto indicator = calculate_your_indicator(instrument_data.price_history);
             instrument_data.your_indicator = indicator;
-            
+
             // Calculate your signal
             double signal = calculate_your_signal(indicator);
             instrument_data.current_signal = signal;
-            
+
             // Calculate position
             double price = instrument_data.price_history.back();
             double volatility = 0.01; // You'll implement volatility calculation
             double raw_position = calculate_position(symbol, signal, price, volatility);
             instrument_data.raw_position = raw_position;
-            
+
             // Apply risk controls
             double final_position = apply_risk_controls(symbol, raw_position);
             instrument_data.final_position = final_position;
-            
+
             // Update position in base class
             Position pos;
             pos.symbol = symbol;
             pos.quantity = final_position;
             pos.average_price = price;
             pos.last_update = symbol_bars.back().timestamp;
-            
+
             auto pos_result = update_position(symbol, pos);
             if (pos_result.is_error()) {
                 WARN("Failed to update position for " + symbol);
             }
-            
+
             // Save signal
             auto signal_result = on_signal(symbol, signal);
             if (signal_result.is_error()) {
                 WARN("Failed to save signal for " + symbol);
             }
-            
+
             instrument_data.last_update = symbol_bars.back().timestamp;
         }
-        
+
         return Result<void>();
-        
+
     } catch (const std::exception& e) {
         ERROR("Error processing data in YourStrategyName: " + std::string(e.what()));
         return make_error<void>(ErrorCode::STRATEGY_ERROR,
@@ -630,9 +630,9 @@ Result<void> YourStrategyName::on_data(const std::vector<Bar>& data) {
 ```cpp
 std::vector<double> YourStrategyName::calculate_your_indicator(
     const std::vector<double>& prices) const {
-    
+
     std::vector<double> indicator(prices.size(), 0.0);
-    
+
     // Implement your indicator calculation here
     // Example: Simple moving average
     for (size_t i = your_config_.lookback_period - 1; i < prices.size(); ++i) {
@@ -642,68 +642,68 @@ std::vector<double> YourStrategyName::calculate_your_indicator(
         }
         indicator[i] = sum / your_config_.lookback_period;
     }
-    
+
     return indicator;
 }
 
 double YourStrategyName::calculate_your_signal(
     const std::vector<double>& indicator) const {
-    
+
     if (indicator.empty()) return 0.0;
-    
+
     // Implement your signal generation here
     // Example: Compare current to previous value
     double current = indicator.back();
     double previous = indicator[indicator.size() - 2];
-    
+
     if (current > previous + your_config_.threshold) return 1.0;   // Buy signal
     if (current < previous - your_config_.threshold) return -1.0;  // Sell signal
     return 0.0;  // No signal
 }
 
-double YourStrategyName::calculate_position(const std::string& symbol, 
-                                          double signal, double price, 
+double YourStrategyName::calculate_position(const std::string& symbol,
+                                          double signal, double price,
                                           double volatility) const {
-    
+
     // Get instrument data
     auto it = instrument_data_.find(symbol);
     if (it == instrument_data_.end()) return 0.0;
-    
+
     const auto& data = it->second;
-    
+
     // Use parameters from base class config
     double capital = config_.capital_allocation;
     double weight = data.weight;
     double contract_size = data.contract_size;
-    
+
     // Your position sizing formula
     double position = (signal * capital * weight) / (price * contract_size * volatility);
-    
+
     // Apply position limits from base class config
     double position_limit = 1000.0;
     if (config_.position_limits.count(symbol) > 0) {
         position_limit = config_.position_limits.at(symbol);
     }
-    
+
     return std::clamp(position, -position_limit, position_limit);
 }
 
-double YourStrategyName::apply_risk_controls(const std::string& symbol, 
+double YourStrategyName::apply_risk_controls(const std::string& symbol,
                                             double position) const {
-    
+
     // Get current position from base class
     double current_position = 0.0;
     auto pos_it = positions_.find(symbol);
     if (pos_it != positions_.end()) {
         current_position = static_cast<double>(pos_it->second.quantity);
     }
-    
+
     // Implement your risk controls here
     // Example: Position buffering
     double buffer = 0.1 * std::abs(position);
     double lower_bound = position - buffer;
     double upper_bound = position + buffer;
-    
+
     if (current_position < lower_bound) return std::round(lower_bound);
     if (current_position > upper_bound) return std::round(upper_bound);
     return std::round(current_position);

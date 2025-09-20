@@ -117,7 +117,7 @@ TEST_F(RiskManagerTest, VolatilityRisk) {
 
 TEST_F(RiskManagerTest, CorrelationRisk) {
     auto market_data_vec = create_test_market_data({
-        {"AAPL", {100, 100, 101, 100, 100, 99, 100, 100, 101, 100, 100, 99, 100, 100, 100}}, 
+        {"AAPL", {100, 100, 101, 100, 100, 99, 100, 100, 101, 100, 100, 99, 100, 100, 100}},
         {"MSFT", {200, 210, 190, 220, 180, 230, 170, 240, 160, 250, 150, 260, 140, 270, 130}}
     });
     auto market_data = risk_manager_->create_market_data(market_data_vec);
@@ -166,7 +166,7 @@ TEST_F(RiskManagerTest, PositionSymbolMismatch) {
 
 TEST_F(RiskManagerTest, MultipleRiskFactors) {
     auto market_data_vec = create_test_market_data({
-        {"AAPL", {100, 100, 101, 100, 100, 99, 100, 100, 101, 100, 100, 99, 100, 100, 100}}, 
+        {"AAPL", {100, 100, 101, 100, 100, 99, 100, 100, 101, 100, 100, 99, 100, 100, 100}},
         {"MSFT", {200, 210, 190, 220, 180, 230, 170, 240, 160, 250, 150, 260, 140, 270, 130}},
         {"GOOG", {2500, 2550, 2450, 2600, 2400, 2650, 2350, 2700, 2300, 2750, 2250, 2800, 2200, 2850, 2150}}
     });

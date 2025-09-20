@@ -11,7 +11,7 @@ jobs:
     name: Setup Branch Protection
     runs-on: ubuntu-latest
     if: github.repository_owner == github.actor  # Only run for repository owner
-    
+
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -24,9 +24,9 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo
             });
-            
+
             const protectedBranches = ['main', 'develop', 'main-hd'];
-            
+
             for (const branch of protectedBranches) {
               if (branches.some(b => b.name === branch)) {
                 try {
@@ -53,7 +53,7 @@ jobs:
                     allow_force_pushes: false,
                     allow_deletions: false
                   });
-                  
+
                   console.log(`✅ Branch protection updated for ${branch}`);
                 } catch (error) {
                   console.log(`⚠️  Could not update protection for ${branch}: ${error.message}`);
@@ -66,7 +66,7 @@ jobs:
   verify-status-checks:
     name: Verify Status Checks
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -85,7 +85,7 @@ jobs:
   create-status-badge:
     name: Create Status Badge
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -93,42 +93,42 @@ jobs:
       - name: Create Status Badge
         run: |
           echo "Creating status badge for README..."
-          
+
           # Create a simple status badge (you can replace with shields.io)
           cat > .github/status-badge.md << EOF
           # Build Status
-          
+
           ![CI/CD Pipeline](https://github.com/\${{ github.repository }}/workflows/CI%2FCD%20Pipeline/badge.svg)
           ![Code Coverage](https://github.com/\${{ github.repository }}/workflows/Code%20Coverage/badge.svg)
-          
+
           ## Coverage Status
-          
+
           Current coverage threshold: **75%**
-          
+
           ## Required Checks
-          
+
           The following checks must pass before merging:
-          
+
           - ✅ **Linting**: Code formatting and style checks
           - ✅ **Build (Debug)**: Compilation in debug mode with coverage
           - ✅ **Build (Release)**: Compilation in release mode
           - ✅ **Coverage**: Code coverage analysis (minimum 75%)
           - ✅ **Security**: Basic security checks
-          
+
           ## Quick Links
-          
+
           - [CI/CD Documentation](CI_CD_README.md)
           - [Development Setup](scripts/setup-dev-environment.sh)
           - [Pre-commit Hook](scripts/pre-commit-hook.sh)
           EOF
-          
+
           echo "Status badge created at .github/status-badge.md"
 
   notify-setup:
     name: Notify Setup Completion
     runs-on: ubuntu-latest
     needs: [setup-protection, verify-status-checks, create-status-badge]
-    
+
     steps:
       - name: Notify Setup
         run: |
@@ -144,4 +144,4 @@ jobs:
           echo "1. Review branch protection settings in GitHub UI"
           echo "2. Add status-badge.md content to README.md"
           echo "3. Configure code owners if needed"
-          echo "4. Set up branch protection for additional branches if needed" 
+          echo "4. Set up branch protection for additional branches if needed"

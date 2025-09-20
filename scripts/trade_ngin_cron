@@ -1,0 +1,4 @@
+# Trade Ngin Daily Cron Job
+# Runs at 9:30 AM Eastern Time daily (13:30 UTC during EST, 14:30 UTC during EDT)
+TZ=America/New_York
+30 9 * * * root /app/run_daily_trend.sh >> /var/log/trade_ngin/cron.log 2>&1

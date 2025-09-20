@@ -262,7 +262,8 @@ TEST_F(DatabasePoolTest, MixedOperations) {
     for (int i = 0; i < operations_per_type; ++i) {
         threads.emplace_back([this, &success_count]() {
             auto db = connection_pool_[rand() % pool_size_];
-            auto result = db->store_positions(create_test_positions(), "TEST_STRATEGY", "trading.positions");
+            auto result =
+                db->store_positions(create_test_positions(), "TEST_STRATEGY", "trading.positions");
             if (result.is_ok())
                 success_count++;
         });
