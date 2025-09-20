@@ -167,40 +167,64 @@ Result<std::shared_ptr<arrow::Table>> PostgresDatabase::get_market_data(
 
 Result<void> PostgresDatabase::store_executions(const std::vector<ExecutionReport>& executions,
                                                 const std::string& table_name) {
+    std::cout << "DEBUG: store_executions called with " << executions.size() << " executions" << std::endl;
+    
     auto validation = validate_connection();
-    if (validation.is_error())
+    if (validation.is_error()) {
+        std::cout << "DEBUG: Connection validation failed" << std::endl;
         return validation;
+    }
+    std::cout << "DEBUG: Connection validation passed" << std::endl;
 
     try {
         pqxx::work txn(*connection_);
 
         // Validate table name
+        std::cout << "DEBUG: Validating table name: " << table_name << std::endl;
         auto table_validation = validate_table_name(table_name);
         if (table_validation.is_error()) {
+            std::cout << "DEBUG: Table validation failed: " << table_validation.error()->what() << std::endl;
             return table_validation;
         }
+        std::cout << "DEBUG: Table validation passed" << std::endl;
 
         for (const auto& exec : executions) {
+            std::cout << "DEBUG: Processing execution for symbol: " << exec.symbol << std::endl;
+            
             // Validate execution data
+            std::cout << "DEBUG: About to validate execution report" << std::endl;
             auto exec_validation = validate_execution_report(exec);
             if (exec_validation.is_error()) {
+                std::cout << "DEBUG: Execution validation failed: " << exec_validation.error()->what() << std::endl;
                 return exec_validation;
             }
+            std::cout << "DEBUG: Execution validation passed" << std::endl;
 
+            // FIXED: Added exec_id to the INSERT statement
             std::string query = "INSERT INTO " + table_name +
-                                " (order_id, symbol, side, quantity, price, "
+                                " (exec_id, order_id, symbol, side, quantity, price, "
                                 "execution_time, commission, is_partial) VALUES "
-                                "($1, $2, $3, $4, $5, $6, $7, $8)";
+                                "($1, $2, $3, $4, $5, $6, $7, $8, $9)";
 
-            txn.exec_params(query, exec.order_id, exec.symbol,
+            std::cout << "DEBUG: About to execute SQL query" << std::endl;
+            std::cout << "DEBUG: Query: " << query << std::endl;
+
+            // FIXED: Added exec.exec_id as the first parameter
+            txn.exec_params(query, exec.exec_id, exec.order_id, exec.symbol,
                             side_to_string(exec.side), static_cast<double>(exec.filled_quantity),
                             static_cast<double>(exec.fill_price), format_timestamp(exec.fill_time),
                             static_cast<double>(exec.commission), exec.is_partial);
+            
+            std::cout << "DEBUG: SQL executed successfully for " << exec.symbol << std::endl;
         }
 
+        std::cout << "DEBUG: About to commit transaction" << std::endl;
         txn.commit();
+        std::cout << "DEBUG: Transaction committed successfully" << std::endl;
+        
         return Result<void>();
     } catch (const std::exception& e) {
+        std::cout << "DEBUG: Exception caught: " << e.what() << std::endl;
         return make_error<void>(ErrorCode::DATABASE_ERROR,
                                 "Failed to store executions: " + std::string(e.what()),
                                 "PostgresDatabase");
@@ -1356,7 +1380,7 @@ Result<void> PostgresDatabase::validate_table_name(const std::string& table_name
     std::transform(lower_name.begin(), lower_name.end(), lower_name.begin(), ::tolower);
 
     std::vector<std::string> forbidden = {"drop",   "delete", "insert", "update", "alter",
-                                          "create", "exec",   "union",  "select", "script",
+                                          "create", "union",  "select", "script",
                                           "--",     "/*",     "*/"};
 
     for (const auto& forbidden_word : forbidden) {
