@@ -338,21 +338,6 @@ int main() {
         }
         INFO("Portfolio processing completed");
 
-        // Get executions that were automatically generated during portfolio processing
-        INFO("Retrieving portfolio executions...");
-        auto portfolio_executions = portfolio->get_recent_executions();
-        if (!portfolio_executions.empty()) {
-            INFO("Storing " + std::to_string(portfolio_executions.size()) + " portfolio executions to database...");
-            auto executions_result = db->store_executions(portfolio_executions, "trading.executions");
-            if (executions_result.is_error()) {
-                ERROR("Failed to store portfolio executions: " + std::string(executions_result.error()->what()));
-            } else {
-                INFO("Successfully stored " + std::to_string(portfolio_executions.size()) + " portfolio executions to database");
-            }
-        } else {
-            INFO("No portfolio executions generated (no position changes during optimization)");
-        }
-
         // Get optimized portfolio positions (integer-rounded after optimization/risk)
         INFO("Retrieving optimized portfolio positions...");
         auto positions = portfolio->get_portfolio_positions();
@@ -369,6 +354,13 @@ int main() {
         } else {
             INFO("No previous day positions found (first run or no data): " + std::string(previous_positions_result.error()->what()));
         }
+
+        INFO("DEBUG: Previous date used for lookup: " + std::to_string(std::chrono::system_clock::to_time_t(previous_date)));
+        INFO("DEBUG: Current date: " + std::to_string(std::chrono::system_clock::to_time_t(now)));
+        INFO("DEBUG: Previous positions loaded: " + std::to_string(previous_positions.size()));
+        for (const auto& [symbol, pos] : previous_positions) {
+            INFO("DEBUG: Previous position - " + symbol + ": " + std::to_string(pos.quantity.as_double()));
+}
         
         // Calculate proper PnL based on position changes between days
         INFO("Calculating PnL based on position changes...");
@@ -507,6 +499,127 @@ int main() {
         
         INFO("Total realized PnL: " + std::to_string(total_realized_pnl));
         INFO("Total unrealized PnL: " + std::to_string(total_unrealized_pnl));
+
+        // ADD THESE DEBUG STATEMENTS:
+        INFO("DEBUG: About to start execution generation");
+        INFO("DEBUG: Previous positions size: " + std::to_string(previous_positions.size()));
+        INFO("DEBUG: Current positions size: " + std::to_string(positions.size()));
+
+        // Generate execution reports for position changes
+        INFO("Generating execution reports for position changes...");
+        std::vector<ExecutionReport> daily_executions;
+
+        // Create date string for order/exec IDs
+        std::stringstream date_ss;
+        date_ss << std::setfill('0') << std::setw(4) << (now_tm->tm_year + 1900)
+                << std::setw(2) << (now_tm->tm_mon + 1)
+                << std::setw(2) << now_tm->tm_mday;
+        std::string date_str = date_ss.str();
+
+        // Handle existing positions that changed
+        for (const auto& [symbol, current_position] : positions) {
+            double current_qty = current_position.quantity.as_double();
+            double prev_qty = 0.0;
+            
+            // Get previous quantity
+            auto prev_it = previous_positions.find(symbol);
+            if (prev_it != previous_positions.end()) {
+                prev_qty = prev_it->second.quantity.as_double();
+            }
+            INFO("DEBUG: Checking " + symbol + " - Current: " + std::to_string(current_qty) + 
+            ", Previous: " + std::to_string(prev_qty) + ", Diff: " + std::to_string(std::abs(current_qty - prev_qty)));
+
+            // Check if position changed
+            if (std::abs(current_qty - prev_qty) > 1e-6) {
+                double trade_size = current_qty - prev_qty;
+                Side side = trade_size > 0 ? Side::BUY : Side::SELL;
+                
+                // Get current market price
+                double market_price = current_position.average_price.as_double();
+                if (current_prices.find(symbol) != current_prices.end()) {
+                    market_price = current_prices[symbol];
+                }
+                
+                // Create execution report
+                ExecutionReport exec;
+                exec.order_id = "DAILY_" + symbol + "_" + date_str;  // Replace hyphens with underscores
+                exec.exec_id = "EXEC_" + symbol + "_" + std::to_string(daily_executions.size());
+                exec.symbol = symbol;
+                exec.side = side;
+                exec.filled_quantity = std::abs(trade_size);
+                exec.fill_price = market_price;
+                exec.fill_time = now;
+                exec.commission = 0.0;
+                exec.is_partial = false;
+                
+                daily_executions.push_back(exec);
+                
+                INFO("Generated execution: " + symbol + " " + 
+                     (side == Side::BUY ? "BUY" : "SELL") + " " +
+                     std::to_string(std::abs(trade_size)) + " at " + 
+                     std::to_string(market_price));
+            }
+        }
+
+        // Handle completely closed positions
+        for (const auto& [symbol, prev_position] : previous_positions) {
+            if (positions.find(symbol) == positions.end() && prev_position.quantity.as_double() != 0.0) {
+                // This position was completely closed
+                double prev_qty = prev_position.quantity.as_double();
+                
+                // Get current market price for execution
+                double market_price = prev_position.average_price.as_double(); // Default fallback
+                if (current_prices.find(symbol) != current_prices.end()) {
+                    market_price = current_prices[symbol];
+                }
+                
+                // Create execution report for closing the position
+                ExecutionReport exec;
+                exec.order_id = "DAILY-" + symbol + "-" + date_str;
+                exec.exec_id = "EXEC-" + symbol + "-" + std::to_string(daily_executions.size());
+                exec.symbol = symbol;
+                exec.side = prev_qty > 0 ? Side::SELL : Side::BUY; // Opposite of original position
+                exec.filled_quantity = std::abs(prev_qty);
+                exec.fill_price = market_price;
+                exec.fill_time = now;
+                exec.commission = 0.0;
+                exec.is_partial = false;
+                
+                daily_executions.push_back(exec);
+                
+                INFO("Generated execution for closed position: " + symbol + " " + 
+                     (exec.side == Side::BUY ? "BUY" : "SELL") + " " +
+                     std::to_string(std::abs(prev_qty)) + " at " + 
+                     std::to_string(market_price));
+            }
+        }
+
+        // Store executions in database
+        // Store executions in database
+        if (!daily_executions.empty()) {
+            INFO("Storing " + std::to_string(daily_executions.size()) + " executions to database...");
+            
+            // ADD THIS DEBUG SECTION:
+            for (const auto& exec : daily_executions) {
+                INFO("DEBUG: Execution data - order_id: " + exec.order_id);
+                INFO("DEBUG: Execution data - exec_id: " + exec.exec_id);
+                INFO("DEBUG: Execution data - symbol: " + exec.symbol);
+                INFO("DEBUG: Execution data - side: " + std::to_string(static_cast<int>(exec.side)));
+                INFO("DEBUG: Execution data - quantity: " + std::to_string(exec.filled_quantity));
+                INFO("DEBUG: Execution data - price: " + std::to_string(exec.fill_price));
+                INFO("DEBUG: Execution data - commission: " + std::to_string(exec.commission));
+                INFO("DEBUG: Execution data - is_partial: " + std::to_string(exec.is_partial));
+            }
+            
+            auto exec_result = db->store_executions(daily_executions, "trading.executions");
+            if (exec_result.is_error()) {
+                ERROR("Failed to store executions: " + std::string(exec_result.error()->what()));
+            } else {
+                INFO("Successfully stored " + std::to_string(daily_executions.size()) + " executions to database");
+            }
+        } else {
+            INFO("No executions to store (no position changes detected)");
+        }
         
         std::cout << "\n======= Daily Position Report =======" << std::endl;
         std::cout << "Date: " << (now_tm->tm_year + 1900) << "-" 
