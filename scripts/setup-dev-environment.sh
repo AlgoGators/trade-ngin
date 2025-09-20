@@ -37,7 +37,7 @@ echo -e "${BLUE}📋 Detected OS: $OS${NC}"
 # Install dependencies based on OS
 if [[ "$OS" == "linux" ]]; then
     echo -e "${BLUE}📦 Installing Linux dependencies...${NC}"
-    
+
     # Check if apt is available (Ubuntu/Debian)
     if command_exists apt-get; then
         sudo apt-get update
@@ -59,13 +59,13 @@ if [[ "$OS" == "linux" ]]; then
 
 elif [[ "$OS" == "macos" ]]; then
     echo -e "${BLUE}📦 Installing macOS dependencies...${NC}"
-    
+
     # Check if Homebrew is installed
     if ! command_exists brew; then
         echo -e "${YELLOW}⚠️  Homebrew not found. Installing Homebrew...${NC}"
         /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
     fi
-    
+
     # Install dependencies via Homebrew
     brew install \
         cmake \
@@ -74,12 +74,12 @@ elif [[ "$OS" == "macos" ]]; then
         apache-arrow \
         libpqxx \
         lcov
-    
+
     # Install cpplint via pip
     if ! command_exists cpplint; then
         pip3 install cpplint
     fi
-    
+
     # Install Google Test
     brew install googletest
 
@@ -137,4 +137,4 @@ echo "1. Run pre-commit checks: ./scripts/pre-commit-hook.sh"
 echo "2. Run linting: ./linting/lint_runner.sh"
 echo "3. Build and test: cd build && cmake .. && make && ctest"
 echo ""
-echo -e "${BLUE}📖 For more information, see CI_CD_README.md${NC}" 
+echo -e "${BLUE}📖 For more information, see CI_CD_README.md${NC}"

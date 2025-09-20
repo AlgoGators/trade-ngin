@@ -40,7 +40,8 @@ void Logger::initialize(const LoggerConfig& config) {
         std::filesystem::path log_dir = std::filesystem::absolute(config_.log_directory);
         std::filesystem::create_directories(log_dir);
 
-        // Enforce retention before creating a new file so total never exceeds max_files
+        // Enforce retention before creating a new file so total never exceeds
+        // max_files
         {
             std::vector<std::filesystem::path> log_files;
             for (const auto& entry : std::filesystem::directory_iterator(log_dir)) {

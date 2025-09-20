@@ -44,21 +44,24 @@ public:
     /**
      * @brief Get futures instrument by symbol
      * @param symbol Futures symbol
-     * @return Shared pointer to the futures instrument, or nullptr if not found or not a futures
+     * @return Shared pointer to the futures instrument, or nullptr if not found
+     * or not a futures
      */
     std::shared_ptr<FuturesInstrument> get_futures_instrument(const std::string& symbol) const;
 
     /**
      * @brief Get equity instrument by symbol
      * @param symbol Equity symbol
-     * @return Shared pointer to the equity instrument, or nullptr if not found or not an equity
+     * @return Shared pointer to the equity instrument, or nullptr if not found or
+     * not an equity
      */
     std::shared_ptr<EquityInstrument> get_equity_instrument(const std::string& symbol) const;
 
     /**
      * @brief Get option instrument by symbol
      * @param symbol Option symbol
-     * @return Shared pointer to the option instrument, or nullptr if not found or not an option
+     * @return Shared pointer to the option instrument, or nullptr if not found or
+     * not an option
      */
     std::shared_ptr<OptionInstrument> get_option_instrument(const std::string& symbol) const;
 

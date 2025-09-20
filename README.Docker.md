@@ -9,7 +9,7 @@
 When you're ready, start your application by running:
 ```bash
 docker build -t trade_ngin .
-```  
+```
 
 Enter the container's terminal:
 ```bash
@@ -40,4 +40,3 @@ RUN sed -i '1i\#include <atomic>' include/trade_ngin/order/order_manager.hpp
 ```
 
 Please add this code near line 70 in the dockerfile. Notice '1i\' preceeds '#include <atomic>.' This is necessary and tells docker to add '#include <atomic>' before the first line in the file. Also include the relative file path afterwards.
-

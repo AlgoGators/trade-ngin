@@ -97,12 +97,14 @@ FROM ubuntu:22.04
 # Avoid prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install basic runtime tools and dependencies
+# Install basic runtime tools and dependencies including cron
 RUN apt-get update && apt-get install -y \
     wget \
     gnupg \
     lsb-release \
     libpq5 \
+    cron \
+    tzdata \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
@@ -129,6 +131,20 @@ RUN ldconfig
 # Copy the entire app directory (including build artifacts)
 COPY --from=builder /app /app
 
+# Set timezone to Eastern Time
+ENV TZ=America/New_York
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
+
+# Copy cron scripts
+COPY scripts/run_daily_trend.sh /app/run_daily_trend.sh
+COPY scripts/docker_entrypoint.sh /app/docker_entrypoint.sh
+COPY scripts/trade_ngin_cron /etc/cron.d/trade_ngin_cron
+
+# Make scripts executable
+RUN chmod +x /app/run_daily_trend.sh && \
+    chmod +x /app/docker_entrypoint.sh && \
+    chmod 0644 /etc/cron.d/trade_ngin_cron
+
 # Create the startup script using traditional RUN/echo commands
 RUN echo '#!/bin/bash' > /app/startup.sh && \
     echo 'echo "Searching for trade_ngin executable..."' >> /app/startup.sh && \
@@ -152,5 +168,8 @@ ENV LD_LIBRARY_PATH=/usr/local/lib:/app/build:/app/lib
 # Set the working directory
 WORKDIR /app
 
-# Set the entry point to our startup script
-ENTRYPOINT ["/app/startup.sh"]
+# Set the entry point to our new docker entrypoint script
+ENTRYPOINT ["/app/docker_entrypoint.sh"]
+
+# Default command (can be overridden)
+CMD ["cron"]

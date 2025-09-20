@@ -13,6 +13,7 @@ add_executable(live_trend ${LIVE_TREND_SOURCES})
 target_link_libraries(live_trend
     PRIVATE
         trade_ngin
+        libpqxx::pqxx
 )
 
 # Set output directory

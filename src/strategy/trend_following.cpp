@@ -1044,7 +1044,8 @@ double TrendFollowingStrategy::calculate_vol_regime_multiplier(
     // Sort to calculate quantile
     std::sort(historical_rel_vol_levels.begin(), historical_rel_vol_levels.end());
 
-    // Find position of current relative volatility level in sorted historical values
+    // Find position of current relative volatility level in sorted historical
+    // values
     auto it = std::upper_bound(historical_rel_vol_levels.begin(), historical_rel_vol_levels.end(),
                                relative_vol_level);
     double quantile = static_cast<double>(std::distance(historical_rel_vol_levels.begin(), it)) /

@@ -54,4 +54,4 @@ if(LIBPQXX_FOUND)
   message(STATUS "libpqxx found: ${LIBPQXX_LIBRARIES}")
 endif()
 
-mark_as_advanced(LIBPQXX_INCLUDE_DIR LIBPQXX_LIBRARY) 
+mark_as_advanced(LIBPQXX_INCLUDE_DIR LIBPQXX_LIBRARY)

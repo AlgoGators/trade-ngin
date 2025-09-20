@@ -1,0 +1,28 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.4.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-added-large-files
+
+  - repo: https://github.com/pre-commit/mirrors-clang-format
+    rev: v21.1.1
+    hooks:
+      - id: clang-format
+        args: [--style=file]
+        files: \.(cpp|hpp)$
+#  - repo: local
+#    hooks:
+#      - id: clang-tidy
+#        name: clang-tidy (changed files)
+#        entry: bash -c '
+#          test -f build/compile_commands.json || exit 0;
+#          clang-tidy -p build/ -quiet \
+#          -extra-arg=-fno-caret-diagnostics "$@"
+#          '
+#        language: system
+#        files: \.(c|cc|cpp|cxx|h|hpp)$
+#        pass_filenames: true
+#        require_serial: true

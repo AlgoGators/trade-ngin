@@ -30,5 +30,3 @@ Notes
 - On Ubuntu we add the Apache Arrow APT source and install Arrow dev packages.
 - On macOS we use Homebrew for all packages; ensure `/opt/homebrew` is on your PATH for Apple Silicon.
 - If libpqxx via Homebrew is not discovered automatically, the project uses pkg-config (`libpqxx.pc`).
-
-

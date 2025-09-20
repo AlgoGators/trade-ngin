@@ -50,7 +50,8 @@ public:
                 pos.last_update = bar.timestamp;
                 pos.unrealized_pnl = (bar.close - pos.average_price) * pos.quantity;
 
-                // For risk management testing, add some positions that might exceed limits
+                // For risk management testing, add some positions that might exceed
+                // limits
                 if (rand() % 10 == 0) {   // 10% chance of a large position
                     pos.quantity *= 5.0;  // Make position significantly larger
                 }

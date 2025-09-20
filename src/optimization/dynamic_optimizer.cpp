@@ -125,7 +125,8 @@ Result<OptimizationResult> DynamicOptimizer::optimize_single_period(
                 }
             }
 
-            // 4) If the best candidate from this pass is better than our overall best, adopt it
+            // 4) If the best candidate from this pass is better than our overall
+            // best, adopt it
             if (proposed_err + config_.convergence_threshold < best_tracking_error) {
                 current_best = std::move(proposed);
                 best_tracking_error = proposed_err;
@@ -162,7 +163,8 @@ Result<OptimizationResult> DynamicOptimizer::apply_buffering(
         // Calculate buffer size based on risk target
         double buffer_size = config_.buffer_size_factor * config_.tau;
 
-        // Calculate tracking error between current and optimized positions (pure, without costs)
+        // Calculate tracking error between current and optimized positions (pure,
+        // without costs)
         double tracking_error =
             calculate_pure_tracking_error(optimized_positions, current_positions, covariance);
 

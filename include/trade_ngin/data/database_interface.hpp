@@ -4,9 +4,9 @@
 
 #include <arrow/api.h>
 #include <memory>
+#include <nlohmann/json.hpp>
 #include <string>
 #include <vector>
-#include <nlohmann/json.hpp>
 #include "trade_ngin/core/error.hpp"
 #include "trade_ngin/core/types.hpp"
 
@@ -131,9 +131,9 @@ public:
      * @param table_name Name of the table to insert into
      * @return Result indicating success or failure
      */
-    virtual Result<void> store_backtest_executions(const std::vector<ExecutionReport>& executions,
-                                                   const std::string& run_id,
-                                                   const std::string& table_name = "backtest.executions") = 0;
+    virtual Result<void> store_backtest_executions(
+        const std::vector<ExecutionReport>& executions, const std::string& run_id,
+        const std::string& table_name = "backtest.executions") = 0;
 
     /**
      * @brief Store backtest signals
@@ -144,10 +144,10 @@ public:
      * @param table_name Name of the table to insert into
      * @return Result indicating success or failure
      */
-    virtual Result<void> store_backtest_signals(const std::unordered_map<std::string, double>& signals,
-                                                const std::string& strategy_id, const std::string& run_id,
-                                                const Timestamp& timestamp,
-                                                const std::string& table_name = "backtest.signals") = 0;
+    virtual Result<void> store_backtest_signals(
+        const std::unordered_map<std::string, double>& signals, const std::string& strategy_id,
+        const std::string& run_id, const Timestamp& timestamp,
+        const std::string& table_name = "backtest.signals") = 0;
 
     /**
      * @brief Store backtest run metadata
@@ -160,10 +160,11 @@ public:
      * @param table_name Name of the table to insert into
      * @return Result indicating success or failure
      */
-    virtual Result<void> store_backtest_metadata(const std::string& run_id, const std::string& name,
-                                                 const std::string& description, const Timestamp& start_date,
-                                                 const Timestamp& end_date, const nlohmann::json& hyperparameters,
-                                                 const std::string& table_name = "backtest.run_metadata") = 0;
+    virtual Result<void> store_backtest_metadata(
+        const std::string& run_id, const std::string& name, const std::string& description,
+        const Timestamp& start_date, const Timestamp& end_date,
+        const nlohmann::json& hyperparameters,
+        const std::string& table_name = "backtest.run_metadata") = 0;
 
     // ============================================================================
     // NEW METHODS FOR LIVE TRADING DATA STORAGE
@@ -196,15 +197,13 @@ public:
      * @param table_name Name of the table to insert into
      * @return Result indicating success or failure
      */
-    virtual Result<void> store_trading_results(const std::string& strategy_id, const Timestamp& date,
-                                               double total_return, double sharpe_ratio, double sortino_ratio,
-                                               double max_drawdown, double calmar_ratio, double volatility,
-                                               int total_trades, double win_rate, double profit_factor,
-                                               double avg_win, double avg_loss, double max_win, double max_loss,
-                                               double avg_holding_period, double var_95, double cvar_95,
-                                               double beta, double correlation, double downside_volatility,
-                                               const nlohmann::json& config,
-                                               const std::string& table_name = "trading.results") = 0;
+    virtual Result<void> store_trading_results(
+        const std::string& strategy_id, const Timestamp& date, double total_return,
+        double sharpe_ratio, double sortino_ratio, double max_drawdown, double calmar_ratio,
+        double volatility, int total_trades, double win_rate, double profit_factor, double avg_win,
+        double avg_loss, double max_win, double max_loss, double avg_holding_period, double var_95,
+        double cvar_95, double beta, double correlation, double downside_volatility,
+        const nlohmann::json& config, const std::string& table_name = "trading.results") = 0;
 
     /**
      * @brief Store live trading results with new schema
@@ -229,14 +228,13 @@ public:
      * @param table_name Name of the table to insert into
      * @return Result indicating success or failure
      */
-    virtual Result<void> store_live_results(const std::string& strategy_id, const Timestamp& date,
-                                           double total_return, double volatility, double total_pnl,
-                                           double unrealized_pnl, double realized_pnl, double current_portfolio_value,
-                                           double portfolio_var, double gross_leverage, double net_leverage,
-                                           double portfolio_leverage, double max_correlation, double jump_risk,
-                                           double risk_scale, double total_notional, int active_positions,
-                                           const nlohmann::json& config,
-                                           const std::string& table_name = "trading.live_results") = 0;
+    virtual Result<void> store_live_results(
+        const std::string& strategy_id, const Timestamp& date, double total_return,
+        double volatility, double total_pnl, double unrealized_pnl, double realized_pnl,
+        double current_portfolio_value, double portfolio_var, double gross_leverage,
+        double net_leverage, double portfolio_leverage, double max_correlation, double jump_risk,
+        double risk_scale, double total_notional, int active_positions,
+        const nlohmann::json& config, const std::string& table_name = "trading.live_results") = 0;
 
     /**
      * @brief Store live trading equity curve point
@@ -246,9 +244,9 @@ public:
      * @param table_name Name of the table to insert into
      * @return Result indicating success or failure
      */
-    virtual Result<void> store_trading_equity_curve(const std::string& strategy_id, const Timestamp& timestamp,
-                                                     double equity,
-                                                     const std::string& table_name = "trading.equity_curve") = 0;
+    virtual Result<void> store_trading_equity_curve(
+        const std::string& strategy_id, const Timestamp& timestamp, double equity,
+        const std::string& table_name = "trading.equity_curve") = 0;
 
     /**
      * @brief Store multiple live trading equity curve points
@@ -257,9 +255,10 @@ public:
      * @param table_name Name of the table to insert into
      * @return Result indicating success or failure
      */
-    virtual Result<void> store_trading_equity_curve_batch(const std::string& strategy_id,
-                                                          const std::vector<std::pair<Timestamp, double>>& equity_points,
-                                                          const std::string& table_name = "trading.equity_curve") = 0;
+    virtual Result<void> store_trading_equity_curve_batch(
+        const std::string& strategy_id,
+        const std::vector<std::pair<Timestamp, double>>& equity_points,
+        const std::string& table_name = "trading.equity_curve") = 0;
 
 protected:
     /**
@@ -268,7 +267,8 @@ protected:
      * @param end_date End date
      * @return Result indicating if date range is valid
      */
-    virtual Result<void> validate_date_range(const Timestamp& start_date, const Timestamp& end_date) const {
+    virtual Result<void> validate_date_range(const Timestamp& start_date,
+                                             const Timestamp& end_date) const {
         if (start_date >= end_date) {
             return make_error<void>(ErrorCode::INVALID_ARGUMENT,
                                     "Start date must be before end date", "DatabaseInterface");

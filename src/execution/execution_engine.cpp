@@ -740,7 +740,8 @@ Result<void> ExecutionEngine::execute_is(const ExecutionJob& job) {
         active_job.child_order_ids.push_back(submit_result.value());
         active_job.metrics.num_child_orders++;
 
-        // Calculate implementation shortfall based on price difference and market impact
+        // Calculate implementation shortfall based on price difference and market
+        // impact
         active_job.metrics.implementation_shortfall =
             std::abs((child.price.as_double() - active_job.metrics.arrival_price) /
                      active_job.metrics.arrival_price) +
@@ -878,7 +879,8 @@ Result<void> ExecutionEngine::update_metrics(const std::string& job_id,
             if (order_result.is_ok()) {
                 const auto& parent_order = order_result.value().order;
                 metrics.completion_rate = total_qty / parent_order.quantity.as_double();
-                // Estimate volume participation (can be refined based on actual market volume)
+                // Estimate volume participation (can be refined based on actual market
+                // volume)
                 metrics.volume_participation =
                     std::min(0.1, total_qty / (parent_order.quantity.as_double() * 2.0));
             }
