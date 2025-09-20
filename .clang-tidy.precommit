@@ -1,0 +1,22 @@
+Checks: >
+  clang-diagnostic-*,
+  clang-analyzer-*,
+  bugprone-*,
+  performance-*,
+  modernize-*,
+  misc-*,
+  concurrency-*,
+  readability-*,
+  cppcoreguidelines-avoid-goto,
+  cppcoreguidelines-narrowing-conversions
+
+WarningsAsErrors: ''  # Start with warnings only
+HeaderFilterRegex: '^(src|include)/'
+CheckOptions:
+  - { key: readability-identifier-naming.VariableCase, value: lower_case }
+  - { key: readability-identifier-naming.ClassCase, value: CamelCase }
+  - { key: readability-identifier-naming.FunctionCase, value: camelBack }
+  - { key: readability-identifier-naming.ConstantCase, value: UPPER_CASE }
+  - { key: modernize-use-nullptr.NullMacros, value: 'NULL' }
+  - { key: cppcoreguidelines-narrowing-conversions.AllowedConversion, value: 'int-to-float' }
+  - { key: performance-for-range-copy.WarnOnAllAutoCopies, value: false }

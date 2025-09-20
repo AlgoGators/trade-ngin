@@ -38,5 +38,3 @@ if [[ ":${PKG_CONFIG_PATH:-}:" != *":${HOMEBREW_PREFIX}/lib/pkgconfig:"* ]]; the
 fi
 
 echo "All dependencies installed successfully via Homebrew."
-
-

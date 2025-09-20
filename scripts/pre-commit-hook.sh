@@ -136,4 +136,4 @@ else
     echo ""
     echo "Or manually fix the formatting issues and run this script again."
     exit 1
-fi 
+fi

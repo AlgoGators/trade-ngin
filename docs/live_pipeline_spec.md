@@ -50,7 +50,7 @@ This document describes what the live pipeline must achieve, how to run it, and 
 - Persist updated positions after the run
 
 ## Failure handling
-- Non-zero exit triggers alert email with error summary to the systems team and leadership 
+- Non-zero exit triggers alert email with error summary to the systems team and leadership
 - Database or data unavailability: retry with backoff, then fail fast
 - Ensure idempotence per day (safe re-run)
 

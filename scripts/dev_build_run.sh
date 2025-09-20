@@ -58,5 +58,3 @@ fi
 
 echo "Running ${EXEC_PATH}..."
 "${EXEC_PATH}"
-
-

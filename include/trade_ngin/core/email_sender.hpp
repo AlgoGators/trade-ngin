@@ -1,11 +1,11 @@
 #pragma once
 
-#include <string>
-#include <vector>
-#include <memory>
 #include <map>
-#include <unordered_map>
+#include <memory>
 #include <optional>
+#include <string>
+#include <unordered_map>
+#include <vector>
 #include "trade_ngin/core/error.hpp"
 #include "trade_ngin/core/types.hpp"
 #include "trade_ngin/data/credential_store.hpp"
@@ -51,7 +51,8 @@ public:
      * @param is_html Whether the body is HTML format
      * @return Result indicating success or failure
      */
-    Result<void> send_email(const std::string& subject, const std::string& body, bool is_html = true);
+    Result<void> send_email(const std::string& subject, const std::string& body,
+                            bool is_html = true);
 
     /**
      * @brief Generate trading results email body
@@ -64,9 +65,7 @@ public:
     std::string generate_trading_report_body(
         const std::unordered_map<std::string, Position>& positions,
         const std::optional<RiskResult>& risk_metrics,
-        const std::map<std::string, double>& strategy_metrics,
-        const std::string& date
-    );
+        const std::map<std::string, double>& strategy_metrics, const std::string& date);
 
     /**
      * @brief Generate trading results email body from database results
@@ -75,11 +74,9 @@ public:
      * @param date Trading date
      * @return HTML email body
      */
-    std::string generate_trading_report_from_db(
-        std::shared_ptr<DatabaseInterface> db,
-        const std::string& strategy_id,
-        const std::string& date
-    );
+    std::string generate_trading_report_from_db(std::shared_ptr<DatabaseInterface> db,
+                                                const std::string& strategy_id,
+                                                const std::string& date);
 
 private:
     std::shared_ptr<CredentialStore> credentials_;
@@ -114,4 +111,4 @@ private:
     std::string format_strategy_metrics(const std::map<std::string, double>& strategy_metrics);
 };
 
-} // namespace trade_ngin
+}  // namespace trade_ngin

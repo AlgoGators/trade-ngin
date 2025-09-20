@@ -177,8 +177,8 @@ private:
     std::vector<double> calculate_ewma(const std::vector<double>& prices, int window) const;
 
     /**
-     * @brief Computes the blended EWMA standard deviation using short-term and long-term
-     * components.
+     * @brief Computes the blended EWMA standard deviation using short-term and
+     * long-term components.
      * @param prices Vector of price data.
      * @param N Lookback period for short-term EWMA std dev.
      * @param weight_short Weight for short-term EWMA (default: 70%).
@@ -201,7 +201,8 @@ private:
     /**
      * @brief Computes the long-term average of EWMA standard deviations.
      * @param history Vector storing past EWMA standard deviations.
-     * @param max_history Maximum number of historical periods (default: 10 years).
+     * @param max_history Maximum number of historical periods (default: 10
+     * years).
      * @return Long-term average EWMA standard deviation.
      */
     double compute_long_term_avg(const std::vector<double>& history,

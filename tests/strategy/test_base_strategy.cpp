@@ -38,8 +38,8 @@ public:
         executions_stored = executions;
         return Result<void>();
     }
-    Result<void> store_positions(const std::vector<Position>& positions,
-                                 const std::string&, const std::string&) override {
+    Result<void> store_positions(const std::vector<Position>& positions, const std::string&,
+                                 const std::string&) override {
         positions_stored = positions;
         return Result<void>();
     }
@@ -245,7 +245,7 @@ TEST_F(BaseStrategyTest, SaveExecution_FailurePropagatesError) {
 
 TEST_F(BaseStrategyTest, MockDatabase_SimulateFailure_ReturnsCorrectErrorCode) {
     auto db = std::make_shared<MockPostgresDatabase>();
-    
+
     // Test with simulate_failure = false (should succeed)
     db->simulate_failure = false;
     ExecutionReport report = createExecution(Side::BUY, "AAPL", 100, 150.0);
@@ -253,14 +253,14 @@ TEST_F(BaseStrategyTest, MockDatabase_SimulateFailure_ReturnsCorrectErrorCode) {
     EXPECT_TRUE(result_success.is_ok());
     EXPECT_EQ(db->executions_stored.size(), 1);
     EXPECT_EQ(db->executions_stored[0].symbol, "AAPL");
-    
+
     // Test with simulate_failure = true (should fail with DATABASE_ERROR)
     db->simulate_failure = true;
     auto result_failure = db->store_executions({report}, "test_table");
     EXPECT_TRUE(result_failure.is_error());
     EXPECT_EQ(result_failure.error()->code(), ErrorCode::DATABASE_ERROR);
     EXPECT_STREQ(result_failure.error()->what(), "Simulated database failure");
-    
+
     // Verify that executions were not stored when failure occurred
     EXPECT_EQ(db->executions_stored.size(), 1);  // Still only the first one
 }

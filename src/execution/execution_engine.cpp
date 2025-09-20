@@ -725,7 +725,7 @@ Result<void> ExecutionEngine::execute_is(const ExecutionJob& job) {
             arrival_price = 150.0;  // Default price for testing
         }
         active_job.metrics.arrival_price = arrival_price;
-        
+
         // Market impact as percentage (2 basis points = 0.02%)
         active_job.metrics.market_impact = 0.0002;  // 2bp market impact as percentage
 
@@ -891,7 +891,8 @@ Result<void> ExecutionEngine::update_metrics(const std::string& job_id,
             if (order_result.is_ok()) {
                 const auto& parent_order = order_result.value().order;
                 metrics.completion_rate = total_qty / parent_order.quantity.as_double();
-                // Estimate volume participation (can be refined based on actual market volume)
+                // Estimate volume participation (can be refined based on actual market
+                // volume)
                 metrics.volume_participation =
                     std::min(0.1, total_qty / (parent_order.quantity.as_double() * 2.0));
             }

@@ -14,6 +14,7 @@ add_executable(bt_trend ${BT_TREND_SOURCES})
 target_link_libraries(bt_trend
     PRIVATE
         trade_ngin
+        libpqxx::pqxx
 )
 
 # Set output directory

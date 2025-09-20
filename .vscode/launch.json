@@ -10,7 +10,8 @@
             "stopAtEntry": false,
             "cwd": "${workspaceFolder}",
             "environment": [],
-            "preLaunchTask": "Build database_test",  // This ensures it builds before running
+            "preLaunchTask": "Build database_test",
+            // This ensures it builds before running
             "console": "integratedTerminal"
         }
     ]

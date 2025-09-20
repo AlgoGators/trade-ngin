@@ -1,23 +1,23 @@
 {
     "version": "2.0.0",
     "tasks": [
-      {
-        "label": "Clean & Build",
-        "type": "shell",
-        "command": "rm -rf build && mkdir build && cd build && cmake .. -G \"Visual Studio 16 2019\" -A x64 -DCMAKE_TOOLCHAIN_FILE=C:/Users/kbott/vcpkg/scripts/buildsystems/vcpkg.cmake && cmake --build . --config Release",
-        "group": {
-          "kind": "build",
-          "isDefault": true
+        {
+            "label": "Clean & Build",
+            "type": "shell",
+            "command":
+                "rm -rf build && mkdir build && cd build && cmake .. -G \"Visual Studio 16 2019\" -A x64 -DCMAKE_TOOLCHAIN_FILE=C:/Users/kbott/vcpkg/scripts/buildsystems/vcpkg.cmake && cmake --build . --config Release",
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "problemMatcher": []
         },
-        "problemMatcher": []
-      },
-      {
-        "label": "Run Tests",
-        "type": "shell",
-        "command": "cd build/bin/Release && ./trade_ngin_tests.exe",
-        "group": "none",
-        "problemMatcher": []
-      }
+        {
+            "label": "Run Tests",
+            "type": "shell",
+            "command": "cd build/bin/Release && ./trade_ngin_tests.exe",
+            "group": "none",
+            "problemMatcher": []
+        }
     ]
-  }
-  
+}

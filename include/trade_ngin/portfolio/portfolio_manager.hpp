@@ -30,14 +30,14 @@ namespace trade_ngin {
 struct PortfolioConfig : public ConfigBase {
     Decimal total_capital{Decimal(0.0)};    // Total portfolio capital
     Decimal reserve_capital{Decimal(0.0)};  // Capital to keep in reserve
-    double max_strategy_allocation{
-        1.0};  // Maximum allocation to any strategy (keep as double - it's a ratio)
-    double min_strategy_allocation{
-        0.0};  // Minimum allocation to any strategy (keep as double - it's a ratio)
-    bool use_optimization{false};     // Whether to use position optimization
-    bool use_risk_management{false};  // Whether to use risk management
-    DynamicOptConfig opt_config;      // Optimization configuration
-    RiskConfig risk_config;           // Risk management configuration
+    double max_strategy_allocation{1.0};    // Maximum allocation to any strategy
+                                            // (keep as double - it's a ratio)
+    double min_strategy_allocation{0.0};    // Minimum allocation to any strategy
+                                            // (keep as double - it's a ratio)
+    bool use_optimization{false};           // Whether to use position optimization
+    bool use_risk_management{false};        // Whether to use risk management
+    DynamicOptConfig opt_config;            // Optimization configuration
+    RiskConfig risk_config;                 // Risk management configuration
 
     std::string version{"1.0.0"};  // Configuration version
 

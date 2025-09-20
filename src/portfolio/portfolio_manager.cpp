@@ -209,7 +209,8 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data)
                                   << result.error()->what() << std::endl;
                     }
 
-                    // Check if it's a TrendFollowingStrategy and use instrument data if available
+                    // Check if it's a TrendFollowingStrategy and use instrument data if
+                    // available
                     auto trend_strategy =
                         std::dynamic_pointer_cast<TrendFollowingStrategy>(info.strategy);
                     if (trend_strategy) {
@@ -264,8 +265,8 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data)
         }
 
         //  Iterative dynamic opt + risk management loop
-        // Up to 5 iterations for convergence to fully integer positions. The final rounding step
-        // can cause minor tracking error/risk profile deviation
+        // Up to 5 iterations for convergence to fully integer positions. The final
+        // rounding step can cause minor tracking error/risk profile deviation
 
         int max_iterations = 5;
         int iteration = 0;
@@ -346,8 +347,8 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data)
             }
         }
 
-        // This safeguard forcibly rounds all final positions to integers in case of conflicting
-        // rounding logic
+        // This safeguard forcibly rounds all final positions to integers in case of
+        // conflicting rounding logic
         if (!done) {
             WARN("Max iterations reached (" + std::to_string(max_iterations) +
                  "). Forcing final rounding to remove any partial contracts.");
@@ -386,7 +387,8 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data)
             }
         }
 
-        // Get optimized positions (should be whole numbers after dynamic optimization)
+        // Get optimized positions (should be whole numbers after dynamic
+        // optimization)
         auto post_opt = get_portfolio_positions();
         {
             std::ostringstream oss3;
@@ -399,8 +401,8 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data)
         {
             std::lock_guard<std::mutex> lock(mutex_);
 
-            // CRITICAL FIX: Generate execution reports using optimized positions (whole numbers)
-            // instead of fractional target_positions from strategies
+            // CRITICAL FIX: Generate execution reports using optimized positions
+            // (whole numbers) instead of fractional target_positions from strategies
             for (const auto& [symbol, new_pos] : post_opt) {
                 double current_qty = 0.0;
 
@@ -767,12 +769,15 @@ Result<void> PortfolioManager::optimize_positions() {
                     returns_by_symbol[symbol] = it->second;  // Copy the data under lock
                 } else {
                     INFO("Symbol " + symbol +
-                         " has insufficient historical data for optimization, skipping symbol");
+                         " has insufficient historical data for optimization, skipping "
+                         "symbol");
                 }
             }
 
             if (symbols.empty()) {
-                INFO("No symbols have sufficient historical data for optimization, skipping");
+                INFO(
+                    "No symbols have sufficient historical data for optimization, "
+                    "skipping");
                 return Result<void>();
             }
 
@@ -909,7 +914,8 @@ Result<void> PortfolioManager::optimize_positions() {
                     }
                 }
 
-                // Get original position from before optimization (stored in your trading data)
+                // Get original position from before optimization (stored in your
+                // trading data)
                 for (const auto& [_, info] : strategies_) {
                     auto trend_strategy =
                         std::dynamic_pointer_cast<TrendFollowingStrategy>(info.strategy);
@@ -1159,7 +1165,8 @@ std::vector<std::shared_ptr<StrategyInterface>> PortfolioManager::get_strategies
 
 double PortfolioManager::get_portfolio_value(
     const std::unordered_map<std::string, double>& current_prices) const {
-    // Start with initial capital (not reduced by reserves for portfolio value calculation)
+    // Start with initial capital (not reduced by reserves for portfolio value
+    // calculation)
     double portfolio_value = static_cast<double>(config_.total_capital);
     DEBUG("Portfolio value calculation starting with initial capital: $" +
           std::to_string(portfolio_value));
@@ -1218,8 +1225,8 @@ std::unordered_map<std::string, Position> PortfolioManager::get_positions_intern
     std::unordered_map<std::string, Position> portfolio_positions;
 
     for (const auto& [_, info] : strategies_) {
-        // CRITICAL FIX: Read positions directly from strategy (with P&L) instead of cached
-        // target_positions
+        // CRITICAL FIX: Read positions directly from strategy (with P&L) instead of
+        // cached target_positions
         const auto& strategy_positions = info.strategy->get_positions();
         for (const auto& [symbol, pos] : strategy_positions) {
             if (portfolio_positions.count(symbol) == 0) {

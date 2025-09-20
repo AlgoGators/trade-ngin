@@ -6,7 +6,7 @@ This guide explains how to properly handle type conversions between `Decimal`, `
 
 ```cpp
 using Price = Decimal;      // Financial price values
-using Quantity = Decimal;   // Order/position quantities  
+using Quantity = Decimal;   // Order/position quantities
 class Decimal;              // Fixed-point decimal with 8 decimal places
 ```
 
@@ -77,13 +77,13 @@ For configuration structs, financial values should be Decimal but serialize as d
 ```cpp
 struct Config {
     Decimal capital{Decimal(1000000.0)};     // Store as Decimal
-    
+
     nlohmann::json to_json() const override {
         nlohmann::json j;
         j["capital"] = static_cast<double>(capital);  // Serialize as double
         return j;
     }
-    
+
     void from_json(const nlohmann::json& j) override {
         if (j.contains("capital")) {
             capital = Decimal(j.at("capital").get<double>());  // Parse as double, store as Decimal
@@ -128,7 +128,7 @@ Decimal converted_back = Decimal(legacy_result);
 ### Database Operations
 ```cpp
 // Always convert Decimal to double for database
-txn.exec_params(query, 
+txn.exec_params(query,
     symbol,
     static_cast<double>(position.quantity),
     static_cast<double>(position.average_price)

@@ -61,5 +61,3 @@ make -j"$(nproc)" && make install
 ldconfig
 
 echo "All dependencies installed successfully."
-
-

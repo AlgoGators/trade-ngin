@@ -43,7 +43,8 @@ void Logger::initialize(const LoggerConfig& config) {
             throw std::runtime_error("Failed to create log directory: " + log_dir.string() + " - " + ec.message());
         }
 
-        // Enforce retention before creating a new file so total never exceeds max_files
+        // Enforce retention before creating a new file so total never exceeds
+        // max_files
         {
             std::vector<std::filesystem::path> log_files;
             for (const auto& entry : std::filesystem::directory_iterator(log_dir)) {

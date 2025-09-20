@@ -171,7 +171,7 @@ TEST_F(CredentialStoreTest, ThrowsOnInvalidJson) {
     corrupt_config << R"({
         "database": {
             "host": "corrupt-host.example.com",
-            "port": 
+            "port":
         }
     })";
     corrupt_config.close();
