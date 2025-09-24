@@ -171,7 +171,7 @@ Result<void> BaseStrategy::on_data(const std::vector<Bar>& data) {
                 return make_error<void>(ErrorCode::INVALID_DATA, "Bar has empty symbol",
                                         "BaseStrategy");
             }
-            if (bar.timestamp == Timestamp{}) {
+            if (bar.timestamp == Timestamp{} || bar.timestamp.time_since_epoch().count() == 0) {
                 return make_error<void>(ErrorCode::INVALID_DATA, "Bar has invalid timestamp",
                                         "BaseStrategy");
             }

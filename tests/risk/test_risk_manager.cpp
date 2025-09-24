@@ -116,8 +116,10 @@ TEST_F(RiskManagerTest, VolatilityRisk) {
 }
 
 TEST_F(RiskManagerTest, CorrelationRisk) {
-    auto market_data_vec = create_test_market_data(
-        {{"AAPL", {100, 102, 100, 102, 100}}, {"MSFT", {200, 196, 200, 196, 200}}});
+    auto market_data_vec = create_test_market_data({
+        {"AAPL", {100, 100, 101, 100, 100, 99, 100, 100, 101, 100, 100, 99, 100, 100, 100}}, 
+        {"MSFT", {200, 210, 190, 220, 180, 230, 170, 240, 160, 250, 150, 260, 140, 270, 130}}
+    });
     auto market_data = risk_manager_->create_market_data(market_data_vec);
     auto positions = create_test_positions({{"AAPL", 5000, 100.0}, {"MSFT", -2500, 200.0}});
     auto result = risk_manager_->process_positions(positions, market_data);
@@ -163,9 +165,14 @@ TEST_F(RiskManagerTest, PositionSymbolMismatch) {
 }
 
 TEST_F(RiskManagerTest, MultipleRiskFactors) {
+    auto market_data_vec = create_test_market_data({
+        {"AAPL", {100, 100, 101, 100, 100, 99, 100, 100, 101, 100, 100, 99, 100, 100, 100}}, 
+        {"MSFT", {200, 210, 190, 220, 180, 230, 170, 240, 160, 250, 150, 260, 140, 270, 130}},
+        {"GOOG", {2500, 2550, 2450, 2600, 2400, 2650, 2350, 2700, 2300, 2750, 2250, 2800, 2200, 2850, 2150}}
+    });
     auto positions =
         create_test_positions({{"AAPL", 1000, 104.0}, {"MSFT", 500, 208.0}, {"GOOG", 100, 2580.0}});
-    auto market_data = risk_manager_->create_market_data(default_market_data_);
+    auto market_data = risk_manager_->create_market_data(market_data_vec);
     auto result = risk_manager_->process_positions(positions, market_data);
     ASSERT_TRUE(result.is_ok());
     const auto& risk_result = result.value();
