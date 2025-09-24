@@ -9,9 +9,6 @@
 
 namespace trade_ngin {
 
-// Thread-local variable to store the current component name
-thread_local std::string Logger::current_component_;
-
 // Helper function to generate formatted timestamp
 std::string generate_session_timestamp() {
     auto now = std::chrono::system_clock::now();
@@ -38,7 +35,13 @@ void Logger::initialize(const LoggerConfig& config) {
         config_.destination == LogDestination::BOTH) {
         // Create full path if it doesn't exist
         std::filesystem::path log_dir = std::filesystem::absolute(config_.log_directory);
-        std::filesystem::create_directories(log_dir);
+        
+        // Try to create directories and check if it succeeded
+        std::error_code ec;
+        std::filesystem::create_directories(log_dir, ec);
+        if (ec) {
+            throw std::runtime_error("Failed to create log directory: " + log_dir.string() + " - " + ec.message());
+        }
 
         // Enforce retention before creating a new file so total never exceeds max_files
         {

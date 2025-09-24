@@ -217,7 +217,7 @@ TEST_F(PostgresDatabaseTest, ConnectionTimeout) {
     auto duration = std::chrono::steady_clock::now() - start_time;
 
     EXPECT_TRUE(result.is_error());
-    EXPECT_EQ(result.error()->code(), ErrorCode::DATABASE_ERROR);
+    EXPECT_EQ(result.error()->code(), ErrorCode::CONNECTION_ERROR);
 
     // Check that it didn't hang for too long (should timeout within reasonable time)
     EXPECT_LT(std::chrono::duration_cast<std::chrono::seconds>(duration).count(), 5);

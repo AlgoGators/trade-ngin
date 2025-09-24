@@ -129,15 +129,36 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
                                         "TrendFollowingStrategy");
             }
 
-            if (bar.timestamp == Timestamp{}) {
+            // Check for default/invalid timestamp (epoch time or zero)
+            if (bar.timestamp == Timestamp{} || bar.timestamp.time_since_epoch().count() == 0) {
                 return make_error<void>(ErrorCode::INVALID_DATA, "Bar has invalid timestamp",
                                         "TrendFollowingStrategy");
             }
 
-            if (bar.open <= 0.0 || bar.high <= 0.0 || bar.high < bar.low || bar.low <= 0.0 ||
-                bar.close <= 0.0 || bar.volume < 0.0) {
+            // Check for default-constructed or invalid price data
+            if (bar.open <= 0.0 || bar.high <= 0.0 || bar.low <= 0.0 || bar.close <= 0.0) {
                 return make_error<void>(ErrorCode::INVALID_DATA,
-                                        "Invalid bar data for symbol " + bar.symbol,
+                                        "Bar has invalid price data (zero or negative prices) for symbol " + bar.symbol,
+                                        "TrendFollowingStrategy");
+            }
+
+            // Check for logical price relationships
+            if (bar.high < bar.low) {
+                return make_error<void>(ErrorCode::INVALID_DATA,
+                                        "Bar high price is less than low price for symbol " + bar.symbol,
+                                        "TrendFollowingStrategy");
+            }
+
+            // Check for reasonable price relationships
+            if (bar.high < bar.open || bar.high < bar.close || bar.low > bar.open || bar.low > bar.close) {
+                return make_error<void>(ErrorCode::INVALID_DATA,
+                                        "Bar price relationships are invalid (high/low not encompassing open/close) for symbol " + bar.symbol,
+                                        "TrendFollowingStrategy");
+            }
+
+            if (bar.volume < 0.0) {
+                return make_error<void>(ErrorCode::INVALID_DATA,
+                                        "Bar has negative volume for symbol " + bar.symbol,
                                         "TrendFollowingStrategy");
             }
 
@@ -883,6 +904,38 @@ double TrendFollowingStrategy::calculate_position(const std::string& symbol, dou
             WARN("Invalid position calculation result for " + symbol + ": " +
                  std::to_string(position));
             position = 0.0;  // Use neutral position
+        }
+
+        // Apply leverage-based position scaling to prevent excessive leverage
+        // Calculate current total leverage from existing positions
+        double existing_leverage = 0.0;
+        for (const auto& [existing_symbol, existing_pos] : positions_) {
+            if (existing_symbol != symbol && existing_pos.quantity != 0) {
+                double existing_contract_size = config_.trading_params.count(existing_symbol) > 0 
+                    ? config_.trading_params.at(existing_symbol) : 1.0;
+                double existing_position_value = std::abs(static_cast<double>(existing_pos.quantity) * 
+                    static_cast<double>(existing_pos.average_price) * existing_contract_size);
+                existing_leverage += existing_position_value;
+            }
+        }
+        
+        // Calculate how much leverage this new position would add
+        double new_position_value = std::abs(position * price * contract_size);
+        double total_leverage = (existing_leverage + new_position_value) / capital;
+        
+        if (total_leverage > static_cast<double>(risk_limits_.max_leverage)) {
+            // Calculate the maximum allowed position value
+            double max_allowed_position_value = capital * static_cast<double>(risk_limits_.max_leverage) - existing_leverage;
+            if (max_allowed_position_value > 0) {
+                double scale_factor = max_allowed_position_value / new_position_value;
+                position *= scale_factor;
+                DEBUG("Scaled position for " + symbol + " by factor " + std::to_string(scale_factor) + 
+                      " to prevent leverage violation (existing leverage: " + std::to_string(existing_leverage/capital) + 
+                      ", new leverage would be: " + std::to_string(total_leverage) + ")");
+            } else {
+                position = 0.0;
+                DEBUG("Zeroed position for " + symbol + " to prevent leverage violation");
+            }
         }
 
         // Apply position limits as a safeguard
