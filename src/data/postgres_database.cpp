@@ -1742,15 +1742,15 @@ Result<void> PostgresDatabase::store_live_results(const std::string& strategy_id
         }
 
         std::string query = "INSERT INTO " + table_name +
-                            " (strategy_id, date, total_return, volatility, total_pnl, unrealized_pnl, realized_pnl, "
+                            " (strategy_id, date, total_return, volatility, total_pnl, total_unrealized_pnl, total_realized_pnl, "
                             "current_portfolio_value, daily_realized_pnl, daily_unrealized_pnl, portfolio_var, "
                             "gross_leverage, net_leverage, portfolio_leverage, max_correlation, jump_risk, "
                             "risk_scale, gross_notional, net_notional, active_positions, total_commissions, config) "
                             "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22) "
                             "ON CONFLICT (strategy_id, date) "
                             "DO UPDATE SET total_return = EXCLUDED.total_return, volatility = EXCLUDED.volatility, "
-                            "total_pnl = EXCLUDED.total_pnl, unrealized_pnl = EXCLUDED.unrealized_pnl, "
-                            "realized_pnl = EXCLUDED.realized_pnl, current_portfolio_value = EXCLUDED.current_portfolio_value, "
+                            "total_pnl = EXCLUDED.total_pnl, total_unrealized_pnl = EXCLUDED.total_unrealized_pnl, "
+                            "total_realized_pnl = EXCLUDED.total_realized_pnl, current_portfolio_value = EXCLUDED.current_portfolio_value, "
                             "daily_realized_pnl = EXCLUDED.daily_realized_pnl, daily_unrealized_pnl = EXCLUDED.daily_unrealized_pnl, "
                             "portfolio_var = EXCLUDED.portfolio_var, gross_leverage = EXCLUDED.gross_leverage, "
                             "net_leverage = EXCLUDED.net_leverage, portfolio_leverage = EXCLUDED.portfolio_leverage, "
@@ -1771,6 +1771,53 @@ Result<void> PostgresDatabase::store_live_results(const std::string& strategy_id
         return make_error<void>(ErrorCode::DATABASE_ERROR,
                                 "Failed to store live results: " + std::string(e.what()),
                                 "PostgresDatabase");
+    }
+}
+
+Result<std::tuple<double, double, double>> PostgresDatabase::get_previous_live_aggregates(
+    const std::string& strategy_id, const Timestamp& date, const std::string& table_name) {
+    auto validation = validate_connection();
+    if (validation.is_error()) {
+        return make_error<std::tuple<double, double, double>>(validation.error()->code(),
+                                                              validation.error()->what());
+    }
+
+    try {
+        pqxx::work txn(*connection_);
+
+        // Validate table name
+        auto table_validation = validate_table_name(table_name);
+        if (table_validation.is_error()) {
+            return make_error<std::tuple<double, double, double>>(table_validation.error()->code(),
+                                                                  table_validation.error()->what());
+        }
+
+        // Build query for the previous calendar day (DATE(date) = DATE($2) - INTERVAL '1 day')
+        std::string query =
+            "SELECT current_portfolio_value, total_pnl, total_commissions "
+            "FROM " + table_name +
+            " WHERE strategy_id = $1 AND DATE(date) = (DATE($2) - INTERVAL '1 day') "
+            "ORDER BY created_at DESC LIMIT 1";
+
+        auto result = txn.exec_params(query, strategy_id, format_timestamp(date));
+        txn.commit();
+
+        double prev_value = 0.0;
+        double prev_total_pnl = 0.0;
+        double prev_total_commissions = 0.0;
+
+        if (!result.empty()) {
+            const auto& row = result[0];
+            if (!row[0].is_null()) prev_value = row[0].as<double>();
+            if (!row[1].is_null()) prev_total_pnl = row[1].as<double>();
+            if (!row[2].is_null()) prev_total_commissions = row[2].as<double>();
+        }
+
+        return Result<std::tuple<double, double, double>>(std::make_tuple(prev_value, prev_total_pnl, prev_total_commissions));
+    } catch (const std::exception& e) {
+        return make_error<std::tuple<double, double, double>>(ErrorCode::DATABASE_ERROR,
+                                                              "Failed to fetch previous live aggregates: " + std::string(e.what()),
+                                                              "PostgresDatabase");
     }
 }
 

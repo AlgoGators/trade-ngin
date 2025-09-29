@@ -241,6 +241,17 @@ public:
                                            const std::string& table_name = "trading.live_results") = 0;
 
     /**
+     * @brief Fetch previous day's cumulative aggregates from live_results
+     * @param strategy_id Strategy identifier
+     * @param date Anchor date; the function will look up DATE(date - 1 day)
+     * @param table_name Name of the live_results table
+     * @return Tuple: (previous_current_portfolio_value, previous_total_pnl, previous_total_commissions)
+     */
+    virtual Result<std::tuple<double, double, double>> get_previous_live_aggregates(
+        const std::string& strategy_id, const Timestamp& date,
+        const std::string& table_name = "trading.live_results") = 0;
+
+    /**
      * @brief Store live trading equity curve point
      * @param strategy_id Strategy identifier
      * @param timestamp Timestamp of the equity point

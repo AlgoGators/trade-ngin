@@ -270,6 +270,10 @@ public:
                                    const nlohmann::json& config,
                                    const std::string& table_name = "trading.live_results") override;
 
+    Result<std::tuple<double, double, double>> get_previous_live_aggregates(
+        const std::string& strategy_id, const Timestamp& date,
+        const std::string& table_name = "trading.live_results") override;
+
     /**
      * @brief Store live trading equity curve point
      * @param strategy_id Strategy identifier
