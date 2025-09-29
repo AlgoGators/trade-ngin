@@ -617,7 +617,46 @@ int main() {
                 INFO("DEBUG: Execution data - commission: " + std::to_string(exec.commission));
                 INFO("DEBUG: Execution data - is_partial: " + std::to_string(exec.is_partial));
             }
-            
+            // Before inserting, delete any stale executions for today with the same order_ids
+            try {
+                // Build unique order_id list
+                std::set<std::string> unique_order_ids;
+                for (const auto& exec : daily_executions) {
+                    unique_order_ids.insert(exec.order_id);
+                }
+
+                if (!unique_order_ids.empty()) {
+                    // Build comma-separated quoted list for SQL IN clause
+                    std::ostringstream ids_ss;
+                    bool first = true;
+                    for (const auto& oid : unique_order_ids) {
+                        if (!first) ids_ss << ", ";
+                        ids_ss << "'" << oid << "'";
+                        first = false;
+                    }
+
+                    // Create YYYY-MM-DD for date filter to match execution_time
+                    std::stringstream date_only_ss;
+                    auto now_time_t_for_del = std::chrono::system_clock::to_time_t(now);
+                    date_only_ss << std::put_time(std::gmtime(&now_time_t_for_del), "%Y-%m-%d");
+
+                    std::string delete_execs_query =
+                        "DELETE FROM trading.executions "
+                        "WHERE DATE(execution_time) = '" + date_only_ss.str() + "' "
+                        "AND order_id IN (" + ids_ss.str() + ")";
+
+                    INFO("Deleting stale executions for today with matching order_ids: " + std::to_string(unique_order_ids.size()));
+                    auto del_res = db->execute_direct_query(delete_execs_query);
+                    if (del_res.is_error()) {
+                        WARN("Failed to delete stale executions: " + std::string(del_res.error()->what()));
+                    } else {
+                        INFO("Stale executions (if any) deleted successfully");
+                    }
+                }
+            } catch (const std::exception& e) {
+                WARN("Exception while deleting stale executions: " + std::string(e.what()));
+            }
+
             auto exec_result = db->store_executions(daily_executions, "trading.executions");
             if (exec_result.is_error()) {
                 ERROR("Failed to store executions: " + std::string(exec_result.error()->what()));
@@ -635,22 +674,30 @@ int main() {
         std::cout << "Total Positions: " << positions.size() << std::endl;
         std::cout << std::endl;
 
-        double total_notional = 0.0;
+        double gross_notional = 0.0;
+        double net_notional = 0.0;
         int active_positions = 0;
 
         for (const auto& [symbol, position] : positions) {
             if (position.quantity.as_double() != 0.0) {
                 active_positions++;
-                double notional = position.quantity.as_double() * position.average_price.as_double();
-                total_notional += notional;
+                // Use current market price if available
+                double market_price = position.average_price.as_double();
+                auto itp = current_prices.find(symbol);
+                if (itp != current_prices.end()) {
+                    market_price = itp->second;
+                }
+                double signed_notional = position.quantity.as_double() * market_price;
+                net_notional += signed_notional;
+                gross_notional += std::abs(signed_notional);
                 
                 std::cout << std::setw(10) << symbol << " | "
                           << std::setw(10) << std::fixed << std::setprecision(2) 
                           << position.quantity.as_double() << " | "
                           << std::setw(10) << std::fixed << std::setprecision(2) 
-                          << position.average_price.as_double() << " | "
+                          << market_price << " | "
                           << std::setw(12) << std::fixed << std::setprecision(2) 
-                          << notional << " | "
+                          << signed_notional << " | "
                           << std::setw(10) << std::fixed << std::setprecision(2) 
                           << position.unrealized_pnl.as_double() << std::endl;
             }
@@ -658,9 +705,10 @@ int main() {
 
         std::cout << std::endl;
         std::cout << "Active Positions: " << active_positions << std::endl;
-        std::cout << "Total Notional: $" << std::fixed << std::setprecision(2) << total_notional << std::endl;
-        std::cout << "Portfolio Leverage: " << std::fixed << std::setprecision(2) 
-                  << (total_notional / initial_capital) << "x" << std::endl;
+        std::cout << "Gross Notional: $" << std::fixed << std::setprecision(2) << gross_notional << std::endl;
+        std::cout << "Net Notional: $" << std::fixed << std::setprecision(2) << net_notional << std::endl;
+        std::cout << "Portfolio Leverage (gross/current): " << std::fixed << std::setprecision(2) 
+                  << (gross_notional / initial_capital) << "x" << std::endl;
 
         // Save positions to database with daily PnL values
         INFO("Saving positions to database with daily PnL...");
@@ -784,45 +832,33 @@ int main() {
         INFO("Total daily commissions: $" + std::to_string(total_daily_commissions));
         INFO("Daily PnL after commissions: $" + std::to_string(daily_realized_pnl));
         
-        // Load previous day's portfolio value and cumulative PnL
+        // Load previous day's aggregates (portfolio value, total pnl, total commissions)
         double previous_portfolio_value = initial_capital; // Default to initial capital
         double previous_total_pnl = 0.0;
+        double previous_total_commissions = 0.0;
 
-        // Try to load previous day's results from live_results table
         try {
-            std::stringstream prev_date_ss;
-            auto prev_time_t = std::chrono::system_clock::to_time_t(previous_date);
-            prev_date_ss << std::put_time(std::gmtime(&prev_time_t), "%Y-%m-%d");
-
-            std::string prev_query = "SELECT current_portfolio_value, total_pnl FROM trading.live_results WHERE strategy_id = 'LIVE_TREND_FOLLOWING' AND DATE(date) = '" + prev_date_ss.str() + "' ORDER BY created_at DESC LIMIT 1";
-            auto prev_result = db->execute_query(prev_query);
-            if (prev_result.is_ok() && prev_result.value()->num_rows() > 0) {
-                auto table = prev_result.value();
-                auto value_col = table->column(0);
-                auto pnl_col = table->column(1);
-                if (value_col->num_chunks() > 0) {
-                    auto value_array = std::static_pointer_cast<arrow::DoubleArray>(value_col->chunk(0));
-                    auto pnl_array = std::static_pointer_cast<arrow::DoubleArray>(pnl_col->chunk(0));
-                    if (value_array->length() > 0 && !value_array->IsNull(0)) {
-                        previous_portfolio_value = value_array->Value(0);
-                        if (!pnl_array->IsNull(0)) {
-                            previous_total_pnl = pnl_array->Value(0);
-                        }
-                        INFO("Loaded previous portfolio value: $" + std::to_string(previous_portfolio_value));
-                        INFO("Loaded previous total PnL: $" + std::to_string(previous_total_pnl));
-                    }
+            auto db_ptr = std::dynamic_pointer_cast<PostgresDatabase>(db);
+            if (db_ptr) {
+                auto prev_agg = db_ptr->get_previous_live_aggregates("LIVE_TREND_FOLLOWING", now, "trading.live_results");
+                if (prev_agg.is_ok()) {
+                    std::tie(previous_portfolio_value, previous_total_pnl, previous_total_commissions) = prev_agg.value();
+                    INFO("Loaded previous aggregates - portfolio_value: $" + std::to_string(previous_portfolio_value) +
+                         ", total_pnl: $" + std::to_string(previous_total_pnl) +
+                         ", total_commissions: $" + std::to_string(previous_total_commissions));
+                } else {
+                    INFO("No previous aggregates found: " + std::string(prev_agg.error()->what()));
                 }
-            } else {
-                INFO("No previous day results found (first run or no data)");
             }
         } catch (const std::exception& e) {
-            INFO("Could not load previous day results: " + std::string(e.what()));
+            INFO("Could not load previous day aggregates: " + std::string(e.what()));
         }
 
         // Calculate cumulative values
         double total_pnl = previous_total_pnl + daily_realized_pnl;
         double current_portfolio_value = previous_portfolio_value + daily_realized_pnl;
         double daily_pnl = daily_realized_pnl;  // Already calculated above
+        double total_commissions_cumulative = previous_total_commissions + total_daily_commissions;
 
         // Since it's futures, all PnL is realized
         double total_realized_pnl = total_pnl;
@@ -855,7 +891,7 @@ int main() {
         std::cout << "Total Return: " << std::fixed << std::setprecision(2) << total_return << "%" << std::endl;
         std::cout << "Daily Return: " << std::fixed << std::setprecision(2) << daily_return << "%" << std::endl;
         std::cout << "Portfolio Leverage: " << std::fixed << std::setprecision(2) 
-                  << (total_notional / current_portfolio_value) << "x" << std::endl;
+                  << (gross_notional / current_portfolio_value) << "x" << std::endl;
 
         // Get forecasts for all symbols
         INFO("Retrieving current forecasts...");
@@ -937,8 +973,9 @@ int main() {
             config_json["risk_target"] = trend_config.risk_target;
             config_json["idm"] = trend_config.idm;
             config_json["active_positions"] = active_positions;
-            config_json["total_notional"] = total_notional;
-            config_json["portfolio_leverage"] = total_notional / initial_capital;
+            config_json["gross_notional"] = gross_notional;
+            config_json["net_notional"] = net_notional;
+            config_json["portfolio_leverage"] = gross_notional / initial_capital;
             
             // Create SQL insert for live_results table with correct schema
             std::stringstream date_ss;
@@ -964,7 +1001,7 @@ int main() {
             }
             
             // Use the calculated PnL values from position analysis
-            double portfolio_leverage = total_notional / current_portfolio_value;
+            double portfolio_leverage = (current_portfolio_value != 0.0) ? (gross_notional / current_portfolio_value) : 0.0;
             
             // First delete existing results for this strategy and date
             // Validate table name before using it in DELETE query
@@ -981,11 +1018,11 @@ int main() {
             
             // Then insert new results with all required columns
             std::string query = "INSERT INTO trading.live_results "
-                               "(strategy_id, date, total_return, volatility, total_pnl, unrealized_pnl, "
-                               "realized_pnl, current_portfolio_value, portfolio_var, gross_leverage, "
+                               "(strategy_id, date, total_return, volatility, total_pnl, total_unrealized_pnl, "
+                               "total_realized_pnl, current_portfolio_value, portfolio_var, gross_leverage, "
                                "net_leverage, portfolio_leverage, max_correlation, jump_risk, risk_scale, "
                                "gross_notional, net_notional, active_positions, config, daily_pnl, "
-                               "total_commissions, daily_realized_pnl, daily_unrealized_pnl) "
+                               "total_commissions, daily_realized_pnl, daily_unrealized_pnl, daily_commissions) "
                                "VALUES ('LIVE_TREND_FOLLOWING', '" + date_ss.str() + "', " +
                                std::to_string(total_return) + ", " + std::to_string(volatility) + ", " +
                                std::to_string(total_pnl) + ", " + std::to_string(total_unrealized_pnl) + ", " +
@@ -993,11 +1030,12 @@ int main() {
                                std::to_string(portfolio_var) + ", " + std::to_string(gross_leverage) + ", " +
                                std::to_string(net_leverage) + ", " + std::to_string(portfolio_leverage) + ", " +
                                std::to_string(max_correlation) + ", " + std::to_string(jump_risk) + ", " +
-                               std::to_string(risk_scale) + ", " + std::to_string(total_notional) + ", " +
-                               std::to_string(total_notional) + ", " +  // Using total_notional for both gross and net for now
+                                std::to_string(risk_scale) + ", " + std::to_string(gross_notional) + ", " +
+                                std::to_string(net_notional) + ", " +
                                std::to_string(active_positions) + ", '" + config_json.dump() + "', " +
-                               std::to_string(daily_pnl) + ", " + std::to_string(total_daily_commissions) + ", " +
-                               std::to_string(daily_realized_pnl) + ", " + std::to_string(daily_unrealized_pnl) + ")";
+                               std::to_string(daily_pnl) + ", " + std::to_string(total_commissions_cumulative) + ", " +
+                               std::to_string(daily_realized_pnl) + ", " + std::to_string(daily_unrealized_pnl) + ", " +
+                               std::to_string(total_daily_commissions) + ")";
             
             auto results_save_result = db->execute_direct_query(query);
             
@@ -1118,10 +1156,11 @@ int main() {
                 strategy_metrics["Realized P&L"] = total_realized_pnl;
                 strategy_metrics["Unrealized P&L"] = total_unrealized_pnl;
                 strategy_metrics["Daily Return"] = daily_return;
-                strategy_metrics["Gross Leverage"] = total_notional / current_portfolio_value;
-                strategy_metrics["Net Leverage"] = total_notional / current_portfolio_value; // Same as gross for this strategy
+                strategy_metrics["Gross Leverage"] = gross_notional / current_portfolio_value;
+                strategy_metrics["Net Leverage"] = net_notional / current_portfolio_value;
                 strategy_metrics["Active Positions"] = active_positions;
-                strategy_metrics["Total Notional"] = total_notional;
+                strategy_metrics["Gross Notional"] = gross_notional;
+                strategy_metrics["Net Notional"] = net_notional;
                 
                 // Note: Risk metrics (Volatility, Jump Risk, Risk Scale) are shown in Risk Metrics section
                 // to avoid duplication
