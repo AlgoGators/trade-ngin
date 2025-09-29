@@ -272,6 +272,13 @@ Result<void> BaseStrategy::on_execution(const ExecutionReport& report) {
 
         pos.last_update = report.fill_time;
 
+        // Always subtract transaction costs from realized PnL (for all trades, not just closing)
+        // This ensures transaction costs are accounted for in opening positions too
+        double transaction_cost = static_cast<double>(report.commission);
+        pos.realized_pnl -= Decimal(transaction_cost);
+        metrics_.realized_pnl -= transaction_cost;
+        metrics_.total_pnl -= transaction_cost;
+
         // Update metrics
         metrics_.total_trades++;
         if (report.fill_price > pos.average_price) {
@@ -617,6 +624,23 @@ Result<void> BaseStrategy::validate_state_transition(StrategyState new_state) co
     }
 
     return Result<void>();
+}
+
+const PnLAccounting& BaseStrategy::get_pnl_accounting() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return pnl_accounting_;
+}
+
+void BaseStrategy::set_pnl_accounting_method(PnLAccountingMethod method) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pnl_accounting_.method = method;
+    INFO("PnL accounting method set to: " + std::to_string(static_cast<int>(method)));
+}
+
+void BaseStrategy::reset_daily_pnl() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pnl_accounting_.reset_daily();
+    INFO("Daily PnL counters reset");
 }
 
 }  // namespace trade_ngin

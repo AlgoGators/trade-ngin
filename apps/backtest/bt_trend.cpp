@@ -146,7 +146,7 @@ int main() {
 
         // Set start date to 2 years ago
         std::tm start_tm = *now_tm;
-        start_tm.tm_year -= 2;  // 2 years ago
+        start_tm.tm_year -= 1;  // 2 years ago
         auto start_time_t = std::mktime(&start_tm);
         config.strategy_config.start_date = std::chrono::system_clock::from_time_t(start_time_t);
 
@@ -158,9 +158,7 @@ int main() {
         config.strategy_config.commission_rate = 0.0005;  // 5 basis points
         config.strategy_config.slippage_model = 1.0;      // 1 basis point
 
-        // auto symbols = std::vector<std::string>{"GC.v.0", "ES.v.0", "CL.v.0"};
-        // config.strategy_config.symbols = symbols;
-
+        // MEMORY FIXED: Restored original symbol loading with memory management
         auto symbols_result = db->get_symbols(trade_ngin::AssetClass::FUTURES);
         auto symbols = symbols_result.value();
 

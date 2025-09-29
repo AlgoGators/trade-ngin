@@ -57,6 +57,11 @@ struct ExecutionConfig : public ConfigBase {
     double min_child_size{100.0};                           // Minimum child order size
     std::vector<std::string> venues;                        // Allowed execution venues
     std::unordered_map<std::string, double> venue_weights;  // Venue routing weights
+    
+    // Transaction cost configuration
+    double commission_rate{0.0005};                         // Commission rate (5 basis points)
+    double market_impact_rate{0.0005};                      // Market impact rate (5 basis points)
+    double fixed_cost{1.0};                                 // Fixed cost per trade
 
     // Configuration metadata
     std::string version{"1.0.0"};  // Configuration version
@@ -73,6 +78,9 @@ struct ExecutionConfig : public ConfigBase {
         j["min_child_size"] = min_child_size;
         j["venues"] = venues;
         j["venue_weights"] = venue_weights;
+        j["commission_rate"] = commission_rate;
+        j["market_impact_rate"] = market_impact_rate;
+        j["fixed_cost"] = fixed_cost;
         j["version"] = version;
 
         return j;
@@ -97,6 +105,12 @@ struct ExecutionConfig : public ConfigBase {
             venues = j.at("venues").get<std::vector<std::string>>();
         if (j.contains("venue_weights"))
             venue_weights = j.at("venue_weights").get<std::unordered_map<std::string, double>>();
+        if (j.contains("commission_rate"))
+            commission_rate = j.at("commission_rate").get<double>();
+        if (j.contains("market_impact_rate"))
+            market_impact_rate = j.at("market_impact_rate").get<double>();
+        if (j.contains("fixed_cost"))
+            fixed_cost = j.at("fixed_cost").get<double>();
         if (j.contains("version"))
             version = j.at("version").get<std::string>();
     }
@@ -263,6 +277,14 @@ private:
      * @return Unique job ID
      */
     std::string generate_job_id() const;
+    
+    /**
+     * @brief Calculate transaction costs for an execution
+     * @param execution Execution report
+     * @param config Execution configuration containing cost parameters
+     * @return Total transaction cost
+     */
+    static double calculate_transaction_costs(const ExecutionReport& execution, const ExecutionConfig& config);
 };
 
 }  // namespace trade_ngin

@@ -262,9 +262,11 @@ public:
     Result<void> store_live_results(const std::string& strategy_id, const Timestamp& date,
                                    double total_return, double volatility, double total_pnl,
                                    double unrealized_pnl, double realized_pnl, double current_portfolio_value,
+                                   double daily_realized_pnl, double daily_unrealized_pnl,
                                    double portfolio_var, double gross_leverage, double net_leverage,
                                    double portfolio_leverage, double max_correlation, double jump_risk,
-                                   double risk_scale, double total_notional, int active_positions,
+                                   double risk_scale, double gross_notional, double net_notional,
+                                   int active_positions, double total_commissions,
                                    const nlohmann::json& config,
                                    const std::string& table_name = "trading.live_results") override;
 
@@ -320,6 +322,13 @@ public:
         return component_id_;
     }
 
+    /**
+     * @brief Validate table name for SQL injection prevention
+     * @param table_name Table name to validate
+     * @return Result indicating success or failure
+     */
+    Result<void> validate_table_name(const std::string& table_name) const;
+
 private:
     std::string connection_string_;
     std::unique_ptr<pqxx::connection> connection_;
@@ -374,13 +383,6 @@ private:
     Result<void> validate_table_name_components(AssetClass asset_class,
                                                 const std::string& data_type,
                                                 DataFrequency freq) const;
-
-    /**
-     * @brief Validate table name for SQL injection prevention
-     * @param table_name Table name to validate
-     * @return Result indicating success or failure
-     */
-    Result<void> validate_table_name(const std::string& table_name) const;
 
     /**
      * @brief Validate symbol for SQL injection prevention

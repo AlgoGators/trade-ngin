@@ -4,6 +4,7 @@
 #include <sstream>
 #include <iomanip>
 #include <algorithm>
+#include <cmath>
 
 namespace trade_ngin {
 
@@ -192,6 +193,7 @@ std::string EmailSender::generate_trading_report_body(
     const std::unordered_map<std::string, Position>& positions,
     const std::optional<RiskResult>& risk_metrics,
     const std::map<std::string, double>& strategy_metrics,
+    const std::vector<ExecutionReport>& executions,
     const std::string& date) {
     
     std::ostringstream html;
@@ -205,8 +207,9 @@ std::string EmailSender::generate_trading_report_body(
     html << "th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }\n";
     html << "th { background-color: #f2f2f2; }\n";
     html << ".metric { margin: 10px 0; }\n";
-    html << ".positive { color: green; }\n";
-    html << ".negative { color: red; }\n";
+    html << ".positive { color: #1a7f37; }\n"; // professional green
+    html << ".negative { color: #b42318; }\n"; // professional red
+    html << ".neutral { color: #0b6efd; }\n";  // blue for zero
     html << ".header-info { color: #666; font-size: 14px; margin-bottom: 20px; }\n";
     html << ".fund-branding { color: #2c5aa0; font-weight: bold; }\n";
     html << "</style>\n";
@@ -214,13 +217,19 @@ std::string EmailSender::generate_trading_report_body(
     
     html << "<h1>Daily Trading Report - " << date << "</h1>\n";
     html << "<div class=\"header-info\">\n";
-    html << "<span class=\"fund-branding\">AlgogAtors</span> - Trend Following Strategy<br>\n";
+    html << "<span class=\"fund-branding\">AlgoGators</span> - Trend Following Strategy<br>\n";
     html << "Strategy: LIVE_TREND_FOLLOWING<br>\n";
     html << "</div>\n";
     
     // Position summary
     html << "<h2>Position Summary</h2>\n";
     html << format_positions_table(positions);
+    
+    // Executions for the day
+    if (!executions.empty()) {
+        html << "<h2>Daily Executions</h2>\n";
+        html << format_executions_table(executions);
+    }
     
     // Risk metrics (excluding duplicates that will be in strategy metrics)
     if (risk_metrics.has_value()) {
@@ -278,26 +287,44 @@ std::string EmailSender::format_positions_table(const std::unordered_map<std::st
     std::ostringstream html;
     
     html << "<table>\n";
-    html << "<tr><th>Symbol</th><th>Quantity</th><th>Avg Price</th><th>Notional</th><th>Unrealized P&L</th></tr>\n";
+    html << "<tr><th>Symbol</th><th>Quantity</th><th>Avg Price</th><th>Market Price</th><th>Notional</th><th>Total P&L</th></tr>\n";
     
     double total_notional = 0.0;
+    double total_margin_posted = 0.0;
     int active_positions = 0;
     
     for (const auto& [symbol, position] : positions) {
         if (position.quantity.as_double() != 0.0) {
             active_positions++;
             double notional = position.quantity.as_double() * position.average_price.as_double();
-            total_notional += notional;
+            total_notional += std::abs(notional);
             
-            std::string pnl_class = position.unrealized_pnl.as_double() >= 0 ? "positive" : "negative";
+            // Estimate margin as 10% of notional value for futures
+            double margin_estimate = std::abs(notional) * 0.10;
+            total_margin_posted += margin_estimate;
+            
+            // Calculate total P&L (realized + unrealized)
+            double total_pnl = position.realized_pnl.as_double() + position.unrealized_pnl.as_double();
+            std::string pnl_class;
+            if (std::fabs(total_pnl) < 1e-9) {
+                pnl_class = "neutral"; // zero -> blue
+            } else if (total_pnl > 0) {
+                pnl_class = "positive";
+            } else {
+                pnl_class = "negative";
+            }
+            
+            // Use average price as market price (could be enhanced with current market prices)
+            double market_price = position.average_price.as_double();
             
             html << "<tr>\n";
             html << "<td>" << symbol << "</td>\n";
-            html << "<td>" << std::fixed << std::setprecision(2) << position.quantity.as_double() << "</td>\n";
+            html << "<td>" << std::fixed << std::setprecision(0) << position.quantity.as_double() << "</td>\n";
             html << "<td>$" << std::fixed << std::setprecision(2) << position.average_price.as_double() << "</td>\n";
-            html << "<td>$" << std::fixed << std::setprecision(2) << notional << "</td>\n";
+            html << "<td>$" << std::fixed << std::setprecision(2) << market_price << "</td>\n";
+            html << "<td>$" << std::fixed << std::setprecision(0) << std::abs(notional) << "</td>\n";
             html << "<td class=\"" << pnl_class << "\">$" << std::fixed << std::setprecision(2) 
-                 << position.unrealized_pnl.as_double() << "</td>\n";
+                 << total_pnl << "</td>\n";
             html << "</tr>\n";
         }
     }
@@ -305,7 +332,8 @@ std::string EmailSender::format_positions_table(const std::unordered_map<std::st
     html << "</table>\n";
     html << "<div class=\"metric\">\n";
     html << "<strong>Active Positions:</strong> " << active_positions << "<br>\n";
-    html << "<strong>Total Notional:</strong> $" << std::fixed << std::setprecision(2) << total_notional << "\n";
+    html << "<strong>Total Notional:</strong> $" << std::fixed << std::setprecision(0) << total_notional << "<br>\n";
+    html << "<strong>Total Margin Posted:</strong> $" << std::fixed << std::setprecision(0) << total_margin_posted << "\n";
     html << "</div>\n";
     
     return html.str();
@@ -343,9 +371,9 @@ std::string EmailSender::format_strategy_metrics(const std::map<std::string, dou
             oss << std::fixed << std::setprecision(2) << value << "%";
             formatted_value = oss.str();
         } else if (key.find("Leverage") != std::string::npos) {
-            // Leverage is already a ratio, so display as percentage
+            // Display leverage in 0.53x format, not as percentage
             std::ostringstream oss;
-            oss << std::fixed << std::setprecision(2) << (value * 100.0) << "%";
+            oss << std::fixed << std::setprecision(2) << value << "x";
             formatted_value = oss.str();
         } else if (key.find("Positions") != std::string::npos) {
             // Count values don't need units
@@ -356,14 +384,65 @@ std::string EmailSender::format_strategy_metrics(const std::map<std::string, dou
             formatted_value = oss.str();
         }
         
-        // Color code P&L values
+        // Color code P&L and Return values
         std::string value_class = "";
-        if (key.find("P&L") != std::string::npos) {
-            value_class = value >= 0 ? " class=\"positive\"" : " class=\"negative\"";
+        bool colorize = (key.find("P&L") != std::string::npos) || (key.find("Return") != std::string::npos);
+        if (colorize) {
+            std::string cls;
+            if (std::fabs(value) < 1e-9) {
+                cls = "neutral";
+            } else if (value > 0) {
+                cls = "positive";
+            } else {
+                cls = "negative";
+            }
+            value_class = " class=\"" + cls + "\"";
         }
         
         html << "<strong>" << key << ":</strong> <span" << value_class << ">" << formatted_value << "</span><br>\n";
     }
+    html << "</div>\n";
+    
+    return html.str();
+}
+
+std::string EmailSender::format_executions_table(const std::vector<ExecutionReport>& executions) {
+    std::ostringstream html;
+    
+    if (executions.empty()) {
+        html << "<p>No executions for today.</p>\n";
+        return html.str();
+    }
+    
+    html << "<table>\n";
+    html << "<tr><th>Symbol</th><th>Side</th><th>Quantity</th><th>Price</th><th>Notional</th><th>Commission</th></tr>\n";
+    
+    double total_commission = 0.0;
+    double total_notional_traded = 0.0;
+    
+    for (const auto& exec : executions) {
+        double notional = exec.filled_quantity.as_double() * exec.fill_price.as_double();
+        total_notional_traded += notional;
+        total_commission += exec.commission.as_double();
+        
+        std::string side_str = exec.side == Side::BUY ? "BUY" : "SELL";
+        std::string side_class = exec.side == Side::BUY ? "positive" : "negative";
+        
+        html << "<tr>\n";
+        html << "<td>" << exec.symbol << "</td>\n";
+        html << "<td class=\"" << side_class << "\">" << side_str << "</td>\n";
+        html << "<td>" << std::fixed << std::setprecision(0) << exec.filled_quantity.as_double() << "</td>\n";
+        html << "<td>$" << std::fixed << std::setprecision(2) << exec.fill_price.as_double() << "</td>\n";
+        html << "<td>$" << std::fixed << std::setprecision(0) << notional << "</td>\n";
+        html << "<td>$" << std::fixed << std::setprecision(2) << exec.commission.as_double() << "</td>\n";
+        html << "</tr>\n";
+    }
+    
+    html << "</table>\n";
+    html << "<div class=\"metric\">\n";
+    html << "<strong>Total Trades:</strong> " << executions.size() << "<br>\n";
+    html << "<strong>Total Notional Traded:</strong> $" << std::fixed << std::setprecision(0) << total_notional_traded << "<br>\n";
+    html << "<strong>Total Commission:</strong> $" << std::fixed << std::setprecision(2) << total_commission << "\n";
     html << "</div>\n";
     
     return html.str();

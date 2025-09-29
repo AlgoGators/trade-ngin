@@ -374,6 +374,12 @@ Result<void> ExecutionEngine::execute_market(const ExecutionJob& job) {
         // Set number of child orders to 1 and completion rate to 100%
         active_job.metrics.num_child_orders = 1;
         active_job.metrics.completion_rate = 1.0;
+        
+        // Calculate and store transaction costs for this execution
+        ExecutionReport mock_exec;
+        mock_exec.filled_quantity = parent_order.quantity;
+        mock_exec.fill_price = parent_order.price;
+        active_job.metrics.market_impact = calculate_transaction_costs(mock_exec, job.config);
 
         // Mark job as complete
         active_job.is_complete = true;
@@ -690,6 +696,12 @@ Result<void> ExecutionEngine::execute_adaptive_limit(const ExecutionJob& job) {
         active_job.child_order_ids.emplace_back(order_result.value());
         active_job.metrics.num_child_orders++;     // Increment child order count
         active_job.metrics.completion_rate = 0.1;  // Initial progress estimate
+        
+        // Calculate transaction costs for this passive order
+        ExecutionReport mock_exec;
+        mock_exec.filled_quantity = passive_order.quantity;
+        mock_exec.fill_price = passive_order.price;
+        active_job.metrics.market_impact = calculate_transaction_costs(mock_exec, job.config);
 
         auto subscribe_result = MarketDataBus::instance().subscribe(sub_info);
         if (subscribe_result.is_error()) {
@@ -959,6 +971,20 @@ std::string ExecutionEngine::generate_job_id() const {
     std::stringstream ss;
     ss << "EXEC_" << std::hex << std::uppercase << std::setfill('0') << std::setw(16) << now_ms;
     return ss.str();
+}
+
+double ExecutionEngine::calculate_transaction_costs(const ExecutionReport& execution, const ExecutionConfig& config) {
+    // Base commission: commission_rate * quantity
+    double commission = static_cast<double>(execution.filled_quantity) * config.commission_rate;
+
+    // Market impact: market_impact_rate * quantity * price
+    double market_impact = static_cast<double>(execution.filled_quantity) *
+                           static_cast<double>(execution.fill_price) * config.market_impact_rate;
+
+    // Fixed cost per trade
+    double fixed_cost = config.fixed_cost;
+
+    return commission + market_impact + fixed_cost;
 }
 
 }  // namespace trade_ngin

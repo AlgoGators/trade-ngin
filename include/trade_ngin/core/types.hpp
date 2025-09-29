@@ -359,16 +359,21 @@ struct Position {
     Decimal unrealized_pnl;
     Decimal realized_pnl;
     Timestamp last_update;
+    // Note: previous_price and contract_size fields removed
 
     // Constructors
     Position(std::string sym, Quantity qty, Price avg_price, Decimal unreal_pnl, Decimal real_pnl,
-             Timestamp ts)
+             Timestamp ts, Decimal prev_price = Decimal(0.0), Decimal contract_sz = Decimal(1.0))
         : symbol(std::move(sym)),
           quantity(qty),
           average_price(avg_price),
           unrealized_pnl(unreal_pnl),
           realized_pnl(real_pnl),
-          last_update(ts) {}
+          last_update(ts) {
+        // prev_price and contract_sz parameters are ignored since fields were removed
+        (void)prev_price;
+        (void)contract_sz;
+    }
 
     Position() : quantity(0), average_price(0), unrealized_pnl(0), realized_pnl(0) {}
 
