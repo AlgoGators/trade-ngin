@@ -148,6 +148,23 @@ public:
     virtual Result<void> update_metrics();
 
     /**
+     * @brief Get the PnL accounting structure
+     * @return PnL accounting information
+     */
+    const PnLAccounting& get_pnl_accounting() const;
+
+    /**
+     * @brief Set the PnL accounting method for this strategy
+     * @param method The accounting method to use
+     */
+    void set_pnl_accounting_method(PnLAccountingMethod method);
+
+    /**
+     * @brief Reset daily PnL counters (call at start of new trading day)
+     */
+    void reset_daily_pnl();
+
+    /**
      * @brief Transition the strategy to a new state
      * @param new_state New state to transition to
      * @return Result indicating success or failure
@@ -171,6 +188,9 @@ protected:
     std::unordered_map<std::string, Position> positions_;
     std::unordered_map<std::string, double> last_signals_;
     RiskLimits risk_limits_;
+
+    // PnL accounting system
+    PnLAccounting pnl_accounting_;
 
     std::shared_ptr<PostgresDatabase> db_;
     mutable std::mutex mutex_;

@@ -17,6 +17,88 @@ namespace trade_ngin {
 enum class StrategyState { INITIALIZED, RUNNING, PAUSED, STOPPED, ERROR };
 
 /**
+ * @brief PnL accounting method for different instrument types
+ */
+enum class PnLAccountingMethod {
+    REALIZED_ONLY,        // Everything is realized (futures marked-to-market)
+    UNREALIZED_ONLY,      // Everything is unrealized until closed (stocks)
+    MIXED                 // Both realized and unrealized (options, complex instruments)
+};
+
+/**
+ * @brief Modular PnL accounting structure
+ */
+struct PnLAccounting {
+    double total_realized_pnl{0.0};     // Total realized PnL across all positions
+    double total_unrealized_pnl{0.0};   // Total unrealized PnL across all positions
+    double daily_realized_pnl{0.0};     // Daily realized PnL change
+    double daily_unrealized_pnl{0.0};   // Daily unrealized PnL change
+    PnLAccountingMethod method{PnLAccountingMethod::MIXED};  // Accounting method
+    
+    /**
+     * @brief Get total PnL based on accounting method
+     */
+    double get_total_pnl() const {
+        switch (method) {
+            case PnLAccountingMethod::REALIZED_ONLY:
+                return total_realized_pnl;
+            case PnLAccountingMethod::UNREALIZED_ONLY:
+                return total_unrealized_pnl;
+            case PnLAccountingMethod::MIXED:
+                return total_realized_pnl + total_unrealized_pnl;
+        }
+        return 0.0;
+    }
+    
+    /**
+     * @brief Get daily PnL based on accounting method
+     */
+    double get_daily_pnl() const {
+        switch (method) {
+            case PnLAccountingMethod::REALIZED_ONLY:
+                return daily_realized_pnl;
+            case PnLAccountingMethod::UNREALIZED_ONLY:
+                return daily_unrealized_pnl;
+            case PnLAccountingMethod::MIXED:
+                return daily_realized_pnl + daily_unrealized_pnl;
+        }
+        return 0.0;
+    }
+    
+    /**
+     * @brief Reset daily PnL counters (call at start of new day)
+     */
+    void reset_daily() {
+        daily_realized_pnl = 0.0;
+        daily_unrealized_pnl = 0.0;
+    }
+    
+    /**
+     * @brief Add realized PnL
+     */
+    void add_realized_pnl(double pnl) {
+        total_realized_pnl += pnl;
+        daily_realized_pnl += pnl;
+    }
+    
+    /**
+     * @brief Add unrealized PnL
+     */
+    void add_unrealized_pnl(double pnl) {
+        total_unrealized_pnl += pnl;
+        daily_unrealized_pnl += pnl;
+    }
+    
+    /**
+     * @brief Set unrealized PnL (for mark-to-market)
+     */
+    void set_unrealized_pnl(double pnl) {
+        daily_unrealized_pnl += (pnl - total_unrealized_pnl);
+        total_unrealized_pnl = pnl;
+    }
+};
+
+/**
  * @brief Strategy metadata structure
  */
 struct StrategyMetadata {

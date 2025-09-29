@@ -362,143 +362,132 @@ int main() {
             INFO("DEBUG: Previous position - " + symbol + ": " + std::to_string(pos.quantity.as_double()));
 }
         
-        // Calculate proper PnL based on position changes between days
-        INFO("Calculating PnL based on position changes...");
-        double total_realized_pnl = 0.0;
-        double total_unrealized_pnl = 0.0;
-        
-        // Get current market prices for all symbols (both current and previous positions)
+        // Get current market prices for PnL calculations
+        INFO("Getting current market prices for PnL calculations...");
         std::set<std::string> all_symbols;
         for (const auto& [symbol, position] : positions) {
             if (position.quantity.as_double() != 0.0) {
                 all_symbols.insert(symbol);
             }
         }
+        // Also add symbols from previous positions that might have been closed
         for (const auto& [symbol, position] : previous_positions) {
-            if (position.quantity.as_double() != 0.0) {
-                all_symbols.insert(symbol);
-            }
+            all_symbols.insert(symbol);
         }
-        
+
         std::vector<std::string> symbols_to_price(all_symbols.begin(), all_symbols.end());
         INFO("Requesting current prices for " + std::to_string(symbols_to_price.size()) + " symbols");
-        for (const auto& symbol : symbols_to_price) {
-            DEBUG("Requesting price for symbol: " + symbol);
-        }
-        
+
         auto current_prices_result = db->get_latest_prices(symbols_to_price, trade_ngin::AssetClass::FUTURES);
         std::unordered_map<std::string, double> current_prices;
         if (current_prices_result.is_ok()) {
             current_prices = current_prices_result.value();
             INFO("Retrieved current prices for " + std::to_string(current_prices.size()) + " symbols");
-            for (const auto& [symbol, price] : current_prices) {
-                DEBUG("Got price for " + symbol + ": " + std::to_string(price));
-            }
         } else {
             ERROR("Failed to get current prices: " + std::string(current_prices_result.error()->what()));
-            ERROR("This means unrealized PnL will be calculated using average prices as fallback");
         }
-        
-        // Process each current position
+
+        // Calculate Daily PnL for each position
+        INFO("Calculating daily PnL for positions...");
+        double daily_realized_pnl = 0.0;
+        double daily_unrealized_pnl = 0.0;  // For futures, this will be 0 as all PnL is realized
+        double total_daily_commissions = 0.0;
+
+        // Track PnL by position for database storage
+        std::unordered_map<std::string, double> position_daily_pnl;
+
+        // Calculate PnL for each current position
         for (auto& [symbol, current_position] : positions) {
             double current_qty = current_position.quantity.as_double();
-            double current_avg_price = current_position.average_price.as_double();
-            
-            // Find previous position for this symbol
-            auto prev_it = previous_positions.find(symbol);
+            double current_price = current_position.average_price.as_double();
+
+            // Get actual market price if available
+            if (current_prices.find(symbol) != current_prices.end()) {
+                current_price = current_prices[symbol];
+            }
+
+            // Find previous position
             double prev_qty = 0.0;
-            double prev_avg_price = 0.0;
-            double prev_realized_pnl = 0.0;
-            
+            double prev_price = current_price;  // Default to current if no previous
+            auto prev_it = previous_positions.find(symbol);
             if (prev_it != previous_positions.end()) {
                 prev_qty = prev_it->second.quantity.as_double();
-                prev_avg_price = prev_it->second.average_price.as_double();
-                prev_realized_pnl = prev_it->second.realized_pnl.as_double();
+                prev_price = prev_it->second.average_price.as_double();
             }
-            
-            // Get current market price for this symbol
-            double current_market_price = current_avg_price; // Default fallback
-            if (current_prices.find(symbol) != current_prices.end()) {
-                current_market_price = current_prices[symbol];
-            } else {
-                WARN("No current market price available for " + symbol + ", using average price as fallback");
-            }
-            
-            // Calculate realized PnL from position changes
-            double position_realized_pnl = 0.0;
-            
+
+            // Calculate daily PnL for this position
+            double daily_position_pnl = 0.0;
+
             if (prev_qty != 0.0 && current_qty != 0.0) {
-                // Position size changed - calculate realized PnL for the difference
-                double qty_change = current_qty - prev_qty;
-                if (std::abs(qty_change) > 1e-6) {
-                    if (qty_change < 0) {
-                        // Position reduced - realize PnL on the closed portion
-                        // For futures: realized_pnl = closed_quantity * (current_price - entry_price)
-                        position_realized_pnl = -qty_change * (current_market_price - prev_avg_price);
-                    } else {
-                        // Position increased - no realized PnL, just new average price
-                        // The new average price should already be calculated by the strategy
-                        position_realized_pnl = 0.0;
-                    }
+                // Position held overnight and still open
+                // PnL = quantity * price_change (for futures, this is mark-to-market)
+                daily_position_pnl = prev_qty * (current_price - prev_price);
+
+                // If position size changed, add PnL from the change
+                if (std::abs(current_qty - prev_qty) > 1e-6) {
+                    // Position changed during the day
+                    // Additional quantity traded at today's price
+                    // This PnL is already reflected in executions
                 }
             } else if (prev_qty != 0.0 && current_qty == 0.0) {
-                // Position completely closed - realize all PnL
-                position_realized_pnl = prev_qty * (current_market_price - prev_avg_price);
+                // Position was closed today
+                daily_position_pnl = prev_qty * (current_price - prev_price);
             } else if (prev_qty == 0.0 && current_qty != 0.0) {
-                // New position - no realized PnL
-                position_realized_pnl = 0.0;
+                // New position opened today
+                // No PnL from overnight hold, only from intraday if price moved
+                // For new positions, PnL is 0 on the first day (just opened at current price)
+                daily_position_pnl = 0.0;
             }
-            
-            // Calculate unrealized PnL for current position
-            double position_unrealized_pnl = 0.0;
-            if (current_qty != 0.0) {
-                // For futures: unrealized_pnl = quantity * (current_price - average_price)
-                position_unrealized_pnl = current_qty * (current_market_price - current_avg_price);
-            }
-            
-            // Update position with calculated PnL
-            current_position.realized_pnl = Decimal(prev_realized_pnl + position_realized_pnl);
-            current_position.unrealized_pnl = Decimal(position_unrealized_pnl);
-            
-            total_realized_pnl += position_realized_pnl;
-            total_unrealized_pnl += position_unrealized_pnl;
-            
-            DEBUG("Position " + symbol + ": prev_qty=" + std::to_string(prev_qty) + 
-                  " current_qty=" + std::to_string(current_qty) + 
-                  " prev_avg=" + std::to_string(prev_avg_price) + 
-                  " current_avg=" + std::to_string(current_avg_price) + 
-                  " market_price=" + std::to_string(current_market_price) + 
-                  " realized_pnl=" + std::to_string(position_realized_pnl) + 
-                  " unrealized_pnl=" + std::to_string(position_unrealized_pnl));
+
+            // Store position daily PnL (before commissions)
+            position_daily_pnl[symbol] = daily_position_pnl;
+
+            // For futures, all PnL is realized (mark-to-market)
+            daily_realized_pnl += daily_position_pnl;
+
+            // Update position with daily PnL
+            current_position.realized_pnl = Decimal(daily_position_pnl);
+            current_position.unrealized_pnl = Decimal(0.0);  // Always 0 for futures
+
+            INFO("Position " + symbol + " daily PnL: prev_qty=" + std::to_string(prev_qty) +
+                 " curr_qty=" + std::to_string(current_qty) +
+                 " prev_price=" + std::to_string(prev_price) +
+                 " curr_price=" + std::to_string(current_price) +
+                 " daily_pnl=" + std::to_string(daily_position_pnl));
         }
-        
-        // Also process any previous positions that are no longer held (for realized PnL)
+
+        // Check for positions that were closed (in previous but not in current)
         for (const auto& [symbol, prev_position] : previous_positions) {
             if (positions.find(symbol) == positions.end() && prev_position.quantity.as_double() != 0.0) {
-                // This position was completely closed
+                // Position was completely closed
                 double prev_qty = prev_position.quantity.as_double();
-                double prev_avg_price = prev_position.average_price.as_double();
-                double prev_realized_pnl = prev_position.realized_pnl.as_double();
-                
-                // Get current market price for realized PnL calculation
-                double current_market_price = prev_avg_price; // Default fallback
+                double prev_price = prev_position.average_price.as_double();
+                double current_price = prev_price;  // Default
+
                 if (current_prices.find(symbol) != current_prices.end()) {
-                    current_market_price = current_prices[symbol];
+                    current_price = current_prices[symbol];
                 }
-                
-                // Calculate realized PnL for completely closed position
-                double position_realized_pnl = prev_qty * (current_market_price - prev_avg_price);
-                total_realized_pnl += position_realized_pnl;
-                
-                DEBUG("Closed position " + symbol + ": qty=" + std::to_string(prev_qty) + 
-                      " avg_price=" + std::to_string(prev_avg_price) + 
-                      " market_price=" + std::to_string(current_market_price) + 
-                      " realized_pnl=" + std::to_string(position_realized_pnl));
+
+                double daily_position_pnl = prev_qty * (current_price - prev_price);
+                position_daily_pnl[symbol] = daily_position_pnl;
+                daily_realized_pnl += daily_position_pnl;
+
+                // Add a zero-quantity position to track the closed position's PnL
+                Position closed_pos;
+                closed_pos.symbol = symbol;
+                closed_pos.quantity = Decimal(0.0);
+                closed_pos.average_price = Decimal(current_price);
+                closed_pos.realized_pnl = Decimal(daily_position_pnl);
+                closed_pos.unrealized_pnl = Decimal(0.0);
+                closed_pos.last_update = now;
+                positions[symbol] = closed_pos;
+
+                INFO("Closed position " + symbol + " daily PnL: qty=" + std::to_string(prev_qty) +
+                     " prev_price=" + std::to_string(prev_price) +
+                     " curr_price=" + std::to_string(current_price) +
+                     " daily_pnl=" + std::to_string(daily_position_pnl));
             }
         }
-        
-        INFO("Total realized PnL: " + std::to_string(total_realized_pnl));
-        INFO("Total unrealized PnL: " + std::to_string(total_unrealized_pnl));
 
         // ADD THESE DEBUG STATEMENTS:
         INFO("DEBUG: About to start execution generation");
@@ -542,14 +531,23 @@ int main() {
                 
                 // Create execution report
                 ExecutionReport exec;
-                exec.order_id = "DAILY_" + symbol + "_" + date_str;  // Replace hyphens with underscores
-                exec.exec_id = "EXEC_" + symbol + "_" + std::to_string(daily_executions.size());
+                exec.order_id = "DAILY_" + symbol + "_" + date_str;
+                // Make exec_id unique with timestamp to avoid duplicates
+                auto timestamp_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+                exec.exec_id = "EXEC_" + symbol + "_" + std::to_string(timestamp_ms) + "_" + std::to_string(daily_executions.size());
                 exec.symbol = symbol;
                 exec.side = side;
                 exec.filled_quantity = std::abs(trade_size);
                 exec.fill_price = market_price;
                 exec.fill_time = now;
-                exec.commission = 0.0;
+                // Calculate transaction costs using the same model as backtesting
+                // Base commission: 5 basis points * quantity
+                double commission_cost = std::abs(trade_size) * commission_rate;
+                // Market impact: 5 basis points * quantity * price
+                double market_impact = std::abs(trade_size) * market_price * 0.0005;
+                // Fixed cost per trade
+                double fixed_cost = 1.0;
+                exec.commission = commission_cost + market_impact + fixed_cost;
                 exec.is_partial = false;
                 
                 daily_executions.push_back(exec);
@@ -575,14 +573,23 @@ int main() {
                 
                 // Create execution report for closing the position
                 ExecutionReport exec;
-                exec.order_id = "DAILY-" + symbol + "-" + date_str;
-                exec.exec_id = "EXEC-" + symbol + "-" + std::to_string(daily_executions.size());
+                exec.order_id = "DAILY_" + symbol + "_" + date_str;
+                // Make exec_id unique with timestamp to avoid duplicates
+                auto timestamp_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+                exec.exec_id = "EXEC_" + symbol + "_" + std::to_string(timestamp_ms) + "_" + std::to_string(daily_executions.size());
                 exec.symbol = symbol;
                 exec.side = prev_qty > 0 ? Side::SELL : Side::BUY; // Opposite of original position
                 exec.filled_quantity = std::abs(prev_qty);
                 exec.fill_price = market_price;
                 exec.fill_time = now;
-                exec.commission = 0.0;
+                // Calculate transaction costs using the same model as backtesting
+                // Base commission: 5 basis points * quantity
+                double commission_cost = std::abs(prev_qty) * commission_rate;
+                // Market impact: 5 basis points * quantity * price
+                double market_impact = std::abs(prev_qty) * market_price * 0.0005;
+                // Fixed cost per trade
+                double fixed_cost = 1.0;
+                exec.commission = commission_cost + market_impact + fixed_cost;
                 exec.is_partial = false;
                 
                 daily_executions.push_back(exec);
@@ -655,45 +662,65 @@ int main() {
         std::cout << "Portfolio Leverage: " << std::fixed << std::setprecision(2) 
                   << (total_notional / initial_capital) << "x" << std::endl;
 
-        // Save positions to database
-        INFO("Saving positions to database...");
+        // Save positions to database with daily PnL values
+        INFO("Saving positions to database with daily PnL...");
         std::vector<trade_ngin::Position> positions_to_save;
         positions_to_save.reserve(positions.size());
-        
+
         for (const auto& [symbol, position] : positions) {
-            if (position.quantity.as_double() != 0.0) {  // Only save non-zero positions
-                // Create a new position with validated values
-                trade_ngin::Position validated_position;
-                validated_position.symbol = position.symbol;
-                validated_position.quantity = position.quantity;
-                validated_position.last_update = std::chrono::system_clock::now();  // Use current time
-                validated_position.unrealized_pnl = position.unrealized_pnl;
-                validated_position.realized_pnl = position.realized_pnl;
-                
-                // Validate and convert average_price to ensure it's within Decimal limits
-                double avg_price_double = static_cast<double>(position.average_price);
-                DEBUG("Validating position " + symbol + " with average_price: " + std::to_string(avg_price_double));
-                
-                // Decimal limit is approximately 92,233,720,368,547.75807
-                const double DECIMAL_MAX = 9.223372036854775807e13;  // INT64_MAX / SCALE
-                if (avg_price_double > DECIMAL_MAX || avg_price_double < -DECIMAL_MAX) {
-                    WARN("Position " + symbol + " has average_price " + std::to_string(avg_price_double) + 
-                         " which exceeds Decimal limit (" + std::to_string(DECIMAL_MAX) + "), using 1.0 instead");
-                    validated_position.average_price = trade_ngin::Decimal(1.0);
+            // Save positions if they have non-zero quantity OR if they have PnL (closed positions today)
+            bool has_quantity = position.quantity.as_double() != 0.0;
+            bool has_pnl = (position.realized_pnl.as_double() != 0.0 || position.unrealized_pnl.as_double() != 0.0);
+
+            // Don't save positions with zero quantity and zero PnL
+            if (!has_quantity && !has_pnl) {
+                continue;
+            }
+
+            // Create a new position with validated values
+            trade_ngin::Position validated_position;
+            validated_position.symbol = position.symbol;
+            validated_position.quantity = position.quantity;
+            validated_position.last_update = now;  // Use current timestamp
+
+            // For futures, daily PnL is all realized (mark-to-market)
+            // The realized_pnl field contains the daily PnL we calculated
+            validated_position.realized_pnl = position.realized_pnl;  // Daily realized PnL
+            validated_position.unrealized_pnl = Decimal(0.0);  // Always 0 for futures
+
+            // Validate and convert average_price to ensure it's within Decimal limits
+            double avg_price_double = static_cast<double>(position.average_price);
+
+            // Decimal limit is approximately 92,233,720,368,547.75807
+            const double DECIMAL_MAX = 9.223372036854775807e13;  // INT64_MAX / SCALE
+            if (avg_price_double > DECIMAL_MAX || avg_price_double < -DECIMAL_MAX) {
+                WARN("Position " + symbol + " has average_price " + std::to_string(avg_price_double) +
+                     " which exceeds Decimal limit, using current market price instead");
+                // Use current market price if available
+                if (current_prices.find(symbol) != current_prices.end()) {
+                    validated_position.average_price = trade_ngin::Decimal(current_prices[symbol]);
                 } else {
-                    try {
-                        validated_position.average_price = position.average_price;
-                        DEBUG("Successfully validated average_price for " + symbol);
-                    } catch (const std::exception& e) {
-                        ERROR("Failed to validate average_price for " + symbol + ": " + std::string(e.what()));
+                    validated_position.average_price = trade_ngin::Decimal(1.0);
+                }
+            } else {
+                try {
+                    validated_position.average_price = position.average_price;
+                } catch (const std::exception& e) {
+                    ERROR("Failed to validate average_price for " + symbol + ": " + std::string(e.what()));
+                    if (current_prices.find(symbol) != current_prices.end()) {
+                        validated_position.average_price = trade_ngin::Decimal(current_prices[symbol]);
+                    } else {
                         validated_position.average_price = trade_ngin::Decimal(1.0);
                     }
                 }
-                
-                positions_to_save.push_back(validated_position);
-                DEBUG("Position to save: " + symbol + " qty=" + std::to_string(position.quantity.as_double()) + 
-                      " price=" + std::to_string(static_cast<double>(validated_position.average_price)));
             }
+
+            positions_to_save.push_back(validated_position);
+            INFO("Position to save: " + symbol +
+                 " qty=" + std::to_string(validated_position.quantity.as_double()) +
+                 " price=" + std::to_string(static_cast<double>(validated_position.average_price)) +
+                 " daily_realized_pnl=" + std::to_string(static_cast<double>(validated_position.realized_pnl)) +
+                 " daily_unrealized_pnl=" + std::to_string(static_cast<double>(validated_position.unrealized_pnl)));
         }
         
         if (!positions_to_save.empty()) {
@@ -741,40 +768,91 @@ int main() {
             std::cout << "Jump Risk (99th): N/A" << std::endl;
             std::cout << "Risk Scale: N/A" << std::endl;
         }
-        // Live trading metrics (calculated from actual position changes)
-        double total_pnl = total_realized_pnl + total_unrealized_pnl;
-        double current_portfolio_value = initial_capital + total_pnl;
-        double daily_return = 0.0;
-        
-        // Calculate daily return if we have previous day data
-        double previous_portfolio_value = initial_capital; // Default to initial capital
-        if (!previous_positions.empty()) {
-            // Try to load previous day's portfolio value from live_results table
-            try {
-                std::stringstream prev_date_ss;
-                auto prev_time_t = std::chrono::system_clock::to_time_t(previous_date);
-                prev_date_ss << std::put_time(std::gmtime(&prev_time_t), "%Y-%m-%d %H:%M:%S");
-                
-                std::string prev_query = "SELECT current_portfolio_value FROM trading.live_results WHERE strategy_id = 'LIVE_TREND_FOLLOWING' AND date = '" + prev_date_ss.str() + "'";
-                auto prev_result = db->execute_query(prev_query);
-                if (prev_result.is_ok() && prev_result.value()->num_rows() > 0) {
-                    // Extract portfolio value from result (simplified - would need proper Arrow table parsing)
-                    // For now, use initial capital as fallback
-                    previous_portfolio_value = initial_capital;
-                }
-            } catch (const std::exception& e) {
-                INFO("Could not load previous day portfolio value: " + std::string(e.what()));
-            }
-            
-            if (previous_portfolio_value > 0) {
-                daily_return = (current_portfolio_value - previous_portfolio_value) / previous_portfolio_value * 100.0;
-            }
+        // Note: PnL calculations have been moved above for proper sequencing
+        // The variables are already calculated:
+        // - total_pnl, daily_pnl, current_portfolio_value
+        // - daily_return, total_return
+        // - total_daily_commissions (renamed from total_commissions)
+
+        // Calculate and deduct commissions from executions
+        for (const auto& exec : daily_executions) {
+            total_daily_commissions += exec.commission.as_double();
         }
+
+        // Deduct commissions from daily PnL
+        daily_realized_pnl -= total_daily_commissions;
+        INFO("Total daily commissions: $" + std::to_string(total_daily_commissions));
+        INFO("Daily PnL after commissions: $" + std::to_string(daily_realized_pnl));
+        
+        // Load previous day's portfolio value and cumulative PnL
+        double previous_portfolio_value = initial_capital; // Default to initial capital
+        double previous_total_pnl = 0.0;
+
+        // Try to load previous day's results from live_results table
+        try {
+            std::stringstream prev_date_ss;
+            auto prev_time_t = std::chrono::system_clock::to_time_t(previous_date);
+            prev_date_ss << std::put_time(std::gmtime(&prev_time_t), "%Y-%m-%d");
+
+            std::string prev_query = "SELECT current_portfolio_value, total_pnl FROM trading.live_results WHERE strategy_id = 'LIVE_TREND_FOLLOWING' AND DATE(date) = '" + prev_date_ss.str() + "' ORDER BY created_at DESC LIMIT 1";
+            auto prev_result = db->execute_query(prev_query);
+            if (prev_result.is_ok() && prev_result.value()->num_rows() > 0) {
+                auto table = prev_result.value();
+                auto value_col = table->column(0);
+                auto pnl_col = table->column(1);
+                if (value_col->num_chunks() > 0) {
+                    auto value_array = std::static_pointer_cast<arrow::DoubleArray>(value_col->chunk(0));
+                    auto pnl_array = std::static_pointer_cast<arrow::DoubleArray>(pnl_col->chunk(0));
+                    if (value_array->length() > 0 && !value_array->IsNull(0)) {
+                        previous_portfolio_value = value_array->Value(0);
+                        if (!pnl_array->IsNull(0)) {
+                            previous_total_pnl = pnl_array->Value(0);
+                        }
+                        INFO("Loaded previous portfolio value: $" + std::to_string(previous_portfolio_value));
+                        INFO("Loaded previous total PnL: $" + std::to_string(previous_total_pnl));
+                    }
+                }
+            } else {
+                INFO("No previous day results found (first run or no data)");
+            }
+        } catch (const std::exception& e) {
+            INFO("Could not load previous day results: " + std::string(e.what()));
+        }
+
+        // Calculate cumulative values
+        double total_pnl = previous_total_pnl + daily_realized_pnl;
+        double current_portfolio_value = previous_portfolio_value + daily_realized_pnl;
+        double daily_pnl = daily_realized_pnl;  // Already calculated above
+
+        // Since it's futures, all PnL is realized
+        double total_realized_pnl = total_pnl;
+        double total_unrealized_pnl = 0.0;
+
+        // Calculate returns
+        double daily_return = 0.0;
+        double total_return = 0.0;
+
+        if (previous_portfolio_value > 0) {
+            daily_return = (daily_pnl / previous_portfolio_value) * 100.0;
+        }
+
+        if (initial_capital > 0) {
+            total_return = ((current_portfolio_value - initial_capital) / initial_capital) * 100.0;
+        }
+
+        INFO("Portfolio value calculation:");
+        INFO("  Previous portfolio value: $" + std::to_string(previous_portfolio_value));
+        INFO("  Daily PnL: $" + std::to_string(daily_pnl));
+        INFO("  Current portfolio value: $" + std::to_string(current_portfolio_value));
+        INFO("  Total PnL: $" + std::to_string(total_pnl));
+        INFO("  Daily return: " + std::to_string(daily_return) + "%");
+        INFO("  Total return: " + std::to_string(total_return) + "%");
         
         std::cout << "Total P&L: $" << std::fixed << std::setprecision(2) << total_pnl << std::endl;
         std::cout << "Realized P&L: $" << std::fixed << std::setprecision(2) << total_realized_pnl << std::endl;
         std::cout << "Unrealized P&L: $" << std::fixed << std::setprecision(2) << total_unrealized_pnl << std::endl;
         std::cout << "Current Portfolio Value: $" << std::fixed << std::setprecision(2) << current_portfolio_value << std::endl;
+        std::cout << "Total Return: " << std::fixed << std::setprecision(2) << total_return << "%" << std::endl;
         std::cout << "Daily Return: " << std::fixed << std::setprecision(2) << daily_return << "%" << std::endl;
         std::cout << "Portfolio Leverage: " << std::fixed << std::setprecision(2) 
                   << (total_notional / current_portfolio_value) << "x" << std::endl;
@@ -820,8 +898,7 @@ int main() {
             // Calculate current date for results
             auto current_date = std::chrono::system_clock::now();
             
-            // Calculate portfolio metrics
-            double total_return = 0.0;  // For daily runs, this would be calculated from previous day
+            // Use the calculated total return from above
             double sharpe_ratio = 0.0;  // Would need historical data to calculate
             double sortino_ratio = 0.0; // Would need historical data to calculate
             double max_drawdown = 0.0;  // Would need historical data to calculate
@@ -890,18 +967,25 @@ int main() {
             double portfolio_leverage = total_notional / current_portfolio_value;
             
             // First delete existing results for this strategy and date
-            std::string delete_query = "DELETE FROM trading.live_results WHERE strategy_id = 'LIVE_TREND_FOLLOWING' AND date = '" + date_ss.str() + "'";
-            auto delete_result = db->execute_direct_query(delete_query);
-            if (delete_result.is_error()) {
-                WARN("Failed to delete existing live results: " + std::string(delete_result.error()->what()));
+            // Validate table name before using it in DELETE query
+            auto live_results_table_validation = db->validate_table_name("trading.live_results");
+            if (live_results_table_validation.is_error()) {
+                ERROR("Invalid live results table name: " + std::string(live_results_table_validation.error()->what()));
+            } else {
+                std::string delete_query = "DELETE FROM trading.live_results WHERE strategy_id = 'LIVE_TREND_FOLLOWING' AND date = '" + date_ss.str() + "'";
+                auto delete_result = db->execute_direct_query(delete_query);
+                if (delete_result.is_error()) {
+                    WARN("Failed to delete existing live results: " + std::string(delete_result.error()->what()));
+                }
             }
             
-            // Then insert new results
+            // Then insert new results with all required columns
             std::string query = "INSERT INTO trading.live_results "
                                "(strategy_id, date, total_return, volatility, total_pnl, unrealized_pnl, "
                                "realized_pnl, current_portfolio_value, portfolio_var, gross_leverage, "
                                "net_leverage, portfolio_leverage, max_correlation, jump_risk, risk_scale, "
-                               "total_notional, active_positions, config) "
+                               "gross_notional, net_notional, active_positions, config, daily_pnl, "
+                               "total_commissions, daily_realized_pnl, daily_unrealized_pnl) "
                                "VALUES ('LIVE_TREND_FOLLOWING', '" + date_ss.str() + "', " +
                                std::to_string(total_return) + ", " + std::to_string(volatility) + ", " +
                                std::to_string(total_pnl) + ", " + std::to_string(total_unrealized_pnl) + ", " +
@@ -910,7 +994,10 @@ int main() {
                                std::to_string(net_leverage) + ", " + std::to_string(portfolio_leverage) + ", " +
                                std::to_string(max_correlation) + ", " + std::to_string(jump_risk) + ", " +
                                std::to_string(risk_scale) + ", " + std::to_string(total_notional) + ", " +
-                               std::to_string(active_positions) + ", '" + config_json.dump() + "')";
+                               std::to_string(total_notional) + ", " +  // Using total_notional for both gross and net for now
+                               std::to_string(active_positions) + ", '" + config_json.dump() + "', " +
+                               std::to_string(daily_pnl) + ", " + std::to_string(total_daily_commissions) + ", " +
+                               std::to_string(daily_realized_pnl) + ", " + std::to_string(daily_unrealized_pnl) + ")";
             
             auto results_save_result = db->execute_direct_query(query);
             
@@ -959,6 +1046,29 @@ int main() {
 
         // Store equity curve in database
         INFO("Storing equity curve in database...");
+        
+        // First delete existing equity curve entry for this strategy and date
+        // Use the same timestamp formatting as the database function to ensure consistency
+        auto db_ptr = std::dynamic_pointer_cast<PostgresDatabase>(db);
+        if (db_ptr) {
+            // Validate table name before using it in DELETE query
+            auto equity_table_validation = db_ptr->validate_table_name("trading.equity_curve");
+            if (equity_table_validation.is_error()) {
+                ERROR("Invalid equity curve table name: " + std::string(equity_table_validation.error()->what()));
+            } else {
+                // Use date-based deletion to handle any timestamp precision issues
+                std::stringstream date_ss;
+                auto time_t = std::chrono::system_clock::to_time_t(now);
+                date_ss << std::put_time(std::gmtime(&time_t), "%Y-%m-%d");
+                
+                std::string delete_equity_query = "DELETE FROM trading.equity_curve WHERE strategy_id = 'LIVE_TREND_FOLLOWING' AND DATE(timestamp) = '" + date_ss.str() + "'";
+                auto delete_equity_result = db->execute_direct_query(delete_equity_query);
+                if (delete_equity_result.is_error()) {
+                    WARN("Failed to delete existing equity curve entry: " + std::string(delete_equity_result.error()->what()));
+                }
+            }
+        }
+        
         auto store_equity_result = db->store_trading_equity_curve("LIVE_TREND_FOLLOWING", now, current_portfolio_value, "trading.equity_curve");
         if (store_equity_result.is_error()) {
             ERROR("Failed to store equity curve: " + std::string(store_equity_result.error()->what()));
@@ -1021,6 +1131,7 @@ int main() {
                     positions, 
                     risk_eval.is_ok() ? std::make_optional(risk_eval.value()) : std::nullopt,
                     strategy_metrics,
+                    daily_executions,
                     date_str
                 );
                 

@@ -238,6 +238,15 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data)
                                     pos.average_price = 1.0;
                                 }
 
+                                // CRITICAL FIX: Copy PnL values from strategy's calculated position
+                                const auto& strategy_positions = info.strategy->get_positions();
+                                if (strategy_positions.find(symbol) != strategy_positions.end()) {
+                                    const auto& strategy_pos = strategy_positions.at(symbol);
+                                    pos.realized_pnl = strategy_pos.realized_pnl;
+                                    pos.unrealized_pnl = strategy_pos.unrealized_pnl;
+                                    pos.average_price = strategy_pos.average_price;  // Use strategy's average price
+                                }
+
                                 // Use latest timestamp if available
                                 pos.last_update = symbol_data.last_update;
                                 info.target_positions[symbol] = pos;
@@ -439,8 +448,14 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data)
                     exec.fill_price = latest_price;
                     exec.fill_time =
                         data.empty() ? std::chrono::system_clock::now() : data[0].timestamp;
-                    exec.commission =
-                        0.0;  // Commission calculation would be done by backtest engine
+                    // Calculate transaction costs using the same model as backtesting
+                    // Base commission: 5 basis points * quantity
+                    double commission = std::abs(trade_size) * 0.0005;
+                    // Market impact: 5 basis points * quantity * price  
+                    double market_impact = std::abs(trade_size) * latest_price * 0.0005;
+                    // Fixed cost per trade
+                    double fixed_cost = 1.0;
+                    exec.commission = commission + market_impact + fixed_cost;
                     exec.is_partial = false;
 
                     // Add to recent executions

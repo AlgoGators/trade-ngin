@@ -462,10 +462,20 @@ Result<BacktestResults> BacktestEngine::run_portfolio(std::shared_ptr<PortfolioM
 
             processed_bars += bars.size();
 
-            // Periodically log progress
+            // Periodically log progress and clean up memory
             if (processed_bars % 1000 == 0) {
                 INFO("Processed " + std::to_string(processed_bars) + " bars across " +
                      std::to_string(portfolio->get_strategies().size()) + " strategies");
+                
+                // MEMORY FIX: Keep only last 1000 equity curve points to prevent memory buildup
+                if (equity_curve.size() > 1000) {
+                    equity_curve.erase(equity_curve.begin(), equity_curve.begin() + 500);
+                }
+                
+                // MEMORY FIX: Keep only last 500 risk metrics
+                if (risk_metrics.size() > 500) {
+                    risk_metrics.erase(risk_metrics.begin(), risk_metrics.begin() + 250);
+                }
             }
         }
 
@@ -1825,6 +1835,26 @@ Result<void> BacktestEngine::save_results_to_db(const BacktestResults& results,
                                     "BacktestEngine");
         }
 
+        // Validate table names that will be constructed
+        auto db_ptr = std::dynamic_pointer_cast<PostgresDatabase>(db_);
+        if (db_ptr) {
+            std::string results_table = config_.results_db_schema + ".results";
+            auto results_validation = db_ptr->validate_table_name(results_table);
+            if (results_validation.is_error()) {
+                return make_error<void>(results_validation.error()->code(),
+                                        "Invalid results table name: " + std::string(results_validation.error()->what()),
+                                        "BacktestEngine");
+            }
+
+            std::string positions_table = config_.results_db_schema + ".final_positions";
+            auto positions_validation = db_ptr->validate_table_name(positions_table);
+            if (positions_validation.is_error()) {
+                return make_error<void>(positions_validation.error()->code(),
+                                        "Invalid positions table name: " + std::string(positions_validation.error()->what()),
+                                        "BacktestEngine");
+            }
+        }
+
         // Helper function to convert timestamps to PostgreSQL format
         auto format_timestamp = [](const std::chrono::system_clock::time_point& tp) {
             auto time_t = std::chrono::system_clock::to_time_t(tp);
@@ -1939,8 +1969,13 @@ Result<void> BacktestEngine::save_results_to_db(const BacktestResults& results,
             // Save final positions with proper PnL calculations
             std::vector<std::string> position_values;
             for (const auto& pos : results.positions) {
-                if (std::abs(static_cast<double>(pos.quantity)) < 1e-6)
-                    continue;  // Skip empty positions
+                // Don't skip zero-quantity positions if they have realized PnL
+                // This ensures we preserve realized gains/losses from closed positions
+                bool has_realized_pnl = std::abs(static_cast<double>(pos.realized_pnl)) > 1e-6;
+                bool has_quantity = std::abs(static_cast<double>(pos.quantity)) >= 1e-6;
+                
+                if (!has_quantity && !has_realized_pnl)
+                    continue;  // Skip only truly empty positions with no PnL
 
                 // Calculate unrealized and realized PnL properly
                 double unrealized_pnl = static_cast<double>(pos.unrealized_pnl);
@@ -2191,8 +2226,12 @@ Result<void> BacktestEngine::save_results_to_csv(const BacktestResults& results,
 
                     // Write data rows
                     for (const auto& pos : results.positions) {
-                        if (std::abs(static_cast<double>(pos.quantity)) < 1e-6)
-                            continue;  // Skip empty positions
+                        // Don't skip zero-quantity positions if they have realized PnL
+                        bool has_realized_pnl = std::abs(static_cast<double>(pos.realized_pnl)) > 1e-6;
+                        bool has_quantity = std::abs(static_cast<double>(pos.quantity)) >= 1e-6;
+                        
+                        if (!has_quantity && !has_realized_pnl)
+                            continue;  // Skip only truly empty positions with no PnL
 
                         positions_file << actual_run_id << "," << pos.symbol << "," << pos.quantity
                                        << "," << pos.average_price << "," << pos.unrealized_pnl

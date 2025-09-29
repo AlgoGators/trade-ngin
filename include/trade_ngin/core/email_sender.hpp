@@ -65,6 +65,7 @@ public:
         const std::unordered_map<std::string, Position>& positions,
         const std::optional<RiskResult>& risk_metrics,
         const std::map<std::string, double>& strategy_metrics,
+        const std::vector<ExecutionReport>& executions,
         const std::string& date
     );
 
@@ -112,6 +113,13 @@ private:
      * @return Formatted strategy metrics HTML
      */
     std::string format_strategy_metrics(const std::map<std::string, double>& strategy_metrics);
+
+    /**
+     * @brief Format executions table for email
+     * @param executions Daily execution reports
+     * @return Formatted executions table HTML
+     */
+    std::string format_executions_table(const std::vector<ExecutionReport>& executions);
 };
 
 } // namespace trade_ngin

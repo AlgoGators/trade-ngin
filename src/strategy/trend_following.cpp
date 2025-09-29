@@ -64,6 +64,10 @@ Result<void> TrendFollowingStrategy::initialize() {
         return base_result;
     }
 
+    // Set PnL accounting method for futures (marked-to-market daily)
+    set_pnl_accounting_method(PnLAccountingMethod::REALIZED_ONLY);
+    INFO("Trend following strategy initialized with REALIZED_ONLY PnL accounting for futures");
+
     try {
         // Initialize price history containers for each symbol with proper capacity
         for (const auto& [symbol, _] : config_.trading_params) {
@@ -104,6 +108,25 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
     // Validate data
     if (data.empty()) {
         return Result<void>();
+    }
+
+
+    // Load previous positions if not already loaded (only once per run)
+    static bool previous_positions_loaded = false;
+    if (!previous_positions_loaded && previous_positions_.empty() && db_) {
+        // Use current date minus 24 hours instead of data timestamp (which might be historical)
+        auto current_time = std::chrono::system_clock::now();
+        auto previous_date = current_time - std::chrono::hours(24);
+        auto previous_positions_result = db_->load_positions_by_date(id_, previous_date, "trading.positions");
+        
+        if (previous_positions_result.is_ok()) {
+            const auto& previous_positions = previous_positions_result.value();
+            INFO("Loaded " + std::to_string(previous_positions.size()) + " previous day positions for PnL calculation");
+            previous_positions_ = previous_positions;
+        } else {
+            INFO("No previous day positions found (first run or no data): " + std::string(previous_positions_result.error()->what()));
+        }
+        previous_positions_loaded = true;
     }
 
     // Call base class data processing first
@@ -152,6 +175,11 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
             // Update price history
             for (const auto& bar : symbol_bars) {
                 instrument_data.price_history.push_back(static_cast<double>(bar.close));
+                
+                // MEMORY FIX: Limit price history to maximum needed lookback (2520 days)
+                if (instrument_data.price_history.size() > 2520) {
+                    instrument_data.price_history.erase(instrument_data.price_history.begin());
+                }
             }
 
             // Wait for enough data before processing
@@ -164,8 +192,14 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
                 continue;
             }
 
-            // Get price history for the symbol
-            const auto& prices = instrument_data.price_history;
+            // Get price history for the symbol (limit to last 1000 days for calculations)
+            const auto& full_prices = instrument_data.price_history;
+            std::vector<double> prices;
+            if (full_prices.size() > 1000) {
+                prices.assign(full_prices.end() - 1000, full_prices.end());
+            } else {
+                prices = full_prices;
+            }
 
             // Calculate volatility
             std::vector<double> volatility;
@@ -193,9 +227,18 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
             if (volatility.size() > MAX_HISTORY_SIZE) {
                 ERROR("Volatility history for " + symbol + " exceeds max size.");
             }
-            // Save volatility history
+            // Save volatility history with memory management
             instrument_data.volatility_history = volatility;
             instrument_data.current_volatility = volatility.back();
+            
+            // MEMORY FIX: Limit volatility history to prevent unbounded growth
+            if (instrument_data.volatility_history.size() > 2520) {
+                instrument_data.volatility_history.erase(
+                    instrument_data.volatility_history.begin(),
+                    instrument_data.volatility_history.begin() + 
+                    (instrument_data.volatility_history.size() - 2520)
+                );
+            }
 
             // Get raw combined forecast
             std::vector<double> raw_forecasts;
@@ -359,12 +402,113 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
                 // Continue processing despite signal save failure
             }
 
-            // Update position
+            // Update position with proper PnL calculation
             Position pos;
             pos.symbol = symbol;
             pos.quantity = final_position;
-            pos.average_price = symbol_bars.back().close;
             pos.last_update = symbol_bars.back().timestamp;
+            
+            // Get current market price
+            double current_price = static_cast<double>(symbol_bars.back().close);
+            
+            // Get previous position for PnL calculation from loaded previous day positions
+            auto prev_pos_it = previous_positions_.find(symbol);
+            double previous_quantity = 0.0;
+            double previous_avg_price = current_price;
+            double previous_realized_pnl = 0.0;
+            
+            if (prev_pos_it != previous_positions_.end()) {
+                previous_quantity = static_cast<double>(prev_pos_it->second.quantity);
+                previous_avg_price = static_cast<double>(prev_pos_it->second.average_price);
+                previous_realized_pnl = static_cast<double>(prev_pos_it->second.realized_pnl);
+            }
+            
+            // Calculate realized PnL from position changes
+            double position_realized_pnl = 0.0;
+            double new_avg_price = current_price;
+            
+            if (previous_quantity != 0.0 && final_position != 0.0) {
+                // Position size changed - calculate realized PnL for the difference
+                double qty_change = final_position - previous_quantity;
+                if (std::abs(qty_change) > 1e-6) {
+                    // Check if position is being reduced (same sign, smaller magnitude)
+                    if ((previous_quantity > 0 && final_position > 0 && final_position < previous_quantity) ||
+                        (previous_quantity < 0 && final_position < 0 && std::abs(final_position) < std::abs(previous_quantity))) {
+                        // Position reduced - realize PnL on the closed portion
+                        double closed_qty = previous_quantity - final_position;
+                        double point_value = get_point_value_multiplier(symbol);
+                        position_realized_pnl = closed_qty * (current_price - previous_avg_price) * point_value;
+                        // Keep the same average price for remaining position
+                        new_avg_price = previous_avg_price;
+                    } else if ((previous_quantity > 0 && final_position > 0 && final_position > previous_quantity) ||
+                               (previous_quantity < 0 && final_position < 0 && std::abs(final_position) > std::abs(previous_quantity))) {
+                        // Position increased in same direction - calculate new weighted average price
+                        double additional_qty = final_position - previous_quantity;
+                        double total_cost = previous_quantity * previous_avg_price + additional_qty * current_price;
+                        new_avg_price = total_cost / final_position;
+                        position_realized_pnl = 0.0; // No PnL realized when increasing position
+                    } else if ((previous_quantity > 0 && final_position < 0) || (previous_quantity < 0 && final_position > 0)) {
+                        // Position reversal - close old position and open new one
+                        double point_value = get_point_value_multiplier(symbol);
+                        position_realized_pnl = previous_quantity * (current_price - previous_avg_price) * point_value;
+                        new_avg_price = current_price;
+                    }
+                } else {
+                    // No significant quantity change - keep same average price
+                    new_avg_price = previous_avg_price;
+                }
+            } else if (previous_quantity != 0.0 && final_position == 0.0) {
+                // Position completely closed - realize all PnL
+                double point_value = get_point_value_multiplier(symbol);
+                position_realized_pnl = previous_quantity * (current_price - previous_avg_price) * point_value;
+                new_avg_price = current_price;
+            } else if (previous_quantity == 0.0 && final_position != 0.0) {
+                // New position - no realized PnL, use current price as average
+                new_avg_price = current_price;
+                position_realized_pnl = 0.0;
+            } else {
+                // No position change
+                new_avg_price = previous_avg_price;
+                position_realized_pnl = 0.0;
+            }
+            
+            // Set position values
+            pos.average_price = new_avg_price;
+            pos.realized_pnl = Decimal(previous_realized_pnl + position_realized_pnl);
+            
+            // Add position-specific realized PnL to accounting system
+            if (std::abs(position_realized_pnl) > 1e-6) {
+                pnl_accounting_.add_realized_pnl(position_realized_pnl);
+            }
+            
+            // For futures (marked-to-market): calculate mark-to-market PnL
+            // In REALIZED_ONLY accounting, this becomes realized PnL due to daily settlement
+            double mark_to_market_pnl = 0.0;
+            if (std::abs(final_position) > 1e-6) {
+                // For futures: use point value multiplier, not full contract size
+                double point_value = get_point_value_multiplier(symbol);
+                mark_to_market_pnl = final_position * (current_price - new_avg_price) * point_value;
+            }
+            
+            // For futures with REALIZED_ONLY accounting: all PnL is realized due to daily settlement
+            if (pnl_accounting_.method == PnLAccountingMethod::REALIZED_ONLY) {
+                pos.realized_pnl += Decimal(mark_to_market_pnl);
+                pos.unrealized_pnl = Decimal(0.0);  // Always zero for futures
+                pnl_accounting_.add_realized_pnl(mark_to_market_pnl);
+            } else {
+                // For other accounting methods, use traditional unrealized PnL
+                pos.unrealized_pnl = Decimal(mark_to_market_pnl);
+                pnl_accounting_.add_unrealized_pnl(mark_to_market_pnl);
+            }
+            
+            INFO("Position update for " + symbol + ": prev_qty=" + std::to_string(previous_quantity) + 
+                  " new_qty=" + std::to_string(final_position) + 
+                  " prev_avg=" + std::to_string(previous_avg_price) + 
+                  " new_avg=" + std::to_string(new_avg_price) + 
+                  " current_price=" + std::to_string(current_price) + 
+                  " realized_pnl_change=" + std::to_string(position_realized_pnl) + 
+                  " total_realized_pnl=" + std::to_string(static_cast<double>(pos.realized_pnl)) + 
+                  " mark_to_market_pnl=" + std::to_string(mark_to_market_pnl));
 
             auto pos_result = update_position(symbol, pos);
             if (pos_result.is_error()) {
@@ -1089,6 +1233,73 @@ double TrendFollowingStrategy::calculate_vol_regime_multiplier(
          " with quantile: " + std::to_string(quantile));
 
     return ewma_vol_multiplier;
+}
+
+double TrendFollowingStrategy::get_point_value_multiplier(const std::string& symbol) const {
+    // Extract base symbol (remove .v.0 suffix)
+    std::string base_symbol = symbol;
+    if (symbol.find(".v.") != std::string::npos) {
+        base_symbol = symbol.substr(0, symbol.find(".v."));
+    }
+    
+    // Map symbols to their correct point values (not full contract sizes)
+    static const std::unordered_map<std::string, double> point_values = {
+        // Currency futures (per tick value)
+        {"6A", 10.0},     // Australian Dollar - $10 per tick
+        {"6B", 6.25},     // British Pound - $6.25 per tick  
+        {"6C", 10.0},     // Canadian Dollar - $10 per tick
+        {"6E", 12.50},    // Euro - $12.50 per tick
+        {"6J", 12.50},    // Japanese Yen - $12.50 per tick
+        {"6M", 12.50},    // Mexican Peso - $12.50 per tick
+        {"6N", 10.0},     // New Zealand Dollar - $10 per tick
+        {"6S", 12.50},    // Swiss Franc - $12.50 per tick
+        
+        // Index futures
+        {"ES", 50.0},     // E-mini S&P 500 - $50 per point
+        {"NQ", 20.0},     // E-mini Nasdaq - $20 per point
+        {"YM", 5.0},      // E-mini Dow - $5 per point
+        {"RTY", 10.0},    // E-mini Russell 2000 - $10 per point
+        
+        // Bond futures  
+        {"ZN", 15.625},   // 10-Year Treasury Note - $15.625 per tick
+        {"ZB", 31.25},    // 30-Year Treasury Bond - $31.25 per tick
+        {"UB", 31.25},    // Ultra Treasury Bond - $31.25 per tick
+        
+        // Commodity futures
+        {"CL", 10.0},     // Crude Oil - $10 per tick
+        {"GC", 10.0},     // Gold - $10 per tick  
+        {"SI", 50.0},     // Silver - $50 per tick
+        {"HG", 25.0},     // Copper - $25 per tick
+        {"PL", 50.0},     // Platinum - $50 per tick
+        
+        // Agricultural futures
+        {"ZC", 12.50},    // Corn - $12.50 per tick
+        {"ZS", 12.50},    // Soybeans - $12.50 per tick
+        {"ZW", 12.50},    // Wheat - $12.50 per tick
+        {"ZM", 10.0},     // Soybean Meal - $10 per tick
+        {"ZL", 6.0},      // Soybean Oil - $6 per tick
+        {"ZR", 10.0},     // Rough Rice - $10 per tick
+        {"KE", 12.50},    // KC HRW Wheat - $12.50 per tick
+        
+        // Energy futures
+        {"RB", 42.0},     // RBOB Gasoline - $42 per tick
+        {"HO", 42.0},     // Heating Oil - $42 per tick
+        {"NG", 10.0},     // Natural Gas - $10 per tick
+        
+        // Livestock futures
+        {"LE", 10.0},     // Live Cattle - $10 per tick
+        {"GF", 2.50},     // Feeder Cattle - $2.50 per tick
+        {"HE", 10.0},     // Lean Hogs - $10 per tick
+    };
+    
+    auto it = point_values.find(base_symbol);
+    if (it != point_values.end()) {
+        return it->second;
+    }
+    
+    // Default fallback - use 1.0 (no multiplier effect)
+    WARN("Unknown point value for symbol " + symbol + ", using default 1.0");
+    return 1.0;
 }
 
 }  // namespace trade_ngin

@@ -232,9 +232,11 @@ public:
     virtual Result<void> store_live_results(const std::string& strategy_id, const Timestamp& date,
                                            double total_return, double volatility, double total_pnl,
                                            double unrealized_pnl, double realized_pnl, double current_portfolio_value,
+                                           double daily_realized_pnl, double daily_unrealized_pnl,
                                            double portfolio_var, double gross_leverage, double net_leverage,
                                            double portfolio_leverage, double max_correlation, double jump_risk,
-                                           double risk_scale, double total_notional, int active_positions,
+                                           double risk_scale, double gross_notional, double net_notional,
+                                           int active_positions, double total_commissions,
                                            const nlohmann::json& config,
                                            const std::string& table_name = "trading.live_results") = 0;
 

@@ -168,6 +168,14 @@ private:
 
     std::unordered_map<std::string, InstrumentData> instrument_data_;
 
+    // Previous day positions for PnL calculation
+    std::unordered_map<std::string, Position> previous_positions_;
+
+    /**
+     * @brief Get the correct point value multiplier for a futures symbol
+     */
+    double get_point_value_multiplier(const std::string& symbol) const;
+
     /**
      * @brief Calculate EWMA for a price series
      * @param prices Price series
