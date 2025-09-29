@@ -1723,7 +1723,7 @@ Result<void> PostgresDatabase::store_live_results(const std::string& strategy_id
                                                  double unrealized_pnl, double realized_pnl, double current_portfolio_value,
                                                  double daily_realized_pnl, double daily_unrealized_pnl,
                                                  double portfolio_var, double gross_leverage, double net_leverage,
-                                                 double portfolio_leverage, double max_correlation, double jump_risk,
+                                                 double portfolio_leverage, double margin_leverage, double margin_cushion, double max_correlation, double jump_risk,
                                                  double risk_scale, double gross_notional, double net_notional,
                                                  int active_positions, double total_commissions,
                                                  const nlohmann::json& config,
@@ -1744,16 +1744,16 @@ Result<void> PostgresDatabase::store_live_results(const std::string& strategy_id
         std::string query = "INSERT INTO " + table_name +
                             " (strategy_id, date, total_return, volatility, total_pnl, total_unrealized_pnl, total_realized_pnl, "
                             "current_portfolio_value, daily_realized_pnl, daily_unrealized_pnl, portfolio_var, "
-                            "gross_leverage, net_leverage, portfolio_leverage, max_correlation, jump_risk, "
+                            "gross_leverage, net_leverage, portfolio_leverage, margin_leverage, margin_cushion, max_correlation, jump_risk, "
                             "risk_scale, gross_notional, net_notional, active_positions, total_commissions, config) "
-                            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22) "
+                            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24) "
                             "ON CONFLICT (strategy_id, date) "
                             "DO UPDATE SET total_return = EXCLUDED.total_return, volatility = EXCLUDED.volatility, "
                             "total_pnl = EXCLUDED.total_pnl, total_unrealized_pnl = EXCLUDED.total_unrealized_pnl, "
                             "total_realized_pnl = EXCLUDED.total_realized_pnl, current_portfolio_value = EXCLUDED.current_portfolio_value, "
                             "daily_realized_pnl = EXCLUDED.daily_realized_pnl, daily_unrealized_pnl = EXCLUDED.daily_unrealized_pnl, "
                             "portfolio_var = EXCLUDED.portfolio_var, gross_leverage = EXCLUDED.gross_leverage, "
-                            "net_leverage = EXCLUDED.net_leverage, portfolio_leverage = EXCLUDED.portfolio_leverage, "
+                            "net_leverage = EXCLUDED.net_leverage, portfolio_leverage = EXCLUDED.portfolio_leverage, margin_leverage = EXCLUDED.margin_leverage, margin_cushion = EXCLUDED.margin_cushion, "
                             "max_correlation = EXCLUDED.max_correlation, jump_risk = EXCLUDED.jump_risk, "
                             "risk_scale = EXCLUDED.risk_scale, gross_notional = EXCLUDED.gross_notional, "
                             "net_notional = EXCLUDED.net_notional, active_positions = EXCLUDED.active_positions, "
@@ -1761,7 +1761,7 @@ Result<void> PostgresDatabase::store_live_results(const std::string& strategy_id
 
         txn.exec_params(query, strategy_id, format_timestamp(date), total_return, volatility, total_pnl,
                         unrealized_pnl, realized_pnl, current_portfolio_value, daily_realized_pnl, daily_unrealized_pnl,
-                        portfolio_var, gross_leverage, net_leverage, portfolio_leverage, max_correlation, jump_risk,
+                        portfolio_var, gross_leverage, net_leverage, portfolio_leverage, margin_leverage, margin_cushion, max_correlation, jump_risk,
                         risk_scale, gross_notional, net_notional, active_positions, total_commissions, config.dump());
 
         txn.commit();
