@@ -1292,31 +1292,43 @@ int main() {
                 
                 std::string subject = "Daily Trading Report - " + date_str;
                 
-                // Create strategy metrics map (no duplicates with risk metrics)
+                // Create strategy metrics map with all relevant metrics organized by category
                 std::map<std::string, double> strategy_metrics;
-                
-                // Add live trading metrics to strategy_metrics
-                strategy_metrics["Current Portfolio Value"] = current_portfolio_value;
-                strategy_metrics["Total P&L"] = total_pnl;
-                strategy_metrics["Realized P&L"] = total_realized_pnl;
-                strategy_metrics["Unrealized P&L"] = total_unrealized_pnl;
+
+                // Performance Metrics
                 strategy_metrics["Daily Return"] = daily_return;
+                strategy_metrics["Daily Unrealized PnL"] = daily_unrealized_pnl;
+                strategy_metrics["Daily Realized PnL"] = daily_realized_pnl;
+                strategy_metrics["Daily Total PnL"] = daily_pnl;
+                strategy_metrics["Total Annualized Return"] = total_return_annualized;
+                strategy_metrics["Total Unrealized PnL"] = total_unrealized_pnl;
+                strategy_metrics["Total Realized PnL"] = total_realized_pnl;
+                strategy_metrics["Total PnL"] = total_pnl;
+                if (risk_eval.is_ok()) {
+                    strategy_metrics["Volatility"] = risk_eval.value().portfolio_var * 100.0;
+                }
+                strategy_metrics["Total Commissions"] = total_commissions_cumulative;
+                strategy_metrics["Current Portfolio Value"] = current_portfolio_value;
+
+                // Leverage Metrics
                 strategy_metrics["Gross Leverage"] = gross_notional / current_portfolio_value;
                 strategy_metrics["Net Leverage"] = net_notional / current_portfolio_value;
-                strategy_metrics["Active Positions"] = active_positions;
-                strategy_metrics["Gross Notional"] = gross_notional;
-                strategy_metrics["Net Notional"] = net_notional;
-                
-                // Note: Risk metrics (Volatility, Jump Risk, Risk Scale) are shown in Risk Metrics section
-                // to avoid duplication
-                
-                // Generate email body
+                strategy_metrics["Portfolio Leverage (Gross)"] = gross_notional / current_portfolio_value;
+                strategy_metrics["Margin Leverage"] = margin_leverage;
+
+                // Risk & Liquidity Metrics
+                strategy_metrics["Margin Cushion"] = margin_cushion * 100.0; // Convert to percentage
+                strategy_metrics["Margin Posted"] = total_posted_margin;
+                strategy_metrics["Cash Available"] = current_portfolio_value - total_posted_margin;
+
+                // Generate email body with is_daily_strategy flag set to true
                 std::string email_body = email_sender->generate_trading_report_body(
-                    positions, 
+                    positions,
                     risk_eval.is_ok() ? std::make_optional(risk_eval.value()) : std::nullopt,
                     strategy_metrics,
                     daily_executions,
-                    date_str
+                    date_str,
+                    true  // is_daily_strategy
                 );
                 
                 // Send email
