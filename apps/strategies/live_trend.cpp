@@ -1166,7 +1166,7 @@ int main() {
                                "total_realized_pnl, current_portfolio_value, portfolio_var, gross_leverage, "
                                "net_leverage, portfolio_leverage, margin_leverage, margin_cushion, max_correlation, jump_risk, risk_scale, "
                                "gross_notional, net_notional, active_positions, config, daily_return, daily_pnl, "
-                               "total_commissions, daily_realized_pnl, daily_unrealized_pnl, daily_commissions) "
+                               "total_commissions, daily_realized_pnl, daily_unrealized_pnl, daily_commissions, margin_posted, cash_available) "
                                "VALUES ('LIVE_TREND_FOLLOWING', '" + date_ss.str() + "', " +
                                 std::to_string(total_return_annualized) + ", " + std::to_string(volatility) + ", " +
                                std::to_string(total_pnl) + ", " + std::to_string(total_unrealized_pnl) + ", " +
@@ -1180,7 +1180,7 @@ int main() {
                                std::to_string(active_positions) + ", '" + config_json.dump() + "', " +
                                std::to_string(daily_return) + ", " + std::to_string(daily_pnl) + ", " + std::to_string(total_commissions_cumulative) + ", " +
                                std::to_string(daily_realized_pnl) + ", " + std::to_string(daily_unrealized_pnl) + ", " +
-                               std::to_string(total_daily_commissions) + ")";
+                               std::to_string(total_daily_commissions) + ", " + std::to_string(total_posted_margin) + ", " + std::to_string(current_portfolio_value - total_posted_margin) + ")";
             
             auto results_save_result = db->execute_direct_query(query);
             
