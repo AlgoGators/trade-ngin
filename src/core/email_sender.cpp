@@ -5,6 +5,7 @@
 #include <iomanip>
 #include <algorithm>
 #include <cmath>
+#include "trade_ngin/instruments/instrument_registry.hpp"
 
 namespace trade_ngin {
 
@@ -299,9 +300,30 @@ std::string EmailSender::format_positions_table(const std::unordered_map<std::st
             double notional = position.quantity.as_double() * position.average_price.as_double();
             total_notional += std::abs(notional);
             
-            // Estimate margin as 10% of notional value for futures
-            double margin_estimate = std::abs(notional) * 0.10;
-            total_margin_posted += margin_estimate;
+            // Compute posted margin accurately using instrument registry margins when available
+            try {
+                auto& registry = InstrumentRegistry::instance();
+                // Normalize variant-suffixed symbols for lookup only (e.g., 6B.v.0 -> 6B)
+                std::string lookup_sym = position.symbol;
+                auto dotpos = lookup_sym.find(".v.");
+                if (dotpos != std::string::npos) {
+                    lookup_sym = lookup_sym.substr(0, dotpos);
+                }
+                dotpos = lookup_sym.find(".c.");
+                if (dotpos != std::string::npos) {
+                    lookup_sym = lookup_sym.substr(0, dotpos);
+                }
+                auto instrument = registry.get_instrument(lookup_sym);
+                if (instrument) {
+                    double contracts_abs = std::abs(position.quantity.as_double());
+                    double initial_margin_per_contract = instrument->get_margin_requirement();
+                    total_margin_posted += contracts_abs * initial_margin_per_contract;
+                }
+            } catch (...) {
+                // Fall back: keep previous estimate behavior if registry not available
+                double margin_estimate = std::abs(notional) * 0.10;
+                total_margin_posted += margin_estimate;
+            }
             
             // Calculate total P&L (realized + unrealized)
             double total_pnl = position.realized_pnl.as_double() + position.unrealized_pnl.as_double();

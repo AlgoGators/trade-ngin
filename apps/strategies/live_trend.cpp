@@ -11,6 +11,7 @@
 #include "trade_ngin/data/postgres_database.hpp"
 #include "trade_ngin/data/conversion_utils.hpp"
 #include "trade_ngin/instruments/instrument_registry.hpp"
+#include "trade_ngin/instruments/futures.hpp"
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
 #include "trade_ngin/core/email_sender.hpp"
@@ -185,6 +186,55 @@ int main() {
              std::to_string(std::chrono::system_clock::to_time_t(start_date)) +
              " to " +
              std::to_string(std::chrono::system_clock::to_time_t(end_date)));
+
+        // Pre-run margin metadata validation for futures instruments
+        // Ensure initial and maintenance margins are present and positive
+        INFO("Validating margin metadata for futures instruments...");
+        int futures_margin_issues = 0;
+        for (const auto& sym : symbols) {
+            try {
+                // Normalize variant-suffixed symbols (e.g., 6B.v.0 -> 6B) for registry lookups only
+                std::string lookup_sym = sym;
+                auto dotpos = lookup_sym.find(".v.");
+                if (dotpos != std::string::npos) {
+                    lookup_sym = lookup_sym.substr(0, dotpos);
+                }
+                dotpos = lookup_sym.find(".c.");
+                if (dotpos != std::string::npos) {
+                    lookup_sym = lookup_sym.substr(0, dotpos);
+                }
+
+                auto inst = registry.get_instrument(lookup_sym);
+                if (!inst) {
+                    WARN("Instrument not found in registry: " + sym);
+                    futures_margin_issues++;
+                    continue;
+                }
+                auto fut = std::dynamic_pointer_cast<trade_ngin::FuturesInstrument>(inst);
+                if (!fut) {
+                    // Symbol list should be futures; warn if not futures
+                    WARN("Symbol not a futures instrument: " + sym);
+                    continue;
+                }
+                double im = fut->get_margin_requirement();
+                double mm = fut->get_maintenance_margin();
+                if (!(im > 0.0)) {
+                    WARN("Missing or non-positive initial margin for " + sym);
+                    futures_margin_issues++;
+                }
+                if (!(mm > 0.0)) {
+                    WARN("Missing or non-positive maintenance margin for " + sym);
+                    futures_margin_issues++;
+                }
+                } catch (const std::exception& e) {
+                WARN("Exception validating margins for " + sym + ": " + std::string(e.what()));
+                futures_margin_issues++;
+            }
+        }
+        if (futures_margin_issues > 0) {
+            ERROR("Margin metadata validation failed for one or more futures instruments. Aborting run.");
+            return 1;
+        }
 
         // Configure portfolio risk management
         RiskConfig risk_config;
@@ -676,6 +726,8 @@ int main() {
 
         double gross_notional = 0.0;
         double net_notional = 0.0;
+        double total_posted_margin = 0.0;  // Sum of per-contract initial margins times contracts
+        double maintenance_requirement_today = 0.0;  // Sum of per-contract maintenance margins times contracts
         int active_positions = 0;
 
         for (const auto& [symbol, position] : positions) {
@@ -690,6 +742,38 @@ int main() {
                 double signed_notional = position.quantity.as_double() * market_price;
                 net_notional += signed_notional;
                 gross_notional += std::abs(signed_notional);
+
+                // Compute posted margin per instrument (per-contract initial margin × contracts)
+                try {
+                    // Normalize variant suffixes for lookup only; keep original symbol for logging/DB
+                    std::string lookup_sym = symbol;
+                    auto dotpos = lookup_sym.find(".v.");
+                    if (dotpos != std::string::npos) {
+                        lookup_sym = lookup_sym.substr(0, dotpos);
+                    }
+                    dotpos = lookup_sym.find(".c.");
+                    if (dotpos != std::string::npos) {
+                        lookup_sym = lookup_sym.substr(0, dotpos);
+                    }
+
+                    auto instrument_ptr = registry.get_instrument(lookup_sym);
+                    if (instrument_ptr) {
+                        double contracts_abs = std::abs(position.quantity.as_double());
+                        double initial_margin_per_contract = instrument_ptr->get_margin_requirement();
+                        total_posted_margin += contracts_abs * initial_margin_per_contract;
+
+                        // Try to get maintenance margin if available (e.g., futures)
+                        // If not available, fall back to initial margin
+                        double maintenance_margin_per_contract = initial_margin_per_contract;
+                        // FuturesInstrument has get_maintenance_margin(); detect via dynamic_cast
+                        if (auto futures_ptr = std::dynamic_pointer_cast<trade_ngin::FuturesInstrument>(instrument_ptr)) {
+                            maintenance_margin_per_contract = futures_ptr->get_maintenance_margin();
+                        }
+                        maintenance_requirement_today += contracts_abs * maintenance_margin_per_contract;
+                    }
+                } catch (const std::exception& e) {
+                    WARN("Failed to compute posted margin for " + symbol + ": " + std::string(e.what()));
+                }
                 
                 std::cout << std::setw(10) << symbol << " | "
                           << std::setw(10) << std::fixed << std::setprecision(2) 
@@ -709,6 +793,14 @@ int main() {
         std::cout << "Net Notional: $" << std::fixed << std::setprecision(2) << net_notional << std::endl;
         std::cout << "Portfolio Leverage (gross/current): " << std::fixed << std::setprecision(2) 
                   << (gross_notional / initial_capital) << "x" << std::endl;
+        // Posted margin should never be zero if there are active positions; enforce and warn
+        if (active_positions > 0 && total_posted_margin <= 0.0) {
+            ERROR("Computed posted margin is non-positive while positions are active. Check instrument metadata.");
+        }
+        double margin_leverage = (total_posted_margin > 0.0) ? (gross_notional / total_posted_margin) : 0.0;
+        if (margin_leverage <= 1.0 && active_positions > 0) {
+            WARN("Implied margin leverage (gross_notional / posted_margin) is <= 1.0; verify margins.");
+        }
 
         // Save positions to database with daily PnL values
         INFO("Saving positions to database with daily PnL...");
@@ -922,6 +1014,27 @@ int main() {
         std::cout << "Daily Return: " << std::fixed << std::setprecision(2) << daily_return << "%" << std::endl;
         std::cout << "Portfolio Leverage: " << std::fixed << std::setprecision(2) 
                   << (gross_notional / current_portfolio_value) << "x" << std::endl;
+        std::cout << "Posted Margin (Initial×Contracts): $" << std::fixed << std::setprecision(2) 
+                  << total_posted_margin << std::endl;
+        std::cout << "Implied Margin Leverage: " << std::fixed << std::setprecision(2)
+                  << margin_leverage << "x" << std::endl;
+        double margin_cushion = 0.0;
+        if (current_portfolio_value > 0.0) {
+            margin_cushion = (current_portfolio_value - maintenance_requirement_today) / current_portfolio_value;
+        } else {
+            margin_cushion = -1.0;
+        }
+
+        // Warnings per thresholds
+        if (total_posted_margin > current_portfolio_value) {
+            WARN("Posted margin exceeds current portfolio value; check sizing and risk limits.");
+        }
+        if (margin_cushion < 0.20) {
+            WARN("Margin cushion below 20%.");
+        }
+        if (margin_leverage > 4.0) {
+            WARN("Implied margin leverage above 4x.");
+        }
 
         // Get forecasts for all symbols
         INFO("Retrieving current forecasts...");
@@ -1032,6 +1145,7 @@ int main() {
             
             // Use the calculated PnL values from position analysis
             double portfolio_leverage = (current_portfolio_value != 0.0) ? (gross_notional / current_portfolio_value) : 0.0;
+            // margin_leverage and margin_cushion already computed above
             
             // First delete existing results for this strategy and date
             // Validate table name before using it in DELETE query
@@ -1050,7 +1164,7 @@ int main() {
             std::string query = "INSERT INTO trading.live_results "
                                "(strategy_id, date, total_return, volatility, total_pnl, total_unrealized_pnl, "
                                "total_realized_pnl, current_portfolio_value, portfolio_var, gross_leverage, "
-                               "net_leverage, portfolio_leverage, max_correlation, jump_risk, risk_scale, "
+                               "net_leverage, portfolio_leverage, margin_leverage, margin_cushion, max_correlation, jump_risk, risk_scale, "
                                "gross_notional, net_notional, active_positions, config, daily_return, daily_pnl, "
                                "total_commissions, daily_realized_pnl, daily_unrealized_pnl, daily_commissions) "
                                "VALUES ('LIVE_TREND_FOLLOWING', '" + date_ss.str() + "', " +
@@ -1059,6 +1173,7 @@ int main() {
                                std::to_string(total_realized_pnl) + ", " + std::to_string(current_portfolio_value) + ", " +
                                std::to_string(portfolio_var) + ", " + std::to_string(gross_leverage) + ", " +
                                std::to_string(net_leverage) + ", " + std::to_string(portfolio_leverage) + ", " +
+                               std::to_string(margin_leverage) + ", " + std::to_string(margin_cushion) + ", " +
                                std::to_string(max_correlation) + ", " + std::to_string(jump_risk) + ", " +
                                 std::to_string(risk_scale) + ", " + std::to_string(gross_notional) + ", " +
                                 std::to_string(net_notional) + ", " +
