@@ -1726,6 +1726,7 @@ Result<void> PostgresDatabase::store_live_results(const std::string& strategy_id
                                                  double portfolio_leverage, double margin_leverage, double margin_cushion, double max_correlation, double jump_risk,
                                                  double risk_scale, double gross_notional, double net_notional,
                                                  int active_positions, double total_commissions,
+                                                 double margin_posted, double cash_available,
                                                  const nlohmann::json& config,
                                                  const std::string& table_name) {
     auto validation = validate_connection();
@@ -1745,8 +1746,8 @@ Result<void> PostgresDatabase::store_live_results(const std::string& strategy_id
                             " (strategy_id, date, total_return, volatility, total_pnl, total_unrealized_pnl, total_realized_pnl, "
                             "current_portfolio_value, daily_realized_pnl, daily_unrealized_pnl, portfolio_var, "
                             "gross_leverage, net_leverage, portfolio_leverage, margin_leverage, margin_cushion, max_correlation, jump_risk, "
-                            "risk_scale, gross_notional, net_notional, active_positions, total_commissions, config) "
-                            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24) "
+                            "risk_scale, gross_notional, net_notional, active_positions, total_commissions, margin_posted, cash_available, config) "
+                            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26) "
                             "ON CONFLICT (strategy_id, date) "
                             "DO UPDATE SET total_return = EXCLUDED.total_return, volatility = EXCLUDED.volatility, "
                             "total_pnl = EXCLUDED.total_pnl, total_unrealized_pnl = EXCLUDED.total_unrealized_pnl, "
@@ -1757,12 +1758,12 @@ Result<void> PostgresDatabase::store_live_results(const std::string& strategy_id
                             "max_correlation = EXCLUDED.max_correlation, jump_risk = EXCLUDED.jump_risk, "
                             "risk_scale = EXCLUDED.risk_scale, gross_notional = EXCLUDED.gross_notional, "
                             "net_notional = EXCLUDED.net_notional, active_positions = EXCLUDED.active_positions, "
-                            "total_commissions = EXCLUDED.total_commissions, config = EXCLUDED.config";
+                            "total_commissions = EXCLUDED.total_commissions, margin_posted = EXCLUDED.margin_posted, cash_available = EXCLUDED.cash_available, config = EXCLUDED.config";
 
         txn.exec_params(query, strategy_id, format_timestamp(date), total_return, volatility, total_pnl,
                         unrealized_pnl, realized_pnl, current_portfolio_value, daily_realized_pnl, daily_unrealized_pnl,
                         portfolio_var, gross_leverage, net_leverage, portfolio_leverage, margin_leverage, margin_cushion, max_correlation, jump_risk,
-                        risk_scale, gross_notional, net_notional, active_positions, total_commissions, config.dump());
+                        risk_scale, gross_notional, net_notional, active_positions, total_commissions, margin_posted, cash_available, config.dump());
 
         txn.commit();
         INFO("Successfully stored live results for strategy: " + strategy_id + " on " + format_timestamp(date));
