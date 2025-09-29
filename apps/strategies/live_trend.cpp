@@ -865,16 +865,46 @@ int main() {
         double total_unrealized_pnl = 0.0;
 
         // Calculate returns
-        double daily_return = 0.0;
-        double total_return = 0.0;
+        double daily_return = 0.0;                 // in percent
+        double total_return_annualized = 0.0;      // in percent
 
         if (previous_portfolio_value > 0) {
             daily_return = (daily_pnl / previous_portfolio_value) * 100.0;
         }
 
-        if (initial_capital > 0) {
-            total_return = ((current_portfolio_value - initial_capital) / initial_capital) * 100.0;
+        // Annualize using geometric method based on cumulative total return over n days
+        // R_total_decimal = (current_value - initial_capital) / initial_capital
+        double total_return_decimal = 0.0;
+        if (initial_capital > 0.0) {
+            total_return_decimal = (current_portfolio_value - initial_capital) / initial_capital;
         }
+
+        // Get n = number of trading days (rows in live_results for this strategy)
+        int trading_days_count = 1; // Default to 1 to avoid division by zero on first day
+        try {
+            auto count_result = db->execute_query(
+                "SELECT COUNT(*) AS cnt FROM trading.live_results WHERE strategy_id = 'LIVE_TREND_FOLLOWING'");
+            if (count_result.is_ok()) {
+                auto table = count_result.value();
+                if (table && table->num_rows() > 0 && table->num_columns() > 0) {
+                    auto col = table->column(0);
+                    if (col->num_chunks() > 0) {
+                        auto arr = std::static_pointer_cast<arrow::Int64Array>(col->chunk(0));
+                        if (arr && arr->length() > 0 && !arr->IsNull(0)) {
+                            trading_days_count = std::max<int>(1, static_cast<int>(arr->Value(0)));
+                        }
+                    }
+                }
+            }
+        } catch (const std::exception& e) {
+            WARN(std::string("Failed to count live_results rows: ") + e.what());
+        }
+
+        // Rdaily from total return across n days (in decimal)
+        double rdaily = std::pow(1.0 + total_return_decimal, 1.0 / static_cast<double>(trading_days_count)) - 1.0;
+        // Annualize: (1 + Rdaily)^252 - 1, then convert to percent
+        double annualized_decimal = std::pow(1.0 + rdaily, 252.0) - 1.0;
+        total_return_annualized = annualized_decimal * 100.0;
 
         INFO("Portfolio value calculation:");
         INFO("  Previous portfolio value: $" + std::to_string(previous_portfolio_value));
@@ -882,13 +912,13 @@ int main() {
         INFO("  Current portfolio value: $" + std::to_string(current_portfolio_value));
         INFO("  Total PnL: $" + std::to_string(total_pnl));
         INFO("  Daily return: " + std::to_string(daily_return) + "%");
-        INFO("  Total return: " + std::to_string(total_return) + "%");
+        INFO("  Annualized return: " + std::to_string(total_return_annualized) + "%");
         
         std::cout << "Total P&L: $" << std::fixed << std::setprecision(2) << total_pnl << std::endl;
         std::cout << "Realized P&L: $" << std::fixed << std::setprecision(2) << total_realized_pnl << std::endl;
         std::cout << "Unrealized P&L: $" << std::fixed << std::setprecision(2) << total_unrealized_pnl << std::endl;
         std::cout << "Current Portfolio Value: $" << std::fixed << std::setprecision(2) << current_portfolio_value << std::endl;
-        std::cout << "Total Return: " << std::fixed << std::setprecision(2) << total_return << "%" << std::endl;
+        std::cout << "Total Return (Annualized): " << std::fixed << std::setprecision(2) << total_return_annualized << "%" << std::endl;
         std::cout << "Daily Return: " << std::fixed << std::setprecision(2) << daily_return << "%" << std::endl;
         std::cout << "Portfolio Leverage: " << std::fixed << std::setprecision(2) 
                   << (gross_notional / current_portfolio_value) << "x" << std::endl;
@@ -934,7 +964,7 @@ int main() {
             // Calculate current date for results
             auto current_date = std::chrono::system_clock::now();
             
-            // Use the calculated total return from above
+            // Use the calculated returns from above
             double sharpe_ratio = 0.0;  // Would need historical data to calculate
             double sortino_ratio = 0.0; // Would need historical data to calculate
             double max_drawdown = 0.0;  // Would need historical data to calculate
@@ -1021,10 +1051,10 @@ int main() {
                                "(strategy_id, date, total_return, volatility, total_pnl, total_unrealized_pnl, "
                                "total_realized_pnl, current_portfolio_value, portfolio_var, gross_leverage, "
                                "net_leverage, portfolio_leverage, max_correlation, jump_risk, risk_scale, "
-                               "gross_notional, net_notional, active_positions, config, daily_pnl, "
+                               "gross_notional, net_notional, active_positions, config, daily_return, daily_pnl, "
                                "total_commissions, daily_realized_pnl, daily_unrealized_pnl, daily_commissions) "
                                "VALUES ('LIVE_TREND_FOLLOWING', '" + date_ss.str() + "', " +
-                               std::to_string(total_return) + ", " + std::to_string(volatility) + ", " +
+                                std::to_string(total_return_annualized) + ", " + std::to_string(volatility) + ", " +
                                std::to_string(total_pnl) + ", " + std::to_string(total_unrealized_pnl) + ", " +
                                std::to_string(total_realized_pnl) + ", " + std::to_string(current_portfolio_value) + ", " +
                                std::to_string(portfolio_var) + ", " + std::to_string(gross_leverage) + ", " +
@@ -1033,7 +1063,7 @@ int main() {
                                 std::to_string(risk_scale) + ", " + std::to_string(gross_notional) + ", " +
                                 std::to_string(net_notional) + ", " +
                                std::to_string(active_positions) + ", '" + config_json.dump() + "', " +
-                               std::to_string(daily_pnl) + ", " + std::to_string(total_commissions_cumulative) + ", " +
+                               std::to_string(daily_return) + ", " + std::to_string(daily_pnl) + ", " + std::to_string(total_commissions_cumulative) + ", " +
                                std::to_string(daily_realized_pnl) + ", " + std::to_string(daily_unrealized_pnl) + ", " +
                                std::to_string(total_daily_commissions) + ")";
             
