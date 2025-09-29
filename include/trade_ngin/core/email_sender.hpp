@@ -59,6 +59,7 @@ public:
      * @param risk_metrics Risk metrics from the pipeline
      * @param strategy_metrics Strategy performance metrics
      * @param date Trading date
+     * @param is_daily_strategy Flag indicating if this is a daily strategy
      * @return HTML email body
      */
     std::string generate_trading_report_body(
@@ -66,7 +67,8 @@ public:
         const std::optional<RiskResult>& risk_metrics,
         const std::map<std::string, double>& strategy_metrics,
         const std::vector<ExecutionReport>& executions,
-        const std::string& date
+        const std::string& date,
+        bool is_daily_strategy = true
     );
 
     /**
@@ -96,9 +98,10 @@ private:
     /**
      * @brief Format position data for email
      * @param positions Portfolio positions
+     * @param is_daily_strategy Flag indicating if this is a daily strategy
      * @return Formatted position table HTML
      */
-    std::string format_positions_table(const std::unordered_map<std::string, Position>& positions);
+    std::string format_positions_table(const std::unordered_map<std::string, Position>& positions, bool is_daily_strategy = true);
 
     /**
      * @brief Format risk metrics for email
