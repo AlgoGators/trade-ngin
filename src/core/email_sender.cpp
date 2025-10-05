@@ -332,7 +332,7 @@ std::string EmailSender::generate_trading_report_body(
     // Footer notes
     if (is_daily_strategy) {
         html << "<div class=\"footer-note\">\n";
-        html << "<strong>Note:</strong> This strategy is based on daily OHLCV data. For execution, it assumes that all orders are filled at the day's opening price, meaning the average execution price is treated as equal to the daily market open.\n";
+        html << "<strong>Note:</strong> This strategy is based on daily OHLCV data.\n";
         html << "</div>\n";
     }
 
@@ -582,8 +582,9 @@ std::string EmailSender::format_strategy_metrics(const std::map<std::string, dou
         if (key.find("Leverage") != std::string::npos) {
             // Leverage metrics - handle separately
             continue;
-        } else if (key.find("Margin") != std::string::npos ||
-                   key.find("Cash") != std::string::npos || key.find("Cushion") != std::string::npos) {
+        } else if (key.find("Margin Posted") != std::string::npos ||
+                   key.find("Cash Available") != std::string::npos ||
+                   key.find("Margin Cushion") != std::string::npos) {
             // Risk & Liquidity metrics - handle separately
             continue;
         }
@@ -591,19 +592,23 @@ std::string EmailSender::format_strategy_metrics(const std::map<std::string, dou
         ordered_metrics[key] = value;
     }
 
-    // Extract leverage metrics
+    // Extract leverage metrics (avoiding duplicates)
     std::map<std::string, double> leverage_metrics;
     for (const auto& [key, value] : strategy_metrics) {
         if (key.find("Leverage") != std::string::npos) {
-            leverage_metrics[key] = value;
+            // Only keep the metrics we want to display
+            if (key == "Gross Leverage" || key == "Net Leverage" ||
+                key == "Portfolio Leverage" || key == "Portfolio Leverage (Gross)" ||
+                key == "Margin Leverage" || key == "Implied Leverage from Margin") {
+                leverage_metrics[key] = value;
+            }
         }
     }
 
-    // Extract risk & liquidity metrics
+    // Extract risk & liquidity metrics (margin and cash only)
     std::map<std::string, double> risk_liquidity_metrics;
     for (const auto& [key, value] : strategy_metrics) {
-        if (key.find("Margin") != std::string::npos ||
-            key.find("Cash") != std::string::npos || key.find("Cushion") != std::string::npos) {
+        if (key == "Margin Posted" || key == "Cash Available" || key == "Margin Cushion") {
             risk_liquidity_metrics[key] = value;
         }
     }
@@ -633,43 +638,88 @@ std::string EmailSender::format_strategy_metrics(const std::map<std::string, dou
             auto it = ordered_metrics.find(metric_name);
             if (it != ordered_metrics.end()) {
                 html << format_metric(it->first, it->second);
+
+                // Add line space after Daily Total PnL
+                if (metric_name == "Daily Total PnL") {
+                    html << "<br>\n";
+                }
+
+                // Add line space after Total PnL
+                if (metric_name == "Total PnL") {
+                    html << "<br>\n";
+                }
             }
         }
 
         html << "</div>\n";
     }
 
-    // Render Leverage Metrics Section with proper labels
-    if (!leverage_metrics.empty()) {
-        html << "<h2>Leverage Metrics</h2>\n";
-        html << "<div class=\"metrics-category\">\n";
-
-        // Define the proper order and labels for leverage metrics
-        std::vector<std::pair<std::string, std::string>> leverage_order = {
-            {"Gross Leverage", "Gross Leverage (Risk Management)"},
-            {"Net Leverage", "Net Leverage (Risk Management)"},
-            {"Portfolio Leverage (Gross)", "Portfolio Leverage"},
-            {"Portfolio Leverage", "Portfolio Leverage"},
-            {"Margin Leverage", "Implied Leverage from Margin"}
-        };
-
-        for (const auto& [search_key, display_label] : leverage_order) {
-            auto it = leverage_metrics.find(search_key);
-            if (it != leverage_metrics.end()) {
-                html << format_metric(display_label, it->second);
-            }
-        }
-
-        html << "</div>\n";
-    }
-
-    // Render Risk & Liquidity Metrics Section
-    if (!risk_liquidity_metrics.empty()) {
+    // Render combined Risk & Liquidity Metrics Section (includes leverage)
+    if (!leverage_metrics.empty() || !risk_liquidity_metrics.empty()) {
         html << "<h2>Risk & Liquidity Metrics</h2>\n";
         html << "<div class=\"metrics-category\">\n";
-        for (const auto& [key, value] : risk_liquidity_metrics) {
-            html << format_metric(key, value);
+
+        // First render Gross and Net Leverage
+        auto gross_it = leverage_metrics.find("Gross Leverage");
+        if (gross_it != leverage_metrics.end()) {
+            html << format_metric("Gross Leverage", gross_it->second);
         }
+
+        auto net_it = leverage_metrics.find("Net Leverage");
+        if (net_it != leverage_metrics.end()) {
+            html << format_metric("Net Leverage", net_it->second);
+        }
+
+        // Add line space
+        if ((gross_it != leverage_metrics.end() || net_it != leverage_metrics.end()) &&
+            (leverage_metrics.find("Portfolio Leverage") != leverage_metrics.end() ||
+             leverage_metrics.find("Portfolio Leverage (Gross)") != leverage_metrics.end())) {
+            html << "<br>\n";
+        }
+
+        // Portfolio Leverage
+        auto portfolio_it = leverage_metrics.find("Portfolio Leverage");
+        if (portfolio_it != leverage_metrics.end()) {
+            html << format_metric("Portfolio Leverage", portfolio_it->second);
+        } else {
+            portfolio_it = leverage_metrics.find("Portfolio Leverage (Gross)");
+            if (portfolio_it != leverage_metrics.end()) {
+                html << format_metric("Portfolio Leverage", portfolio_it->second);
+            }
+        }
+
+        // Add line space before Implied Leverage
+        if (portfolio_it != leverage_metrics.end() && leverage_metrics.find("Margin Leverage") != leverage_metrics.end()) {
+            html << "<br>\n";
+        }
+
+        // Implied Leverage from Margin (using Margin Leverage value)
+        auto margin_lev_it = leverage_metrics.find("Margin Leverage");
+        if (margin_lev_it != leverage_metrics.end()) {
+            html << format_metric("Implied Leverage from Margin", margin_lev_it->second);
+        }
+
+        // Add line space before margin and cash metrics
+        if (margin_lev_it != leverage_metrics.end() && !risk_liquidity_metrics.empty()) {
+            html << "<br>\n";
+        }
+
+        // Render margin and cash metrics in specific order
+        auto margin_posted_it = risk_liquidity_metrics.find("Margin Posted");
+        if (margin_posted_it != risk_liquidity_metrics.end()) {
+            html << format_metric("Margin Posted", margin_posted_it->second);
+        }
+
+        auto margin_cushion_it = risk_liquidity_metrics.find("Margin Cushion");
+        if (margin_cushion_it != risk_liquidity_metrics.end()) {
+            html << format_metric("Margin Cushion", margin_cushion_it->second);
+        }
+
+        auto cash_available_it = risk_liquidity_metrics.find("Cash Available");
+        if (cash_available_it != risk_liquidity_metrics.end()) {
+            html << format_metric("Cash Available", cash_available_it->second);
+        }
+
         html << "</div>\n";
     }
 
