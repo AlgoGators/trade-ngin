@@ -1204,19 +1204,41 @@ int main() {
         
         std::ofstream position_file(filename);
         if (position_file.is_open()) {
-            position_file << "symbol,quantity,avg_price,market_price,notional,unrealized_pnl,realized_pnl,forecast\n";
+            position_file << "symbol,quantity,quantity_change,market_price,price_change,price_change_pct,notional,pct_of_gross_notional,pct_of_portfolio_value,unrealized_pnl,realized_pnl,forecast\n";
             for (const auto& [symbol, position] : positions) {
-                double notional = position.quantity.as_double() * position.average_price.as_double();
+                double current_qty = position.quantity.as_double();
                 double forecast = tf_strategy->get_forecast(symbol);
                 double market_price = position.average_price.as_double(); // Default fallback
                 if (current_prices.find(symbol) != current_prices.end()) {
                     market_price = current_prices[symbol];
                 }
+                double notional = current_qty * market_price;
+
+                // Get previous position data for calculations
+                double prev_qty = 0.0;
+                double prev_price = market_price; // Default to current if no previous
+                auto prev_it = previous_positions.find(symbol);
+                if (prev_it != previous_positions.end()) {
+                    prev_qty = prev_it->second.quantity.as_double();
+                    prev_price = prev_it->second.average_price.as_double();
+                }
+
+                // Calculate position-level metrics
+                double quantity_change = current_qty - prev_qty;
+                double price_change = market_price - prev_price;
+                double price_change_pct = (prev_price != 0.0) ? (price_change / prev_price) * 100.0 : 0.0;
+                double pct_of_gross_notional = (gross_notional != 0.0) ? (std::abs(notional) / gross_notional) * 100.0 : 0.0;
+                double pct_of_portfolio_value = (current_portfolio_value != 0.0) ? (std::abs(notional) / std::abs(current_portfolio_value)) * 100.0 : 0.0;
+
                 position_file << symbol << ","
-                             << position.quantity.as_double() << ","
-                             << position.average_price.as_double() << ","
+                             << current_qty << ","
+                             << quantity_change << ","
                              << market_price << ","
+                             << price_change << ","
+                             << price_change_pct << ","
                              << notional << ","
+                             << pct_of_gross_notional << ","
+                             << pct_of_portfolio_value << ","
                              << position.unrealized_pnl.as_double() << ","
                              << position.realized_pnl.as_double() << ","
                              << forecast << "\n";
