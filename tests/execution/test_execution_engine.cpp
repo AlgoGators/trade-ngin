@@ -248,8 +248,11 @@ TEST_F(ExecutionEngineTest, ImplementationShortfallExecution) {
 
     const auto& metrics = metrics_result.value();
     EXPECT_GT(metrics.implementation_shortfall, 0.0);
+    std::cout << "Implementation shortfall: " << metrics.implementation_shortfall << std::endl;
     EXPECT_GT(metrics.market_impact, 0.0);
+    std::cout << "Market impact: " << metrics.market_impact << std::endl;
     EXPECT_GT(metrics.completion_rate, 0.0);
+    std::cout << "Completion rate: " << metrics.completion_rate << std::endl;
 }
 
 TEST_F(ExecutionEngineTest, AdaptiveLimitExecution) {
