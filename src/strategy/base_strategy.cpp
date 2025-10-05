@@ -482,39 +482,8 @@ Result<void> BaseStrategy::save_positions() {
             return Result<void>();
         }
 
-        // Use a retry-with-backoff pattern
-        for (int attempt = 0; attempt < 3; attempt++) {
-            // Get a fresh connection each time
-            auto conn_guard =
-                DatabasePool::instance().acquire_connection(1, std::chrono::milliseconds(500));
-            auto db = conn_guard.get();
-
-            if (!db) {
-                if (attempt < 2) {
-                    // Wait before retry
-                    std::this_thread::sleep_for(std::chrono::milliseconds(50));
-                    continue;
-                }
-                return make_error<void>(ErrorCode::DATABASE_ERROR,
-                                        "Failed to acquire database connection after retries",
-                                        "BaseStrategy");
-            }
-
-            auto result = db->store_positions(pos_vec, "trading.positions");
-            if (result.is_ok()) {
-                return result;
-            }
-
-            // Only retry on connection/busy errors
-            if (result.error()->code() != ErrorCode::DATABASE_ERROR) {
-                return result;
-            }
-
-            std::this_thread::sleep_for(std::chrono::milliseconds(100 * (1 << attempt)));
-        }
-
-        return make_error<void>(ErrorCode::DATABASE_ERROR,
-                                "Failed to save positions after multiple attempts", "BaseStrategy");
+        // Use the injected database directly, the orignal appraoch was cAUSING A Deadlock!!
+        return db_->store_positions(pos_vec, "trading.positions");
 
     } catch (const std::exception& e) {
         // Detailed error message for logging

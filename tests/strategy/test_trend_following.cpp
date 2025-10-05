@@ -274,6 +274,125 @@ TEST_F(TrendFollowingTest, SignalGeneration) {
     EXPECT_TRUE(result.is_error()) << "Expected an error for missing fields, but got success";
 }
 
+TEST_F(TrendFollowingTest, InvalidBar_TimestampZero_ReturnsInvalidData) {
+    ASSERT_TRUE(strategy_->start().is_ok());
+
+    Bar bar;
+    bar.symbol = "ES";
+    bar.timestamp = Timestamp{};  
+    bar.open = 100.0;
+    bar.high = 101.0;
+    bar.low = 99.0;
+    bar.close = 100.5;
+    bar.volume = 1000.0;
+
+    auto result = strategy_->on_data(std::vector<Bar>{bar});
+    EXPECT_TRUE(result.is_error());
+    EXPECT_EQ(result.error()->code(), ErrorCode::INVALID_DATA);
+}
+
+TEST_F(TrendFollowingTest, InvalidBar_NonPositivePrices_ReturnsInvalidData) {
+    ASSERT_TRUE(strategy_->start().is_ok());
+
+    {
+        Bar bar;
+        bar.symbol = "ES";
+        bar.timestamp = std::chrono::system_clock::now();
+        bar.open = 0.0; 
+        bar.high = 101.0;
+        bar.low = 99.0;
+        bar.close = 100.5;
+        bar.volume = 1000.0;
+
+        auto result = strategy_->on_data({bar});
+        EXPECT_TRUE(result.is_error());
+        EXPECT_EQ(result.error()->code(), ErrorCode::INVALID_DATA);
+    }
+
+    {
+        Bar bar;
+        bar.symbol = "ES";
+        bar.timestamp = std::chrono::system_clock::now();
+        bar.open = 100.0;
+        bar.high = 101.0;
+        bar.low = 99.0;
+        bar.close = 0.0;  
+        bar.volume = 1000.0;
+
+        auto result = strategy_->on_data({bar});
+        EXPECT_TRUE(result.is_error());
+        EXPECT_EQ(result.error()->code(), ErrorCode::INVALID_DATA);
+    }
+}
+
+TEST_F(TrendFollowingTest, InvalidBar_HighLessThanLow_ReturnsInvalidData) {
+    ASSERT_TRUE(strategy_->start().is_ok());
+
+    Bar bar;
+    bar.symbol = "ES";
+    bar.timestamp = std::chrono::system_clock::now();
+    bar.open = 100.0;
+    bar.high = 98.0; 
+    bar.low = 99.0;
+    bar.close = 99.5;
+    bar.volume = 1000.0;
+
+    auto result = strategy_->on_data({bar});
+    EXPECT_TRUE(result.is_error());
+    EXPECT_EQ(result.error()->code(), ErrorCode::INVALID_DATA);
+}
+
+TEST_F(TrendFollowingTest, InvalidBar_InconsistentOHLCRelationships_ReturnsInvalidData) {
+    ASSERT_TRUE(strategy_->start().is_ok());
+
+    
+    {
+        Bar bar;
+        bar.symbol = "ES";
+        bar.timestamp = std::chrono::system_clock::now();
+        bar.open = 100.0;
+        bar.close = 100.2;
+        bar.high = 99.9;   // 
+        bar.low = 99.0;
+        bar.volume = 1000.0;
+        auto result = strategy_->on_data({bar});
+        EXPECT_TRUE(result.is_error());
+        EXPECT_EQ(result.error()->code(), ErrorCode::INVALID_DATA);
+    }
+
+
+    {
+        Bar bar;
+        bar.symbol = "ES";
+        bar.timestamp = std::chrono::system_clock::now();
+        bar.open = 100.0;
+        bar.close = 100.2;
+        bar.high = 101.0;
+        bar.low = 100.3;  
+        bar.volume = 1000.0;
+        auto result = strategy_->on_data({bar});
+        EXPECT_TRUE(result.is_error());
+        EXPECT_EQ(result.error()->code(), ErrorCode::INVALID_DATA);
+    }
+}
+
+TEST_F(TrendFollowingTest, InvalidBar_NegativeVolume_ReturnsInvalidData) {
+    ASSERT_TRUE(strategy_->start().is_ok());
+
+    Bar bar;
+    bar.symbol = "ES";
+    bar.timestamp = std::chrono::system_clock::now();
+    bar.open = 100.0;
+    bar.high = 101.0;
+    bar.low = 99.0;
+    bar.close = 100.5;
+    bar.volume = -1.0;  
+
+    auto result = strategy_->on_data({bar});
+    EXPECT_TRUE(result.is_error());
+    EXPECT_EQ(result.error()->code(), ErrorCode::INVALID_DATA);
+}
+
 // Test state transitions: INITIALIZED -> RUNNING -> PAUSED -> RUNNING -> STOPPED
 TEST_F(TrendFollowingTest, StateTransitions) {
     EXPECT_EQ(strategy_->get_state(), StrategyState::INITIALIZED);
