@@ -1353,12 +1353,12 @@ int main() {
                     true  // is_daily_strategy
                 );
                 
-                // Send email
-                auto send_result = email_sender->send_email(subject, email_body, true);
+                // Send email with CSV attachment
+                auto send_result = email_sender->send_email(subject, email_body, true, filename);
                 if (send_result.is_error()) {
                     ERROR("Failed to send email: " + std::string(send_result.error()->what()));
                 } else {
-                    INFO("Email report sent successfully");
+                    INFO("Email report sent successfully with CSV attachment: " + filename);
                 }
             }
         } catch (const std::exception& e) {

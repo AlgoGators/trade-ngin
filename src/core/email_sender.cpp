@@ -116,7 +116,7 @@ Result<void> EmailSender::load_config() {
     }
 }
 
-Result<void> EmailSender::send_email(const std::string& subject, const std::string& body, bool is_html) {
+Result<void> EmailSender::send_email(const std::string& subject, const std::string& body, bool is_html, const std::optional<std::string>& attachment_path) {
     if (!initialized_) {
         return make_error<void>(ErrorCode::NOT_INITIALIZED,
                                "Email sender not initialized",
@@ -204,35 +204,125 @@ Result<void> EmailSender::send_email(const std::string& subject, const std::stri
             }
         }
 
-        // Create multipart email payload with embedded image
-        std::string boundary = "----=_Part_0_" + std::to_string(std::time(nullptr));
+        // Read and encode CSV attachment if provided
+        std::string csv_base64;
+        std::string csv_filename;
+        if (attachment_path.has_value()) {
+            std::ifstream csv_file(attachment_path.value(), std::ios::binary);
+            if (csv_file.is_open()) {
+                std::vector<unsigned char> csv_data((std::istreambuf_iterator<char>(csv_file)),
+                                                     std::istreambuf_iterator<char>());
+                csv_file.close();
+
+                // Base64 encode CSV data using same logic as logo
+                static const char base64_chars[] =
+                    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                    "abcdefghijklmnopqrstuvwxyz"
+                    "0123456789+/";
+
+                int i = 0;
+                int j = 0;
+                unsigned char char_array_3[3];
+                unsigned char char_array_4[4];
+
+                for (size_t idx = 0; idx < csv_data.size(); idx++) {
+                    char_array_3[i++] = csv_data[idx];
+                    if (i == 3) {
+                        char_array_4[0] = (char_array_3[0] & 0xfc) >> 2;
+                        char_array_4[1] = ((char_array_3[0] & 0x03) << 4) + ((char_array_3[1] & 0xf0) >> 4);
+                        char_array_4[2] = ((char_array_3[1] & 0x0f) << 2) + ((char_array_3[2] & 0xc0) >> 6);
+                        char_array_4[3] = char_array_3[2] & 0x3f;
+
+                        for(i = 0; i < 4; i++)
+                            csv_base64 += base64_chars[char_array_4[i]];
+                        i = 0;
+                    }
+                }
+
+                if (i) {
+                    for(j = i; j < 3; j++)
+                        char_array_3[j] = '\0';
+
+                    char_array_4[0] = (char_array_3[0] & 0xfc) >> 2;
+                    char_array_4[1] = ((char_array_3[0] & 0x03) << 4) + ((char_array_3[1] & 0xf0) >> 4);
+                    char_array_4[2] = ((char_array_3[1] & 0x0f) << 2) + ((char_array_3[2] & 0xc0) >> 6);
+
+                    for (j = 0; j < i + 1; j++)
+                        csv_base64 += base64_chars[char_array_4[j]];
+
+                    while(i++ < 3)
+                        csv_base64 += '=';
+                }
+
+                // Extract filename from path
+                size_t last_slash = attachment_path.value().find_last_of("/\\");
+                csv_filename = (last_slash != std::string::npos)
+                    ? attachment_path.value().substr(last_slash + 1)
+                    : attachment_path.value();
+            } else {
+                WARN("Failed to open CSV attachment file: " + attachment_path.value());
+            }
+        }
+
+        // Create multipart email payload
+        // Use multipart/mixed for attachments, with nested multipart/related for HTML+logo
+        std::string outer_boundary = "----=_Outer_" + std::to_string(std::time(nullptr));
+        std::string inner_boundary = "----=_Inner_" + std::to_string(std::time(nullptr));
         std::string content_type = is_html ? "text/html; charset=UTF-8" : "text/plain";
+
+        // Determine top-level content type based on whether we have attachments
+        std::string top_content_type = csv_base64.empty() ? "multipart/related" : "multipart/mixed";
+        std::string top_boundary = csv_base64.empty() ? inner_boundary : outer_boundary;
 
         g_email_payload =
             "From: " + config_.from_email + "\r\n"
             "To: " + config_.to_emails[0] + "\r\n"
             "Subject: " + subject + "\r\n"
             "MIME-Version: 1.0\r\n"
-            "Content-Type: multipart/related; boundary=\"" + boundary + "\"\r\n"
-            "\r\n"
-            "--" + boundary + "\r\n"
-            "Content-Type: " + content_type + "\r\n"
-            "Content-Transfer-Encoding: 7bit\r\n"
-            "\r\n"
-            + body + "\r\n";
+            "Content-Type: " + top_content_type + "; boundary=\"" + top_boundary + "\"\r\n"
+            "\r\n";
 
-        if (!logo_base64.empty()) {
-            g_email_payload +=
-                "\r\n--" + boundary + "\r\n"
-                "Content-Type: image/png\r\n"
-                "Content-Transfer-Encoding: base64\r\n"
-                "Content-ID: <algogators_logo>\r\n"
-                "Content-Disposition: inline; filename=\"Algo.png\"\r\n"
-                "\r\n"
-                + logo_base64 + "\r\n";
+        // If we have attachments, create nested structure
+        if (!csv_base64.empty()) {
+            // Start outer multipart/mixed
+            g_email_payload += "--" + outer_boundary + "\r\n";
+            g_email_payload += "Content-Type: multipart/related; boundary=\"" + inner_boundary + "\"\r\n";
+            g_email_payload += "\r\n";
         }
 
-        g_email_payload += "\r\n--" + boundary + "--\r\n";
+        // Add HTML body
+        g_email_payload += "--" + inner_boundary + "\r\n";
+        g_email_payload += "Content-Type: " + content_type + "\r\n";
+        g_email_payload += "Content-Transfer-Encoding: 7bit\r\n";
+        g_email_payload += "\r\n";
+        g_email_payload += body + "\r\n";
+
+        // Add embedded logo
+        if (!logo_base64.empty()) {
+            g_email_payload += "\r\n--" + inner_boundary + "\r\n";
+            g_email_payload += "Content-Type: image/png\r\n";
+            g_email_payload += "Content-Transfer-Encoding: base64\r\n";
+            g_email_payload += "Content-ID: <algogators_logo>\r\n";
+            g_email_payload += "Content-Disposition: inline; filename=\"Algo.png\"\r\n";
+            g_email_payload += "\r\n";
+            g_email_payload += logo_base64 + "\r\n";
+        }
+
+        // Close inner multipart/related
+        g_email_payload += "\r\n--" + inner_boundary + "--\r\n";
+
+        // Add CSV attachment if present
+        if (!csv_base64.empty()) {
+            g_email_payload += "\r\n--" + outer_boundary + "\r\n";
+            g_email_payload += "Content-Type: text/csv; name=\"" + csv_filename + "\"\r\n";
+            g_email_payload += "Content-Transfer-Encoding: base64\r\n";
+            g_email_payload += "Content-Disposition: attachment; filename=\"" + csv_filename + "\"\r\n";
+            g_email_payload += "\r\n";
+            g_email_payload += csv_base64 + "\r\n";
+
+            // Close outer multipart/mixed
+            g_email_payload += "\r\n--" + outer_boundary + "--\r\n";
+        }
 
         g_payload_pos = 0;  // Reset position
 
