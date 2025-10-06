@@ -270,7 +270,8 @@ std::string EmailSender::generate_trading_report_body(
     const std::map<std::string, double>& strategy_metrics,
     const std::vector<ExecutionReport>& executions,
     const std::string& date,
-    bool is_daily_strategy) {
+    bool is_daily_strategy,
+    const std::unordered_map<std::string, double>& current_prices) {
 
     std::ostringstream html;
 
@@ -314,7 +315,7 @@ std::string EmailSender::generate_trading_report_body(
 
     // Position summary
     html << "<h2>Positions</h2>\n";
-    html << format_positions_table(positions, is_daily_strategy);
+    html << format_positions_table(positions, is_daily_strategy, current_prices);
 
     // Executions for the day
     if (!executions.empty()) {
@@ -377,18 +378,16 @@ std::string EmailSender::generate_trading_report_from_db(
     return html.str();
 }
 
-std::string EmailSender::format_positions_table(const std::unordered_map<std::string, Position>& positions, bool is_daily_strategy) {
+std::string EmailSender::format_positions_table(const std::unordered_map<std::string, Position>& positions,
+                                                bool is_daily_strategy,
+                                                const std::unordered_map<std::string, double>& current_prices) {
     std::ostringstream html;
 
     html << "<table>\n";
     html << "<tr><th>Symbol</th><th>Quantity</th>";
 
-    // Conditionally show columns based on strategy type
-    if (is_daily_strategy) {
-        html << "<th>Market Price</th>";
-    } else {
-        html << "<th>Average Price</th><th>Market Price</th>";
-    }
+    // Show only market price for positions
+    html << "<th>Market Price</th>";
 
     html << "<th>Notional</th><th>Total P&L</th></tr>\n";
 
@@ -399,8 +398,10 @@ std::string EmailSender::format_positions_table(const std::unordered_map<std::st
     for (const auto& [symbol, position] : positions) {
         if (position.quantity.as_double() != 0.0) {
             active_positions++;
-            double notional = position.quantity.as_double() * position.average_price.as_double();
-            total_notional += std::abs(notional);
+
+            // Get contract multiplier for proper notional calculation
+            double contract_multiplier = 1.0;
+            double notional = 0.0;
 
             // Compute posted margin accurately using instrument registry margins when available
             try {
@@ -417,13 +418,42 @@ std::string EmailSender::format_positions_table(const std::unordered_map<std::st
                 }
                 auto instrument = registry.get_instrument(lookup_sym);
                 if (instrument) {
+                    // Get contract multiplier for notional calculation
+                    contract_multiplier = instrument->get_multiplier();
+
                     double contracts_abs = std::abs(position.quantity.as_double());
                     double initial_margin_per_contract = instrument->get_margin_requirement();
                     total_margin_posted += contracts_abs * initial_margin_per_contract;
+                } else {
+                    // Use fallback multipliers for common contracts
+                    if (lookup_sym == "NQ" || lookup_sym == "MNQ") contract_multiplier = 20.0;
+                    else if (lookup_sym == "ES" || lookup_sym == "MES") contract_multiplier = 50.0;
+                    else if (lookup_sym == "YM" || lookup_sym == "MYM") contract_multiplier = 5.0;
+                    else if (lookup_sym == "6B") contract_multiplier = 62500.0;
+                    else if (lookup_sym == "6E") contract_multiplier = 125000.0;
+                    else if (lookup_sym == "6C") contract_multiplier = 100000.0;
+                    else if (lookup_sym == "6J") contract_multiplier = 12500000.0;
+                    else if (lookup_sym == "6S") contract_multiplier = 125000.0;
+                    else if (lookup_sym == "6N") contract_multiplier = 100000.0;
+                    else if (lookup_sym == "6M") contract_multiplier = 500000.0;
+                    else if (lookup_sym == "CL") contract_multiplier = 1000.0;
+                    else if (lookup_sym == "GC") contract_multiplier = 100.0;
+                    else if (lookup_sym == "HG") contract_multiplier = 25000.0;
+                    else if (lookup_sym == "PL") contract_multiplier = 50.0;
+                    else if (lookup_sym == "ZR") contract_multiplier = 2000.0;
                 }
             } catch (...) {
+                // Use fallback multipliers if exception occurs
+            }
+
+            // Calculate notional with proper contract multiplier
+            notional = position.quantity.as_double() * position.average_price.as_double() * contract_multiplier;
+            total_notional += std::abs(notional);
+
+            // If margin not calculated above, estimate it
+            if (total_margin_posted == 0.0) {
                 // Fall back: keep previous estimate behavior if registry not available
-                double margin_estimate = std::abs(notional) * 0.10;
+                double margin_estimate = std::abs(notional) * 0.05;  // More realistic 5% for futures
                 total_margin_posted += margin_estimate;
             }
 
@@ -438,20 +468,19 @@ std::string EmailSender::format_positions_table(const std::unordered_map<std::st
                 pnl_class = "negative";
             }
 
-            // Use average price as market price (could be enhanced with current market prices)
+            // Use current market price if available, otherwise fall back to average price
             double market_price = position.average_price.as_double();
+            auto price_it = current_prices.find(symbol);
+            if (price_it != current_prices.end()) {
+                market_price = price_it->second;
+            }
 
             html << "<tr>\n";
             html << "<td>" << symbol << "</td>\n";
             html << "<td>" << std::fixed << std::setprecision(0) << position.quantity.as_double() << "</td>\n";
 
-            // Conditionally show price columns
-            if (is_daily_strategy) {
-                html << "<td>$" << std::fixed << std::setprecision(2) << market_price << "</td>\n";
-            } else {
-                html << "<td>$" << std::fixed << std::setprecision(2) << position.average_price.as_double() << "</td>\n";
-                html << "<td>$" << std::fixed << std::setprecision(2) << market_price << "</td>\n";
-            }
+            // Show only market price
+            html << "<td>$" << std::fixed << std::setprecision(2) << market_price << "</td>\n";
 
             html << "<td>$" << std::fixed << std::setprecision(2) << std::abs(notional) << "</td>\n";
             html << "<td class=\"" << pnl_class << "\">$" << std::fixed << std::setprecision(2)
@@ -741,7 +770,61 @@ std::string EmailSender::format_executions_table(const std::vector<ExecutionRepo
     double total_notional_traded = 0.0;
 
     for (const auto& exec : executions) {
-        double notional = exec.filled_quantity.as_double() * exec.fill_price.as_double();
+        // Get contract multiplier for proper notional calculation
+        double contract_multiplier = 1.0;
+
+        try {
+            auto& registry = InstrumentRegistry::instance();
+            // Normalize variant-suffixed symbols for lookup only (e.g., 6B.v.0 -> 6B)
+            std::string lookup_sym = exec.symbol;
+            auto dotpos = lookup_sym.find(".v.");
+            if (dotpos != std::string::npos) {
+                lookup_sym = lookup_sym.substr(0, dotpos);
+            }
+            dotpos = lookup_sym.find(".c.");
+            if (dotpos != std::string::npos) {
+                lookup_sym = lookup_sym.substr(0, dotpos);
+            }
+            auto instrument = registry.get_instrument(lookup_sym);
+            if (instrument) {
+                contract_multiplier = instrument->get_multiplier();
+            } else {
+                // Use fallback multipliers for common contracts
+                if (lookup_sym == "NQ" || lookup_sym == "MNQ") contract_multiplier = 20.0;
+                else if (lookup_sym == "ES" || lookup_sym == "MES") contract_multiplier = 50.0;
+                else if (lookup_sym == "YM" || lookup_sym == "MYM") contract_multiplier = 0.5;
+                else if (lookup_sym == "6B") contract_multiplier = 62500.0;
+                else if (lookup_sym == "6E") contract_multiplier = 125000.0;
+                else if (lookup_sym == "6C") contract_multiplier = 100000.0;
+                else if (lookup_sym == "6J") contract_multiplier = 12500000.0;
+                else if (lookup_sym == "6S") contract_multiplier = 125000.0;
+                else if (lookup_sym == "6N") contract_multiplier = 100000.0;
+                else if (lookup_sym == "6M") contract_multiplier = 500000.0;
+                else if (lookup_sym == "CL") contract_multiplier = 1000.0;
+                else if (lookup_sym == "GC") contract_multiplier = 100.0;
+                else if (lookup_sym == "HG") contract_multiplier = 25000.0;
+                else if (lookup_sym == "PL") contract_multiplier = 50.0;
+                else if (lookup_sym == "ZR") contract_multiplier = 2000.0;
+                else if (lookup_sym == "RB") contract_multiplier = 42000.0;
+                else if (lookup_sym == "RTY") contract_multiplier = 50.0;
+                else if (lookup_sym == "SI") contract_multiplier = 5000.0;
+                else if (lookup_sym == "UB") contract_multiplier = 100000.0;
+                else if (lookup_sym == "ZC") contract_multiplier = 5000.0;
+                else if (lookup_sym == "ZL") contract_multiplier = 60000.0;
+                else if (lookup_sym == "ZM") contract_multiplier = 100.0;
+                else if (lookup_sym == "ZN") contract_multiplier = 100000.0;
+                else if (lookup_sym == "ZS") contract_multiplier = 5000.0;
+                else if (lookup_sym == "ZW") contract_multiplier = 5000.0;
+                else if (lookup_sym == "HE") contract_multiplier = 40000.0;
+                else if (lookup_sym == "LE") contract_multiplier = 40000.0;
+                else if (lookup_sym == "GF") contract_multiplier = 50000.0;
+                else if (lookup_sym == "KE") contract_multiplier = 5000.0;
+            }
+        } catch (...) {
+            // Use default multiplier if exception occurs
+        }
+
+        double notional = exec.filled_quantity.as_double() * exec.fill_price.as_double() * contract_multiplier;
         total_notional_traded += notional;
         total_commission += exec.commission.as_double();
 
