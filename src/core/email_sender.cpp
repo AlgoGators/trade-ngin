@@ -447,7 +447,7 @@ std::string EmailSender::generate_trading_report_body(
     // Footer note
     if (is_daily_strategy) {
         html << "<div class=\"footer-note\">\n";
-        html << "<strong>Note:</strong> This strategy is based on daily OHLCV data.\n";
+        html << "<strong>Note:</strong> This strategy is based on daily OHLCV data. All values reflect a trading start date of January 1st, 2025. \n";
         html << "</div>\n";
     }
 
@@ -491,38 +491,31 @@ std::string EmailSender::format_executions_table(const std::vector<ExecutionRepo
             }
             auto instrument = registry.get_instrument(lookup_sym);
             if (instrument) {
+                // Get multiplier from registry (primary source)
                 contract_multiplier = instrument->get_multiplier();
             } else {
-                // Use fallback multipliers for common contracts
-                if (lookup_sym == "NQ" || lookup_sym == "MNQ") contract_multiplier = 20.0;
-                else if (lookup_sym == "ES" || lookup_sym == "MES") contract_multiplier = 50.0;
-                else if (lookup_sym == "YM" || lookup_sym == "MYM") contract_multiplier = 0.5;
-                else if (lookup_sym == "6B") contract_multiplier = 62500.0;
-                else if (lookup_sym == "6E") contract_multiplier = 125000.0;
-                else if (lookup_sym == "6C") contract_multiplier = 100000.0;
-                else if (lookup_sym == "6J") contract_multiplier = 12500000.0;
-                else if (lookup_sym == "6S") contract_multiplier = 125000.0;
-                else if (lookup_sym == "6N") contract_multiplier = 100000.0;
-                else if (lookup_sym == "6M") contract_multiplier = 500000.0;
-                else if (lookup_sym == "CL") contract_multiplier = 1000.0;
-                else if (lookup_sym == "GC") contract_multiplier = 100.0;
-                else if (lookup_sym == "HG") contract_multiplier = 25000.0;
-                else if (lookup_sym == "PL") contract_multiplier = 50.0;
-                else if (lookup_sym == "ZR") contract_multiplier = 2000.0;
-                else if (lookup_sym == "RB") contract_multiplier = 42000.0;
-                else if (lookup_sym == "RTY") contract_multiplier = 50.0;
-                else if (lookup_sym == "SI") contract_multiplier = 5000.0;
-                else if (lookup_sym == "UB") contract_multiplier = 100000.0;
-                else if (lookup_sym == "ZC") contract_multiplier = 5000.0;
-                else if (lookup_sym == "ZL") contract_multiplier = 60000.0;
-                else if (lookup_sym == "ZM") contract_multiplier = 100.0;
-                else if (lookup_sym == "ZN") contract_multiplier = 100000.0;
-                else if (lookup_sym == "ZS") contract_multiplier = 5000.0;
-                else if (lookup_sym == "ZW") contract_multiplier = 5000.0;
-                else if (lookup_sym == "HE") contract_multiplier = 40000.0;
-                else if (lookup_sym == "LE") contract_multiplier = 40000.0;
-                else if (lookup_sym == "GF") contract_multiplier = 50000.0;
-                else if (lookup_sym == "KE") contract_multiplier = 5000.0;
+                // NOTE: This fallback uses static values as EmailSender doesn't have access to TrendFollowingStrategy
+                // Future improvement: pass strategy reference or create shared utility for fallback multipliers
+
+                // Fallback multipliers for common contracts (kept minimal for robustness)
+                static const std::unordered_map<std::string, double> fallback_multipliers = {
+                    {"NQ", 20.0}, {"MNQ", 2.0}, {"ES", 50.0}, {"MES", 5.0},
+                    {"YM", 5.0}, {"MYM", 0.5}, {"RTY", 50.0},
+                    {"6A", 100000.0}, {"6B", 62500.0}, {"6C", 100000.0}, {"6E", 125000.0},
+                    {"6J", 12500000.0}, {"6S", 125000.0}, {"6N", 100000.0}, {"6M", 500000.0},
+                    {"CL", 1000.0}, {"GC", 100.0}, {"HG", 25000.0}, {"PL", 50.0}, {"SI", 5000.0},
+                    {"ZC", 5000.0}, {"ZS", 5000.0}, {"ZW", 5000.0}, {"ZL", 60000.0},
+                    {"ZM", 100.0}, {"ZN", 100000.0}, {"ZB", 100000.0}, {"UB", 100000.0},
+                    {"ZR", 2000.0}, {"RB", 42000.0}, {"HO", 42000.0}, {"NG", 10000.0},
+                    {"HE", 40000.0}, {"LE", 40000.0}, {"GF", 50000.0}, {"KE", 5000.0}
+                };
+
+                auto it = fallback_multipliers.find(lookup_sym);
+                if (it != fallback_multipliers.end()) {
+                    contract_multiplier = it->second;
+                } else {
+                    WARN("Unknown contract multiplier for " + lookup_sym + " in email formatting, using 1.0");
+                }
             }
         } catch (...) {
             // Use default multiplier if exception occurs
@@ -582,7 +575,7 @@ std::string EmailSender::format_positions_table(const std::unordered_map<std::st
     // Show only market price for positions
     html << "<th>Market Price</th>";
 
-    html << "<th>Notional</th><th>Total P&L</th></tr>\n";
+    html << "<th>Notional</th><th>P&L</th></tr>\n";
 
     double total_notional = 0.0;
     double total_margin_posted = 0.0;
@@ -596,7 +589,7 @@ std::string EmailSender::format_positions_table(const std::unordered_map<std::st
             double contract_multiplier = 1.0;
             double notional = 0.0;
 
-            // Compute posted margin accurately using instrument registry margins when available
+            // ONLY use instrument registry - no fallbacks allowed
             try {
                 auto& registry = InstrumentRegistry::instance();
                 // Normalize variant-suffixed symbols for lookup only (e.g., 6B.v.0 -> 6B)
@@ -609,46 +602,38 @@ std::string EmailSender::format_positions_table(const std::unordered_map<std::st
                 if (dotpos != std::string::npos) {
                     lookup_sym = lookup_sym.substr(0, dotpos);
                 }
-                auto instrument = registry.get_instrument(lookup_sym);
-                if (instrument) {
-                    // Get contract multiplier for notional calculation
-                    contract_multiplier = instrument->get_multiplier();
 
-                    double contracts_abs = std::abs(position.quantity.as_double());
-                    double initial_margin_per_contract = instrument->get_margin_requirement();
-                    total_margin_posted += contracts_abs * initial_margin_per_contract;
-                } else {
-                    // Use fallback multipliers for common contracts
-                    if (lookup_sym == "NQ" || lookup_sym == "MNQ") contract_multiplier = 20.0;
-                    else if (lookup_sym == "ES" || lookup_sym == "MES") contract_multiplier = 50.0;
-                    else if (lookup_sym == "YM" || lookup_sym == "MYM") contract_multiplier = 5.0;
-                    else if (lookup_sym == "6B") contract_multiplier = 62500.0;
-                    else if (lookup_sym == "6E") contract_multiplier = 125000.0;
-                    else if (lookup_sym == "6C") contract_multiplier = 100000.0;
-                    else if (lookup_sym == "6J") contract_multiplier = 12500000.0;
-                    else if (lookup_sym == "6S") contract_multiplier = 125000.0;
-                    else if (lookup_sym == "6N") contract_multiplier = 100000.0;
-                    else if (lookup_sym == "6M") contract_multiplier = 500000.0;
-                    else if (lookup_sym == "CL") contract_multiplier = 1000.0;
-                    else if (lookup_sym == "GC") contract_multiplier = 100.0;
-                    else if (lookup_sym == "HG") contract_multiplier = 25000.0;
-                    else if (lookup_sym == "PL") contract_multiplier = 50.0;
-                    else if (lookup_sym == "ZR") contract_multiplier = 2000.0;
+                auto instrument = registry.get_instrument(lookup_sym);
+                if (!instrument) {
+                    ERROR("CRITICAL: Instrument " + lookup_sym + " not found in registry for email generation!");
+                    throw std::runtime_error("Missing instrument in registry: " + lookup_sym);
                 }
-            } catch (...) {
-                // Use fallback multipliers if exception occurs
+
+                // Get contract multiplier for notional calculation from registry (ONLY source)
+                contract_multiplier = instrument->get_multiplier();
+                if (contract_multiplier <= 0) {
+                    ERROR("CRITICAL: Invalid multiplier " + std::to_string(contract_multiplier) +
+                          " for " + lookup_sym);
+                    throw std::runtime_error("Invalid multiplier for: " + lookup_sym);
+                }
+
+                double contracts_abs = std::abs(position.quantity.as_double());
+                double initial_margin_per_contract = instrument->get_margin_requirement();
+                if (initial_margin_per_contract <= 0) {
+                    ERROR("CRITICAL: Invalid margin requirement " + std::to_string(initial_margin_per_contract) +
+                          " for " + lookup_sym);
+                    throw std::runtime_error("Invalid margin requirement for: " + lookup_sym);
+                }
+                total_margin_posted += contracts_abs * initial_margin_per_contract;
+
+            } catch (const std::exception& e) {
+                ERROR("CRITICAL: Failed to get instrument data for " + position.symbol + ": " + e.what());
+                throw;  // Re-throw - don't hide the error
             }
 
             // Calculate notional with proper contract multiplier
             notional = position.quantity.as_double() * position.average_price.as_double() * contract_multiplier;
             total_notional += std::abs(notional);
-
-            // If margin not calculated above, estimate it
-            if (total_margin_posted == 0.0) {
-                // Fall back: keep previous estimate behavior if registry not available
-                double margin_estimate = std::abs(notional) * 0.05;  // More realistic 5% for futures
-                total_margin_posted += margin_estimate;
-            }
 
             // Calculate total P&L (realized + unrealized)
             double total_pnl = position.realized_pnl.as_double() + position.unrealized_pnl.as_double();
@@ -819,11 +804,11 @@ std::string EmailSender::format_strategy_metrics(const std::map<std::string, dou
     // Extract leverage metrics (avoiding duplicates)
     std::map<std::string, double> leverage_metrics;
     for (const auto& [key, value] : strategy_metrics) {
-        if (key.find("Leverage") != std::string::npos) {
+        if (key.find("Leverage") != std::string::npos || key == "Equity-to-Margin Ratio") {
             // Only keep the metrics we want to display
             if (key == "Gross Leverage" || key == "Net Leverage" ||
                 key == "Portfolio Leverage" || key == "Portfolio Leverage (Gross)" ||
-                key == "Margin Leverage" || key == "Implied Leverage from Margin") {
+                key == "Equity-to-Margin Ratio" || key == "Implied Leverage from Margin") {
                 leverage_metrics[key] = value;
             }
         }
@@ -883,7 +868,7 @@ std::string EmailSender::format_strategy_metrics(const std::map<std::string, dou
         html << "<h2>Risk & Liquidity Metrics</h2>\n";
         html << "<div class=\"metrics-category\">\n";
 
-        // First render Gross and Net Leverage
+        // Leverage metrics in exact order
         auto gross_it = leverage_metrics.find("Gross Leverage");
         if (gross_it != leverage_metrics.end()) {
             html << format_metric("Gross Leverage", gross_it->second);
@@ -894,14 +879,7 @@ std::string EmailSender::format_strategy_metrics(const std::map<std::string, dou
             html << format_metric("Net Leverage", net_it->second);
         }
 
-        // Add line space
-        if ((gross_it != leverage_metrics.end() || net_it != leverage_metrics.end()) &&
-            (leverage_metrics.find("Portfolio Leverage") != leverage_metrics.end() ||
-             leverage_metrics.find("Portfolio Leverage (Gross)") != leverage_metrics.end())) {
-            html << "<br>\n";
-        }
-
-        // Portfolio Leverage
+        // Portfolio Leverage (use Portfolio Leverage if exists, else Portfolio Leverage (Gross))
         auto portfolio_it = leverage_metrics.find("Portfolio Leverage");
         if (portfolio_it != leverage_metrics.end()) {
             html << format_metric("Portfolio Leverage", portfolio_it->second);
@@ -912,26 +890,18 @@ std::string EmailSender::format_strategy_metrics(const std::map<std::string, dou
             }
         }
 
-        // Add line space before Implied Leverage
-        if (portfolio_it != leverage_metrics.end() && leverage_metrics.find("Margin Leverage") != leverage_metrics.end()) {
-            html << "<br>\n";
-        }
+        // Add line break after leverage metrics
+        html << "<br>\n";
 
-        // Implied Leverage from Margin (using Margin Leverage value)
-        auto margin_lev_it = leverage_metrics.find("Margin Leverage");
-        if (margin_lev_it != leverage_metrics.end()) {
-            html << format_metric("Implied Leverage from Margin", margin_lev_it->second);
-        }
-
-        // Add line space before margin and cash metrics
-        if (margin_lev_it != leverage_metrics.end() && !risk_liquidity_metrics.empty()) {
-            html << "<br>\n";
-        }
-
-        // Render margin and cash metrics in specific order
+        // Margin metrics in exact order
         auto margin_posted_it = risk_liquidity_metrics.find("Margin Posted");
         if (margin_posted_it != risk_liquidity_metrics.end()) {
             html << format_metric("Margin Posted", margin_posted_it->second);
+        }
+
+        auto margin_cov_it = leverage_metrics.find("Equity-to-Margin Ratio");
+        if (margin_cov_it != leverage_metrics.end()) {
+            html << format_metric("Equity-to-Margin Ratio", margin_cov_it->second);
         }
 
         auto margin_cushion_it = risk_liquidity_metrics.find("Margin Cushion");
@@ -939,6 +909,10 @@ std::string EmailSender::format_strategy_metrics(const std::map<std::string, dou
             html << format_metric("Margin Cushion", margin_cushion_it->second);
         }
 
+        // Add line break before cash available
+        html << "<br>\n";
+
+        // Cash available
         auto cash_available_it = risk_liquidity_metrics.find("Cash Available");
         if (cash_available_it != risk_liquidity_metrics.end()) {
             html << format_metric("Cash Available", cash_available_it->second);

@@ -1058,14 +1058,17 @@ double TrendFollowingStrategy::apply_position_buffer(const std::string& symbol, 
 
     // Validation
     if (std::isnan(raw_position) || std::isinf(raw_position)) {
+        WARN("Invalid raw_position for " + symbol + ", returning 0");
         return 0.0;
     }
 
     if (std::isnan(price) || price <= 0.0) {
+        WARN("Invalid price for " + symbol + ", returning 0");
         return 0.0;
     }
 
     if (std::isnan(volatility) || std::isinf(volatility) || volatility <= 0.0) {
+        WARN("Invalid volatility for " + symbol + ", returning 0");
         return 0.0;
     }
 
@@ -1083,72 +1086,89 @@ double TrendFollowingStrategy::apply_position_buffer(const std::string& symbol, 
 
     double weight = std::max(0.0, trend_config_.weight);
 
-    // Get contract size from instrument registry
+    // Get contract size from instrument registry (use cached value if available)
     double contract_size = 1.0;
+    auto inst_data_it = instrument_data_.find(symbol);
+    if (inst_data_it != instrument_data_.end()) {
+        contract_size = inst_data_it->second.contract_size;
+    } else {
+        // Fallback: lookup from registry
+        try {
+            std::string lookup_symbol = symbol;
+            if (symbol.find(".v.") != std::string::npos) {
+                lookup_symbol = symbol.substr(0, symbol.find(".v."));
+            }
+            if (symbol.find(".c.") != std::string::npos) {
+                lookup_symbol = symbol.substr(0, symbol.find(".c."));
+            }
 
-    std::shared_ptr<Instrument> instrument = nullptr;
-    try {
-        // Transform symbol to match what's in the registry
-        std::string lookup_symbol = symbol;
-        if (symbol.find(".v.") != std::string::npos) {
-            lookup_symbol = symbol.substr(0, symbol.find(".v."));
+            if (registry_ && registry_->has_instrument(lookup_symbol)) {
+                auto instrument = registry_->get_instrument(lookup_symbol);
+                if (instrument) {
+                    contract_size = instrument->get_multiplier();
+                }
+            }
+        } catch (const std::exception& e) {
+            WARN("Failed to get contract size for " + symbol + ": " + std::string(e.what()));
+            contract_size = 1.0;
         }
-
-        INFO("Looking up instrument for symbol " + symbol + " (normalized to " + lookup_symbol +
-             ")");
-
-        if (registry_ && registry_->has_instrument(lookup_symbol)) {
-            INFO("Found instrument in registry for " + symbol);
-            instrument = registry_->get_instrument(lookup_symbol);
-        } else if (InstrumentRegistry::instance().has_instrument(lookup_symbol)) {
-            ERROR("Found instrument in global registry for " + symbol);
-        } else {
-            ERROR("Instrument not found in registry for " + symbol);
-        }
-
-        if (instrument) {
-            contract_size = instrument->get_multiplier();
-            INFO("Found instrument for " + symbol +
-                 ": contract size = " + std::to_string(contract_size));
-        } else {
-            ERROR("Instrument not found for " + symbol + ", using default values");
-        }
-
-    } catch (const std::exception& e) {
-        ERROR("Exception in calculate_position: " + std::string(e.what()) + " for symbol " +
-              symbol);
-        // Use safe defaults
-        contract_size = 1.0;
     }
 
-    // Calculate buffer width as:
-    // 0.1 x capital x IDM x weight x tau /
-    // (contract size x price x fx rate x volatility)
+    // IMPLEMENTATION: Calculate buffer width using Carver's formula
+    // buffer_width = 0.1 * capital * IDM * weight * risk_target /
+    //                (contract_size * price * fx_rate * volatility)
     double buffer_width = 0.1 * config_.capital_allocation * trend_config_.idm *
                           trend_config_.risk_target * weight /
                           (contract_size * price * trend_config_.fx_rate * volatility);
+
+    // PURE CARVER APPROACH - No clamping applied
+    // This allows the buffer to scale naturally with position size and market conditions
+    // as originally intended in the methodology
+    DEBUG("Buffer width for " + symbol + ": " + std::to_string(buffer_width) +
+          " contracts (unclamped Carver approach)");
 
     // Calculate buffer bounds
     double lower_buffer = raw_position - buffer_width;
     double upper_buffer = raw_position + buffer_width;
 
-    // Apply buffering logic
+    // IMPLEMENTATION: Apply buffering logic
+    // If current position is within the buffer zone [lower_buffer, upper_buffer],
+    // keep the current position (no trade). Otherwise, trade to the buffer boundary.
     double new_position;
     if (current_position < lower_buffer) {
+        // Current position is below the buffer zone - trade up to lower boundary
         new_position = std::round(lower_buffer);
+        DEBUG("Position buffering for " + symbol + ": trading from " +
+              std::to_string(current_position) + " to lower buffer " +
+              std::to_string(new_position) + " (raw: " + std::to_string(raw_position) + ")");
     } else if (current_position > upper_buffer) {
+        // Current position is above the buffer zone - trade down to upper boundary
         new_position = std::round(upper_buffer);
+        DEBUG("Position buffering for " + symbol + ": trading from " +
+              std::to_string(current_position) + " to upper buffer " +
+              std::to_string(new_position) + " (raw: " + std::to_string(raw_position) + ")");
     } else {
+        // Current position is within the buffer zone - no trade needed
         new_position = std::round(current_position);
+        DEBUG("Position buffering for " + symbol + ": keeping current position " +
+              std::to_string(new_position) + " (within buffer, raw: " +
+              std::to_string(raw_position) + ")");
     }
 
-    // Final safety check - cap positions to a reasonable maximum for testing
+    // Final safety check - cap positions to configured limits
     double position_limit = 1000.0;
     if (config_.position_limits.count(symbol) > 0) {
         position_limit = config_.position_limits.at(symbol);
     }
 
-    return std::max(-position_limit, std::min(position_limit, new_position));
+    double final_position = std::max(-position_limit, std::min(position_limit, new_position));
+
+    if (std::abs(final_position - new_position) > 0.1) {
+        WARN("Position for " + symbol + " capped by position limit: " +
+             std::to_string(new_position) + " -> " + std::to_string(final_position));
+    }
+
+    return final_position;
 }
 
 double TrendFollowingStrategy::calculate_vol_regime_multiplier(
@@ -1237,70 +1257,50 @@ double TrendFollowingStrategy::calculate_vol_regime_multiplier(
 }
 
 double TrendFollowingStrategy::get_point_value_multiplier(const std::string& symbol) const {
-    // Extract base symbol (remove .v.0 suffix)
+    // Extract base symbol (remove .v./.c. suffix)
     std::string base_symbol = symbol;
     if (symbol.find(".v.") != std::string::npos) {
         base_symbol = symbol.substr(0, symbol.find(".v."));
     }
-    
-    // Map symbols to their correct point values (not full contract sizes)
-    static const std::unordered_map<std::string, double> point_values = {
-        // Currency futures (per tick value)
-        {"6A", 10.0},     // Australian Dollar - $10 per tick
-        {"6B", 6.25},     // British Pound - $6.25 per tick  
-        {"6C", 10.0},     // Canadian Dollar - $10 per tick
-        {"6E", 12.50},    // Euro - $12.50 per tick
-        {"6J", 12.50},    // Japanese Yen - $12.50 per tick
-        {"6M", 12.50},    // Mexican Peso - $12.50 per tick
-        {"6N", 10.0},     // New Zealand Dollar - $10 per tick
-        {"6S", 12.50},    // Swiss Franc - $12.50 per tick
-        
-        // Index futures
-        {"ES", 50.0},     // E-mini S&P 500 - $50 per point
-        {"NQ", 20.0},     // E-mini Nasdaq - $20 per point
-        {"YM", 5.0},      // E-mini Dow - $5 per point
-        {"RTY", 10.0},    // E-mini Russell 2000 - $10 per point
-        
-        // Bond futures  
-        {"ZN", 15.625},   // 10-Year Treasury Note - $15.625 per tick
-        {"ZB", 31.25},    // 30-Year Treasury Bond - $31.25 per tick
-        {"UB", 31.25},    // Ultra Treasury Bond - $31.25 per tick
-        
-        // Commodity futures
-        {"CL", 10.0},     // Crude Oil - $10 per tick
-        {"GC", 10.0},     // Gold - $10 per tick  
-        {"SI", 50.0},     // Silver - $50 per tick
-        {"HG", 25.0},     // Copper - $25 per tick
-        {"PL", 50.0},     // Platinum - $50 per tick
-        
-        // Agricultural futures
-        {"ZC", 12.50},    // Corn - $12.50 per tick
-        {"ZS", 12.50},    // Soybeans - $12.50 per tick
-        {"ZW", 12.50},    // Wheat - $12.50 per tick
-        {"ZM", 10.0},     // Soybean Meal - $10 per tick
-        {"ZL", 6.0},      // Soybean Oil - $6 per tick
-        {"ZR", 10.0},     // Rough Rice - $10 per tick
-        {"KE", 12.50},    // KC HRW Wheat - $12.50 per tick
-        
-        // Energy futures
-        {"RB", 42.0},     // RBOB Gasoline - $42 per tick
-        {"HO", 42.0},     // Heating Oil - $42 per tick
-        {"NG", 10.0},     // Natural Gas - $10 per tick
-        
-        // Livestock futures
-        {"LE", 10.0},     // Live Cattle - $10 per tick
-        {"GF", 2.50},     // Feeder Cattle - $2.50 per tick
-        {"HE", 10.0},     // Lean Hogs - $10 per tick
-    };
-    
-    auto it = point_values.find(base_symbol);
-    if (it != point_values.end()) {
-        return it->second;
+    if (symbol.find(".c.") != std::string::npos) {
+        base_symbol = symbol.substr(0, symbol.find(".c."));
     }
-    
-    // Default fallback - use 1.0 (no multiplier effect)
-    WARN("Unknown point value for symbol " + symbol + ", using default 1.0");
-    return 1.0;
+
+    // ONLY use registry - no fallbacks allowed
+    if (!registry_) {
+        ERROR("CRITICAL: Instrument registry not initialized when requesting multiplier for " + symbol);
+        throw std::runtime_error("Instrument registry not initialized for symbol: " + symbol);
+    }
+
+    if (!registry_->has_instrument(base_symbol)) {
+        ERROR("CRITICAL: Instrument " + base_symbol + " not found in registry! Cannot continue without proper multiplier.");
+        throw std::runtime_error("Missing instrument in registry: " + base_symbol +
+                               ". Please ensure this instrument is loaded in the database.");
+    }
+
+    try {
+        auto instrument = registry_->get_instrument(base_symbol);
+        if (!instrument) {
+            ERROR("CRITICAL: Null instrument returned for " + base_symbol);
+            throw std::runtime_error("Null instrument for: " + base_symbol);
+        }
+
+        double multiplier = instrument->get_multiplier();
+        if (multiplier <= 0) {
+            ERROR("CRITICAL: Invalid multiplier " + std::to_string(multiplier) +
+                  " for " + base_symbol + ". Multiplier must be positive.");
+            throw std::runtime_error("Invalid multiplier (" + std::to_string(multiplier) +
+                                   ") for: " + base_symbol);
+        }
+
+        DEBUG("Retrieved point value multiplier from registry for " + symbol + ": " +
+              std::to_string(multiplier));
+        return multiplier;
+    } catch (const std::exception& e) {
+        ERROR("CRITICAL: Failed to get multiplier for " + symbol + ": " + e.what() +
+              ". Cannot continue without proper multiplier.");
+        throw;  // Re-throw the original exception
+    }
 }
 
 }  // namespace trade_ngin
