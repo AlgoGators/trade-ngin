@@ -105,6 +105,8 @@
         "__verbose_abort": "cpp",
         "complex": "cpp",
         "cstdarg": "cpp",
-        "execution": "cpp"
+        "execution": "cpp",
+        "print": "cpp",
+        "stack": "cpp"
     }
 }

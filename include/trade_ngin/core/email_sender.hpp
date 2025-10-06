@@ -68,7 +68,8 @@ public:
         const std::map<std::string, double>& strategy_metrics,
         const std::vector<ExecutionReport>& executions,
         const std::string& date,
-        bool is_daily_strategy = true
+        bool is_daily_strategy,
+        std::shared_ptr<DatabaseInterface> db
     );
 
     /**
@@ -123,6 +124,13 @@ private:
      * @return Formatted executions table HTML
      */
     std::string format_executions_table(const std::vector<ExecutionReport>& executions);
+
+    /**
+     * @brief Format symbols reference table for email
+     * @param db Database interface to query symbols
+     * @return Formatted symbols table HTML
+     */
+    std::string format_symbols_table_for_positions(const std::unordered_map<std::string, Position>& positions,std::shared_ptr<DatabaseInterface> db);
 };
 
 } // namespace trade_ngin
