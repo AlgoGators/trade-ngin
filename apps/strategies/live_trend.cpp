@@ -531,8 +531,14 @@ int main(int argc, char* argv[]) {
                 prev_price = prev_it->second.average_price.as_double();
             }
 
-            // Get point value multiplier for this symbol (matching trend_following.cpp)
-            double point_value = tf_strategy->get_point_value_multiplier(symbol);
+            // Get point value multiplier for this symbol from strategy (which now uses registry ONLY)
+            double point_value = 0.0;
+            try {
+                point_value = tf_strategy->get_point_value_multiplier(symbol);
+            } catch (const std::exception& e) {
+                ERROR("CRITICAL: Cannot get point value for " + symbol + ": " + e.what());
+                throw;  // Re-throw - cannot calculate PnL without multiplier
+            }
 
             // Calculate daily PnL for this position
             double daily_position_pnl = 0.0;
@@ -588,8 +594,14 @@ int main(int argc, char* argv[]) {
                     current_price = current_prices[symbol];
                 }
 
-                // Get point value multiplier for this symbol (matching trend_following.cpp)
-                double point_value = tf_strategy->get_point_value_multiplier(symbol);
+                // Get point value multiplier for this symbol from strategy (which now uses registry ONLY)
+                double point_value = 0.0;
+                try {
+                    point_value = tf_strategy->get_point_value_multiplier(symbol);
+                } catch (const std::exception& e) {
+                    ERROR("CRITICAL: Cannot get point value for " + symbol + ": " + e.what());
+                    throw;  // Re-throw - cannot calculate PnL without multiplier
+                }
 
                 double daily_position_pnl = prev_qty * (current_price - prev_price) * point_value;
                 position_daily_pnl[symbol] = daily_position_pnl;
@@ -846,58 +858,48 @@ int main(int argc, char* argv[]) {
                 // Get contract multiplier for proper notional calculation
                 double contract_multiplier = 1.0;
 
-                // Compute posted margin per instrument (per-contract initial margin × contracts)
+                // ONLY use registry - no fallbacks allowed
                 try {
                     auto instrument_ptr = registry.get_instrument(lookup_sym);
-                    if (instrument_ptr) {
-                        // Get the contract multiplier for notional calculation
-                        contract_multiplier = instrument_ptr->get_multiplier();
-
-                        double contracts_abs = std::abs(position.quantity.as_double());
-                        double initial_margin_per_contract = instrument_ptr->get_margin_requirement();
-                        total_posted_margin += contracts_abs * initial_margin_per_contract;
-
-                        // Try to get maintenance margin if available (e.g., futures)
-                        // If not available, fall back to initial margin
-                        double maintenance_margin_per_contract = initial_margin_per_contract;
-                        // FuturesInstrument has get_maintenance_margin(); detect via dynamic_cast
-                        if (auto futures_ptr = std::dynamic_pointer_cast<trade_ngin::FuturesInstrument>(instrument_ptr)) {
-                            maintenance_margin_per_contract = futures_ptr->get_maintenance_margin();
-                        }
-                        maintenance_requirement_today += contracts_abs * maintenance_margin_per_contract;
+                    if (!instrument_ptr) {
+                        ERROR("CRITICAL: Instrument " + lookup_sym + " not found in registry!");
+                        throw std::runtime_error("Missing instrument in registry: " + lookup_sym +
+                                               ". Cannot calculate margin or notional without proper data.");
                     }
+
+                    // Get the contract multiplier for notional calculation from registry (ONLY source)
+                    contract_multiplier = instrument_ptr->get_multiplier();
+                    if (contract_multiplier <= 0) {
+                        ERROR("CRITICAL: Invalid multiplier " + std::to_string(contract_multiplier) +
+                              " for " + lookup_sym);
+                        throw std::runtime_error("Invalid multiplier for: " + lookup_sym);
+                    }
+
+                    double contracts_abs = std::abs(position.quantity.as_double());
+                    double initial_margin_per_contract = instrument_ptr->get_margin_requirement();
+                    if (initial_margin_per_contract <= 0) {
+                        ERROR("CRITICAL: Invalid initial margin " + std::to_string(initial_margin_per_contract) +
+                              " for " + lookup_sym);
+                        throw std::runtime_error("Invalid initial margin for: " + lookup_sym);
+                    }
+                    total_posted_margin += contracts_abs * initial_margin_per_contract;
+
+                    // Try to get maintenance margin if available (e.g., futures)
+                    // If not available, use initial margin (conservative approach)
+                    double maintenance_margin_per_contract = initial_margin_per_contract;
+                    // FuturesInstrument has get_maintenance_margin(); detect via dynamic_cast
+                    if (auto futures_ptr = std::dynamic_pointer_cast<trade_ngin::FuturesInstrument>(instrument_ptr)) {
+                        maintenance_margin_per_contract = futures_ptr->get_maintenance_margin();
+                        if (maintenance_margin_per_contract <= 0) {
+                            ERROR("CRITICAL: Invalid maintenance margin " +
+                                  std::to_string(maintenance_margin_per_contract) + " for " + lookup_sym);
+                            throw std::runtime_error("Invalid maintenance margin for: " + lookup_sym);
+                        }
+                    }
+                    maintenance_requirement_today += contracts_abs * maintenance_margin_per_contract;
                 } catch (const std::exception& e) {
-                    WARN("Failed to compute posted margin for " + symbol + ": " + std::string(e.what()));
-                    // Use fallback multipliers if instrument not found - comprehensive list
-                    if (lookup_sym == "NQ" || lookup_sym == "MNQ") contract_multiplier = 20.0;
-                    else if (lookup_sym == "ES" || lookup_sym == "MES") contract_multiplier = 50.0;
-                    else if (lookup_sym == "YM" || lookup_sym == "MYM") contract_multiplier = 5.0;
-                    else if (lookup_sym == "6B") contract_multiplier = 62500.0;
-                    else if (lookup_sym == "6E") contract_multiplier = 125000.0;
-                    else if (lookup_sym == "6C") contract_multiplier = 100000.0;
-                    else if (lookup_sym == "6J") contract_multiplier = 12500000.0;
-                    else if (lookup_sym == "6S") contract_multiplier = 125000.0;
-                    else if (lookup_sym == "6N") contract_multiplier = 100000.0;
-                    else if (lookup_sym == "6M") contract_multiplier = 500000.0;
-                    else if (lookup_sym == "CL") contract_multiplier = 1000.0;
-                    else if (lookup_sym == "GC") contract_multiplier = 100.0;
-                    else if (lookup_sym == "HG") contract_multiplier = 25000.0;
-                    else if (lookup_sym == "PL") contract_multiplier = 50.0;
-                    else if (lookup_sym == "ZR") contract_multiplier = 2000.0;
-                    else if (lookup_sym == "RB") contract_multiplier = 42000.0;
-                    else if (lookup_sym == "RTY") contract_multiplier = 50.0;
-                    else if (lookup_sym == "SI") contract_multiplier = 5000.0;
-                    else if (lookup_sym == "UB") contract_multiplier = 100000.0;
-                    else if (lookup_sym == "ZC") contract_multiplier = 5000.0;
-                    else if (lookup_sym == "ZL") contract_multiplier = 60000.0;
-                    else if (lookup_sym == "ZM") contract_multiplier = 100.0;
-                    else if (lookup_sym == "ZN") contract_multiplier = 100000.0;
-                    else if (lookup_sym == "ZS") contract_multiplier = 5000.0;
-                    else if (lookup_sym == "ZW") contract_multiplier = 5000.0;
-                    else if (lookup_sym == "HE") contract_multiplier = 40000.0;
-                    else if (lookup_sym == "LE") contract_multiplier = 40000.0;
-                    else if (lookup_sym == "GF") contract_multiplier = 50000.0;
-                    else if (lookup_sym == "KE") contract_multiplier = 5000.0;
+                    ERROR("CRITICAL: Failed to get instrument data for " + symbol + ": " + e.what());
+                    throw;  // Re-throw the exception - don't hide the error
                 }
 
                 // Calculate notional with proper contract multiplier
@@ -927,9 +929,12 @@ int main(int argc, char* argv[]) {
         if (active_positions > 0 && total_posted_margin <= 0.0) {
             ERROR("Computed posted margin is non-positive while positions are active. Check instrument metadata.");
         }
-        double margin_leverage = (total_posted_margin > 0.0) ? (gross_notional / total_posted_margin) : 0.0;
-        if (margin_leverage <= 1.0 && active_positions > 0) {
-            WARN("Implied margin leverage (gross_notional / posted_margin) is <= 1.0; verify margins.");
+        // Equity-to-Margin Ratio = gross_notional / total_posted_margin
+        // This metric shows how many times the gross notional exposure is covered by posted margin
+        // Higher values indicate more leverage relative to margin requirements
+        double equity_to_margin_ratio = (total_posted_margin > 0.0) ? (gross_notional / total_posted_margin) : 0.0;
+        if (equity_to_margin_ratio <= 1.0 && active_positions > 0) {
+            WARN("Equity-to-Margin Ratio (gross_notional / posted_margin) is <= 1.0; verify margins.");
         }
 
         // Save positions to database with daily PnL values
@@ -1144,15 +1149,17 @@ int main(int argc, char* argv[]) {
         std::cout << "Daily Return: " << std::fixed << std::setprecision(2) << daily_return << "%" << std::endl;
         std::cout << "Portfolio Leverage: " << std::fixed << std::setprecision(2) 
                   << (gross_notional / current_portfolio_value) << "x" << std::endl;
-        std::cout << "Posted Margin (Initial×Contracts): $" << std::fixed << std::setprecision(2) 
+        std::cout << "Posted Margin (Initial×Contracts): $" << std::fixed << std::setprecision(2)
                   << total_posted_margin << std::endl;
-        std::cout << "Implied Margin Leverage: " << std::fixed << std::setprecision(2)
-                  << margin_leverage << "x" << std::endl;
+        std::cout << "Equity-to-Margin Ratio: " << std::fixed << std::setprecision(2)
+                  << equity_to_margin_ratio << "x" << std::endl;
         double margin_cushion = 0.0;
-        if (current_portfolio_value > 0.0) {
-            margin_cushion = (current_portfolio_value - maintenance_requirement_today) / current_portfolio_value;
+        if (maintenance_requirement_today > 0.0) {
+            // Correct formula: margin_cushion = (equity - maintenance) / maintenance
+            // This shows how much cushion we have above maintenance margin requirements
+            margin_cushion = (current_portfolio_value - maintenance_requirement_today) / maintenance_requirement_today;
         } else {
-            margin_cushion = -1.0;
+            margin_cushion = -1.0;  // Invalid if no maintenance requirement
         }
 
         // Warnings per thresholds
@@ -1162,8 +1169,8 @@ int main(int argc, char* argv[]) {
         if (margin_cushion < 0.20) {
             WARN("Margin cushion below 20%.");
         }
-        if (margin_leverage > 4.0) {
-            WARN("Implied margin leverage above 4x.");
+        if (equity_to_margin_ratio > 4.0) {
+            WARN("Equity-to-Margin Ratio above 4x.");
         }
 
         // Get forecasts for all symbols
@@ -1262,7 +1269,7 @@ int main(int argc, char* argv[]) {
             double max_correlation = 0.0;
             double jump_risk = 0.0;
             double risk_scale = 1.0;
-            
+
             if (risk_eval.is_ok()) {
                 const auto& r = risk_eval.value();
                 portfolio_var = r.portfolio_var;
@@ -1272,10 +1279,10 @@ int main(int argc, char* argv[]) {
                 jump_risk = r.jump_risk;
                 risk_scale = r.recommended_scale;
             }
-            
+
             // Use the calculated PnL values from position analysis
             double portfolio_leverage = (current_portfolio_value != 0.0) ? (gross_notional / current_portfolio_value) : 0.0;
-            // margin_leverage and margin_cushion already computed above
+            // equity_to_margin_ratio and margin_cushion already computed above
             
             // First delete existing results for this strategy and date
             // Validate table name before using it in DELETE query
@@ -1294,7 +1301,7 @@ int main(int argc, char* argv[]) {
             std::string query = "INSERT INTO trading.live_results "
                                "(strategy_id, date, total_return, volatility, total_pnl, total_unrealized_pnl, "
                                "total_realized_pnl, current_portfolio_value, portfolio_var, gross_leverage, "
-                               "net_leverage, portfolio_leverage, margin_leverage, margin_cushion, max_correlation, jump_risk, risk_scale, "
+                               "net_leverage, portfolio_leverage, equity_to_margin_ratio, margin_cushion, max_correlation, jump_risk, risk_scale, "
                                "gross_notional, net_notional, active_positions, config, daily_return, daily_pnl, "
                                "total_commissions, daily_realized_pnl, daily_unrealized_pnl, daily_commissions, margin_posted, cash_available) "
                                "VALUES ('LIVE_TREND_FOLLOWING', '" + date_ss.str() + "', " +
@@ -1303,7 +1310,7 @@ int main(int argc, char* argv[]) {
                                std::to_string(total_realized_pnl) + ", " + std::to_string(current_portfolio_value) + ", " +
                                std::to_string(portfolio_var) + ", " + std::to_string(gross_leverage) + ", " +
                                std::to_string(net_leverage) + ", " + std::to_string(portfolio_leverage) + ", " +
-                               std::to_string(margin_leverage) + ", " + std::to_string(margin_cushion) + ", " +
+                               std::to_string(equity_to_margin_ratio) + ", " + std::to_string(margin_cushion) + ", " +
                                std::to_string(max_correlation) + ", " + std::to_string(jump_risk) + ", " +
                                 std::to_string(risk_scale) + ", " + std::to_string(gross_notional) + ", " +
                                 std::to_string(net_notional) + ", " +
@@ -1350,44 +1357,24 @@ int main(int argc, char* argv[]) {
                     lookup_sym = lookup_sym.substr(0, dotpos);
                 }
 
-                double contract_multiplier = 1.0;
+                double contract_multiplier = 0.0;
                 try {
                     auto& registry = InstrumentRegistry::instance();
                     auto instrument_ptr = registry.get_instrument(lookup_sym);
-                    if (instrument_ptr) {
-                        contract_multiplier = instrument_ptr->get_multiplier();
+                    if (!instrument_ptr) {
+                        ERROR("CRITICAL: Instrument " + lookup_sym + " not found in registry for CSV export!");
+                        throw std::runtime_error("Missing instrument in registry: " + lookup_sym);
                     }
-                } catch (...) {
-                    // Use fallback multipliers - comprehensive list
-                    if (lookup_sym == "NQ" || lookup_sym == "MNQ") contract_multiplier = 20.0;
-                    else if (lookup_sym == "ES" || lookup_sym == "MES") contract_multiplier = 50.0;
-                    else if (lookup_sym == "YM" || lookup_sym == "MYM") contract_multiplier = 5.0;
-                    else if (lookup_sym == "6B") contract_multiplier = 62500.0;
-                    else if (lookup_sym == "6E") contract_multiplier = 125000.0;
-                    else if (lookup_sym == "6C") contract_multiplier = 100000.0;
-                    else if (lookup_sym == "6J") contract_multiplier = 12500000.0;
-                    else if (lookup_sym == "6S") contract_multiplier = 125000.0;
-                    else if (lookup_sym == "6N") contract_multiplier = 100000.0;
-                    else if (lookup_sym == "6M") contract_multiplier = 500000.0;
-                    else if (lookup_sym == "CL") contract_multiplier = 1000.0;
-                    else if (lookup_sym == "GC") contract_multiplier = 100.0;
-                    else if (lookup_sym == "HG") contract_multiplier = 25000.0;
-                    else if (lookup_sym == "PL") contract_multiplier = 50.0;
-                    else if (lookup_sym == "ZR") contract_multiplier = 2000.0;
-                    else if (lookup_sym == "RB") contract_multiplier = 42000.0;
-                    else if (lookup_sym == "RTY") contract_multiplier = 50.0;
-                    else if (lookup_sym == "SI") contract_multiplier = 5000.0;
-                    else if (lookup_sym == "UB") contract_multiplier = 100000.0;
-                    else if (lookup_sym == "ZC") contract_multiplier = 5000.0;
-                    else if (lookup_sym == "ZL") contract_multiplier = 60000.0;
-                    else if (lookup_sym == "ZM") contract_multiplier = 100.0;
-                    else if (lookup_sym == "ZN") contract_multiplier = 100000.0;
-                    else if (lookup_sym == "ZS") contract_multiplier = 5000.0;
-                    else if (lookup_sym == "ZW") contract_multiplier = 5000.0;
-                    else if (lookup_sym == "HE") contract_multiplier = 40000.0;
-                    else if (lookup_sym == "LE") contract_multiplier = 40000.0;
-                    else if (lookup_sym == "GF") contract_multiplier = 50000.0;
-                    else if (lookup_sym == "KE") contract_multiplier = 5000.0;
+                    // Get multiplier from registry (ONLY source)
+                    contract_multiplier = instrument_ptr->get_multiplier();
+                    if (contract_multiplier <= 0) {
+                        ERROR("CRITICAL: Invalid multiplier " + std::to_string(contract_multiplier) +
+                              " for " + lookup_sym);
+                        throw std::runtime_error("Invalid multiplier for: " + lookup_sym);
+                    }
+                } catch (const std::exception& e) {
+                    ERROR("CRITICAL: Failed to get multiplier for " + symbol + ": " + e.what());
+                    throw;  // Re-throw - cannot export without proper multiplier
                 }
                 double forecast = tf_strategy->get_forecast(symbol);
                 // Get current market price for comparison
@@ -1567,7 +1554,7 @@ int main(int argc, char* argv[]) {
                 strategy_metrics["Gross Leverage"] = gross_notional / current_portfolio_value;
                 strategy_metrics["Net Leverage"] = net_notional / current_portfolio_value;
                 strategy_metrics["Portfolio Leverage (Gross)"] = gross_notional / current_portfolio_value;
-                strategy_metrics["Margin Leverage"] = margin_leverage;
+                strategy_metrics["Equity-to-Margin Ratio"] = equity_to_margin_ratio;
 
                 // Risk & Liquidity Metrics
                 strategy_metrics["Margin Cushion"] = margin_cushion * 100.0; // Convert to percentage
