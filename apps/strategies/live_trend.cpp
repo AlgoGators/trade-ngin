@@ -868,7 +868,7 @@ int main(int argc, char* argv[]) {
                     }
                 } catch (const std::exception& e) {
                     WARN("Failed to compute posted margin for " + symbol + ": " + std::string(e.what()));
-                    // Use fallback multipliers if instrument not found
+                    // Use fallback multipliers if instrument not found - comprehensive list
                     if (lookup_sym == "NQ" || lookup_sym == "MNQ") contract_multiplier = 20.0;
                     else if (lookup_sym == "ES" || lookup_sym == "MES") contract_multiplier = 50.0;
                     else if (lookup_sym == "YM" || lookup_sym == "MYM") contract_multiplier = 5.0;
@@ -884,6 +884,20 @@ int main(int argc, char* argv[]) {
                     else if (lookup_sym == "HG") contract_multiplier = 25000.0;
                     else if (lookup_sym == "PL") contract_multiplier = 50.0;
                     else if (lookup_sym == "ZR") contract_multiplier = 2000.0;
+                    else if (lookup_sym == "RB") contract_multiplier = 42000.0;
+                    else if (lookup_sym == "RTY") contract_multiplier = 50.0;
+                    else if (lookup_sym == "SI") contract_multiplier = 5000.0;
+                    else if (lookup_sym == "UB") contract_multiplier = 100000.0;
+                    else if (lookup_sym == "ZC") contract_multiplier = 5000.0;
+                    else if (lookup_sym == "ZL") contract_multiplier = 60000.0;
+                    else if (lookup_sym == "ZM") contract_multiplier = 100.0;
+                    else if (lookup_sym == "ZN") contract_multiplier = 100000.0;
+                    else if (lookup_sym == "ZS") contract_multiplier = 5000.0;
+                    else if (lookup_sym == "ZW") contract_multiplier = 5000.0;
+                    else if (lookup_sym == "HE") contract_multiplier = 40000.0;
+                    else if (lookup_sym == "LE") contract_multiplier = 40000.0;
+                    else if (lookup_sym == "GF") contract_multiplier = 50000.0;
+                    else if (lookup_sym == "KE") contract_multiplier = 5000.0;
                 }
 
                 // Calculate notional with proper contract multiplier
@@ -1344,7 +1358,7 @@ int main(int argc, char* argv[]) {
                         contract_multiplier = instrument_ptr->get_multiplier();
                     }
                 } catch (...) {
-                    // Use fallback multipliers
+                    // Use fallback multipliers - comprehensive list
                     if (lookup_sym == "NQ" || lookup_sym == "MNQ") contract_multiplier = 20.0;
                     else if (lookup_sym == "ES" || lookup_sym == "MES") contract_multiplier = 50.0;
                     else if (lookup_sym == "YM" || lookup_sym == "MYM") contract_multiplier = 5.0;
@@ -1352,8 +1366,28 @@ int main(int argc, char* argv[]) {
                     else if (lookup_sym == "6E") contract_multiplier = 125000.0;
                     else if (lookup_sym == "6C") contract_multiplier = 100000.0;
                     else if (lookup_sym == "6J") contract_multiplier = 12500000.0;
+                    else if (lookup_sym == "6S") contract_multiplier = 125000.0;
+                    else if (lookup_sym == "6N") contract_multiplier = 100000.0;
+                    else if (lookup_sym == "6M") contract_multiplier = 500000.0;
                     else if (lookup_sym == "CL") contract_multiplier = 1000.0;
+                    else if (lookup_sym == "GC") contract_multiplier = 100.0;
                     else if (lookup_sym == "HG") contract_multiplier = 25000.0;
+                    else if (lookup_sym == "PL") contract_multiplier = 50.0;
+                    else if (lookup_sym == "ZR") contract_multiplier = 2000.0;
+                    else if (lookup_sym == "RB") contract_multiplier = 42000.0;
+                    else if (lookup_sym == "RTY") contract_multiplier = 50.0;
+                    else if (lookup_sym == "SI") contract_multiplier = 5000.0;
+                    else if (lookup_sym == "UB") contract_multiplier = 100000.0;
+                    else if (lookup_sym == "ZC") contract_multiplier = 5000.0;
+                    else if (lookup_sym == "ZL") contract_multiplier = 60000.0;
+                    else if (lookup_sym == "ZM") contract_multiplier = 100.0;
+                    else if (lookup_sym == "ZN") contract_multiplier = 100000.0;
+                    else if (lookup_sym == "ZS") contract_multiplier = 5000.0;
+                    else if (lookup_sym == "ZW") contract_multiplier = 5000.0;
+                    else if (lookup_sym == "HE") contract_multiplier = 40000.0;
+                    else if (lookup_sym == "LE") contract_multiplier = 40000.0;
+                    else if (lookup_sym == "GF") contract_multiplier = 50000.0;
+                    else if (lookup_sym == "KE") contract_multiplier = 5000.0;
                 }
                 double forecast = tf_strategy->get_forecast(symbol);
                 // Get current market price for comparison
