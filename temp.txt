@@ -1,0 +1,510 @@
+#!/usr/bin/env python3
+"""
+LevFin-focused news retrieval + ranking + tagging + console reporter.
+
+This script builds a lightweight, domain-curated RAG retrieval layer for daily market commentary:
+1) Fetch curated RSS feeds (Reuters, FT, ratings agencies, SEC, macro calendars, etc.).
+2) Normalize, deduplicate, and timestamp-sort.
+3) Stage-1 lexical relevance ranking (BM25) using LevFin-specific terms.
+4) Optional Stage-2 semantic rerank if sentence-transformers is installed.
+5) Event tagging (New Issue, Refi/Amend, Ratings, M&A/LBO, Macro, Other) via rule templates.
+6) Simple clustering of near-duplicate stories.
+7) Pretty console print by sections with source attributions and links.
+
+Author: ChatGPT (GPT-5 Thinking)
+"""
+
+from __future__ import annotations
+
+import re
+import os
+import sys
+import json
+import math
+import hashlib
+import logging
+import itertools
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+from typing import List, Dict, Any, Iterable, Optional, Tuple, Callable, Set
+
+# Third-party deps
+try:
+    import feedparser  # RSS/Atom parsing
+except ImportError:
+    raise SystemExit("Missing dependency 'feedparser'. Install with: pip install feedparser")
+
+try:
+    from rank_bm25 import BM25Okapi  # lexical ranking
+except ImportError:
+    raise SystemExit("Missing dependency 'rank-bm25'. Install with: pip install rank-bm25")
+
+try:
+    from dateutil import parser as dateparser  # robust date parsing
+except ImportError:
+    raise SystemExit("Missing dependency 'python-dateutil'. Install with: pip install python-dateutil")
+
+try:
+    import tldextract  # robust domain extraction
+except ImportError:
+    raise SystemExit("Missing dependency 'tldextract'. Install with: pip install tldextract")
+
+# Optional: semantic rerank (will gracefully skip if unavailable)
+HAVE_SEMANTIC = True
+try:
+    from sentence_transformers import SentenceTransformer, util as st_util  # type: ignore
+except Exception:
+    HAVE_SEMANTIC = False
+
+# Optional: progress indication
+try:
+    from tqdm import tqdm
+    TQDM = True
+except Exception:
+    TQDM = False
+
+
+# --------------------------- CONFIG ------------------------------------------
+
+# Curated RSS feeds with consistent, finance-relevant signal.
+# (You can add firm-specific IR feeds if desired.)
+CURATED_RSS: List[str] = [
+    # Wires / business
+    "https://feeds.reuters.com/reuters/businessNews",
+    "https://feeds.reuters.com/reuters/USBusinessNews",
+    "https://feeds.reuters.com/reuters/financialsNews",
+    "https://www.ft.com/rss/home/us",  # FT general (use ranking to filter)
+    # Ratings actions
+    "https://www.moodys.com/rss/RssAllRatingsAnnouncements",     # Moody's global
+    "https://www.fitchratings.com/site/rss",                     # Fitch site-wide (will filter via ranking)
+    "https://www.spglobal.com/ratings/en/sector/rss",            # S&P sector RSS hub (some subfeeds)
+    # Macro calendars / releases (official)
+    "https://www.federalreserve.gov/feeds/press_all.xml",        # Fed press
+    "https://www.bls.gov/feed/news.rss",                         # BLS news
+    "https://www.bea.gov/news/2020-02-07/feed",                  # BEA news (somewhat dated URL, still feeds)
+    "https://home.treasury.gov/news/press-releases/rss.xml",     # UST press releases
+    # SEC — broad press (company-specific 8-K IR RSS can be added per issuer)
+    "https://www.sec.gov/news/pressreleases.rss",
+]
+
+# Domain allowlist boosts (used to bias relevance)
+ALLOWLIST_DOMAINS: Set[str] = {
+    "reuters.com",
+    "ft.com",
+    "wsj.com",
+    "spglobal.com",
+    "moodys.com",
+    "fitchratings.com",
+    "sec.gov",
+    "federalreserve.gov",
+    "bea.gov",
+    "bls.gov",
+    "home.treasury.gov",
+}
+
+# LevFin keyword inventory (extend as needed)
+LEVFIN_TERMS: List[str] = [
+    "leveraged loan", "term loan b", "tlb", "high-yield", "hy bond", "junk bond",
+    "refinancing", "repricing", "amend-and-extend", "a&e", "consent solicitation",
+    "covenant", "bridge loan", "commitment letter", "debt package",
+    "price talk", "guidance", "allocated", "bookbuild", "order book",
+    "lbo", "acquisition financing", "sponsor", "private equity",
+    "ratings", "upgrade", "downgrade", "watch", "outlook",
+    "sofr", "cpi", "nfp", "fomc", "dot plot", "treasury refunding",
+    "clo", "bdc", "term sheet", "add-on", "tap", "senior notes",
+]
+
+# Watchlist (tickers or issuer names) — optional issuer boost.
+# You can map company names → tickers here for stronger ranking.
+WATCHLIST: Set[str] = set()  # e.g., {"ALTICE", "ACET", "TEVA", "CCM", "UPL"} (uppercased)
+
+# Time window filter (keep recent N days; set to 3–7 typically)
+RECENT_DAYS: int = 4
+
+# How many top results to display per section
+MAX_ITEMS_PER_SECTION: int = 8
+
+# Stage-1 and Stage-2 cutoffs
+CANDIDATES_FOR_SEMANTIC: int = 100  # top-K from BM25 to consider for semantic rerank
+FINAL_TOP_N: int = 60               # final ranked pool before clustering/tagging
+
+# Optional: semantic rerank model name (if installed)
+SEMANTIC_MODEL_NAME: str = "sentence-transformers/all-MiniLM-L6-v2"
+
+# Logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s",
+    datefmt="%H:%M:%S",
+)
+
+
+# --------------------------- DATA STRUCTURES ----------------------------------
+
+@dataclass
+class NewsItem:
+    """Normalized representation of a feed item."""
+    title: str
+    summary: str
+    url: str
+    source_domain: str
+    published: Optional[datetime] = None
+    score_lex: float = 0.0
+    score_sem: float = 0.0
+    score_total: float = 0.0
+    event_type: str = "Other"  # assigned later
+    cluster_key: str = ""      # assigned later
+    # Optional: entities, tickers, etc.
+    entities: List[str] = field(default_factory=list)
+
+    def pretty_time(self) -> str:
+        return self.published.isoformat(timespec="minutes") if self.published else "Unknown"
+
+
+# --------------------------- UTILITIES ----------------------------------------
+
+def safe_domain(url: str) -> str:
+    """
+    Extract registrable domain (e.g., 'reuters.com') using tldextract.
+    """
+    ext = tldextract.extract(url)
+    if ext.registered_domain:
+        return ext.registered_domain.lower()
+    return re.sub(r"^https?://", "", url).split("/")[0].lower()
+
+
+def parse_datetime(dt_str: Optional[str]) -> Optional[datetime]:
+    """
+    Parse a datetime string into aware UTC datetime. Returns None if parsing fails.
+    """
+    if not dt_str:
+        return None
+    try:
+        dt = dateparser.parse(dt_str)
+        if dt is None:
+            return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def tokenize(text: str) -> List[str]:
+    """
+    Simple alphanumeric tokenizer with lowercase normalization.
+    """
+    return re.findall(r"[A-Za-z0-9\-]+", text.lower())
+
+
+def sim_key(text: str) -> str:
+    """
+    Lightweight de-dup key based on md5 of normalized title+summary.
+    """
+    base = re.sub(r"\s+", " ", text.strip().lower())
+    return hashlib.md5(base.encode("utf-8")).hexdigest()[:16]
+
+
+def within_days(dt: Optional[datetime], days: int) -> bool:
+    """
+    Check whether a datetime is within N days from now (UTC). If None, keep it (conservative).
+    """
+    if dt is None:
+        return True
+    now = datetime.now(timezone.utc)
+    return (now - dt) <= timedelta(days=days)
+
+
+def contains_any(hay: str, needles: Iterable[str]) -> bool:
+    """
+    Case-insensitive containment for any token in list.
+    """
+    low = hay.lower()
+    return any(n.lower() in low for n in needles)
+
+
+# --------------------------- FETCH & NORMALIZE --------------------------------
+
+def fetch_rss(urls: List[str]) -> List[NewsItem]:
+    """
+    Fetch a set of RSS/Atom feeds and return normalized NewsItem list.
+    """
+    items: List[NewsItem] = []
+    iterable = tqdm(urls, desc="Fetching RSS") if TQDM else urls
+    for u in iterable:
+        try:
+            parsed = feedparser.parse(u)
+        except Exception as e:
+            logging.warning(f"Feed parse failed: {u} | {e}")
+            continue
+        for e in parsed.entries:
+            title = e.get("title", "").strip()
+            summary = e.get("summary", "").strip()
+            link = e.get("link", "").strip()
+            pub = e.get("published", "") or e.get("updated", "") or e.get("created", "")
+            dt = parse_datetime(pub)
+            src = safe_domain(link or u)
+            # Fall back to feed link domain if needed
+            if not src:
+                src = safe_domain(u)
+            if not title and not summary:
+                continue
+            items.append(NewsItem(
+                title=title, summary=summary, url=link or u, source_domain=src, published=dt
+            ))
+    return items
+
+
+def dedupe(items: List[NewsItem]) -> List[NewsItem]:
+    """
+    Deduplicate by simhash-like key on title+summary.
+    """
+    seen: Set[str] = set()
+    out: List[NewsItem] = []
+    for it in items:
+        k = sim_key((it.title or "") + " || " + (it.summary or ""))
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(it)
+    return out
+
+
+def filter_recent(items: List[NewsItem], days: int) -> List[NewsItem]:
+    """
+    Keep only recent items (or undated).
+    """
+    return [it for it in items if within_days(it.published, days)]
+
+
+# --------------------------- RANKING ------------------------------------------
+
+def stage1_bm25_rank(items: List[NewsItem], query_terms: List[str]) -> List[NewsItem]:
+    """
+    Lexical BM25 over title+summary; apply rule-based boosts for LevFin context.
+    """
+    corpus_tok: List[List[str]] = [tokenize(f"{it.title} {it.summary}") for it in items]
+    bm25 = BM25Okapi(corpus_tok)
+    q = tokenize(" ".join(query_terms))
+    scores = bm25.get_scores(q)
+
+    for it, s in zip(items, scores):
+        txt = f"{it.title} {it.summary}".lower()
+        boost = 0.0
+        # Event verb boosts
+        if contains_any(txt, ["price talk", "guidance", "allocated", "bookbuild", "commitment", "lbo",
+                              "refinancing", "repricing", "amend-and-extend", "consent solicitation", "add-on"]):
+            boost += 2.0
+        # Ratings boost
+        if contains_any(txt, ["moody", "s&p", "fitch", "upgrade", "downgrade", "watch", "outlook"]):
+            boost += 1.5
+        # Macro boost
+        if contains_any(txt, ["cpi", "nfp", "fomc", "dot plot", "treasury refunding", "sofr"]):
+            boost += 0.5
+        # Domain allowlist boost
+        if it.source_domain in ALLOWLIST_DOMAINS:
+            boost += 1.0
+        # Issuer/watchlist boost
+        if WATCHLIST:
+            if any(w in it.title.upper() for w in WATCHLIST):
+                boost += 1.0
+        it.score_lex = float(s + boost)
+
+    items_sorted = sorted(items, key=lambda x: x.score_lex, reverse=True)
+    return items_sorted
+
+
+def stage2_semantic_rerank(items: List[NewsItem]) -> List[NewsItem]:
+    """
+    Optional semantic rerank: cosine sim between doc embeddings and a LevFin intent query.
+    If sentence-transformers is not available, returns items with score_sem = 0.
+    """
+    if not HAVE_SEMANTIC or not items:
+        return items
+
+    try:
+        model = SentenceTransformer(SEMANTIC_MODEL_NAME)
+    except Exception as e:
+        logging.warning(f"Semantic model load failed: {e}")
+        return items
+
+    # Compose a dense query reflecting LevFin intent
+    query = ("leveraged loans term loan b high-yield bonds refinancing repricing amend-and-extend "
+             "price talk guidance allocated ratings upgrade downgrade watch outlook acquisition financing lbo "
+             "sofr cpi fomc treasury refunding")
+
+    docs = [f"{it.title}. {it.summary}" for it in items]
+    q_emb = model.encode([query], convert_to_tensor=True, normalize_embeddings=True)
+    d_emb = model.encode(docs, convert_to_tensor=True, normalize_embeddings=True)
+    sims = st_util.cos_sim(q_emb, d_emb).cpu().numpy()[0].tolist()
+
+    # Blend: total = 0.7 * lexical_norm + 0.3 * semantic_norm (after min-max)
+    lex = [it.score_lex for it in items]
+    def norm(v: List[float]) -> List[float]:
+        mn, mx = min(v), max(v)
+        if mx - mn < 1e-9:
+            return [0.0 for _ in v]
+        return [(x - mn) / (mx - mn) for x in v]
+
+    lex_n = norm(lex)
+    sem_n = norm(sims)
+
+    for it, l, s in zip(items, lex_n, sem_n):
+        it.score_sem = float(s)
+        it.score_total = 0.7 * l + 0.3 * s
+
+    reranked = sorted(items, key=lambda x: x.score_total, reverse=True)
+    return reranked
+
+
+# --------------------------- EVENT TAGGING & CLUSTERING -----------------------
+
+EVENT_RULES: List[Tuple[str, List[str]]] = [
+    ("New Issue", ["price talk", "guidance", "allocated", "bookbuild", "add-on", "term loan b", "tlb", "senior notes"]),
+    ("Refi/Amend", ["refinancing", "repricing", "amend-and-extend", "consent solicitation"]),
+    ("M&A/LBO", ["lbo", "acquisition financing", "bridge loan", "debt package", "sponsor"]),
+    ("Ratings", ["moody", "s&p", "fitch", "upgrade", "downgrade", "watch", "outlook", "affirmed"]),
+    ("Macro", ["cpi", "nfp", "fomc", "dot plot", "treasury refunding", "sofr", "payrolls"]),
+]
+
+SECTION_ORDER: List[str] = ["New Issue", "Refi/Amend", "Ratings", "M&A/LBO", "Macro", "Other"]
+
+
+def tag_event(it: NewsItem) -> str:
+    """
+    Assign event type based on heuristic keyword rules.
+    """
+    text = f"{it.title} {it.summary}".lower()
+    for label, keys in EVENT_RULES:
+        if contains_any(text, keys):
+            return label
+    return "Other"
+
+
+def cluster_key(it: NewsItem) -> str:
+    """
+    Build a stable cluster key based on normalized title tokens.
+    """
+    title = re.sub(r"[^A-Za-z0-9 ]+", " ", it.title.lower())
+    title = re.sub(r"\s+", " ", title).strip()
+    # Keep first ~8 tokens to catch near duplicates
+    tokens = title.split()[:8]
+    norm = " ".join(tokens)
+    return hashlib.md5(norm.encode("utf-8")).hexdigest()[:12]
+
+
+def cluster_items(items: List[NewsItem]) -> Dict[str, List[NewsItem]]:
+    """
+    Group near-duplicate items by cluster key.
+    """
+    clusters: Dict[str, List[NewsItem]] = {}
+    for it in items:
+        k = cluster_key(it)
+        it.cluster_key = k
+        clusters.setdefault(k, []).append(it)
+    return clusters
+
+
+# --------------------------- RENDERING ----------------------------------------
+
+def format_line(it: NewsItem) -> str:
+    """
+    One-line console bullet with key details.
+    """
+    t = it.pretty_time()
+    return f"- {it.title}  [{it.source_domain}]  ({t})\n  {it.url}"
+
+
+def print_section(title: str, items: List[NewsItem], limit: int) -> None:
+    """
+    Print a section with up to N items.
+    """
+    if not items:
+        return
+    print(f"\n## {title}")
+    for it in items[:limit]:
+        print(format_line(it))
+
+
+def console_report(final_items: List[NewsItem]) -> None:
+    """
+    Render a full console report grouped by event type.
+    """
+    # Tag events
+    for it in final_items:
+        it.event_type = tag_event(it)
+
+    # Cluster & pick best representative per cluster by score_total (or score_lex)
+    # Aggregate cluster representatives and keep best per cluster
+    # If semantic not run, score_total may be 0 → fallback to lexical.
+    rep_per_cluster: Dict[str, NewsItem] = {}
+    for k, group in cluster_items(final_items).items():
+        best = max(group, key=lambda x: (x.score_total if x.score_total > 0 else x.score_lex))
+        rep_per_cluster[k] = best
+
+    reps = list(rep_per_cluster.values())
+
+    # Group by section and sort by recency then score
+    by_section: Dict[str, List[NewsItem]] = {s: [] for s in SECTION_ORDER}
+    for it in reps:
+        by_section.setdefault(it.event_type, []).append(it)
+
+    for sec, arr in by_section.items():
+        arr.sort(key=lambda x: (
+            x.published or datetime(1970, 1, 1, tzinfo=timezone.utc),
+            x.score_total if x.score_total > 0 else x.score_lex
+        ), reverse=True)
+
+    # Header
+    now_local = datetime.now().astimezone()
+    print("# Daily LevFin Market Brief")
+    print(f"Generated: {now_local.isoformat(timespec='minutes')}")
+    print("Sections: New Issue, Refi/Amend, Ratings, M&A/LBO, Macro, Other")
+    print("-" * 80)
+
+    # Sections in defined order
+    for sec in SECTION_ORDER:
+        print_section(sec, by_section.get(sec, []), MAX_ITEMS_PER_SECTION)
+
+
+# --------------------------- MAIN PIPELINE ------------------------------------
+
+def main() -> None:
+    """
+    Orchestrate: fetch → recent filter → dedupe → BM25 → (optional semantic) → trim → report.
+    """
+    logging.info("Starting curated fetch...")
+    items = fetch_rss(CURATED_RSS)
+    logging.info(f"Fetched {len(items)} raw items")
+
+    items = filter_recent(items, RECENT_DAYS)
+    logging.info(f"{len(items)} items within last {RECENT_DAYS} day(s)")
+
+    items = dedupe(items)
+    logging.info(f"{len(items)} items after deduplication")
+
+    if not items:
+        print("No items found. Try expanding RECENT_DAYS or adding feeds.")
+        return
+
+    # Stage-1 rank
+    items_bm25 = stage1_bm25_rank(items, LEVFIN_TERMS)
+    # Keep top-K for potential semantic rerank
+    top_for_sem = items_bm25[:CANDIDATES_FOR_SEMANTIC]
+
+    # Stage-2 (optional)
+    if HAVE_SEMANTIC:
+        logging.info("Running semantic rerank (optional)...")
+        items_sem = stage2_semantic_rerank(top_for_sem)
+        # Use semantic reranked top-N; else fallback to lexical
+        ranked_final = items_sem[:FINAL_TOP_N]
+    else:
+        logging.info("Semantic rerank not available; using lexical ranking only.")
+        ranked_final = items_bm25[:FINAL_TOP_N]
+
+    # Report
+    console_report(ranked_final)
+
+
+if __name__ == "__main__":
+    main()
