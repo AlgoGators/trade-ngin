@@ -1350,7 +1350,8 @@ int main() {
                     strategy_metrics,
                     daily_executions,
                     date_str,
-                    true  // is_daily_strategy
+                    true,  // is_daily_strategy
+                    db
                 );
                 
                 // Send email with CSV attachment
