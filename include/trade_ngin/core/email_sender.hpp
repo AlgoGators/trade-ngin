@@ -49,9 +49,10 @@ public:
      * @param subject Email subject
      * @param body Email body (HTML or plain text)
      * @param is_html Whether the body is HTML format
+     * @param attachment_path Optional path to file to attach (e.g., CSV file)
      * @return Result indicating success or failure
      */
-    Result<void> send_email(const std::string& subject, const std::string& body, bool is_html = true);
+    Result<void> send_email(const std::string& subject, const std::string& body, bool is_html = true, const std::optional<std::string>& attachment_path = std::nullopt);
 
     /**
      * @brief Generate trading results email body
@@ -69,7 +70,8 @@ public:
         const std::vector<ExecutionReport>& executions,
         const std::string& date,
         bool is_daily_strategy = true,
-        const std::unordered_map<std::string, double>& current_prices = {}
+        const std::unordered_map<std::string, double>& current_prices = {},
+        std::shared_ptr<DatabaseInterface> db = nullptr
     );
 
     /**
@@ -126,6 +128,13 @@ private:
      * @return Formatted executions table HTML
      */
     std::string format_executions_table(const std::vector<ExecutionReport>& executions);
+
+    /**
+     * @brief Format symbols reference table for email
+     * @param db Database interface to query symbols
+     * @return Formatted symbols table HTML
+     */
+    std::string format_symbols_table_for_positions(const std::unordered_map<std::string, Position>& positions,std::shared_ptr<DatabaseInterface> db);
 };
 
 } // namespace trade_ngin
