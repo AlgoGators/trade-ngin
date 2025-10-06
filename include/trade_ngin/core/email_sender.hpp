@@ -49,9 +49,10 @@ public:
      * @param subject Email subject
      * @param body Email body (HTML or plain text)
      * @param is_html Whether the body is HTML format
+     * @param attachment_path Optional path to file to attach (e.g., CSV file)
      * @return Result indicating success or failure
      */
-    Result<void> send_email(const std::string& subject, const std::string& body, bool is_html = true);
+    Result<void> send_email(const std::string& subject, const std::string& body, bool is_html = true, const std::optional<std::string>& attachment_path = std::nullopt);
 
     /**
      * @brief Generate trading results email body
