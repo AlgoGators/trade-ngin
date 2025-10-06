@@ -1320,12 +1320,12 @@ int main(int argc, char* argv[]) {
         
         std::ofstream position_file(filename);
         if (position_file.is_open()) {
-            // CSV header: entry_price = average cost basis for the position
-            //             market_price = current market price (close for historical, real-time for live)
-            //             ema_8, ema_32 = exponential moving averages for trend analysis
-            position_file << "symbol,quantity,entry_price,market_price,price_diff_%,notional,unrealized_pnl,realized_pnl,forecast,ema_8,ema_32,volatility\n";
+            // Comprehensive CSV header combining both versions
+            position_file << "symbol,quantity,quantity_change,entry_price,market_price,price_diff_%,price_change,price_change_pct,notional,pct_of_gross_notional,pct_of_portfolio_value,unrealized_pnl,realized_pnl,forecast,ema_8,ema_32,volatility\n";
             for (const auto& [symbol, position] : positions) {
-                // Get contract multiplier for proper notional calculation
+                double current_qty = position.quantity.as_double();
+
+                // Get contract multiplier for proper notional calculation (YOUR FIX)
                 std::string lookup_sym = symbol;
                 auto dotpos = lookup_sym.find(".v.");
                 if (dotpos != std::string::npos) {
@@ -1355,9 +1355,6 @@ int main(int argc, char* argv[]) {
                     else if (lookup_sym == "CL") contract_multiplier = 1000.0;
                     else if (lookup_sym == "HG") contract_multiplier = 25000.0;
                 }
-
-                // Notional based on entry price (cost basis) with proper multiplier
-                double notional = position.quantity.as_double() * position.average_price.as_double() * contract_multiplier;
                 double forecast = tf_strategy->get_forecast(symbol);
                 // Get current market price for comparison
                 double market_price = position.average_price.as_double(); // Default fallback
@@ -1365,14 +1362,33 @@ int main(int argc, char* argv[]) {
                     market_price = current_prices[symbol];
                 }
 
-                // Calculate price difference percentage
+                // Notional with proper contract multiplier (YOUR FIX)
+                double notional = current_qty * market_price * contract_multiplier;
+
+                // Calculate price difference percentage (YOUR VERSION)
                 double price_diff_pct = 0.0;
                 if (position.average_price.as_double() != 0.0) {
                     price_diff_pct = ((market_price - position.average_price.as_double()) /
                                       position.average_price.as_double()) * 100.0;
                 }
 
-                // Get EMAs and volatility from strategy's instrument data
+                // Get previous position data for calculations (THEIR VERSION)
+                double prev_qty = 0.0;
+                double prev_price = market_price; // Default to current if no previous
+                auto prev_it = previous_positions.find(symbol);
+                if (prev_it != previous_positions.end()) {
+                    prev_qty = prev_it->second.quantity.as_double();
+                    prev_price = prev_it->second.average_price.as_double();
+                }
+
+                // Calculate position-level metrics (THEIR VERSION)
+                double quantity_change = current_qty - prev_qty;
+                double price_change = market_price - prev_price;
+                double price_change_pct = (prev_price != 0.0) ? (price_change / prev_price) * 100.0 : 0.0;
+                double pct_of_gross_notional = (gross_notional != 0.0) ? (std::abs(notional) / gross_notional) * 100.0 : 0.0;
+                double pct_of_portfolio_value = (current_portfolio_value != 0.0) ? (std::abs(notional) / std::abs(current_portfolio_value)) * 100.0 : 0.0;
+
+                // Get EMAs and volatility from strategy's instrument data (YOUR VERSION)
                 double ema_8 = 0.0;
                 double ema_32 = 0.0;
                 double volatility = 0.0;
@@ -1403,11 +1419,16 @@ int main(int argc, char* argv[]) {
                 }
 
                 position_file << symbol << ","
-                             << position.quantity.as_double() << ","
-                             << position.average_price.as_double() << ","
+                             << current_qty << ","
+                             << quantity_change << ","
+                             << position.average_price.as_double() << ","  // entry_price
                              << market_price << ","
                              << std::fixed << std::setprecision(2) << price_diff_pct << ","
+                             << price_change << ","
+                             << price_change_pct << ","
                              << notional << ","
+                             << pct_of_gross_notional << ","
+                             << pct_of_portfolio_value << ","
                              << position.unrealized_pnl.as_double() << ","
                              << position.realized_pnl.as_double() << ","
                              << forecast << ","
@@ -1527,15 +1548,16 @@ int main(int argc, char* argv[]) {
                     daily_executions,
                     date_str,
                     true,  // is_daily_strategy
-                    current_prices  // Pass current market prices for accurate display
+                    current_prices,  // Pass current market prices for accurate display
+                    db  // Pass database for symbols reference table
                 );
                 
-                // Send email
-                auto send_result = email_sender->send_email(subject, email_body, true);
+                // Send email with CSV attachment
+                auto send_result = email_sender->send_email(subject, email_body, true, filename);
                 if (send_result.is_error()) {
                     ERROR("Failed to send email: " + std::string(send_result.error()->what()));
                 } else {
-                    INFO("Email report sent successfully");
+                    INFO("Email report sent successfully with CSV attachment: " + filename);
                 }
                 }
             } catch (const std::exception& e) {
