@@ -1,15 +1,12 @@
 #!/usr/bin/env python3
 """
-LevFin-focused news retrieval + ranking + tagging + console reporter.
+Enhanced LevFin news retrieval with Google News RSS + curated feeds.
 
-This script builds a lightweight, domain-curated RAG retrieval layer for daily market commentary:
-1) Fetch curated RSS feeds (Reuters, FT, ratings agencies, SEC, macro calendars, etc.).
-2) Normalize, deduplicate, and timestamp-sort.
-3) Stage-1 lexical relevance ranking (BM25) using LevFin-specific terms.
-4) Optional Stage-2 semantic rerank if sentence-transformers is installed.
-5) Event tagging (New Issue, Refi/Amend, Ratings, M&A/LBO, Macro, Other) via rule templates.
-6) Simple clustering of near-duplicate stories.
-7) Pretty console print by sections with source attributions and links.
+Key improvements vs previous version:
+- Adds Google News RSS queries with LevFin-specific terms and optional domain filters.
+- Broadens curated feeds and widens recency window to capture more items.
+- Retains BM25 lexical ranking and optional semantic rerank.
+- Tags events and prints a concise, source-attributed console brief.
 
 Author: ChatGPT (GPT-5 Thinking)
 """
@@ -23,40 +20,39 @@ import json
 import math
 import hashlib
 import logging
-import itertools
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import List, Dict, Any, Iterable, Optional, Tuple, Callable, Set
+from typing import List, Dict, Any, Iterable, Optional, Tuple, Set
 
 # Third-party deps
 try:
-    import feedparser  # RSS/Atom parsing
-except ImportError:
-    raise SystemExit("Missing dependency 'feedparser'. Install with: pip install feedparser")
+    import feedparser
+except ImportError as e:
+    raise SystemExit("Missing dependency 'feedparser'. Install with: pip install feedparser") from e
 
 try:
-    from rank_bm25 import BM25Okapi  # lexical ranking
-except ImportError:
-    raise SystemExit("Missing dependency 'rank-bm25'. Install with: pip install rank-bm25")
+    from rank_bm25 import BM25Okapi
+except ImportError as e:
+    raise SystemExit("Missing dependency 'rank-bm25'. Install with: pip install rank-bm25") from e
 
 try:
-    from dateutil import parser as dateparser  # robust date parsing
-except ImportError:
-    raise SystemExit("Missing dependency 'python-dateutil'. Install with: pip install python-dateutil")
+    from dateutil import parser as dateparser
+except ImportError as e:
+    raise SystemExit("Missing dependency 'python-dateutil'. Install with: pip install python-dateutil") from e
 
 try:
-    import tldextract  # robust domain extraction
-except ImportError:
-    raise SystemExit("Missing dependency 'tldextract'. Install with: pip install tldextract")
+    import tldextract
+except ImportError as e:
+    raise SystemExit("Missing dependency 'tldextract'. Install with: pip install tldextract") from e
 
-# Optional: semantic rerank (will gracefully skip if unavailable)
+# Optional semantic rerank
 HAVE_SEMANTIC = True
 try:
     from sentence_transformers import SentenceTransformer, util as st_util  # type: ignore
 except Exception:
     HAVE_SEMANTIC = False
 
-# Optional: progress indication
+# Optional progress
 try:
     from tqdm import tqdm
     TQDM = True
@@ -66,41 +62,24 @@ except Exception:
 
 # --------------------------- CONFIG ------------------------------------------
 
-# Curated RSS feeds with consistent, finance-relevant signal.
-# (You can add firm-specific IR feeds if desired.)
-CURATED_RSS: List[str] = [
-    # Wires / business
-    "https://feeds.reuters.com/reuters/businessNews",
-    "https://feeds.reuters.com/reuters/USBusinessNews",
-    "https://feeds.reuters.com/reuters/financialsNews",
-    "https://www.ft.com/rss/home/us",  # FT general (use ranking to filter)
-    # Ratings actions
-    "https://www.moodys.com/rss/RssAllRatingsAnnouncements",     # Moody's global
-    "https://www.fitchratings.com/site/rss",                     # Fitch site-wide (will filter via ranking)
-    "https://www.spglobal.com/ratings/en/sector/rss",            # S&P sector RSS hub (some subfeeds)
-    # Macro calendars / releases (official)
-    "https://www.federalreserve.gov/feeds/press_all.xml",        # Fed press
-    "https://www.bls.gov/feed/news.rss",                         # BLS news
-    "https://www.bea.gov/news/2020-02-07/feed",                  # BEA news (somewhat dated URL, still feeds)
-    "https://home.treasury.gov/news/press-releases/rss.xml",     # UST press releases
-    # SEC — broad press (company-specific 8-K IR RSS can be added per issuer)
-    "https://www.sec.gov/news/pressreleases.rss",
-]
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s",
+    datefmt="%H:%M:%S",
+)
 
-# Domain allowlist boosts (used to bias relevance)
-ALLOWLIST_DOMAINS: Set[str] = {
-    "reuters.com",
-    "ft.com",
-    "wsj.com",
-    "spglobal.com",
-    "moodys.com",
-    "fitchratings.com",
-    "sec.gov",
-    "federalreserve.gov",
-    "bea.gov",
-    "bls.gov",
-    "home.treasury.gov",
-}
+# Widen default recency to improve hit-rate on slow days (you can tune via env).
+RECENT_DAYS: int = int(os.getenv("RECENT_DAYS", "7"))
+
+# How many items per section to print
+MAX_ITEMS_PER_SECTION: int = int(os.getenv("MAX_ITEMS_PER_SECTION", "8"))
+
+# Candidate cutoffs
+CANDIDATES_FOR_SEMANTIC: int = int(os.getenv("CANDIDATES_FOR_SEMANTIC", "140"))
+FINAL_TOP_N: int = int(os.getenv("FINAL_TOP_N", "80"))
+
+# Optional sentence-transformers model
+SEMANTIC_MODEL_NAME: str = os.getenv("SEMANTIC_MODEL_NAME", "sentence-transformers/all-MiniLM-L6-v2")
 
 # LevFin keyword inventory (extend as needed)
 LEVFIN_TERMS: List[str] = [
@@ -109,41 +88,94 @@ LEVFIN_TERMS: List[str] = [
     "covenant", "bridge loan", "commitment letter", "debt package",
     "price talk", "guidance", "allocated", "bookbuild", "order book",
     "lbo", "acquisition financing", "sponsor", "private equity",
-    "ratings", "upgrade", "downgrade", "watch", "outlook",
+    "ratings", "upgrade", "downgrade", "watch", "outlook", "affirmed",
     "sofr", "cpi", "nfp", "fomc", "dot plot", "treasury refunding",
     "clo", "bdc", "term sheet", "add-on", "tap", "senior notes",
 ]
 
-# Watchlist (tickers or issuer names) — optional issuer boost.
-# You can map company names → tickers here for stronger ranking.
-WATCHLIST: Set[str] = set()  # e.g., {"ALTICE", "ACET", "TEVA", "CCM", "UPL"} (uppercased)
+# Domain allowlist boosts
+ALLOWLIST_DOMAINS: Set[str] = {
+    "reuters.com",
+    "ft.com",
+    "wsj.com",
+    "spglobal.com",
+    "spglobal.com/marketintelligence",
+    "moodys.com",
+    "fitchratings.com",
+    "sec.gov",
+    "federalreserve.gov",
+    "bea.gov",
+    "bls.gov",
+    "home.treasury.gov",
+    "marketwatch.com",
+    "bloomberg.com",  # may be paywalled; still useful in ranking
+    "businesswire.com",
+    "prnewswire.com",
+}
 
-# Time window filter (keep recent N days; set to 3–7 typically)
-RECENT_DAYS: int = 4
+# Optional issuer/watchlist boost: set via env WATCHLIST (comma separated)
+WATCHLIST: Set[str] = set(w.strip().upper() for w in os.getenv("WATCHLIST", "").split(",") if w.strip())
 
-# How many top results to display per section
-MAX_ITEMS_PER_SECTION: int = 8
+# Curated direct RSS feeds
+CURATED_RSS: List[str] = [
+    # Reuters general/business — good base; LevFin items get ranked up
+    "https://feeds.reuters.com/reuters/businessNews",
+    "https://feeds.reuters.com/reuters/USBusinessNews",
+    "https://feeds.reuters.com/reuters/financialsNews",
+    # Financial Times (general); ranking will filter
+    "https://www.ft.com/rss/home/us",
+    # Ratings agencies
+    "https://www.moodys.com/rss/RssAllRatingsAnnouncements",
+    "https://www.fitchratings.com/site/rss",
+    # S&P: their sector feeds can be added; this is a hub-ish feed
+    "https://www.spglobal.com/ratings/en/sector/rss",
+    # Macro official
+    "https://www.federalreserve.gov/feeds/press_all.xml",
+    "https://www.bls.gov/feed/news.rss",
+    "https://www.bea.gov/news/2020-02-07/feed",
+    "https://home.treasury.gov/news/press-releases/rss.xml",
+    # SEC press (NOTE: For 8-Ks, prefer company IR RSS or add Google News RSS queries below)
+    "https://www.sec.gov/news/pressreleases.rss",
+]
 
-# Stage-1 and Stage-2 cutoffs
-CANDIDATES_FOR_SEMANTIC: int = 100  # top-K from BM25 to consider for semantic rerank
-FINAL_TOP_N: int = 60               # final ranked pool before clustering/tagging
+# ---------- Google News RSS query configuration ----------
+# We will generate many query-specific RSS feeds to greatly increase coverage.
+# Docs: https://news.google.com/rss/search?q=<query>&hl=en-US&gl=US&ceid=US:en
+GNEWS_BASE = "https://news.google.com/rss/search"
+GNEWS_HL = "en-US"
+GNEWS_GL = "US"
+GNEWS_CEID = "US:en"
 
-# Optional: semantic rerank model name (if installed)
-SEMANTIC_MODEL_NAME: str = "sentence-transformers/all-MiniLM-L6-v2"
+# Time window for Google News via "when:Xd" (string). Keep aligned with RECENT_DAYS.
+GNEWS_WHEN: str = os.getenv("GNEWS_WHEN", f"when:{RECENT_DAYS}d")
 
-# Logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s",
-    datefmt="%H:%M:%S",
-)
+# Core LevFin queries
+LEVFIN_QUERY_TEMPLATES: List[str] = [
+    '"leveraged loan" OR "term loan b" OR "TLB"',
+    '"high-yield" OR "junk bond" OR "senior notes"',
+    '"refinancing" OR "repricing" OR "amend-and-extend" OR "consent solicitation"',
+    '"price talk" OR "guidance" OR "allocated" OR "bookbuild"',
+    '"acquisition financing" OR "bridge loan" OR "LBO"',
+    '"ratings" OR "upgrade" OR "downgrade" OR "rating watch" OR "outlook"',
+    '"CLO" OR "BDC"',
+]
 
+# Optional domain-focused queries to bias toward high-signal sources
+DOMAIN_FOCUSED_QUERIES: List[str] = [
+    '(site:reuters.com) ("leveraged loan" OR "high-yield" OR "LBO" OR "price talk")',
+    '(site:spglobal.com) ("ratings" OR "downgrade" OR "upgrade" OR "high-yield" OR "leveraged")',
+    '(site:moodys.com) ("rating" OR "downgrade" OR "upgrade")',
+    '(site:fitchratings.com) ("rating" OR "downgrade" OR "upgrade")',
+    '(site:businesswire.com OR site:prnewswire.com) ("senior notes" OR "term loan" OR "high-yield")',
+]
 
 # --------------------------- DATA STRUCTURES ----------------------------------
 
 @dataclass
 class NewsItem:
-    """Normalized representation of a feed item."""
+    """
+    Normalized news item structure.
+    """
     title: str
     summary: str
     url: str
@@ -152,20 +184,20 @@ class NewsItem:
     score_lex: float = 0.0
     score_sem: float = 0.0
     score_total: float = 0.0
-    event_type: str = "Other"  # assigned later
-    cluster_key: str = ""      # assigned later
-    # Optional: entities, tickers, etc.
+    event_type: str = "Other"
+    cluster_key: str = ""
     entities: List[str] = field(default_factory=list)
 
     def pretty_time(self) -> str:
+        """Return ISO-like time if available."""
         return self.published.isoformat(timespec="minutes") if self.published else "Unknown"
 
 
-# --------------------------- UTILITIES ----------------------------------------
+# --------------------------- UTILS --------------------------------------------
 
 def safe_domain(url: str) -> str:
     """
-    Extract registrable domain (e.g., 'reuters.com') using tldextract.
+    Extract registrable domain using tldextract (e.g., 'reuters.com').
     """
     ext = tldextract.extract(url)
     if ext.registered_domain:
@@ -190,16 +222,24 @@ def parse_datetime(dt_str: Optional[str]) -> Optional[datetime]:
         return None
 
 
+def contains_any(hay: str, needles: Iterable[str]) -> bool:
+    """
+    Case-insensitive containment for any token in 'needles'.
+    """
+    low = hay.lower()
+    return any(n.lower() in low for n in needles)
+
+
 def tokenize(text: str) -> List[str]:
     """
-    Simple alphanumeric tokenizer with lowercase normalization.
+    Alphanumeric tokenizer with lowercase normalization.
     """
     return re.findall(r"[A-Za-z0-9\-]+", text.lower())
 
 
 def sim_key(text: str) -> str:
     """
-    Lightweight de-dup key based on md5 of normalized title+summary.
+    Dedup key via md5 of normalized text.
     """
     base = re.sub(r"\s+", " ", text.strip().lower())
     return hashlib.md5(base.encode("utf-8")).hexdigest()[:16]
@@ -207,7 +247,7 @@ def sim_key(text: str) -> str:
 
 def within_days(dt: Optional[datetime], days: int) -> bool:
     """
-    Check whether a datetime is within N days from now (UTC). If None, keep it (conservative).
+    True if dt is within N days from now (UTC). None counts as True (conservative keep).
     """
     if dt is None:
         return True
@@ -215,19 +255,34 @@ def within_days(dt: Optional[datetime], days: int) -> bool:
     return (now - dt) <= timedelta(days=days)
 
 
-def contains_any(hay: str, needles: Iterable[str]) -> bool:
+# --------------------------- GOOGLE NEWS RSS ----------------------------------
+
+def gnews_rss_url(query: str, when: str) -> str:
     """
-    Case-insensitive containment for any token in list.
+    Build a Google News RSS URL for a given query and time window (e.g., 'when:7d').
     """
-    low = hay.lower()
-    return any(n.lower() in low for n in needles)
+    # URL encoding: replace spaces with '+', leave quotes and operators; feedparser handles basic encoding.
+    q = f"{query} {when}"
+    q = re.sub(r"\s+", " ", q).strip()
+    q_enc = q.replace(" ", "+")
+    return f"{GNEWS_BASE}?q={q_enc}&hl={GNEWS_HL}&gl={GNEWS_GL}&ceid={GNEWS_CEID}"
+
+
+def build_gnews_feed_list() -> List[str]:
+    """
+    Construct a list of Google News RSS URLs from query templates.
+    """
+    feeds = []
+    for q in LEVFIN_QUERY_TEMPLATES + DOMAIN_FOCUSED_QUERIES:
+        feeds.append(gnews_rss_url(q, GNEWS_WHEN))
+    return feeds
 
 
 # --------------------------- FETCH & NORMALIZE --------------------------------
 
 def fetch_rss(urls: List[str]) -> List[NewsItem]:
     """
-    Fetch a set of RSS/Atom feeds and return normalized NewsItem list.
+    Fetch RSS/Atom feeds and normalize into NewsItem list.
     """
     items: List[NewsItem] = []
     iterable = tqdm(urls, desc="Fetching RSS") if TQDM else urls
@@ -243,11 +298,9 @@ def fetch_rss(urls: List[str]) -> List[NewsItem]:
             link = e.get("link", "").strip()
             pub = e.get("published", "") or e.get("updated", "") or e.get("created", "")
             dt = parse_datetime(pub)
+            # Prefer item link; fallback to feed URL domain
             src = safe_domain(link or u)
-            # Fall back to feed link domain if needed
-            if not src:
-                src = safe_domain(u)
-            if not title and not summary:
+            if not (title or summary):
                 continue
             items.append(NewsItem(
                 title=title, summary=summary, url=link or u, source_domain=src, published=dt
@@ -255,14 +308,21 @@ def fetch_rss(urls: List[str]) -> List[NewsItem]:
     return items
 
 
+def filter_recent(items: List[NewsItem], days: int) -> List[NewsItem]:
+    """
+    Keep items within the recent window.
+    """
+    return [it for it in items if within_days(it.published, days)]
+
+
 def dedupe(items: List[NewsItem]) -> List[NewsItem]:
     """
-    Deduplicate by simhash-like key on title+summary.
+    Remove near-duplicates using a simple md5-based key on title+summary.
     """
     seen: Set[str] = set()
     out: List[NewsItem] = []
     for it in items:
-        k = sim_key((it.title or "") + " || " + (it.summary or ""))
+        k = sim_key(f"{it.title} || {it.summary}")
         if k in seen:
             continue
         seen.add(k)
@@ -270,18 +330,11 @@ def dedupe(items: List[NewsItem]) -> List[NewsItem]:
     return out
 
 
-def filter_recent(items: List[NewsItem], days: int) -> List[NewsItem]:
-    """
-    Keep only recent items (or undated).
-    """
-    return [it for it in items if within_days(it.published, days)]
-
-
 # --------------------------- RANKING ------------------------------------------
 
 def stage1_bm25_rank(items: List[NewsItem], query_terms: List[str]) -> List[NewsItem]:
     """
-    Lexical BM25 over title+summary; apply rule-based boosts for LevFin context.
+    BM25 lexical ranking on title+summary with LevFin-specific rule-based boosts.
     """
     corpus_tok: List[List[str]] = [tokenize(f"{it.title} {it.summary}") for it in items]
     bm25 = BM25Okapi(corpus_tok)
@@ -296,7 +349,7 @@ def stage1_bm25_rank(items: List[NewsItem], query_terms: List[str]) -> List[News
                               "refinancing", "repricing", "amend-and-extend", "consent solicitation", "add-on"]):
             boost += 2.0
         # Ratings boost
-        if contains_any(txt, ["moody", "s&p", "fitch", "upgrade", "downgrade", "watch", "outlook"]):
+        if contains_any(txt, ["moody", "s&p", "fitch", "upgrade", "downgrade", "watch", "outlook", "affirmed"]):
             boost += 1.5
         # Macro boost
         if contains_any(txt, ["cpi", "nfp", "fomc", "dot plot", "treasury refunding", "sofr"]):
@@ -305,19 +358,16 @@ def stage1_bm25_rank(items: List[NewsItem], query_terms: List[str]) -> List[News
         if it.source_domain in ALLOWLIST_DOMAINS:
             boost += 1.0
         # Issuer/watchlist boost
-        if WATCHLIST:
-            if any(w in it.title.upper() for w in WATCHLIST):
-                boost += 1.0
+        if WATCHLIST and any(w in it.title.upper() for w in WATCHLIST):
+            boost += 1.0
         it.score_lex = float(s + boost)
 
-    items_sorted = sorted(items, key=lambda x: x.score_lex, reverse=True)
-    return items_sorted
+    return sorted(items, key=lambda x: x.score_lex, reverse=True)
 
 
 def stage2_semantic_rerank(items: List[NewsItem]) -> List[NewsItem]:
     """
     Optional semantic rerank: cosine sim between doc embeddings and a LevFin intent query.
-    If sentence-transformers is not available, returns items with score_sem = 0.
     """
     if not HAVE_SEMANTIC or not items:
         return items
@@ -328,18 +378,17 @@ def stage2_semantic_rerank(items: List[NewsItem]) -> List[NewsItem]:
         logging.warning(f"Semantic model load failed: {e}")
         return items
 
-    # Compose a dense query reflecting LevFin intent
     query = ("leveraged loans term loan b high-yield bonds refinancing repricing amend-and-extend "
              "price talk guidance allocated ratings upgrade downgrade watch outlook acquisition financing lbo "
              "sofr cpi fomc treasury refunding")
-
     docs = [f"{it.title}. {it.summary}" for it in items]
     q_emb = model.encode([query], convert_to_tensor=True, normalize_embeddings=True)
     d_emb = model.encode(docs, convert_to_tensor=True, normalize_embeddings=True)
     sims = st_util.cos_sim(q_emb, d_emb).cpu().numpy()[0].tolist()
 
-    # Blend: total = 0.7 * lexical_norm + 0.3 * semantic_norm (after min-max)
+    # Blend normalized lexical and semantic scores
     lex = [it.score_lex for it in items]
+
     def norm(v: List[float]) -> List[float]:
         mn, mx = min(v), max(v)
         if mx - mn < 1e-9:
@@ -353,11 +402,10 @@ def stage2_semantic_rerank(items: List[NewsItem]) -> List[NewsItem]:
         it.score_sem = float(s)
         it.score_total = 0.7 * l + 0.3 * s
 
-    reranked = sorted(items, key=lambda x: x.score_total, reverse=True)
-    return reranked
+    return sorted(items, key=lambda x: x.score_total, reverse=True)
 
 
-# --------------------------- EVENT TAGGING & CLUSTERING -----------------------
+# --------------------------- TAGGING & CLUSTERING -----------------------------
 
 EVENT_RULES: List[Tuple[str, List[str]]] = [
     ("New Issue", ["price talk", "guidance", "allocated", "bookbuild", "add-on", "term loan b", "tlb", "senior notes"]),
@@ -366,13 +414,12 @@ EVENT_RULES: List[Tuple[str, List[str]]] = [
     ("Ratings", ["moody", "s&p", "fitch", "upgrade", "downgrade", "watch", "outlook", "affirmed"]),
     ("Macro", ["cpi", "nfp", "fomc", "dot plot", "treasury refunding", "sofr", "payrolls"]),
 ]
-
 SECTION_ORDER: List[str] = ["New Issue", "Refi/Amend", "Ratings", "M&A/LBO", "Macro", "Other"]
 
 
 def tag_event(it: NewsItem) -> str:
     """
-    Assign event type based on heuristic keyword rules.
+    Assign event type via heuristic keyword rules.
     """
     text = f"{it.title} {it.summary}".lower()
     for label, keys in EVENT_RULES:
@@ -383,11 +430,10 @@ def tag_event(it: NewsItem) -> str:
 
 def cluster_key(it: NewsItem) -> str:
     """
-    Build a stable cluster key based on normalized title tokens.
+    Cluster key derived from first 8 normalized title tokens.
     """
     title = re.sub(r"[^A-Za-z0-9 ]+", " ", it.title.lower())
     title = re.sub(r"\s+", " ", title).strip()
-    # Keep first ~8 tokens to catch near duplicates
     tokens = title.split()[:8]
     norm = " ".join(tokens)
     return hashlib.md5(norm.encode("utf-8")).hexdigest()[:12]
@@ -395,7 +441,7 @@ def cluster_key(it: NewsItem) -> str:
 
 def cluster_items(items: List[NewsItem]) -> Dict[str, List[NewsItem]]:
     """
-    Group near-duplicate items by cluster key.
+    Group near-duplicates by cluster key.
     """
     clusters: Dict[str, List[NewsItem]] = {}
     for it in items:
@@ -409,7 +455,7 @@ def cluster_items(items: List[NewsItem]) -> Dict[str, List[NewsItem]]:
 
 def format_line(it: NewsItem) -> str:
     """
-    One-line console bullet with key details.
+    One-line console bullet with attribution and URL.
     """
     t = it.pretty_time()
     return f"- {it.title}  [{it.source_domain}]  ({t})\n  {it.url}"
@@ -417,7 +463,7 @@ def format_line(it: NewsItem) -> str:
 
 def print_section(title: str, items: List[NewsItem], limit: int) -> None:
     """
-    Print a section with up to N items.
+    Print a section with up to 'limit' items.
     """
     if not items:
         return
@@ -428,25 +474,22 @@ def print_section(title: str, items: List[NewsItem], limit: int) -> None:
 
 def console_report(final_items: List[NewsItem]) -> None:
     """
-    Render a full console report grouped by event type.
+    Render grouped report to console.
     """
-    # Tag events
     for it in final_items:
         it.event_type = tag_event(it)
 
-    # Cluster & pick best representative per cluster by score_total (or score_lex)
-    # Aggregate cluster representatives and keep best per cluster
-    # If semantic not run, score_total may be 0 → fallback to lexical.
-    rep_per_cluster: Dict[str, NewsItem] = {}
+    # Cluster and keep best representative by score_total or score_lex
+    reps: Dict[str, NewsItem] = {}
     for k, group in cluster_items(final_items).items():
         best = max(group, key=lambda x: (x.score_total if x.score_total > 0 else x.score_lex))
-        rep_per_cluster[k] = best
+        reps[k] = best
 
-    reps = list(rep_per_cluster.values())
+    reps_list = list(reps.values())
 
-    # Group by section and sort by recency then score
+    # Group by section and sort
     by_section: Dict[str, List[NewsItem]] = {s: [] for s in SECTION_ORDER}
-    for it in reps:
+    for it in reps_list:
         by_section.setdefault(it.event_type, []).append(it)
 
     for sec, arr in by_section.items():
@@ -455,26 +498,28 @@ def console_report(final_items: List[NewsItem]) -> None:
             x.score_total if x.score_total > 0 else x.score_lex
         ), reverse=True)
 
-    # Header
     now_local = datetime.now().astimezone()
     print("# Daily LevFin Market Brief")
     print(f"Generated: {now_local.isoformat(timespec='minutes')}")
     print("Sections: New Issue, Refi/Amend, Ratings, M&A/LBO, Macro, Other")
     print("-" * 80)
 
-    # Sections in defined order
     for sec in SECTION_ORDER:
         print_section(sec, by_section.get(sec, []), MAX_ITEMS_PER_SECTION)
 
 
-# --------------------------- MAIN PIPELINE ------------------------------------
+# --------------------------- MAIN --------------------------------------------
 
 def main() -> None:
     """
-    Orchestrate: fetch → recent filter → dedupe → BM25 → (optional semantic) → trim → report.
+    Orchestrate: build feed list → fetch → filter → dedupe → rank → (semantic) → report.
     """
-    logging.info("Starting curated fetch...")
-    items = fetch_rss(CURATED_RSS)
+    # Build combined feed list: curated RSS + Google News RSS
+    gnews_feeds = build_gnews_feed_list()
+    feed_list = CURATED_RSS + gnews_feeds
+
+    logging.info(f"Total feeds to fetch: {len(feed_list)}")
+    items = fetch_rss(feed_list)
     logging.info(f"Fetched {len(items)} raw items")
 
     items = filter_recent(items, RECENT_DAYS)
@@ -484,25 +529,25 @@ def main() -> None:
     logging.info(f"{len(items)} items after deduplication")
 
     if not items:
-        print("No items found. Try expanding RECENT_DAYS or adding feeds.")
+        print("No items found. Try increasing RECENT_DAYS, or check network connectivity.")
         return
 
-    # Stage-1 rank
+    # Stage-1 lexical ranking
     items_bm25 = stage1_bm25_rank(items, LEVFIN_TERMS)
-    # Keep top-K for potential semantic rerank
+
+    # Prepare list for optional semantic rerank
     top_for_sem = items_bm25[:CANDIDATES_FOR_SEMANTIC]
 
-    # Stage-2 (optional)
+    # Stage-2 semantic rerank (optional)
     if HAVE_SEMANTIC:
         logging.info("Running semantic rerank (optional)...")
         items_sem = stage2_semantic_rerank(top_for_sem)
-        # Use semantic reranked top-N; else fallback to lexical
         ranked_final = items_sem[:FINAL_TOP_N]
     else:
         logging.info("Semantic rerank not available; using lexical ranking only.")
         ranked_final = items_bm25[:FINAL_TOP_N]
 
-    # Report
+    # Print console report
     console_report(ranked_final)
 
 
