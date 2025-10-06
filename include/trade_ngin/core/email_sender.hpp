@@ -68,7 +68,8 @@ public:
         const std::map<std::string, double>& strategy_metrics,
         const std::vector<ExecutionReport>& executions,
         const std::string& date,
-        bool is_daily_strategy = true
+        bool is_daily_strategy = true,
+        const std::unordered_map<std::string, double>& current_prices = {}
     );
 
     /**
@@ -101,7 +102,9 @@ private:
      * @param is_daily_strategy Flag indicating if this is a daily strategy
      * @return Formatted position table HTML
      */
-    std::string format_positions_table(const std::unordered_map<std::string, Position>& positions, bool is_daily_strategy = true);
+    std::string format_positions_table(const std::unordered_map<std::string, Position>& positions,
+                                       bool is_daily_strategy = true,
+                                       const std::unordered_map<std::string, double>& current_prices = {});
 
     /**
      * @brief Format risk metrics for email

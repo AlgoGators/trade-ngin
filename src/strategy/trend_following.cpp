@@ -114,9 +114,10 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
     // Load previous positions if not already loaded (only once per run)
     static bool previous_positions_loaded = false;
     if (!previous_positions_loaded && previous_positions_.empty() && db_) {
-        // Use current date minus 24 hours instead of data timestamp (which might be historical)
-        auto current_time = std::chrono::system_clock::now();
-        auto previous_date = current_time - std::chrono::hours(24);
+        // Use the data's timestamp (not current time) to handle historical runs correctly
+        // Get the timestamp from the first bar to determine the processing date
+        auto data_time = data.empty() ? std::chrono::system_clock::now() : data[0].timestamp;
+        auto previous_date = data_time - std::chrono::hours(24);
         auto previous_positions_result = db_->load_positions_by_date(id_, previous_date, "trading.positions");
         
         if (previous_positions_result.is_ok()) {

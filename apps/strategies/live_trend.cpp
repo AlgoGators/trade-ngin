@@ -1,6 +1,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <sstream>
 #include <chrono>
 #include <ctime>
 #include <set>
@@ -18,8 +19,47 @@
 
 using namespace trade_ngin;
 
-int main() {
+int main(int argc, char* argv[]) {
     try {
+        // Parse command-line arguments for date override and email flag
+        std::chrono::system_clock::time_point target_date;
+        bool use_override_date = false;
+        bool send_email = false;  // Default to false for historical runs
+
+        // Parse command-line arguments
+        for (int i = 1; i < argc; i++) {
+            std::string arg = argv[i];
+
+            // Check for email flag
+            if (arg == "--send-email") {
+                send_email = true;
+                continue;
+            }
+
+            // Try to parse as date
+            std::tm tm = {};
+            std::istringstream ss(arg);
+            ss >> std::get_time(&tm, "%Y-%m-%d");
+            if (!ss.fail()) {
+                target_date = std::chrono::system_clock::from_time_t(std::mktime(&tm));
+                use_override_date = true;
+                std::cout << "Running for historical date: " << arg << std::endl;
+            } else if (arg != "--send-email") {
+                std::cerr << "Invalid argument: " << arg << std::endl;
+                std::cerr << "Usage: " << argv[0] << " [YYYY-MM-DD] [--send-email]" << std::endl;
+                std::cerr << "Example: " << argv[0] << " 2025-01-01 --send-email" << std::endl;
+                return 1;
+            }
+        }
+
+        // If no date override, enable email by default for real-time runs
+        if (!use_override_date) {
+            send_email = true;
+        }
+
+        if (send_email && use_override_date) {
+            std::cout << "Email sending enabled for historical run" << std::endl;
+        }
         // Initialize the logger
         auto& logger = Logger::instance();
         LoggerConfig logger_config;
@@ -136,8 +176,8 @@ int main() {
         // Configure daily position generation parameters
         INFO("Loading configuration...");
 
-        // Get current date for daily processing
-        auto now = std::chrono::system_clock::now();
+        // Get current date for daily processing (or use override date)
+        auto now = use_override_date ? target_date : std::chrono::system_clock::now();
         auto now_time_t = std::chrono::system_clock::to_time_t(now);
         std::tm* now_tm = std::localtime(&now_time_t);
 
@@ -428,13 +468,39 @@ int main() {
         std::vector<std::string> symbols_to_price(all_symbols.begin(), all_symbols.end());
         INFO("Requesting current prices for " + std::to_string(symbols_to_price.size()) + " symbols");
 
-        auto current_prices_result = db->get_latest_prices(symbols_to_price, trade_ngin::AssetClass::FUTURES);
+        // For historical runs, use the close prices from the bars data for consistency
+        // For live runs, get real-time prices
         std::unordered_map<std::string, double> current_prices;
-        if (current_prices_result.is_ok()) {
-            current_prices = current_prices_result.value();
-            INFO("Retrieved current prices for " + std::to_string(current_prices.size()) + " symbols");
+
+        if (use_override_date) {
+            // Historical run: Extract close prices from the last bars for each symbol
+            INFO("Historical run detected - using close prices from bars data for date: " +
+                 std::to_string(std::chrono::system_clock::to_time_t(target_date)));
+
+            // Group bars by symbol and get the last close price for each
+            std::unordered_map<std::string, std::vector<Bar>> bars_by_symbol;
+            for (const auto& bar : all_bars) {
+                bars_by_symbol[bar.symbol].push_back(bar);
+            }
+
+            for (const auto& [symbol, symbol_bars] : bars_by_symbol) {
+                if (!symbol_bars.empty()) {
+                    // Use the last available close price for this symbol
+                    double close_price = static_cast<double>(symbol_bars.back().close);
+                    current_prices[symbol] = close_price;
+                    DEBUG("Historical price for " + symbol + ": " + std::to_string(close_price));
+                }
+            }
+            INFO("Using historical close prices for " + std::to_string(current_prices.size()) + " symbols");
         } else {
-            ERROR("Failed to get current prices: " + std::string(current_prices_result.error()->what()));
+            // Live run: Get real-time prices from database
+            auto current_prices_result = db->get_latest_prices(symbols_to_price, trade_ngin::AssetClass::FUTURES);
+            if (current_prices_result.is_ok()) {
+                current_prices = current_prices_result.value();
+                INFO("Retrieved real-time prices for " + std::to_string(current_prices.size()) + " symbols");
+            } else {
+                ERROR("Failed to get current prices: " + std::string(current_prices_result.error()->what()));
+            }
         }
 
         // Calculate Daily PnL for each position
@@ -465,13 +531,16 @@ int main() {
                 prev_price = prev_it->second.average_price.as_double();
             }
 
+            // Get point value multiplier for this symbol (matching trend_following.cpp)
+            double point_value = tf_strategy->get_point_value_multiplier(symbol);
+
             // Calculate daily PnL for this position
             double daily_position_pnl = 0.0;
 
             if (prev_qty != 0.0 && current_qty != 0.0) {
                 // Position held overnight and still open
-                // PnL = quantity * price_change (for futures, this is mark-to-market)
-                daily_position_pnl = prev_qty * (current_price - prev_price);
+                // PnL = quantity * price_change * point_value (for futures, this is mark-to-market)
+                daily_position_pnl = prev_qty * (current_price - prev_price) * point_value;
 
                 // If position size changed, add PnL from the change
                 if (std::abs(current_qty - prev_qty) > 1e-6) {
@@ -481,7 +550,7 @@ int main() {
                 }
             } else if (prev_qty != 0.0 && current_qty == 0.0) {
                 // Position was closed today
-                daily_position_pnl = prev_qty * (current_price - prev_price);
+                daily_position_pnl = prev_qty * (current_price - prev_price) * point_value;
             } else if (prev_qty == 0.0 && current_qty != 0.0) {
                 // New position opened today
                 // No PnL from overnight hold, only from intraday if price moved
@@ -503,6 +572,7 @@ int main() {
                  " curr_qty=" + std::to_string(current_qty) +
                  " prev_price=" + std::to_string(prev_price) +
                  " curr_price=" + std::to_string(current_price) +
+                 " point_value=" + std::to_string(point_value) +
                  " daily_pnl=" + std::to_string(daily_position_pnl));
         }
 
@@ -518,7 +588,10 @@ int main() {
                     current_price = current_prices[symbol];
                 }
 
-                double daily_position_pnl = prev_qty * (current_price - prev_price);
+                // Get point value multiplier for this symbol (matching trend_following.cpp)
+                double point_value = tf_strategy->get_point_value_multiplier(symbol);
+
+                double daily_position_pnl = prev_qty * (current_price - prev_price) * point_value;
                 position_daily_pnl[symbol] = daily_position_pnl;
                 daily_realized_pnl += daily_position_pnl;
 
@@ -535,6 +608,7 @@ int main() {
                 INFO("Closed position " + symbol + " daily PnL: qty=" + std::to_string(prev_qty) +
                      " prev_price=" + std::to_string(prev_price) +
                      " curr_price=" + std::to_string(current_price) +
+                     " point_value=" + std::to_string(point_value) +
                      " daily_pnl=" + std::to_string(daily_position_pnl));
             }
         }
@@ -588,7 +662,12 @@ int main() {
                 exec.symbol = symbol;
                 exec.side = side;
                 exec.filled_quantity = std::abs(trade_size);
-                exec.fill_price = market_price;
+
+                // Apply slippage to match backtest behavior
+                double slip_factor = slippage_model / 10000.0;  // Convert bps to decimal (1 bp = 0.0001)
+                double fill_price = side == Side::BUY ? market_price * (1.0 + slip_factor)
+                                                      : market_price * (1.0 - slip_factor);
+                exec.fill_price = fill_price;
                 exec.fill_time = now;
                 // Calculate transaction costs using the same model as backtesting
                 // Base commission: 5 basis points * quantity
@@ -630,7 +709,13 @@ int main() {
                 exec.symbol = symbol;
                 exec.side = prev_qty > 0 ? Side::SELL : Side::BUY; // Opposite of original position
                 exec.filled_quantity = std::abs(prev_qty);
-                exec.fill_price = market_price;
+
+                // Apply slippage to match backtest behavior
+                double slip_factor = slippage_model / 10000.0;  // Convert bps to decimal (1 bp = 0.0001)
+                Side close_side = prev_qty > 0 ? Side::SELL : Side::BUY;
+                double fill_price = close_side == Side::BUY ? market_price * (1.0 + slip_factor)
+                                                            : market_price * (1.0 - slip_factor);
+                exec.fill_price = fill_price;
                 exec.fill_time = now;
                 // Calculate transaction costs using the same model as backtesting
                 // Base commission: 5 basis points * quantity
@@ -718,11 +803,19 @@ int main() {
         }
         
         std::cout << "\n======= Daily Position Report =======" << std::endl;
-        std::cout << "Date: " << (now_tm->tm_year + 1900) << "-" 
+        std::cout << "Date: " << (now_tm->tm_year + 1900) << "-"
                   << std::setfill('0') << std::setw(2) << (now_tm->tm_mon + 1) << "-"
                   << std::setfill('0') << std::setw(2) << now_tm->tm_mday << std::endl;
         std::cout << "Total Positions: " << positions.size() << std::endl;
         std::cout << std::endl;
+
+        // Add header for position table
+        std::cout << std::setw(10) << "Symbol" << " | "
+                  << std::setw(10) << "Quantity" << " | "
+                  << std::setw(10) << "Mkt Price" << " | "
+                  << std::setw(12) << "Notional" << " | "
+                  << std::setw(10) << "Unreal PnL" << std::endl;
+        std::cout << std::string(60, '-') << std::endl;
 
         double gross_notional = 0.0;
         double net_notional = 0.0;
@@ -739,25 +832,27 @@ int main() {
                 if (itp != current_prices.end()) {
                     market_price = itp->second;
                 }
-                double signed_notional = position.quantity.as_double() * market_price;
-                net_notional += signed_notional;
-                gross_notional += std::abs(signed_notional);
+                // Normalize variant suffixes for lookup only; keep original symbol for logging/DB
+                std::string lookup_sym = symbol;
+                auto dotpos = lookup_sym.find(".v.");
+                if (dotpos != std::string::npos) {
+                    lookup_sym = lookup_sym.substr(0, dotpos);
+                }
+                dotpos = lookup_sym.find(".c.");
+                if (dotpos != std::string::npos) {
+                    lookup_sym = lookup_sym.substr(0, dotpos);
+                }
+
+                // Get contract multiplier for proper notional calculation
+                double contract_multiplier = 1.0;
 
                 // Compute posted margin per instrument (per-contract initial margin × contracts)
                 try {
-                    // Normalize variant suffixes for lookup only; keep original symbol for logging/DB
-                    std::string lookup_sym = symbol;
-                    auto dotpos = lookup_sym.find(".v.");
-                    if (dotpos != std::string::npos) {
-                        lookup_sym = lookup_sym.substr(0, dotpos);
-                    }
-                    dotpos = lookup_sym.find(".c.");
-                    if (dotpos != std::string::npos) {
-                        lookup_sym = lookup_sym.substr(0, dotpos);
-                    }
-
                     auto instrument_ptr = registry.get_instrument(lookup_sym);
                     if (instrument_ptr) {
+                        // Get the contract multiplier for notional calculation
+                        contract_multiplier = instrument_ptr->get_multiplier();
+
                         double contracts_abs = std::abs(position.quantity.as_double());
                         double initial_margin_per_contract = instrument_ptr->get_margin_requirement();
                         total_posted_margin += contracts_abs * initial_margin_per_contract;
@@ -773,8 +868,29 @@ int main() {
                     }
                 } catch (const std::exception& e) {
                     WARN("Failed to compute posted margin for " + symbol + ": " + std::string(e.what()));
+                    // Use fallback multipliers if instrument not found
+                    if (lookup_sym == "NQ" || lookup_sym == "MNQ") contract_multiplier = 20.0;
+                    else if (lookup_sym == "ES" || lookup_sym == "MES") contract_multiplier = 50.0;
+                    else if (lookup_sym == "YM" || lookup_sym == "MYM") contract_multiplier = 5.0;
+                    else if (lookup_sym == "6B") contract_multiplier = 62500.0;
+                    else if (lookup_sym == "6E") contract_multiplier = 125000.0;
+                    else if (lookup_sym == "6C") contract_multiplier = 100000.0;
+                    else if (lookup_sym == "6J") contract_multiplier = 12500000.0;
+                    else if (lookup_sym == "6S") contract_multiplier = 125000.0;
+                    else if (lookup_sym == "6N") contract_multiplier = 100000.0;
+                    else if (lookup_sym == "6M") contract_multiplier = 500000.0;
+                    else if (lookup_sym == "CL") contract_multiplier = 1000.0;
+                    else if (lookup_sym == "GC") contract_multiplier = 100.0;
+                    else if (lookup_sym == "HG") contract_multiplier = 25000.0;
+                    else if (lookup_sym == "PL") contract_multiplier = 50.0;
+                    else if (lookup_sym == "ZR") contract_multiplier = 2000.0;
                 }
-                
+
+                // Calculate notional with proper contract multiplier
+                double signed_notional = position.quantity.as_double() * market_price * contract_multiplier;
+                net_notional += signed_notional;
+                gross_notional += std::abs(signed_notional);
+
                 std::cout << std::setw(10) << symbol << " | "
                           << std::setw(10) << std::fixed << std::setprecision(2) 
                           << position.quantity.as_double() << " | "
@@ -1074,8 +1190,8 @@ int main() {
         // Save trading results to results table
         INFO("Saving trading results to database...");
         try {
-            // Calculate current date for results
-            auto current_date = std::chrono::system_clock::now();
+            // Calculate current date for results (use override date if specified)
+            auto current_date = now;
             
             // Use the calculated returns from above
             double sharpe_ratio = 0.0;  // Would need historical data to calculate
@@ -1204,22 +1320,100 @@ int main() {
         
         std::ofstream position_file(filename);
         if (position_file.is_open()) {
-            position_file << "symbol,quantity,avg_price,market_price,notional,unrealized_pnl,realized_pnl,forecast\n";
+            // CSV header: entry_price = average cost basis for the position
+            //             market_price = current market price (close for historical, real-time for live)
+            //             ema_8, ema_32 = exponential moving averages for trend analysis
+            position_file << "symbol,quantity,entry_price,market_price,price_diff_%,notional,unrealized_pnl,realized_pnl,forecast,ema_8,ema_32,volatility\n";
             for (const auto& [symbol, position] : positions) {
-                double notional = position.quantity.as_double() * position.average_price.as_double();
+                // Get contract multiplier for proper notional calculation
+                std::string lookup_sym = symbol;
+                auto dotpos = lookup_sym.find(".v.");
+                if (dotpos != std::string::npos) {
+                    lookup_sym = lookup_sym.substr(0, dotpos);
+                }
+                dotpos = lookup_sym.find(".c.");
+                if (dotpos != std::string::npos) {
+                    lookup_sym = lookup_sym.substr(0, dotpos);
+                }
+
+                double contract_multiplier = 1.0;
+                try {
+                    auto& registry = InstrumentRegistry::instance();
+                    auto instrument_ptr = registry.get_instrument(lookup_sym);
+                    if (instrument_ptr) {
+                        contract_multiplier = instrument_ptr->get_multiplier();
+                    }
+                } catch (...) {
+                    // Use fallback multipliers
+                    if (lookup_sym == "NQ" || lookup_sym == "MNQ") contract_multiplier = 20.0;
+                    else if (lookup_sym == "ES" || lookup_sym == "MES") contract_multiplier = 50.0;
+                    else if (lookup_sym == "YM" || lookup_sym == "MYM") contract_multiplier = 5.0;
+                    else if (lookup_sym == "6B") contract_multiplier = 62500.0;
+                    else if (lookup_sym == "6E") contract_multiplier = 125000.0;
+                    else if (lookup_sym == "6C") contract_multiplier = 100000.0;
+                    else if (lookup_sym == "6J") contract_multiplier = 12500000.0;
+                    else if (lookup_sym == "CL") contract_multiplier = 1000.0;
+                    else if (lookup_sym == "HG") contract_multiplier = 25000.0;
+                }
+
+                // Notional based on entry price (cost basis) with proper multiplier
+                double notional = position.quantity.as_double() * position.average_price.as_double() * contract_multiplier;
                 double forecast = tf_strategy->get_forecast(symbol);
+                // Get current market price for comparison
                 double market_price = position.average_price.as_double(); // Default fallback
                 if (current_prices.find(symbol) != current_prices.end()) {
                     market_price = current_prices[symbol];
                 }
+
+                // Calculate price difference percentage
+                double price_diff_pct = 0.0;
+                if (position.average_price.as_double() != 0.0) {
+                    price_diff_pct = ((market_price - position.average_price.as_double()) /
+                                      position.average_price.as_double()) * 100.0;
+                }
+
+                // Get EMAs and volatility from strategy's instrument data
+                double ema_8 = 0.0;
+                double ema_32 = 0.0;
+                double volatility = 0.0;
+
+                auto instrument_data = tf_strategy->get_instrument_data(symbol);
+                if (instrument_data != nullptr && !instrument_data->price_history.empty()) {
+                    // Calculate 8-day EMA
+                    auto prices = instrument_data->price_history;
+                    if (prices.size() >= 8) {
+                        double lambda_8 = 2.0 / 9.0;
+                        ema_8 = prices[prices.size() - 8];
+                        for (size_t i = prices.size() - 7; i < prices.size(); ++i) {
+                            ema_8 = lambda_8 * prices[i] + (1 - lambda_8) * ema_8;
+                        }
+                    }
+
+                    // Calculate 32-day EMA
+                    if (prices.size() >= 32) {
+                        double lambda_32 = 2.0 / 33.0;
+                        ema_32 = prices[prices.size() - 32];
+                        for (size_t i = prices.size() - 31; i < prices.size(); ++i) {
+                            ema_32 = lambda_32 * prices[i] + (1 - lambda_32) * ema_32;
+                        }
+                    }
+
+                    // Get current volatility
+                    volatility = instrument_data->current_volatility;
+                }
+
                 position_file << symbol << ","
                              << position.quantity.as_double() << ","
                              << position.average_price.as_double() << ","
                              << market_price << ","
+                             << std::fixed << std::setprecision(2) << price_diff_pct << ","
                              << notional << ","
                              << position.unrealized_pnl.as_double() << ","
                              << position.realized_pnl.as_double() << ","
-                             << forecast << "\n";
+                             << forecast << ","
+                             << std::fixed << std::setprecision(4) << ema_8 << ","
+                             << std::fixed << std::setprecision(4) << ema_32 << ","
+                             << std::fixed << std::setprecision(6) << volatility << "\n";
             }
             position_file.close();
             INFO("Positions saved to " + filename);
@@ -1270,19 +1464,23 @@ int main() {
 
         std::cout << "\n======= Daily Processing Complete =======" << std::endl;
         std::cout << "Positions file: " << filename << std::endl;
-        std::cout << "Total processing time: " << std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::system_clock::now() - now).count() << "ms" << std::endl;
+        // Only show processing time for real-time runs, not historical
+        if (!use_override_date) {
+            std::cout << "Total processing time: " << std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now() - now).count() << "ms" << std::endl;
+        }
 
         INFO("Daily trend following position generation completed successfully");
 
-        // Send email report with trading results
-        INFO("Sending email report...");
-        try {
-            auto email_sender = std::make_shared<EmailSender>(credentials);
-            auto email_init_result = email_sender->initialize();
-            if (email_init_result.is_error()) {
-                ERROR("Failed to initialize email sender: " + std::string(email_init_result.error()->what()));
-            } else {
+        // Send email report with trading results (based on send_email flag)
+        if (send_email) {
+            INFO("Sending email report...");
+            try {
+                auto email_sender = std::make_shared<EmailSender>(credentials);
+                auto email_init_result = email_sender->initialize();
+                if (email_init_result.is_error()) {
+                    ERROR("Failed to initialize email sender: " + std::string(email_init_result.error()->what()));
+                } else {
                 // Prepare email data
                 std::string date_str = std::to_string(now_tm->tm_year + 1900) + "-" 
                                      + std::string(2 - std::to_string(now_tm->tm_mon + 1).length(), '0') 
@@ -1321,14 +1519,15 @@ int main() {
                 strategy_metrics["Margin Posted"] = total_posted_margin;
                 strategy_metrics["Cash Available"] = current_portfolio_value - total_posted_margin;
 
-                // Generate email body with is_daily_strategy flag set to true
+                // Generate email body with is_daily_strategy flag set to true and current prices
                 std::string email_body = email_sender->generate_trading_report_body(
                     positions,
                     risk_eval.is_ok() ? std::make_optional(risk_eval.value()) : std::nullopt,
                     strategy_metrics,
                     daily_executions,
                     date_str,
-                    true  // is_daily_strategy
+                    true,  // is_daily_strategy
+                    current_prices  // Pass current market prices for accurate display
                 );
                 
                 // Send email
@@ -1338,9 +1537,12 @@ int main() {
                 } else {
                     INFO("Email report sent successfully");
                 }
+                }
+            } catch (const std::exception& e) {
+                ERROR("Exception during email sending: " + std::string(e.what()));
             }
-        } catch (const std::exception& e) {
-            ERROR("Exception during email sending: " + std::string(e.what()));
+        } else {
+            INFO("Email reporting disabled");
         }
 
         std::cerr << "At end of main: initialized=" << Logger::instance().is_initialized()
