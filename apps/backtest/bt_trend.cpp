@@ -146,7 +146,7 @@ int main() {
 
         // Set start date to 2 years ago
         std::tm start_tm = *now_tm;
-        start_tm.tm_year -= 2;  // 2 years ago
+        start_tm.tm_year -= 5;  // 2 years ago
         auto start_time_t = std::mktime(&start_tm);
         config.strategy_config.start_date = std::chrono::system_clock::from_time_t(start_time_t);
 

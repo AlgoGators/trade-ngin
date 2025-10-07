@@ -1341,8 +1341,49 @@ int main(int argc, char* argv[]) {
         
         std::ofstream position_file(filename);
         if (position_file.is_open()) {
-            // Comprehensive CSV header combining both versions
-            position_file << "symbol,quantity,quantity_change,entry_price,market_price,price_diff_%,price_change,price_change_pct,notional,pct_of_gross_notional,pct_of_portfolio_value,unrealized_pnl,realized_pnl,forecast,ema_8,ema_32,volatility\n";
+            // Query daily commissions per symbol from executions table
+            std::unordered_map<std::string, double> symbol_commissions;
+            try {
+                std::string commission_query =
+                    "SELECT symbol, COALESCE(SUM(commission), 0.0) as total_commission "
+                    "FROM trading.executions "
+                    "WHERE DATE(execution_time) = '" + date_ss.str() + "' "
+                    "GROUP BY symbol";
+                auto commission_result = db->execute_query(commission_query);
+                if (commission_result.is_ok()) {
+                    auto table = commission_result.value();
+                    if (table && table->num_rows() > 0) {
+                        auto symbol_col = table->column(0);
+                        auto commission_col = table->column(1);
+                        for (int64_t i = 0; i < table->num_rows(); ++i) {
+                            auto sym_chunk = symbol_col->chunk(0);
+                            auto comm_chunk = commission_col->chunk(0);
+                            if (sym_chunk && comm_chunk) {
+                                auto sym_array = std::static_pointer_cast<arrow::StringArray>(sym_chunk);
+                                auto comm_array = std::static_pointer_cast<arrow::DoubleArray>(comm_chunk);
+                                if (i < sym_array->length() && i < comm_array->length()) {
+                                    std::string sym = sym_array->GetString(i);
+                                    double comm = comm_array->Value(i);
+                                    symbol_commissions[sym] = comm;
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    WARN("Failed to query commissions: " + std::string(commission_result.error()->what()));
+                }
+            } catch (const std::exception& e) {
+                WARN("Exception querying commissions: " + std::string(e.what()));
+            }
+
+            // Portfolio-level metrics as header comment
+            position_file << "# Portfolio Value: " << std::fixed << std::setprecision(2) << current_portfolio_value
+                         << ", Gross Notional: " << gross_notional
+                         << ", Net Notional: " << net_notional
+                         << ", Date: " << date_ss.str() << "\n";
+
+            // CSV header - restructured in logical order
+            position_file << "symbol,quantity,quantity_change,entry_price,market_price,price_diff_%,notional,pct_of_gross_notional,pct_of_portfolio_value,unrealized_pnl,realized_pnl,commission,forecast,volatility\n";
             for (const auto& [symbol, position] : positions) {
                 double current_qty = position.quantity.as_double();
 
@@ -1409,52 +1450,34 @@ int main(int argc, char* argv[]) {
                 double pct_of_gross_notional = (gross_notional != 0.0) ? (std::abs(notional) / gross_notional) * 100.0 : 0.0;
                 double pct_of_portfolio_value = (current_portfolio_value != 0.0) ? (std::abs(notional) / std::abs(current_portfolio_value)) * 100.0 : 0.0;
 
-                // Get EMAs and volatility from strategy's instrument data (YOUR VERSION)
-                double ema_8 = 0.0;
-                double ema_32 = 0.0;
+                // Get volatility from strategy's instrument data
                 double volatility = 0.0;
-
                 auto instrument_data = tf_strategy->get_instrument_data(symbol);
-                if (instrument_data != nullptr && !instrument_data->price_history.empty()) {
-                    // Calculate 8-day EMA
-                    auto prices = instrument_data->price_history;
-                    if (prices.size() >= 8) {
-                        double lambda_8 = 2.0 / 9.0;
-                        ema_8 = prices[prices.size() - 8];
-                        for (size_t i = prices.size() - 7; i < prices.size(); ++i) {
-                            ema_8 = lambda_8 * prices[i] + (1 - lambda_8) * ema_8;
-                        }
-                    }
-
-                    // Calculate 32-day EMA
-                    if (prices.size() >= 32) {
-                        double lambda_32 = 2.0 / 33.0;
-                        ema_32 = prices[prices.size() - 32];
-                        for (size_t i = prices.size() - 31; i < prices.size(); ++i) {
-                            ema_32 = lambda_32 * prices[i] + (1 - lambda_32) * ema_32;
-                        }
-                    }
-
-                    // Get current volatility
+                if (instrument_data != nullptr) {
                     volatility = instrument_data->current_volatility;
                 }
 
+                // Get commission for this symbol
+                double commission = 0.0;
+                auto comm_it = symbol_commissions.find(symbol);
+                if (comm_it != symbol_commissions.end()) {
+                    commission = comm_it->second;
+                }
+
+                // Write row in logical order: symbol, position info, prices, notional/percentages, PnL, commission, forecast, volatility
                 position_file << symbol << ","
                              << current_qty << ","
                              << quantity_change << ","
                              << position.average_price.as_double() << ","  // entry_price
                              << market_price << ","
                              << std::fixed << std::setprecision(2) << price_diff_pct << ","
-                             << price_change << ","
-                             << price_change_pct << ","
                              << notional << ","
                              << pct_of_gross_notional << ","
                              << pct_of_portfolio_value << ","
                              << position.unrealized_pnl.as_double() << ","
                              << position.realized_pnl.as_double() << ","
+                             << commission << ","
                              << forecast << ","
-                             << std::fixed << std::setprecision(4) << ema_8 << ","
-                             << std::fixed << std::setprecision(4) << ema_32 << ","
                              << std::fixed << std::setprecision(6) << volatility << "\n";
             }
             position_file.close();
