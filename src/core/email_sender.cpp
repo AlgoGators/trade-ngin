@@ -469,7 +469,14 @@ std::string EmailSender::generate_trading_report_body(
     }
         */
 
-    // Symbols Reference (make sure this exists in the body again)
+    // Strategy metrics
+    if (!strategy_metrics.empty()) {
+        html << "<div class=\"metrics-section\">\n";
+        html << format_strategy_metrics(strategy_metrics);
+        html << "</div>\n";
+    }
+
+    // Symbols Reference (moved after Portfolio Snapshot)
     html << "<h2>Symbols Reference</h2>\n";
     if (db) {
         try {
@@ -479,13 +486,6 @@ std::string EmailSender::generate_trading_report_body(
         }
     } else {
         html << "<p>Database unavailable; symbols reference not included.</p>\n";
-    }
-
-    // Strategy metrics
-    if (!strategy_metrics.empty()) {
-        html << "<div class=\"metrics-section\">\n";
-        html << format_strategy_metrics(strategy_metrics);
-        html << "</div>\n";
     }
 
     // Footer note
@@ -618,7 +618,7 @@ std::string EmailSender::format_positions_table(const std::unordered_map<std::st
     html << "<tr><th>Symbol</th><th>Quantity</th>";
 
     // Show only market price for forward-looking positions (no PnL - will be zero)
-    html << "<th>Entry Price</th><th>Market Price</th>";
+    html << "<th>Market Price</th>";
 
     html << "<th>Notional</th><th>% of Total</th></tr>\n";
 
@@ -713,8 +713,7 @@ std::string EmailSender::format_positions_table(const std::unordered_map<std::st
         html << "<td>" << symbol << "</td>\n";
         html << "<td>" << std::fixed << std::setprecision(0) << qty << "</td>\n";
 
-        // Show entry and market price (will be the same for forward-looking positions)
-        html << "<td>$" << std::fixed << std::setprecision(2) << entry_price << "</td>\n";
+        // Show only market price (entry price removed from display)
         html << "<td>$" << std::fixed << std::setprecision(2) << market_price << "</td>\n";
 
         html << "<td>$" << std::fixed << std::setprecision(2) << std::abs(notional) << "</td>\n";

@@ -185,8 +185,15 @@ int main(int argc, char* argv[]) {
         // Set start date to 300 days ago for sufficient historical data
         auto start_date = now - std::chrono::hours(24 * 300);  // 300 days ago
 
-        // Set end date to today
-        auto end_date = now;
+        // Set end date based on run type to avoid lookahead bias
+        auto end_date = use_override_date ? (now - std::chrono::hours(24)) : now;
+        // For historical runs: exclude current day's data (use previous day)
+        // For live runs: include current day's data (use current day)
+        
+        INFO("DEBUG: Run type: " + std::string(use_override_date ? "HISTORICAL" : "LIVE"));
+        INFO("DEBUG: Start date: " + std::to_string(std::chrono::system_clock::to_time_t(start_date)));
+        INFO("DEBUG: End date: " + std::to_string(std::chrono::system_clock::to_time_t(end_date)));
+        INFO("DEBUG: Target date (now): " + std::to_string(std::chrono::system_clock::to_time_t(now)));
 
         double initial_capital = 500000.0;  // $500k
         double commission_rate = 0.0005;    // 5 basis points
@@ -312,7 +319,7 @@ int main(int argc, char* argv[]) {
 
         // Create trend following strategy configuration
         trade_ngin::StrategyConfig tf_config;
-        tf_config.capital_allocation = initial_capital * 0.85;  // Use 85% of capital
+        tf_config.capital_allocation = initial_capital;  // Match backtest (reserve handled separately)
         tf_config.asset_classes = {trade_ngin::AssetClass::FUTURES};
         tf_config.frequencies = {trade_ngin::DataFrequency::DAILY};
         tf_config.max_drawdown = 0.4;   // Match backtest defaults
@@ -494,21 +501,30 @@ int main(int argc, char* argv[]) {
                     std::sort(symbol_bars.begin(), symbol_bars.end(),
                              [](const Bar& a, const Bar& b) { return a.timestamp < b.timestamp; });
 
-                    // Last bar is Day T-1 (yesterday's close)
+                    // Last bar is Day T-1 (yesterday's close) - automatically falls back to last available trading day
                     double yesterday_close = static_cast<double>(symbol_bars.back().close);
                     previous_day_close_prices[symbol] = yesterday_close;
-                    DEBUG("Day T-1 close for " + symbol + ": " + std::to_string(yesterday_close));
+                    
+                    // Log the actual date of the last bar for debugging
+                    auto last_bar_time = std::chrono::system_clock::to_time_t(symbol_bars.back().timestamp);
+                    DEBUG("Day T-1 close for " + symbol + ": " + std::to_string(yesterday_close) + 
+                          " (from " + std::to_string(last_bar_time) + ")");
 
                     // Second-to-last bar is Day T-2 (two days ago close) - for finalizing Day T-1
                     if (symbol_bars.size() >= 2) {
                         double two_days_ago_close = static_cast<double>(symbol_bars[symbol_bars.size() - 2].close);
                         two_days_ago_close_prices[symbol] = two_days_ago_close;
-                        DEBUG("Day T-2 close for " + symbol + ": " + std::to_string(two_days_ago_close));
+                        auto second_last_bar_time = std::chrono::system_clock::to_time_t(symbol_bars[symbol_bars.size() - 2].timestamp);
+                        DEBUG("Day T-2 close for " + symbol + ": " + std::to_string(two_days_ago_close) + 
+                              " (from " + std::to_string(second_last_bar_time) + ")");
                     }
+                } else {
+                    WARN("No bars data available for symbol: " + symbol);
                 }
             }
             INFO("Using historical close prices: " + std::to_string(previous_day_close_prices.size()) + " Day T-1, " +
                  std::to_string(two_days_ago_close_prices.size()) + " Day T-2");
+            INFO("Note: For weekends/holidays, Day T-1 automatically falls back to last available trading day");
         } else {
             // Live run: Get yesterday's and two-days-ago close prices from database
             // Query for yesterday's close
@@ -1163,15 +1179,19 @@ int main(int argc, char* argv[]) {
 
             try {
                 std::string query =
-                    "SELECT COALESCE(daily_commissions, 0.0), COALESCE(total_commissions, 0.0), "
-                    "COALESCE(gross_notional, 0.0), COALESCE(net_notional, 0.0), "
-                    "COALESCE(active_positions, 0), COALESCE(margin_posted, 0.0) "
+                    "SELECT COALESCE(daily_commissions, 0.0) as daily_commissions, "
+                    "COALESCE(total_commissions, 0.0) as total_commissions, "
+                    "COALESCE(gross_notional, 0.0) as gross_notional, "
+                    "COALESCE(net_notional, 0.0) as net_notional, "
+                    "COALESCE(active_positions, 0) as active_positions, "
+                    "COALESCE(margin_posted, 0.0) as margin_posted "
                     "FROM trading.live_results "
                     "WHERE strategy_id = 'LIVE_TREND_FOLLOWING' AND DATE(date) = '" + yesterday_date_ss.str() + "'";
                 INFO("Querying yesterday's metrics for date: " + yesterday_date_ss.str());
                 auto result = db->execute_query(query);
                 if (result.is_error()) {
                     WARN("Query failed: " + std::string(result.error()->what()));
+                    INFO("Commission query succeeded, but parsing not implemented - using 0");
                 } else if (result.value()->num_rows() == 0) {
                     WARN("Query returned 0 rows for date: " + yesterday_date_ss.str());
                 }
@@ -1198,6 +1218,7 @@ int main(int argc, char* argv[]) {
                         }
                         if (gross_arr && gross_arr->length() > 0 && !gross_arr->IsNull(0)) {
                             yesterday_gross_notional = gross_arr->Value(0);
+                            INFO("Loaded yesterday_gross_notional: $" + std::to_string(yesterday_gross_notional));
                         }
                         if (net_arr && net_arr->length() > 0 && !net_arr->IsNull(0)) {
                             yesterday_net_notional = net_arr->Value(0);
@@ -1207,6 +1228,7 @@ int main(int argc, char* argv[]) {
                         }
                         if (margin_arr && margin_arr->length() > 0 && !margin_arr->IsNull(0)) {
                             yesterday_margin_posted = margin_arr->Value(0);
+                            INFO("Loaded yesterday_margin_posted: $" + std::to_string(yesterday_margin_posted));
                         }
                     }
                 }
@@ -1267,11 +1289,7 @@ int main(int argc, char* argv[]) {
                 yesterday_daily_return = (yesterday_daily_pnl_finalized / day_before_yesterday_portfolio_value) * 100.0;
             }
 
-            // Save values for email
-            yesterday_daily_return_for_email = yesterday_daily_return;
-            yesterday_daily_pnl_for_email = yesterday_daily_pnl_finalized;
-            yesterday_realized_pnl_for_email = yesterday_total_pnl;  // This is the realized PnL
-            yesterday_unrealized_pnl_for_email = 0.0;  // Futures have no unrealized on closed positions
+            // Note: Yesterday's metrics for email will be loaded from database after update
 
             // Calculate yesterday's annualized return
             double yesterday_total_return_annualized = 0.0;
@@ -1303,15 +1321,58 @@ int main(int argc, char* argv[]) {
             yesterday_total_return_annualized = annualized_decimal * 100.0;
 
             // Calculate yesterday's leverage and risk metrics
-            double yesterday_portfolio_leverage = (yesterday_portfolio_value_finalized != 0.0) ?
-                (yesterday_gross_notional / yesterday_portfolio_value_finalized) : 0.0;
-            double yesterday_equity_to_margin_ratio = (yesterday_margin_posted > 0.0) ?
-                (yesterday_gross_notional / yesterday_margin_posted) : 0.0;
+            // IMPORTANT: We MUST preserve existing values from the database
+            // These were calculated correctly when Day T-1 was originally processed
+            double yesterday_portfolio_leverage = 0.0;
+            double yesterday_equity_to_margin_ratio = 0.0;
+
+            // Load existing values from database - DO NOT RECALCULATE
+            try {
+                std::string existing_metrics_query =
+                    "SELECT portfolio_leverage, equity_to_margin_ratio, gross_notional, margin_posted "
+                    "FROM trading.live_results "
+                    "WHERE strategy_id = 'LIVE_TREND_FOLLOWING' AND DATE(date) = '" + yesterday_date_ss.str() + "'";
+                auto existing_result = db->execute_query(existing_metrics_query);
+                if (existing_result.is_ok() && existing_result.value()->num_rows() > 0) {
+                    auto table = existing_result.value();
+                    auto leverage_arr = std::static_pointer_cast<arrow::DoubleArray>(table->column(0)->chunk(0));
+                    auto equity_margin_arr = std::static_pointer_cast<arrow::DoubleArray>(table->column(1)->chunk(0));
+                    auto gross_notional_arr = std::static_pointer_cast<arrow::DoubleArray>(table->column(2)->chunk(0));
+                    auto margin_posted_arr = std::static_pointer_cast<arrow::DoubleArray>(table->column(3)->chunk(0));
+
+                    if (leverage_arr && !leverage_arr->IsNull(0)) {
+                        yesterday_portfolio_leverage = leverage_arr->Value(0);
+                    }
+                    if (equity_margin_arr && !equity_margin_arr->IsNull(0)) {
+                        yesterday_equity_to_margin_ratio = equity_margin_arr->Value(0);
+                    }
+
+                    // Also update the gross_notional and margin_posted if available
+                    if (gross_notional_arr && !gross_notional_arr->IsNull(0)) {
+                        yesterday_gross_notional = gross_notional_arr->Value(0);
+                    }
+                    if (margin_posted_arr && !margin_posted_arr->IsNull(0)) {
+                        yesterday_margin_posted = margin_posted_arr->Value(0);
+                    }
+
+                    INFO("Preserved existing metrics from database: leverage=" +
+                         std::to_string(yesterday_portfolio_leverage) + ", equity_to_margin=" +
+                         std::to_string(yesterday_equity_to_margin_ratio) + ", gross_notional=" +
+                         std::to_string(yesterday_gross_notional) + ", margin_posted=" +
+                         std::to_string(yesterday_margin_posted));
+                }
+            } catch (const std::exception& e) {
+                WARN("Failed to load existing metrics: " + std::string(e.what()));
+            }
+
+            // DO NOT recalculate these values - they should remain as loaded from database
+            // These values were correctly calculated when the day was originally processed
             double yesterday_cash_available = yesterday_portfolio_value_finalized - yesterday_margin_posted;
 
             // UPDATE yesterday's live_results with ALL recalculated metrics
             // Note: We calculate daily_pnl, total_pnl, and current_portfolio_value in SQL
             // to properly incorporate the EXISTING daily_commissions value
+            // IMPORTANT: Only update portfolio_leverage and equity_to_margin_ratio if they are NULL or 0
             std::string update_query =
                 "WITH day_before AS ("
                 "  SELECT COALESCE(current_portfolio_value, " + std::to_string(initial_capital) + ") as portfolio, "
@@ -1330,8 +1391,8 @@ int main(int argc, char* argv[]) {
                 "               THEN ((" + std::to_string(yesterday_total_pnl) + " - COALESCE(daily_commissions, 0.0)) / COALESCE((SELECT portfolio FROM day_before), " + std::to_string(initial_capital) + ")) * 100.0 "
                 "               ELSE 0.0 END, "
                 "total_return = " + std::to_string(yesterday_total_return_annualized) + ", "
-                "portfolio_leverage = " + std::to_string(yesterday_portfolio_leverage) + ", "
-                "equity_to_margin_ratio = " + std::to_string(yesterday_equity_to_margin_ratio) + ", "
+                "portfolio_leverage = CASE WHEN portfolio_leverage IS NULL OR portfolio_leverage = 0 THEN " + std::to_string(yesterday_portfolio_leverage) + " ELSE portfolio_leverage END, "
+                "equity_to_margin_ratio = CASE WHEN equity_to_margin_ratio IS NULL OR equity_to_margin_ratio = 0 THEN " + std::to_string(yesterday_equity_to_margin_ratio) + " ELSE equity_to_margin_ratio END, "
                 "cash_available = COALESCE((SELECT portfolio FROM day_before), " + std::to_string(initial_capital) + ") + (" + std::to_string(yesterday_total_pnl) + " - COALESCE(daily_commissions, 0.0)) - COALESCE(margin_posted, 0.0) "
                 "WHERE strategy_id = 'LIVE_TREND_FOLLOWING' AND DATE(date) = '" + yesterday_date_ss.str() + "'";
 
@@ -1356,6 +1417,66 @@ int main(int argc, char* argv[]) {
                 ERROR("Failed to update Day T-1 equity_curve: " + std::string(update_equity_result.error()->what()));
             } else {
                 INFO("Successfully updated Day T-1 equity_curve");
+            }
+
+            // Load updated metrics from database for email - MUST do this AFTER the UPDATE
+            try {
+                std::string metrics_query =
+                    "SELECT daily_return, daily_pnl, daily_realized_pnl, daily_unrealized_pnl, "
+                    "portfolio_leverage, equity_to_margin_ratio "
+                    "FROM trading.live_results "
+                    "WHERE strategy_id = 'LIVE_TREND_FOLLOWING' AND DATE(date) = '" + yesterday_date_ss.str() + "'";
+
+                INFO("Loading yesterday's metrics from database with query: " + metrics_query);
+                auto metrics_result = db->execute_query(metrics_query);
+
+                if (metrics_result.is_ok() && metrics_result.value()->num_rows() > 0) {
+                    auto table = metrics_result.value();
+                    if (table->num_columns() >= 4) {
+                        auto daily_return_arr = std::static_pointer_cast<arrow::DoubleArray>(table->column(0)->chunk(0));
+                        auto daily_pnl_arr = std::static_pointer_cast<arrow::DoubleArray>(table->column(1)->chunk(0));
+                        auto daily_realized_arr = std::static_pointer_cast<arrow::DoubleArray>(table->column(2)->chunk(0));
+                        auto daily_unrealized_arr = std::static_pointer_cast<arrow::DoubleArray>(table->column(3)->chunk(0));
+
+                        if (daily_return_arr && daily_return_arr->length() > 0 && !daily_return_arr->IsNull(0)) {
+                            yesterday_daily_return_for_email = daily_return_arr->Value(0);
+                            INFO("Loaded yesterday's daily_return: " + std::to_string(yesterday_daily_return_for_email));
+                        }
+                        if (daily_pnl_arr && daily_pnl_arr->length() > 0 && !daily_pnl_arr->IsNull(0)) {
+                            yesterday_daily_pnl_for_email = daily_pnl_arr->Value(0);
+                            INFO("Loaded yesterday's daily_pnl: " + std::to_string(yesterday_daily_pnl_for_email));
+                        }
+                        if (daily_realized_arr && daily_realized_arr->length() > 0 && !daily_realized_arr->IsNull(0)) {
+                            yesterday_realized_pnl_for_email = daily_realized_arr->Value(0);
+                            INFO("Loaded yesterday's daily_realized_pnl: " + std::to_string(yesterday_realized_pnl_for_email));
+                        } else {
+                            // If daily_realized_pnl is null or 0, use yesterday_total_pnl as fallback
+                            yesterday_realized_pnl_for_email = yesterday_total_pnl;
+                            INFO("Using calculated yesterday_total_pnl as realized PnL: " + std::to_string(yesterday_realized_pnl_for_email));
+                        }
+                        if (daily_unrealized_arr && daily_unrealized_arr->length() > 0 && !daily_unrealized_arr->IsNull(0)) {
+                            yesterday_unrealized_pnl_for_email = daily_unrealized_arr->Value(0);
+                            INFO("Loaded yesterday's daily_unrealized_pnl: " + std::to_string(yesterday_unrealized_pnl_for_email));
+                        }
+
+                        // For futures, unrealized PnL should always be 0, realized PnL is the total daily PnL
+                        yesterday_unrealized_pnl_for_email = 0.0;  // Futures have no unrealized PnL
+
+                        INFO("Successfully loaded yesterday's metrics from database for email");
+                    }
+                } else {
+                    WARN("No metrics found in database for yesterday, using calculated values");
+                    // Use the calculated values as fallback
+                    yesterday_realized_pnl_for_email = yesterday_total_pnl;
+                    yesterday_daily_pnl_for_email = yesterday_total_pnl;  // For futures, daily PnL = realized PnL
+                    yesterday_unrealized_pnl_for_email = 0.0;  // No unrealized for futures
+                }
+            } catch (const std::exception& e) {
+                WARN("Failed to load updated yesterday's metrics: " + std::string(e.what()));
+                // Use calculated values as fallback
+                yesterday_realized_pnl_for_email = yesterday_total_pnl;
+                yesterday_daily_pnl_for_email = yesterday_total_pnl;
+                yesterday_unrealized_pnl_for_email = 0.0;
             }
         } else {
             if (is_first_trading_day) {
@@ -1444,9 +1565,9 @@ int main(int argc, char* argv[]) {
                   << equity_to_margin_ratio << "x" << std::endl;
         double margin_cushion = 0.0;
         if (maintenance_requirement_today > 0.0) {
-            // Correct formula: margin_cushion = (equity - maintenance) / maintenance
+            // Correct formula: margin_cushion = (equity - maintenance) / equity
             // This shows how much cushion we have above maintenance margin requirements
-            margin_cushion = (current_portfolio_value - maintenance_requirement_today) / maintenance_requirement_today;
+            margin_cushion = (current_portfolio_value - maintenance_requirement_today) / current_portfolio_value;
         } else {
             margin_cushion = -1.0;  // Invalid if no maintenance requirement
         }
@@ -1797,33 +1918,84 @@ int main(int argc, char* argv[]) {
                 // CSV header for yesterday's finalized positions
                 yesterday_file << "symbol,quantity,entry_price,exit_price,realized_pnl\n";
 
-                for (const auto& [symbol, prev_position] : previous_positions) {
-                    double prev_qty = prev_position.quantity.as_double();
-
-                    // Skip zero quantity positions
-                    if (std::abs(prev_qty) < 0.0001) continue;
-
-                    // Entry price: Day T-2 close
-                    double entry_price = 0.0;
-                    if (two_days_ago_close_prices.find(symbol) != two_days_ago_close_prices.end()) {
-                        entry_price = two_days_ago_close_prices[symbol];
+                // Load finalized positions from database for CSV
+                std::string yesterday_date_ss_csv;
+                std::ostringstream yss_csv;
+                auto yesterday_time_t_csv = std::chrono::system_clock::to_time_t(yesterday_time);
+                yss_csv << std::put_time(std::gmtime(&yesterday_time_t_csv), "%Y-%m-%d");
+                yesterday_date_ss_csv = yss_csv.str();
+                
+                std::string positions_query_csv = "SELECT symbol, quantity, average_price, realized_pnl, unrealized_pnl, last_update "
+                                                 "FROM trading.positions "
+                                                 "WHERE strategy_id = 'LIVE_TREND_FOLLOWING' AND DATE(last_update) = '" + yesterday_date_ss_csv + "'";
+                
+                auto positions_result_csv = db->execute_query(positions_query_csv);
+                if (positions_result_csv.is_ok() && positions_result_csv.value()->num_rows() > 0) {
+                    auto table_csv = positions_result_csv.value();
+                    auto symbol_arr_csv = std::static_pointer_cast<arrow::StringArray>(table_csv->column(0)->chunk(0));
+                    auto quantity_arr_csv = std::static_pointer_cast<arrow::DoubleArray>(table_csv->column(1)->chunk(0));
+                    auto avg_price_arr_csv = std::static_pointer_cast<arrow::DoubleArray>(table_csv->column(2)->chunk(0));
+                    auto realized_pnl_arr_csv = std::static_pointer_cast<arrow::DoubleArray>(table_csv->column(3)->chunk(0));
+                    
+                    for (int64_t i = 0; i < table_csv->num_rows(); ++i) {
+                        if (!symbol_arr_csv->IsNull(i) && !quantity_arr_csv->IsNull(i)) {
+                            std::string symbol = symbol_arr_csv->GetString(i);
+                            double quantity = quantity_arr_csv->Value(i);
+                            double avg_price = avg_price_arr_csv->Value(i);
+                            double realized_pnl = realized_pnl_arr_csv->Value(i);
+                            
+                            // Skip positions with zero quantity
+                            if (std::abs(quantity) < 0.0001) continue;
+                            
+                            // Entry price: Day T-2 close
+                            double entry_price = 0.0;
+                            if (two_days_ago_close_prices.find(symbol) != two_days_ago_close_prices.end()) {
+                                entry_price = two_days_ago_close_prices[symbol];
+                            }
+                            
+                            // Exit price: Day T-1 close
+                            double exit_price = 0.0;
+                            if (previous_day_close_prices.find(symbol) != previous_day_close_prices.end()) {
+                                exit_price = previous_day_close_prices[symbol];
+                            }
+                            
+                            // Write row with finalized PnL from database
+                            yesterday_file << symbol << ","
+                                          << quantity << ","
+                                          << entry_price << ","
+                                          << exit_price << ","
+                                          << realized_pnl << "\n";
+                        }
                     }
-
-                    // Exit price: Day T-1 close
-                    double exit_price = 0.0;
-                    if (previous_day_close_prices.find(symbol) != previous_day_close_prices.end()) {
-                        exit_price = previous_day_close_prices[symbol];
+                    INFO("Wrote " + std::to_string(table_csv->num_rows()) + " finalized positions to CSV");
+                } else {
+                    WARN("Failed to load finalized positions for CSV, using previous_positions");
+                    // Fallback to previous_positions
+                    for (const auto& [symbol, prev_position] : previous_positions) {
+                        double prev_qty = prev_position.quantity.as_double();
+                        if (std::abs(prev_qty) < 0.0001) continue;
+                        
+                        // Entry price: Day T-2 close
+                        double entry_price = 0.0;
+                        if (two_days_ago_close_prices.find(symbol) != two_days_ago_close_prices.end()) {
+                            entry_price = two_days_ago_close_prices[symbol];
+                        }
+                        
+                        // Exit price: Day T-1 close
+                        double exit_price = 0.0;
+                        if (previous_day_close_prices.find(symbol) != previous_day_close_prices.end()) {
+                            exit_price = previous_day_close_prices[symbol];
+                        }
+                        
+                        // Realized PnL (GROSS from positions table)
+                        double realized_pnl = prev_position.realized_pnl.as_double();
+                        
+                        yesterday_file << symbol << ","
+                                      << prev_qty << ","
+                                      << entry_price << ","
+                                      << exit_price << ","
+                                      << realized_pnl << "\n";
                     }
-
-                    // Realized PnL (GROSS from positions table)
-                    double realized_pnl = prev_position.realized_pnl.as_double();
-
-                    // Write row
-                    yesterday_file << symbol << ","
-                                  << prev_qty << ","
-                                  << entry_price << ","
-                                  << exit_price << ","
-                                  << realized_pnl << "\n";
                 }
 
                 yesterday_file.close();
@@ -1905,11 +2077,52 @@ int main(int argc, char* argv[]) {
 
                 std::string subject = "Daily Trading Report - " + date_str;
 
-                // Prepare yesterday's finalized positions for email
+                // Prepare yesterday's finalized positions for email - load from database with finalized PnL
                 std::unordered_map<std::string, Position> yesterday_positions_finalized;
-                for (const auto& [symbol, prev_pos] : previous_positions) {
-                    if (prev_pos.quantity.as_double() != 0.0) {
-                        yesterday_positions_finalized[symbol] = prev_pos;
+                if (!previous_positions.empty() && !is_first_trading_day) {
+                    // Load yesterday's positions from database with finalized PnL
+                    std::string yesterday_date_ss;
+                    std::ostringstream yss;
+                    auto yesterday_time_t = std::chrono::system_clock::to_time_t(target_date - std::chrono::hours(24));
+                    yss << std::put_time(std::gmtime(&yesterday_time_t), "%Y-%m-%d");
+                    yesterday_date_ss = yss.str();
+                    
+                    std::string positions_query = "SELECT symbol, quantity, average_price, realized_pnl, unrealized_pnl, last_update "
+                                                 "FROM trading.positions "
+                                                 "WHERE strategy_id = 'LIVE_TREND_FOLLOWING' AND DATE(last_update) = '" + yesterday_date_ss + "'";
+                    
+                    auto positions_result = db->execute_query(positions_query);
+                    if (positions_result.is_ok() && positions_result.value()->num_rows() > 0) {
+                        auto table = positions_result.value();
+                        auto symbol_arr = std::static_pointer_cast<arrow::StringArray>(table->column(0)->chunk(0));
+                        auto quantity_arr = std::static_pointer_cast<arrow::DoubleArray>(table->column(1)->chunk(0));
+                        auto avg_price_arr = std::static_pointer_cast<arrow::DoubleArray>(table->column(2)->chunk(0));
+                        auto realized_pnl_arr = std::static_pointer_cast<arrow::DoubleArray>(table->column(3)->chunk(0));
+                        auto unrealized_pnl_arr = std::static_pointer_cast<arrow::DoubleArray>(table->column(4)->chunk(0));
+                        
+                        for (int64_t i = 0; i < table->num_rows(); ++i) {
+                            if (!symbol_arr->IsNull(i) && !quantity_arr->IsNull(i)) {
+                                Position pos;
+                                pos.symbol = symbol_arr->GetString(i);
+                                pos.quantity = Decimal(quantity_arr->Value(i));
+                                pos.average_price = Decimal(avg_price_arr->Value(i));
+                                pos.realized_pnl = Decimal(realized_pnl_arr->Value(i));
+                                pos.unrealized_pnl = Decimal(unrealized_pnl_arr->Value(i));
+                                
+                                if (pos.quantity.as_double() != 0.0) {
+                                    yesterday_positions_finalized[pos.symbol] = pos;
+                                }
+                            }
+                        }
+                        INFO("Loaded " + std::to_string(yesterday_positions_finalized.size()) + " finalized positions from database for email");
+                    } else {
+                        WARN("Failed to load yesterday's finalized positions from database, using previous_positions");
+                        // Fallback to previous_positions if database query fails
+                        for (const auto& [symbol, prev_pos] : previous_positions) {
+                            if (prev_pos.quantity.as_double() != 0.0) {
+                                yesterday_positions_finalized[symbol] = prev_pos;
+                            }
+                        }
                     }
                 }
                 
@@ -1931,10 +2144,14 @@ int main(int argc, char* argv[]) {
                 strategy_metrics["Total Commissions"] = total_commissions_cumulative;
                 strategy_metrics["Current Portfolio Value"] = current_portfolio_value;
 
-                // Leverage Metrics
-                strategy_metrics["Gross Leverage"] = gross_notional / current_portfolio_value;
-                strategy_metrics["Net Leverage"] = net_notional / current_portfolio_value;
-                strategy_metrics["Portfolio Leverage (Gross)"] = gross_notional / current_portfolio_value;
+                // Leverage Metrics - Calculate values from position analysis
+                double gross_leverage_calc = (current_portfolio_value != 0.0) ? (gross_notional / current_portfolio_value) : 0.0;
+                double net_leverage_calc = (current_portfolio_value != 0.0) ? (net_notional / current_portfolio_value) : 0.0;
+                double portfolio_leverage_calc = (current_portfolio_value != 0.0) ? (gross_notional / current_portfolio_value) : 0.0;
+                
+                strategy_metrics["Gross Leverage"] = gross_leverage_calc;
+                strategy_metrics["Net Leverage"] = net_leverage_calc;
+                strategy_metrics["Portfolio Leverage"] = portfolio_leverage_calc;
                 strategy_metrics["Equity-to-Margin Ratio"] = equity_to_margin_ratio;
 
                 // Risk & Liquidity Metrics
