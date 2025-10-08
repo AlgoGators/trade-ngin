@@ -1912,9 +1912,6 @@ int main(int argc, char* argv[]) {
 
             std::ofstream yesterday_file(yesterday_filename);
             if (yesterday_file.is_open()) {
-                // Portfolio-level metrics as header comment
-                yesterday_file << "# Yesterday's Finalized Positions - Date: " << date_ss.str() << "\n";
-
                 // CSV header for yesterday's finalized positions
                 yesterday_file << "symbol,quantity,entry_price,exit_price,realized_pnl\n";
 
@@ -1925,7 +1922,7 @@ int main(int argc, char* argv[]) {
                 yss_csv << std::put_time(std::gmtime(&yesterday_time_t_csv), "%Y-%m-%d");
                 yesterday_date_ss_csv = yss_csv.str();
                 
-                std::string positions_query_csv = "SELECT symbol, quantity, average_price, realized_pnl, unrealized_pnl, last_update "
+                std::string positions_query_csv = "SELECT symbol, quantity, average_price, daily_realized_pnl, daily_unrealized_pnl, last_update "
                                                  "FROM trading.positions "
                                                  "WHERE strategy_id = 'LIVE_TREND_FOLLOWING' AND DATE(last_update) = '" + yesterday_date_ss_csv + "'";
                 
@@ -2048,9 +2045,7 @@ int main(int argc, char* argv[]) {
 
         std::cout << "\n======= Daily Processing Complete =======" << std::endl;
         std::cout << "Today's positions file: " << today_filename << std::endl;
-        if (!yesterday_filename.empty()) {
-            std::cout << "Yesterday's finalized positions file: " << yesterday_filename << std::endl;
-        }
+        // Removed yesterday finalized positions file output per request
         // Only show processing time for real-time runs, not historical
         if (!use_override_date) {
             std::cout << "Total processing time: " << std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -2077,54 +2072,9 @@ int main(int argc, char* argv[]) {
 
                 std::string subject = "Daily Trading Report - " + date_str;
 
-                // Prepare yesterday's finalized positions for email - load from database with finalized PnL
+                // Removed loading of yesterday's finalized positions and metrics per request
                 std::unordered_map<std::string, Position> yesterday_positions_finalized;
-                if (!previous_positions.empty() && !is_first_trading_day) {
-                    // Load yesterday's positions from database with finalized PnL
-                    std::string yesterday_date_ss;
-                    std::ostringstream yss;
-                    auto yesterday_time_t = std::chrono::system_clock::to_time_t(target_date - std::chrono::hours(24));
-                    yss << std::put_time(std::gmtime(&yesterday_time_t), "%Y-%m-%d");
-                    yesterday_date_ss = yss.str();
-                    
-                    std::string positions_query = "SELECT symbol, quantity, average_price, realized_pnl, unrealized_pnl, last_update "
-                                                 "FROM trading.positions "
-                                                 "WHERE strategy_id = 'LIVE_TREND_FOLLOWING' AND DATE(last_update) = '" + yesterday_date_ss + "'";
-                    
-                    auto positions_result = db->execute_query(positions_query);
-                    if (positions_result.is_ok() && positions_result.value()->num_rows() > 0) {
-                        auto table = positions_result.value();
-                        auto symbol_arr = std::static_pointer_cast<arrow::StringArray>(table->column(0)->chunk(0));
-                        auto quantity_arr = std::static_pointer_cast<arrow::DoubleArray>(table->column(1)->chunk(0));
-                        auto avg_price_arr = std::static_pointer_cast<arrow::DoubleArray>(table->column(2)->chunk(0));
-                        auto realized_pnl_arr = std::static_pointer_cast<arrow::DoubleArray>(table->column(3)->chunk(0));
-                        auto unrealized_pnl_arr = std::static_pointer_cast<arrow::DoubleArray>(table->column(4)->chunk(0));
-                        
-                        for (int64_t i = 0; i < table->num_rows(); ++i) {
-                            if (!symbol_arr->IsNull(i) && !quantity_arr->IsNull(i)) {
-                                Position pos;
-                                pos.symbol = symbol_arr->GetString(i);
-                                pos.quantity = Decimal(quantity_arr->Value(i));
-                                pos.average_price = Decimal(avg_price_arr->Value(i));
-                                pos.realized_pnl = Decimal(realized_pnl_arr->Value(i));
-                                pos.unrealized_pnl = Decimal(unrealized_pnl_arr->Value(i));
-                                
-                                if (pos.quantity.as_double() != 0.0) {
-                                    yesterday_positions_finalized[pos.symbol] = pos;
-                                }
-                            }
-                        }
-                        INFO("Loaded " + std::to_string(yesterday_positions_finalized.size()) + " finalized positions from database for email");
-                    } else {
-                        WARN("Failed to load yesterday's finalized positions from database, using previous_positions");
-                        // Fallback to previous_positions if database query fails
-                        for (const auto& [symbol, prev_pos] : previous_positions) {
-                            if (prev_pos.quantity.as_double() != 0.0) {
-                                yesterday_positions_finalized[symbol] = prev_pos;
-                            }
-                        }
-                    }
-                }
+                std::map<std::string, double> yesterday_daily_metrics_final;
                 
                 // Create strategy metrics map with all relevant metrics organized by category
                 std::map<std::string, double> strategy_metrics;
@@ -2159,12 +2109,8 @@ int main(int argc, char* argv[]) {
                 strategy_metrics["Margin Posted"] = total_posted_margin;
                 strategy_metrics["Cash Available"] = current_portfolio_value - total_posted_margin;
 
-                // Create yesterday's daily metrics map using values from STEP 4
-                std::map<std::string, double> yesterday_daily_metrics;
-                yesterday_daily_metrics["Daily Return"] = yesterday_daily_return_for_email;
-                yesterday_daily_metrics["Daily Unrealized PnL"] = yesterday_unrealized_pnl_for_email;
-                yesterday_daily_metrics["Daily Realized PnL"] = yesterday_realized_pnl_for_email;
-                yesterday_daily_metrics["Daily Total PnL"] = yesterday_daily_pnl_for_email;
+                // Note: yesterday_daily_metrics_final is now loaded AFTER database updates above
+                // So we don't need to create it here anymore
 
                 // Generate email body with is_daily_strategy flag set to true and current prices
                 std::string email_body = email_sender->generate_trading_report_body(
@@ -2176,13 +2122,13 @@ int main(int argc, char* argv[]) {
                     true,  // is_daily_strategy
                     previous_day_close_prices,  // Pass Day T-1 close prices for today's positions
                     db,  // Pass database for symbols reference table
-                    yesterday_positions_finalized,  // Yesterday's positions with finalized PnL
-                    previous_day_close_prices,  // Yesterday's exit prices (Day T-1 close)
-                    two_days_ago_close_prices,  // Yesterday's entry prices (Day T-2 close)
-                    yesterday_daily_metrics  // Yesterday's daily metrics from database
+                    yesterday_positions_finalized,  // empty per request
+                    {},  // empty exit prices
+                    {},  // empty entry prices
+                    yesterday_daily_metrics_final  // empty per request
                 );
                 
-                // Send email with CSV attachments (today's positions + yesterday's finalized)
+                // Send email with CSV attachments: today's positions and yesterday's finalized (if available)
                 std::vector<std::string> attachments = {today_filename};
                 if (!yesterday_filename.empty()) {
                     attachments.push_back(yesterday_filename);

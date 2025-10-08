@@ -541,6 +541,22 @@ Result<void> BacktestEngine::process_bar(
     std::vector<std::pair<Timestamp, double>>& equity_curve,
     std::vector<RiskResult>& risk_metrics) {
     try {
+        // PnL Lag Model: Store previous day's close prices for execution pricing
+        static std::unordered_map<std::string, double> previous_day_close_prices;
+        static std::unordered_map<std::string, double> two_days_ago_close_prices;
+        
+        // Update price history for PnL lag model
+        for (const auto& bar : bars) {
+            const std::string& symbol = bar.symbol;
+            double current_close = static_cast<double>(bar.close);
+            
+            // Shift prices: T-2 becomes T-1, T-1 becomes current
+            if (previous_day_close_prices.find(symbol) != previous_day_close_prices.end()) {
+                two_days_ago_close_prices[symbol] = previous_day_close_prices[symbol];
+            }
+            previous_day_close_prices[symbol] = current_close;
+        }
+
         // Pass market data to strategy
         auto data_result = strategy->on_data(bars);
         if (data_result.is_error()) {
@@ -559,16 +575,23 @@ Result<void> BacktestEngine::process_bar(
                                      : 0.0;
 
             if (std::abs(static_cast<double>(new_pos.quantity) - current_qty) > 1e-4) {
-                // Find latest price for symbol
-                double latest_price = 0.0;
-                for (const auto& bar : bars) {
-                    if (bar.symbol == symbol) {
-                        latest_price = static_cast<double>(bar.close);
-                        break;
+                // PnL Lag Model: Use previous day's close for execution price (eliminate lookahead bias)
+                double execution_price = 0.0;
+                if (previous_day_close_prices.find(symbol) != previous_day_close_prices.end()) {
+                    execution_price = previous_day_close_prices[symbol];
+                    DEBUG("PnL Lag Model: Using previous day close for " + symbol + " execution: " + std::to_string(execution_price));
+                } else {
+                    // Fallback: if no previous price available, use current close (first day case)
+                    for (const auto& bar : bars) {
+                        if (bar.symbol == symbol) {
+                            execution_price = static_cast<double>(bar.close);
+                            break;
+                        }
                     }
+                    DEBUG("PnL Lag Model: First day fallback for " + symbol + " execution: " + std::to_string(execution_price));
                 }
 
-                if (latest_price == 0.0) {
+                if (execution_price == 0.0) {
                     continue;  // Skip if price not available
                 }
 
@@ -589,14 +612,14 @@ Result<void> BacktestEngine::process_bar(
                     }
 
                     fill_price = slippage_model_->calculate_slippage(
-                        latest_price, std::abs(trade_size), side, symbol_bar);
+                        execution_price, std::abs(trade_size), side, symbol_bar);
                 } else {
                     // Apply basic slippage model
                     double slip_factor =
                         static_cast<double>(config_.strategy_config.slippage_model) /
                         10000.0;  // bps to decimal
-                    fill_price = side == Side::BUY ? latest_price * (1.0 + slip_factor)
-                                                   : latest_price * (1.0 - slip_factor);
+                    fill_price = side == Side::BUY ? execution_price * (1.0 + slip_factor)
+                                                   : execution_price * (1.0 - slip_factor);
                 }
 
                 // Create execution report
@@ -625,23 +648,28 @@ Result<void> BacktestEngine::process_bar(
             }
         }
 
-        // Calculate current portfolio value
+        // Calculate current portfolio value using PnL Lag Model
         double portfolio_value = static_cast<double>(config_.portfolio_config.initial_capital);
         for (const auto& [symbol, pos] : current_positions) {
-            // Find latest price for symbol
-            double latest_price = 0.0;
+            if (static_cast<double>(pos.quantity) == 0.0) continue;
+            
+            // PnL Lag Model: Daily PnL = (current_day_close - previous_day_close) * quantity * point_value
+            double current_price = 0.0;
             for (const auto& bar : bars) {
                 if (bar.symbol == symbol) {
-                    latest_price = static_cast<double>(bar.close);
+                    current_price = static_cast<double>(bar.close);
                     break;
                 }
             }
-
-            if (latest_price > 0.0 && static_cast<double>(pos.average_price) > 0.0) {
-                // Calculate P&L: quantity * (current_price - entry_price)
-                double pnl = static_cast<double>(pos.quantity) *
-                             (latest_price - static_cast<double>(pos.average_price));
-                portfolio_value += pnl;
+            
+            if (current_price > 0.0 && previous_day_close_prices.find(symbol) != previous_day_close_prices.end()) {
+                // Get point value multiplier (assuming $20 for NQ, adjust as needed)
+                double point_value = 20.0;  // TODO: Get from instrument registry
+                
+                // Calculate daily PnL: quantity * (current_close - previous_close) * point_value
+                double daily_pnl = static_cast<double>(pos.quantity) * 
+                                  (current_price - previous_day_close_prices[symbol]) * point_value;
+                portfolio_value += daily_pnl;
             }
         }
 
@@ -734,6 +762,7 @@ Result<void> BacktestEngine::process_bar(
 }
 
 // Process market data through each strategy and collect their positions
+// PnL Lag Model Implementation: Use previous day's close for executions to eliminate lookahead bias
 Result<void> BacktestEngine::process_strategy_signals(
     const std::vector<Bar>& bars, std::shared_ptr<StrategyInterface> strategy,
     std::map<std::string, Position>& current_positions,
@@ -741,6 +770,22 @@ Result<void> BacktestEngine::process_strategy_signals(
     std::vector<std::pair<Timestamp, double>>& equity_curve,
     std::map<std::pair<Timestamp, std::string>, double>& signals) {
     try {
+        // PnL Lag Model: Store previous day's close prices for execution pricing
+        static std::unordered_map<std::string, double> previous_day_close_prices;
+        static std::unordered_map<std::string, double> two_days_ago_close_prices;
+        
+        // Update price history for PnL lag model
+        for (const auto& bar : bars) {
+            const std::string& symbol = bar.symbol;
+            double current_close = static_cast<double>(bar.close);
+            
+            // Shift prices: T-2 becomes T-1, T-1 becomes current
+            if (previous_day_close_prices.find(symbol) != previous_day_close_prices.end()) {
+                two_days_ago_close_prices[symbol] = previous_day_close_prices[symbol];
+            }
+            previous_day_close_prices[symbol] = current_close;
+        }
+
         // Pass market data to strategy
         auto data_result = strategy->on_data(bars);
         if (data_result.is_error()) {
@@ -771,16 +816,23 @@ Result<void> BacktestEngine::process_strategy_signals(
                       " (pos change: " + std::to_string(current_qty) + " -> " + 
                       std::to_string(static_cast<double>(new_pos.quantity)) + ")");
                 
-                // Find latest price for symbol
-                double latest_price = 0.0;
-                for (const auto& bar : bars) {
-                    if (bar.symbol == symbol) {
-                        latest_price = static_cast<double>(bar.close);
-                        break;
+                // PnL Lag Model: Use previous day's close for execution price (eliminate lookahead bias)
+                double execution_price = 0.0;
+                if (previous_day_close_prices.find(symbol) != previous_day_close_prices.end()) {
+                    execution_price = previous_day_close_prices[symbol];
+                    DEBUG("PnL Lag Model: Using previous day close for " + symbol + " execution: " + std::to_string(execution_price));
+                } else {
+                    // Fallback: if no previous price available, use current close (first day case)
+                    for (const auto& bar : bars) {
+                        if (bar.symbol == symbol) {
+                            execution_price = static_cast<double>(bar.close);
+                            break;
+                        }
                     }
+                    DEBUG("PnL Lag Model: First day fallback for " + symbol + " execution: " + std::to_string(execution_price));
                 }
 
-                if (latest_price == 0.0) {
+                if (execution_price == 0.0) {
                     continue;  // Skip if price not available
                 }
 
@@ -801,14 +853,14 @@ Result<void> BacktestEngine::process_strategy_signals(
                     }
 
                     fill_price = slippage_model_->calculate_slippage(
-                        latest_price, std::abs(trade_size), side, symbol_bar);
+                        execution_price, std::abs(trade_size), side, symbol_bar);
                 } else {
                     // Apply basic slippage model
                     double slip_factor =
                         static_cast<double>(config_.strategy_config.slippage_model) /
                         10000.0;  // bps to decimal
-                    fill_price = side == Side::BUY ? latest_price * (1.0 + slip_factor)
-                                                   : latest_price * (1.0 - slip_factor);
+                    fill_price = side == Side::BUY ? execution_price * (1.0 + slip_factor)
+                                                   : execution_price * (1.0 - slip_factor);
                 }
 
                 // Create execution report
@@ -838,23 +890,28 @@ Result<void> BacktestEngine::process_strategy_signals(
             }
         }
 
-        // Calculate current portfolio value
+        // Calculate current portfolio value using PnL Lag Model
         double portfolio_value = static_cast<double>(config_.portfolio_config.initial_capital);
         for (const auto& [symbol, pos] : current_positions) {
-            // Find latest price for symbol
-            double latest_price = 0.0;
+            if (static_cast<double>(pos.quantity) == 0.0) continue;
+            
+            // PnL Lag Model: Daily PnL = (current_day_close - previous_day_close) * quantity * point_value
+            double current_price = 0.0;
             for (const auto& bar : bars) {
                 if (bar.symbol == symbol) {
-                    latest_price = static_cast<double>(bar.close);
+                    current_price = static_cast<double>(bar.close);
                     break;
                 }
             }
-
-            if (latest_price > 0.0 && static_cast<double>(pos.average_price) > 0.0) {
-                // Calculate P&L: quantity * (current_price - entry_price)
-                double pnl = static_cast<double>(pos.quantity) *
-                             (latest_price - static_cast<double>(pos.average_price));
-                portfolio_value += pnl;
+            
+            if (current_price > 0.0 && previous_day_close_prices.find(symbol) != previous_day_close_prices.end()) {
+                // Get point value multiplier (assuming $20 for NQ, adjust as needed)
+                double point_value = 20.0;  // TODO: Get from instrument registry
+                
+                // Calculate daily PnL: quantity * (current_close - previous_close) * point_value
+                double daily_pnl = static_cast<double>(pos.quantity) * 
+                                  (current_price - previous_day_close_prices[symbol]) * point_value;
+                portfolio_value += daily_pnl;
             }
         }
 
