@@ -5,6 +5,7 @@
 #include <numeric>
 #include <set>
 #include "trade_ngin/core/logger.hpp"
+#include "trade_ngin/instruments/instrument_registry.hpp"
 
 namespace trade_ngin {
 
@@ -46,6 +47,9 @@ Result<RiskResult> RiskManager::process_positions(
 
         // Create vectors that match the order in market_data_ structures
         position_values.resize(market_data.ordered_symbols.size(), 0.0);
+        // Parallel values WITHOUT contract multipliers for volatility-only weighting
+        std::vector<double> position_values_no_multiplier;
+        position_values_no_multiplier.resize(market_data.ordered_symbols.size(), 0.0);
 
         for (const auto& [symbol, pos] : positions) {
             // Only include positions with symbols in our market data
@@ -57,7 +61,7 @@ Result<RiskResult> RiskManager::process_positions(
                     // For backtest: use average price (original logic)
                     // For live: use current price if available
                     double price_for_leverage = static_cast<double>(pos.average_price);
-                    
+
                     if (!current_prices.empty()) {
                         // Live trading: use current market price if available
                         auto price_it = current_prices.find(symbol);
@@ -65,12 +69,38 @@ Result<RiskResult> RiskManager::process_positions(
                             price_for_leverage = price_it->second;
                         }
                     }
-                    
-                    double position_value =
-                        static_cast<double>(pos.quantity) * price_for_leverage;
+
+                    // Get contract multiplier from InstrumentRegistry for proper notional calculation
+                    double contract_multiplier = 1.0;
+                    try {
+                        auto& registry = InstrumentRegistry::instance();
+                        // Normalize variant-suffixed symbols for lookup (e.g., 6B.v.0 -> 6B)
+                        std::string lookup_sym = symbol;
+                        auto dotpos = lookup_sym.find(".v.");
+                        if (dotpos != std::string::npos) {
+                            lookup_sym = lookup_sym.substr(0, dotpos);
+                        }
+                        dotpos = lookup_sym.find(".c.");
+                        if (dotpos != std::string::npos) {
+                            lookup_sym = lookup_sym.substr(0, dotpos);
+                        }
+                        auto instrument = registry.get_instrument(lookup_sym);
+                        if (instrument) {
+                            contract_multiplier = instrument->get_multiplier();
+                        }
+                    } catch (...) {
+                        // Use default multiplier if exception occurs
+                    }
+
+                    double signed_quantity = static_cast<double>(pos.quantity);
+                    double position_value = signed_quantity * price_for_leverage * contract_multiplier;
                     position_values[index] = position_value;
                     total_value += std::abs(position_value);
                     position_symbols.push_back(symbol);
+
+                    // Also capture position value WITHOUT multiplier (signed) for volatility weights
+                    double position_value_no_mult = signed_quantity * price_for_leverage;
+                    position_values_no_multiplier[index] = position_value_no_mult;
                 }
             }
         }
@@ -80,13 +110,25 @@ Result<RiskResult> RiskManager::process_positions(
             return Result<RiskResult>(result);  // Return default result
         }
 
-        // Calculate position weights
+        // Calculate position weights (with multipliers) for general risk calcs
         std::vector<double> weights;
         weights.resize(position_values.size(), 0.0);
+        // Volatility-specific weights (WITHOUT multipliers), signed numerators
+        std::vector<double> vol_weights;
+        vol_weights.resize(position_values.size(), 0.0);
+        double total_value_no_multiplier_abs = 0.0;
+        for (double v : position_values_no_multiplier) {
+            total_value_no_multiplier_abs += std::abs(v);
+        }
 
         if (total_value > 0.0) {
             for (size_t i = 0; i < position_values.size(); ++i) {
                 weights[i] = position_values[i] / total_value;
+            }
+        }
+        if (total_value_no_multiplier_abs > 0.0) {
+            for (size_t i = 0; i < position_values.size(); ++i) {
+                vol_weights[i] = position_values_no_multiplier[i] / total_value_no_multiplier_abs;
             }
         }
 
@@ -97,6 +139,17 @@ Result<RiskResult> RiskManager::process_positions(
             calculate_correlation_multiplier(market_data, weights, result);
         result.leverage_multiplier =
             calculate_leverage_multiplier(market_data, weights, position_values, total_value, result);
+
+        // Recompute portfolio_var for reporting using volatility-only weights (WITHOUT multipliers)
+        if (!market_data.covariance.empty() && !vol_weights.empty()) {
+            double variance = 0.0;
+            for (size_t i = 0; i < vol_weights.size(); ++i) {
+                for (size_t j = 0; j < vol_weights.size(); ++j) {
+                    variance += vol_weights[i] * market_data.covariance[i][j] * vol_weights[j];
+                }
+            }
+            result.portfolio_var = variance > 0.0 ? std::sqrt(variance) : 0.0;
+        }
 
         // Overall scale is minimum of all multipliers
         result.recommended_scale =
@@ -148,7 +201,7 @@ double RiskManager::calculate_portfolio_multiplier(const MarketData& market_data
         return 1.0;
     }
 
-    // Calculate portfolio variance using covariance matrix
+    // Calculate portfolio variance using covariance matrix (SIGNED weights here)
     double variance = 0.0;
     for (size_t i = 0; i < weights.size(); ++i) {
         for (size_t j = 0; j < weights.size(); ++j) {
@@ -285,7 +338,7 @@ double RiskManager::calculate_leverage_multiplier(const MarketData& market_data,
     }
 
     result.gross_leverage = gross / static_cast<double>(config_.capital);
-    result.net_leverage = std::abs(net) / static_cast<double>(config_.capital);
+    result.net_leverage = net / static_cast<double>(config_.capital);  // Preserve sign: positive = net long, negative = net short
 
     // Historical leverage calculation
     std::vector<double> historical_leverage;
