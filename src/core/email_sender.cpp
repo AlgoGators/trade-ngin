@@ -455,11 +455,6 @@ std::string EmailSender::generate_trading_report_body(
             yesterday_daily_metrics,    // Yesterday's daily metrics (not today's strategy_metrics)
             yesterday_date_str
         );
-    } else if (yesterday_positions.empty()) {
-        html << "<h2>Yesterday's Finalized Positions - Actual Results</h2>\n";
-        html << "<div class=\"note\">\n";
-        html << "<p><em>First trading day - no previous positions to report</em></p>\n";
-        html << "</div>\n";
     }
 
     /*    // Risk snapshot (if provided)
@@ -773,10 +768,7 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
     std::ostringstream html;
 
     if (yesterday_positions.empty()) {
-        html << "<div class=\"note\">\n";
-        html << "<p><em>First trading day - no previous positions to report</em></p>\n";
-        html << "</div>\n";
-        return html.str();
+        return std::string();
     }
 
     html << "<h2>Yesterday's Finalized Position Results</h2>\n";
