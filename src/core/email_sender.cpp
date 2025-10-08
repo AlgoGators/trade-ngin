@@ -119,7 +119,7 @@ Result<void> EmailSender::load_config() {
     }
 }
 
-Result<void> EmailSender::send_email(const std::string& subject, const std::string& body, bool is_html, const std::optional<std::string>& attachment_path) {
+Result<void> EmailSender::send_email(const std::string& subject, const std::string& body, bool is_html, const std::vector<std::string>& attachment_paths) {
     if (!initialized_) {
         return make_error<void>(ErrorCode::NOT_INITIALIZED,
                                "Email sender not initialized",
@@ -207,17 +207,17 @@ Result<void> EmailSender::send_email(const std::string& subject, const std::stri
             }
         }
 
-        // Read and encode CSV attachment if provided
-        std::string csv_base64;
-        std::string csv_filename;
-        if (attachment_path.has_value()) {
-            std::ifstream csv_file(attachment_path.value(), std::ios::binary);
+        // Read and encode CSV attachments if provided
+        std::vector<std::pair<std::string, std::string>> attachments; // filename, base64_data
+        for (const auto& attachment_path : attachment_paths) {
+            std::ifstream csv_file(attachment_path, std::ios::binary);
             if (csv_file.is_open()) {
                 std::vector<unsigned char> csv_data((std::istreambuf_iterator<char>(csv_file)),
                                                      std::istreambuf_iterator<char>());
                 csv_file.close();
 
-                // Base64 encode CSV data using same logic as logo
+                // Base64 encode CSV data
+                std::string csv_base64;
                 static const char base64_chars[] =
                     "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
                     "abcdefghijklmnopqrstuvwxyz"
@@ -258,12 +258,14 @@ Result<void> EmailSender::send_email(const std::string& subject, const std::stri
                 }
 
                 // Extract filename from path
-                size_t last_slash = attachment_path.value().find_last_of("/\\");
-                csv_filename = (last_slash != std::string::npos)
-                    ? attachment_path.value().substr(last_slash + 1)
-                    : attachment_path.value();
+                size_t last_slash = attachment_path.find_last_of("/\\");
+                std::string csv_filename = (last_slash != std::string::npos)
+                    ? attachment_path.substr(last_slash + 1)
+                    : attachment_path;
+
+                attachments.push_back({csv_filename, csv_base64});
             } else {
-                WARN("Failed to open CSV attachment file: " + attachment_path.value());
+                WARN("Failed to open CSV attachment file: " + attachment_path);
             }
         }
 
@@ -274,8 +276,8 @@ Result<void> EmailSender::send_email(const std::string& subject, const std::stri
         std::string content_type = is_html ? "text/html; charset=UTF-8" : "text/plain";
 
         // Determine top-level content type based on whether we have attachments
-        std::string top_content_type = csv_base64.empty() ? "multipart/related" : "multipart/mixed";
-        std::string top_boundary = csv_base64.empty() ? inner_boundary : outer_boundary;
+        std::string top_content_type = attachments.empty() ? "multipart/related" : "multipart/mixed";
+        std::string top_boundary = attachments.empty() ? inner_boundary : outer_boundary;
 
         g_email_payload =
             "From: " + config_.from_email + "\r\n"
@@ -286,7 +288,7 @@ Result<void> EmailSender::send_email(const std::string& subject, const std::stri
             "\r\n";
 
         // If we have attachments, create nested structure
-        if (!csv_base64.empty()) {
+        if (!attachments.empty()) {
             // Start outer multipart/mixed
             g_email_payload += "--" + outer_boundary + "\r\n";
             g_email_payload += "Content-Type: multipart/related; boundary=\"" + inner_boundary + "\"\r\n";
@@ -314,14 +316,16 @@ Result<void> EmailSender::send_email(const std::string& subject, const std::stri
         // Close inner multipart/related
         g_email_payload += "\r\n--" + inner_boundary + "--\r\n";
 
-        // Add CSV attachment if present
-        if (!csv_base64.empty()) {
-            g_email_payload += "\r\n--" + outer_boundary + "\r\n";
-            g_email_payload += "Content-Type: text/csv; name=\"" + csv_filename + "\"\r\n";
-            g_email_payload += "Content-Transfer-Encoding: base64\r\n";
-            g_email_payload += "Content-Disposition: attachment; filename=\"" + csv_filename + "\"\r\n";
-            g_email_payload += "\r\n";
-            g_email_payload += csv_base64 + "\r\n";
+        // Add CSV attachments if present
+        if (!attachments.empty()) {
+            for (const auto& [csv_filename, csv_base64] : attachments) {
+                g_email_payload += "\r\n--" + outer_boundary + "\r\n";
+                g_email_payload += "Content-Type: text/csv; name=\"" + csv_filename + "\"\r\n";
+                g_email_payload += "Content-Transfer-Encoding: base64\r\n";
+                g_email_payload += "Content-Disposition: attachment; filename=\"" + csv_filename + "\"\r\n";
+                g_email_payload += "\r\n";
+                g_email_payload += csv_base64 + "\r\n";
+            }
 
             // Close outer multipart/mixed
             g_email_payload += "\r\n--" + outer_boundary + "--\r\n";
@@ -365,7 +369,11 @@ std::string EmailSender::generate_trading_report_body(
     const std::string& date,
     bool is_daily_strategy,
     const std::unordered_map<std::string, double>& current_prices,
-    std::shared_ptr<DatabaseInterface> db)
+    std::shared_ptr<DatabaseInterface> db,
+    const std::unordered_map<std::string, Position>& yesterday_positions,
+    const std::unordered_map<std::string, double>& yesterday_close_prices,
+    const std::unordered_map<std::string, double>& two_days_ago_close_prices,
+    const std::map<std::string, double>& yesterday_daily_metrics)
 {
     std::ostringstream html;
 
@@ -408,14 +416,50 @@ std::string EmailSender::generate_trading_report_body(
     html << "</div>\n";
     html << "</div>\n";
 
-    // Positions
-    html << "<h2>Positions</h2>\n";
-    html << format_positions_table(positions, is_daily_strategy, current_prices);
+    // Today's Positions (Forward-Looking - no PnL shown as it will be zero)
+    html << "<h2>Today's Positions</h2>\n";
+    html << format_positions_table(positions, is_daily_strategy, current_prices, strategy_metrics);
 
     // Executions (if any)
     if (!executions.empty()) {
         html << "<h2>Daily Executions</h2>\n";
         html << format_executions_table(executions);
+    }
+
+    // Calculate yesterday's date for display
+    std::string yesterday_date_str;
+    try {
+        // Parse the date string to calculate yesterday
+        std::tm tm = {};
+        std::istringstream ss(date);
+        ss >> std::get_time(&tm, "%Y-%m-%d");
+        if (!ss.fail()) {
+            auto time_point = std::chrono::system_clock::from_time_t(std::mktime(&tm));
+            auto yesterday = time_point - std::chrono::hours(24);
+            auto yesterday_time_t = std::chrono::system_clock::to_time_t(yesterday);
+            std::ostringstream oss;
+            oss << std::put_time(std::gmtime(&yesterday_time_t), "%Y-%m-%d");
+            yesterday_date_str = oss.str();
+        }
+    } catch (...) {
+        yesterday_date_str = "Previous Day";
+    }
+
+    // Yesterday's Finalized Positions (with actual PnL)
+    if (!yesterday_positions.empty() && !yesterday_close_prices.empty() && !two_days_ago_close_prices.empty()) {
+        html << format_yesterday_finalized_positions_table(
+            yesterday_positions,
+            two_days_ago_close_prices,  // Entry prices (Day T-2)
+            yesterday_close_prices,      // Exit prices (Day T-1)
+            db,
+            yesterday_daily_metrics,    // Yesterday's daily metrics (not today's strategy_metrics)
+            yesterday_date_str
+        );
+    } else if (yesterday_positions.empty()) {
+        html << "<h2>Yesterday's Finalized Positions - Actual Results</h2>\n";
+        html << "<div class=\"note\">\n";
+        html << "<p><em>First trading day - no previous positions to report</em></p>\n";
+        html << "</div>\n";
     }
 
     /*    // Risk snapshot (if provided)
@@ -447,7 +491,7 @@ std::string EmailSender::generate_trading_report_body(
     // Footer note
     if (is_daily_strategy) {
         html << "<div class=\"footer-note\">\n";
-        html << "<strong>Note:</strong> This strategy is based on daily OHLCV data. All values reflect a trading start date of January 1st, 2025. \n";
+        html << "<strong>Note:</strong> This strategy is based on daily OHLCV data. All values reflect a trading start date of October 5th, 2025. \n";
         html << "</div>\n";
     }
 
@@ -566,20 +610,24 @@ std::string EmailSender::format_executions_table(const std::vector<ExecutionRepo
 
 std::string EmailSender::format_positions_table(const std::unordered_map<std::string, Position>& positions,
                                                 bool is_daily_strategy,
-                                                const std::unordered_map<std::string, double>& current_prices) {
+                                                const std::unordered_map<std::string, double>& current_prices,
+                                                const std::map<std::string, double>& strategy_metrics) {
     std::ostringstream html;
 
     html << "<table>\n";
     html << "<tr><th>Symbol</th><th>Quantity</th>";
 
-    // Show only market price for positions
-    html << "<th>Market Price</th>";
+    // Show only market price for forward-looking positions (no PnL - will be zero)
+    html << "<th>Entry Price</th><th>Market Price</th>";
 
-    html << "<th>Notional</th><th>P&L</th></tr>\n";
+    html << "<th>Notional</th><th>% of Total</th></tr>\n";
 
     double total_notional = 0.0;
     double total_margin_posted = 0.0;
     int active_positions = 0;
+
+    // First pass: calculate total notional
+    std::vector<std::tuple<std::string, double, double, double, double, double>> position_data;  // symbol, qty, entry, market, notional, margin
 
     for (const auto& [symbol, position] : positions) {
         if (position.quantity.as_double() != 0.0) {
@@ -635,17 +683,6 @@ std::string EmailSender::format_positions_table(const std::unordered_map<std::st
             notional = position.quantity.as_double() * position.average_price.as_double() * contract_multiplier;
             total_notional += std::abs(notional);
 
-            // Calculate total P&L (realized + unrealized)
-            double total_pnl = position.realized_pnl.as_double() + position.unrealized_pnl.as_double();
-            std::string pnl_class;
-            if (std::fabs(total_pnl) < 1e-9) {
-                pnl_class = "neutral"; // zero -> blue
-            } else if (total_pnl > 0) {
-                pnl_class = "positive";
-            } else {
-                pnl_class = "negative";
-            }
-
             // Use current market price if available, otherwise fall back to average price
             double market_price = position.average_price.as_double();
             auto price_it = current_prices.find(symbol);
@@ -653,18 +690,36 @@ std::string EmailSender::format_positions_table(const std::unordered_map<std::st
                 market_price = price_it->second;
             }
 
-            html << "<tr>\n";
-            html << "<td>" << symbol << "</td>\n";
-            html << "<td>" << std::fixed << std::setprecision(0) << position.quantity.as_double() << "</td>\n";
+            // Entry price (same as market price for forward-looking positions)
+            double entry_price = position.average_price.as_double();
 
-            // Show only market price
-            html << "<td>$" << std::fixed << std::setprecision(2) << market_price << "</td>\n";
-
-            html << "<td>$" << std::fixed << std::setprecision(2) << std::abs(notional) << "</td>\n";
-            html << "<td class=\"" << pnl_class << "\">$" << std::fixed << std::setprecision(2)
-                 << total_pnl << "</td>\n";
-            html << "</tr>\n";
+            // Store data for second pass
+            position_data.push_back(std::make_tuple(
+                symbol,
+                position.quantity.as_double(),
+                entry_price,
+                market_price,
+                notional,
+                total_margin_posted
+            ));
         }
+    }
+
+    // Second pass: render rows with % of total
+    for (const auto& [symbol, qty, entry_price, market_price, notional, margin] : position_data) {
+        double pct_of_total = (total_notional > 0) ? (std::abs(notional) / total_notional * 100.0) : 0.0;
+
+        html << "<tr>\n";
+        html << "<td>" << symbol << "</td>\n";
+        html << "<td>" << std::fixed << std::setprecision(0) << qty << "</td>\n";
+
+        // Show entry and market price (will be the same for forward-looking positions)
+        html << "<td>$" << std::fixed << std::setprecision(2) << entry_price << "</td>\n";
+        html << "<td>$" << std::fixed << std::setprecision(2) << market_price << "</td>\n";
+
+        html << "<td>$" << std::fixed << std::setprecision(2) << std::abs(notional) << "</td>\n";
+        html << "<td>" << std::fixed << std::setprecision(2) << pct_of_total << "%</td>\n";
+        html << "</tr>\n";
     }
 
     html << "</table>\n";
@@ -693,9 +748,171 @@ std::string EmailSender::format_positions_table(const std::unordered_map<std::st
     };
 
     html << "<strong>Active Positions:</strong> " << active_positions << "<br>\n";
+
+    // Add volatility if available in strategy metrics
+    auto volatility_it = strategy_metrics.find("Volatility");
+    if (volatility_it != strategy_metrics.end()) {
+        html << "<strong>Volatility:</strong> " << std::fixed << std::setprecision(2)
+             << volatility_it->second << "%<br>\n";
+    }
+
     html << "<strong>Total Notional:</strong> $" << format_with_commas(total_notional) << "<br>\n";
     html << "<strong>Total Margin Posted:</strong> $" << format_with_commas(total_margin_posted) << "\n";
     html << "</div>\n";
+
+    return html.str();
+}
+
+std::string EmailSender::format_yesterday_finalized_positions_table(
+    const std::unordered_map<std::string, Position>& yesterday_positions,
+    const std::unordered_map<std::string, double>& entry_prices,  // Day T-2 close
+    const std::unordered_map<std::string, double>& exit_prices,   // Day T-1 close
+    std::shared_ptr<DatabaseInterface> db,
+    const std::map<std::string, double>& strategy_metrics,
+    const std::string& yesterday_date
+) {
+    std::ostringstream html;
+
+    if (yesterday_positions.empty()) {
+        html << "<div class=\"note\">\n";
+        html << "<p><em>First trading day - no previous positions to report</em></p>\n";
+        html << "</div>\n";
+        return html.str();
+    }
+
+    html << "<h2>Yesterday's Finalized Position Results</h2>\n";
+    html << "<table>\n";
+    html << "<tr>";
+    html << "<th>Symbol</th>";
+    html << "<th>Quantity</th>";
+    html << "<th>Entry Price</th>";
+    html << "<th>Exit Price</th>";
+    html << "<th>Realized PnL</th>";
+    html << "</tr>\n";
+
+    // Helper function to format numbers with commas
+    auto format_with_commas = [](double value, int precision = 2) -> std::string {
+        std::ostringstream oss;
+        oss << std::fixed << std::setprecision(precision) << value;
+        std::string str = oss.str();
+
+        // Find decimal point
+        size_t decimal_pos = str.find('.');
+        if (decimal_pos == std::string::npos) {
+            decimal_pos = str.length();
+        }
+
+        // Insert commas
+        int insert_pos = decimal_pos - 3;
+        while (insert_pos > 0) {
+            str.insert(insert_pos, ",");
+            insert_pos -= 3;
+        }
+
+        return str;
+    };
+
+    // Collect position data for sorting and aggregation
+    std::vector<std::tuple<std::string, double, double, double, double>> position_data;
+    double total_realized_pnl = 0.0;
+
+    for (const auto& [symbol, position] : yesterday_positions) {
+        double qty = position.quantity.as_double();
+
+        // Skip positions with zero quantity
+        if (std::abs(qty) < 0.0001) continue;
+
+        // Get entry and exit prices
+        double entry_price = 0.0;
+        double exit_price = 0.0;
+
+        if (entry_prices.find(symbol) != entry_prices.end()) {
+            entry_price = entry_prices.at(symbol);
+        }
+        if (exit_prices.find(symbol) != exit_prices.end()) {
+            exit_price = exit_prices.at(symbol);
+        }
+
+        // Get realized PnL from the position (GROSS PnL - not net of commissions)
+        // This is the PnL as stored in the positions table after finalization
+        double realized_pnl = position.realized_pnl.as_double();
+
+        position_data.emplace_back(symbol, qty, entry_price, exit_price, realized_pnl);
+
+        total_realized_pnl += realized_pnl;
+    }
+
+    // Sort by symbol
+    std::sort(position_data.begin(), position_data.end(),
+              [](const auto& a, const auto& b) { return std::get<0>(a) < std::get<0>(b); });
+
+    // Render table rows
+    for (const auto& [symbol, qty, entry_price, exit_price, realized_pnl] : position_data) {
+
+        html << "<tr>";
+        html << "<td>" << symbol << "</td>";
+        html << "<td>" << std::fixed << std::setprecision(2) << qty << "</td>";
+        html << "<td>" << format_with_commas(entry_price, 2) << "</td>";
+        html << "<td>" << format_with_commas(exit_price, 2) << "</td>";
+
+        // Realized PnL with color (GROSS PnL from positions table)
+        std::string realized_pnl_class = (realized_pnl >= 0) ? "positive" : "negative";
+        html << "<td class=\"" << realized_pnl_class << "\">";
+        html << "$" << format_with_commas(realized_pnl, 2);
+        html << "</td>";
+
+        html << "</tr>\n";
+    }
+
+    html << "</table>\n";
+
+    // Add daily metrics as a section heading after the table - use passed yesterday_daily_metrics
+    if (!strategy_metrics.empty() && !yesterday_date.empty()) {
+        html << "<h2>" << yesterday_date << " Metrics</h2>\n";
+        html << "<div class=\"metrics-category\">\n";
+
+        // Helper to format metrics with proper color
+        auto format_metric_display = [&format_with_commas](const std::string& label, double value, bool is_percentage) -> std::string {
+            std::string value_class = "";
+            if (std::fabs(value) < 1e-9) {
+                value_class = " class=\"neutral\"";
+            } else if (value > 0) {
+                value_class = " class=\"positive\"";
+            } else {
+                value_class = " class=\"negative\"";
+            }
+
+            std::string formatted_value;
+            if (is_percentage) {
+                formatted_value = format_with_commas(value, 2) + "%";
+            } else {
+                formatted_value = "$" + format_with_commas(value, 2);
+            }
+
+            return "<div class=\"metric\"><strong>" + label + ":</strong> <span" + value_class + ">" + formatted_value + "</span></div>\n";
+        };
+
+        // Extract metrics from the passed map
+        auto daily_return_it = strategy_metrics.find("Daily Return");
+        auto daily_unrealized_it = strategy_metrics.find("Daily Unrealized PnL");
+        auto daily_realized_it = strategy_metrics.find("Daily Realized PnL");
+        auto daily_total_it = strategy_metrics.find("Daily Total PnL");
+
+        if (daily_return_it != strategy_metrics.end()) {
+            html << format_metric_display("Daily Return", daily_return_it->second, true);
+        }
+        if (daily_unrealized_it != strategy_metrics.end()) {
+            html << format_metric_display("Daily Unrealized PnL", daily_unrealized_it->second, false);
+        }
+        if (daily_realized_it != strategy_metrics.end()) {
+            html << format_metric_display("Daily Realized PnL", daily_realized_it->second, false);
+        }
+        if (daily_total_it != strategy_metrics.end()) {
+            html << format_metric_display("Daily Total PnL", daily_total_it->second, false);
+        }
+
+        html << "</div>\n";
+    }
 
     return html.str();
 }
@@ -757,7 +974,7 @@ std::string EmailSender::format_strategy_metrics(const std::map<std::string, dou
         } else if (key.find("Return") != std::string::npos || key.find("Volatility") != std::string::npos ||
                    key.find("Cushion") != std::string::npos) {
             formatted_value = format_with_commas(value) + "%";
-        } else if (key.find("Leverage") != std::string::npos) {
+        } else if (key.find("Leverage") != std::string::npos || key.find("Ratio") != std::string::npos) {
             formatted_value = format_with_commas(value) + "x";
         } else if (key.find("Positions") != std::string::npos) {
             formatted_value = std::to_string(static_cast<int>(std::round(value)));
@@ -783,143 +1000,89 @@ std::string EmailSender::format_strategy_metrics(const std::map<std::string, dou
         return result.str();
     };
 
-    // Extract specific metrics for proper ordering
-    std::map<std::string, double> ordered_metrics;
+    // Single Portfolio Snapshot section
+    html << "<h2>Portfolio Snapshot</h2>\n";
+    html << "<div class=\"metrics-category\">\n";
 
-    // Store metrics in specific order
-    for (const auto& [key, value] : strategy_metrics) {
-        if (key.find("Leverage") != std::string::npos) {
-            // Leverage metrics - handle separately
-            continue;
-        } else if (key.find("Margin Posted") != std::string::npos ||
-                   key.find("Cash Available") != std::string::npos ||
-                   key.find("Margin Cushion") != std::string::npos) {
-            // Risk & Liquidity metrics - handle separately
-            continue;
-        }
-        // Store everything else for performance metrics
-        ordered_metrics[key] = value;
-    }
+    // Define the exact order for Portfolio Snapshot
+    std::vector<std::string> portfolio_order = {
+        "Total Annualized Return",
+        "Total Unrealized PnL",
+        "Total Realized PnL",
+        "Total PnL"
+    };
 
-    // Extract leverage metrics (avoiding duplicates)
-    std::map<std::string, double> leverage_metrics;
-    for (const auto& [key, value] : strategy_metrics) {
-        if (key.find("Leverage") != std::string::npos || key == "Equity-to-Margin Ratio") {
-            // Only keep the metrics we want to display
-            if (key == "Gross Leverage" || key == "Net Leverage" ||
-                key == "Portfolio Leverage" || key == "Portfolio Leverage (Gross)" ||
-                key == "Equity-to-Margin Ratio" || key == "Implied Leverage from Margin") {
-                leverage_metrics[key] = value;
-            }
+    // Add total metrics
+    for (const auto& metric_name : portfolio_order) {
+        auto it = strategy_metrics.find(metric_name);
+        if (it != strategy_metrics.end()) {
+            html << format_metric(it->first, it->second);
         }
     }
 
-    // Extract risk & liquidity metrics (margin and cash only)
-    std::map<std::string, double> risk_liquidity_metrics;
-    for (const auto& [key, value] : strategy_metrics) {
-        if (key == "Margin Posted" || key == "Cash Available" || key == "Margin Cushion") {
-            risk_liquidity_metrics[key] = value;
+    html << "<br>\n";
+
+    // Leverage metrics
+    auto gross_lev = strategy_metrics.find("Gross Leverage");
+    if (gross_lev != strategy_metrics.end()) {
+        html << format_metric("Gross Leverage", gross_lev->second);
+    }
+
+    auto net_lev = strategy_metrics.find("Net Leverage");
+    if (net_lev != strategy_metrics.end()) {
+        html << format_metric("Net Leverage", net_lev->second);
+    }
+
+    auto port_lev = strategy_metrics.find("Portfolio Leverage");
+    if (port_lev != strategy_metrics.end()) {
+        html << format_metric("Portfolio Leverage", port_lev->second);
+    } else {
+        auto port_lev_gross = strategy_metrics.find("Portfolio Leverage (Gross)");
+        if (port_lev_gross != strategy_metrics.end()) {
+            html << format_metric("Portfolio Leverage", port_lev_gross->second);
         }
     }
 
-    // Render Performance Metrics Section with explicit ordering
-    if (!ordered_metrics.empty()) {
-        html << "<h2>Performance Metrics</h2>\n";
-        html << "<div class=\"metrics-category\">\n";
+    html << "<br>\n";
 
-        // Define the exact order we want
-        std::vector<std::string> performance_order = {
-            "Daily Return",
-            "Daily Unrealized PnL",
-            "Daily Realized PnL",
-            "Daily Total PnL",
-            "Total Annualized Return",
-            "Total Return",
-            "Total Unrealized PnL",
-            "Total Realized PnL",
-            "Total PnL",
-            "Volatility",
-            "Total Commissions",
-            "Current Portfolio Value"
-        };
-
-        for (const auto& metric_name : performance_order) {
-            auto it = ordered_metrics.find(metric_name);
-            if (it != ordered_metrics.end()) {
-                html << format_metric(it->first, it->second);
-
-                // Add line space after Daily Total PnL
-                if (metric_name == "Daily Total PnL") {
-                    html << "<br>\n";
-                }
-
-                // Add line space after Total PnL
-                if (metric_name == "Total PnL") {
-                    html << "<br>\n";
-                }
-            }
-        }
-
-        html << "</div>\n";
+    // Total Commissions
+    auto total_comm = strategy_metrics.find("Total Commissions");
+    if (total_comm != strategy_metrics.end()) {
+        html << format_metric("Total Commissions", total_comm->second);
     }
 
-    // Render combined Risk & Liquidity Metrics Section (includes leverage)
-    if (!leverage_metrics.empty() || !risk_liquidity_metrics.empty()) {
-        html << "<h2>Risk & Liquidity Metrics</h2>\n";
-        html << "<div class=\"metrics-category\">\n";
+    html << "<br>\n";
 
-        // Leverage metrics in exact order
-        auto gross_it = leverage_metrics.find("Gross Leverage");
-        if (gross_it != leverage_metrics.end()) {
-            html << format_metric("Gross Leverage", gross_it->second);
-        }
-
-        auto net_it = leverage_metrics.find("Net Leverage");
-        if (net_it != leverage_metrics.end()) {
-            html << format_metric("Net Leverage", net_it->second);
-        }
-
-        // Portfolio Leverage (use Portfolio Leverage if exists, else Portfolio Leverage (Gross))
-        auto portfolio_it = leverage_metrics.find("Portfolio Leverage");
-        if (portfolio_it != leverage_metrics.end()) {
-            html << format_metric("Portfolio Leverage", portfolio_it->second);
-        } else {
-            portfolio_it = leverage_metrics.find("Portfolio Leverage (Gross)");
-            if (portfolio_it != leverage_metrics.end()) {
-                html << format_metric("Portfolio Leverage", portfolio_it->second);
-            }
-        }
-
-        // Add line break after leverage metrics
-        html << "<br>\n";
-
-        // Margin metrics in exact order
-        auto margin_posted_it = risk_liquidity_metrics.find("Margin Posted");
-        if (margin_posted_it != risk_liquidity_metrics.end()) {
-            html << format_metric("Margin Posted", margin_posted_it->second);
-        }
-
-        auto margin_cov_it = leverage_metrics.find("Equity-to-Margin Ratio");
-        if (margin_cov_it != leverage_metrics.end()) {
-            html << format_metric("Equity-to-Margin Ratio", margin_cov_it->second);
-        }
-
-        auto margin_cushion_it = risk_liquidity_metrics.find("Margin Cushion");
-        if (margin_cushion_it != risk_liquidity_metrics.end()) {
-            html << format_metric("Margin Cushion", margin_cushion_it->second);
-        }
-
-        // Add line break before cash available
-        html << "<br>\n";
-
-        // Cash available
-        auto cash_available_it = risk_liquidity_metrics.find("Cash Available");
-        if (cash_available_it != risk_liquidity_metrics.end()) {
-            html << format_metric("Cash Available", cash_available_it->second);
-        }
-
-        html << "</div>\n";
+    // Margin metrics
+    auto margin_posted = strategy_metrics.find("Margin Posted");
+    if (margin_posted != strategy_metrics.end()) {
+        html << format_metric("Margin Posted", margin_posted->second);
     }
+
+    auto equity_margin = strategy_metrics.find("Equity-to-Margin Ratio");
+    if (equity_margin != strategy_metrics.end()) {
+        html << format_metric("Equity-to-Margin Ratio", equity_margin->second);
+    }
+
+    auto margin_cushion = strategy_metrics.find("Margin Cushion");
+    if (margin_cushion != strategy_metrics.end()) {
+        html << format_metric("Margin Cushion", margin_cushion->second);
+    }
+
+    html << "<br>\n";
+
+    // Cash and Portfolio Value
+    auto portfolio_value = strategy_metrics.find("Current Portfolio Value");
+    if (portfolio_value != strategy_metrics.end()) {
+        html << format_metric("Current Portfolio Value", portfolio_value->second);
+    }
+
+    auto cash_available = strategy_metrics.find("Cash Available");
+    if (cash_available != strategy_metrics.end()) {
+        html << format_metric("Cash Available", cash_available->second);
+    }
+
+    html << "</div>\n";
 
     return html.str();
 }

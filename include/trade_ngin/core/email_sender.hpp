@@ -49,10 +49,10 @@ public:
      * @param subject Email subject
      * @param body Email body (HTML or plain text)
      * @param is_html Whether the body is HTML format
-     * @param attachment_path Optional path to file to attach (e.g., CSV file)
+     * @param attachment_paths Optional vector of file paths to attach (e.g., CSV files)
      * @return Result indicating success or failure
      */
-    Result<void> send_email(const std::string& subject, const std::string& body, bool is_html = true, const std::optional<std::string>& attachment_path = std::nullopt);
+    Result<void> send_email(const std::string& subject, const std::string& body, bool is_html = true, const std::vector<std::string>& attachment_paths = {});
 
     /**
      * @brief Generate trading results email body
@@ -71,7 +71,11 @@ public:
         const std::string& date,
         bool is_daily_strategy = true,
         const std::unordered_map<std::string, double>& current_prices = {},
-        std::shared_ptr<DatabaseInterface> db = nullptr
+        std::shared_ptr<DatabaseInterface> db = nullptr,
+        const std::unordered_map<std::string, Position>& yesterday_positions = {},
+        const std::unordered_map<std::string, double>& yesterday_close_prices = {},
+        const std::unordered_map<std::string, double>& two_days_ago_close_prices = {},
+        const std::map<std::string, double>& yesterday_daily_metrics = {}
     );
 
     /**
@@ -102,11 +106,14 @@ private:
      * @brief Format position data for email
      * @param positions Portfolio positions
      * @param is_daily_strategy Flag indicating if this is a daily strategy
+     * @param current_prices Current market prices
+     * @param strategy_metrics Strategy metrics (to extract volatility)
      * @return Formatted position table HTML
      */
     std::string format_positions_table(const std::unordered_map<std::string, Position>& positions,
                                        bool is_daily_strategy = true,
-                                       const std::unordered_map<std::string, double>& current_prices = {});
+                                       const std::unordered_map<std::string, double>& current_prices = {},
+                                       const std::map<std::string, double>& strategy_metrics = {});
 
     /**
      * @brief Format risk metrics for email
@@ -135,6 +142,25 @@ private:
      * @return Formatted symbols table HTML
      */
     std::string format_symbols_table_for_positions(const std::unordered_map<std::string, Position>& positions,std::shared_ptr<DatabaseInterface> db);
+
+    /**
+     * @brief Format yesterday's finalized positions table with actual PnL
+     * @param yesterday_positions Yesterday's positions
+     * @param entry_prices Entry prices (Day T-2 close)
+     * @param exit_prices Exit prices (Day T-1 close)
+     * @param db Database interface to query contract multipliers
+     * @param strategy_metrics Strategy metrics (to extract daily metrics)
+     * @param yesterday_date Yesterday's date string
+     * @return Formatted yesterday's finalized positions table HTML
+     */
+    std::string format_yesterday_finalized_positions_table(
+        const std::unordered_map<std::string, Position>& yesterday_positions,
+        const std::unordered_map<std::string, double>& entry_prices,
+        const std::unordered_map<std::string, double>& exit_prices,
+        std::shared_ptr<DatabaseInterface> db,
+        const std::map<std::string, double>& strategy_metrics = {},
+        const std::string& yesterday_date = ""
+    );
 };
 
 } // namespace trade_ngin

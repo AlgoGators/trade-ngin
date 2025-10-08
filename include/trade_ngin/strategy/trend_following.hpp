@@ -153,6 +153,14 @@ public:
      */
     double get_point_value_multiplier(const std::string& symbol) const;
 
+    /**
+     * @brief Get EMA values for a symbol at specific windows
+     * @param symbol Instrument symbol
+     * @param windows Vector of EMA window sizes to calculate
+     * @return Map of window sizes to EMA values
+     */
+    std::unordered_map<int, double> get_ema_values(const std::string& symbol, const std::vector<int>& windows) const;
+
 protected:
     /**
      * @brief Validate strategy configuration

@@ -5,6 +5,7 @@
 #include <chrono>
 #include <ctime>
 #include <set>
+#include <algorithm>
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/core/time_utils.hpp"
 #include "trade_ngin/data/credential_store.hpp"
@@ -452,8 +453,8 @@ int main(int argc, char* argv[]) {
             INFO("DEBUG: Previous position - " + symbol + ": " + std::to_string(pos.quantity.as_double()));
 }
         
-        // Get current market prices for PnL calculations
-        INFO("Getting current market prices for PnL calculations...");
+        // Get market prices - TWO sets needed for PnL lag model
+        INFO("Getting market prices for PnL lag model...");
         std::set<std::string> all_symbols;
         for (const auto& [symbol, position] : positions) {
             if (position.quantity.as_double() != 0.0) {
@@ -466,163 +467,208 @@ int main(int argc, char* argv[]) {
         }
 
         std::vector<std::string> symbols_to_price(all_symbols.begin(), all_symbols.end());
-        INFO("Requesting current prices for " + std::to_string(symbols_to_price.size()) + " symbols");
+        INFO("Requesting prices for " + std::to_string(symbols_to_price.size()) + " symbols");
 
         // For historical runs, use the close prices from the bars data for consistency
         // For live runs, get real-time prices
-        std::unordered_map<std::string, double> current_prices;
+        // We need TWO price sets:
+        // 1. previous_day_close_prices (Day T-1 close) - for execution and market_price on Day T
+        // 2. two_days_ago_close_prices (Day T-2 close) - for finalizing Day T-1 PnL
+        std::unordered_map<std::string, double> previous_day_close_prices;  // Day T-1 close
+        std::unordered_map<std::string, double> two_days_ago_close_prices;  // Day T-2 close
 
         if (use_override_date) {
-            // Historical run: Extract close prices from the last bars for each symbol
+            // Historical run: Extract close prices from the bars data
             INFO("Historical run detected - using close prices from bars data for date: " +
                  std::to_string(std::chrono::system_clock::to_time_t(target_date)));
 
-            // Group bars by symbol and get the last close price for each
+            // Group bars by symbol and sort by timestamp
             std::unordered_map<std::string, std::vector<Bar>> bars_by_symbol;
             for (const auto& bar : all_bars) {
                 bars_by_symbol[bar.symbol].push_back(bar);
             }
 
-            for (const auto& [symbol, symbol_bars] : bars_by_symbol) {
+            for (auto& [symbol, symbol_bars] : bars_by_symbol) {
                 if (!symbol_bars.empty()) {
-                    // Use the last available close price for this symbol
-                    double close_price = static_cast<double>(symbol_bars.back().close);
-                    current_prices[symbol] = close_price;
-                    DEBUG("Historical price for " + symbol + ": " + std::to_string(close_price));
+                    // Sort by timestamp
+                    std::sort(symbol_bars.begin(), symbol_bars.end(),
+                             [](const Bar& a, const Bar& b) { return a.timestamp < b.timestamp; });
+
+                    // Last bar is Day T-1 (yesterday's close)
+                    double yesterday_close = static_cast<double>(symbol_bars.back().close);
+                    previous_day_close_prices[symbol] = yesterday_close;
+                    DEBUG("Day T-1 close for " + symbol + ": " + std::to_string(yesterday_close));
+
+                    // Second-to-last bar is Day T-2 (two days ago close) - for finalizing Day T-1
+                    if (symbol_bars.size() >= 2) {
+                        double two_days_ago_close = static_cast<double>(symbol_bars[symbol_bars.size() - 2].close);
+                        two_days_ago_close_prices[symbol] = two_days_ago_close;
+                        DEBUG("Day T-2 close for " + symbol + ": " + std::to_string(two_days_ago_close));
+                    }
                 }
             }
-            INFO("Using historical close prices for " + std::to_string(current_prices.size()) + " symbols");
+            INFO("Using historical close prices: " + std::to_string(previous_day_close_prices.size()) + " Day T-1, " +
+                 std::to_string(two_days_ago_close_prices.size()) + " Day T-2");
         } else {
-            // Live run: Get real-time prices from database
-            auto current_prices_result = db->get_latest_prices(symbols_to_price, trade_ngin::AssetClass::FUTURES);
-            if (current_prices_result.is_ok()) {
-                current_prices = current_prices_result.value();
-                INFO("Retrieved real-time prices for " + std::to_string(current_prices.size()) + " symbols");
+            // Live run: Get yesterday's and two-days-ago close prices from database
+            // Query for yesterday's close
+            auto yesterday_date = now - std::chrono::hours(24);
+            auto yesterday_prices_result = db->get_latest_prices(symbols_to_price, trade_ngin::AssetClass::FUTURES);
+            if (yesterday_prices_result.is_ok()) {
+                previous_day_close_prices = yesterday_prices_result.value();
+                INFO("Retrieved Day T-1 (yesterday) close prices for " + std::to_string(previous_day_close_prices.size()) + " symbols");
             } else {
-                ERROR("Failed to get current prices: " + std::string(current_prices_result.error()->what()));
+                ERROR("Failed to get yesterday's close prices: " + std::string(yesterday_prices_result.error()->what()));
             }
+
+            // Query for two-days-ago close (for finalizing yesterday's PnL)
+            auto two_days_ago_date = now - std::chrono::hours(48);
+            // TODO: Need database method to get historical close by specific date
+            // For now, we'll use the same approach as historical mode
+            WARN("Live mode two-days-ago close price retrieval not yet implemented - will skip Day T-1 finalization");
         }
 
-        // Calculate Daily PnL for each position
-        INFO("Calculating daily PnL for positions...");
-        double daily_realized_pnl = 0.0;
-        double daily_unrealized_pnl = 0.0;  // For futures, this will be 0 as all PnL is realized
-        double total_daily_commissions = 0.0;
+        // ========================================
+        // STEP 1: FINALIZE YESTERDAY'S (Day T-1) PnL
+        // ========================================
+        INFO("STEP 1: Finalizing Day T-1 PnL using Day T-1 close prices...");
 
-        // Track PnL by position for database storage
-        std::unordered_map<std::string, double> position_daily_pnl;
+        // We need to UPDATE yesterday's positions with actual PnL
+        // Yesterday's positions were stored with realized_pnl = 0
+        // Now we have yesterday's close (Day T-1 close), so we can calculate actual PnL
 
-        // Calculate PnL for each current position
-        for (auto& [symbol, current_position] : positions) {
-            double current_qty = current_position.quantity.as_double();
-            double current_price = current_position.average_price.as_double();
+        double yesterday_total_pnl = 0.0;
 
-            // Get actual market price if available
-            if (current_prices.find(symbol) != current_prices.end()) {
-                current_price = current_prices[symbol];
-            }
+        if (!two_days_ago_close_prices.empty() && !previous_positions.empty()) {
+            INFO("Calculating Day T-1 finalized PnL...");
 
-            // Find previous position
-            double prev_qty = 0.0;
-            double prev_price = current_price;  // Default to current if no previous
-            auto prev_it = previous_positions.find(symbol);
-            if (prev_it != previous_positions.end()) {
-                prev_qty = prev_it->second.quantity.as_double();
-                prev_price = prev_it->second.average_price.as_double();
-            }
-
-            // Get point value multiplier for this symbol from strategy (which now uses registry ONLY)
-            double point_value = 0.0;
-            try {
-                point_value = tf_strategy->get_point_value_multiplier(symbol);
-            } catch (const std::exception& e) {
-                ERROR("CRITICAL: Cannot get point value for " + symbol + ": " + e.what());
-                throw;  // Re-throw - cannot calculate PnL without multiplier
-            }
-
-            // Calculate daily PnL for this position
-            double daily_position_pnl = 0.0;
-
-            if (prev_qty != 0.0 && current_qty != 0.0) {
-                // Position held overnight and still open
-                // PnL = quantity * price_change * point_value (for futures, this is mark-to-market)
-                daily_position_pnl = prev_qty * (current_price - prev_price) * point_value;
-
-                // If position size changed, add PnL from the change
-                if (std::abs(current_qty - prev_qty) > 1e-6) {
-                    // Position changed during the day
-                    // Additional quantity traded at today's price
-                    // This PnL is already reflected in executions
-                }
-            } else if (prev_qty != 0.0 && current_qty == 0.0) {
-                // Position was closed today
-                daily_position_pnl = prev_qty * (current_price - prev_price) * point_value;
-            } else if (prev_qty == 0.0 && current_qty != 0.0) {
-                // New position opened today
-                // No PnL from overnight hold, only from intraday if price moved
-                // For new positions, PnL is 0 on the first day (just opened at current price)
-                daily_position_pnl = 0.0;
-            }
-
-            // Store position daily PnL (before commissions)
-            position_daily_pnl[symbol] = daily_position_pnl;
-
-            // For futures, all PnL is realized (mark-to-market)
-            daily_realized_pnl += daily_position_pnl;
-
-            // Update position with daily PnL
-            current_position.realized_pnl = Decimal(daily_position_pnl);
-            current_position.unrealized_pnl = Decimal(0.0);  // Always 0 for futures
-
-            INFO("Position " + symbol + " daily PnL: prev_qty=" + std::to_string(prev_qty) +
-                 " curr_qty=" + std::to_string(current_qty) +
-                 " prev_price=" + std::to_string(prev_price) +
-                 " curr_price=" + std::to_string(current_price) +
-                 " point_value=" + std::to_string(point_value) +
-                 " daily_pnl=" + std::to_string(daily_position_pnl));
-        }
-
-        // Check for positions that were closed (in previous but not in current)
-        for (const auto& [symbol, prev_position] : previous_positions) {
-            if (positions.find(symbol) == positions.end() && prev_position.quantity.as_double() != 0.0) {
-                // Position was completely closed
+            for (const auto& [symbol, prev_position] : previous_positions) {
                 double prev_qty = prev_position.quantity.as_double();
-                double prev_price = prev_position.average_price.as_double();
-                double current_price = prev_price;  // Default
+                if (prev_qty == 0.0) continue;
 
-                if (current_prices.find(symbol) != current_prices.end()) {
-                    current_price = current_prices[symbol];
+                double prev_entry_price = prev_position.average_price.as_double();
+
+                // Get Day T-2 close (entry price for Day T-1 position)
+                double day_t2_close = prev_entry_price;  // Default
+                if (two_days_ago_close_prices.find(symbol) != two_days_ago_close_prices.end()) {
+                    day_t2_close = two_days_ago_close_prices[symbol];
                 }
 
-                // Get point value multiplier for this symbol from strategy (which now uses registry ONLY)
+                // Get Day T-1 close (current market price for Day T-1 finalization)
+                double day_t1_close = prev_entry_price;  // Default
+                if (previous_day_close_prices.find(symbol) != previous_day_close_prices.end()) {
+                    day_t1_close = previous_day_close_prices[symbol];
+                }
+
+                // Get point value multiplier
                 double point_value = 0.0;
                 try {
                     point_value = tf_strategy->get_point_value_multiplier(symbol);
                 } catch (const std::exception& e) {
                     ERROR("CRITICAL: Cannot get point value for " + symbol + ": " + e.what());
-                    throw;  // Re-throw - cannot calculate PnL without multiplier
+                    throw;
                 }
 
-                double daily_position_pnl = prev_qty * (current_price - prev_price) * point_value;
-                position_daily_pnl[symbol] = daily_position_pnl;
-                daily_realized_pnl += daily_position_pnl;
+                // Calculate Day T-1 PnL: qty * (Day T-1 close - Day T-2 close) * point_value
+                double yesterday_position_pnl = prev_qty * (day_t1_close - day_t2_close) * point_value;
+                yesterday_total_pnl += yesterday_position_pnl;
 
-                // Add a zero-quantity position to track the closed position's PnL
-                Position closed_pos;
-                closed_pos.symbol = symbol;
-                closed_pos.quantity = Decimal(0.0);
-                closed_pos.average_price = Decimal(current_price);
-                closed_pos.realized_pnl = Decimal(daily_position_pnl);
-                closed_pos.unrealized_pnl = Decimal(0.0);
-                closed_pos.last_update = now;
-                positions[symbol] = closed_pos;
-
-                INFO("Closed position " + symbol + " daily PnL: qty=" + std::to_string(prev_qty) +
-                     " prev_price=" + std::to_string(prev_price) +
-                     " curr_price=" + std::to_string(current_price) +
+                INFO("Day T-1 finalization for " + symbol + ": qty=" + std::to_string(prev_qty) +
+                     " Day T-2 close=" + std::to_string(day_t2_close) +
+                     " Day T-1 close=" + std::to_string(day_t1_close) +
                      " point_value=" + std::to_string(point_value) +
-                     " daily_pnl=" + std::to_string(daily_position_pnl));
+                     " Day T-1 PnL=" + std::to_string(yesterday_position_pnl));
             }
+
+            // UPDATE yesterday's positions in database with finalized PnL
+            INFO("Updating Day T-1 positions with finalized PnL: $" + std::to_string(yesterday_total_pnl));
+
+            std::vector<trade_ngin::Position> yesterday_finalized_positions;
+            for (const auto& [symbol, prev_position] : previous_positions) {
+                double prev_qty = prev_position.quantity.as_double();
+
+                // Get Day T-2 close
+                double day_t2_close = prev_position.average_price.as_double();
+                if (two_days_ago_close_prices.find(symbol) != two_days_ago_close_prices.end()) {
+                    day_t2_close = two_days_ago_close_prices[symbol];
+                }
+
+                // Get Day T-1 close
+                double day_t1_close = day_t2_close;
+                if (previous_day_close_prices.find(symbol) != previous_day_close_prices.end()) {
+                    day_t1_close = previous_day_close_prices[symbol];
+                }
+
+                // Get point value
+                double point_value = 0.0;
+                try {
+                    point_value = tf_strategy->get_point_value_multiplier(symbol);
+                } catch (const std::exception& e) {
+                    ERROR("CRITICAL: Cannot get point value for " + symbol + ": " + e.what());
+                    throw;
+                }
+
+                // Calculate finalized PnL
+                double yesterday_position_pnl = prev_qty * (day_t1_close - day_t2_close) * point_value;
+
+                // Create updated position for Day T-1
+                trade_ngin::Position updated_pos;
+                updated_pos.symbol = symbol;
+                updated_pos.quantity = prev_position.quantity;
+                updated_pos.average_price = Decimal(day_t2_close);  // Entry was at Day T-2 close
+                updated_pos.realized_pnl = Decimal(yesterday_position_pnl);  // FINALIZED PnL
+                updated_pos.unrealized_pnl = Decimal(0.0);
+                updated_pos.last_update = previous_date;  // Keep yesterday's date
+
+                yesterday_finalized_positions.push_back(updated_pos);
+            }
+
+            // Store updated positions for yesterday (Day T-1) in database
+            if (!yesterday_finalized_positions.empty()) {
+                auto update_result = db->store_positions(yesterday_finalized_positions, "LIVE_TREND_FOLLOWING", "trading.positions");
+                if (update_result.is_error()) {
+                    ERROR("Failed to update Day T-1 positions: " + std::string(update_result.error()->what()));
+                } else {
+                    INFO("Successfully updated " + std::to_string(yesterday_finalized_positions.size()) + " Day T-1 positions with finalized PnL");
+                }
+            }
+
+            // Also UPDATE yesterday's live_results with finalized PnL
+            INFO("Updating Day T-1 live_results with finalized PnL...");
+            // We'll do this later after loading previous aggregates
+        } else {
+            INFO("Skipping Day T-1 finalization (no two_days_ago prices or no previous positions)");
+        }
+
+        // ========================================
+        // STEP 2: CREATE TODAY'S (Day T) POSITIONS WITH ZERO PnL
+        // ========================================
+        INFO("STEP 2: Creating Day T positions with zero PnL (placeholders)...");
+
+        double total_daily_commissions = 0.0;  // Will be calculated from executions
+
+        // Update all current positions to have:
+        // - average_price = Day T-1 close (execution price)
+        // - market_price = Day T-1 close (last known price)
+        // - realized_pnl = 0 (placeholder, will be finalized tomorrow)
+        // - unrealized_pnl = 0 (always 0 for futures)
+
+        for (auto& [symbol, current_position] : positions) {
+            // Get Day T-1 close price for this symbol
+            double yesterday_close = current_position.average_price.as_double();  // Default
+            if (previous_day_close_prices.find(symbol) != previous_day_close_prices.end()) {
+                yesterday_close = previous_day_close_prices[symbol];
+            }
+
+            // Set position fields for Day T
+            current_position.average_price = Decimal(yesterday_close);  // Entry at Day T-1 close
+            current_position.realized_pnl = Decimal(0.0);  // PLACEHOLDER - will be finalized tomorrow
+            current_position.unrealized_pnl = Decimal(0.0);  // Always 0 for futures
+            current_position.last_update = now;  // Today's timestamp
+
+            INFO("Day T position for " + symbol + ": qty=" + std::to_string(current_position.quantity.as_double()) +
+                 " entry_price=" + std::to_string(yesterday_close) +
+                 " realized_pnl=0 (placeholder)");
         }
 
         // ADD THESE DEBUG STATEMENTS:
@@ -659,10 +705,10 @@ int main(int argc, char* argv[]) {
                 double trade_size = current_qty - prev_qty;
                 Side side = trade_size > 0 ? Side::BUY : Side::SELL;
                 
-                // Get current market price
+                // Get Day T-1 close price (execution price for Day T)
                 double market_price = current_position.average_price.as_double();
-                if (current_prices.find(symbol) != current_prices.end()) {
-                    market_price = current_prices[symbol];
+                if (previous_day_close_prices.find(symbol) != previous_day_close_prices.end()) {
+                    market_price = previous_day_close_prices[symbol];
                 }
                 
                 // Create execution report
@@ -706,10 +752,10 @@ int main(int argc, char* argv[]) {
                 // This position was completely closed
                 double prev_qty = prev_position.quantity.as_double();
                 
-                // Get current market price for execution
+                // Get Day T-1 close price (execution price for closing on Day T)
                 double market_price = prev_position.average_price.as_double(); // Default fallback
-                if (current_prices.find(symbol) != current_prices.end()) {
-                    market_price = current_prices[symbol];
+                if (previous_day_close_prices.find(symbol) != previous_day_close_prices.end()) {
+                    market_price = previous_day_close_prices[symbol];
                 }
                 
                 // Create execution report for closing the position
@@ -838,10 +884,10 @@ int main(int argc, char* argv[]) {
         for (const auto& [symbol, position] : positions) {
             if (position.quantity.as_double() != 0.0) {
                 active_positions++;
-                // Use current market price if available
+                // Use Day T-1 close (market price for Day T positions)
                 double market_price = position.average_price.as_double();
-                auto itp = current_prices.find(symbol);
-                if (itp != current_prices.end()) {
+                auto itp = previous_day_close_prices.find(symbol);
+                if (itp != previous_day_close_prices.end()) {
                     market_price = itp->second;
                 }
                 // Normalize variant suffixes for lookup only; keep original symbol for logging/DB
@@ -970,10 +1016,10 @@ int main(int argc, char* argv[]) {
             const double DECIMAL_MAX = 9.223372036854775807e13;  // INT64_MAX / SCALE
             if (avg_price_double > DECIMAL_MAX || avg_price_double < -DECIMAL_MAX) {
                 WARN("Position " + symbol + " has average_price " + std::to_string(avg_price_double) +
-                     " which exceeds Decimal limit, using current market price instead");
-                // Use current market price if available
-                if (current_prices.find(symbol) != current_prices.end()) {
-                    validated_position.average_price = trade_ngin::Decimal(current_prices[symbol]);
+                     " which exceeds Decimal limit, using Day T-1 close instead");
+                // Use Day T-1 close if available
+                if (previous_day_close_prices.find(symbol) != previous_day_close_prices.end()) {
+                    validated_position.average_price = trade_ngin::Decimal(previous_day_close_prices[symbol]);
                 } else {
                     validated_position.average_price = trade_ngin::Decimal(1.0);
                 }
@@ -982,8 +1028,8 @@ int main(int argc, char* argv[]) {
                     validated_position.average_price = position.average_price;
                 } catch (const std::exception& e) {
                     ERROR("Failed to validate average_price for " + symbol + ": " + std::string(e.what()));
-                    if (current_prices.find(symbol) != current_prices.end()) {
-                        validated_position.average_price = trade_ngin::Decimal(current_prices[symbol]);
+                    if (previous_day_close_prices.find(symbol) != previous_day_close_prices.end()) {
+                        validated_position.average_price = trade_ngin::Decimal(previous_day_close_prices[symbol]);
                     } else {
                         validated_position.average_price = trade_ngin::Decimal(1.0);
                     }
@@ -1043,21 +1089,25 @@ int main(int argc, char* argv[]) {
             std::cout << "Jump Risk (99th): N/A" << std::endl;
             std::cout << "Risk Scale: N/A" << std::endl;
         }
-        // Note: PnL calculations have been moved above for proper sequencing
-        // The variables are already calculated:
-        // - total_pnl, daily_pnl, current_portfolio_value
-        // - daily_return, total_return
-        // - total_daily_commissions (renamed from total_commissions)
+        // ========================================
+        // STEP 3: CALCULATE COMMISSIONS AND Day T PnL (ZERO)
+        // ========================================
+        INFO("STEP 3: Calculating commissions and Day T PnL...");
 
-        // Calculate and deduct commissions from executions
+        // Calculate commissions from executions
         for (const auto& exec : daily_executions) {
             total_daily_commissions += exec.commission.as_double();
         }
-
-        // Deduct commissions from daily PnL
-        daily_realized_pnl -= total_daily_commissions;
         INFO("Total daily commissions: $" + std::to_string(total_daily_commissions));
-        INFO("Daily PnL after commissions: $" + std::to_string(daily_realized_pnl));
+
+        // Day T PnL is ZERO (placeholder) - positions were just opened at Day T-1 close
+        double daily_realized_pnl = 0.0;
+        double daily_unrealized_pnl = 0.0;
+        double daily_pnl_for_today = -total_daily_commissions;  // Only commissions on Day T
+
+        INFO("Day T PnL (placeholder): $0.00");
+        INFO("Day T commissions: $" + std::to_string(total_daily_commissions));
+        INFO("Day T total impact: $" + std::to_string(daily_pnl_for_today));
         
         // Load previous day's aggregates (portfolio value, total pnl, total commissions)
         double previous_portfolio_value = initial_capital; // Default to initial capital
@@ -1081,10 +1131,249 @@ int main(int argc, char* argv[]) {
             INFO("Could not load previous day aggregates: " + std::string(e.what()));
         }
 
-        // Calculate cumulative values
-        double total_pnl = previous_total_pnl + daily_realized_pnl;
-        double current_portfolio_value = previous_portfolio_value + daily_realized_pnl;
-        double daily_pnl = daily_realized_pnl;  // Already calculated above
+        // ========================================
+        // STEP 4: UPDATE Day T-1 live_results AND equity_curve WITH FINALIZED PnL
+        // ========================================
+        // Skip if this is the first trading day (no previous positions to finalize)
+        bool is_first_trading_day = previous_positions.empty() ||
+                                     (previous_positions.size() > 0 &&
+                                      std::all_of(previous_positions.begin(), previous_positions.end(),
+                                                 [](const auto& p) { return p.second.quantity.as_double() == 0.0; }));
+
+        // Declare yesterday's daily metrics outside the block so they're available for email
+        double yesterday_daily_return_for_email = 0.0;
+        double yesterday_daily_pnl_for_email = 0.0;
+        double yesterday_realized_pnl_for_email = 0.0;
+        double yesterday_unrealized_pnl_for_email = 0.0;
+
+        if (!two_days_ago_close_prices.empty() && yesterday_total_pnl != 0.0 && !is_first_trading_day) {
+            INFO("STEP 4: Updating Day T-1 live_results with finalized PnL: $" + std::to_string(yesterday_total_pnl));
+
+            // Get yesterday's commissions and other existing metrics from database
+            double yesterday_commissions = 0.0;
+            double yesterday_total_commissions = 0.0;
+            double yesterday_gross_notional = 0.0;
+            double yesterday_net_notional = 0.0;
+            int yesterday_active_positions = 0;
+            double yesterday_margin_posted = 0.0;
+
+            std::stringstream yesterday_date_ss;
+            auto yesterday_time_t = std::chrono::system_clock::to_time_t(previous_date);
+            yesterday_date_ss << std::put_time(std::gmtime(&yesterday_time_t), "%Y-%m-%d");
+
+            try {
+                std::string query =
+                    "SELECT COALESCE(daily_commissions, 0.0), COALESCE(total_commissions, 0.0), "
+                    "COALESCE(gross_notional, 0.0), COALESCE(net_notional, 0.0), "
+                    "COALESCE(active_positions, 0), COALESCE(margin_posted, 0.0) "
+                    "FROM trading.live_results "
+                    "WHERE strategy_id = 'LIVE_TREND_FOLLOWING' AND DATE(date) = '" + yesterday_date_ss.str() + "'";
+                INFO("Querying yesterday's metrics for date: " + yesterday_date_ss.str());
+                auto result = db->execute_query(query);
+                if (result.is_error()) {
+                    WARN("Query failed: " + std::string(result.error()->what()));
+                } else if (result.value()->num_rows() == 0) {
+                    WARN("Query returned 0 rows for date: " + yesterday_date_ss.str());
+                }
+                if (result.is_ok() && result.value()->num_rows() > 0) {
+                    INFO("Found " + std::to_string(result.value()->num_rows()) + " rows for yesterday");
+                    auto table = result.value();
+                    INFO("Table has " + std::to_string(table->num_columns()) + " columns");
+                    if (table->num_columns() >= 6) {
+                        auto comm_arr = std::static_pointer_cast<arrow::DoubleArray>(table->column(0)->chunk(0));
+                        auto total_comm_arr = std::static_pointer_cast<arrow::DoubleArray>(table->column(1)->chunk(0));
+                        auto gross_arr = std::static_pointer_cast<arrow::DoubleArray>(table->column(2)->chunk(0));
+                        auto net_arr = std::static_pointer_cast<arrow::DoubleArray>(table->column(3)->chunk(0));
+                        auto pos_arr = std::static_pointer_cast<arrow::Int64Array>(table->column(4)->chunk(0));
+                        auto margin_arr = std::static_pointer_cast<arrow::DoubleArray>(table->column(5)->chunk(0));
+
+                        if (comm_arr && comm_arr->length() > 0 && !comm_arr->IsNull(0)) {
+                            yesterday_commissions = comm_arr->Value(0);
+                            INFO("Successfully loaded yesterday_commissions: $" + std::to_string(yesterday_commissions));
+                        } else {
+                            INFO("Failed to load commissions from Arrow array");
+                        }
+                        if (total_comm_arr && total_comm_arr->length() > 0 && !total_comm_arr->IsNull(0)) {
+                            yesterday_total_commissions = total_comm_arr->Value(0);
+                        }
+                        if (gross_arr && gross_arr->length() > 0 && !gross_arr->IsNull(0)) {
+                            yesterday_gross_notional = gross_arr->Value(0);
+                        }
+                        if (net_arr && net_arr->length() > 0 && !net_arr->IsNull(0)) {
+                            yesterday_net_notional = net_arr->Value(0);
+                        }
+                        if (pos_arr && pos_arr->length() > 0 && !pos_arr->IsNull(0)) {
+                            yesterday_active_positions = static_cast<int>(pos_arr->Value(0));
+                        }
+                        if (margin_arr && margin_arr->length() > 0 && !margin_arr->IsNull(0)) {
+                            yesterday_margin_posted = margin_arr->Value(0);
+                        }
+                    }
+                }
+            } catch (const std::exception& e) {
+                WARN("Failed to get yesterday's metrics: " + std::string(e.what()));
+            }
+
+            // Since we couldn't query commissions, we'll calculate daily_pnl in SQL
+            // For cumulative calculations, we need to query the actual commission value
+            double yesterday_commissions_for_calc = 0.0;
+            try {
+                std::string comm_query = "SELECT COALESCE(daily_commissions, 0.0) FROM trading.live_results "
+                                        "WHERE strategy_id = 'LIVE_TREND_FOLLOWING' AND DATE(date) = '" + yesterday_date_ss.str() + "'";
+                auto comm_result = db->execute_direct_query(comm_query);
+                if (comm_result.is_ok()) {
+                    // Parse the result - it should be a simple value
+                    // For now, we'll just use yesterday_commissions which defaults to 0
+                    INFO("Commission query succeeded, but parsing not implemented - using 0");
+                }
+            } catch (const std::exception& e) {
+                INFO("Could not query commissions: " + std::string(e.what()));
+            }
+
+            // Use the queried value from earlier (which may be 0 if query failed)
+            double yesterday_daily_pnl_finalized = yesterday_total_pnl - yesterday_commissions;
+
+            INFO("Day T-1 PnL breakdown:");
+            INFO("  Position PnL (yesterday_total_pnl): $" + std::to_string(yesterday_total_pnl));
+            INFO("  Commissions (yesterday_commissions): $" + std::to_string(yesterday_commissions));
+            INFO("  Net PnL (yesterday_daily_pnl_finalized): $" + std::to_string(yesterday_daily_pnl_finalized));
+
+            // Get the day BEFORE yesterday's portfolio value and total_pnl
+            double day_before_yesterday_portfolio_value = initial_capital;
+            double day_before_yesterday_total_pnl = 0.0;
+            try {
+                auto db_ptr = std::dynamic_pointer_cast<PostgresDatabase>(db);
+                if (db_ptr) {
+                    auto prev_agg = db_ptr->get_previous_live_aggregates("LIVE_TREND_FOLLOWING", previous_date, "trading.live_results");
+                    if (prev_agg.is_ok()) {
+                        std::tie(day_before_yesterday_portfolio_value, day_before_yesterday_total_pnl, std::ignore) = prev_agg.value();
+                        INFO("Loaded day-before-yesterday aggregates: portfolio=$" + std::to_string(day_before_yesterday_portfolio_value) +
+                             ", total_pnl=$" + std::to_string(day_before_yesterday_total_pnl));
+                    }
+                }
+            } catch (const std::exception& e) {
+                INFO("Could not load day-before-yesterday aggregates: " + std::string(e.what()));
+            }
+
+            // Calculate yesterday's cumulative values
+            // NOTE: Since we may not have correct commissions, the cumulative values will be recalculated by SQL
+            // using the daily_pnl formula (daily_realized_pnl - daily_commissions)
+            double yesterday_total_pnl_cumulative = day_before_yesterday_total_pnl + yesterday_daily_pnl_finalized;
+            double yesterday_portfolio_value_finalized = day_before_yesterday_portfolio_value + yesterday_daily_pnl_finalized;
+
+            // Calculate yesterday's returns
+            double yesterday_daily_return = 0.0;
+            if (day_before_yesterday_portfolio_value > 0) {
+                yesterday_daily_return = (yesterday_daily_pnl_finalized / day_before_yesterday_portfolio_value) * 100.0;
+            }
+
+            // Save values for email
+            yesterday_daily_return_for_email = yesterday_daily_return;
+            yesterday_daily_pnl_for_email = yesterday_daily_pnl_finalized;
+            yesterday_realized_pnl_for_email = yesterday_total_pnl;  // This is the realized PnL
+            yesterday_unrealized_pnl_for_email = 0.0;  // Futures have no unrealized on closed positions
+
+            // Calculate yesterday's annualized return
+            double yesterday_total_return_annualized = 0.0;
+            double yesterday_total_return_decimal = 0.0;
+            if (initial_capital > 0.0) {
+                yesterday_total_return_decimal = (yesterday_portfolio_value_finalized - initial_capital) / initial_capital;
+            }
+
+            // Get trading days count for annualization
+            int trading_days_count = 1;
+            try {
+                auto count_result = db->execute_query(
+                    "SELECT COUNT(*) AS cnt FROM trading.live_results WHERE strategy_id = 'LIVE_TREND_FOLLOWING'");
+                if (count_result.is_ok()) {
+                    auto table = count_result.value();
+                    if (table && table->num_rows() > 0 && table->num_columns() > 0) {
+                        auto arr = std::static_pointer_cast<arrow::Int64Array>(table->column(0)->chunk(0));
+                        if (arr && arr->length() > 0 && !arr->IsNull(0)) {
+                            trading_days_count = std::max<int>(1, static_cast<int>(arr->Value(0)));
+                        }
+                    }
+                }
+            } catch (const std::exception& e) {
+                WARN("Failed to count trading days: " + std::string(e.what()));
+            }
+
+            double rdaily = std::pow(1.0 + yesterday_total_return_decimal, 1.0 / static_cast<double>(trading_days_count)) - 1.0;
+            double annualized_decimal = std::pow(1.0 + rdaily, 252.0) - 1.0;
+            yesterday_total_return_annualized = annualized_decimal * 100.0;
+
+            // Calculate yesterday's leverage and risk metrics
+            double yesterday_portfolio_leverage = (yesterday_portfolio_value_finalized != 0.0) ?
+                (yesterday_gross_notional / yesterday_portfolio_value_finalized) : 0.0;
+            double yesterday_equity_to_margin_ratio = (yesterday_margin_posted > 0.0) ?
+                (yesterday_gross_notional / yesterday_margin_posted) : 0.0;
+            double yesterday_cash_available = yesterday_portfolio_value_finalized - yesterday_margin_posted;
+
+            // UPDATE yesterday's live_results with ALL recalculated metrics
+            // Note: We calculate daily_pnl, total_pnl, and current_portfolio_value in SQL
+            // to properly incorporate the EXISTING daily_commissions value
+            std::string update_query =
+                "WITH day_before AS ("
+                "  SELECT COALESCE(current_portfolio_value, " + std::to_string(initial_capital) + ") as portfolio, "
+                "         COALESCE(total_pnl, 0.0) as total_pnl "
+                "  FROM trading.live_results "
+                "  WHERE strategy_id = 'LIVE_TREND_FOLLOWING' AND DATE(date) < '" + yesterday_date_ss.str() + "' "
+                "  ORDER BY date DESC LIMIT 1"
+                ") "
+                "UPDATE trading.live_results SET "
+                "daily_realized_pnl = " + std::to_string(yesterday_total_pnl) + ", "
+                "daily_pnl = " + std::to_string(yesterday_total_pnl) + " - COALESCE(daily_commissions, 0.0), "
+                "total_pnl = COALESCE((SELECT total_pnl FROM day_before), 0.0) + (" + std::to_string(yesterday_total_pnl) + " - COALESCE(daily_commissions, 0.0)), "
+                "total_realized_pnl = COALESCE((SELECT total_pnl FROM day_before), 0.0) + (" + std::to_string(yesterday_total_pnl) + " - COALESCE(daily_commissions, 0.0)), "
+                "current_portfolio_value = COALESCE((SELECT portfolio FROM day_before), " + std::to_string(initial_capital) + ") + (" + std::to_string(yesterday_total_pnl) + " - COALESCE(daily_commissions, 0.0)), "
+                "daily_return = CASE WHEN COALESCE((SELECT portfolio FROM day_before), " + std::to_string(initial_capital) + ") > 0 "
+                "               THEN ((" + std::to_string(yesterday_total_pnl) + " - COALESCE(daily_commissions, 0.0)) / COALESCE((SELECT portfolio FROM day_before), " + std::to_string(initial_capital) + ")) * 100.0 "
+                "               ELSE 0.0 END, "
+                "total_return = " + std::to_string(yesterday_total_return_annualized) + ", "
+                "portfolio_leverage = " + std::to_string(yesterday_portfolio_leverage) + ", "
+                "equity_to_margin_ratio = " + std::to_string(yesterday_equity_to_margin_ratio) + ", "
+                "cash_available = COALESCE((SELECT portfolio FROM day_before), " + std::to_string(initial_capital) + ") + (" + std::to_string(yesterday_total_pnl) + " - COALESCE(daily_commissions, 0.0)) - COALESCE(margin_posted, 0.0) "
+                "WHERE strategy_id = 'LIVE_TREND_FOLLOWING' AND DATE(date) = '" + yesterday_date_ss.str() + "'";
+
+            auto update_result = db->execute_direct_query(update_query);
+            if (update_result.is_error()) {
+                ERROR("Failed to update Day T-1 live_results: " + std::string(update_result.error()->what()));
+            } else {
+                INFO("Successfully updated Day T-1 live_results with finalized PnL and all metrics");
+            }
+
+            // UPDATE yesterday's equity_curve
+            // Use current_portfolio_value from the updated live_results
+            INFO("Updating Day T-1 equity_curve...");
+            std::string update_equity_query =
+                "UPDATE trading.equity_curve SET "
+                "equity = (SELECT current_portfolio_value FROM trading.live_results "
+                "          WHERE strategy_id = 'LIVE_TREND_FOLLOWING' AND DATE(date) = '" + yesterday_date_ss.str() + "') "
+                "WHERE strategy_id = 'LIVE_TREND_FOLLOWING' AND DATE(timestamp) = '" + yesterday_date_ss.str() + "'";
+
+            auto update_equity_result = db->execute_direct_query(update_equity_query);
+            if (update_equity_result.is_error()) {
+                ERROR("Failed to update Day T-1 equity_curve: " + std::string(update_equity_result.error()->what()));
+            } else {
+                INFO("Successfully updated Day T-1 equity_curve");
+            }
+        } else {
+            if (is_first_trading_day) {
+                INFO("Skipping Day T-1 update (first trading day - no previous positions to finalize)");
+            } else {
+                INFO("Skipping Day T-1 live_results update (no two_days_ago prices or zero PnL)");
+            }
+        }
+
+        // ========================================
+        // STEP 5: CALCULATE Day T CUMULATIVE VALUES
+        // ========================================
+        INFO("STEP 5: Calculating Day T cumulative values...");
+
+        // Calculate cumulative values for Day T
+        double total_pnl = previous_total_pnl + daily_pnl_for_today;
+        double current_portfolio_value = previous_portfolio_value + daily_pnl_for_today;
+        double daily_pnl = daily_pnl_for_today;  // Only commissions on Day T
         double total_commissions_cumulative = previous_total_commissions + total_daily_commissions;
 
         // Since it's futures, all PnL is realized
@@ -1331,15 +1620,14 @@ int main(int argc, char* argv[]) {
         }
 
         // Save positions to file for external consumption
-        INFO("Saving positions to file...");
-        std::string filename = "daily_positions_" + 
-                              std::to_string(now_tm->tm_year + 1900) + 
-                              std::string(2 - std::to_string(now_tm->tm_mon + 1).length(), '0') + 
-                              std::to_string(now_tm->tm_mon + 1) + 
-                              std::string(2 - std::to_string(now_tm->tm_mday).length(), '0') + 
-                              std::to_string(now_tm->tm_mday) + ".csv";
+        INFO("Saving today's positions to file...");
+        // Format: DD-MM-YYYY_positions.csv
+        std::string day_str = std::string(2 - std::to_string(now_tm->tm_mday).length(), '0') + std::to_string(now_tm->tm_mday);
+        std::string month_str = std::string(2 - std::to_string(now_tm->tm_mon + 1).length(), '0') + std::to_string(now_tm->tm_mon + 1);
+        std::string year_str = std::to_string(now_tm->tm_year + 1900);
+        std::string today_filename = day_str + "-" + month_str + "-" + year_str + "_positions.csv";
         
-        std::ofstream position_file(filename);
+        std::ofstream position_file(today_filename);
         if (position_file.is_open()) {
             // Query daily commissions per symbol from executions table
             std::unordered_map<std::string, double> symbol_commissions;
@@ -1382,8 +1670,8 @@ int main(int argc, char* argv[]) {
                          << ", Net Notional: " << net_notional
                          << ", Date: " << date_ss.str() << "\n";
 
-            // CSV header - restructured in logical order
-            position_file << "symbol,quantity,quantity_change,entry_price,market_price,price_diff_%,notional,pct_of_gross_notional,pct_of_portfolio_value,unrealized_pnl,realized_pnl,commission,forecast,volatility\n";
+            // CSV header for today's positions (forward-looking, no PnL)
+            position_file << "symbol,quantity,market_price,notional,pct_of_gross_notional,pct_of_portfolio_value,forecast,volatility,ema_8,ema_32,ema_64,ema_256\n";
             for (const auto& [symbol, position] : positions) {
                 double current_qty = position.quantity.as_double();
 
@@ -1418,10 +1706,10 @@ int main(int argc, char* argv[]) {
                     throw;  // Re-throw - cannot export without proper multiplier
                 }
                 double forecast = tf_strategy->get_forecast(symbol);
-                // Get current market price for comparison
+                // Get Day T-1 close (market price for Day T positions)
                 double market_price = position.average_price.as_double(); // Default fallback
-                if (current_prices.find(symbol) != current_prices.end()) {
-                    market_price = current_prices[symbol];
+                if (previous_day_close_prices.find(symbol) != previous_day_close_prices.end()) {
+                    market_price = previous_day_close_prices[symbol];
                 }
 
                 // Notional with proper contract multiplier (YOUR FIX)
@@ -1457,33 +1745,92 @@ int main(int argc, char* argv[]) {
                     volatility = instrument_data->current_volatility;
                 }
 
-                // Get commission for this symbol
-                double commission = 0.0;
-                auto comm_it = symbol_commissions.find(symbol);
-                if (comm_it != symbol_commissions.end()) {
-                    commission = comm_it->second;
-                }
+                // Get EMA values (8, 32, 64, 256)
+                auto ema_values = tf_strategy->get_ema_values(symbol, {8, 32, 64, 256});
+                double ema_8 = ema_values.count(8) ? ema_values[8] : 0.0;
+                double ema_32 = ema_values.count(32) ? ema_values[32] : 0.0;
+                double ema_64 = ema_values.count(64) ? ema_values[64] : 0.0;
+                double ema_256 = ema_values.count(256) ? ema_values[256] : 0.0;
 
-                // Write row in logical order: symbol, position info, prices, notional/percentages, PnL, commission, forecast, volatility
+                // Write row for today's positions (forward-looking, no PnL/commission)
                 position_file << symbol << ","
                              << current_qty << ","
-                             << quantity_change << ","
-                             << position.average_price.as_double() << ","  // entry_price
                              << market_price << ","
-                             << std::fixed << std::setprecision(2) << price_diff_pct << ","
                              << notional << ","
                              << pct_of_gross_notional << ","
                              << pct_of_portfolio_value << ","
-                             << position.unrealized_pnl.as_double() << ","
-                             << position.realized_pnl.as_double() << ","
-                             << commission << ","
                              << forecast << ","
-                             << std::fixed << std::setprecision(6) << volatility << "\n";
+                             << std::fixed << std::setprecision(6) << volatility << ","
+                             << ema_8 << ","
+                             << ema_32 << ","
+                             << ema_64 << ","
+                             << ema_256 << "\n";
             }
             position_file.close();
-            INFO("Positions saved to " + filename);
+            INFO("Today's positions saved to " + today_filename);
         } else {
-            ERROR("Failed to open position file for writing");
+            ERROR("Failed to open today's position file for writing");
+        }
+
+        // Save yesterday's finalized positions (if not first trading day)
+        std::string yesterday_filename;
+        if (!is_first_trading_day && !previous_positions.empty()) {
+            INFO("Saving yesterday's finalized positions to file...");
+            // Calculate yesterday's date
+            auto yesterday_time = now - std::chrono::hours(24);
+            auto yesterday_time_t = std::chrono::system_clock::to_time_t(yesterday_time);
+            std::tm* yesterday_tm = std::gmtime(&yesterday_time_t);
+
+            std::string yesterday_day_str = std::string(2 - std::to_string(yesterday_tm->tm_mday).length(), '0') + std::to_string(yesterday_tm->tm_mday);
+            std::string yesterday_month_str = std::string(2 - std::to_string(yesterday_tm->tm_mon + 1).length(), '0') + std::to_string(yesterday_tm->tm_mon + 1);
+            std::string yesterday_year_str = std::to_string(yesterday_tm->tm_year + 1900);
+
+            // Format: DD-1-MM-YYYY_positions_asof_DD-MM-YYYY.csv
+            yesterday_filename = yesterday_day_str + "-" + yesterday_month_str + "-" + yesterday_year_str +
+                                "_positions_asof_" + day_str + "-" + month_str + "-" + year_str + ".csv";
+
+            std::ofstream yesterday_file(yesterday_filename);
+            if (yesterday_file.is_open()) {
+                // Portfolio-level metrics as header comment
+                yesterday_file << "# Yesterday's Finalized Positions - Date: " << date_ss.str() << "\n";
+
+                // CSV header for yesterday's finalized positions
+                yesterday_file << "symbol,quantity,entry_price,exit_price,realized_pnl\n";
+
+                for (const auto& [symbol, prev_position] : previous_positions) {
+                    double prev_qty = prev_position.quantity.as_double();
+
+                    // Skip zero quantity positions
+                    if (std::abs(prev_qty) < 0.0001) continue;
+
+                    // Entry price: Day T-2 close
+                    double entry_price = 0.0;
+                    if (two_days_ago_close_prices.find(symbol) != two_days_ago_close_prices.end()) {
+                        entry_price = two_days_ago_close_prices[symbol];
+                    }
+
+                    // Exit price: Day T-1 close
+                    double exit_price = 0.0;
+                    if (previous_day_close_prices.find(symbol) != previous_day_close_prices.end()) {
+                        exit_price = previous_day_close_prices[symbol];
+                    }
+
+                    // Realized PnL (GROSS from positions table)
+                    double realized_pnl = prev_position.realized_pnl.as_double();
+
+                    // Write row
+                    yesterday_file << symbol << ","
+                                  << prev_qty << ","
+                                  << entry_price << ","
+                                  << exit_price << ","
+                                  << realized_pnl << "\n";
+                }
+
+                yesterday_file.close();
+                INFO("Yesterday's finalized positions saved to " + yesterday_filename);
+            } else {
+                ERROR("Failed to open yesterday's position file for writing");
+            }
         }
 
         // Store equity curve in database
@@ -1528,7 +1875,10 @@ int main(int argc, char* argv[]) {
         }
 
         std::cout << "\n======= Daily Processing Complete =======" << std::endl;
-        std::cout << "Positions file: " << filename << std::endl;
+        std::cout << "Today's positions file: " << today_filename << std::endl;
+        if (!yesterday_filename.empty()) {
+            std::cout << "Yesterday's finalized positions file: " << yesterday_filename << std::endl;
+        }
         // Only show processing time for real-time runs, not historical
         if (!use_override_date) {
             std::cout << "Total processing time: " << std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -1547,13 +1897,21 @@ int main(int argc, char* argv[]) {
                     ERROR("Failed to initialize email sender: " + std::string(email_init_result.error()->what()));
                 } else {
                 // Prepare email data
-                std::string date_str = std::to_string(now_tm->tm_year + 1900) + "-" 
-                                     + std::string(2 - std::to_string(now_tm->tm_mon + 1).length(), '0') 
+                std::string date_str = std::to_string(now_tm->tm_year + 1900) + "-"
+                                     + std::string(2 - std::to_string(now_tm->tm_mon + 1).length(), '0')
                                      + std::to_string(now_tm->tm_mon + 1) + "-"
-                                     + std::string(2 - std::to_string(now_tm->tm_mday).length(), '0') 
+                                     + std::string(2 - std::to_string(now_tm->tm_mday).length(), '0')
                                      + std::to_string(now_tm->tm_mday);
-                
+
                 std::string subject = "Daily Trading Report - " + date_str;
+
+                // Prepare yesterday's finalized positions for email
+                std::unordered_map<std::string, Position> yesterday_positions_finalized;
+                for (const auto& [symbol, prev_pos] : previous_positions) {
+                    if (prev_pos.quantity.as_double() != 0.0) {
+                        yesterday_positions_finalized[symbol] = prev_pos;
+                    }
+                }
                 
                 // Create strategy metrics map with all relevant metrics organized by category
                 std::map<std::string, double> strategy_metrics;
@@ -1584,6 +1942,13 @@ int main(int argc, char* argv[]) {
                 strategy_metrics["Margin Posted"] = total_posted_margin;
                 strategy_metrics["Cash Available"] = current_portfolio_value - total_posted_margin;
 
+                // Create yesterday's daily metrics map using values from STEP 4
+                std::map<std::string, double> yesterday_daily_metrics;
+                yesterday_daily_metrics["Daily Return"] = yesterday_daily_return_for_email;
+                yesterday_daily_metrics["Daily Unrealized PnL"] = yesterday_unrealized_pnl_for_email;
+                yesterday_daily_metrics["Daily Realized PnL"] = yesterday_realized_pnl_for_email;
+                yesterday_daily_metrics["Daily Total PnL"] = yesterday_daily_pnl_for_email;
+
                 // Generate email body with is_daily_strategy flag set to true and current prices
                 std::string email_body = email_sender->generate_trading_report_body(
                     positions,
@@ -1592,16 +1957,29 @@ int main(int argc, char* argv[]) {
                     daily_executions,
                     date_str,
                     true,  // is_daily_strategy
-                    current_prices,  // Pass current market prices for accurate display
-                    db  // Pass database for symbols reference table
+                    previous_day_close_prices,  // Pass Day T-1 close prices for today's positions
+                    db,  // Pass database for symbols reference table
+                    yesterday_positions_finalized,  // Yesterday's positions with finalized PnL
+                    previous_day_close_prices,  // Yesterday's exit prices (Day T-1 close)
+                    two_days_ago_close_prices,  // Yesterday's entry prices (Day T-2 close)
+                    yesterday_daily_metrics  // Yesterday's daily metrics from database
                 );
                 
-                // Send email with CSV attachment
-                auto send_result = email_sender->send_email(subject, email_body, true, filename);
+                // Send email with CSV attachments (today's positions + yesterday's finalized)
+                std::vector<std::string> attachments = {today_filename};
+                if (!yesterday_filename.empty()) {
+                    attachments.push_back(yesterday_filename);
+                }
+
+                auto send_result = email_sender->send_email(subject, email_body, true, attachments);
                 if (send_result.is_error()) {
                     ERROR("Failed to send email: " + std::string(send_result.error()->what()));
                 } else {
-                    INFO("Email report sent successfully with CSV attachment: " + filename);
+                    std::string attachment_list = today_filename;
+                    if (!yesterday_filename.empty()) {
+                        attachment_list += ", " + yesterday_filename;
+                    }
+                    INFO("Email report sent successfully with CSV attachments: " + attachment_list);
                 }
                 }
             } catch (const std::exception& e) {

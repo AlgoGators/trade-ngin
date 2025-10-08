@@ -1303,4 +1303,28 @@ double TrendFollowingStrategy::get_point_value_multiplier(const std::string& sym
     }
 }
 
+std::unordered_map<int, double> TrendFollowingStrategy::get_ema_values(const std::string& symbol, const std::vector<int>& windows) const {
+    std::unordered_map<int, double> ema_values;
+
+    // Get instrument data for this symbol
+    auto it = instrument_data_.find(symbol);
+    if (it == instrument_data_.end() || it->second.price_history.empty()) {
+        // Return empty map if no data available
+        return ema_values;
+    }
+
+    const auto& price_history = it->second.price_history;
+
+    // Calculate EMA for each requested window
+    for (int window : windows) {
+        auto ema_series = calculate_ewma(price_history, window);
+        if (!ema_series.empty()) {
+            // Return the most recent EMA value
+            ema_values[window] = ema_series.back();
+        }
+    }
+
+    return ema_values;
+}
+
 }  // namespace trade_ngin
