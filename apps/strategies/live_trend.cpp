@@ -1152,28 +1152,6 @@ int main(int argc, char* argv[]) {
         INFO("Day T PnL (placeholder): $0.00");
         INFO("Day T commissions: $" + std::to_string(total_daily_commissions));
         INFO("Day T total impact: $" + std::to_string(daily_pnl_for_today));
-        
-        // Load previous day's aggregates (portfolio value, total pnl, total commissions)
-        double previous_portfolio_value = initial_capital; // Default to initial capital
-        double previous_total_pnl = 0.0;
-        double previous_total_commissions = 0.0;
-
-        try {
-            auto db_ptr = std::dynamic_pointer_cast<PostgresDatabase>(db);
-            if (db_ptr) {
-                auto prev_agg = db_ptr->get_previous_live_aggregates("LIVE_TREND_FOLLOWING", now, "trading.live_results");
-                if (prev_agg.is_ok()) {
-                    std::tie(previous_portfolio_value, previous_total_pnl, previous_total_commissions) = prev_agg.value();
-                    INFO("Loaded previous aggregates - portfolio_value: $" + std::to_string(previous_portfolio_value) +
-                         ", total_pnl: $" + std::to_string(previous_total_pnl) +
-                         ", total_commissions: $" + std::to_string(previous_total_commissions));
-                } else {
-                    INFO("No previous aggregates found: " + std::string(prev_agg.error()->what()));
-                }
-            }
-        } catch (const std::exception& e) {
-            INFO("Could not load previous day aggregates: " + std::string(e.what()));
-        }
 
         // ========================================
         // STEP 4: UPDATE Day T-1 live_results AND equity_curve WITH FINALIZED PnL
@@ -1515,9 +1493,32 @@ int main(int argc, char* argv[]) {
         }
 
         // ========================================
-        // STEP 5: CALCULATE Day T CUMULATIVE VALUES
+        // STEP 5: LOAD UPDATED PREVIOUS DAY AGGREGATES AND CALCULATE Day T CUMULATIVE VALUES
         // ========================================
-        INFO("STEP 5: Calculating Day T cumulative values...");
+        INFO("STEP 5: Loading updated previous day aggregates and calculating Day T cumulative values...");
+
+        // Load previous day's aggregates (portfolio value, total pnl, total commissions)
+        // This is done AFTER updating Day T-1 live_results to ensure we get the finalized values
+        double previous_portfolio_value = initial_capital; // Default to initial capital
+        double previous_total_pnl = 0.0;
+        double previous_total_commissions = 0.0;
+
+        try {
+            auto db_ptr = std::dynamic_pointer_cast<PostgresDatabase>(db);
+            if (db_ptr) {
+                auto prev_agg = db_ptr->get_previous_live_aggregates("LIVE_TREND_FOLLOWING", now, "trading.live_results");
+                if (prev_agg.is_ok()) {
+                    std::tie(previous_portfolio_value, previous_total_pnl, previous_total_commissions) = prev_agg.value();
+                    INFO("Loaded updated previous aggregates - portfolio_value: $" + std::to_string(previous_portfolio_value) +
+                         ", total_pnl: $" + std::to_string(previous_total_pnl) +
+                         ", total_commissions: $" + std::to_string(previous_total_commissions));
+                } else {
+                    INFO("No previous aggregates found: " + std::string(prev_agg.error()->what()));
+                }
+            }
+        } catch (const std::exception& e) {
+            INFO("Could not load previous day aggregates: " + std::string(e.what()));
+        }
 
         // Calculate cumulative values for Day T
         double total_pnl = previous_total_pnl + daily_pnl_for_today;
@@ -1949,25 +1950,36 @@ int main(int argc, char* argv[]) {
                 auto yesterday_time_t_csv = std::chrono::system_clock::to_time_t(yesterday_time);
                 yss_csv << std::put_time(std::gmtime(&yesterday_time_t_csv), "%Y-%m-%d");
                 yesterday_date_ss_csv = yss_csv.str();
-                
+
+                INFO("Loading finalized positions for date: " + yesterday_date_ss_csv);
+
                 std::string positions_query_csv = "SELECT symbol, quantity, average_price, daily_realized_pnl, daily_unrealized_pnl, last_update "
                                                  "FROM trading.positions "
                                                  "WHERE strategy_id = 'LIVE_TREND_FOLLOWING' AND DATE(last_update) = '" + yesterday_date_ss_csv + "'";
-                
+
+                INFO("Executing query: " + positions_query_csv);
                 auto positions_result_csv = db->execute_query(positions_query_csv);
+
+                if (!positions_result_csv.is_ok()) {
+                    ERROR("Query failed: " + std::string(positions_result_csv.error()->what()));
+                } else if (positions_result_csv.value()->num_rows() == 0) {
+                    WARN("Query returned 0 rows for date: " + yesterday_date_ss_csv);
+                }
+
                 if (positions_result_csv.is_ok() && positions_result_csv.value()->num_rows() > 0) {
                     auto table_csv = positions_result_csv.value();
+                    // All columns are StringArrays from generic converter
                     auto symbol_arr_csv = std::static_pointer_cast<arrow::StringArray>(table_csv->column(0)->chunk(0));
-                    auto quantity_arr_csv = std::static_pointer_cast<arrow::DoubleArray>(table_csv->column(1)->chunk(0));
-                    auto avg_price_arr_csv = std::static_pointer_cast<arrow::DoubleArray>(table_csv->column(2)->chunk(0));
-                    auto realized_pnl_arr_csv = std::static_pointer_cast<arrow::DoubleArray>(table_csv->column(3)->chunk(0));
-                    
+                    auto quantity_arr_csv = std::static_pointer_cast<arrow::StringArray>(table_csv->column(1)->chunk(0));
+                    auto avg_price_arr_csv = std::static_pointer_cast<arrow::StringArray>(table_csv->column(2)->chunk(0));
+                    auto realized_pnl_arr_csv = std::static_pointer_cast<arrow::StringArray>(table_csv->column(3)->chunk(0));
+
                     for (int64_t i = 0; i < table_csv->num_rows(); ++i) {
                         if (!symbol_arr_csv->IsNull(i) && !quantity_arr_csv->IsNull(i)) {
                             std::string symbol = symbol_arr_csv->GetString(i);
-                            double quantity = quantity_arr_csv->Value(i);
-                            double avg_price = avg_price_arr_csv->Value(i);
-                            double realized_pnl = realized_pnl_arr_csv->Value(i);
+                            double quantity = std::stod(quantity_arr_csv->GetString(i));
+                            double avg_price = std::stod(avg_price_arr_csv->GetString(i));
+                            double realized_pnl = std::stod(realized_pnl_arr_csv->GetString(i));
                             
                             // Skip positions with zero quantity
                             if (std::abs(quantity) < 0.0001) continue;
