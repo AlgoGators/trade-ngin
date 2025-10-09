@@ -2112,9 +2112,123 @@ int main(int argc, char* argv[]) {
 
                 std::string subject = "Daily Trading Report - " + date_str;
 
-                // Removed loading of yesterday's finalized positions and metrics per request
+                // Load yesterday's finalized positions for email display
                 std::unordered_map<std::string, Position> yesterday_positions_finalized;
                 std::map<std::string, double> yesterday_daily_metrics_final;
+                std::unordered_map<std::string, double> yesterday_entry_prices;  // Day T-2 close
+                std::unordered_map<std::string, double> yesterday_exit_prices;   // Day T-1 close
+
+                // Calculate yesterday's date for email
+                auto yesterday_time_email = now - std::chrono::hours(24);
+                auto yesterday_time_t_email = std::chrono::system_clock::to_time_t(yesterday_time_email);
+
+                // Load finalized positions from database for email
+                std::string yesterday_date_for_email;
+                std::ostringstream yss_email;
+                yss_email << std::put_time(std::gmtime(&yesterday_time_t_email), "%Y-%m-%d");
+                yesterday_date_for_email = yss_email.str();
+
+                INFO("Loading yesterday's finalized positions for email: " + yesterday_date_for_email);
+
+                std::string positions_query_email = "SELECT symbol, quantity, average_price, daily_realized_pnl, daily_unrealized_pnl, last_update "
+                                                   "FROM trading.positions "
+                                                   "WHERE strategy_id = 'LIVE_TREND_FOLLOWING' AND DATE(last_update) = '" + yesterday_date_for_email + "'";
+
+                auto positions_result_email = db->execute_query(positions_query_email);
+
+                if (positions_result_email.is_ok() && positions_result_email.value()->num_rows() > 0) {
+                    auto table_email = positions_result_email.value();
+                    // All columns are StringArrays from generic converter
+                    auto symbol_arr = std::static_pointer_cast<arrow::StringArray>(table_email->column(0)->chunk(0));
+                    auto quantity_arr = std::static_pointer_cast<arrow::StringArray>(table_email->column(1)->chunk(0));
+                    auto avg_price_arr = std::static_pointer_cast<arrow::StringArray>(table_email->column(2)->chunk(0));
+                    auto realized_pnl_arr = std::static_pointer_cast<arrow::StringArray>(table_email->column(3)->chunk(0));
+
+                    for (int64_t i = 0; i < table_email->num_rows(); ++i) {
+                        if (!symbol_arr->IsNull(i) && !quantity_arr->IsNull(i)) {
+                            std::string symbol = symbol_arr->GetString(i);
+                            double quantity = std::stod(quantity_arr->GetString(i));
+                            double avg_price = std::stod(avg_price_arr->GetString(i));
+                            double realized_pnl = std::stod(realized_pnl_arr->GetString(i));
+
+                            // Skip positions with zero quantity
+                            if (std::abs(quantity) < 0.0001) continue;
+
+                            // Create Position object for yesterday's finalized position
+                            Position pos;
+                            pos.symbol = symbol;
+                            pos.quantity = Decimal(quantity);
+                            pos.average_price = Decimal(avg_price);
+                            pos.realized_pnl = Decimal(realized_pnl);
+
+                            yesterday_positions_finalized[symbol] = pos;
+
+                            // Populate entry and exit prices
+                            if (two_days_ago_close_prices.find(symbol) != two_days_ago_close_prices.end()) {
+                                yesterday_entry_prices[symbol] = two_days_ago_close_prices[symbol];
+                            }
+                            if (previous_day_close_prices.find(symbol) != previous_day_close_prices.end()) {
+                                yesterday_exit_prices[symbol] = previous_day_close_prices[symbol];
+                            }
+                        }
+                    }
+                    INFO("Loaded " + std::to_string(yesterday_positions_finalized.size()) + " finalized positions for email");
+
+                    // Load yesterday's daily metrics from database for accurate display
+                    std::string yesterday_metrics_query =
+                        "SELECT daily_return, daily_unrealized_pnl, daily_realized_pnl, daily_pnl "
+                        "FROM trading.live_results "
+                        "WHERE strategy_id = 'LIVE_TREND_FOLLOWING' AND date = '" + yesterday_date_for_email + "' "
+                        "ORDER BY date DESC LIMIT 1";
+
+                    INFO("Loading yesterday's daily metrics from live_results: " + yesterday_metrics_query);
+                    auto yesterday_metrics_result = db->execute_query(yesterday_metrics_query);
+
+                    if (yesterday_metrics_result.is_ok() && yesterday_metrics_result.value()->num_rows() > 0) {
+                        auto metrics_table = yesterday_metrics_result.value();
+                        INFO("Retrieved " + std::to_string(metrics_table->num_rows()) + " rows from live_results");
+
+                        auto daily_return_arr = std::static_pointer_cast<arrow::StringArray>(metrics_table->column(0)->chunk(0));
+                        auto daily_unrealized_arr = std::static_pointer_cast<arrow::StringArray>(metrics_table->column(1)->chunk(0));
+                        auto daily_realized_arr = std::static_pointer_cast<arrow::StringArray>(metrics_table->column(2)->chunk(0));
+                        auto daily_total_arr = std::static_pointer_cast<arrow::StringArray>(metrics_table->column(3)->chunk(0));
+
+                        if (!daily_return_arr->IsNull(0)) {
+                            yesterday_daily_metrics_final["Daily Return"] = std::stod(daily_return_arr->GetString(0));
+                            INFO("Daily Return: " + daily_return_arr->GetString(0));
+                        }
+                        if (!daily_unrealized_arr->IsNull(0)) {
+                            yesterday_daily_metrics_final["Daily Unrealized PnL"] = std::stod(daily_unrealized_arr->GetString(0));
+                            INFO("Daily Unrealized PnL: " + daily_unrealized_arr->GetString(0));
+                        }
+                        if (!daily_realized_arr->IsNull(0)) {
+                            yesterday_daily_metrics_final["Daily Realized PnL"] = std::stod(daily_realized_arr->GetString(0));
+                            INFO("Daily Realized PnL: " + daily_realized_arr->GetString(0));
+                        }
+                        if (!daily_total_arr->IsNull(0)) {
+                            yesterday_daily_metrics_final["Daily Total PnL"] = std::stod(daily_total_arr->GetString(0));
+                            INFO("Daily Total PnL: " + daily_total_arr->GetString(0));
+                        }
+
+                        INFO("Successfully loaded yesterday's daily metrics from live_results");
+                    } else {
+                        if (yesterday_metrics_result.is_error()) {
+                            ERROR("Failed to query live_results: " + std::string(yesterday_metrics_result.error()->what()));
+                        } else {
+                            WARN("No rows found in live_results for date: " + yesterday_date_for_email);
+                        }
+                        // Fallback: calculate from positions if database query fails
+                        double yesterday_daily_realized = 0.0;
+                        for (const auto& [symbol, pos] : yesterday_positions_finalized) {
+                            yesterday_daily_realized += pos.realized_pnl.as_double();
+                        }
+                        yesterday_daily_metrics_final["Daily Realized PnL"] = yesterday_daily_realized;
+                        INFO("Calculated yesterday's metrics from positions (fallback) - Daily Realized PnL: " + std::to_string(yesterday_daily_realized));
+                    }
+
+                } else {
+                    INFO("No finalized positions found for yesterday's email table");
+                }
                 
                 // Create strategy metrics map with all relevant metrics organized by category
                 std::map<std::string, double> strategy_metrics;
@@ -2162,10 +2276,10 @@ int main(int argc, char* argv[]) {
                     true,  // is_daily_strategy
                     previous_day_close_prices,  // Pass Day T-1 close prices for today's positions
                     db,  // Pass database for symbols reference table
-                    yesterday_positions_finalized,  // empty per request
-                    {},  // empty exit prices
-                    {},  // empty entry prices
-                    yesterday_daily_metrics_final  // empty per request
+                    yesterday_positions_finalized,  // Now populated with yesterday's finalized positions
+                    yesterday_exit_prices,  // Day T-1 close prices for yesterday's positions
+                    yesterday_entry_prices,  // Day T-2 close prices for yesterday's positions
+                    yesterday_daily_metrics_final  // Yesterday's metrics
                 );
                 
                 // Send email with CSV attachments: today's positions and yesterday's finalized (if available)
