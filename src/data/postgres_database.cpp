@@ -596,7 +596,9 @@ Result<std::shared_ptr<arrow::Table>> PostgresDatabase::execute_query(const std:
         pqxx::work txn(*connection_);
         auto result = txn.exec(query);
         txn.commit();
-        return convert_to_arrow_table(result);
+
+        // Use generic converter that doesn't assume specific columns
+        return convert_generic_to_arrow(result);
 
     } catch (const std::exception& e) {
         return make_error<std::shared_ptr<arrow::Table>>(
@@ -1888,6 +1890,81 @@ Result<void> PostgresDatabase::store_trading_equity_curve_batch(const std::strin
         return make_error<void>(ErrorCode::DATABASE_ERROR,
                                 "Failed to store trading equity curve batch: " + std::string(e.what()),
                                 "PostgresDatabase");
+    }
+}
+
+Result<std::shared_ptr<arrow::Table>> PostgresDatabase::convert_generic_to_arrow(
+    const pqxx::result& result) const {
+    if (result.empty()) {
+        // Create an empty table with empty schema
+        auto schema = arrow::schema({});
+        std::vector<std::shared_ptr<arrow::Array>> empty_arrays;
+        auto empty_table = arrow::Table::Make(schema, empty_arrays);
+        return Result<std::shared_ptr<arrow::Table>>(empty_table);
+    }
+
+    try {
+        arrow::MemoryPool* pool = arrow::default_memory_pool();
+        std::vector<std::shared_ptr<arrow::Field>> fields;
+        std::vector<std::shared_ptr<arrow::Array>> arrays;
+
+        // Iterate through columns to build schema and arrays
+        for (pqxx::row::size_type col = 0; col < result.columns(); ++col) {
+            std::string col_name = result.column_name(col);
+
+            // Build a string array for all columns (simplest approach)
+            // For production, you'd want to detect types properly
+            arrow::StringBuilder builder(pool);
+
+            // Reserve space
+            if (builder.Reserve(result.size()) != arrow::Status::OK()) {
+                return make_error<std::shared_ptr<arrow::Table>>(
+                    ErrorCode::CONVERSION_ERROR,
+                    "Failed to reserve memory for column: " + col_name);
+            }
+
+            // Add values
+            for (const auto& row : result) {
+                if (row[col].is_null()) {
+                    if (builder.AppendNull() != arrow::Status::OK()) {
+                        return make_error<std::shared_ptr<arrow::Table>>(
+                            ErrorCode::CONVERSION_ERROR,
+                            "Failed to append null value for column: " + col_name);
+                    }
+                } else {
+                    // Try to get value as string
+                    std::string val = row[col].as<std::string>();
+                    if (builder.Append(val) != arrow::Status::OK()) {
+                        return make_error<std::shared_ptr<arrow::Table>>(
+                            ErrorCode::CONVERSION_ERROR,
+                            "Failed to append value for column: " + col_name);
+                    }
+                }
+            }
+
+            // Finish array
+            std::shared_ptr<arrow::Array> array;
+            if (builder.Finish(&array) != arrow::Status::OK()) {
+                return make_error<std::shared_ptr<arrow::Table>>(
+                    ErrorCode::CONVERSION_ERROR,
+                    "Failed to finish array for column: " + col_name);
+            }
+
+            // Add field and array
+            fields.push_back(arrow::field(col_name, arrow::utf8()));
+            arrays.push_back(array);
+        }
+
+        // Create schema and table
+        auto schema = arrow::schema(fields);
+        auto table = arrow::Table::Make(schema, arrays);
+
+        return Result<std::shared_ptr<arrow::Table>>(table);
+
+    } catch (const std::exception& e) {
+        return make_error<std::shared_ptr<arrow::Table>>(
+            ErrorCode::CONVERSION_ERROR,
+            "Exception during generic Arrow table conversion: " + std::string(e.what()));
     }
 }
 

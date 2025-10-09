@@ -448,6 +448,14 @@ private:
         const pqxx::result& result) const;
 
     /**
+     * @brief Convert any pqxx result to a generic Arrow table
+     * @param result pqxx result to convert
+     * @return Result containing the Arrow table with columns dynamically determined
+     */
+    Result<std::shared_ptr<arrow::Table>> convert_generic_to_arrow(
+        const pqxx::result& result) const;
+
+    /**
      * @brief Get the latest data time for a given asset class and frequency
      * @param asset_class Asset class to retrieve
      * @param freq Data frequency
