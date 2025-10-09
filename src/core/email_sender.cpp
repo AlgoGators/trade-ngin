@@ -486,7 +486,8 @@ std::string EmailSender::generate_trading_report_body(
     // Footer note
     if (is_daily_strategy) {
         html << "<div class=\"footer-note\">\n";
-        html << "<strong>Note:</strong> This strategy is based on daily OHLCV data. All values reflect a trading start date of October 5th, 2025. \n";
+        html << "<strong>Note:</strong> This strategy is based on daily OHLCV data. All values reflect a trading start date of October 5th, 2025. ";
+        html << "The ES, NQ, and YM positions are micro contracts (MES, MNQ, and MYM), not the standard mini or full-size contracts. All values reflect this accurately, and this is only a mismatch in representation, which we are currently working on fixing.\n";
         html << "</div>\n";
     }
 

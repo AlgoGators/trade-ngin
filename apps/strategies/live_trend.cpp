@@ -414,6 +414,9 @@ int main(int argc, char* argv[]) {
 
         if (all_bars.empty()) {
             ERROR("No historical data loaded. Cannot calculate positions.");
+            ERROR("This may be due to missing market data for the requested date.");
+            ERROR("Please check if market data exists for " + std::to_string(std::chrono::system_clock::to_time_t(now)) + 
+                  " and the 300 days prior.");
             return 1;
         }
 
@@ -533,8 +536,21 @@ int main(int argc, char* argv[]) {
             if (yesterday_prices_result.is_ok()) {
                 previous_day_close_prices = yesterday_prices_result.value();
                 INFO("Retrieved Day T-1 (yesterday) close prices for " + std::to_string(previous_day_close_prices.size()) + " symbols");
+                
+                // Check if we have prices for all required symbols
+                if (previous_day_close_prices.size() < symbols_to_price.size()) {
+                    WARN("Missing prices for some symbols. Required: " + std::to_string(symbols_to_price.size()) + 
+                         ", Got: " + std::to_string(previous_day_close_prices.size()));
+                    for (const auto& symbol : symbols_to_price) {
+                        if (previous_day_close_prices.find(symbol) == previous_day_close_prices.end()) {
+                            WARN("Missing price for symbol: " + symbol);
+                        }
+                    }
+                }
             } else {
                 ERROR("Failed to get yesterday's close prices: " + std::string(yesterday_prices_result.error()->what()));
+                ERROR("This may be due to missing market data for yesterday (" + std::to_string(std::chrono::system_clock::to_time_t(yesterday_date)) + ")");
+                ERROR("Continuing with empty price data - this may cause PnL calculation issues");
             }
 
             // Query for two-days-ago close (for finalizing yesterday's PnL)
@@ -548,6 +564,14 @@ int main(int argc, char* argv[]) {
         // STEP 1: FINALIZE YESTERDAY'S (Day T-1) PnL
         // ========================================
         INFO("STEP 1: Finalizing Day T-1 PnL using Day T-1 close prices...");
+        
+        // Check if we have sufficient data for PnL finalization
+        if (previous_day_close_prices.empty() && !previous_positions.empty()) {
+            ERROR("CRITICAL: Cannot finalize yesterday's PnL - no close prices available!");
+            ERROR("This indicates missing market data for yesterday (" + std::to_string(std::chrono::system_clock::to_time_t(previous_date)) + ")");
+            ERROR("Cannot proceed safely. Please ensure market data is available before running.");
+            return 1;
+        }
 
         // We need to UPDATE yesterday's positions with actual PnL
         // Yesterday's positions were stored with realized_pnl = 0
@@ -564,16 +588,15 @@ int main(int argc, char* argv[]) {
 
                 double prev_entry_price = prev_position.average_price.as_double();
 
-                // Get Day T-2 close (entry price for Day T-1 position)
-                double day_t2_close = prev_entry_price;  // Default
-                if (two_days_ago_close_prices.find(symbol) != two_days_ago_close_prices.end()) {
-                    day_t2_close = two_days_ago_close_prices[symbol];
-                }
-
+                // Get Day T-2 close (entry price for Day T-1 position) - NEVER change the original entry price
+                double day_t2_close = prev_entry_price;  // Use the original entry price from database
+                
                 // Get Day T-1 close (current market price for Day T-1 finalization)
-                double day_t1_close = prev_entry_price;  // Default
+                double day_t1_close = prev_entry_price;  // Default fallback
                 if (previous_day_close_prices.find(symbol) != previous_day_close_prices.end()) {
                     day_t1_close = previous_day_close_prices[symbol];
+                } else {
+                    WARN("No Day T-1 close price available for " + symbol + ", using entry price as fallback");
                 }
 
                 // Get point value multiplier
@@ -590,7 +613,7 @@ int main(int argc, char* argv[]) {
                 yesterday_total_pnl += yesterday_position_pnl;
 
                 INFO("Day T-1 finalization for " + symbol + ": qty=" + std::to_string(prev_qty) +
-                     " Day T-2 close=" + std::to_string(day_t2_close) +
+                     " Entry price (Day T-2)=" + std::to_string(day_t2_close) +
                      " Day T-1 close=" + std::to_string(day_t1_close) +
                      " point_value=" + std::to_string(point_value) +
                      " Day T-1 PnL=" + std::to_string(yesterday_position_pnl));
@@ -603,16 +626,15 @@ int main(int argc, char* argv[]) {
             for (const auto& [symbol, prev_position] : previous_positions) {
                 double prev_qty = prev_position.quantity.as_double();
 
-                // Get Day T-2 close
+                // Use the ORIGINAL entry price from the database - NEVER change it
                 double day_t2_close = prev_position.average_price.as_double();
-                if (two_days_ago_close_prices.find(symbol) != two_days_ago_close_prices.end()) {
-                    day_t2_close = two_days_ago_close_prices[symbol];
-                }
 
-                // Get Day T-1 close
-                double day_t1_close = day_t2_close;
+                // Get Day T-1 close for PnL calculation
+                double day_t1_close = day_t2_close;  // Default fallback
                 if (previous_day_close_prices.find(symbol) != previous_day_close_prices.end()) {
                     day_t1_close = previous_day_close_prices[symbol];
+                } else {
+                    WARN("No Day T-1 close price available for " + symbol + ", using entry price as fallback");
                 }
 
                 // Get point value
@@ -627,11 +649,11 @@ int main(int argc, char* argv[]) {
                 // Calculate finalized PnL
                 double yesterday_position_pnl = prev_qty * (day_t1_close - day_t2_close) * point_value;
 
-                // Create updated position for Day T-1
+                // Create updated position for Day T-1 - PRESERVE original entry price
                 trade_ngin::Position updated_pos;
                 updated_pos.symbol = symbol;
                 updated_pos.quantity = prev_position.quantity;
-                updated_pos.average_price = Decimal(day_t2_close);  // Entry was at Day T-2 close
+                updated_pos.average_price = prev_position.average_price;  // KEEP original entry price
                 updated_pos.realized_pnl = Decimal(yesterday_position_pnl);  // FINALIZED PnL
                 updated_pos.unrealized_pnl = Decimal(0.0);
                 updated_pos.last_update = previous_date;  // Keep yesterday's date
@@ -925,8 +947,14 @@ int main(int argc, char* argv[]) {
                     auto instrument_ptr = registry.get_instrument(lookup_sym);
                     if (!instrument_ptr) {
                         ERROR("CRITICAL: Instrument " + lookup_sym + " not found in registry!");
-                        throw std::runtime_error("Missing instrument in registry: " + lookup_sym +
-                                               ". Cannot calculate margin or notional without proper data.");
+                        ERROR("Available instruments in registry:");
+                        auto all_instruments = registry.get_all_instruments();
+                        for (const auto& inst : all_instruments) {
+                            ERROR("  - " + inst.first);
+                        }
+                        ERROR("Cannot calculate margin or notional without proper data.");
+                        ERROR("This may cause segmentation faults. Exiting gracefully.");
+                        return 1;  // Exit gracefully instead of throwing
                     }
 
                     // Get the contract multiplier for notional calculation from registry (ONLY source)
