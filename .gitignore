@@ -6,3 +6,11 @@ config.json
 apps/backtest/results/
 .claude/
 CLAUDE.md
+.csv
+
+# Backup files
+*.backup
+*_backup.*
+
+# Daily position CSV files
+daily_positions_*.csv
