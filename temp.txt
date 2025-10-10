@@ -351,3 +351,23 @@ html = template.render(context)  # context = the dict we defined earlier
 with open('preview.html', 'w', encoding='utf-8') as f:
     f.write(html)
 webbrowser.open('file://' + os.path.realpath('preview.html'))
+
+context = {
+  "report": {"generated_at_et": "Fri Oct 10, 2025 08:05 ET", "alert_badge": "CPI 8:30a", "year": "2025"},
+  "summary": {"bullets": ["Primary cautious; windows narrow.", "Loan proxy +0.2%; HY proxy −0.3%."], "bias": "mixed"},
+  "kpi": {
+    "rates": {"ust2y": {"level": 424.5, "delta_bp": 3.2}, "ust10y": {"level": 408.9, "delta_bp": -1.5}},
+    "policy": {"sofr": {"last": "5.30%"}},
+    "hy_effective_yield": {"level_pct": 7.92, "delta_bp": 7.0},
+    "proxies": {"loans": {"dod_pct": 0.21}, "hy": {"dod_pct": -0.33}},
+    "primary_wtd": {"counts": {"loans": 3, "hy": 2}}
+  },
+  "events": {"today": [{"time":"8:30a","label":"CPI (Core)","relevance":"Front-end repricing; primary tone sensitive"}]},
+  "deals": {
+    "loans": {"today":[{"issuer":"Acme Corp","instrument":"TLB","status":"launched","size_mm":750,"use":"Refi","talk_or_oid":"OID 98-98.5","ratings_note":"B2/B+"}]},
+    "hy": {"today":[{"issuer":"Beta Holdings","instrument":"Senior Notes","status":"books","size_mm":500,"use":"M&A","talk_or_price":"Talk ~8.125%","ratings_note":"B3/B-"}]},
+    "yday":[{"issuer":"Gamma Co","note":"HY priced at 7.875% (tight of talk)"}]
+  },
+  "secondary": {"proxy_notes": ["Loans modestly firmer; breadth mixed.", "HY proxy softer amid rate vol."]},
+  "methodology": {"sources":"FRED (rates, SOFR, HY Effective Yield); public market proxies (prices via Yahoo); curated headlines."}
+}
