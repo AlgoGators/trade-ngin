@@ -1,26 +1,353 @@
-SYSTEM INSTRUCTION:
-You are a leveraged finance strategist at a major investment bank. 
-Your task is to write a concise daily *Executive Summary* of the leveraged finance market.
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <!--[if !mso]><!-->
+  <meta http-equiv="x-ua-compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!--<![endif]-->
+  <title>Daily LevFin Market Update</title>
+  <!-- Keep CSS minimal; Outlook favors inline styles. -->
+</head>
+<body style="margin:0;padding:0;background-color:#F2F4F7;">
+  <!-- Outer wrapper (full width, gray background) -->
+  <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color:#F2F4F7;">
+    <tr>
+      <td align="center" style="padding:24px 12px;">
+        <!-- Fixed-width container -->
+        <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="680" style="width:680px;max-width:680px;background-color:#FFFFFF;border-collapse:collapse;">
+          
+          <!-- ===== Header / Top Bar ===== -->
+          <tr>
+            <td style="background-color:#0033A0;padding:18px 20px 16px 20px;border-top-left-radius:6px;border-top-right-radius:6px;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+                <tr>
+                  <td align="left" style="font-family:Arial,Helvetica,sans-serif;font-size:18px;line-height:22px;color:#FFFFFF;font-weight:bold;">
+                    Daily LevFin Market Update
+                  </td>
+                  <td align="right" style="font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:16px;color:#E6ECF5;">
+                    As of {{ report.generated_at_et }}
+                  </td>
+                </tr>
+                {% if report.alert_badge %}
+                <tr>
+                  <td colspan="2" style="padding-top:8px;">
+                    <span style="display:inline-block;background-color:#FDBB30;color:#002D72;font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:16px;font-weight:bold;padding:4px 8px;border-radius:3px;">
+                      {{ report.alert_badge }}
+                    </span>
+                  </td>
+                </tr>
+                {% endif %}
+              </table>
+            </td>
+          </tr>
 
-Use the structured data provided. Do NOT speculate or invent facts. 
-Write in a professional sell-side tone: factual, confident, concise, and data-backed. 
-Limit to ~200 words total.
+          <!-- Decorative slim divider in brand gold -->
+          <tr>
+            <td style="height:4px;background-color:#FDBB30;"></td>
+          </tr>
 
-STRUCTURE:
-1. Headline line (1 sentence) summarizing overall market tone.
-2. 3–5 bullet-style key takeaways (1 line each, with clear metrics).
-3. 1–2 sentences of macro/rates context.
-4. 2–3 sentences summarizing primary market and secondary tone.
-5. 1 sentence forward-looking outlook.
+          <!-- ===== Executive Summary ===== -->
+          {% if summary and summary.bullets %}
+          <tr>
+            <td style="padding:20px 20px 8px 20px;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid #E5E9F0;border-left:4px solid #FDBB30;border-radius:4px;">
+                <tr>
+                  <td style="padding:14px 16px 6px 16px;">
+                    <div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:20px;color:#243447;font-weight:bold;">
+                      Executive Summary
+                    </div>
+                  </td>
+                </tr>
+                <tr>
+                  <td style="padding:2px 16px 14px 16px;">
+                    <ul style="margin:6px 0 0 18px;padding:0;font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:19px;color:#243447;">
+                      {% for b in summary.bullets %}
+                        <li style="margin:6px 0 0 0;">{{ b }}</li>
+                      {% endfor %}
+                    </ul>
+                    {% if summary.bias %}
+                      <div style="margin-top:10px;font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:16px;color:#5A6572;">
+                        Stance:
+                        {% if summary.bias == 'risk_on' %}
+                          <span style="font-weight:bold;color:#0B8F3E;">Selective risk-on</span>
+                        {% elif summary.bias == 'risk_off' %}
+                          <span style="font-weight:bold;color:#C62828;">Risk-off</span>
+                        {% else %}
+                          <span style="font-weight:bold;color:#243447;">Mixed</span>
+                        {% endif %}
+                      </div>
+                    {% endif %}
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          {% endif %}
 
-OUTPUT STYLE:
-- Use present tense and active phrasing.
-- Include key numeric data (bps, %, $bn, inflow/outflow, etc.).
-- Avoid adjectives like “good,” “bad,” or “strong” — use directional terms like “tightened,” “softened,” “muted.”
-- Never exceed 220 words.
-- Include no markdown formatting.
+          <!-- ===== Market Dashboard (KPI Tiles) ===== -->
+          {% set show_any_kpi = (kpi and (kpi.rates or kpi.policy or kpi.proxies or kpi.hy_effective_yield or kpi.primary_wtd)) %}
+          {% if show_any_kpi %}
+          <tr>
+            <td style="padding:8px 20px 8px 20px;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid #E5E9F0;border-radius:4px;">
+                <tr>
+                  <td style="padding:12px 14px 0 14px;">
+                    <div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:20px;color:#243447;font-weight:bold;">
+                      Market Dashboard
+                    </div>
+                  </td>
+                </tr>
+                <tr>
+                  <td style="padding:8px 8px 12px 8px;">
+                    <!-- Tile grid: 2 columns x n rows for Outlook safety -->
+                    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+                      {% macro kpi_tile(label, value, sub, delta_bp=None, delta_pct=None) -%}
+                        <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="50%" align="left" style="width:50%;max-width:50%;padding:6px;">
+                          <tr>
+                            <td style="border:1px solid #E5E9F0;border-radius:4px;padding:10px 12px;">
+                              <div style="font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:16px;color:#5A6572;text-transform:uppercase;letter-spacing:0.3px;">{{ label }}</div>
+                              <div style="font-family:Arial,Helvetica,sans-serif;font-size:18px;line-height:22px;color:#002D72;font-weight:bold;margin-top:2px;">{{ value }}</div>
+                              {% if sub %}
+                              <div style="font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:16px;color:#5A6572;margin-top:2px;">{{ sub }}</div>
+                              {% endif %}
+                              {% if delta_bp is not none or delta_pct is not none %}
+                                {% set raw = delta_bp if delta_bp is not none else delta_pct %}
+                                {% set is_pos = (raw | float) > 0 %}
+                                {% set is_neg = (raw | float) < 0 %}
+                                {% set sign = '+' if (raw | float) > 0 else '' %}
+                                {% set unit = ' bp' if delta_bp is not none else '%' %}
+                                <div style="font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:16px;margin-top:4px;color:{% if is_pos %}#0B8F3E{% elif is_neg %}#C62828{% else %}#5A6572{% endif %};">
+                                  {{ sign }}{{ '%.2f'|format(raw|float) }}{{ unit }} D/D
+                                </div>
+                              {% endif %}
+                            </td>
+                          </tr>
+                        </table>
+                      {%- endmacro %}
 
-DATA INPUT:
-{{structured_market_data_json_here}}
+                      <!-- Row 1: Rates & Policy -->
+                      {% if kpi.rates and kpi.rates.ust2y %}
+                        {{ kpi_tile('US 2-Year Yield', kpi.rates.ust2y.level ~ ' bp', 'Level', delta_bp=kpi.rates.ust2y.delta_bp) }}
+                      {% endif %}
+                      {% if kpi.rates and kpi.rates.ust10y %}
+                        {{ kpi_tile('US 10-Year Yield', kpi.rates.ust10y.level ~ ' bp', 'Level', delta_bp=kpi.rates.ust10y.delta_bp) }}
+                      {% endif %}
 
-Generate the final executive summary now.
+                      <!-- Row 2: SOFR & HY Effective Yield -->
+                      {% if kpi.policy and kpi.policy.sofr and kpi.policy.sofr.last %}
+                        {{ kpi_tile('SOFR (Latest)', kpi.policy.sofr.last, 'Overnight rate') }}
+                      {% endif %}
+                      {% if kpi.hy_effective_yield and kpi.hy_effective_yield.level_pct %}
+                        {{ kpi_tile('High-Yield Effective Yield', kpi.hy_effective_yield.level_pct ~ '%', 'ICE BofA HY (FRED)', delta_bp=kpi.hy_effective_yield.delta_bp) }}
+                      {% endif %}
+
+                      <!-- Row 3: Loan & HY proxies (descriptive, no tickers) -->
+                      {% if kpi.proxies and kpi.proxies.loans and kpi.proxies.loans.dod_pct is not none %}
+                        {{ kpi_tile('Senior-Secured Loan Market Proxy', (kpi.proxies.loans.dod_pct|float)|round(2) ~ '%', 'D/D move', delta_pct=kpi.proxies.loans.dod_pct) }}
+                      {% endif %}
+                      {% if kpi.proxies and kpi.proxies.hy and kpi.proxies.hy.dod_pct is not none %}
+                        {{ kpi_tile('High-Yield Bond Market Proxy', (kpi.proxies.hy.dod_pct|float)|round(2) ~ '%', 'D/D move', delta_pct=kpi.proxies.hy.dod_pct) }}
+                      {% endif %}
+
+                      <!-- Row 4: Primary counts (optional) -->
+                      {% if kpi.primary_wtd and (kpi.primary_wtd.counts and (kpi.primary_wtd.counts.loans or kpi.primary_wtd.counts.hy)) %}
+                        {{ kpi_tile('Primary WTD—Loans', (kpi.primary_wtd.counts.loans if kpi.primary_wtd.counts.loans else '—'), 'Deals this week') }}
+                        {{ kpi_tile('Primary WTD—High Yield', (kpi.primary_wtd.counts.hy if kpi.primary_wtd.counts.hy else '—'), 'Deals this week') }}
+                      {% endif %}
+
+                      <!-- Clear floats for Outlook -->
+                      <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%"><tr><td style="font-size:0;line-height:0;">&nbsp;</td></tr></table>
+                    </table>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          {% endif %}
+
+          <!-- ===== Key Events ===== -->
+          {% if events and events.today and events.today|length > 0 %}
+          <tr>
+            <td style="padding:8px 20px;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid #E5E9F0;border-radius:4px;">
+                <tr>
+                  <td style="padding:12px 14px 0 14px;">
+                    <div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:20px;color:#243447;font-weight:bold;">
+                      Key Events
+                    </div>
+                  </td>
+                </tr>
+                <tr>
+                  <td style="padding:8px 16px 14px 16px;">
+                    <ul style="margin:6px 0 0 18px;padding:0;font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:19px;color:#243447;">
+                      {% for e in events.today %}
+                        <li style="margin:6px 0 0 0;">
+                          <span style="font-weight:bold;color:#002D72;">{{ e.time }}</span>
+                          — {{ e.label }}
+                          {% if e.relevance %}
+                            <span style="display:inline-block;margin-left:6px;padding:2px 6px;background-color:#EAF2FF;color:#0033A0;border:1px solid #C8D9F8;border-radius:3px;font-size:11px;line-height:14px;">LevFin relevance: {{ e.relevance }}</span>
+                          {% endif %}
+                        </li>
+                      {% endfor %}
+                    </ul>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          {% endif %}
+
+          <!-- ===== Deal Activity (bullets) ===== -->
+          {% set has_loans = deals and deals.loans and deals.loans.today and deals.loans.today|length>0 %}
+          {% set has_hy = deals and deals.hy and deals.hy.today and deals.hy.today|length>0 %}
+          {% set has_yday = deals and deals.yday and deals.yday|length>0 %}
+          {% if has_loans or has_hy or has_yday %}
+          <tr>
+            <td style="padding:8px 20px;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid #E5E9F0;border-radius:4px;">
+                <tr>
+                  <td style="padding:12px 14px 0 14px;">
+                    <div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:20px;color:#243447;font-weight:bold;">
+                      Deal Activity
+                    </div>
+                  </td>
+                </tr>
+                {% if has_loans %}
+                <tr>
+                  <td style="padding:6px 16px 0 16px;">
+                    <div style="font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:19px;color:#002D72;font-weight:bold;margin-top:4px;">Loans — Today</div>
+                    <ul style="margin:6px 0 0 18px;padding:0;font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:19px;color:#243447;">
+                      {% for d in deals.loans.today %}
+                        <li style="margin:6px 0 0 0;">
+                          <span style="font-weight:bold;color:#243447;">{{ d.issuer }}</span>
+                          {% if d.instrument %} — {{ d.instrument }}{% endif %};
+                          <span style="font-weight:bold;color:#0033A0;">{{ d.status }}</span>
+                          {% if d.size_mm %} • Size: ${{ '{:,.0f}'.format(d.size_mm) }}mm{% endif %}
+                          {% if d.use %} • Use: {{ d.use }}{% endif %}
+                          {% if d.talk_or_oid %} • Terms: {{ d.talk_or_oid }}{% endif %}
+                          {% if d.ratings_note %} • Ratings: {{ d.ratings_note }}{% endif %}
+                        </li>
+                      {% endfor %}
+                    </ul>
+                  </td>
+                </tr>
+                {% endif %}
+
+                {% if has_hy %}
+                <tr>
+                  <td style="padding:10px 16px 0 16px;">
+                    <div style="font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:19px;color:#002D72;font-weight:bold;margin-top:4px;">High Yield — Today</div>
+                    <ul style="margin:6px 0 0 18px;padding:0;font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:19px;color:#243447;">
+                      {% for d in deals.hy.today %}
+                        <li style="margin:6px 0 0 0;">
+                          <span style="font-weight:bold;color:#243447;">{{ d.issuer }}</span>
+                          {% if d.instrument %} — {{ d.instrument }}{% endif %};
+                          <span style="font-weight:bold;color:#0033A0;">{{ d.status }}</span>
+                          {% if d.size_mm %} • Size: ${{ '{:,.0f}'.format(d.size_mm) }}mm{% endif %}
+                          {% if d.use %} • Use: {{ d.use }}{% endif %}
+                          {% if d.talk_or_price %} • Terms: {{ d.talk_or_price }}{% endif %}
+                          {% if d.ratings_note %} • Ratings: {{ d.ratings_note }}{% endif %}
+                        </li>
+                      {% endfor %}
+                    </ul>
+                  </td>
+                </tr>
+                {% endif %}
+
+                {% if has_yday %}
+                <tr>
+                  <td style="padding:10px 16px 12px 16px;">
+                    <div style="font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:19px;color:#002D72;font-weight:bold;margin-top:4px;">Priced / Watchlist — Yesterday</div>
+                    <ul style="margin:6px 0 0 18px;padding:0;font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:19px;color:#243447;">
+                      {% for d in deals.yday %}
+                        <li style="margin:6px 0 0 0;">
+                          <span style="font-weight:bold;color:#243447;">{{ d.issuer }}</span> — {{ d.note }}
+                        </li>
+                      {% endfor %}
+                    </ul>
+                  </td>
+                </tr>
+                {% endif %}
+              </table>
+            </td>
+          </tr>
+          {% endif %}
+
+          <!-- ===== Secondary Color (proxy-based) ===== -->
+          {% if secondary and secondary.proxy_notes and secondary.proxy_notes|length>0 %}
+          <tr>
+            <td style="padding:8px 20px;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid #E5E9F0;border-radius:4px;">
+                <tr>
+                  <td style="padding:12px 14px 0 14px;">
+                    <div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:20px;color:#243447;font-weight:bold;">
+                      Secondary Color
+                    </div>
+                  </td>
+                </tr>
+                <tr>
+                  <td style="padding:8px 16px 14px 16px;">
+                    <ul style="margin:6px 0 0 18px;padding:0;font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:19px;color:#243447;">
+                      {% for n in secondary.proxy_notes %}
+                        <li style="margin:6px 0 0 0;">{{ n }}</li>
+                      {% endfor %}
+                    </ul>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          {% endif %}
+
+          <!-- ===== Methodology / Sources ===== -->
+          {% set has_sources = methodology and methodology.sources %}
+          {% if has_sources %}
+          <tr>
+            <td style="padding:8px 20px 20px 20px;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid #E5E9F0;border-radius:4px;">
+                <tr>
+                  <td style="padding:12px 14px 0 14px;">
+                    <div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:20px;color:#243447;font-weight:bold;">
+                      Methodology & Sources
+                    </div>
+                  </td>
+                </tr>
+                <tr>
+                  <td style="padding:8px 16px 12px 16px;font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:18px;color:#5A6572;">
+                    {{ methodology.sources }}<br>
+                    Times in Eastern Time (ET).
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          {% endif %}
+
+          <!-- ===== Footer ===== -->
+          <tr>
+            <td style="background-color:#FFFFFF;border-top:1px solid #E5E9F0;padding:16px 20px;border-bottom-left-radius:6px;border-bottom-right-radius:6px;">
+              <div style="font-family:Arial,Helvetica,sans-serif;font-size:11px;line-height:16px;color:#5A6572;">
+                Internal distribution only. This note is informational and not investment advice. © {{ report.year or '' }}
+              </div>
+            </td>
+          </tr>
+
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+
+from jinja2 import Environment, FileSystemLoader
+import webbrowser, os
+
+env = Environment(loader=FileSystemLoader('.'))
+template = env.get_template('levfin_update.html')
+html = template.render(context)  # context = the dict we defined earlier
+
+# Write to file and open in default browser
+with open('preview.html', 'w', encoding='utf-8') as f:
+    f.write(html)
+webbrowser.open('file://' + os.path.realpath('preview.html'))
