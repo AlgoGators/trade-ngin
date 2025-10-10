@@ -7,19 +7,18 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <!--<![endif]-->
   <title>Daily LevFin Market Update</title>
-  <!-- Keep CSS minimal; Outlook favors inline styles. -->
 </head>
 <body style="margin:0;padding:0;background-color:#F2F4F7;">
-  <!-- Outer wrapper (full width, gray background) -->
+  <!-- Outer wrapper (full width, gray bg) -->
   <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color:#F2F4F7;">
     <tr>
       <td align="center" style="padding:24px 12px;">
-        <!-- Fixed-width container -->
-        <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="680" style="width:680px;max-width:680px;background-color:#FFFFFF;border-collapse:collapse;">
+        <!-- Main card container (ALL sections live inside this table) -->
+        <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="680" style="width:680px;max-width:680px;background-color:#FFFFFF;border-collapse:collapse;border-radius:6px;overflow:hidden;">
           
-          <!-- ===== Header / Top Bar ===== -->
+          <!-- ===== Header / Top Bar (inside main card) ===== -->
           <tr>
-            <td style="background-color:#0033A0;padding:18px 20px 16px 20px;border-top-left-radius:6px;border-top-right-radius:6px;">
+            <td style="background-color:#0033A0;padding:18px 20px 16px 20px;">
               <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
                 <tr>
                   <td align="left" style="font-family:Arial,Helvetica,sans-serif;font-size:18px;line-height:22px;color:#FFFFFF;font-weight:bold;">
@@ -42,10 +41,8 @@
             </td>
           </tr>
 
-          <!-- Decorative slim divider in brand gold -->
-          <tr>
-            <td style="height:4px;background-color:#FDBB30;"></td>
-          </tr>
+          <!-- Brand accent divider -->
+          <tr><td style="height:4px;background-color:#FDBB30;"></td></tr>
 
           <!-- ===== Executive Summary ===== -->
           {% if summary and summary.bullets %}
@@ -54,9 +51,7 @@
               <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid #E5E9F0;border-left:4px solid #FDBB30;border-radius:4px;">
                 <tr>
                   <td style="padding:14px 16px 6px 16px;">
-                    <div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:20px;color:#243447;font-weight:bold;">
-                      Executive Summary
-                    </div>
+                    <div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:20px;color:#243447;font-weight:bold;">Executive Summary</div>
                   </td>
                 </tr>
                 <tr>
@@ -67,16 +62,16 @@
                       {% endfor %}
                     </ul>
                     {% if summary.bias %}
-                      <div style="margin-top:10px;font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:16px;color:#5A6572;">
-                        Stance:
-                        {% if summary.bias == 'risk_on' %}
-                          <span style="font-weight:bold;color:#0B8F3E;">Selective risk-on</span>
-                        {% elif summary.bias == 'risk_off' %}
-                          <span style="font-weight:bold;color:#C62828;">Risk-off</span>
-                        {% else %}
-                          <span style="font-weight:bold;color:#243447;">Mixed</span>
-                        {% endif %}
-                      </div>
+                    <div style="margin-top:10px;font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:16px;color:#5A6572;">
+                      Stance:
+                      {% if summary.bias == 'risk_on' %}
+                        <span style="font-weight:bold;color:#0B8F3E;">Selective risk-on</span>
+                      {% elif summary.bias == 'risk_off' %}
+                        <span style="font-weight:bold;color:#C62828;">Risk-off</span>
+                      {% else %}
+                        <span style="font-weight:bold;color:#243447;">Mixed</span>
+                      {% endif %}
+                    </div>
                     {% endif %}
                   </td>
                 </tr>
@@ -89,18 +84,16 @@
           {% set show_any_kpi = (kpi and (kpi.rates or kpi.policy or kpi.proxies or kpi.hy_effective_yield or kpi.primary_wtd)) %}
           {% if show_any_kpi %}
           <tr>
-            <td style="padding:8px 20px 8px 20px;">
+            <td style="padding:8px 20px;">
               <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid #E5E9F0;border-radius:4px;">
                 <tr>
                   <td style="padding:12px 14px 0 14px;">
-                    <div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:20px;color:#243447;font-weight:bold;">
-                      Market Dashboard
-                    </div>
+                    <div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:20px;color:#243447;font-weight:bold;">Market Dashboard</div>
                   </td>
                 </tr>
                 <tr>
                   <td style="padding:8px 8px 12px 8px;">
-                    <!-- Tile grid: 2 columns x n rows for Outlook safety -->
+                    <!-- 2-col tile grid (Outlook-safe) -->
                     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
                       {% macro kpi_tile(label, value, sub, delta_bp=None, delta_pct=None) -%}
                         <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="50%" align="left" style="width:50%;max-width:50%;padding:6px;">
@@ -108,9 +101,7 @@
                             <td style="border:1px solid #E5E9F0;border-radius:4px;padding:10px 12px;">
                               <div style="font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:16px;color:#5A6572;text-transform:uppercase;letter-spacing:0.3px;">{{ label }}</div>
                               <div style="font-family:Arial,Helvetica,sans-serif;font-size:18px;line-height:22px;color:#002D72;font-weight:bold;margin-top:2px;">{{ value }}</div>
-                              {% if sub %}
-                              <div style="font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:16px;color:#5A6572;margin-top:2px;">{{ sub }}</div>
-                              {% endif %}
+                              {% if sub %}<div style="font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:16px;color:#5A6572;margin-top:2px;">{{ sub }}</div>{% endif %}
                               {% if delta_bp is not none or delta_pct is not none %}
                                 {% set raw = delta_bp if delta_bp is not none else delta_pct %}
                                 {% set is_pos = (raw | float) > 0 %}
@@ -126,7 +117,7 @@
                         </table>
                       {%- endmacro %}
 
-                      <!-- Row 1: Rates & Policy -->
+                      <!-- Row 1: Rates -->
                       {% if kpi.rates and kpi.rates.ust2y %}
                         {{ kpi_tile('US 2-Year Yield', kpi.rates.ust2y.level ~ ' bp', 'Level', delta_bp=kpi.rates.ust2y.delta_bp) }}
                       {% endif %}
@@ -142,7 +133,7 @@
                         {{ kpi_tile('High-Yield Effective Yield', kpi.hy_effective_yield.level_pct ~ '%', 'ICE BofA HY (FRED)', delta_bp=kpi.hy_effective_yield.delta_bp) }}
                       {% endif %}
 
-                      <!-- Row 3: Loan & HY proxies (descriptive, no tickers) -->
+                      <!-- Row 3: Loan & HY proxies (descriptive names) -->
                       {% if kpi.proxies and kpi.proxies.loans and kpi.proxies.loans.dod_pct is not none %}
                         {{ kpi_tile('Senior-Secured Loan Market Proxy', (kpi.proxies.loans.dod_pct|float)|round(2) ~ '%', 'D/D move', delta_pct=kpi.proxies.loans.dod_pct) }}
                       {% endif %}
@@ -152,12 +143,50 @@
 
                       <!-- Row 4: Primary counts (optional) -->
                       {% if kpi.primary_wtd and (kpi.primary_wtd.counts and (kpi.primary_wtd.counts.loans or kpi.primary_wtd.counts.hy)) %}
-                        {{ kpi_tile('Primary WTD—Loans', (kpi.primary_wtd.counts.loans if kpi.primary_wtd.counts.loans else '—'), 'Deals this week') }}
-                        {{ kpi_tile('Primary WTD—High Yield', (kpi.primary_wtd.counts.hy if kpi.primary_wtd.counts.hy else '—'), 'Deals this week') }}
+                        {{ kpi_tile('Primary WTD — Loans', (kpi.primary_wtd.counts.loans if kpi.primary_wtd.counts.loans else '—'), 'Deals this week') }}
+                        {{ kpi_tile('Primary WTD — High Yield', (kpi.primary_wtd.counts.hy if kpi.primary_wtd.counts.hy else '—'), 'Deals this week') }}
                       {% endif %}
 
-                      <!-- Clear floats for Outlook -->
+                      <!-- Clear floats -->
                       <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%"><tr><td style="font-size:0;line-height:0;">&nbsp;</td></tr></table>
+                    </table>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          {% endif %}
+
+          <!-- ===== NEW: UST Rates Table (full curve) ===== -->
+          {% if kpi and kpi.ust_curve and kpi.ust_curve|length > 0 %}
+          <tr>
+            <td style="padding:8px 20px;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid #E5E9F0;border-radius:4px;">
+                <tr>
+                  <td style="padding:12px 14px 0 14px;">
+                    <div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:20px;color:#243447;font-weight:bold;">UST Rates — Full Curve</div>
+                  </td>
+                </tr>
+                <tr>
+                  <td style="padding:8px 14px 14px 14px;">
+                    <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse;">
+                      <tr style="background-color:#EAF2FF;">
+                        <td style="font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:16px;color:#0033A0;font-weight:bold;padding:8px;border:1px solid #DDE3EC;">Tenor</td>
+                        <td style="font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:16px;color:#0033A0;font-weight:bold;padding:8px;border:1px solid #DDE3EC;" align="right">Level (bp)</td>
+                        <td style="font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:16px;color:#0033A0;font-weight:bold;padding:8px;border:1px solid #DDE3EC;" align="right">Δ D/D (bp)</td>
+                      </tr>
+                      {% set preferred_order = ['ON','1M','3M','6M','1Y','2Y','3Y','5Y','7Y','10Y','20Y','30Y'] %}
+                      {% for tenor in preferred_order %}
+                        {% if kpi.ust_curve.get(tenor) %}
+                          {% set row = kpi.ust_curve.get(tenor) %}
+                          {% set d = row.delta_bp if row.delta_bp is not none else 0 %}
+                          <tr>
+                            <td style="font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:16px;color:#243447;padding:8px;border:1px solid #EFEFEF;">{{ tenor }}</td>
+                            <td align="right" style="font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:16px;color:#002D72;padding:8px;border:1px solid #EFEFEF;font-weight:bold;">{{ '%.1f'|format(row.level_bp|float) }}</td>
+                            <td align="right" style="font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:16px;padding:8px;border:1px solid #EFEFEF;color:{% if d>0 %}#0B8F3E{% elif d<0 %}#C62828{% else %}#5A6572{% endif %};">{{ '%+0.2f'|format(d|float) }}</td>
+                          </tr>
+                        {% endif %}
+                      {% endfor %}
                     </table>
                   </td>
                 </tr>
@@ -173,9 +202,7 @@
               <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid #E5E9F0;border-radius:4px;">
                 <tr>
                   <td style="padding:12px 14px 0 14px;">
-                    <div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:20px;color:#243447;font-weight:bold;">
-                      Key Events
-                    </div>
+                    <div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:20px;color:#243447;font-weight:bold;">Key Events</div>
                   </td>
                 </tr>
                 <tr>
@@ -183,8 +210,7 @@
                     <ul style="margin:6px 0 0 18px;padding:0;font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:19px;color:#243447;">
                       {% for e in events.today %}
                         <li style="margin:6px 0 0 0;">
-                          <span style="font-weight:bold;color:#002D72;">{{ e.time }}</span>
-                          — {{ e.label }}
+                          <span style="font-weight:bold;color:#002D72;">{{ e.time }}</span> — {{ e.label }}
                           {% if e.relevance %}
                             <span style="display:inline-block;margin-left:6px;padding:2px 6px;background-color:#EAF2FF;color:#0033A0;border:1px solid #C8D9F8;border-radius:3px;font-size:11px;line-height:14px;">LevFin relevance: {{ e.relevance }}</span>
                           {% endif %}
@@ -204,13 +230,11 @@
           {% set has_yday = deals and deals.yday and deals.yday|length>0 %}
           {% if has_loans or has_hy or has_yday %}
           <tr>
-            <td style="padding:8px 20px;">
+            <td style="padding:8px 20px 16px 20px;">
               <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid #E5E9F0;border-radius:4px;">
                 <tr>
                   <td style="padding:12px 14px 0 14px;">
-                    <div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:20px;color:#243447;font-weight:bold;">
-                      Deal Activity
-                    </div>
+                    <div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:20px;color:#243447;font-weight:bold;">Deal Activity</div>
                   </td>
                 </tr>
                 {% if has_loans %}
@@ -233,7 +257,6 @@
                   </td>
                 </tr>
                 {% endif %}
-
                 {% if has_hy %}
                 <tr>
                   <td style="padding:10px 16px 0 16px;">
@@ -254,16 +277,13 @@
                   </td>
                 </tr>
                 {% endif %}
-
                 {% if has_yday %}
                 <tr>
                   <td style="padding:10px 16px 12px 16px;">
                     <div style="font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:19px;color:#002D72;font-weight:bold;margin-top:4px;">Priced / Watchlist — Yesterday</div>
                     <ul style="margin:6px 0 0 18px;padding:0;font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:19px;color:#243447;">
                       {% for d in deals.yday %}
-                        <li style="margin:6px 0 0 0;">
-                          <span style="font-weight:bold;color:#243447;">{{ d.issuer }}</span> — {{ d.note }}
-                        </li>
+                        <li style="margin:6px 0 0 0;"><span style="font-weight:bold;color:#243447;">{{ d.issuer }}</span> — {{ d.note }}</li>
                       {% endfor %}
                     </ul>
                   </td>
@@ -274,100 +294,41 @@
           </tr>
           {% endif %}
 
-          <!-- ===== Secondary Color (proxy-based) ===== -->
-          {% if secondary and secondary.proxy_notes and secondary.proxy_notes|length>0 %}
+          <!-- ===== Footer (inside main card) ===== -->
           <tr>
-            <td style="padding:8px 20px;">
-              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid #E5E9F0;border-radius:4px;">
-                <tr>
-                  <td style="padding:12px 14px 0 14px;">
-                    <div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:20px;color:#243447;font-weight:bold;">
-                      Secondary Color
-                    </div>
-                  </td>
-                </tr>
-                <tr>
-                  <td style="padding:8px 16px 14px 16px;">
-                    <ul style="margin:6px 0 0 18px;padding:0;font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:19px;color:#243447;">
-                      {% for n in secondary.proxy_notes %}
-                        <li style="margin:6px 0 0 0;">{{ n }}</li>
-                      {% endfor %}
-                    </ul>
-                  </td>
-                </tr>
-              </table>
-            </td>
-          </tr>
-          {% endif %}
-
-          <!-- ===== Methodology / Sources ===== -->
-          {% set has_sources = methodology and methodology.sources %}
-          {% if has_sources %}
-          <tr>
-            <td style="padding:8px 20px 20px 20px;">
-              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid #E5E9F0;border-radius:4px;">
-                <tr>
-                  <td style="padding:12px 14px 0 14px;">
-                    <div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:20px;color:#243447;font-weight:bold;">
-                      Methodology & Sources
-                    </div>
-                  </td>
-                </tr>
-                <tr>
-                  <td style="padding:8px 16px 12px 16px;font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:18px;color:#5A6572;">
-                    {{ methodology.sources }}<br>
-                    Times in Eastern Time (ET).
-                  </td>
-                </tr>
-              </table>
-            </td>
-          </tr>
-          {% endif %}
-
-          <!-- ===== Footer ===== -->
-          <tr>
-            <td style="background-color:#FFFFFF;border-top:1px solid #E5E9F0;padding:16px 20px;border-bottom-left-radius:6px;border-bottom-right-radius:6px;">
+            <td style="background-color:#FFFFFF;border-top:1px solid #E5E9F0;padding:16px 20px;">
               <div style="font-family:Arial,Helvetica,sans-serif;font-size:11px;line-height:16px;color:#5A6572;">
                 Internal distribution only. This note is informational and not investment advice. © {{ report.year or '' }}
               </div>
             </td>
           </tr>
 
-        </table>
+        </table><!-- /main card container -->
       </td>
     </tr>
   </table>
 </body>
 </html>
 
-from jinja2 import Environment, FileSystemLoader
-import webbrowser, os
-
-env = Environment(loader=FileSystemLoader('.'))
-template = env.get_template('levfin_update.html')
-html = template.render(context)  # context = the dict we defined earlier
-
-# Write to file and open in default browser
-with open('preview.html', 'w', encoding='utf-8') as f:
-    f.write(html)
-webbrowser.open('file://' + os.path.realpath('preview.html'))
-
-context = {
-  "report": {"generated_at_et": "Fri Oct 10, 2025 08:05 ET", "alert_badge": "CPI 8:30a", "year": "2025"},
-  "summary": {"bullets": ["Primary cautious; windows narrow.", "Loan proxy +0.2%; HY proxy −0.3%."], "bias": "mixed"},
-  "kpi": {
-    "rates": {"ust2y": {"level": 424.5, "delta_bp": 3.2}, "ust10y": {"level": 408.9, "delta_bp": -1.5}},
-    "policy": {"sofr": {"last": "5.30%"}},
-    "hy_effective_yield": {"level_pct": 7.92, "delta_bp": 7.0},
-    "proxies": {"loans": {"dod_pct": 0.21}, "hy": {"dod_pct": -0.33}},
-    "primary_wtd": {"counts": {"loans": 3, "hy": 2}}
-  },
-  "events": {"today": [{"time":"8:30a","label":"CPI (Core)","relevance":"Front-end repricing; primary tone sensitive"}]},
-  "deals": {
-    "loans": {"today":[{"issuer":"Acme Corp","instrument":"TLB","status":"launched","size_mm":750,"use":"Refi","talk_or_oid":"OID 98-98.5","ratings_note":"B2/B+"}]},
-    "hy": {"today":[{"issuer":"Beta Holdings","instrument":"Senior Notes","status":"books","size_mm":500,"use":"M&A","talk_or_price":"Talk ~8.125%","ratings_note":"B3/B-"}]},
-    "yday":[{"issuer":"Gamma Co","note":"HY priced at 7.875% (tight of talk)"}]
-  },
-  "secondary": {"proxy_notes": ["Loans modestly firmer; breadth mixed.", "HY proxy softer amid rate vol."]},
-  "methodology": {"sources":"FRED (rates, SOFR, HY Effective Yield); public market proxies (prices via Yahoo); curated headlines."}
+"kpi": {
+  "rates": {"ust2y": {"level": 424.5, "delta_bp": 3.2},
+            "ust10y": {"level": 408.9, "delta_bp": -1.5}},
+  "policy": {"sofr": {"last": "5.30%"}},
+  "hy_effective_yield": {"level_pct": 7.92, "delta_bp": 7.0},
+  "proxies": {"loans": {"dod_pct": 0.21}, "hy": {"dod_pct": -0.33}},
+  "primary_wtd": {"counts": {"loans": 3, "hy": 2}},
+  "ust_curve": {
+    "ON":{"level_bp": 535.0, "delta_bp": 0.5},
+    "1M":{"level_bp": 540.1, "delta_bp": 0.2},
+    "3M":{"level_bp": 545.6, "delta_bp": -0.1},
+    "6M":{"level_bp": 548.2, "delta_bp": 0.0},
+    "1Y":{"level_bp": 520.4, "delta_bp": -1.2},
+    "2Y":{"level_bp": 424.5, "delta_bp": 3.2},
+    "3Y":{"level_bp": 417.8, "delta_bp": 2.4},
+    "5Y":{"level_bp": 412.0, "delta_bp": 1.1},
+    "7Y":{"level_bp": 410.2, "delta_bp": 0.8},
+    "10Y":{"level_bp": 408.9, "delta_bp": -1.5},
+    "20Y":{"level_bp": 430.3, "delta_bp": -2.0},
+    "30Y":{"level_bp": 424.7, "delta_bp": -2.4}
+  }
 }
