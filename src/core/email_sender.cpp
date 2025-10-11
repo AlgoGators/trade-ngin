@@ -585,10 +585,17 @@ std::string EmailSender::format_executions_table(const std::vector<ExecutionRepo
         std::ostringstream oss;
         oss << std::fixed << std::setprecision(2) << value;
         std::string s = oss.str();
+        
+        // Handle negative numbers by processing the absolute value
+        size_t start_pos = 0;
+        if (!s.empty() && s[0] == '-') {
+            start_pos = 1;
+        }
+        
         size_t dp = s.find('.');
         if (dp == std::string::npos) dp = s.size();
         int pos = static_cast<int>(dp) - 3;
-        while (pos > 0) {
+        while (pos > static_cast<int>(start_pos)) {
             s.insert(static_cast<size_t>(pos), ",");
             pos -= 3;
         }
@@ -726,16 +733,22 @@ std::string EmailSender::format_positions_table(const std::unordered_map<std::st
         oss << std::fixed << std::setprecision(2) << value;
         std::string str = oss.str();
 
+        // Handle negative numbers by processing the absolute value
+        size_t start_pos = 0;
+        if (!str.empty() && str[0] == '-') {
+            start_pos = 1;
+        }
+
         // Find decimal point
         size_t decimal_pos = str.find('.');
         if (decimal_pos == std::string::npos) {
             decimal_pos = str.length();
         }
 
-        // Insert commas
-        int insert_pos = decimal_pos - 3;
-        while (insert_pos > 0) {
-            str.insert(insert_pos, ",");
+        // Insert commas (starting from after the negative sign if present)
+        int insert_pos = static_cast<int>(decimal_pos) - 3;
+        while (insert_pos > static_cast<int>(start_pos)) {
+            str.insert(static_cast<size_t>(insert_pos), ",");
             insert_pos -= 3;
         }
 
@@ -788,16 +801,22 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
         oss << std::fixed << std::setprecision(precision) << value;
         std::string str = oss.str();
 
+        // Handle negative numbers by processing the absolute value
+        size_t start_pos = 0;
+        if (!str.empty() && str[0] == '-') {
+            start_pos = 1;
+        }
+
         // Find decimal point
         size_t decimal_pos = str.find('.');
         if (decimal_pos == std::string::npos) {
             decimal_pos = str.length();
         }
 
-        // Insert commas
-        int insert_pos = decimal_pos - 3;
-        while (insert_pos > 0) {
-            str.insert(insert_pos, ",");
+        // Insert commas (starting from after the negative sign if present)
+        int insert_pos = static_cast<int>(decimal_pos) - 3;
+        while (insert_pos > static_cast<int>(start_pos)) {
+            str.insert(static_cast<size_t>(insert_pos), ",");
             insert_pos -= 3;
         }
 
@@ -942,16 +961,22 @@ std::string EmailSender::format_strategy_metrics(const std::map<std::string, dou
         oss << std::fixed << std::setprecision(precision) << value;
         std::string str = oss.str();
 
+        // Handle negative numbers by processing the absolute value
+        size_t start_pos = 0;
+        if (!str.empty() && str[0] == '-') {
+            start_pos = 1;
+        }
+
         // Find decimal point
         size_t decimal_pos = str.find('.');
         if (decimal_pos == std::string::npos) {
             decimal_pos = str.length();
         }
 
-        // Insert commas
-        int insert_pos = decimal_pos - 3;
-        while (insert_pos > 0) {
-            str.insert(insert_pos, ",");
+        // Insert commas (starting from after the negative sign if present)
+        int insert_pos = static_cast<int>(decimal_pos) - 3;
+        while (insert_pos > static_cast<int>(start_pos)) {
+            str.insert(static_cast<size_t>(insert_pos), ",");
             insert_pos -= 3;
         }
 
