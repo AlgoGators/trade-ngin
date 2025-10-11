@@ -362,142 +362,162 @@ Result<void> EmailSender::send_email(const std::string& subject, const std::stri
 }
 
 std::string EmailSender::generate_trading_report_body(
-    const std::unordered_map<std::string, Position>& positions,
-    const std::optional<RiskResult>& risk_metrics,
-    const std::map<std::string, double>& strategy_metrics,
-    const std::vector<ExecutionReport>& executions,
-    const std::string& date,
-    bool is_daily_strategy,
-    const std::unordered_map<std::string, double>& current_prices,
-    std::shared_ptr<DatabaseInterface> db,
-    const std::unordered_map<std::string, Position>& yesterday_positions,
-    const std::unordered_map<std::string, double>& yesterday_close_prices,
-    const std::unordered_map<std::string, double>& two_days_ago_close_prices,
-    const std::map<std::string, double>& yesterday_daily_metrics)
+   const std::unordered_map<std::string, Position>& positions,
+   const std::optional<RiskResult>& risk_metrics,
+   const std::map<std::string, double>& strategy_metrics,
+   const std::vector<ExecutionReport>& executions,
+   const std::string& date,
+   bool is_daily_strategy,
+   const std::unordered_map<std::string, double>& current_prices,
+   std::shared_ptr<DatabaseInterface> db,
+   const std::unordered_map<std::string, Position>& yesterday_positions,
+   const std::unordered_map<std::string, double>& yesterday_close_prices,
+   const std::unordered_map<std::string, double>& two_days_ago_close_prices,
+   const std::map<std::string, double>& yesterday_daily_metrics)
 {
-    std::ostringstream html;
+   std::ostringstream html;
 
-    html << "<!DOCTYPE html>\n";
-    html << "<html>\n<head>\n";
-    html << "<meta charset=\"UTF-8\" />\n";
-    html << "<style>\n";
-    html << "body { font-family: Arial, sans-serif; margin: 20px; background-color: #f9f9f9; }\n";
-    html << ".container { max-width: 1200px; margin: 0 auto; background-color: white; padding: 30px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }\n";
-    html << "h1, h2 { color: #333; font-family: Arial, sans-serif; }\n";
-    html << "h1 { font-size: 24px; margin-bottom: 5px; }\n";
-    html << "h2 { font-size: 18px; margin-top: 25px; margin-bottom: 10px; border-bottom: 2px solid #2c5aa0; padding-bottom: 5px; }\n";
-    html << "table { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 14px; font-family: Arial, sans-serif; }\n";
-    html << "th, td { border: 1px solid #ddd; padding: 10px; text-align: left; }\n";
-    html << "th { background-color: #f2f2f2; font-weight: bold; }\n";
-    html << ".metric { margin: 8px 0; font-size: 14px; line-height: 1.6; font-family: Arial, sans-serif; }\n";
-    html << ".positive { color: #1a7f37; font-weight: 500; }\n";
-    html << ".negative { color: #b42318; font-weight: 500; }\n";
-    html << ".neutral { color: #0b6efd; font-weight: 500; }\n";
-    html << ".header-section { margin-bottom: 30px; display: flex; align-items: center; }\n";
-    html << ".header-section img { width: 80px; height: 80px; margin-right: 20px; }\n";
-    html << ".header-text { flex: 1; }\n";
-    html << ".header-info { color: #666; font-size: 14px; margin-top: 10px; font-family: Arial, sans-serif; }\n";
-    html << ".fund-branding { color: #2c5aa0; font-weight: bold; font-size: 16px; font-family: Arial, sans-serif; }\n";
-    html << ".metrics-section { margin: 20px 0; }\n";
-    html << ".metrics-category { background-color: #fff5e6; padding: 15px; border-radius: 5px; margin-bottom: 20px; }\n";
-    html << ".footer-note { background-color: #fff9e6; border-left: 4px solid #ffc107; padding: 15px; margin: 20px 0; font-size: 13px; color: #666; font-family: Arial, sans-serif; }\n";
-    html << ".summary-stats { background-color: #fff5e6; padding: 15px; margin: 15px 0; border-radius: 5px; font-family: Arial, sans-serif; font-size: 14px; }\n";
-    html << "</style>\n";
-    html << "</head>\n<body>\n";
-    html << "<div class=\"container\">\n";
 
-    // Header with logo and branding
-    html << "<div class=\"header-section\">\n";
-    html << "<img src=\"cid:algogators_logo\" alt=\"AlgoGators Logo\">\n";
-    html << "<div class=\"header-text\">\n";
-    html << "<span class=\"fund-branding\">AlgoGators</span><br>\n";
-    html << "<h1>Daily Trading Report</h1>\n";
-    html << "<div class=\"header-info\">" << date << " | Trend Following Strategy</div>\n";
-    html << "</div>\n";
-    html << "</div>\n";
+   html << "<!DOCTYPE html>\n";
+   html << "<html>\n<head>\n";
+   html << "<meta charset=\"UTF-8\" />\n";
+   html << "<style>\n";
+   html << "body { font-family: Arial, sans-serif; margin: 20px; background-color: #f9f9f9; }\n";
+   html << ".container { max-width: 1200px; margin: 0 auto; background-color: white; padding: 30px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }\n";
+   html << "h1, h2 { color: #333; font-family: Arial, sans-serif; }\n";
+   html << "h1 { font-size: 24px; margin-bottom: 5px; }\n";
+   html << "h2 { font-size: 18px; margin-top: 25px; margin-bottom: 10px; border-bottom: 2px solid #2c5aa0; padding-bottom: 5px; }\n";
+   html << "table { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 14px; font-family: Arial, sans-serif; }\n";
+   html << "th, td { border: 1px solid #ddd; padding: 10px; text-align: left; }\n";
+   html << "th { background-color: #f2f2f2; font-weight: bold; }\n";
+   html << ".metric { margin: 8px 0; font-size: 14px; line-height: 1.6; font-family: Arial, sans-serif; }\n";
+   html << ".positive { color: #1a7f37; font-weight: 500; }\n";
+   html << ".negative { color: #b42318; font-weight: 500; }\n";
+   html << ".neutral { color: #0b6efd; font-weight: 500; }\n";
+   html << ".header-section { margin-bottom: 30px; display: flex; align-items: center; }\n";
+   html << ".header-section img { width: 80px; height: 80px; margin-right: 20px; }\n";
+   html << ".header-text { flex: 1; }\n";
+   html << ".header-info { color: #666; font-size: 14px; margin-top: 10px; font-family: Arial, sans-serif; }\n";
+   html << ".fund-branding { color: #2c5aa0; font-weight: bold; font-size: 16px; font-family: Arial, sans-serif; }\n";
+   html << ".metrics-section { margin: 20px 0; }\n";
+   html << ".metrics-category { background-color: #fff5e6; padding: 15px; border-radius: 5px; margin-bottom: 20px; }\n";
+   html << ".footer-note { background-color: #fff9e6; border-left: 4px solid #ffc107; padding: 15px; margin: 20px 0; font-size: 13px; color: #666; font-family: Arial, sans-serif; }\n";
+   html << ".summary-stats { background-color: #fff5e6; padding: 15px; margin: 15px 0; border-radius: 5px; font-family: Arial, sans-serif; font-size: 14px; }\n";
+   html << ".chart-container { margin: 20px 0; padding: 20px; background-color: #f8f9fa; border-radius: 8px; text-align: center; }\n";
+   html << "</style>\n";
+   html << "</head>\n<body>\n";
+   html << "<div class=\"container\">\n";
 
-    // Today's Positions (Forward-Looking - no PnL shown as it will be zero)
-    html << "<h2>Today's Positions</h2>\n";
-    html << format_positions_table(positions, is_daily_strategy, current_prices, strategy_metrics);
 
-    // Executions (if any)
-    if (!executions.empty()) {
-        html << "<h2>Daily Executions</h2>\n";
-        html << format_executions_table(executions);
-    }
+   // Header with logo and branding
+   html << "<div class=\"header-section\">\n";
+   html << "<img src=\"cid:algogators_logo\" alt=\"AlgoGators Logo\">\n";
+   html << "<div class=\"header-text\">\n";
+   html << "<span class=\"fund-branding\">AlgoGators</span><br>\n";
+   html << "<h1>Daily Trading Report</h1>\n";
+   html << "<div class=\"header-info\">" << date << " | Trend Following Strategy</div>\n";
+   html << "</div>\n";
+   html << "</div>\n";
 
-    // Calculate yesterday's date for display
-    std::string yesterday_date_str;
-    try {
-        // Parse the date string to calculate yesterday
-        std::tm tm = {};
-        std::istringstream ss(date);
-        ss >> std::get_time(&tm, "%Y-%m-%d");
-        if (!ss.fail()) {
-            auto time_point = std::chrono::system_clock::from_time_t(std::mktime(&tm));
-            auto yesterday = time_point - std::chrono::hours(24);
-            auto yesterday_time_t = std::chrono::system_clock::to_time_t(yesterday);
-            std::ostringstream oss;
-            oss << std::put_time(std::gmtime(&yesterday_time_t), "%Y-%m-%d");
-            yesterday_date_str = oss.str();
-        }
-    } catch (...) {
-        yesterday_date_str = "Previous Day";
-    }
 
-    // Yesterday's Finalized Positions (with actual PnL)
-    if (!yesterday_positions.empty() && !yesterday_close_prices.empty() && !two_days_ago_close_prices.empty()) {
-        html << format_yesterday_finalized_positions_table(
-            yesterday_positions,
-            two_days_ago_close_prices,  // Entry prices (Day T-2)
-            yesterday_close_prices,      // Exit prices (Day T-1)
-            db,
-            yesterday_daily_metrics,    // Yesterday's daily metrics (not today's strategy_metrics)
-            yesterday_date_str
-        );
-    }
+   // Today's Positions (Forward-Looking - no PnL shown as it will be zero)
+   html << "<h2>Today's Positions</h2>\n";
+   html << format_positions_table(positions, is_daily_strategy, current_prices, strategy_metrics);
 
-    /*    // Risk snapshot (if provided)
-    if (risk_metrics.has_value()) {
-        html << "<h2>Risk Snapshot</h2>\n";
-        html << format_risk_metrics(*risk_metrics);
-    }
-        */
 
-    // Strategy metrics
-    if (!strategy_metrics.empty()) {
-        html << "<div class=\"metrics-section\">\n";
-        html << format_strategy_metrics(strategy_metrics);
-        html << "</div>\n";
-    }
+   // Executions (if any)
+   if (!executions.empty()) {
+       html << "<h2>Daily Executions</h2>\n";
+       html << format_executions_table(executions);
+   }
 
-    // Symbols Reference (moved after Portfolio Snapshot)
-    html << "<h2>Symbols Reference</h2>\n";
-    if (db) {
-        try {
-            html << format_symbols_table_for_positions(positions, db);
-        } catch (const std::exception& e) {
-            html << "<p>Error loading symbols data: " << e.what() << "</p>\n";
-        }
-    } else {
-        html << "<p>Database unavailable; symbols reference not included.</p>\n";
-    }
 
-    // Footer note
-    if (is_daily_strategy) {
-        html << "<div class=\"footer-note\">\n";
-        html << "<strong>Note:</strong> This strategy is based on daily OHLCV data. All values reflect a trading start date of October 5th, 2025. ";
-        html << "The ES, NQ, and YM positions are micro contracts (MES, MNQ, and MYM), not the standard mini or full-size contracts. All values reflect this accurately, and this is only a mismatch in representation, which we are currently working on fixing.\n";
-        html << "</div>\n";
-    }
+   // Calculate yesterday's date for display
+   std::string yesterday_date_str;
+   try {
+       // Parse the date string to calculate yesterday
+       std::tm tm = {};
+       std::istringstream ss(date);
+       ss >> std::get_time(&tm, "%Y-%m-%d");
+       if (!ss.fail()) {
+           auto time_point = std::chrono::system_clock::from_time_t(std::mktime(&tm));
+           auto yesterday = time_point - std::chrono::hours(24);
+           auto yesterday_time_t = std::chrono::system_clock::to_time_t(yesterday);
+           std::ostringstream oss;
+           oss << std::put_time(std::gmtime(&yesterday_time_t), "%Y-%m-%d");
+           yesterday_date_str = oss.str();
+       }
+   } catch (...) {
+       yesterday_date_str = "Previous Day";
+   }
 
-    html << "<hr style=\"margin-top: 30px; border: none; border-top: 1px solid #ddd;\">\n";
-    html << "<p style=\"text-align: center; color: #999; font-size: 12px; margin-top: 20px; font-family: Arial, sans-serif;\">Generated by AlgoGator's Trade-ngin</p>\n";
-    html << "</div>\n";
-    html << "</body>\n</html>\n";
 
-    return html.str();
+   // Yesterday's Finalized Positions (with actual PnL)
+   if (!yesterday_positions.empty() && !yesterday_close_prices.empty() && !two_days_ago_close_prices.empty()) {
+       html << format_yesterday_finalized_positions_table(
+           yesterday_positions,
+           two_days_ago_close_prices,  // Entry prices (Day T-2)
+           yesterday_close_prices,      // Exit prices (Day T-1)
+           db,
+           yesterday_daily_metrics,    // Yesterday's daily metrics (not today's strategy_metrics)
+           yesterday_date_str
+       );
+   }
+
+
+   /*    // Risk snapshot (if provided)
+   if (risk_metrics.has_value()) {
+       html << "<h2>Risk Snapshot</h2>\n";
+       html << format_risk_metrics(*risk_metrics);
+   }
+       */
+
+
+   // Strategy metrics
+   if (!strategy_metrics.empty()) {
+       html << "<div class=\"metrics-section\">\n";
+       html << format_strategy_metrics(strategy_metrics);
+       html << "</div>\n";
+   }
+
+   html << "<h2>Charts</h2>\n";
+   if (db) {
+   std::string chart_html = generate_portfolio_chart(db, "LIVE_TREND_FOLLOWING", 30);
+   if (!chart_html.empty()) {
+       html << chart_html;
+   }
 }
+
+   // Symbols Reference (moved after Portfolio Snapshot)
+   html << "<h2>Symbols Reference</h2>\n";
+   if (db) {
+       try {
+           html << format_symbols_table_for_positions(positions, db);
+       } catch (const std::exception& e) {
+           html << "<p>Error loading symbols data: " << e.what() << "</p>\n";
+       }
+   } else {
+       html << "<p>Database unavailable; symbols reference not included.</p>\n";
+   }
+
+
+   // Footer note
+   if (is_daily_strategy) {
+       html << "<div class=\"footer-note\">\n";
+       html << "<strong>Note:</strong> This strategy is based on daily OHLCV data. All values reflect a trading start date of October 5th, 2025. ";
+       html << "The ES, NQ, and YM positions are micro contracts (MES, MNQ, and MYM), not the standard mini or full-size contracts. All values reflect this accurately, and this is only a mismatch in representation, which we are currently working on fixing.\n";
+       html << "</div>\n";
+   }
+
+   html << "<hr style=\"margin-top: 30px; border: none; border-top: 1px solid #ddd;\">\n";
+   html << "<p style=\"text-align: center; color: #999; font-size: 12px; margin-top: 20px; font-family: Arial, sans-serif;\">Generated by AlgoGator's Trade-ngin</p>\n";
+   html << "</div>\n";
+   html << "</body>\n</html>\n";
+
+
+   return html.str();
+}
+
 
 std::string EmailSender::format_executions_table(const std::vector<ExecutionReport>& executions) {
     std::ostringstream html;
@@ -1111,165 +1131,707 @@ std::string EmailSender::format_strategy_metrics(const std::map<std::string, dou
     return html.str();
 }
 std::string EmailSender::format_symbols_table_for_positions(
-    const std::unordered_map<std::string, Position>& positions,
-    std::shared_ptr<DatabaseInterface> db) {
+   const std::unordered_map<std::string, Position>& positions,
+   std::shared_ptr<DatabaseInterface> db) {
 
-    std::ostringstream html;
 
-    // 1) Collect normalized base symbols from active positions
-    std::set<std::string> base_syms;
-    for (const auto& [sym, pos] : positions) {
-        if (pos.quantity.as_double() == 0.0) continue;
-        std::string b = sym;
-        if (auto p = b.find(".v."); p != std::string::npos) b = b.substr(0, p);
-        if (auto p = b.find(".c."); p != std::string::npos) b = b.substr(0, p);
-        std::transform(b.begin(), b.end(), b.begin(),
+   std::ostringstream html;
+
+
+   // 1) Collect normalized base symbols from active positions
+   std::set<std::string> base_syms;
+   for (const auto& [sym, pos] : positions) {
+       if (pos.quantity.as_double() == 0.0) continue;
+       std::string b = sym;
+       if (auto p = b.find(".v."); p != std::string::npos) b = b.substr(0, p);
+       if (auto p = b.find(".c."); p != std::string::npos) b = b.substr(0, p);
+       std::transform(b.begin(), b.end(), b.begin(),
+                      [](unsigned char c){ return static_cast<char>(std::toupper(c)); });
+       b.erase(std::remove_if(b.begin(), b.end(),
+            [](unsigned char c){ return !(std::isalnum(c) || c=='/'); }), b.end());
+       if (!b.empty()) base_syms.insert(b);
+   }
+
+
+   if (base_syms.empty()) {
+       html << "<p>No active positions to display symbol metadata for.</p>\n";
+       return html.str();
+   }
+
+
+   auto make_in_list = [](const std::set<std::string>& S){
+       std::ostringstream oss; bool first=true;
+       for (const auto& s : S) { if (!first) oss << ", "; oss << "'" << s << "'"; first=false; }
+       return oss.str();
+   };
+   const std::string in_list = make_in_list(base_syms);
+
+
+   try {
+       // 2) Padded schema + filter on EITHER Databento or IB symbol
+       const std::string sql =
+           "SELECT "
+           "  CURRENT_TIMESTAMP AS \"time\","
+           "  to_jsonb(json_build_object("
+           "    'db',     \"Databento Symbol\","
+           "    'ib',     \"IB Symbol\","
+           "    'name',   \"Name\","
+           "    'months', \"Contract Months\""
+           "  ))::text AS \"symbol\","
+           "  0.0::double precision AS \"open\","
+           "  0.0::double precision AS \"high\","
+           "  0.0::double precision AS \"low\","
+           "  0.0::double precision AS \"close\","
+           "  0.0::double precision AS \"volume\","
+           "  0.0::double precision AS \"vwap\","
+           "  0.0::double precision AS \"bid\","
+           "  0.0::double precision AS \"ask\","
+           "  0.0::double precision AS \"last\","
+           "  0::bigint              AS \"count\","
+           "  0.0::double precision AS \"open_interest\" "
+           "FROM metadata.contract_metadata "
+           "WHERE \"Databento Symbol\" IN (" + in_list + ") "
+           "   OR \"IB Symbol\"       IN (" + in_list + ") "
+           "ORDER BY \"Name\"";
+
+
+       auto qr = db->execute_query(sql);
+       if (qr.is_error()) {
+           auto err = qr.error()->to_string();
+           WARN(std::string("Symbols query failed: ") + err);
+           html << "<p>Unable to load symbols data: " << err << "</p>\n";
+           return html.str();
+       }
+
+
+       auto table = qr.value();
+       if (!table || table->num_rows() == 0) {
+           html << "<p>No symbol metadata found for active positions.</p>\n";
+           return html.str();
+       }
+
+
+       auto combine_res = table->CombineChunks();
+       if (!combine_res.ok()) {
+           WARN(std::string("CombineChunks failed: ") + combine_res.status().ToString());
+           html << "<p>Error loading symbols data</p>\n";
+           return html.str();
+       }
+       auto combined = combine_res.ValueOrDie();
+
+
+       // Find 'symbol' (JSON text) column
+       int idx_symbol = -1;
+       auto schema = combined->schema();
+       for (int i = 0; i < schema->num_fields(); ++i) {
+           if (schema->field(i)->name() == "symbol") { idx_symbol = i; break; }
+       }
+       if (idx_symbol < 0) {
+           WARN("Symbols table: required metadata fields missing. Got fields: "
+                + schema->ToString());
+           html << "<p>Error loading symbols data</p>\n";
+           return html.str();
+       }
+
+
+       auto get_str = [](const std::shared_ptr<arrow::Array>& arr, int64_t i) -> std::string {
+           if (!arr || arr->IsNull(i)) return "";
+           if (arr->type_id() == arrow::Type::STRING)
+               return std::static_pointer_cast<arrow::StringArray>(arr)->GetString(i);
+           if (arr->type_id() == arrow::Type::LARGE_STRING)
+               return std::static_pointer_cast<arrow::LargeStringArray>(arr)->GetString(i);
+           return "";
+       };
+
+
+       auto col_symbol = combined->column(idx_symbol)->chunk(0);
+
+
+       // Render
+       html << "<table>\n";
+       html << "<tr><th>Databento Symbol</th><th>IB Symbol</th>"
+               "<th>Name</th><th>Contract Months</th></tr>\n";
+
+
+       // Track matched symbols to detect gaps
+       std::set<std::string> matched;
+
+
+       // helper to uppercase once, reuse
+       auto up = [](std::string s){
+           std::transform(s.begin(), s.end(), s.begin(),
                        [](unsigned char c){ return static_cast<char>(std::toupper(c)); });
-        b.erase(std::remove_if(b.begin(), b.end(),
-             [](unsigned char c){ return !(std::isalnum(c) || c=='/'); }), b.end());
-        if (!b.empty()) base_syms.insert(b);
-    }
+           return s;
+       };
 
-    if (base_syms.empty()) {
-        html << "<p>No active positions to display symbol metadata for.</p>\n";
-        return html.str();
-    }
 
-    auto make_in_list = [](const std::set<std::string>& S){
-        std::ostringstream oss; bool first=true;
-        for (const auto& s : S) { if (!first) oss << ", "; oss << "'" << s << "'"; first=false; }
-        return oss.str();
-    };
-    const std::string in_list = make_in_list(base_syms);
+       // --- HARD-CODED ROWS: always render first ---
+       struct Row { std::string db, ib, name, months; };
+       const std::vector<Row> hardcoded = {
+           {"NQ", "NQ", "E-mini Nasdaq - 100 Index", "MAR, JUN, SEP, DEC"},
+           {"YM", "YM", "E-mini Dow Jones Industrial Average Index", "MAR, JUN, SEP, DEC"}
+       };
 
-    try {
-        // 2) Padded schema + filter on EITHER Databento or IB symbol
-        const std::string sql =
-            "SELECT "
-            "  CURRENT_TIMESTAMP AS \"time\","
-            "  to_jsonb(json_build_object("
-            "    'db',     \"Databento Symbol\","
-            "    'ib',     \"IB Symbol\","
-            "    'name',   \"Name\","
-            "    'months', \"Contract Months\""
-            "  ))::text AS \"symbol\","
-            "  0.0::double precision AS \"open\","
-            "  0.0::double precision AS \"high\","
-            "  0.0::double precision AS \"low\","
-            "  0.0::double precision AS \"close\","
-            "  0.0::double precision AS \"volume\","
-            "  0.0::double precision AS \"vwap\","
-            "  0.0::double precision AS \"bid\","
-            "  0.0::double precision AS \"ask\","
-            "  0.0::double precision AS \"last\","
-            "  0::bigint              AS \"count\","
-            "  0.0::double precision AS \"open_interest\" "
-            "FROM metadata.contract_metadata "
-            "WHERE \"Databento Symbol\" IN (" + in_list + ") "
-            "   OR \"IB Symbol\"       IN (" + in_list + ") "
-            "ORDER BY \"Name\"";
 
-        auto qr = db->execute_query(sql);
-        if (qr.is_error()) {
-            auto err = qr.error()->to_string();
-            WARN(std::string("Symbols query failed: ") + err);
-            html << "<p>Unable to load symbols data: " << err << "</p>\n";
-            return html.str();
-        }
+       for (const auto& r : hardcoded) {
+           html << "<tr>\n"
+               << "<td>" << r.db     << "</td>\n"
+               << "<td>" << r.ib     << "</td>\n"
+               << "<td>" << r.name   << "</td>\n"
+               << "<td>" << r.months << "</td>\n"
+               << "</tr>\n";
+           matched.insert(up(r.db));
+           matched.insert(up(r.ib));
+       }
 
-        auto table = qr.value();
-        if (!table || table->num_rows() == 0) {
-            html << "<p>No symbol metadata found for active positions.</p>\n";
-            return html.str();
-        }
 
-        auto combine_res = table->CombineChunks();
-        if (!combine_res.ok()) {
-            WARN(std::string("CombineChunks failed: ") + combine_res.status().ToString());
-            html << "<p>Error loading symbols data</p>\n";
-            return html.str();
-        }
-        auto combined = combine_res.ValueOrDie();
+       for (int64_t i = 0; i < combined->num_rows(); ++i) {
+           std::string json_txt = get_str(col_symbol, i);
+           std::string db_sym, ib_sym, name, months;
+           try {
+               if (!json_txt.empty()) {
+                   nlohmann::json j = nlohmann::json::parse(json_txt);
+                   db_sym = j.value("db", "");
+                   ib_sym = j.value("ib", "");
+                   name   = j.value("name", "");
+                   months = j.value("months", "");
+               }
+           } catch (...) {}
+           auto up = [](std::string s){
+               std::transform(s.begin(), s.end(), s.begin(),
+                              [](unsigned char c){ return static_cast<char>(std::toupper(c)); });
+               return s;
+           };
+           if (!db_sym.empty()) matched.insert(up(db_sym));
+           if (!ib_sym.empty()) matched.insert(up(ib_sym));
 
-        // Find 'symbol' (JSON text) column
-        int idx_symbol = -1;
-        auto schema = combined->schema();
-        for (int i = 0; i < schema->num_fields(); ++i) {
-            if (schema->field(i)->name() == "symbol") { idx_symbol = i; break; }
-        }
-        if (idx_symbol < 0) {
-            WARN("Symbols table: required metadata fields missing. Got fields: "
-                 + schema->ToString());
-            html << "<p>Error loading symbols data</p>\n";
-            return html.str();
-        }
 
-        auto get_str = [](const std::shared_ptr<arrow::Array>& arr, int64_t i) -> std::string {
-            if (!arr || arr->IsNull(i)) return "";
-            if (arr->type_id() == arrow::Type::STRING)
-                return std::static_pointer_cast<arrow::StringArray>(arr)->GetString(i);
-            if (arr->type_id() == arrow::Type::LARGE_STRING)
-                return std::static_pointer_cast<arrow::LargeStringArray>(arr)->GetString(i);
-            return "";
-        };
+           html << "<tr>\n";
+           html << "<td>" << db_sym << "</td>\n";
+           html << "<td>" << ib_sym << "</td>\n";
+           html << "<td>" << name   << "</td>\n";
+           html << "<td>" << months << "</td>\n";
+           html << "</tr>\n";
+       }
 
-        auto col_symbol = combined->column(idx_symbol)->chunk(0);
 
-        // Render
-        html << "<table>\n";
-        html << "<tr><th>Databento Symbol</th><th>IB Symbol</th>"
-                "<th>Name</th><th>Contract Months</th></tr>\n";
+       // Show any active symbols we couldn’t match
+       std::vector<std::string> missing;
+       for (const auto& s : base_syms) if (!matched.count(s)) missing.push_back(s);
+       if (!missing.empty()) {
+           html << "<p style=\"color:#b42318\"><strong>Note:</strong> metadata not found for: ";
+           for (size_t i = 0; i < missing.size(); ++i) { if (i) html << ", "; html << missing[i]; }
+           html << ".</p>\n";
+           WARN("Symbols reference: missing metadata for " + std::to_string(missing.size()) + " symbols");
+       }
 
-        // Track matched symbols to detect gaps
-        std::set<std::string> matched;
 
-        for (int64_t i = 0; i < combined->num_rows(); ++i) {
-            std::string json_txt = get_str(col_symbol, i);
-            std::string db_sym, ib_sym, name, months;
-            try {
-                if (!json_txt.empty()) {
-                    nlohmann::json j = nlohmann::json::parse(json_txt);
-                    db_sym = j.value("db", "");
-                    ib_sym = j.value("ib", "");
-                    name   = j.value("name", "");
-                    months = j.value("months", "");
-                }
-            } catch (...) {}
+       html << "</table>\n";
 
-            auto up = [](std::string s){
-                std::transform(s.begin(), s.end(), s.begin(),
-                               [](unsigned char c){ return static_cast<char>(std::toupper(c)); });
-                return s;
-            };
-            if (!db_sym.empty()) matched.insert(up(db_sym));
-            if (!ib_sym.empty()) matched.insert(up(ib_sym));
 
-            html << "<tr>\n";
-            html << "<td>" << db_sym << "</td>\n";
-            html << "<td>" << ib_sym << "</td>\n";
-            html << "<td>" << name   << "</td>\n";
-            html << "<td>" << months << "</td>\n";
-            html << "</tr>\n";
-        }
+   } catch (const std::exception& e) {
+       WARN(std::string("Exception while formatting filtered symbols table: ") + e.what());
+       html << "<p>Error loading symbols data</p>\n";
+   }
 
-        // Show any active symbols we couldn’t match
-        std::vector<std::string> missing;
-        for (const auto& s : base_syms) if (!matched.count(s)) missing.push_back(s);
-        if (!missing.empty()) {
-            html << "<p style=\"color:#b42318\"><strong>Note:</strong> metadata not found for: ";
-            for (size_t i = 0; i < missing.size(); ++i) { if (i) html << ", "; html << missing[i]; }
-            html << ".</p>\n";
-            WARN("Symbols reference: missing metadata for " + std::to_string(missing.size()) + " symbols");
-        }
 
-        html << "</table>\n";
-
-    } catch (const std::exception& e) {
-        WARN(std::string("Exception while formatting filtered symbols table: ") + e.what());
-        html << "<p>Error loading symbols data</p>\n";
-    }
-
-    return html.str();
+   return html.str();
 }
+// Replace your generate_portfolio_chart method with this gnuplot implementation
 
-} // namespace trade_ngin
+
+std::string EmailSender::generate_portfolio_chart(
+   std::shared_ptr<DatabaseInterface> db,
+   const std::string& strategy_id,
+   int lookback_days)
+{
+   if (!db) {
+       WARN("Database interface is null, cannot generate portfolio chart");
+       return "";
+   }
+
+
+   try {
+       // Query equity curve data
+       std::string query =
+           "SELECT timestamp, equity "
+           "FROM trading.equity_curve "
+           "WHERE strategy_id = '" + strategy_id + "' "
+           "ORDER BY timestamp ASC "
+           "LIMIT " + std::to_string(lookback_days);
+
+
+       INFO("Querying equity curve with: " + query);
+       auto result = db->execute_query(query);
+      
+       if (result.is_error()) {
+           ERROR("Failed to query equity curve: " + std::string(result.error()->what()));
+           return "";
+       }
+
+
+       auto table = result.value();
+       if (!table || table->num_rows() == 0) {
+           WARN("No equity curve data available");
+           return "";
+       }
+
+
+       INFO("Retrieved " + std::to_string(table->num_rows()) + " rows for chart");
+
+
+       // Create temporary data file
+       std::string data_filename = "temp_equity_data.txt";
+       std::ofstream data_file(data_filename);
+       if (!data_file.is_open()) {
+           ERROR("Failed to create temporary data file");
+           return "";
+       }
+
+
+       // Extract and write data
+       std::vector<std::string> dates;
+       std::vector<double> equity_values;
+
+
+       auto combined_result = table->CombineChunks();
+       if (!combined_result.ok()) {
+           ERROR("Failed to combine chunks");
+           data_file.close();
+           return "";
+       }
+       auto combined = combined_result.ValueOrDie();
+
+
+       auto timestamp_col = combined->column(0);
+       auto equity_col = combined->column(1);
+
+
+       for (int64_t i = 0; i < combined->num_rows(); ++i) {
+           try {
+               // Extract date
+               std::string date_str;
+               auto ts_chunk = timestamp_col->chunk(0);
+              
+               if (ts_chunk->type_id() == arrow::Type::STRING) {
+                   auto str_array = std::static_pointer_cast<arrow::StringArray>(ts_chunk);
+                   if (!str_array->IsNull(i)) {
+                       date_str = str_array->GetString(i);
+                       if (date_str.length() > 10) {
+                           date_str = date_str.substr(0, 10);
+                       }
+                   }
+               } else if (ts_chunk->type_id() == arrow::Type::LARGE_STRING) {
+                   auto str_array = std::static_pointer_cast<arrow::LargeStringArray>(ts_chunk);
+                   if (!str_array->IsNull(i)) {
+                       date_str = str_array->GetString(i);
+                       if (date_str.length() > 10) {
+                           date_str = date_str.substr(0, 10);
+                       }
+                   }
+               } else if (ts_chunk->type_id() == arrow::Type::TIMESTAMP) {
+                   auto ts_array = std::static_pointer_cast<arrow::TimestampArray>(ts_chunk);
+                   if (!ts_array->IsNull(i)) {
+                       int64_t ts_val = ts_array->Value(i);
+                       std::time_t tt = ts_val / 1000000;
+                       std::tm* tm = std::gmtime(&tt);
+                       std::ostringstream oss;
+                       oss << std::put_time(tm, "%Y-%m-%d");
+                       date_str = oss.str();
+                   }
+               }
+
+
+               // Extract equity
+               double equity = 0.0;
+               auto eq_chunk = equity_col->chunk(0);
+              
+               if (!eq_chunk->IsNull(i)) {
+                   if (eq_chunk->type_id() == arrow::Type::STRING) {
+                       auto str_array = std::static_pointer_cast<arrow::StringArray>(eq_chunk);
+                       equity = std::stod(str_array->GetString(i));
+                   } else if (eq_chunk->type_id() == arrow::Type::LARGE_STRING) {
+                       auto str_array = std::static_pointer_cast<arrow::LargeStringArray>(eq_chunk);
+                       equity = std::stod(str_array->GetString(i));
+                   } else if (eq_chunk->type_id() == arrow::Type::DOUBLE) {
+                       auto dbl_array = std::static_pointer_cast<arrow::DoubleArray>(eq_chunk);
+                       equity = dbl_array->Value(i);
+                   } else if (eq_chunk->type_id() == arrow::Type::FLOAT) {
+                       auto flt_array = std::static_pointer_cast<arrow::FloatArray>(eq_chunk);
+                       equity = static_cast<double>(flt_array->Value(i));
+                   }
+               }
+
+
+               if (!date_str.empty()) {
+                   dates.push_back(date_str);
+                   equity_values.push_back(equity);
+                   // Write to data file: date equity
+                   data_file << date_str << " " << std::fixed << std::setprecision(2) << equity << "\n";
+               }
+           } catch (const std::exception& e) {
+               WARN("Error processing row " + std::to_string(i) + ": " + std::string(e.what()));
+               continue;
+           }
+       }
+
+
+       data_file.close();
+
+
+       if (dates.empty() || equity_values.empty()) {
+           ERROR("No valid data extracted");
+           return "";
+       }
+
+
+       INFO("Initial data extracted: " + std::to_string(dates.size()) + " points");
+
+
+       // Sort data by date to find gaps
+       std::vector<std::pair<std::string, double>> date_equity_pairs;
+       for (size_t i = 0; i < dates.size(); i++) {
+           date_equity_pairs.push_back({dates[i], equity_values[i]});
+       }
+       std::sort(date_equity_pairs.begin(), date_equity_pairs.end());
+
+
+       // Find the most recent consecutive block of data (no gaps > 5 days)
+       std::vector<std::pair<std::string, double>> recent_data;
+       if (!date_equity_pairs.empty()) {
+           recent_data.push_back(date_equity_pairs.back());
+          
+           // Work backwards to find consecutive data
+           for (int i = date_equity_pairs.size() - 2; i >= 0; i--) {
+               std::tm tm1 = {}, tm2 = {};
+               std::istringstream ss1(date_equity_pairs[i].first);
+               std::istringstream ss2(recent_data.front().first);
+               ss1 >> std::get_time(&tm1, "%Y-%m-%d");
+               ss2 >> std::get_time(&tm2, "%Y-%m-%d");
+              
+               if (!ss1.fail() && !ss2.fail()) {
+                   auto t1 = std::chrono::system_clock::from_time_t(std::mktime(&tm1));
+                   auto t2 = std::chrono::system_clock::from_time_t(std::mktime(&tm2));
+                   auto days_diff = std::chrono::duration_cast<std::chrono::hours>(t2 - t1).count() / 24;
+                  
+                   // If gap is more than 5 days, stop here
+                   if (days_diff > 5) {
+                       INFO("Found data gap of " + std::to_string(days_diff) + " days, using recent data only");
+                       break;
+                   }
+                   recent_data.insert(recent_data.begin(), date_equity_pairs[i]);
+               }
+           }
+       }
+
+
+       // Clear and repopulate with recent data only
+       dates.clear();
+       equity_values.clear();
+       for (const auto& [date, equity] : recent_data) {
+           dates.push_back(date);
+           equity_values.push_back(equity);
+       }
+
+
+       INFO("Using " + std::to_string(dates.size()) + " recent consecutive data points");
+
+
+       if (dates.empty()) {
+           ERROR("No valid consecutive data after filtering");
+           return "";
+       }
+
+
+       // Remove the last day's data (show up to yesterday only)
+       if (dates.size() > 1) {
+           std::string removed_date = dates.back();
+           dates.pop_back();
+           equity_values.pop_back();
+           INFO("Removed last day (" + removed_date + ") - showing up to previous day only");
+       }
+
+
+       // Prepend a starting point at $500k one day before the first data point
+       std::string first_date = dates.front();
+       std::tm tm = {};
+       std::istringstream ss(first_date);
+       ss >> std::get_time(&tm, "%Y-%m-%d");
+      
+       if (!ss.fail()) {
+           // Subtract one day
+           auto first_timepoint = std::chrono::system_clock::from_time_t(std::mktime(&tm));
+           auto day_before = first_timepoint - std::chrono::hours(24);
+           auto day_before_time_t = std::chrono::system_clock::to_time_t(day_before);
+           std::tm* day_before_tm = std::gmtime(&day_before_time_t);
+          
+           std::ostringstream date_oss;
+           date_oss << std::put_time(day_before_tm, "%Y-%m-%d");
+           std::string starting_date = date_oss.str();
+          
+           // Insert starting point at beginning
+           dates.insert(dates.begin(), starting_date);
+           equity_values.insert(equity_values.begin(), 500000.0);
+          
+           INFO("Added starting point at $500k on " + starting_date);
+       }
+
+
+       // Rewrite data file with filtered and starting data
+       std::ofstream data_file_rewrite(data_filename);
+       if (!data_file_rewrite.is_open()) {
+           ERROR("Failed to rewrite data file");
+           return "";
+       }
+      
+       for (size_t i = 0; i < dates.size(); i++) {
+           data_file_rewrite << dates[i] << " " << std::fixed << std::setprecision(2)
+                            << equity_values[i] << "\n";
+       }
+       data_file_rewrite.close();
+
+
+       INFO("Data file rewritten with " + std::to_string(dates.size()) + " points");
+
+
+       // Calculate statistics
+       double first_val = 500000.0;  // Always start from initial capital
+       double last_val = equity_values.back();
+       double change = last_val - first_val;
+       double change_pct = (first_val != 0) ? (change / first_val) * 100.0 : 0.0;
+       double min_val = *std::min_element(equity_values.begin(), equity_values.end());
+       double max_val = *std::max_element(equity_values.begin(), equity_values.end());
+
+
+       // Format currency helper
+       auto format_currency = [](double val) -> std::string {
+           std::ostringstream oss;
+           oss << std::fixed << std::setprecision(0) << val;
+           std::string s = oss.str();
+           size_t dp = s.find('.');
+           if (dp == std::string::npos) dp = s.size();
+           int pos = static_cast<int>(dp) - 3;
+           while (pos > 0) {
+               s.insert(static_cast<size_t>(pos), ",");
+               pos -= 3;
+           }
+           return s;
+       };
+
+
+       // Create gnuplot script
+       std::string script_filename = "temp_plot_script.gnu";
+       std::ofstream script_file(script_filename);
+       if (!script_file.is_open()) {
+           ERROR("Failed to create gnuplot script file");
+           return "";
+       }
+
+
+       std::string chart_filename = "portfolio_chart.png";
+       std::string perf_sign = (change >= 0) ? "+" : "";
+      
+       // Format title with proper percentage
+       std::ostringstream title_stream;
+       title_stream << "Equity Curve - " << perf_sign << "$" << format_currency(change)
+                   << " (" << perf_sign << std::fixed << std::setprecision(2) << change_pct << "%)";
+       std::string title = title_stream.str();
+
+
+       script_file << "# Gnuplot script for equity curve\n";
+       script_file << "reset\n";
+       script_file << "set terminal pngcairo size 1000,500 enhanced font 'Arial,11'\n";
+       script_file << "set output '" << chart_filename << "'\n";
+       script_file << "set bmargin 5\n\n";  // Increase bottom margin for rotated labels
+      
+       // Styling
+       script_file << "# Colors and style\n";
+       script_file << "set style line 1 lc rgb '#2c5aa0' lt 1 lw 3 pt 7 ps 0.8\n";
+       script_file << "set style line 2 lc rgb '#666666' lt 2 lw 1 dt 2\n";
+       script_file << "set border lw 1.5\n";
+       script_file << "set grid ytics lc rgb '#e0e0e0' lt 1 lw 0.5\n";
+       script_file << "unset key\n\n";  // Remove legend
+      
+       // Title and labels
+       script_file << "# Title and labels\n";
+       script_file << "set xlabel 'Date' font 'Arial,11'\n";
+       script_file << "set ylabel 'Portfolio Value ($)' font 'Arial,11'\n\n";
+      
+       // X-axis (dates)
+       script_file << "# X-axis settings\n";
+       script_file << "set xdata time\n";
+       script_file << "set timefmt '%Y-%m-%d'\n";
+       script_file << "set format x '%m/%d'\n";
+      
+       // Calculate proper date range and ticks
+       script_file << "set xrange ['" << dates.front() << "':'" << dates.back() << "']\n";
+      
+       // Show only specific evenly-spaced dates to avoid overlap
+       // Generate explicit tic list
+       int num_ticks = std::min(5, (int)dates.size());  // Show at most 5 dates
+       script_file << "set xtics (";
+       for (int i = 0; i < num_ticks; i++) {
+           int idx = (i * (dates.size() - 1)) / std::max(1, num_ticks - 1);
+           if (i > 0) script_file << ", ";
+           script_file << "'" << dates[idx] << "' '" << dates[idx] << "'";
+       }
+       script_file << ") rotate by -45 font 'Arial,10'\n\n";
+      
+       // Y-axis (currency)
+       script_file << "# Y-axis settings\n";
+       script_file << "set format y '$%.0f'\n";
+       script_file << "set decimalsign '.'\n";
+       // Set range with fixed $2,000 padding above and below
+       double y_padding = 2000.0;
+       double y_min = std::max(0.0, min_val - y_padding);  // Don't go below 0
+       double y_max = max_val + y_padding;
+       script_file << "set yrange [" << y_min << ":" << y_max << "]\n";
+       // Use better tick spacing
+       double y_range = y_max - y_min;
+       double tick_size = std::pow(10, std::floor(std::log10(y_range / 5)));  // ~5 ticks
+       script_file << "set ytics " << tick_size << "\n\n";
+      
+       // Reference line at starting value
+       script_file << "# Reference line at starting value\n";
+       script_file << "set arrow from graph 0, first 500000"
+                  << " to graph 1, first 500000"
+                  << " nohead ls 2 back\n\n";
+      
+       // Key/Legend - removed
+      
+       // Plot without filled area
+       script_file << "# Plot\n";
+       script_file << "plot '" << data_filename << "' using 1:2 with linespoints ls 1 notitle, \\\n";
+       script_file << "     500000 with lines ls 2 notitle\n";
+
+
+       script_file.close();
+       INFO("Gnuplot script created");
+
+
+       // Execute gnuplot
+       std::ostringstream cmd;
+       cmd << "gnuplot " << script_filename << " 2>&1";
+      
+       INFO("Executing: " + cmd.str());
+      
+       FILE* pipe = popen(cmd.str().c_str(), "r");
+       if (!pipe) {
+           ERROR("Failed to execute gnuplot command");
+           return "";
+       }
+
+
+       // Read output
+       char buffer[256];
+       std::string gnuplot_output;
+       while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
+           gnuplot_output += buffer;
+       }
+      
+       int return_code = pclose(pipe);
+      
+       if (return_code != 0) {
+           ERROR("Gnuplot failed with code " + std::to_string(return_code));
+           if (!gnuplot_output.empty()) {
+               ERROR("Gnuplot output: " + gnuplot_output);
+           }
+           return "";
+       }
+
+
+       INFO("Gnuplot executed successfully");
+
+
+       // Read the generated PNG
+       std::ifstream chart_file(chart_filename, std::ios::binary);
+       if (!chart_file.is_open()) {
+           ERROR("Failed to open generated chart file: " + chart_filename);
+           return "";
+       }
+
+
+       std::vector<unsigned char> chart_data((std::istreambuf_iterator<char>(chart_file)),
+                                              std::istreambuf_iterator<char>());
+       chart_file.close();
+
+
+       INFO("Chart file read, size: " + std::to_string(chart_data.size()) + " bytes");
+
+
+       // Base64 encode (same as your logo encoding)
+       static const char base64_chars[] =
+           "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+           "abcdefghijklmnopqrstuvwxyz"
+           "0123456789+/";
+
+
+       std::string chart_base64;
+       int i = 0;
+       int j = 0;
+       unsigned char char_array_3[3];
+       unsigned char char_array_4[4];
+
+
+       for (size_t idx = 0; idx < chart_data.size(); idx++) {
+           char_array_3[i++] = chart_data[idx];
+           if (i == 3) {
+               char_array_4[0] = (char_array_3[0] & 0xfc) >> 2;
+               char_array_4[1] = ((char_array_3[0] & 0x03) << 4) + ((char_array_3[1] & 0xf0) >> 4);
+               char_array_4[2] = ((char_array_3[1] & 0x0f) << 2) + ((char_array_3[2] & 0xc0) >> 6);
+               char_array_4[3] = char_array_3[2] & 0x3f;
+
+
+               for(i = 0; i < 4; i++)
+                   chart_base64 += base64_chars[char_array_4[i]];
+               i = 0;
+           }
+       }
+
+
+       if (i) {
+           for(j = i; j < 3; j++)
+               char_array_3[j] = '\0';
+
+
+           char_array_4[0] = (char_array_3[0] & 0xfc) >> 2;
+           char_array_4[1] = ((char_array_3[0] & 0x03) << 4) + ((char_array_3[1] & 0xf0) >> 4);
+           char_array_4[2] = ((char_array_3[1] & 0x0f) << 2) + ((char_array_3[2] & 0xc0) >> 6);
+
+
+           for (j = 0; j < i + 1; j++)
+               chart_base64 += base64_chars[char_array_4[j]];
+
+
+           while(i++ < 3)
+               chart_base64 += '=';
+       }
+
+
+       INFO("Chart base64 encoded, length: " + std::to_string(chart_base64.length()));
+
+
+       // Clean up temporary files
+       std::remove(data_filename.c_str());
+       std::remove(script_filename.c_str());
+       std::remove(chart_filename.c_str());
+
+
+       // Return HTML with embedded image
+       std::ostringstream html;
+       html << "<div style=\"width: 100%; max-width: 1000px; margin: 20px auto; text-align: center;\">\n";
+       html << "<img src=\"data:image/png;base64," << chart_base64
+            << "\" alt=\"Portfolio Equity Curve\" style=\"max-width: 100%; height: auto; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);\" />\n";
+       html << "</div>\n";
+
+
+       INFO("Successfully generated portfolio chart with gnuplot");
+       return html.str();
+
+
+   } catch (const std::exception& e) {
+       ERROR("Exception generating portfolio chart: " + std::string(e.what()));
+       return "";
+   }
+}
+} //namespace trade ngin

@@ -161,6 +161,20 @@ private:
         const std::map<std::string, double>& strategy_metrics = {},
         const std::string& yesterday_date = ""
     );
+
+    /**
+    * @brief Generate portfolio value chart as embedded SVG
+    * @param db Database interface to query equity curve
+    * @param strategy_id Strategy identifier
+    * @param lookback_days Number of days to show in the chart (default: 30)
+    * @return SVG chart as string, or empty string if data unavailable
+    */
+   std::string generate_portfolio_chart(
+       std::shared_ptr<DatabaseInterface> db,
+       const std::string& strategy_id,
+       int lookback_days = 30
+   );
+
 };
 
 } // namespace trade_ngin
