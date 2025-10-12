@@ -484,7 +484,7 @@ Result<void> BaseStrategy::save_positions() {
         }
 
         // Use the injected database directly, the orignal appraoch was cAUSING A Deadlock!!
-        return db_->store_positions(pos_vec, "trading.positions");
+        return db_->store_positions(pos_vec, id_, "trading.positions");
 
     } catch (const std::exception& e) {
         // Detailed error message for logging
