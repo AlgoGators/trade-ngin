@@ -23,7 +23,7 @@ set(TEST_SOURCES
     strategy/test_trend_following.cpp
 )
 
-# Create test executable
+# Create test executablecd
 add_executable(trade_ngin_tests ${TEST_SOURCES})
 
 # Set include directories for tests
