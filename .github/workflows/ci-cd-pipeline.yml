@@ -2,7 +2,7 @@ name: CI/CD Pipeline
 
 on:
   push:
-    branches: [main, develop, main-hd, formatting-test]
+    branches: [main, develop, main-hd, formatting-test, unit-testing-and-ci-cd-pipeline-updates]
   pull_request:
     branches: [main, develop, main-hd]
 
