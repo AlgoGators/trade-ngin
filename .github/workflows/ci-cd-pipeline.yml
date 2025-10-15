@@ -2,7 +2,14 @@ name: CI/CD Pipeline
 
 on:
   push:
-    branches: [main, develop, main-hd, formatting-test, unit-testing-and-ci-cd-pipeline-updates]
+    branches:
+      [
+        main,
+        develop,
+        main-hd,
+        formatting-test,
+        unit-testing-and-ci-cd-pipeline-updates,
+      ]
   pull_request:
     branches: [main, develop, main-hd]
 
@@ -271,14 +278,14 @@ jobs:
           # Generate coverage data
           lcov --capture --directory . --output-file coverage.info --ignore-errors mismatch --ignore-errors negative
 
-          # Remove external files from coverage
-          lcov --remove coverage.info '/usr/*' '/opt/*' '*/tests/*' '*/externals/*' --output-file coverage.info --ignore-errors unused
+          # Only use files in the src directory
+          lcov --extract coverage.info '*/src/*' --output-file coverage.info --ignore-errors unused
 
           # Generate HTML report
           genhtml coverage.info --output-directory coverage_html
 
           # Generate XML report for GitHub
-          gcovr --root .. --exclude tests --exclude externals --xml --output coverage.xml
+          gcovr --root .. --filter '../src/.*' --xml --output coverage.xml
 
       - name: Check Coverage Threshold
         if: matrix.build-type == 'Debug'
