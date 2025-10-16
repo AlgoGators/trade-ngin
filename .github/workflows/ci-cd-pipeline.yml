@@ -380,3 +380,30 @@ jobs:
         with:
           name: summary-report-${{ github.run_number }}
           path: summary.md
+  image-generation:
+    name: Generate and push docker image to registry
+    runs-on: ubuntu-latest
+    container:
+    image: ghcr.io/algogators/trade-ngin-ci:latest
+    credentials:
+      username: ${{ github.actor }}
+      password: ${{ secrets.GITHUB_TOKEN }}
+    needs: [lint, build, security-scan]
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and Push Image
+        run: |
+          pwd
+          BRANCH_NAME=${GITHUB_REF#refs/heads/}
+          DATE=$(date +%Y%m%d)
+          TIME=$(date +%H%M%S)
+          IMAGE_NAME="ghcr.io/${{ github.repository }}.${BRANCH_NAME}.${DATE}.${TIME}"
+          docker build -t ${IMAGE_NAME} .
+          docker push ${IMAGE_NAME}
