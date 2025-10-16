@@ -381,7 +381,7 @@ jobs:
           name: summary-report-${{ github.run_number }}
           path: summary.md
   image-generation:
-    name: Generate and push docker image to registry
+    name: Image Generation
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/algogators/trade-ngin-ci:latest
@@ -401,9 +401,12 @@ jobs:
       - name: Build and Push Image
         run: |
           pwd
-          BRANCH_NAME=${GITHUB_REF#refs/heads/}
+          REPO="ghcr.io/${GITHUB_REPOSITORY,,}"            # lowercase owner/repo
+          BRANCH="${GITHUB_REF#refs/heads/}"
+          BRANCH_SAFE=$(echo "$BRANCH" | tr '[:upper:]' '[:lower:]')
           DATE=$(date +%Y%m%d)
           TIME=$(date +%H%M%S)
-          IMAGE_NAME="ghcr.io/${{ github.repository }}.${BRANCH_NAME}.${DATE}.${TIME}"
-          docker build -t ${IMAGE_NAME} .
-          docker push ${IMAGE_NAME}
+          TAG="${BRANCH_SAFE}-${DATE}-${TIME}"
+
+          docker build -t "${REPO}:${TAG}" .
+          docker push "${REPO}:${TAG}"
