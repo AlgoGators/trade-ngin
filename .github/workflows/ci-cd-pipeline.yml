@@ -384,10 +384,10 @@ jobs:
     name: Generate and push docker image to registry
     runs-on: ubuntu-latest
     container:
-    image: ghcr.io/algogators/trade-ngin-ci:latest
-    credentials:
-      username: ${{ github.actor }}
-      password: ${{ secrets.GITHUB_TOKEN }}
+      image: ghcr.io/algogators/trade-ngin-ci:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     needs: [lint, build, security-scan]
     steps:
       - name: Checkout Repository
