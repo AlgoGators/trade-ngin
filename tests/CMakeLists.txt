@@ -44,6 +44,13 @@ target_link_libraries(trade_ngin_tests
     Arrow::arrow_shared
 )
 
+if(CMAKE_BUILD_TYPE MATCHES Debug)
+    target_compile_options(trade_ngin_tests PRIVATE
+            -fno-profile-arcs
+            -fno-test-coverage
+    )
+endif()
+
 # Set output directory
 set_target_properties(trade_ngin_tests
     PROPERTIES
