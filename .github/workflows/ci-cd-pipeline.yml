@@ -399,6 +399,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Build and Push Image
+        shell: bash
         run: |
           pwd
           REPO="ghcr.io/${GITHUB_REPOSITORY,,}"            # lowercase owner/repo
