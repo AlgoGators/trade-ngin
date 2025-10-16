@@ -250,8 +250,10 @@ jobs:
           cd build
           cmake .. \
             -DCMAKE_BUILD_TYPE=${{ matrix.build-type }} \
-            -DCMAKE_CXX_FLAGS="${{ matrix.build-type == 'Debug' && '-g -O0 -fprofile-arcs -ftest-coverage' || '-O3' }}" \
-            -DCMAKE_EXE_LINKER_FLAGS="${{ matrix.build-type == 'Debug' && '-fprofile-arcs -ftest-coverage' || '' }}"
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            -DCMAKE_CXX_COMPILER=${{ matrix.build-type == 'Debug' && 'g++' || 'g++' }} \
+            -DCMAKE_CXX_FLAGS="${{ matrix.build-type == 'Debug' && '-g -O0 --coverage' || '-O3' }}" \
+            -DCMAKE_EXE_LINKER_FLAGS="${{ matrix.build-type == 'Debug' && '--coverage' || '' }}"
 
       - name: Build Project
         run: |
@@ -319,6 +321,8 @@ jobs:
             build/coverage_html/
             build/coverage.xml
             build/coverage.info
+            coverage-reports/gcov/
+            build/compile_commands.json
 
       - name: Upload Test Results
         uses: actions/upload-artifact@v4
