@@ -77,7 +77,7 @@ set(TRADE_NGIN_SOURCES
 )
 
 # Add library target
-add_library(trade_ngin SHARED ${TRADE_NGIN_SOURCES})
+add_library(trade_ngin STATIC ${TRADE_NGIN_SOURCES})
 
 # Link against dependencies
 target_link_libraries(trade_ngin

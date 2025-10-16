@@ -380,6 +380,27 @@ jobs:
         with:
           name: summary-report-${{ github.run_number }}
           path: summary.md
+  sonarqube:
+    name: SonarQube Analysis
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download Coverage Reports
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-reports-${{ github.run_number }}
+          path: coverage-reports/
+
+      - name: SonarCloud Scan
+        uses: sonarsource/sonarcloud-github-action@master
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
   image-generation:
     name: Image Generation
     permissions:
@@ -391,7 +412,7 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-    needs: [lint, build, security-scan]
+    needs: [lint, build, security-scan, sonarqube]
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
