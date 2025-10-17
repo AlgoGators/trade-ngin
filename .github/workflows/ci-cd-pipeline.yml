@@ -312,6 +312,14 @@ jobs:
           mkdir -p ../coverage-reports/gcov
           find . -name '*.gcov' -exec mv {} ../coverage-reports/gcov/ \;
 
+      - name: SonarCloud Scan
+        if: matrix.build-type == 'Debug'
+        uses: SonarSource/sonarqube-scan-action@v6
+        env:
+          SONAR_HOST_URL: https://sonarcloud.io
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
       - name: Upload Coverage Reports
         if: matrix.build-type == 'Debug'
         uses: actions/upload-artifact@v4
@@ -391,28 +399,6 @@ jobs:
         with:
           name: summary-report-${{ github.run_number }}
           path: summary.md
-  sonarqube:
-    name: SonarQube Analysis
-    runs-on: ubuntu-latest
-    needs: build
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Download Coverage Reports
-        uses: actions/download-artifact@v4
-        with:
-          name: coverage-reports-${{ github.run_number }}
-          path: coverage-reports/
-
-      - name: SonarCloud Scan
-        uses: SonarSource/sonarqube-scan-action@v6
-        env:
-          SONAR_HOST_URL: https://sonarcloud.io
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
   image-generation:
     name: Image Generation
     permissions:
