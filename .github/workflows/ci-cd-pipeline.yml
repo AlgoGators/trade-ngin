@@ -354,7 +354,6 @@ jobs:
 
           # Check for hardcoded credentials
           grep -r "password\|secret\|key" src include || echo "No obvious hardcoded credentials found"
-
   report:
     name: Generate Summary Report
     runs-on: ubuntu-latest
