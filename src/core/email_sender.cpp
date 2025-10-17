@@ -347,6 +347,48 @@ Result<void> EmailSender::send_email(const std::string& subject, const std::stri
             g_email_payload += daily_pnl_base64_ + "\r\n";
         }
 
+        if(!total_commissions_base64_.empty()){
+            g_email_payload += "\r\n--" + inner_boundary + "\r\n";
+            g_email_payload += "Content-Type: image/png\r\n";
+            g_email_payload += "Content-Transfer-Encoding: base64\r\n";
+            g_email_payload += "Content-ID: <total_commissions>\r\n";
+            g_email_payload += "Content-Disposition: inline; filename=\"total_commissions.png\"\r\n";
+            g_email_payload += "\r\n";
+            g_email_payload += total_commissions_base64_ + "\r\n";
+        }
+
+        if(!margin_posted_base64_.empty()){
+            g_email_payload += "\r\n--" + inner_boundary + "\r\n";
+            g_email_payload += "Content-Type: image/png\r\n";
+            g_email_payload += "Content-Transfer-Encoding: base64\r\n";
+            g_email_payload += "Content-ID: <margin_posted>\r\n";
+            g_email_payload += "Content-Disposition: inline; filename=\"margin_posted.png\"\r\n";
+            g_email_payload += "\r\n";
+            g_email_payload += margin_posted_base64_ + "\r\n";
+        }
+
+        if (!portfolio_composition_base64_.empty()) {
+            g_email_payload += "\r\n--" + inner_boundary + "\r\n";
+            g_email_payload += "Content-Type: image/png\r\n";
+            g_email_payload += "Content-Transfer-Encoding: base64\r\n";
+            g_email_payload += "Content-ID: <portfolio_composition>\r\n";
+            g_email_payload += "Content-Disposition: inline; filename=\"portfolio_composition.png\"\r\n";
+            g_email_payload += "\r\n";
+            g_email_payload += portfolio_composition_base64_ + "\r\n";
+        }
+
+        if (!cumulative_pnl_by_symbol_base64_.empty()) {
+            g_email_payload += "\r\n--" + inner_boundary + "\r\n";
+            g_email_payload += "Content-Type: image/png\r\n";
+            g_email_payload += "Content-Transfer-Encoding: base64\r\n";
+            g_email_payload += "Content-ID: <cumulative_pnl_by_symbol>\r\n";
+            g_email_payload += "Content-Disposition: inline; filename=\"cumulative_pnl_by_symbol.png\"\r\n";
+            g_email_payload += "\r\n";
+            g_email_payload += cumulative_pnl_by_symbol_base64_ + "\r\n";
+        }
+
+        
+
         // Close inner multipart/related
         g_email_payload += "\r\n--" + inner_boundary + "--\r\n";
 
@@ -542,6 +584,54 @@ std::string EmailSender::generate_trading_report_body(
            html << "<img src=\"cid:daily_pnl\" alt=\"Daily PnL\" style=\"max-width: 100%; height: auto; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);\" />\n";
            html << "</div>\n";
        }
+
+        total_commissions_base64_ = ChartGenerator::generate_total_commissions_chart(db, "LIVE_TREND_FOLLOWING", date);
+        if (!total_commissions_base64_.empty()) {
+            html << "<h3 style=\"margin-top: 20px; color: #333;\">Cumulative Commissions (All Time)</h3>\n";
+            html << "<div style=\"width: 100%; max-width: 1000px; margin: 20px auto; text-align: center;\">\n";
+            html << "<img src=\"cid:total_commissions\" alt=\"Cumulative Commissions\" style=\"max-width: 100%; height: auto; ""border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);\" />\n";
+            html << "</div>\n";
+        }
+
+        margin_posted_base64_ = ChartGenerator::generate_margin_posted_chart(db, "LIVE_TREND_FOLLOWING", date);
+
+        if (!margin_posted_base64_.empty()) {
+            html << "<h3 style=\"margin-top: 20px; color: #333;\">Margin Posted</h3>\n";
+            html << "<div style=\"width: 100%; max-width: 1000px; margin: 20px auto; text-align: center;\">\n";
+            html << "<img src=\"cid:margin_posted\" alt=\"Margin Posted\" "
+                    "style=\"max-width: 100%; height: auto; border-radius: 8px; "
+                    "box-shadow: 0 2px 8px rgba(0,0,0,0.1);\" />\n";
+            html << "</div>\n";
+        }
+
+        portfolio_composition_base64_ = ChartGenerator::generate_portfolio_composition_chart(
+        positions, 
+        current_prices
+        );
+        if (!portfolio_composition_base64_.empty()) {
+            html << "<h3 style=\"margin-top: 20px; color: #333;\">Portfolio Composition</h3>\n";
+            html << "<div style=\"width: 100%; max-width: 800px; margin: 20px auto; text-align: center;\">\n";
+            html << "<img src=\"cid:portfolio_composition\" alt=\"Portfolio Composition\" "
+                    "style=\"max-width: 100%; height: auto; border-radius: 8px; "
+                    "box-shadow: 0 2px 8px rgba(0,0,0,0.1);\" />\n";
+            html << "</div>\n";
+        }
+
+        cumulative_pnl_by_symbol_base64_ = ChartGenerator::generate_cumulative_pnl_by_symbol_chart(
+            db,
+            "LIVE_TREND_FOLLOWING",
+            date
+        );
+        if (!cumulative_pnl_by_symbol_base64_.empty()) {
+            html << "<h3 style=\"margin-top: 20px; color: #333;\">Cumulative PnL by Symbol (All-Time)</h3>\n";
+            html << "<div style=\"width: 100%; max-width: 800px; margin: 20px auto; text-align: center;\">\n";
+            html << "<img src=\"cid:cumulative_pnl_by_symbol\" alt=\"Cumulative PnL by Symbol\" "
+                    "style=\"max-width: 100%; height: auto; border-radius: 8px; "
+                    "box-shadow: 0 2px 8px rgba(0,0,0,0.1);\" />\n";
+            html << "</div>\n";
+        }
+
+
    }
 
    // Symbols Reference (moved after Portfolio Snapshot)

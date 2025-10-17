@@ -1,5 +1,6 @@
 #include "trade_ngin/core/chart_generator.hpp"
 #include "trade_ngin/core/logger.hpp"
+#include "trade_ngin/instruments/instrument_registry.hpp"
 #include <fstream>
 #include <sstream>
 #include <iomanip>
@@ -310,32 +311,28 @@ ChartData ChartGenerator::fetch_pnl_by_symbol_data(
     }
 
     try {
-        // Query YESTERDAY'S positions with daily PnL (not today's which are zero)
-        // The 'date' parameter is today's date, so we subtract 1 day to get yesterday's finalized positions
+        // Yesterday's realized PnL by symbol
         std::string query =
-            "SELECT symbol, daily_realized_pnl, daily_unrealized_pnl "
+            "SELECT symbol, daily_realized_pnl "
             "FROM trading.positions "
             "WHERE strategy_id = '" + strategy_id + "' "
             "AND DATE(last_update) = DATE('" + date + "') - INTERVAL '1 day' "
             "ORDER BY last_update DESC";
 
-        INFO("Querying PnL by symbol with: " + query);
+        INFO("Querying realized PnL by symbol with: " + query);
         auto result = db->execute_query(query);
 
         if (result.is_error()) {
-            ERROR("Failed to query PnL by symbol: " + std::string(result.error()->what()));
+            ERROR("Failed to query realized PnL by symbol: " + std::string(result.error()->what()));
             return chart_data;
         }
 
         auto table = result.value();
         if (!table || table->num_rows() == 0) {
-            WARN("No PnL data available");
+            WARN("No realized PnL data available");
             return chart_data;
         }
 
-        INFO("Retrieved " + std::to_string(table->num_rows()) + " symbols with PnL");
-
-        // Extract data
         auto combined_result = table->CombineChunks();
         if (!combined_result.ok()) {
             ERROR("Failed to combine chunks");
@@ -345,57 +342,53 @@ ChartData ChartGenerator::fetch_pnl_by_symbol_data(
 
         std::vector<std::pair<std::string, double>> symbol_pnl_data;
 
-        auto symbol_col = combined->column(0);
+        auto symbol_col   = combined->column(0);
         auto realized_col = combined->column(1);
-        auto unrealized_col = combined->column(2);
 
         for (int64_t i = 0; i < combined->num_rows(); ++i) {
             try {
-                // Extract symbol
+                // --- symbol ---
                 std::string symbol;
                 auto sym_chunk = symbol_col->chunk(0);
                 if (sym_chunk->type_id() == arrow::Type::STRING) {
-                    auto str_array = std::static_pointer_cast<arrow::StringArray>(sym_chunk);
-                    if (!str_array->IsNull(i)) {
-                        symbol = str_array->GetString(i);
-                    }
+                    auto s = std::static_pointer_cast<arrow::StringArray>(sym_chunk);
+                    if (!s->IsNull(i)) symbol = s->GetString(i);
                 } else if (sym_chunk->type_id() == arrow::Type::LARGE_STRING) {
-                    auto str_array = std::static_pointer_cast<arrow::LargeStringArray>(sym_chunk);
-                    if (!str_array->IsNull(i)) {
-                        symbol = str_array->GetString(i);
-                    }
+                    auto s = std::static_pointer_cast<arrow::LargeStringArray>(sym_chunk);
+                    if (!s->IsNull(i)) symbol = s->GetString(i);
                 }
 
-                // Extract PnL values
+                // --- realized pnl only ---
                 double realized_pnl = 0.0;
-                double unrealized_pnl = 0.0;
-
                 auto real_chunk = realized_col->chunk(0);
                 if (!real_chunk->IsNull(i)) {
                     if (real_chunk->type_id() == arrow::Type::DOUBLE) {
-                        auto dbl_array = std::static_pointer_cast<arrow::DoubleArray>(real_chunk);
-                        realized_pnl = dbl_array->Value(i);
+                        auto a = std::static_pointer_cast<arrow::DoubleArray>(real_chunk);
+                        realized_pnl = a->Value(i);
                     } else if (real_chunk->type_id() == arrow::Type::FLOAT) {
-                        auto flt_array = std::static_pointer_cast<arrow::FloatArray>(real_chunk);
-                        realized_pnl = static_cast<double>(flt_array->Value(i));
+                        auto a = std::static_pointer_cast<arrow::FloatArray>(real_chunk);
+                        realized_pnl = static_cast<double>(a->Value(i));
+                    } else if (real_chunk->type_id() == arrow::Type::INT64) {
+                        auto a = std::static_pointer_cast<arrow::Int64Array>(real_chunk);
+                        realized_pnl = static_cast<double>(a->Value(i));
+                    } else if (real_chunk->type_id() == arrow::Type::INT32) {
+                        auto a = std::static_pointer_cast<arrow::Int32Array>(real_chunk);
+                        realized_pnl = static_cast<double>(a->Value(i));
+                    } else if (real_chunk->type_id() == arrow::Type::STRING) {
+                        auto a = std::static_pointer_cast<arrow::StringArray>(real_chunk);
+                        if (!a->IsNull(i)) {
+                            try { realized_pnl = std::stod(a->GetString(i)); } catch (...) {}
+                        }
+                    } else if (real_chunk->type_id() == arrow::Type::LARGE_STRING) {
+                        auto a = std::static_pointer_cast<arrow::LargeStringArray>(real_chunk);
+                        if (!a->IsNull(i)) {
+                            try { realized_pnl = std::stod(a->GetString(i)); } catch (...) {}
+                        }
                     }
                 }
 
-                auto unreal_chunk = unrealized_col->chunk(0);
-                if (!unreal_chunk->IsNull(i)) {
-                    if (unreal_chunk->type_id() == arrow::Type::DOUBLE) {
-                        auto dbl_array = std::static_pointer_cast<arrow::DoubleArray>(unreal_chunk);
-                        unrealized_pnl = dbl_array->Value(i);
-                    } else if (unreal_chunk->type_id() == arrow::Type::FLOAT) {
-                        auto flt_array = std::static_pointer_cast<arrow::FloatArray>(unreal_chunk);
-                        unrealized_pnl = static_cast<double>(flt_array->Value(i));
-                    }
-                }
-
-                double total_pnl = realized_pnl + unrealized_pnl;
-                // Include ALL positions to ensure chart appears (no filtering by PnL amount)
                 if (!symbol.empty()) {
-                    symbol_pnl_data.push_back({symbol, total_pnl});
+                    symbol_pnl_data.emplace_back(symbol, realized_pnl);
                 }
             } catch (const std::exception& e) {
                 WARN("Error processing row " + std::to_string(i) + ": " + std::string(e.what()));
@@ -404,35 +397,31 @@ ChartData ChartGenerator::fetch_pnl_by_symbol_data(
         }
 
         if (symbol_pnl_data.empty()) {
-            WARN("No valid PnL data extracted");
+            WARN("No valid realized PnL data extracted");
             return chart_data;
         }
 
-        // Sort by PnL (descending)
+        // Sort by realized PnL (descending)
         std::sort(symbol_pnl_data.begin(), symbol_pnl_data.end(),
                   [](const auto& a, const auto& b) { return a.second > b.second; });
 
         // Populate ChartData
         INFO("Populating chart data with " + std::to_string(symbol_pnl_data.size()) + " symbols");
-        for (const auto& [symbol, pnl] : symbol_pnl_data) {
-            chart_data.labels.push_back(symbol);
+        for (const auto& [sym, pnl] : symbol_pnl_data) {
+            chart_data.labels.push_back(sym);
             chart_data.values.push_back(pnl);
         }
 
-        // Log first 3 symbols for debugging
-        if (symbol_pnl_data.size() > 0) {
-            INFO("Sample PnL data - First symbol: " + symbol_pnl_data[0].first +
+        // Debug sample
+        if (!symbol_pnl_data.empty()) {
+            INFO("Sample Realized PnL - First: " + symbol_pnl_data[0].first +
                  " PnL: " + std::to_string(symbol_pnl_data[0].second));
-            if (symbol_pnl_data.size() > 1) {
-                INFO("Sample PnL data - Second symbol: " + symbol_pnl_data[1].first +
-                     " PnL: " + std::to_string(symbol_pnl_data[1].second));
-            }
         }
 
-        chart_data.x_label = "PnL ($)";
-        chart_data.y_label = "Symbol";
+        chart_data.x_label = "Symbol";
+        chart_data.y_label = "Realized PnL ($)";
         chart_data.reference_line = 0.0;
-        chart_data.has_reference_line = false;
+        chart_data.has_reference_line = true;
 
         INFO("Chart data prepared with " + std::to_string(chart_data.labels.size()) +
              " labels and " + std::to_string(chart_data.values.size()) + " values");
@@ -440,10 +429,11 @@ ChartData ChartGenerator::fetch_pnl_by_symbol_data(
         return chart_data;
 
     } catch (const std::exception& e) {
-        ERROR("Exception fetching PnL by symbol data: " + std::string(e.what()));
+        ERROR("Exception fetching realized PnL by symbol: " + std::string(e.what()));
         return chart_data;
     }
 }
+
 
 ChartData ChartGenerator::fetch_daily_pnl_data(
     std::shared_ptr<DatabaseInterface> db,
@@ -464,7 +454,7 @@ ChartData ChartGenerator::fetch_daily_pnl_data(
             "FROM trading.equity_curve "
             "WHERE strategy_id = '" + strategy_id + "' "
             "ORDER BY timestamp DESC "
-            "LIMIT " + std::to_string(lookback_days + 1);
+            "LIMIT " + std::to_string(lookback_days);
 
         INFO("Querying daily PnL data with: " + query);
         auto result = db->execute_query(query);
@@ -585,6 +575,522 @@ ChartData ChartGenerator::fetch_daily_pnl_data(
 
     } catch (const std::exception& e) {
         ERROR("Exception fetching daily PnL data: " + std::string(e.what()));
+        return chart_data;
+    }
+}
+
+ChartData ChartGenerator::fetch_cumulative_commissions_data(
+    std::shared_ptr<DatabaseInterface> db,
+    const std::string& strategy_id,
+    const std::string& date /* today, YYYY-MM-DD */)
+{
+    ChartData chart_data;
+    if (!db) { WARN("DB null"); return chart_data; }
+
+    try {
+        std::string query =
+            "SELECT date, total_commissions "
+            "FROM trading.live_results "
+            "WHERE strategy_id = '" + strategy_id + "' "
+            "AND DATE(date) <= DATE('" + date + "') - INTERVAL '1 day' "
+            "ORDER BY date ASC";
+
+        INFO("Querying cumulative commissions with: " + query);
+        auto result = db->execute_query(query);
+        if (result.is_error()) {
+            ERROR("Query failed: " + std::string(result.error()->what()));
+            return chart_data;
+        }
+
+        auto table = result.value();
+        if (!table || table->num_rows() == 0) {
+            WARN("No commissions rows returned");
+            return chart_data;
+        }
+
+        auto combined_result = table->CombineChunks();
+        if (!combined_result.ok()) {
+            ERROR("CombineChunks failed");
+            return chart_data;
+        }
+        auto combined = combined_result.ValueOrDie();
+
+        // Expect: col0 = date, col1 = total_commissions
+        auto day_col = combined->column(0);
+        auto val_col = combined->column(1);
+        auto day_chunk = day_col->chunk(0);
+        auto val_chunk = val_col->chunk(0);
+
+        double running = 0.0;
+
+        for (int64_t i = 0; i < combined->num_rows(); ++i) {
+            // ---- parse date -> "YYYY-MM-DD"
+            std::string day_str;
+            switch (day_chunk->type_id()) {
+                case arrow::Type::STRING: {
+                    auto s = std::static_pointer_cast<arrow::StringArray>(day_chunk);
+                    if (!s->IsNull(i)) {
+                        day_str = s->GetString(i);
+                        if (day_str.size() > 10) day_str = day_str.substr(0, 10);
+                    }
+                } break;
+                case arrow::Type::LARGE_STRING: {
+                    auto s = std::static_pointer_cast<arrow::LargeStringArray>(day_chunk);
+                    if (!s->IsNull(i)) {
+                        day_str = s->GetString(i);
+                        if (day_str.size() > 10) day_str = day_str.substr(0, 10);
+                    }
+                } break;
+                case arrow::Type::DATE32: {
+                    auto d = std::static_pointer_cast<arrow::Date32Array>(day_chunk);
+                    if (!d->IsNull(i)) {
+                        int32_t days = d->Value(i);
+                        std::time_t tsec = static_cast<std::time_t>(days) * 86400;
+                        std::tm* tm = std::gmtime(&tsec);
+                        std::ostringstream oss; oss << std::put_time(tm, "%Y-%m-%d");
+                        day_str = oss.str();
+                    }
+                } break;
+                case arrow::Type::TIMESTAMP: {
+                    auto ts = std::static_pointer_cast<arrow::TimestampArray>(day_chunk);
+                    if (!ts->IsNull(i)) {
+                        std::time_t tsec = ts->Value(i) / 1000000; // micro → sec
+                        std::tm* tm = std::gmtime(&tsec);
+                        std::ostringstream oss; oss << std::put_time(tm, "%Y-%m-%d");
+                        day_str = oss.str();
+                    }
+                } break;
+                default: break;
+            }
+            if (day_str.empty()) continue;
+
+            // ---- parse total_commissions -> double
+            double val = 0.0;
+            bool have = false;
+            switch (val_chunk->type_id()) {
+                case arrow::Type::DOUBLE: {
+                    auto a = std::static_pointer_cast<arrow::DoubleArray>(val_chunk);
+                    if (!a->IsNull(i)) { val = a->Value(i); have = true; }
+                } break;
+                case arrow::Type::FLOAT: {
+                    auto a = std::static_pointer_cast<arrow::FloatArray>(val_chunk);
+                    if (!a->IsNull(i)) { val = static_cast<double>(a->Value(i)); have = true; }
+                } break;
+                case arrow::Type::INT64: {
+                    auto a = std::static_pointer_cast<arrow::Int64Array>(val_chunk);
+                    if (!a->IsNull(i)) { val = static_cast<double>(a->Value(i)); have = true; }
+                } break;
+                case arrow::Type::INT32: {
+                    auto a = std::static_pointer_cast<arrow::Int32Array>(val_chunk);
+                    if (!a->IsNull(i)) { val = static_cast<double>(a->Value(i)); have = true; }
+                } break;
+                case arrow::Type::STRING: {
+                    auto a = std::static_pointer_cast<arrow::StringArray>(val_chunk);
+                    if (!a->IsNull(i)) { try { val = std::stod(a->GetString(i)); have = true; } catch (...) {} }
+                } break;
+                case arrow::Type::LARGE_STRING: {
+                    auto a = std::static_pointer_cast<arrow::LargeStringArray>(val_chunk);
+                    if (!a->IsNull(i)) { try { val = std::stod(a->GetString(i)); have = true; } catch (...) {} }
+                } break;
+                default: break;
+            }
+            if (!have) continue;
+
+            // running cumulative
+            running += val;
+            chart_data.labels.push_back(day_str);
+            chart_data.values.push_back(running);
+        }
+
+        if (chart_data.labels.size() == 1) {
+            // guard against single-point x-range (gnuplot needs width)
+            std::tm tm{}; std::istringstream ss(chart_data.labels[0]);
+            ss >> std::get_time(&tm, "%Y-%m-%d");
+            if (!ss.fail()) {
+                auto t = std::chrono::system_clock::from_time_t(std::mktime(&tm));
+                auto t_prev = t - std::chrono::hours(24);
+                std::time_t tt = std::chrono::system_clock::to_time_t(t_prev);
+                std::tm* g = std::gmtime(&tt);
+                std::ostringstream os; os << std::put_time(g, "%Y-%m-%d");
+                chart_data.labels.insert(chart_data.labels.begin(), os.str());
+                chart_data.values.insert(chart_data.values.begin(), 0.0);
+            }
+        }
+
+        chart_data.title = "Cumulative Commissions (All Time)";
+        chart_data.x_label = "Date";
+        chart_data.y_label = "Cumulative Commissions ($)";
+        chart_data.reference_line = 0.0;
+        chart_data.has_reference_line = true;
+        return chart_data;
+
+    } catch (const std::exception& e) {
+        ERROR(std::string("Exception fetching cumulative commissions: ") + e.what());
+        return chart_data;
+    }
+}
+
+ChartData ChartGenerator::fetch_margin_posted_data(
+    std::shared_ptr<DatabaseInterface> db,
+    const std::string& strategy_id,
+    const std::string& date /* today, YYYY-MM-DD */)
+{
+    ChartData chart_data;
+    if (!db) { WARN("DB null"); return chart_data; }
+
+    try {
+        // All days up to (today - 1) => exclude today
+        std::string query =
+            "SELECT date, margin_posted "
+            "FROM trading.live_results "
+            "WHERE strategy_id = '" + strategy_id + "' "
+            "AND DATE(date) <= DATE('" + date + "') - INTERVAL '1 day' "
+            "ORDER BY date ASC";
+
+        INFO("Querying margin posted with: " + query);
+        auto result = db->execute_query(query);
+        if (result.is_error()) {
+            ERROR("Failed to query margin posted: " + std::string(result.error()->what()));
+            return chart_data;
+        }
+
+        auto table = result.value();
+        if (!table || table->num_rows() == 0) {
+            WARN("No margin posted data available");
+            return chart_data;
+        }
+
+        auto combined_result = table->CombineChunks();
+        if (!combined_result.ok()) {
+            ERROR("Failed to combine chunks");
+            return chart_data;
+        }
+        auto combined = combined_result.ValueOrDie();
+
+        // Expect: col0 = date, col1 = margin_posted
+        auto day_col = combined->column(0);
+        auto val_col = combined->column(1);
+        auto day_chunk = day_col->chunk(0);
+        auto val_chunk = val_col->chunk(0);
+
+        for (int64_t i = 0; i < combined->num_rows(); ++i) {
+            // ---- parse date -> "YYYY-MM-DD"
+            std::string day_str;
+            switch (day_chunk->type_id()) {
+                case arrow::Type::STRING: {
+                    auto s = std::static_pointer_cast<arrow::StringArray>(day_chunk);
+                    if (!s->IsNull(i)) {
+                        day_str = s->GetString(i);
+                        if (day_str.size() > 10) day_str = day_str.substr(0, 10);
+                    }
+                } break;
+                case arrow::Type::LARGE_STRING: {
+                    auto s = std::static_pointer_cast<arrow::LargeStringArray>(day_chunk);
+                    if (!s->IsNull(i)) {
+                        day_str = s->GetString(i);
+                        if (day_str.size() > 10) day_str = day_str.substr(0, 10);
+                    }
+                } break;
+                case arrow::Type::DATE32: {
+                    auto d = std::static_pointer_cast<arrow::Date32Array>(day_chunk);
+                    if (!d->IsNull(i)) {
+                        int32_t days = d->Value(i);
+                        std::time_t tsec = static_cast<std::time_t>(days) * 86400;
+                        std::tm* tm = std::gmtime(&tsec);
+                        std::ostringstream oss; oss << std::put_time(tm, "%Y-%m-%d");
+                        day_str = oss.str();
+                    }
+                } break;
+                case arrow::Type::TIMESTAMP: {
+                    auto ts = std::static_pointer_cast<arrow::TimestampArray>(day_chunk);
+                    if (!ts->IsNull(i)) {
+                        std::time_t tsec = ts->Value(i) / 1000000; // micro → sec
+                        std::tm* tm = std::gmtime(&tsec);
+                        std::ostringstream oss; oss << std::put_time(tm, "%Y-%m-%d");
+                        day_str = oss.str();
+                    }
+                } break;
+                default: break;
+            }
+            if (day_str.empty()) continue;
+
+            // ---- parse margin_posted -> double (skip nulls)
+            double val = 0.0;
+            bool have = false;
+            switch (val_chunk->type_id()) {
+                case arrow::Type::DOUBLE: {
+                    auto a = std::static_pointer_cast<arrow::DoubleArray>(val_chunk);
+                    if (!a->IsNull(i)) { val = a->Value(i); have = true; }
+                } break;
+                case arrow::Type::FLOAT: {
+                    auto a = std::static_pointer_cast<arrow::FloatArray>(val_chunk);
+                    if (!a->IsNull(i)) { val = static_cast<double>(a->Value(i)); have = true; }
+                } break;
+                case arrow::Type::INT64: {
+                    auto a = std::static_pointer_cast<arrow::Int64Array>(val_chunk);
+                    if (!a->IsNull(i)) { val = static_cast<double>(a->Value(i)); have = true; }
+                } break;
+                case arrow::Type::INT32: {
+                    auto a = std::static_pointer_cast<arrow::Int32Array>(val_chunk);
+                    if (!a->IsNull(i)) { val = static_cast<double>(a->Value(i)); have = true; }
+                } break;
+                case arrow::Type::STRING: {
+                    auto a = std::static_pointer_cast<arrow::StringArray>(val_chunk);
+                    if (!a->IsNull(i)) { try { val = std::stod(a->GetString(i)); have = true; } catch (...) {} }
+                } break;
+                case arrow::Type::LARGE_STRING: {
+                    auto a = std::static_pointer_cast<arrow::LargeStringArray>(val_chunk);
+                    if (!a->IsNull(i)) { try { val = std::stod(a->GetString(i)); have = true; } catch (...) {} }
+                } break;
+                default: break;
+            }
+            if (!have) continue;  // skip NULL margins
+
+            chart_data.labels.push_back(day_str);
+            chart_data.values.push_back(val);
+        }
+
+        if (chart_data.labels.empty()) {
+            WARN("No valid margin posted points parsed");
+            return chart_data;
+        }
+
+        chart_data.title = "Margin Posted";
+        chart_data.x_label = "Date";
+        chart_data.y_label = "Margin Posted ($)";
+        chart_data.reference_line = 0.0;
+        chart_data.has_reference_line = true;
+        return chart_data;
+
+    } catch (const std::exception& e) {
+        ERROR(std::string("Exception fetching margin posted: ") + e.what());
+        return chart_data;
+    }
+}
+
+ChartData ChartGenerator::fetch_portfolio_composition_data(
+    const std::unordered_map<std::string, Position>& positions,
+    const std::unordered_map<std::string, double>& current_prices)
+{
+    ChartData chart_data;
+
+    try {
+        // Calculate gross notional for each symbol
+        std::vector<std::pair<std::string, double>> symbol_notionals;
+        double total_notional = 0.0;
+
+        for (const auto& [symbol, position] : positions) {
+            if (position.quantity.as_double() == 0.0) continue;
+
+            // Get contract multiplier
+            double contract_multiplier = 1.0;
+            try {
+                auto& registry = InstrumentRegistry::instance();
+                
+                // Normalize variant-suffixed symbols for lookup
+                std::string lookup_sym = symbol;
+                auto dotpos = lookup_sym.find(".v.");
+                if (dotpos != std::string::npos) {
+                    lookup_sym = lookup_sym.substr(0, dotpos);
+                }
+                dotpos = lookup_sym.find(".c.");
+                if (dotpos != std::string::npos) {
+                    lookup_sym = lookup_sym.substr(0, dotpos);
+                }
+
+                auto instrument = registry.get_instrument(lookup_sym);
+                if (!instrument) {
+                    ERROR("CRITICAL: Instrument " + lookup_sym + " not found in registry for pie chart!");
+                    continue;
+                }
+                contract_multiplier = instrument->get_multiplier();
+            } catch (const std::exception& e) {
+                ERROR("Failed to get instrument data for " + symbol + ": " + std::string(e.what()));
+                continue;
+            }
+
+            // Use current price if available, otherwise average price
+            double price = position.average_price.as_double();
+            auto price_it = current_prices.find(symbol);
+            if (price_it != current_prices.end()) {
+                price = price_it->second;
+            }
+
+            // Calculate gross notional (absolute value)
+            double notional = std::abs(position.quantity.as_double() * price * contract_multiplier);
+            
+            symbol_notionals.push_back({symbol, notional});
+            total_notional += notional;
+        }
+
+        if (total_notional == 0.0 || symbol_notionals.empty()) {
+            WARN("No valid positions for portfolio composition chart");
+            return chart_data;
+        }
+
+        // Sort by notional descending
+        std::sort(symbol_notionals.begin(), symbol_notionals.end(),
+                  [](const auto& a, const auto& b) { return a.second > b.second; });
+
+        // Convert all symbols to percentages (no grouping, show all individually)
+        std::vector<std::pair<std::string, double>> final_data;
+
+        for (const auto& [sym, notional] : symbol_notionals) {
+            double percentage = (notional / total_notional) * 100.0;
+            final_data.push_back({sym, percentage});
+        }
+
+        // Populate ChartData
+        for (const auto& [sym, pct] : final_data) {
+            chart_data.labels.push_back(sym);
+            chart_data.values.push_back(pct);
+        }
+
+        chart_data.title = "Portfolio Composition by Gross Notional";
+        chart_data.x_label = "Symbol";
+        chart_data.y_label = "Percentage of Portfolio (%)";
+
+        INFO("Portfolio composition chart data prepared with " + 
+             std::to_string(chart_data.labels.size()) + " categories");
+
+        return chart_data;
+
+    } catch (const std::exception& e) {
+        ERROR("Exception fetching portfolio composition data: " + std::string(e.what()));
+        return chart_data;
+    }
+}
+
+ChartData ChartGenerator::fetch_cumulative_pnl_by_symbol_data(
+    std::shared_ptr<DatabaseInterface> db,
+    const std::string& strategy_id,
+    const std::string& date)
+{
+    ChartData chart_data;
+
+    if (!db) {
+        WARN("Database interface is null, cannot fetch cumulative PnL data");
+        return chart_data;
+    }
+
+    try {
+        // Query to sum up all realized PnL by symbol across all time
+        std::string query =
+            "SELECT symbol, SUM(daily_realized_pnl) as cumulative_pnl "
+            "FROM trading.positions "
+            "WHERE strategy_id = '" + strategy_id + "' "
+            "AND DATE(last_update) <= DATE('" + date + "') "
+            "GROUP BY symbol "
+            "HAVING SUM(daily_realized_pnl) IS NOT NULL "
+            "AND SUM(daily_realized_pnl) != 0 "
+            "ORDER BY cumulative_pnl DESC";
+
+        INFO("Querying cumulative PnL by symbol with: " + query);
+        auto result = db->execute_query(query);
+
+        if (result.is_error()) {
+            ERROR("Failed to query cumulative PnL by symbol: " + std::string(result.error()->what()));
+            return chart_data;
+        }
+
+        auto table = result.value();
+        if (!table || table->num_rows() == 0) {
+            WARN("No cumulative PnL data available");
+            return chart_data;
+        }
+
+        auto combined_result = table->CombineChunks();
+        if (!combined_result.ok()) {
+            ERROR("Failed to combine chunks");
+            return chart_data;
+        }
+        auto combined = combined_result.ValueOrDie();
+
+        std::vector<std::pair<std::string, double>> symbol_pnl_data;
+
+        auto symbol_col = combined->column(0);
+        auto pnl_col = combined->column(1);
+
+        for (int64_t i = 0; i < combined->num_rows(); ++i) {
+            try {
+                // Extract symbol
+                std::string symbol;
+                auto sym_chunk = symbol_col->chunk(0);
+                if (sym_chunk->type_id() == arrow::Type::STRING) {
+                    auto s = std::static_pointer_cast<arrow::StringArray>(sym_chunk);
+                    if (!s->IsNull(i)) symbol = s->GetString(i);
+                } else if (sym_chunk->type_id() == arrow::Type::LARGE_STRING) {
+                    auto s = std::static_pointer_cast<arrow::LargeStringArray>(sym_chunk);
+                    if (!s->IsNull(i)) symbol = s->GetString(i);
+                }
+
+                // Extract cumulative PnL
+                double pnl = 0.0;
+                auto pnl_chunk = pnl_col->chunk(0);
+                if (!pnl_chunk->IsNull(i)) {
+                    if (pnl_chunk->type_id() == arrow::Type::DOUBLE) {
+                        auto a = std::static_pointer_cast<arrow::DoubleArray>(pnl_chunk);
+                        pnl = a->Value(i);
+                    } else if (pnl_chunk->type_id() == arrow::Type::FLOAT) {
+                        auto a = std::static_pointer_cast<arrow::FloatArray>(pnl_chunk);
+                        pnl = static_cast<double>(a->Value(i));
+                    } else if (pnl_chunk->type_id() == arrow::Type::INT64) {
+                        auto a = std::static_pointer_cast<arrow::Int64Array>(pnl_chunk);
+                        pnl = static_cast<double>(a->Value(i));
+                    } else if (pnl_chunk->type_id() == arrow::Type::INT32) {
+                        auto a = std::static_pointer_cast<arrow::Int32Array>(pnl_chunk);
+                        pnl = static_cast<double>(a->Value(i));
+                    } else if (pnl_chunk->type_id() == arrow::Type::STRING) {
+                        auto a = std::static_pointer_cast<arrow::StringArray>(pnl_chunk);
+                        if (!a->IsNull(i)) {
+                            try { pnl = std::stod(a->GetString(i)); } catch (...) {}
+                        }
+                    } else if (pnl_chunk->type_id() == arrow::Type::LARGE_STRING) {
+                        auto a = std::static_pointer_cast<arrow::LargeStringArray>(pnl_chunk);
+                        if (!a->IsNull(i)) {
+                            try { pnl = std::stod(a->GetString(i)); } catch (...) {}
+                        }
+                    }
+                }
+
+                if (!symbol.empty()) {
+                    symbol_pnl_data.emplace_back(symbol, pnl);
+                }
+            } catch (const std::exception& e) {
+                WARN("Error processing row " + std::to_string(i) + ": " + std::string(e.what()));
+                continue;
+            }
+        }
+
+        if (symbol_pnl_data.empty()) {
+            WARN("No valid cumulative PnL data extracted");
+            return chart_data;
+        }
+
+        // Already sorted by query (DESC), but let's ensure it
+        std::sort(symbol_pnl_data.begin(), symbol_pnl_data.end(),
+                  [](const auto& a, const auto& b) { return a.second > b.second; });
+
+        // Populate ChartData
+        INFO("Populating cumulative PnL chart data with " + std::to_string(symbol_pnl_data.size()) + " symbols");
+        for (const auto& [sym, pnl] : symbol_pnl_data) {
+            chart_data.labels.push_back(sym);
+            chart_data.values.push_back(pnl);
+        }
+
+        chart_data.title = "Cumulative Realized PnL by Symbol (All-Time)";
+        chart_data.x_label = "Cumulative Realized PnL ($)";
+        chart_data.y_label = "Symbol";
+        chart_data.reference_line = 0.0;
+        chart_data.has_reference_line = true;
+
+        INFO("Chart data prepared with " + std::to_string(chart_data.labels.size()) +
+             " labels and " + std::to_string(chart_data.values.size()) + " values");
+
+        return chart_data;
+
+    } catch (const std::exception& e) {
+        ERROR("Exception fetching cumulative PnL by symbol: " + std::string(e.what()));
         return chart_data;
     }
 }
@@ -768,94 +1274,74 @@ std::string ChartGenerator::render_bar_chart(const ChartData& data, const ChartC
         WARN("No data provided for bar chart");
         return "";
     }
-
     if (data.labels.size() != data.values.size()) {
         ERROR("Labels and values size mismatch in bar chart");
         return "";
     }
 
     try {
-        // Build data file content
+        // Build data file: index value
+        // (gnuplot likes numeric x with xtics mapping for categories)
         std::ostringstream data_content;
         for (size_t i = 0; i < data.labels.size(); ++i) {
-            data_content << data.labels[i] << " " << std::fixed << std::setprecision(2)
-                        << data.values[i] << "\n";
+            data_content << i << " " << std::fixed << std::setprecision(2) << data.values[i] << "\n";
         }
 
-        // Build gnuplot script
         std::ostringstream script;
         script << "reset\n";
         script << "set terminal pngcairo size " << config.width << "," << config.height
                << " enhanced font 'Arial," << config.font_size << "'\n";
         script << "set output 'temp_chart_output.png'\n";
-        if (config.rotate_x_labels) {
-            script << "set bmargin 5\n";
-        }
+        if (config.rotate_x_labels) script << "set bmargin 5\n";
         script << "\n";
 
         // Styling
         script << "set border lw 1.5\n";
-        if (config.show_grid) {
-            script << "set grid ytics lc rgb '#e0e0e0' lt 1 lw 0.5\n";
-        }
+        if (config.show_grid) script << "set grid ytics lc rgb '#e0e0e0' lt 1 lw 0.5\n";
         script << "unset key\n\n";
 
-        // Labels
-        if (!data.x_label.empty()) {
-            script << "set xlabel '" << data.x_label << "'\n";
-        }
-        if (!data.y_label.empty()) {
-            script << "set ylabel '" << data.y_label << "'\n";
-        }
-        if (!data.title.empty()) {
-            script << "set title '" << data.title << "'\n";
-        }
+        // Labels / Title
+        if (!data.x_label.empty()) script << "set xlabel '" << data.x_label << "'\n";
+        if (!data.y_label.empty()) script << "set ylabel '" << data.y_label << "'\n";
+        if (!data.title.empty())   script << "set title '"  << data.title   << "'\n";
 
-        // X-axis (time data)
-        script << "set xdata time\n";
-        script << "set timefmt '%Y-%m-%d'\n";
-        script << "set format x '%m/%d'\n";
-        script << "set xrange ['" << data.labels.front() << "':'" << data.labels.back() << "']\n";
-
-        // X-axis ticks
-        int num_ticks = std::min(8, static_cast<int>(data.labels.size()));
+        // X axis: categorical ticks
+        script << "unset xdata\n";
+        script << "set xrange [-0.5:" << (data.labels.size()-0.5) << "]\n";
         script << "set xtics (";
-        for (int i = 0; i < num_ticks; i++) {
-            int idx = (i * (data.labels.size() - 1)) / std::max(1, num_ticks - 1);
-            if (i > 0) script << ", ";
-            script << "'" << data.labels[idx] << "' '" << data.labels[idx] << "'";
+        for (size_t i = 0; i < data.labels.size(); ++i) {
+            if (i) script << ", ";
+            script << "'" << data.labels[i] << "' " << i;
         }
         script << ")";
-        if (config.rotate_x_labels) {
-            script << " rotate by " << config.x_label_angle;
-        }
+        if (config.rotate_x_labels) script << " rotate by " << config.x_label_angle;
         script << "\n\n";
 
-        // Y-axis
+        // Y axis
         script << "set format y '$%.0f'\n\n";
 
-        // Reference line (typically at zero for PnL)
+        // Reference line at 0 (PnL baseline)
         if (data.has_reference_line) {
             script << "set arrow from graph 0, first " << data.reference_line
                    << " to graph 1, first " << data.reference_line
                    << " nohead lc rgb '#666666' lt 2 lw 1\n\n";
         }
 
-        // Bar chart with conditional coloring
+        // Bars with conditional color
         script << "set style fill solid border -1\n";
         script << "set boxwidth " << config.box_width << " relative\n";
-        script << "plot 'temp_chart_data.txt' using 1:($2 >= 0 ? $2 : 0) with boxes lc rgb '"
+        script << "plot 'temp_chart_data.txt' using 1:($2>=0?$2:0) with boxes lc rgb '"
                << config.positive_color << "' notitle, \\\n";
-        script << "     'temp_chart_data.txt' using 1:($2 < 0 ? $2 : 0) with boxes lc rgb '"
+        script << "     'temp_chart_data.txt' using 1:($2<0?$2:0)  with boxes lc rgb '"
                << config.negative_color << "' notitle\n";
 
         return execute_gnuplot(script.str(), data_content.str());
-
     } catch (const std::exception& e) {
         ERROR("Exception rendering bar chart: " + std::string(e.what()));
         return "";
     }
 }
+
 
 std::string ChartGenerator::render_horizontal_bar_chart(const ChartData& data, const ChartConfig& config) {
     if (data.labels.empty() || data.values.empty()) {
@@ -942,6 +1428,8 @@ std::string ChartGenerator::render_horizontal_bar_chart(const ChartData& data, c
     }
 }
 
+// REPLACE the render_pie_chart function with this version that ensures legend visibility:
+
 std::string ChartGenerator::render_pie_chart(const ChartData& data, const ChartConfig& config) {
     if (data.labels.empty() || data.values.empty()) {
         WARN("No data provided for pie chart");
@@ -954,26 +1442,63 @@ std::string ChartGenerator::render_pie_chart(const ChartData& data, const ChartC
     }
 
     try {
-        // Calculate percentages
+        // Calculate total and verify non-zero
         double total = 0.0;
         for (double val : data.values) {
-            total += std::abs(val);  // Use absolute values for pie chart
+            total += std::abs(val);
         }
 
-        if (total == 0.0) {
-            WARN("Total is zero, cannot create pie chart");
+        if (total < 0.01) {
+            WARN("Total is near zero, cannot create pie chart");
             return "";
         }
 
-        // Build data file content with percentages
+        // Color palette for pie slices
+        std::vector<std::string> colors = {
+            "#2c5aa0",  // Blue
+            "#1a7f37",  // Green
+            "#f59e0b",  // Orange
+            "#8b5cf6",  // Purple
+            "#ec4899",  // Pink
+            "#0891b2",  // Cyan
+            "#dc2626",  // Red
+            "#65a30d",  // Lime
+            "#7c3aed",  // Violet
+            "#db2777"   // Rose
+        };
+
+        // Build data file - separate blocks for each slice
         std::ostringstream data_content;
+        double cumulative_angle = 0.0;
+        
         for (size_t i = 0; i < data.labels.size(); ++i) {
-            double percentage = (std::abs(data.values[i]) / total) * 100.0;
-            data_content << data.labels[i] << " " << std::fixed << std::setprecision(1)
-                        << percentage << "\n";
+            double value = std::abs(data.values[i]);
+            double percentage = (value / total) * 100.0;
+            double angle_span = (value / total) * 360.0;
+            double start_angle = cumulative_angle;
+            double end_angle = cumulative_angle + angle_span;
+            
+            // Create parametric data for this wedge
+            int steps = std::max(20, static_cast<int>(angle_span / 3.0));
+            for (int j = 0; j <= steps; ++j) {
+                double t = static_cast<double>(j) / steps;
+                double angle = start_angle + t * angle_span;
+                double rad = angle * M_PI / 180.0;
+                
+                // Output: x y
+                data_content << std::fixed << std::setprecision(4)
+                            << std::cos(rad) << " " << std::sin(rad) << "\n";
+            }
+            
+            // Blank line separates blocks for gnuplot index
+            if (i < data.labels.size() - 1) {
+                data_content << "\n\n";
+            }
+            
+            cumulative_angle = end_angle;
         }
 
-        // Build gnuplot script for pie chart
+        // Build gnuplot script
         std::ostringstream script;
         script << "reset\n";
         script << "set terminal pngcairo size " << config.width << "," << config.height
@@ -981,29 +1506,49 @@ std::string ChartGenerator::render_pie_chart(const ChartData& data, const ChartC
         script << "set output 'temp_chart_output.png'\n\n";
 
         if (!data.title.empty()) {
-            script << "set title '" << data.title << "'\n";
+            script << "set title '" << data.title << "' font 'Arial," << (config.font_size + 2) << ",bold'\n";
         }
 
-        // Pie chart settings
+        // Define colors
+        for (size_t i = 0; i < colors.size(); ++i) {
+            script << "set linetype " << (i + 1) << " lc rgb '" << colors[i] << "'\n";
+        }
+        script << "\n";
+
+        // Chart settings - make room for legend on right (closer to pie)
         script << "set size ratio -1\n";
-        script << "set xrange [-1.2:1.2]\n";
-        script << "set yrange [-1.2:1.2]\n";
+        script << "set xrange [-1.4:2.2]\n";  // Tighter right margin for legend
+        script << "set yrange [-1.3:1.3]\n";
         script << "unset xtics\n";
         script << "unset ytics\n";
         script << "unset border\n";
-        script << "set key outside right\n\n";
+        script << "set key at 1.3,0 center left\n";  // Position legend closer to pie
+        script << "set key font 'Arial," << (config.font_size - 1) << "'\n";
+        script << "set key spacing 1.2\n";
+        script << "set key samplen 1.2\n";
+        script << "set key width 0\n";
+        script << "set key box lw 1\n\n";  // Box around legend
 
-        // Color palette (using various colors)
-        script << "set palette defined (0 '#2c5aa0', 1 '#1a7f37', 2 '#b42318', 3 '#f59e0b', 4 '#8b5cf6', 5 '#ec4899')\n";
-        script << "unset colorbox\n\n";
+        // Plot wedges with explicit legend entries
+        script << "plot ";
+        
+        for (size_t i = 0; i < data.labels.size(); ++i) {
+            if (i > 0) script << ", \\\n     ";
+            
+            double percentage = (std::abs(data.values[i]) / total) * 100.0;
+            
+            // Each wedge as a filled polygon with legend
+            script << "'temp_chart_data.txt' index " << i << " ";
+            script << "using 1:2 ";
+            script << "with filledcurves xy=0,0 ";
+            script << "lt " << ((i % colors.size()) + 1) << " ";
+            script << "fs solid 0.85 ";
+            script << "title '" << data.labels[i] << " (" 
+                   << std::fixed << std::setprecision(1) << percentage << "%)'";
+        }
+        
+        script << "\n";
 
-        // Note: Pie charts in gnuplot are complex - this is a simplified version
-        // For production, consider using a dedicated plotting library
-        script << "# Simplified pie representation using circles\n";
-        script << "set style fill solid\n";
-        script << "plot 'temp_chart_data.txt' using (0):(0):(1):($0) with circles lc palette notitle\n";
-
-        WARN("Pie chart rendering is simplified - consider using a specialized visualization library for production");
         return execute_gnuplot(script.str(), data_content.str());
 
     } catch (const std::exception& e) {
@@ -1011,7 +1556,6 @@ std::string ChartGenerator::render_pie_chart(const ChartData& data, const ChartC
         return "";
     }
 }
-
 // ============================================================================
 // ChartGenerator Implementation - High-Level Functions (Original)
 // ============================================================================
@@ -1056,7 +1600,9 @@ std::string ChartGenerator::generate_pnl_by_symbol_chart(
 
     // Render using modular renderer
     ChartConfig config;
-    std::string result = render_horizontal_bar_chart(data, config);
+    config.rotate_x_labels = true;
+    config.x_label_angle = -45;
+    std::string result = render_bar_chart(data, config);
 
     if (result.empty()) {
         ERROR("Failed to generate PnL by symbol chart - render_horizontal_bar_chart returned empty string");
@@ -1089,5 +1635,107 @@ std::string ChartGenerator::generate_daily_pnl_chart(
     // Render using modular renderer
     return render_bar_chart(data, config);
 }
+
+std::string ChartGenerator::generate_total_commissions_chart(
+    std::shared_ptr<DatabaseInterface> db,
+    const std::string& strategy_id,
+    const std::string& end_date)   // "YYYY-MM-DD" (today)
+{
+    ChartData data = fetch_cumulative_commissions_data(db, strategy_id, end_date);
+    if (data.labels.empty() || data.values.empty()) return "";
+
+    ChartConfig config;
+    config.width = 1000;
+    config.height = 500;
+    config.rotate_x_labels = true;
+    config.x_label_angle = -45;
+
+    return render_line_chart(data, config);
+}
+
+std::string ChartGenerator::generate_margin_posted_chart(
+    std::shared_ptr<DatabaseInterface> db,
+    const std::string& strategy_id,
+    const std::string& date /* today */)
+{
+    ChartData data = fetch_margin_posted_data(db, strategy_id, date);
+    if (data.labels.empty() || data.values.empty()) return "";
+
+    ChartConfig config;
+    config.width = 1000;
+    config.height = 500;
+    config.rotate_x_labels = true;
+    config.x_label_angle = -45;
+
+    // Title can be set in data or here:
+    if (data.title.empty()) data.title = "Margin Posted";
+
+    return render_line_chart(data, config);
+}
+
+std::string ChartGenerator::generate_portfolio_composition_chart(
+    const std::unordered_map<std::string, Position>& positions,
+    const std::unordered_map<std::string, double>& current_prices)
+{
+    INFO("Starting portfolio composition pie chart generation");
+
+    // Fetch data
+    ChartData data = fetch_portfolio_composition_data(positions, current_prices);
+
+    if (data.labels.empty() || data.values.empty()) {
+        WARN("No data available for portfolio composition chart");
+        return "";
+    }
+
+    // Configure chart appearance
+    ChartConfig config;
+    config.width = 800;
+    config.height = 600;
+
+    // Render using pie chart renderer
+    std::string result = render_pie_chart(data, config);
+
+    if (result.empty()) {
+        ERROR("Failed to generate portfolio composition chart");
+    } else {
+        INFO("Portfolio composition chart generated successfully");
+    }
+
+    return result;
+}
+
+std::string ChartGenerator::generate_cumulative_pnl_by_symbol_chart(
+    std::shared_ptr<DatabaseInterface> db,
+    const std::string& strategy_id,
+    const std::string& date)
+{
+    INFO("Starting cumulative PnL by symbol chart generation for strategy: " + strategy_id);
+
+    // Fetch data
+    ChartData data = fetch_cumulative_pnl_by_symbol_data(db, strategy_id, date);
+
+    if (data.labels.empty() || data.values.empty()) {
+        WARN("No data available for cumulative PnL by symbol chart");
+        return "";
+    }
+
+    // Configure chart appearance
+    ChartConfig config;
+    config.rotate_x_labels = true;
+    config.x_label_angle = -45;
+
+    // Render using horizontal bar chart
+    std::string result = render_horizontal_bar_chart(data, config);
+
+    if (result.empty()) {
+        ERROR("Failed to generate cumulative PnL by symbol chart");
+    } else {
+        INFO("Cumulative PnL by symbol chart generated successfully");
+    }
+
+    return result;
+}
+
+
 
 } // namespace trade_ngin
