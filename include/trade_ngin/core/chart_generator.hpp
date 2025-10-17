@@ -122,6 +122,40 @@ public:
         int lookback_days = 30
     );
 
+    static ChartData fetch_cumulative_commissions_data(
+        std::shared_ptr<DatabaseInterface> db,
+        const std::string& strategy_id,
+        const std::string& date /* today, YYYY-MM-DD */);
+    
+    static ChartData fetch_margin_posted_data(
+        std::shared_ptr<DatabaseInterface> db,
+        const std::string& strategy_id,
+        const std::string& date /* today, YYYY-MM-DD */);
+    
+    /**
+     * @brief Fetch cumulative realized PnL by symbol (all-time)
+     * @param db Database interface
+     * @param strategy_id Strategy identifier
+     * @param date Current date (to query up to this date)
+     * @return ChartData with symbols and their cumulative realized PnL
+     */
+    static ChartData fetch_cumulative_pnl_by_symbol_data(
+        std::shared_ptr<DatabaseInterface> db,
+        const std::string& strategy_id,
+        const std::string& date
+    );
+
+    /**
+     * @brief Fetch portfolio composition data from current positions
+     * @param positions Current portfolio positions
+     * @param current_prices Current market prices for calculating notional
+     * @return ChartData with symbols and their gross notional percentages
+     */
+    static ChartData fetch_portfolio_composition_data(
+        const std::unordered_map<std::string, Position>& positions,
+        const std::unordered_map<std::string, double>& current_prices
+    );
+
     /**
      * @brief Generic Chart Renderers - Render any ChartData with specified config
      */
@@ -229,6 +263,52 @@ public:
         const std::string& strategy_id,
         int lookback_days = 30
     );
+
+    static std::string generate_total_commissions_chart(
+        std::shared_ptr<DatabaseInterface> db,
+        const std::string& strategy_id,
+        const std::string& end_date /* today, YYYY-MM-DD */);
+    
+    
+    static std::string generate_margin_posted_chart(
+        std::shared_ptr<DatabaseInterface> db,
+        const std::string& strategy_id,
+        const std::string& date);
+    
+    /**
+     * @brief Generate portfolio composition pie chart
+     *
+     * Creates a pie chart showing what percentage of total portfolio exposure
+     * each symbol represents, based on gross notional values. Symbols representing
+     * less than 5% are grouped into "Other" category.
+     *
+     * @param positions Current portfolio positions
+     * @param current_prices Current market prices for calculating notional
+     * @return Base64-encoded PNG chart data, or empty string on error
+     */
+    static std::string generate_portfolio_composition_chart(
+        const std::unordered_map<std::string, Position>& positions,
+        const std::unordered_map<std::string, double>& current_prices
+    );
+
+    /**
+     * @brief Generate cumulative PnL by symbol chart (all-time)
+     *
+     * Creates a horizontal bar chart showing total realized PnL for each symbol
+     * across the entire trading history. Shows which symbols have been the best
+     * and worst performers historically.
+     *
+     * @param db Database interface to query positions data
+     * @param strategy_id Strategy identifier to filter data
+     * @param date Current date (to query up to this date)
+     * @return Base64-encoded PNG chart data, or empty string on error
+     */
+    static std::string generate_cumulative_pnl_by_symbol_chart(
+        std::shared_ptr<DatabaseInterface> db,
+        const std::string& strategy_id,
+        const std::string& date
+    );
+
 
     // Future chart types can be added here as new static methods:
     // static std::string generate_drawdown_chart(...);
