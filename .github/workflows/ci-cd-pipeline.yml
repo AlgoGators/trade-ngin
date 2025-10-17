@@ -11,7 +11,8 @@ on:
         unit-testing-and-ci-cd-pipeline-updates,
       ]
   pull_request:
-    branches: "*"
+    branches:
+      - "*"
 
 env:
   COVERAGE_THRESHOLD: 30
