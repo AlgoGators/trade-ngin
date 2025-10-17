@@ -310,11 +310,13 @@ ChartData ChartGenerator::fetch_pnl_by_symbol_data(
     }
 
     try {
-        // Query most recent positions with daily PnL
+        // Query YESTERDAY'S positions with daily PnL (not today's which are zero)
+        // The 'date' parameter is today's date, so we subtract 1 day to get yesterday's finalized positions
         std::string query =
             "SELECT symbol, daily_realized_pnl, daily_unrealized_pnl "
             "FROM trading.positions "
             "WHERE strategy_id = '" + strategy_id + "' "
+            "AND DATE(last_update) = DATE('" + date + "') - INTERVAL '1 day' "
             "ORDER BY last_update DESC";
 
         INFO("Querying PnL by symbol with: " + query);
@@ -411,15 +413,29 @@ ChartData ChartGenerator::fetch_pnl_by_symbol_data(
                   [](const auto& a, const auto& b) { return a.second > b.second; });
 
         // Populate ChartData
+        INFO("Populating chart data with " + std::to_string(symbol_pnl_data.size()) + " symbols");
         for (const auto& [symbol, pnl] : symbol_pnl_data) {
             chart_data.labels.push_back(symbol);
             chart_data.values.push_back(pnl);
+        }
+
+        // Log first 3 symbols for debugging
+        if (symbol_pnl_data.size() > 0) {
+            INFO("Sample PnL data - First symbol: " + symbol_pnl_data[0].first +
+                 " PnL: " + std::to_string(symbol_pnl_data[0].second));
+            if (symbol_pnl_data.size() > 1) {
+                INFO("Sample PnL data - Second symbol: " + symbol_pnl_data[1].first +
+                     " PnL: " + std::to_string(symbol_pnl_data[1].second));
+            }
         }
 
         chart_data.x_label = "PnL ($)";
         chart_data.y_label = "Symbol";
         chart_data.reference_line = 0.0;
         chart_data.has_reference_line = false;
+
+        INFO("Chart data prepared with " + std::to_string(chart_data.labels.size()) +
+             " labels and " + std::to_string(chart_data.values.size()) + " values");
 
         return chart_data;
 
@@ -640,10 +656,17 @@ namespace {
                                                    std::istreambuf_iterator<char>());
         chart_file.close();
 
-        // Cleanup
-        std::remove(data_filename.c_str());
-        std::remove(script_filename.c_str());
-        std::remove(chart_filename.c_str());
+        // Cleanup (keep files for debugging if generation fails)
+        if (!chart_data_bin.empty()) {
+            std::remove(data_filename.c_str());
+            std::remove(script_filename.c_str());
+            std::remove(chart_filename.c_str());
+        } else {
+            ERROR("Chart generation failed - keeping temp files for debugging:");
+            ERROR("  Data file: " + data_filename);
+            ERROR("  Script file: " + script_filename);
+            ERROR("  Output file: " + chart_filename);
+        }
 
         // Base64 encode
         return ChartHelpers::encode_to_base64(chart_data_bin);
@@ -845,6 +868,8 @@ std::string ChartGenerator::render_horizontal_bar_chart(const ChartData& data, c
         return "";
     }
 
+    INFO("Rendering horizontal bar chart with " + std::to_string(data.labels.size()) + " items");
+
     try {
         // Build data file content (symbol pnl)
         std::ostringstream data_content;
@@ -898,10 +923,16 @@ std::string ChartGenerator::render_horizontal_bar_chart(const ChartData& data, c
         script << ")\n\n";
 
         // Plot with conditional coloring
-        script << "plot 'temp_chart_data.txt' using ($2 >= 0 ? $2 : 0):0:(" << config.box_width
-               << "):($2 >= 0 ? 0x" << config.positive_color.substr(1) << " : 0xffffff) with boxxy lc rgb variable notitle, \\\n";
-        script << "     'temp_chart_data.txt' using ($2 < 0 ? $2 : 0):0:(" << config.box_width
-               << "):($2 < 0 ? 0x" << config.negative_color.substr(1) << " : 0xffffff) with boxxy lc rgb variable notitle\n";
+        // For boxxy: using x_center:y_center:x_halfwidth:y_halfwidth
+        // Plot positive values (from 0 to value)
+        script << "plot 'temp_chart_data.txt' using ($2 > 0 ? $2/2 : 1/0):($0):(abs($2)/2):(" << config.box_width/2
+               << ") with boxxy lc rgb '" << config.positive_color << "' notitle, \\\n";
+        // Plot negative values (from value to 0)
+        script << "     'temp_chart_data.txt' using ($2 < 0 ? $2/2 : 1/0):($0):(abs($2)/2):(" << config.box_width/2
+               << ") with boxxy lc rgb '" << config.negative_color << "' notitle, \\\n";
+        // Plot zero values as tiny markers (ensures chart appears even when all PnL is zero)
+        script << "     'temp_chart_data.txt' using (abs($2) < 0.01 ? 0.1 : 1/0):($0):(0.1):(" << config.box_width/2
+               << ") with boxxy lc rgb '#cccccc' notitle\n";
 
         return execute_gnuplot(script.str(), data_content.str());
 
@@ -1013,16 +1044,27 @@ std::string ChartGenerator::generate_pnl_by_symbol_chart(
     const std::string& strategy_id,
     const std::string& date)
 {
+    INFO("Starting PnL by symbol chart generation for strategy: " + strategy_id);
+
     // Fetch data using modular fetcher
     ChartData data = fetch_pnl_by_symbol_data(db, strategy_id, date);
 
     if (data.labels.empty() || data.values.empty()) {
+        WARN("No data available for PnL by symbol chart - returning empty string");
         return "";
     }
 
     // Render using modular renderer
     ChartConfig config;
-    return render_horizontal_bar_chart(data, config);
+    std::string result = render_horizontal_bar_chart(data, config);
+
+    if (result.empty()) {
+        ERROR("Failed to generate PnL by symbol chart - render_horizontal_bar_chart returned empty string");
+    } else {
+        INFO("PnL by symbol chart generated successfully, base64 length: " + std::to_string(result.length()));
+    }
+
+    return result;
 }
 
 std::string ChartGenerator::generate_daily_pnl_chart(
