@@ -16,7 +16,6 @@ on:
 
 env:
   COVERAGE_THRESHOLD: 30
-
 jobs:
   lint:
     name: Code Linting
