@@ -6,3 +6,5 @@ config.json
 apps/backtest/results/
 .claude/
 src/.DS_Store
+.idea/
+cmake-build-debug/
