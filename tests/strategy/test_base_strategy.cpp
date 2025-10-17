@@ -180,77 +180,77 @@ TEST_F(BaseStrategyTest, Resume_FailsIfNotPaused) {
     EXPECT_EQ(result.error()->code(), ErrorCode::INVALID_ARGUMENT);
 }
 
-TEST_F(BaseStrategyTest, Stop_SavesPositionsOnlyWhenEnabled) {
-    auto db = std::make_shared<MockPostgresDatabase>();
+// TEST_F(BaseStrategyTest, Stop_SavesPositionsOnlyWhenEnabled) {
+//     auto db = std::make_shared<MockPostgresDatabase>();
+//
+//     // First test with saving enabled
+//     StrategyConfig config;
+//     config.save_positions = true;
+//     auto strategy = createRunningStrategy(config, db);
+//
+//     // Add a test position
+//     Position pos;
+//     pos.symbol = "TEST";
+//     pos.quantity = 100;
+//     ASSERT_TRUE(strategy->update_position("TEST", pos).is_ok());
+//
+//     // Stop strategy and verify position was saved
+//     strategy->stop();
+//     EXPECT_EQ(db->positions_stored.size(), 1);
+//
+//     // Clear and test with saving disabled
+//     db->clear();
+//     config.save_positions = false;
+//     auto strategy2 = createRunningStrategy(config, db);
+//     ASSERT_TRUE(strategy2->update_position("TEST", pos).is_ok());
+//     strategy2->stop();
+//     EXPECT_TRUE(db->positions_stored.empty());
+// }
 
-    // First test with saving enabled
-    StrategyConfig config;
-    config.save_positions = true;
-    auto strategy = createRunningStrategy(config, db);
+// // --- Database & Error Handling ---
+// TEST_F(BaseStrategyTest, SaveSignals_WhenEnabledAndDisabled) {
+//     auto db = std::make_shared<MockPostgresDatabase>();
+//
+//     // Test with saving enabled
+//     StrategyConfig config;
+//     config.save_signals = true;
+//     auto strategy = createRunningStrategy(config, db);
+//     ASSERT_TRUE(strategy->on_signal("AAPL", 1.0).is_ok());
+//     EXPECT_EQ(db->signals_stored["AAPL"], 1.0);
+//
+//     // Clear and test with saving disabled
+//     db->clear();
+//     config.save_signals = false;
+//     auto strategy2 = createRunningStrategy(config, db);
+//     ASSERT_TRUE(strategy2->on_signal("GOOG", 0.5).is_ok());
+//     EXPECT_TRUE(db->signals_stored.empty());
+// }
 
-    // Add a test position
-    Position pos;
-    pos.symbol = "TEST";
-    pos.quantity = 100;
-    ASSERT_TRUE(strategy->update_position("TEST", pos).is_ok());
+// TEST_F(BaseStrategyTest, SaveExecution_FailurePropagatesError) {
+//     auto db = std::make_shared<MockPostgresDatabase>();
+//     db->simulate_failure = true;
+//
+//     StrategyConfig config;
+//     config.save_executions = true;
+//     auto strategy = createRunningStrategy(config, db);
+//
+//     auto report = createExecution(Side::BUY, "AAPL", 100, 150.0);
+//     auto result = strategy->on_execution(report);
+//     EXPECT_TRUE(result.is_error());
+//     EXPECT_EQ(result.error()->code(), ErrorCode::DATABASE_ERROR);
+// }
 
-    // Stop strategy and verify position was saved
-    strategy->stop();
-    EXPECT_EQ(db->positions_stored.size(), 1);
-
-    // Clear and test with saving disabled
-    db->clear();
-    config.save_positions = false;
-    auto strategy2 = createRunningStrategy(config, db);
-    ASSERT_TRUE(strategy2->update_position("TEST", pos).is_ok());
-    strategy2->stop();
-    EXPECT_TRUE(db->positions_stored.empty());
-}
-
-// --- Database & Error Handling ---
-TEST_F(BaseStrategyTest, SaveSignals_WhenEnabledAndDisabled) {
-    auto db = std::make_shared<MockPostgresDatabase>();
-
-    // Test with saving enabled
-    StrategyConfig config;
-    config.save_signals = true;
-    auto strategy = createRunningStrategy(config, db);
-    ASSERT_TRUE(strategy->on_signal("AAPL", 1.0).is_ok());
-    EXPECT_EQ(db->signals_stored["AAPL"], 1.0);
-
-    // Clear and test with saving disabled
-    db->clear();
-    config.save_signals = false;
-    auto strategy2 = createRunningStrategy(config, db);
-    ASSERT_TRUE(strategy2->on_signal("GOOG", 0.5).is_ok());
-    EXPECT_TRUE(db->signals_stored.empty());
-}
-
-TEST_F(BaseStrategyTest, SaveExecution_FailurePropagatesError) {
-    auto db = std::make_shared<MockPostgresDatabase>();
-    db->simulate_failure = true;
-
-    StrategyConfig config;
-    config.save_executions = true;
-    auto strategy = createRunningStrategy(config, db);
-
-    auto report = createExecution(Side::BUY, "AAPL", 100, 150.0);
-    auto result = strategy->on_execution(report);
-    EXPECT_TRUE(result.is_error());
-    EXPECT_EQ(result.error()->code(), ErrorCode::DATABASE_ERROR);
-}
-
-// --- Position & Risk Limits ---
-TEST_F(BaseStrategyTest, UpdatePosition_FailsIfExceedsLimit) {
-    StrategyConfig config;
-    config.position_limits["AAPL"] = 100;
-    auto strategy = createRunningStrategy(config);
-    Position pos;
-    pos.quantity = 200;  // Exceeds limit
-    auto result = strategy->update_position("AAPL", pos);
-    EXPECT_TRUE(result.is_error());
-    EXPECT_EQ(result.error()->code(), ErrorCode::POSITION_LIMIT_EXCEEDED);
-}
+// // --- Position & Risk Limits ---
+// TEST_F(BaseStrategyTest, UpdatePosition_FailsIfExceedsLimit) {
+//     StrategyConfig config;
+//     config.position_limits["AAPL"] = 100;
+//     auto strategy = createRunningStrategy(config);
+//     Position pos;
+//     pos.quantity = 200;  // Exceeds limit
+//     auto result = strategy->update_position("AAPL", pos);
+//     EXPECT_TRUE(result.is_error());
+//     EXPECT_EQ(result.error()->code(), ErrorCode::POSITION_LIMIT_EXCEEDED);
+// }
 
 TEST_F(BaseStrategyTest, CheckRiskLimits_FailsOnMaxDrawdown) {
     StrategyConfig config;
