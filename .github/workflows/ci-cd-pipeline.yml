@@ -293,12 +293,12 @@ jobs:
         if: matrix.build-type == 'Debug'
         run: |
           cd build
-          # Extract coverage percentage
-          COVERAGE_PERCENT=$(lcov --summary coverage.info | grep "lines......:" | awk '{print $3}' | sed 's/%//')
+          # Extract coverage percentage (get the number before the %)
+          COVERAGE_PERCENT=$(lcov --summary coverage.info 2>&1 | grep "lines" | grep -oP '\d+\.\d+(?=%)')
           echo "Coverage: $COVERAGE_PERCENT%"
 
-          # Check if coverage meets threshold
-          if (( $(echo "$COVERAGE_PERCENT < ${{ env.COVERAGE_THRESHOLD }}" | bc -l) )); then
+          # Check if coverage meets threshold using awk instead of bc
+          if [ $(awk -v cov="$COVERAGE_PERCENT" -v thresh="${{ env.COVERAGE_THRESHOLD }}" 'BEGIN {print (cov < thresh)}') -eq 1 ]; then
             echo "❌ Coverage ($COVERAGE_PERCENT%) is below threshold (${{ env.COVERAGE_THRESHOLD }}%)"
             exit 1
           else
@@ -308,7 +308,7 @@ jobs:
         if: matrix.build-type == 'Debug'
         run: |
           cd build
-          gcov -o . $(find . -name '*.o' -o -name '*.gcno') >/dev/null
+          find . -type f -name '*.gcno' -execdir gcov -p {} \; 2>/dev/null || true
           mkdir -p ../coverage-reports/gcov
           find . -name '*.gcov' -exec mv {} ../coverage-reports/gcov/ \;
 
