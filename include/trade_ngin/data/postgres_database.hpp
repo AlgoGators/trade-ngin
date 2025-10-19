@@ -298,6 +298,121 @@ public:
                                                   const std::vector<std::pair<Timestamp, double>>& equity_points,
                                                   const std::string& table_name = "trading.equity_curve") override;
 
+    // ============================================================================
+    // NEW METHODS TO REPLACE RAW SQL (Phase 0 Refactoring)
+    // ============================================================================
+
+    /**
+     * @brief Delete stale executions for a given date and order IDs
+     * @param order_ids List of order IDs to match
+     * @param date Date to filter executions
+     * @param table_name Name of the executions table
+     * @return Result indicating success or failure
+     */
+    Result<void> delete_stale_executions(const std::vector<std::string>& order_ids,
+                                         const Timestamp& date,
+                                         const std::string& table_name = "trading.executions");
+
+    /**
+     * @brief Store backtest summary results (replaces raw SQL INSERT)
+     * @param run_id Backtest run identifier
+     * @param start_date Start date of backtest
+     * @param end_date End date of backtest
+     * @param metrics Map of metric name to value
+     * @param table_name Name of the results table
+     * @return Result indicating success or failure
+     */
+    Result<void> store_backtest_summary(const std::string& run_id,
+                                        const Timestamp& start_date,
+                                        const Timestamp& end_date,
+                                        const std::unordered_map<std::string, double>& metrics,
+                                        const std::string& table_name = "backtest.results");
+
+    /**
+     * @brief Store backtest equity curve batch (replaces raw SQL INSERT)
+     * @param run_id Backtest run identifier
+     * @param equity_points Vector of timestamp-equity pairs
+     * @param table_name Name of the equity curve table
+     * @return Result indicating success or failure
+     */
+    Result<void> store_backtest_equity_curve_batch(const std::string& run_id,
+                                                   const std::vector<std::pair<Timestamp, double>>& equity_points,
+                                                   const std::string& table_name = "backtest.equity_curve");
+
+    /**
+     * @brief Store backtest final positions (replaces raw SQL INSERT)
+     * @param positions Vector of positions
+     * @param run_id Backtest run identifier
+     * @param table_name Name of the positions table
+     * @return Result indicating success or failure
+     */
+    Result<void> store_backtest_positions(const std::vector<Position>& positions,
+                                          const std::string& run_id,
+                                          const std::string& table_name = "backtest.final_positions");
+
+    /**
+     * @brief Update live results for previous day finalization (replaces raw SQL UPDATE)
+     * @param strategy_id Strategy identifier
+     * @param date Date to update
+     * @param updates Map of column name to new value
+     * @param table_name Name of the live results table
+     * @return Result indicating success or failure
+     */
+    Result<void> update_live_results(const std::string& strategy_id,
+                                     const Timestamp& date,
+                                     const std::unordered_map<std::string, double>& updates,
+                                     const std::string& table_name = "trading.live_results");
+
+    /**
+     * @brief Update live equity curve (replaces raw SQL UPDATE)
+     * @param strategy_id Strategy identifier
+     * @param date Date to update
+     * @param equity New equity value
+     * @param table_name Name of the equity curve table
+     * @return Result indicating success or failure
+     */
+    Result<void> update_live_equity_curve(const std::string& strategy_id,
+                                          const Timestamp& date,
+                                          double equity,
+                                          const std::string& table_name = "trading.equity_curve");
+
+    /**
+     * @brief Delete existing live results for a date (replaces raw SQL DELETE)
+     * @param strategy_id Strategy identifier
+     * @param date Date to delete
+     * @param table_name Name of the live results table
+     * @return Result indicating success or failure
+     */
+    Result<void> delete_live_results(const std::string& strategy_id,
+                                     const Timestamp& date,
+                                     const std::string& table_name = "trading.live_results");
+
+    /**
+     * @brief Delete existing equity curve entry for a date (replaces raw SQL DELETE)
+     * @param strategy_id Strategy identifier
+     * @param date Date to delete
+     * @param table_name Name of the equity curve table
+     * @return Result indicating success or failure
+     */
+    Result<void> delete_live_equity_curve(const std::string& strategy_id,
+                                          const Timestamp& date,
+                                          const std::string& table_name = "trading.equity_curve");
+
+    /**
+     * @brief Store complete live results row with all metrics (replaces raw SQL INSERT)
+     * @param strategy_id Strategy identifier
+     * @param date Trading date
+     * @param metrics Complete set of metrics as key-value pairs
+     * @param table_name Name of the live results table
+     * @return Result indicating success or failure
+     */
+    Result<void> store_live_results_complete(const std::string& strategy_id,
+                                             const Timestamp& date,
+                                             const std::unordered_map<std::string, double>& metrics,
+                                             const std::unordered_map<std::string, int>& int_metrics,
+                                             const nlohmann::json& config,
+                                             const std::string& table_name = "trading.live_results");
+
     /**
      * @brief Get contract metadata for trading instruments
      * @return Result containing Arrow table with contract metadata

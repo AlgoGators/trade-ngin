@@ -867,17 +867,13 @@ int main(int argc, char* argv[]) {
                     }
 
                     // Create YYYY-MM-DD for date filter to match execution_time
-                    std::stringstream date_only_ss;
-                    auto now_time_t_for_del = std::chrono::system_clock::to_time_t(now);
-                    date_only_ss << std::put_time(std::gmtime(&now_time_t_for_del), "%Y-%m-%d");
+                    // Convert set to vector for the new method
+                    std::vector<std::string> order_ids_vector(unique_order_ids.begin(), unique_order_ids.end());
 
-                    std::string delete_execs_query =
-                        "DELETE FROM trading.executions "
-                        "WHERE DATE(execution_time) = '" + date_only_ss.str() + "' "
-                        "AND order_id IN (" + ids_ss.str() + ")";
+                    INFO("Deleting stale executions for today with matching order_ids: " + std::to_string(order_ids_vector.size()));
 
-                    INFO("Deleting stale executions for today with matching order_ids: " + std::to_string(unique_order_ids.size()));
-                    auto del_res = db->execute_direct_query(delete_execs_query);
+                    // Use the new delete_stale_executions method
+                    auto del_res = db->delete_stale_executions(order_ids_vector, now, "trading.executions");
                     if (del_res.is_error()) {
                         WARN("Failed to delete stale executions: " + std::string(del_res.error()->what()));
                     } else {
@@ -1409,20 +1405,34 @@ int main(int argc, char* argv[]) {
                 INFO("Successfully updated Day T-1 live_results with finalized PnL and all metrics");
             }
 
-            // UPDATE yesterday's equity_curve
-            // Use current_portfolio_value from the updated live_results
+            // UPDATE yesterday's equity_curve using new method
+            // First get the updated portfolio value
             INFO("Updating Day T-1 equity_curve...");
-            std::string update_equity_query =
-                "UPDATE trading.equity_curve SET "
-                "equity = (SELECT current_portfolio_value FROM trading.live_results "
-                "          WHERE strategy_id = 'LIVE_TREND_FOLLOWING' AND DATE(date) = '" + yesterday_date_ss.str() + "') "
-                "WHERE strategy_id = 'LIVE_TREND_FOLLOWING' AND DATE(timestamp) = '" + yesterday_date_ss.str() + "'";
 
-            auto update_equity_result = db->execute_direct_query(update_equity_query);
-            if (update_equity_result.is_error()) {
-                ERROR("Failed to update Day T-1 equity_curve: " + std::string(update_equity_result.error()->what()));
+            // Query the current portfolio value from updated live_results
+            std::string get_equity_query =
+                "SELECT current_portfolio_value FROM trading.live_results "
+                "WHERE strategy_id = 'LIVE_TREND_FOLLOWING' AND DATE(date) = '" + yesterday_date_ss.str() + "'";
+
+            auto equity_result = db->execute_query(get_equity_query);
+            if (equity_result.is_error()) {
+                ERROR("Failed to get portfolio value for equity update: " + std::string(equity_result.error()->what()));
             } else {
-                INFO("Successfully updated Day T-1 equity_curve");
+                auto table = equity_result.value();
+                if (table->num_rows() > 0) {
+                    auto array = std::static_pointer_cast<arrow::DoubleArray>(table->column(0)->chunk(0));
+                    double portfolio_value = array->Value(0);
+
+                    // Use the new update_live_equity_curve method
+                    auto update_equity_result = db->update_live_equity_curve(
+                        "LIVE_TREND_FOLLOWING", previous_date, portfolio_value, "trading.equity_curve");
+
+                    if (update_equity_result.is_error()) {
+                        ERROR("Failed to update Day T-1 equity_curve: " + std::string(update_equity_result.error()->what()));
+                    } else {
+                        INFO("Successfully updated Day T-1 equity_curve");
+                    }
+                }
             }
 
             // Load updated metrics from database for email - MUST do this AFTER the UPDATE
@@ -1723,43 +1733,50 @@ int main(int argc, char* argv[]) {
             double portfolio_leverage = (current_portfolio_value != 0.0) ? (gross_notional / current_portfolio_value) : 0.0;
             // equity_to_margin_ratio and margin_cushion already computed above
             
-            // First delete existing results for this strategy and date
-            // Validate table name before using it in DELETE query
-            auto live_results_table_validation = db->validate_table_name("trading.live_results");
-            if (live_results_table_validation.is_error()) {
-                ERROR("Invalid live results table name: " + std::string(live_results_table_validation.error()->what()));
-            } else {
-                std::string delete_query = "DELETE FROM trading.live_results WHERE strategy_id = 'LIVE_TREND_FOLLOWING' AND date = '" + date_ss.str() + "'";
-                auto delete_result = db->execute_direct_query(delete_query);
-                if (delete_result.is_error()) {
-                    WARN("Failed to delete existing live results: " + std::string(delete_result.error()->what()));
-                }
+            // First delete existing results for this strategy and date using new method
+            auto delete_result = db->delete_live_results("LIVE_TREND_FOLLOWING", now, "trading.live_results");
+            if (delete_result.is_error()) {
+                WARN("Failed to delete existing live results: " + std::string(delete_result.error()->what()));
             }
             
-            // Then insert new results with all required columns
-            std::string query = "INSERT INTO trading.live_results "
-                               "(strategy_id, date, total_return, volatility, total_pnl, total_unrealized_pnl, "
-                               "total_realized_pnl, current_portfolio_value, portfolio_var, gross_leverage, "
-                               "net_leverage, portfolio_leverage, equity_to_margin_ratio, margin_cushion, max_correlation, jump_risk, risk_scale, "
-                               "gross_notional, net_notional, active_positions, config, daily_return, daily_pnl, "
-                               "total_commissions, daily_realized_pnl, daily_unrealized_pnl, daily_commissions, margin_posted, cash_available) "
-                               "VALUES ('LIVE_TREND_FOLLOWING', '" + date_ss.str() + "', " +
-                                std::to_string(total_return_annualized) + ", " + std::to_string(volatility) + ", " +
-                               std::to_string(total_pnl) + ", " + std::to_string(total_unrealized_pnl) + ", " +
-                               std::to_string(total_realized_pnl) + ", " + std::to_string(current_portfolio_value) + ", " +
-                               std::to_string(portfolio_var) + ", " + std::to_string(gross_leverage) + ", " +
-                               std::to_string(net_leverage) + ", " + std::to_string(portfolio_leverage) + ", " +
-                               std::to_string(equity_to_margin_ratio) + ", " + std::to_string(margin_cushion) + ", " +
-                               std::to_string(max_correlation) + ", " + std::to_string(jump_risk) + ", " +
-                                std::to_string(risk_scale) + ", " + std::to_string(gross_notional) + ", " +
-                                std::to_string(net_notional) + ", " +
-                               std::to_string(active_positions) + ", '" + config_json.dump() + "', " +
-                               std::to_string(daily_return) + ", " + std::to_string(daily_pnl) + ", " + std::to_string(total_commissions_cumulative) + ", " +
-                               std::to_string(daily_realized_pnl) + ", " + std::to_string(daily_unrealized_pnl) + ", " +
-                               std::to_string(total_daily_commissions) + ", " + std::to_string(total_posted_margin) + ", " + std::to_string(current_portfolio_value - total_posted_margin) + ")";
-            
-            auto results_save_result = db->execute_direct_query(query);
-            
+            // Then insert new results using the new database method
+            // Prepare metrics maps
+            std::unordered_map<std::string, double> metrics = {
+                {"total_return", total_return_annualized},
+                {"volatility", volatility},
+                {"total_pnl", total_pnl},
+                {"total_unrealized_pnl", total_unrealized_pnl},
+                {"total_realized_pnl", total_realized_pnl},
+                {"current_portfolio_value", current_portfolio_value},
+                {"portfolio_var", portfolio_var},
+                {"gross_leverage", gross_leverage},
+                {"net_leverage", net_leverage},
+                {"portfolio_leverage", portfolio_leverage},
+                {"equity_to_margin_ratio", equity_to_margin_ratio},
+                {"margin_cushion", margin_cushion},
+                {"max_correlation", max_correlation},
+                {"jump_risk", jump_risk},
+                {"risk_scale", risk_scale},
+                {"gross_notional", gross_notional},
+                {"net_notional", net_notional},
+                {"daily_return", daily_return},
+                {"daily_pnl", daily_pnl},
+                {"total_commissions", total_commissions_cumulative},
+                {"daily_realized_pnl", daily_realized_pnl},
+                {"daily_unrealized_pnl", daily_unrealized_pnl},
+                {"daily_commissions", total_daily_commissions},
+                {"margin_posted", total_posted_margin},
+                {"cash_available", current_portfolio_value - total_posted_margin}
+            };
+
+            std::unordered_map<std::string, int> int_metrics = {
+                {"active_positions", active_positions}
+            };
+
+            // Use the new store_live_results_complete method
+            auto results_save_result = db->store_live_results_complete(
+                "LIVE_TREND_FOLLOWING", now, metrics, int_metrics, config_json, "trading.live_results");
+
             if (results_save_result.is_error()) {
                 ERROR("Failed to save trading results: " + std::string(results_save_result.error()->what()));
             } else {
@@ -2045,25 +2062,13 @@ int main(int argc, char* argv[]) {
         // Store equity curve in database
         INFO("Storing equity curve in database...");
         
-        // First delete existing equity curve entry for this strategy and date
-        // Use the same timestamp formatting as the database function to ensure consistency
+        // First delete existing equity curve entry for this strategy and date using new method
         auto db_ptr = std::dynamic_pointer_cast<PostgresDatabase>(db);
         if (db_ptr) {
-            // Validate table name before using it in DELETE query
-            auto equity_table_validation = db_ptr->validate_table_name("trading.equity_curve");
-            if (equity_table_validation.is_error()) {
-                ERROR("Invalid equity curve table name: " + std::string(equity_table_validation.error()->what()));
-            } else {
-                // Use date-based deletion to handle any timestamp precision issues
-                std::stringstream date_ss;
-                auto time_t = std::chrono::system_clock::to_time_t(now);
-                date_ss << std::put_time(std::gmtime(&time_t), "%Y-%m-%d");
-                
-                std::string delete_equity_query = "DELETE FROM trading.equity_curve WHERE strategy_id = 'LIVE_TREND_FOLLOWING' AND DATE(timestamp) = '" + date_ss.str() + "'";
-                auto delete_equity_result = db->execute_direct_query(delete_equity_query);
-                if (delete_equity_result.is_error()) {
-                    WARN("Failed to delete existing equity curve entry: " + std::string(delete_equity_result.error()->what()));
-                }
+            auto delete_equity_result = db_ptr->delete_live_equity_curve(
+                "LIVE_TREND_FOLLOWING", now, "trading.equity_curve");
+            if (delete_equity_result.is_error()) {
+                WARN("Failed to delete existing equity curve entry: " + std::string(delete_equity_result.error()->what()));
             }
         }
         
