@@ -1864,374 +1864,86 @@ Result<void> BacktestEngine::save_results_to_db(const BacktestResults& results,
         return Result<void>();
     }
 
-    // Check if we should use the new storage manager (Phase 1 refactoring)
-    // Default is to use the new storage manager (can be disabled with USE_NEW_STORAGE_MANAGER=false)
-    bool use_storage_manager = true;
-    const char* use_new_storage = std::getenv("USE_NEW_STORAGE_MANAGER");
-    if (use_new_storage && std::string(use_new_storage) == "false") {
-        use_storage_manager = false;
-    }
+    // Use the new BacktestResultsManager for storage (Phase 1 refactoring)
+    INFO("Using BacktestResultsManager for storage");
 
-    if (use_storage_manager) {
-        INFO("Using new BacktestResultsManager for storage");
-
-        auto db_ptr = std::dynamic_pointer_cast<PostgresDatabase>(db_);
-        if (!db_ptr) {
-            ERROR("Database is not a PostgresDatabase instance");
-            return make_error<void>(ErrorCode::DATABASE_ERROR,
-                                   "Invalid database type", "BacktestEngine");
-        }
-
-        // Create and configure the results manager
-        auto results_manager = std::make_unique<BacktestResultsManager>(
-            db_ptr,
-            config_.store_trade_details,
-            "TREND_FOLLOWING"  // Default strategy ID
-        );
-
-        // Set all the data
-        results_manager->set_metadata(
-            config_.strategy_config.start_date,
-            config_.strategy_config.end_date,
-            nlohmann::json{},  // TODO: Add hyperparameters from config
-            "Backtest Run",
-            "Automated backtest run"
-        );
-
-        // Convert performance metrics
-        std::unordered_map<std::string, double> metrics = {
-            {"total_return", results.total_return},
-            {"sharpe_ratio", results.sharpe_ratio},
-            {"sortino_ratio", results.sortino_ratio},
-            {"max_drawdown", results.max_drawdown},
-            {"calmar_ratio", results.calmar_ratio},
-            {"volatility", results.volatility},
-            {"total_trades", static_cast<double>(results.total_trades)},
-            {"win_rate", results.win_rate},
-            {"profit_factor", results.profit_factor},
-            {"avg_win", results.avg_win},
-            {"avg_loss", results.avg_loss},
-            {"max_win", results.max_win},
-            {"max_loss", results.max_loss},
-            {"avg_holding_period", results.avg_holding_period},
-            {"var_95", results.var_95},
-            {"cvar_95", results.cvar_95},
-            {"beta", results.beta},
-            {"correlation", results.correlation},
-            {"downside_volatility", results.downside_volatility}
-        };
-        results_manager->set_performance_metrics(metrics);
-
-        // Set equity curve
-        std::vector<std::pair<Timestamp, double>> equity_points;
-        for (const auto& [timestamp, equity] : results.equity_curve) {
-            equity_points.push_back({timestamp, equity});
-        }
-        results_manager->set_equity_curve(equity_points);
-
-        // Set final positions
-        results_manager->set_final_positions(results.positions);
-
-        // Set executions
-        results_manager->set_executions(results.executions);
-
-        // Generate run_id if not provided
-        std::string actual_run_id = run_id.empty()
-            ? BacktestResultsManager::generate_run_id("TREND_FOLLOWING")
-            : run_id;
-
-        // Save all results
-        auto save_result = results_manager->save_all_results(actual_run_id,
-                                                            config_.strategy_config.end_date);
-
-        if (save_result.is_error()) {
-            ERROR("Failed to save results using BacktestResultsManager: " +
-                  std::string(save_result.error()->what()));
-            return save_result;
-        }
-
-        INFO("Successfully saved backtest results using new storage manager");
-        return Result<void>();
-    }
-
-    // Original implementation follows
-    try {
-        // Generate strategy-specific run_id prefix based on strategy name
-        std::string strategy_prefix = "TF_";  // Default to Trend Following based on common usage
-        std::string strategy_name = "Trend Following Strategy Backtest";  // Default strategy name
-        
-        // Try to determine strategy type from config or context
-        // Check if this looks like a trend following configuration
-        if (!config_.strategy_config.symbols.empty()) {
-            // For futures with daily frequency, likely trend following
-            if (config_.strategy_config.asset_class == AssetClass::FUTURES && 
-                config_.strategy_config.data_freq == DataFrequency::DAILY) {
-                strategy_prefix = "TF_";
-                strategy_name = "Trend Following Strategy Backtest";
-            }
-            // Could add more logic here for other strategy types
-        }
-        
-        std::string actual_run_id =
-            run_id.empty()
-                ? strategy_prefix + std::to_string(std::chrono::system_clock::now().time_since_epoch().count())
-                : run_id;
-
-        INFO("Saving backtest results with ID: " + actual_run_id);
-
-        if (!db_ || !db_->is_connected()) {
-            return make_error<void>(ErrorCode::CONNECTION_ERROR, "Database not connected",
-                                    "BacktestEngine");
-        }
-
-        // Validate table names that will be constructed
-        auto db_ptr = std::dynamic_pointer_cast<PostgresDatabase>(db_);
-        if (db_ptr) {
-            std::string results_table = config_.results_db_schema + ".results";
-            auto results_validation = db_ptr->validate_table_name(results_table);
-            if (results_validation.is_error()) {
-                return make_error<void>(results_validation.error()->code(),
-                                        "Invalid results table name: " + std::string(results_validation.error()->what()),
-                                        "BacktestEngine");
-            }
-
-            std::string positions_table = config_.results_db_schema + ".final_positions";
-            auto positions_validation = db_ptr->validate_table_name(positions_table);
-            if (positions_validation.is_error()) {
-                return make_error<void>(positions_validation.error()->code(),
-                                        "Invalid positions table name: " + std::string(positions_validation.error()->what()),
-                                        "BacktestEngine");
-            }
-        }
-
-        // Helper function to convert timestamps to PostgreSQL format
-        auto format_timestamp = [](const std::chrono::system_clock::time_point& tp) {
-            auto time_t = std::chrono::system_clock::to_time_t(tp);
-            std::stringstream ss;
-            ss << std::put_time(std::gmtime(&time_t), "%Y-%m-%d %H:%M:%S");
-            return ss.str();
-        };
-
-        // Safety checks before executing query
-        if (!db_) {
-            ERROR("Database pointer is null during save_results_to_db");
-            return make_error<void>(ErrorCode::CONNECTION_ERROR, "Database pointer is null", "BacktestEngine");
-        }
-
-        if (!db_->is_connected()) {
-            ERROR("Database is not connected during save_results_to_db");
-            return make_error<void>(ErrorCode::CONNECTION_ERROR, "Database not connected", "BacktestEngine");
-        }
-
-        // Use new database extension methods instead of raw SQL
-        try {
-            auto db_ptr = std::dynamic_pointer_cast<PostgresDatabase>(db_);
-            if (!db_ptr) {
-                ERROR("Database is not a PostgresDatabase instance");
-                return make_error<void>(ErrorCode::DATABASE_ERROR, "Invalid database type", "BacktestEngine");
-            }
-
-            // Prepare metrics map for the new method
-            std::unordered_map<std::string, double> metrics = {
-                {"total_return", results.total_return},
-                {"sharpe_ratio", results.sharpe_ratio},
-                {"sortino_ratio", results.sortino_ratio},
-                {"max_drawdown", results.max_drawdown},
-                {"calmar_ratio", results.calmar_ratio},
-                {"volatility", results.volatility},
-                {"total_trades", static_cast<double>(results.total_trades)},
-                {"win_rate", results.win_rate},
-                {"profit_factor", results.profit_factor},
-                {"avg_win", results.avg_win},
-                {"avg_loss", results.avg_loss},
-                {"max_win", results.max_win},
-                {"max_loss", results.max_loss},
-                {"avg_holding_period", results.avg_holding_period},
-                {"var_95", results.var_95},
-                {"cvar_95", results.cvar_95},
-                {"beta", results.beta},
-                {"correlation", results.correlation},
-                {"downside_volatility", results.downside_volatility}
-            };
-
-            // Use the new store_backtest_summary method
-            std::string results_table = config_.results_db_schema + ".results";
-            auto result = db_ptr->store_backtest_summary(
-                actual_run_id,
-                config_.strategy_config.start_date,
-                config_.strategy_config.end_date,
-                metrics,
-                results_table
-            );
-
-            if (result.is_error()) {
-                WARN("Failed to save backtest results: " + std::string(result.error()->what()));
-                return make_error<void>(
-                    ErrorCode::DATABASE_ERROR,
-                    "Failed to save main backtest results: " + std::string(result.error()->what()),
-                    "BacktestEngine");
-            }
-        } catch (const std::exception& e) {
-            ERROR("Exception during database save: " + std::string(e.what()));
-            return make_error<void>(
-                ErrorCode::DATABASE_ERROR,
-                "Exception during database save: " + std::string(e.what()),
-                "BacktestEngine");
-        }
-
-        // Save equity curve, positions, executions, and metadata
-        if (config_.store_trade_details) {
-            // Get database pointer for extended methods
-            auto db_ptr = std::dynamic_pointer_cast<PostgresDatabase>(db_);
-            if (!db_ptr) {
-                ERROR("Database is not a PostgresDatabase instance");
-                return make_error<void>(ErrorCode::DATABASE_ERROR, "Invalid database type", "BacktestEngine");
-            }
-
-            // Prepare batch for equity curve points using new method
-            std::vector<std::pair<Timestamp, double>> equity_points;
-            for (const auto& [timestamp, equity] : results.equity_curve) {
-                equity_points.push_back({timestamp, equity});
-
-                // Insert in batches of 1000 to avoid too-large queries
-                if (equity_points.size() >= 1000) {
-                    std::string equity_table = config_.results_db_schema + ".equity_curve";
-                    auto curve_result = db_ptr->store_backtest_equity_curve_batch(
-                        actual_run_id, equity_points, equity_table);
-
-                    if (curve_result.is_error()) {
-                        WARN("Failed to save equity curve batch: " +
-                             std::string(curve_result.error()->what()));
-                    }
-                    equity_points.clear();
-                }
-            }
-
-            // Insert any remaining equity curve points
-            if (!equity_points.empty()) {
-                std::string equity_table = config_.results_db_schema + ".equity_curve";
-                auto curve_result = db_ptr->store_backtest_equity_curve_batch(
-                    actual_run_id, equity_points, equity_table);
-
-                if (curve_result.is_error()) {
-                    WARN("Failed to save final equity curve batch: " +
-                         std::string(curve_result.error()->what()));
-                }
-            }
-
-            // Save final positions using the new database method
-            // Note: The store_backtest_positions method currently only stores basic position info
-            // PnL tracking is preserved via the original logic below
-            std::vector<std::string> position_values;
-            for (const auto& pos : results.positions) {
-                // Don't skip zero-quantity positions if they have realized PnL
-                // This ensures we preserve realized gains/losses from closed positions
-                bool has_realized_pnl = std::abs(static_cast<double>(pos.realized_pnl)) > 1e-6;
-                bool has_quantity = std::abs(static_cast<double>(pos.quantity)) >= 1e-6;
-
-                if (!has_quantity && !has_realized_pnl)
-                    continue;  // Skip only truly empty positions with no PnL
-
-                // Calculate unrealized and realized PnL properly
-                double unrealized_pnl = static_cast<double>(pos.unrealized_pnl);
-                double realized_pnl = static_cast<double>(pos.realized_pnl);
-                
-                // If PnL values are zero but we have a position, calculate unrealized PnL
-                if (unrealized_pnl == 0.0 && static_cast<double>(pos.quantity) != 0.0) {
-                    // Calculate unrealized PnL from symbol_pnl_map which tracks realized trades
-                    auto symbol_pnl_it = results.symbol_pnl.find(pos.symbol);
-                    if (symbol_pnl_it != results.symbol_pnl.end()) {
-                        // Use the realized PnL from our tracking
-                        realized_pnl = symbol_pnl_it->second;
-                        
-                        // For remaining position, calculate unrealized PnL based on current mark
-                        // Note: In real implementation, you'd use current market price
-                        // For backtest, this represents the potential PnL of the remaining position
-                        unrealized_pnl = 0.0;  // Will be calculated by portfolio manager if available
-                    }
-                }
-
-                std::string value = "('" + actual_run_id + "', '" + pos.symbol + "', " +
-                                    std::to_string(static_cast<double>(pos.quantity)) + ", " +
-                                    std::to_string(static_cast<double>(pos.average_price)) + ", " +
-                                    std::to_string(unrealized_pnl) + ", " +
-                                    std::to_string(realized_pnl) + ")";
-
-                position_values.push_back(value);
-            }
-
-            if (!position_values.empty()) {
-                std::string query = "INSERT INTO " + config_.results_db_schema +
-                        ".final_positions "
-                        "(run_id, symbol, quantity, average_price, unrealized_pnl, realized_pnl) "
-                        "VALUES " +
-                        join(position_values, ", ");
-
-                auto pos_result = db_->execute_direct_query(query);
-                if (pos_result.is_error()) {
-                    WARN("Failed to save positions: " + std::string(pos_result.error()->what()));
-                }
-            }
-
-            // Save actual trades (only position-closing trades) using new method
-            INFO("=== ACTUAL TRADES SAVE DEBUG ===");
-            INFO("Actual trades to save: " + std::to_string(results.actual_trades.size()));
-            INFO("Store trade details enabled: " + std::string(config_.store_trade_details ? "true" : "false"));
-            
-            if (!results.actual_trades.empty()) {
-                INFO("Attempting to save " + std::to_string(results.actual_trades.size()) + " actual trades to database");
-                auto exec_result = db_->store_backtest_executions(results.actual_trades, actual_run_id);
-                if (exec_result.is_error()) {
-                    ERROR("Failed to save backtest actual trades: " + std::string(exec_result.error()->what()));
-                } else {
-                }
-            } else {
-                WARN("No actual trades to save - actual_trades vector is empty!");
-            }
-
-            // Save backtest metadata with strategy-specific name
-            auto metadata_result = db_->store_backtest_metadata(
-                actual_run_id, strategy_name, "Automated " + strategy_name.substr(0, strategy_name.find(" ")) + " backtest run", 
-                config_.strategy_config.start_date, config_.strategy_config.end_date,
-                config_.to_json());
-            if (metadata_result.is_error()) {
-                WARN("Failed to save backtest metadata: " + std::string(metadata_result.error()->what()));
-            }
-
-            // Save strategy signals (if available)
-            INFO("=== SIGNALS SAVE DEBUG ===");
-            INFO("Signals to save: " + std::to_string(results.signals.size()));
-            
-            if (!results.signals.empty()) {
-                // Convert signals to the format expected by store_backtest_signals
-                std::unordered_map<std::string, double> latest_signals;
-                for (const auto& [time_symbol, signal_value] : results.signals) {
-                    const std::string& symbol = time_symbol.second;
-                    // Keep the latest signal for each symbol
-                    latest_signals[symbol] = signal_value;
-                }
-                
-                INFO("Converted to " + std::to_string(latest_signals.size()) + " latest signals for symbols");
-                INFO("Strategy ID: " + strategy_prefix.substr(0, strategy_prefix.length()-1));
-                
-                auto signals_result = db_->store_backtest_signals(
-                    latest_signals, strategy_prefix.substr(0, strategy_prefix.length()-1),  // Remove trailing "_"
-                    actual_run_id, config_.strategy_config.start_date);
-                if (signals_result.is_error()) {
-                    ERROR("Failed to save backtest signals: " + std::string(signals_result.error()->what()));
-                } else {
-                }
-            } else {
-            }
-        }
-
-        return Result<void>();
-
-    } catch (const std::exception& e) {
+    auto db_ptr = std::dynamic_pointer_cast<PostgresDatabase>(db_);
+    if (!db_ptr) {
+        ERROR("Database is not a PostgresDatabase instance");
         return make_error<void>(ErrorCode::DATABASE_ERROR,
-                                std::string("Error saving backtest results: ") + e.what(),
-                                "BacktestEngine");
+                               "Invalid database type", "BacktestEngine");
     }
+
+    // Create and configure the results manager
+    auto results_manager = std::make_unique<BacktestResultsManager>(
+        db_ptr,
+        config_.store_trade_details,
+        "TREND_FOLLOWING"  // Default strategy ID
+    );
+
+    // Set all the data
+    results_manager->set_metadata(
+        config_.strategy_config.start_date,
+        config_.strategy_config.end_date,
+        nlohmann::json{},  // TODO: Add hyperparameters from config
+        "Backtest Run",
+        "Automated backtest run"
+    );
+
+    // Convert performance metrics
+    std::unordered_map<std::string, double> metrics = {
+        {"total_return", results.total_return},
+        {"sharpe_ratio", results.sharpe_ratio},
+        {"sortino_ratio", results.sortino_ratio},
+        {"max_drawdown", results.max_drawdown},
+        {"calmar_ratio", results.calmar_ratio},
+        {"volatility", results.volatility},
+        {"total_trades", static_cast<double>(results.total_trades)},
+        {"win_rate", results.win_rate},
+        {"profit_factor", results.profit_factor},
+        {"avg_win", results.avg_win},
+        {"avg_loss", results.avg_loss},
+        {"max_win", results.max_win},
+        {"max_loss", results.max_loss},
+        {"avg_holding_period", results.avg_holding_period},
+        {"var_95", results.var_95},
+        {"cvar_95", results.cvar_95},
+        {"beta", results.beta},
+        {"correlation", results.correlation},
+        {"downside_volatility", results.downside_volatility}
+    };
+    results_manager->set_performance_metrics(metrics);
+
+    // Set equity curve
+    std::vector<std::pair<Timestamp, double>> equity_points;
+    for (const auto& [timestamp, equity] : results.equity_curve) {
+        equity_points.push_back({timestamp, equity});
+    }
+    results_manager->set_equity_curve(equity_points);
+
+    // Set final positions
+    results_manager->set_final_positions(results.positions);
+
+    // Set executions
+    results_manager->set_executions(results.executions);
+
+    // Generate run_id if not provided
+    std::string actual_run_id = run_id.empty()
+        ? BacktestResultsManager::generate_run_id("TREND_FOLLOWING")
+        : run_id;
+
+    // Save all results
+    auto save_result = results_manager->save_all_results(actual_run_id,
+                                                        config_.strategy_config.end_date);
+
+    if (save_result.is_error()) {
+        ERROR("Failed to save results using BacktestResultsManager: " +
+              std::string(save_result.error()->what()));
+        return save_result;
+    }
+
+    INFO("Successfully saved backtest results using new storage manager");
+    return Result<void>();
 }
 
 Result<void> BacktestEngine::save_results_to_csv(const BacktestResults& results,
