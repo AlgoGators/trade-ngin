@@ -306,7 +306,7 @@ jobs:
           find . -name '*.gcov' -exec mv {} ../coverage-reports/gcov/ \;
 
       - name: SonarCloud Scan
-        if: matrix.build-type == 'Debug'
+        if: matrix.build-type == 'Debug' && github.event_name == 'pull_request'
         uses: SonarSource/sonarqube-scan-action@v6
         env:
           SONAR_HOST_URL: https://sonarcloud.io
@@ -393,6 +393,7 @@ jobs:
           path: summary.md
   image-generation:
     name: Image Generation
+    if: github.event_name == 'pull_request'
     permissions:
       contents: read
       packages: write
@@ -415,10 +416,10 @@ jobs:
       - name: Build and Push Image
         shell: bash
         run: |
-          pwd
-          REPO="ghcr.io/${GITHUB_REPOSITORY,,}"            # lowercase owner/repo
-          BRANCH="${GITHUB_REF#refs/heads/}"
-          BRANCH_SAFE=$(echo "$BRANCH" | tr '[:upper:]' '[:lower:]')
+          REPO="ghcr.io/${GITHUB_REPOSITORY,,}"
+          # Use the source branch name from PR
+          BRANCH="${GITHUB_HEAD_REF}"  # Changed from GITHUB_REF
+          BRANCH_SAFE=$(echo "$BRANCH" | tr '[:upper:]' '[:lower:]' | tr '/' '-')
           DATE=$(date +%Y%m%d)
           TIME=$(date +%H%M%S)
           TAG="${BRANCH_SAFE}-${DATE}-${TIME}"
