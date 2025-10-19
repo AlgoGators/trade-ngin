@@ -1920,31 +1920,6 @@ Result<void> BacktestEngine::save_results_to_db(const BacktestResults& results,
             return ss.str();
         };
 
-        // Create SQL query to save results - REMOVE config column
-        std::string query =
-            "INSERT INTO " + config_.results_db_schema +
-            ".results "
-            "(run_id, start_date, end_date, total_return, sharpe_ratio, sortino_ratio, "
-            "max_drawdown, "
-            "calmar_ratio, volatility, total_trades, win_rate, profit_factor, avg_win, avg_loss, "
-            "max_win, max_loss, avg_holding_period, var_95, cvar_95, beta, correlation, "
-            "downside_volatility) VALUES "  // Removed config from column list
-            "('" +
-            actual_run_id + "', '" + format_timestamp(config_.strategy_config.start_date) + "', '" +
-            format_timestamp(config_.strategy_config.end_date) + "', " +
-            std::to_string(results.total_return) + ", " +
-            std::to_string(results.sharpe_ratio) + ", " + std::to_string(results.sortino_ratio) +
-            ", " + std::to_string(results.max_drawdown) + ", " +
-            std::to_string(results.calmar_ratio) + ", " + std::to_string(results.volatility) +
-            ", " + std::to_string(results.total_trades) + ", " + std::to_string(results.win_rate) +
-            ", " + std::to_string(results.profit_factor) + ", " + std::to_string(results.avg_win) +
-            ", " + std::to_string(results.avg_loss) + ", " + std::to_string(results.max_win) +
-            ", " + std::to_string(results.max_loss) + ", " +
-            std::to_string(results.avg_holding_period) + ", " + std::to_string(results.var_95) +
-            ", " + std::to_string(results.cvar_95) + ", " + std::to_string(results.beta) + ", " +
-            std::to_string(results.correlation) + ", " +
-            std::to_string(results.downside_volatility) + ")";  // Removed config value
-
         // Safety checks before executing query
         if (!db_) {
             ERROR("Database pointer is null during save_results_to_db");
@@ -1956,18 +1931,47 @@ Result<void> BacktestEngine::save_results_to_db(const BacktestResults& results,
             return make_error<void>(ErrorCode::CONNECTION_ERROR, "Database not connected", "BacktestEngine");
         }
 
-        // Execute query directly without Arrow table conversion
+        // Use new database extension methods instead of raw SQL
         try {
-            // Use a direct database execution method that doesn't return Arrow table
-            // This avoids the convert_to_arrow_table issue with INSERT statements
             auto db_ptr = std::dynamic_pointer_cast<PostgresDatabase>(db_);
             if (!db_ptr) {
                 ERROR("Database is not a PostgresDatabase instance");
                 return make_error<void>(ErrorCode::DATABASE_ERROR, "Invalid database type", "BacktestEngine");
             }
-            
-            // Execute the INSERT query directly
-            auto result = db_ptr->execute_direct_query(query);
+
+            // Prepare metrics map for the new method
+            std::unordered_map<std::string, double> metrics = {
+                {"total_return", results.total_return},
+                {"sharpe_ratio", results.sharpe_ratio},
+                {"sortino_ratio", results.sortino_ratio},
+                {"max_drawdown", results.max_drawdown},
+                {"calmar_ratio", results.calmar_ratio},
+                {"volatility", results.volatility},
+                {"total_trades", static_cast<double>(results.total_trades)},
+                {"win_rate", results.win_rate},
+                {"profit_factor", results.profit_factor},
+                {"avg_win", results.avg_win},
+                {"avg_loss", results.avg_loss},
+                {"max_win", results.max_win},
+                {"max_loss", results.max_loss},
+                {"avg_holding_period", results.avg_holding_period},
+                {"var_95", results.var_95},
+                {"cvar_95", results.cvar_95},
+                {"beta", results.beta},
+                {"correlation", results.correlation},
+                {"downside_volatility", results.downside_volatility}
+            };
+
+            // Use the new store_backtest_summary method
+            std::string results_table = config_.results_db_schema + ".results";
+            auto result = db_ptr->store_backtest_summary(
+                actual_run_id,
+                config_.strategy_config.start_date,
+                config_.strategy_config.end_date,
+                metrics,
+                results_table
+            );
+
             if (result.is_error()) {
                 WARN("Failed to save backtest results: " + std::string(result.error()->what()));
                 return make_error<void>(
@@ -1976,61 +1980,63 @@ Result<void> BacktestEngine::save_results_to_db(const BacktestResults& results,
                     "BacktestEngine");
             }
         } catch (const std::exception& e) {
-            ERROR("Exception during database query execution: " + std::string(e.what()));
+            ERROR("Exception during database save: " + std::string(e.what()));
             return make_error<void>(
                 ErrorCode::DATABASE_ERROR,
-                "Exception during database query: " + std::string(e.what()),
+                "Exception during database save: " + std::string(e.what()),
                 "BacktestEngine");
         }
 
         // Save equity curve, positions, executions, and metadata
         if (config_.store_trade_details) {
-            // Prepare batch for equity curve points
-            std::vector<std::string> equity_values;
+            // Get database pointer for extended methods
+            auto db_ptr = std::dynamic_pointer_cast<PostgresDatabase>(db_);
+            if (!db_ptr) {
+                ERROR("Database is not a PostgresDatabase instance");
+                return make_error<void>(ErrorCode::DATABASE_ERROR, "Invalid database type", "BacktestEngine");
+            }
+
+            // Prepare batch for equity curve points using new method
+            std::vector<std::pair<Timestamp, double>> equity_points;
             for (const auto& [timestamp, equity] : results.equity_curve) {
-                std::string timestamp_str = format_timestamp(timestamp);
-                std::string value = "('" + actual_run_id + "', '" + timestamp_str + "', " +
-                                    std::to_string(equity) + ")";
-                equity_values.push_back(value);
+                equity_points.push_back({timestamp, equity});
 
                 // Insert in batches of 1000 to avoid too-large queries
-                if (equity_values.size() >= 1000) {
-                    query = "INSERT INTO " + config_.results_db_schema +
-                            ".equity_curve "
-                            "(run_id, timestamp, equity) VALUES " +
-                            join(equity_values, ", ");
+                if (equity_points.size() >= 1000) {
+                    std::string equity_table = config_.results_db_schema + ".equity_curve";
+                    auto curve_result = db_ptr->store_backtest_equity_curve_batch(
+                        actual_run_id, equity_points, equity_table);
 
-                    auto curve_result = db_->execute_direct_query(query);
                     if (curve_result.is_error()) {
                         WARN("Failed to save equity curve batch: " +
                              std::string(curve_result.error()->what()));
                     }
-                    equity_values.clear();
+                    equity_points.clear();
                 }
             }
 
             // Insert any remaining equity curve points
-            if (!equity_values.empty()) {
-                query = "INSERT INTO " + config_.results_db_schema +
-                        ".equity_curve "
-                        "(run_id, timestamp, equity) VALUES " +
-                        join(equity_values, ", ");
+            if (!equity_points.empty()) {
+                std::string equity_table = config_.results_db_schema + ".equity_curve";
+                auto curve_result = db_ptr->store_backtest_equity_curve_batch(
+                    actual_run_id, equity_points, equity_table);
 
-                auto curve_result = db_->execute_direct_query(query);
                 if (curve_result.is_error()) {
                     WARN("Failed to save final equity curve batch: " +
                          std::string(curve_result.error()->what()));
                 }
             }
 
-            // Save final positions with proper PnL calculations
+            // Save final positions using the new database method
+            // Note: The store_backtest_positions method currently only stores basic position info
+            // PnL tracking is preserved via the original logic below
             std::vector<std::string> position_values;
             for (const auto& pos : results.positions) {
                 // Don't skip zero-quantity positions if they have realized PnL
                 // This ensures we preserve realized gains/losses from closed positions
                 bool has_realized_pnl = std::abs(static_cast<double>(pos.realized_pnl)) > 1e-6;
                 bool has_quantity = std::abs(static_cast<double>(pos.quantity)) >= 1e-6;
-                
+
                 if (!has_quantity && !has_realized_pnl)
                     continue;  // Skip only truly empty positions with no PnL
 
@@ -2063,7 +2069,7 @@ Result<void> BacktestEngine::save_results_to_db(const BacktestResults& results,
             }
 
             if (!position_values.empty()) {
-                query = "INSERT INTO " + config_.results_db_schema +
+                std::string query = "INSERT INTO " + config_.results_db_schema +
                         ".final_positions "
                         "(run_id, symbol, quantity, average_price, unrealized_pnl, realized_pnl) "
                         "VALUES " +
