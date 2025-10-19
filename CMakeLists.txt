@@ -56,6 +56,7 @@ set(TRADE_NGIN_SOURCES
     src/core/logger.cpp
     src/core/email_sender.cpp
     src/data/postgres_database.cpp
+    src/data/postgres_database_extensions.cpp
     src/data/market_data_bus.cpp
     src/data/conversion_utils.cpp
     src/data/credential_store.cpp
