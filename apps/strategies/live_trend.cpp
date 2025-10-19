@@ -17,6 +17,7 @@
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
 #include "trade_ngin/core/email_sender.hpp"
+#include "trade_ngin/storage/live_results_manager.hpp"
 
 using namespace trade_ngin;
 
@@ -390,6 +391,23 @@ int main(int argc, char* argv[]) {
         }
         INFO("Strategy added to portfolio successfully");
 
+        // Create LiveResultsManager for centralized storage (Phase 1 refactoring)
+        bool use_storage_manager = true;  // Enable storage manager
+        const char* use_new_storage = std::getenv("USE_NEW_STORAGE_MANAGER");
+        if (use_new_storage && std::string(use_new_storage) == "false") {
+            use_storage_manager = false;
+        }
+
+        std::unique_ptr<LiveResultsManager> results_manager;
+        if (use_storage_manager) {
+            INFO("Using LiveResultsManager for centralized storage");
+            results_manager = std::make_unique<LiveResultsManager>(
+                db, true, "LIVE_TREND_FOLLOWING"
+            );
+        } else {
+            INFO("Using legacy storage methods");
+        }
+
         // Load market data for daily processing
         INFO("Loading market data for daily processing...");
         auto market_data_result = db->get_market_data(
@@ -663,6 +681,8 @@ int main(int argc, char* argv[]) {
 
             // Store updated positions for yesterday (Day T-1) in database
             if (!yesterday_finalized_positions.empty()) {
+                // Always save yesterday's finalized positions immediately (not queued)
+                // These are updates to existing positions from the previous day
                 auto update_result = db->store_positions(yesterday_finalized_positions, "LIVE_TREND_FOLLOWING", "trading.positions");
                 if (update_result.is_error()) {
                     ERROR("Failed to update Day T-1 positions: " + std::string(update_result.error()->what()));
@@ -884,11 +904,18 @@ int main(int argc, char* argv[]) {
                 WARN("Exception while deleting stale executions: " + std::string(e.what()));
             }
 
-            auto exec_result = db->store_executions(daily_executions, "trading.executions");
-            if (exec_result.is_error()) {
-                ERROR("Failed to store executions: " + std::string(exec_result.error()->what()));
+            if (use_storage_manager && results_manager) {
+                // Use LiveResultsManager for storage
+                results_manager->set_executions(daily_executions);
+                INFO("Queued " + std::to_string(daily_executions.size()) + " executions for storage");
             } else {
-                INFO("Successfully stored " + std::to_string(daily_executions.size()) + " executions to database");
+                // Legacy storage method
+                auto exec_result = db->store_executions(daily_executions, "trading.executions");
+                if (exec_result.is_error()) {
+                    ERROR("Failed to store executions: " + std::string(exec_result.error()->what()));
+                } else {
+                    INFO("Successfully stored " + std::to_string(daily_executions.size()) + " executions to database");
+                }
             }
         } else {
             INFO("No executions to store (no position changes detected)");
@@ -1087,13 +1114,21 @@ int main(int argc, char* argv[]) {
         if (!positions_to_save.empty()) {
             INFO("Attempting to save " + std::to_string(positions_to_save.size()) + " positions to database");
             DEBUG("Database connection status: " + std::string(db->is_connected() ? "connected" : "disconnected"));
-            
-            auto save_result = db->store_positions(positions_to_save, "LIVE_TREND_FOLLOWING", "trading.positions");
-            if (save_result.is_error()) {
-                ERROR("Failed to save positions to database: " + std::string(save_result.error()->what()));
-                ERROR("Error code: " + std::to_string(static_cast<int>(save_result.error()->code())));
+
+            if (use_storage_manager && results_manager) {
+                // Use LiveResultsManager for storage - set today's positions (main positions to save)
+                // Note: Yesterday's finalized positions were set earlier and should be saved separately
+                results_manager->set_positions(positions_to_save);
+                INFO("Queued " + std::to_string(positions_to_save.size()) + " current positions for storage");
             } else {
-                INFO("Successfully saved " + std::to_string(positions_to_save.size()) + " positions to database");
+                // Legacy storage method
+                auto save_result = db->store_positions(positions_to_save, "LIVE_TREND_FOLLOWING", "trading.positions");
+                if (save_result.is_error()) {
+                    ERROR("Failed to save positions to database: " + std::string(save_result.error()->what()));
+                    ERROR("Error code: " + std::to_string(static_cast<int>(save_result.error()->code())));
+                } else {
+                    INFO("Successfully saved " + std::to_string(positions_to_save.size()) + " positions to database");
+                }
             }
         } else {
             INFO("No positions to save (all positions are zero)");
@@ -1644,17 +1679,28 @@ int main(int argc, char* argv[]) {
                       << std::setw(12) << std::fixed << std::setprecision(2) << position << std::endl;
         }
 
-        // Store signals in database
-        if (!signals_to_store.empty()) {
-            INFO("Storing " + std::to_string(signals_to_store.size()) + " signals to database...");
-            auto signals_result = db->store_signals(signals_to_store, "LIVE_TREND_FOLLOWING", now, "trading.signals");
-            if (signals_result.is_error()) {
-                ERROR("Failed to store signals: " + std::string(signals_result.error()->what()));
+        // Store signals in database or results manager
+        if (use_storage_manager && results_manager) {
+            // Use the new LiveResultsManager
+            if (!signals_to_store.empty()) {
+                INFO("Setting " + std::to_string(signals_to_store.size()) + " signals in LiveResultsManager...");
+                results_manager->set_signals(signals_to_store);
             } else {
-                INFO("Successfully stored " + std::to_string(signals_to_store.size()) + " signals to database");
+                INFO("No signals to store (all forecasts are zero)");
             }
         } else {
-            INFO("No signals to store (all forecasts are zero)");
+            // Use the monolithic approach
+            if (!signals_to_store.empty()) {
+                INFO("Storing " + std::to_string(signals_to_store.size()) + " signals to database...");
+                auto signals_result = db->store_signals(signals_to_store, "LIVE_TREND_FOLLOWING", now, "trading.signals");
+                if (signals_result.is_error()) {
+                    ERROR("Failed to store signals: " + std::string(signals_result.error()->what()));
+                } else {
+                    INFO("Successfully stored " + std::to_string(signals_to_store.size()) + " signals to database");
+                }
+            } else {
+                INFO("No signals to store (all forecasts are zero)");
+            }
         }
 
         // Save trading results to results table
@@ -1733,54 +1779,102 @@ int main(int argc, char* argv[]) {
             double portfolio_leverage = (current_portfolio_value != 0.0) ? (gross_notional / current_portfolio_value) : 0.0;
             // equity_to_margin_ratio and margin_cushion already computed above
             
-            // First delete existing results for this strategy and date using new method
-            auto delete_result = db->delete_live_results("LIVE_TREND_FOLLOWING", now, "trading.live_results");
-            if (delete_result.is_error()) {
-                WARN("Failed to delete existing live results: " + std::string(delete_result.error()->what()));
-            }
-            
-            // Then insert new results using the new database method
-            // Prepare metrics maps
-            std::unordered_map<std::string, double> metrics = {
-                {"total_return", total_return_annualized},
-                {"volatility", volatility},
-                {"total_pnl", total_pnl},
-                {"total_unrealized_pnl", total_unrealized_pnl},
-                {"total_realized_pnl", total_realized_pnl},
-                {"current_portfolio_value", current_portfolio_value},
-                {"portfolio_var", portfolio_var},
-                {"gross_leverage", gross_leverage},
-                {"net_leverage", net_leverage},
-                {"portfolio_leverage", portfolio_leverage},
-                {"equity_to_margin_ratio", equity_to_margin_ratio},
-                {"margin_cushion", margin_cushion},
-                {"max_correlation", max_correlation},
-                {"jump_risk", jump_risk},
-                {"risk_scale", risk_scale},
-                {"gross_notional", gross_notional},
-                {"net_notional", net_notional},
-                {"daily_return", daily_return},
-                {"daily_pnl", daily_pnl},
-                {"total_commissions", total_commissions_cumulative},
-                {"daily_realized_pnl", daily_realized_pnl},
-                {"daily_unrealized_pnl", daily_unrealized_pnl},
-                {"daily_commissions", total_daily_commissions},
-                {"margin_posted", total_posted_margin},
-                {"cash_available", current_portfolio_value - total_posted_margin}
-            };
+            if (use_storage_manager && results_manager) {
+                // Use the new LiveResultsManager
+                INFO("Setting metrics in LiveResultsManager...");
 
-            std::unordered_map<std::string, int> int_metrics = {
-                {"active_positions", active_positions}
-            };
+                // Prepare metrics maps
+                std::unordered_map<std::string, double> double_metrics = {
+                    {"total_return", total_return_annualized},
+                    {"volatility", volatility},
+                    {"total_pnl", total_pnl},
+                    {"total_unrealized_pnl", total_unrealized_pnl},
+                    {"total_realized_pnl", total_realized_pnl},
+                    {"current_portfolio_value", current_portfolio_value},
+                    {"portfolio_var", portfolio_var},
+                    {"gross_leverage", gross_leverage},
+                    {"net_leverage", net_leverage},
+                    {"portfolio_leverage", portfolio_leverage},
+                    {"equity_to_margin_ratio", equity_to_margin_ratio},
+                    {"margin_cushion", margin_cushion},
+                    {"max_correlation", max_correlation},
+                    {"jump_risk", jump_risk},
+                    {"risk_scale", risk_scale},
+                    {"gross_notional", gross_notional},
+                    {"net_notional", net_notional},
+                    {"daily_return", daily_return},
+                    {"daily_pnl", daily_pnl},
+                    {"total_commissions", total_commissions_cumulative},
+                    {"daily_realized_pnl", daily_realized_pnl},
+                    {"daily_unrealized_pnl", daily_unrealized_pnl},
+                    {"daily_commissions", total_daily_commissions},
+                    {"margin_posted", total_posted_margin},
+                    {"cash_available", current_portfolio_value - total_posted_margin}
+                };
 
-            // Use the new store_live_results_complete method
-            auto results_save_result = db->store_live_results_complete(
-                "LIVE_TREND_FOLLOWING", now, metrics, int_metrics, config_json, "trading.live_results");
+                std::unordered_map<std::string, int> int_metrics = {
+                    {"active_positions", active_positions}
+                };
 
-            if (results_save_result.is_error()) {
-                ERROR("Failed to save trading results: " + std::string(results_save_result.error()->what()));
+                // Set all metrics at once
+                results_manager->set_metrics(double_metrics, int_metrics);
+
+                // Set config
+                results_manager->set_config(config_json);
+
+                // Set equity for equity curve tracking
+                results_manager->set_equity(current_portfolio_value);
             } else {
-                INFO("Successfully saved trading results to database");
+                // Use the monolithic approach
+                // First delete existing results for this strategy and date using new method
+                auto delete_result = db->delete_live_results("LIVE_TREND_FOLLOWING", now, "trading.live_results");
+                if (delete_result.is_error()) {
+                    WARN("Failed to delete existing live results: " + std::string(delete_result.error()->what()));
+                }
+
+                // Then insert new results using the new database method
+                // Prepare metrics maps
+                std::unordered_map<std::string, double> metrics = {
+                    {"total_return", total_return_annualized},
+                    {"volatility", volatility},
+                    {"total_pnl", total_pnl},
+                    {"total_unrealized_pnl", total_unrealized_pnl},
+                    {"total_realized_pnl", total_realized_pnl},
+                    {"current_portfolio_value", current_portfolio_value},
+                    {"portfolio_var", portfolio_var},
+                    {"gross_leverage", gross_leverage},
+                    {"net_leverage", net_leverage},
+                    {"portfolio_leverage", portfolio_leverage},
+                    {"equity_to_margin_ratio", equity_to_margin_ratio},
+                    {"margin_cushion", margin_cushion},
+                    {"max_correlation", max_correlation},
+                    {"jump_risk", jump_risk},
+                    {"risk_scale", risk_scale},
+                    {"gross_notional", gross_notional},
+                    {"net_notional", net_notional},
+                    {"daily_return", daily_return},
+                    {"daily_pnl", daily_pnl},
+                    {"total_commissions", total_commissions_cumulative},
+                    {"daily_realized_pnl", daily_realized_pnl},
+                    {"daily_unrealized_pnl", daily_unrealized_pnl},
+                    {"daily_commissions", total_daily_commissions},
+                    {"margin_posted", total_posted_margin},
+                    {"cash_available", current_portfolio_value - total_posted_margin}
+                };
+
+                std::unordered_map<std::string, int> int_metrics = {
+                    {"active_positions", active_positions}
+                };
+
+                // Use the new store_live_results_complete method
+                auto results_save_result = db->store_live_results_complete(
+                    "LIVE_TREND_FOLLOWING", now, metrics, int_metrics, config_json, "trading.live_results");
+
+                if (results_save_result.is_error()) {
+                    ERROR("Failed to save trading results: " + std::string(results_save_result.error()->what()));
+                } else {
+                    INFO("Successfully saved trading results to database");
+                }
             }
         } catch (const std::exception& e) {
             ERROR("Exception while saving trading results: " + std::string(e.what()));
@@ -2059,24 +2153,37 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        // Store equity curve in database
-        INFO("Storing equity curve in database...");
-        
-        // First delete existing equity curve entry for this strategy and date using new method
-        auto db_ptr = std::dynamic_pointer_cast<PostgresDatabase>(db);
-        if (db_ptr) {
-            auto delete_equity_result = db_ptr->delete_live_equity_curve(
-                "LIVE_TREND_FOLLOWING", now, "trading.equity_curve");
-            if (delete_equity_result.is_error()) {
-                WARN("Failed to delete existing equity curve entry: " + std::string(delete_equity_result.error()->what()));
+        // Store equity curve and save all results to database
+        if (use_storage_manager && results_manager) {
+            // Use the new LiveResultsManager - save all results at once
+            INFO("Saving all live trading results using LiveResultsManager...");
+
+            auto save_result = results_manager->save_all_results("LIVE_TREND_FOLLOWING", now);
+            if (save_result.is_error()) {
+                ERROR("Failed to save all live results: " + std::string(save_result.error()->what()));
+            } else {
+                INFO("Successfully saved all live trading results to database");
             }
-        }
-        
-        auto store_equity_result = db->store_trading_equity_curve("LIVE_TREND_FOLLOWING", now, current_portfolio_value, "trading.equity_curve");
-        if (store_equity_result.is_error()) {
-            ERROR("Failed to store equity curve: " + std::string(store_equity_result.error()->what()));
         } else {
-            INFO("Equity curve stored successfully");
+            // Use the monolithic approach for equity curve
+            INFO("Storing equity curve in database...");
+
+            // First delete existing equity curve entry for this strategy and date using new method
+            auto db_ptr = std::dynamic_pointer_cast<PostgresDatabase>(db);
+            if (db_ptr) {
+                auto delete_equity_result = db_ptr->delete_live_equity_curve(
+                    "LIVE_TREND_FOLLOWING", now, "trading.equity_curve");
+                if (delete_equity_result.is_error()) {
+                    WARN("Failed to delete existing equity curve entry: " + std::string(delete_equity_result.error()->what()));
+                }
+            }
+
+            auto store_equity_result = db->store_trading_equity_curve("LIVE_TREND_FOLLOWING", now, current_portfolio_value, "trading.equity_curve");
+            if (store_equity_result.is_error()) {
+                ERROR("Failed to store equity curve: " + std::string(store_equity_result.error()->what()));
+            } else {
+                INFO("Equity curve stored successfully");
+            }
         }
 
         // Stop the strategy
