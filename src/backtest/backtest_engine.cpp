@@ -14,6 +14,7 @@
 #include "trade_ngin/data/database_interface.hpp"
 #include "trade_ngin/data/database_pooling.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
+#include "trade_ngin/storage/backtest_results_manager.hpp"
 
 namespace {
 std::string join(const std::vector<std::string>& elements, const std::string& delimiter) {
@@ -1863,6 +1864,97 @@ Result<void> BacktestEngine::save_results_to_db(const BacktestResults& results,
         return Result<void>();
     }
 
+    // Check if we should use the new storage manager (Phase 1 refactoring)
+    // Default is to use the new storage manager (can be disabled with USE_NEW_STORAGE_MANAGER=false)
+    bool use_storage_manager = true;
+    const char* use_new_storage = std::getenv("USE_NEW_STORAGE_MANAGER");
+    if (use_new_storage && std::string(use_new_storage) == "false") {
+        use_storage_manager = false;
+    }
+
+    if (use_storage_manager) {
+        INFO("Using new BacktestResultsManager for storage");
+
+        auto db_ptr = std::dynamic_pointer_cast<PostgresDatabase>(db_);
+        if (!db_ptr) {
+            ERROR("Database is not a PostgresDatabase instance");
+            return make_error<void>(ErrorCode::DATABASE_ERROR,
+                                   "Invalid database type", "BacktestEngine");
+        }
+
+        // Create and configure the results manager
+        auto results_manager = std::make_unique<BacktestResultsManager>(
+            db_ptr,
+            config_.store_trade_details,
+            "TREND_FOLLOWING"  // Default strategy ID
+        );
+
+        // Set all the data
+        results_manager->set_metadata(
+            config_.strategy_config.start_date,
+            config_.strategy_config.end_date,
+            nlohmann::json{},  // TODO: Add hyperparameters from config
+            "Backtest Run",
+            "Automated backtest run"
+        );
+
+        // Convert performance metrics
+        std::unordered_map<std::string, double> metrics = {
+            {"total_return", results.total_return},
+            {"sharpe_ratio", results.sharpe_ratio},
+            {"sortino_ratio", results.sortino_ratio},
+            {"max_drawdown", results.max_drawdown},
+            {"calmar_ratio", results.calmar_ratio},
+            {"volatility", results.volatility},
+            {"total_trades", static_cast<double>(results.total_trades)},
+            {"win_rate", results.win_rate},
+            {"profit_factor", results.profit_factor},
+            {"avg_win", results.avg_win},
+            {"avg_loss", results.avg_loss},
+            {"max_win", results.max_win},
+            {"max_loss", results.max_loss},
+            {"avg_holding_period", results.avg_holding_period},
+            {"var_95", results.var_95},
+            {"cvar_95", results.cvar_95},
+            {"beta", results.beta},
+            {"correlation", results.correlation},
+            {"downside_volatility", results.downside_volatility}
+        };
+        results_manager->set_performance_metrics(metrics);
+
+        // Set equity curve
+        std::vector<std::pair<Timestamp, double>> equity_points;
+        for (const auto& [timestamp, equity] : results.equity_curve) {
+            equity_points.push_back({timestamp, equity});
+        }
+        results_manager->set_equity_curve(equity_points);
+
+        // Set final positions
+        results_manager->set_final_positions(results.positions);
+
+        // Set executions
+        results_manager->set_executions(results.executions);
+
+        // Generate run_id if not provided
+        std::string actual_run_id = run_id.empty()
+            ? BacktestResultsManager::generate_run_id("TREND_FOLLOWING")
+            : run_id;
+
+        // Save all results
+        auto save_result = results_manager->save_all_results(actual_run_id,
+                                                            config_.strategy_config.end_date);
+
+        if (save_result.is_error()) {
+            ERROR("Failed to save results using BacktestResultsManager: " +
+                  std::string(save_result.error()->what()));
+            return save_result;
+        }
+
+        INFO("Successfully saved backtest results using new storage manager");
+        return Result<void>();
+    }
+
+    // Original implementation follows
     try {
         // Generate strategy-specific run_id prefix based on strategy name
         std::string strategy_prefix = "TF_";  // Default to Trend Following based on common usage

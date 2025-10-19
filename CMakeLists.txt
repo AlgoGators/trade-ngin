@@ -76,6 +76,9 @@ set(TRADE_NGIN_SOURCES
     src/strategy/base_strategy.cpp
     src/strategy/trend_following.cpp
     src/strategy/regime_detector.cpp
+    src/storage/results_manager_base.cpp
+    src/storage/backtest_results_manager.cpp
+    src/storage/live_results_manager.cpp
 )
 
 # Add library target
