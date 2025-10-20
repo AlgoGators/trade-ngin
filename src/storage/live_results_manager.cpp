@@ -5,6 +5,7 @@
 #include "trade_ngin/core/types.hpp"
 #include "trade_ngin/core/logger.hpp"
 #include <chrono>
+#include <cmath>
 #include <iomanip>
 #include <sstream>
 
@@ -209,19 +210,46 @@ Result<void> LiveResultsManager::save_equity_curve(const Timestamp& date) {
         return Result<void>();
     }
 
-    INFO("Saving equity curve point: " + std::to_string(current_equity_));
+    double equity_to_save = current_equity_;
 
-    // First try to update existing entry
-    auto result = db_->update_live_equity_curve(strategy_id_, date,
-                                               current_equity_, "trading.equity_curve");
+    // Validate equity value - check for invalid values:
+    // 1. Zero or negative
+    // 2. NaN or infinity
+    // 3. Suspiciously small (< $1000 - likely garbage/uninitialized)
+    bool is_invalid = (equity_to_save <= 0.0) ||
+                      std::isnan(equity_to_save) ||
+                      std::isinf(equity_to_save) ||
+                      (equity_to_save > 0.0 && equity_to_save < 1000.0);
 
-    // If update affected 0 rows, insert new entry
-    if (result.is_ok()) {
-        // Check if we need to insert (update_live_equity_curve logs rows affected)
-        // For now, we'll use the store method which handles insert
-        result = db_->store_trading_equity_curve(strategy_id_, date,
-                                                current_equity_, "trading.equity_curve");
+    if (is_invalid) {
+        WARN("Invalid equity value: " + std::to_string(equity_to_save) +
+             " (zero, negative, NaN, inf, or suspiciously small). Attempting to use previous day's value");
+
+        // Try to get the most recent valid equity value (>= 1000)
+        std::string get_prev_equity_query =
+            "SELECT equity FROM trading.equity_curve "
+            "WHERE strategy_id = '" + strategy_id_ + "' "
+            "AND equity >= 1000.0 "
+            "ORDER BY timestamp DESC LIMIT 1";
+
+        auto prev_result = db_->execute_query(get_prev_equity_query);
+        if (prev_result.is_ok() && prev_result.value()->num_rows() > 0) {
+            auto table = prev_result.value();
+            auto array = std::static_pointer_cast<arrow::DoubleArray>(table->column(0)->chunk(0));
+            equity_to_save = array->Value(0);
+            INFO("Using previous equity value: " + std::to_string(equity_to_save));
+        } else {
+            ERROR("Cannot save equity curve: equity is invalid (" + std::to_string(current_equity_) +
+                  ") and no previous valid value found");
+            return Result<void>();  // Don't save invalid values
+        }
     }
+
+    INFO("Saving equity curve point: " + std::to_string(equity_to_save));
+
+    // Use store method which handles INSERT ... ON CONFLICT (UPSERT)
+    auto result = db_->store_trading_equity_curve(strategy_id_, date,
+                                                 equity_to_save, "trading.equity_curve");
 
     return result;
 }

@@ -1400,15 +1400,22 @@ int main(int argc, char* argv[]) {
                 "cash_available = COALESCE((SELECT portfolio FROM day_before), " + std::to_string(initial_capital) + ") + (" + std::to_string(yesterday_total_pnl) + " - COALESCE(daily_commissions, 0.0)) - COALESCE(margin_posted, 0.0) "
                 "WHERE strategy_id = 'LIVE_TREND_FOLLOWING' AND DATE(date) = '" + yesterday_date_ss.str() + "'";
 
+            INFO("Executing UPDATE query for Day T-1 live_results...");
+            INFO("UPDATE will set current_portfolio_value for date: " + yesterday_date_ss.str());
+
             auto update_result = db->execute_direct_query(update_query);
             if (update_result.is_error()) {
                 ERROR("Failed to update Day T-1 live_results: " + std::string(update_result.error()->what()));
             } else {
                 INFO("Successfully updated Day T-1 live_results with finalized PnL and all metrics");
+
+                // Log the expected value
+                INFO("Expected current_portfolio_value calculation: day_before_portfolio + (yesterday_pnl - commissions)");
+                INFO("  yesterday_total_pnl: $" + std::to_string(yesterday_total_pnl));
+                INFO("  yesterday_commissions: $" + std::to_string(yesterday_commissions_for_calc));
             }
 
-            // UPDATE yesterday's equity_curve using new method
-            // First get the updated portfolio value
+            // UPDATE yesterday's equity_curve using LiveResultsManager
             INFO("Updating Day T-1 equity_curve...");
 
             // Query the current portfolio value from updated live_results
@@ -1416,24 +1423,52 @@ int main(int argc, char* argv[]) {
                 "SELECT current_portfolio_value FROM trading.live_results "
                 "WHERE strategy_id = 'LIVE_TREND_FOLLOWING' AND DATE(date) = '" + yesterday_date_ss.str() + "'";
 
+            INFO("Querying for portfolio value with date: " + yesterday_date_ss.str());
+
             auto equity_result = db->execute_query(get_equity_query);
             if (equity_result.is_error()) {
                 ERROR("Failed to get portfolio value for equity update: " + std::string(equity_result.error()->what()));
             } else {
                 auto table = equity_result.value();
+                INFO("Query returned " + std::to_string(table->num_rows()) + " rows");
+
                 if (table->num_rows() > 0) {
                     auto array = std::static_pointer_cast<arrow::DoubleArray>(table->column(0)->chunk(0));
-                    double portfolio_value = array->Value(0);
 
-                    // Use the new update_live_equity_curve method
-                    auto update_equity_result = db->update_live_equity_curve(
-                        "LIVE_TREND_FOLLOWING", previous_date, portfolio_value, "trading.equity_curve");
-
-                    if (update_equity_result.is_error()) {
-                        ERROR("Failed to update Day T-1 equity_curve: " + std::string(update_equity_result.error()->what()));
+                    // Check for NULL value before reading
+                    if (array->IsNull(0)) {
+                        ERROR("Cannot update Day T-1 equity_curve: current_portfolio_value is NULL for date " + yesterday_date_ss.str());
                     } else {
-                        INFO("Successfully updated Day T-1 equity_curve");
+                        double portfolio_value = array->Value(0);
+                        INFO("Raw value read from database: " + std::to_string(portfolio_value));
+
+                        // Validate the value before using it
+                        if (portfolio_value <= 0.0 || std::isnan(portfolio_value) || std::isinf(portfolio_value) || portfolio_value < 1000.0) {
+                            ERROR("Invalid portfolio value for Day T-1 equity update: " + std::to_string(portfolio_value) +
+                                  " (date: " + yesterday_date_ss.str() + "). Skipping equity_curve update.");
+                            ERROR("  Validation failed: <= 0.0? " + std::string(portfolio_value <= 0.0 ? "YES" : "NO") +
+                                  ", isnan? " + std::string(std::isnan(portfolio_value) ? "YES" : "NO") +
+                                  ", isinf? " + std::string(std::isinf(portfolio_value) ? "YES" : "NO") +
+                                  ", < 1000? " + std::string(portfolio_value < 1000.0 ? "YES" : "NO"));
+                        } else {
+                            INFO("✓ Valid portfolio value for Day T-1: $" + std::to_string(portfolio_value));
+
+                            // Create a temporary LiveResultsManager for Day T-1 equity update
+                            auto yesterday_manager = std::make_unique<LiveResultsManager>(
+                                db, true, "LIVE_TREND_FOLLOWING"
+                            );
+                            yesterday_manager->set_equity(portfolio_value);
+
+                            auto update_equity_result = yesterday_manager->save_equity_curve(previous_date);
+                            if (update_equity_result.is_error()) {
+                                ERROR("Failed to update Day T-1 equity_curve: " + std::string(update_equity_result.error()->what()));
+                            } else {
+                                INFO("Successfully updated Day T-1 equity_curve with value: " + std::to_string(portfolio_value));
+                            }
+                        }
                     }
+                } else {
+                    WARN("No live_results found for date " + yesterday_date_ss.str() + ", skipping equity_curve update");
                 }
             }
 
