@@ -113,12 +113,14 @@ public:
      * @brief Fetch daily PnL data from database
      * @param db Database interface
      * @param strategy_id Strategy identifier
+     * @param date Current date (to exclude today and only show up to T-1)
      * @param lookback_days Number of days to fetch
      * @return ChartData with dates and daily PnL values
      */
     static ChartData fetch_daily_pnl_data(
         std::shared_ptr<DatabaseInterface> db,
         const std::string& strategy_id,
+        const std::string& date,
         int lookback_days = 30
     );
 
@@ -149,11 +151,13 @@ public:
      * @brief Fetch portfolio composition data from current positions
      * @param positions Current portfolio positions
      * @param current_prices Current market prices for calculating notional
+     * @param date Current date for the title (YYYY-MM-DD format)
      * @return ChartData with symbols and their gross notional percentages
      */
     static ChartData fetch_portfolio_composition_data(
         const std::unordered_map<std::string, Position>& positions,
-        const std::unordered_map<std::string, double>& current_prices
+        const std::unordered_map<std::string, double>& current_prices,
+        const std::string& date = ""
     );
 
     /**
@@ -250,17 +254,19 @@ public:
      * @brief Generate daily PnL chart
      *
      * Creates a vertical bar chart showing daily PnL for the last N trading days.
-     * Calculates day-over-day equity changes from equity curve data.
+     * Uses daily_pnl from live_results table, showing data up to T-1 (yesterday).
      * Bars are color-coded (green for positive days, red for negative days).
      *
-     * @param db Database interface to query equity curve data
+     * @param db Database interface to query live_results data
      * @param strategy_id Strategy identifier to filter data
+     * @param date Current date (to exclude today and only show up to T-1)
      * @param lookback_days Number of days to include in the chart (default: 30)
      * @return Base64-encoded PNG chart data, or empty string on error
      */
     static std::string generate_daily_pnl_chart(
         std::shared_ptr<DatabaseInterface> db,
         const std::string& strategy_id,
+        const std::string& date,
         int lookback_days = 30
     );
 
@@ -284,11 +290,13 @@ public:
      *
      * @param positions Current portfolio positions
      * @param current_prices Current market prices for calculating notional
+     * @param date Current date for the title (YYYY-MM-DD format)
      * @return Base64-encoded PNG chart data, or empty string on error
      */
     static std::string generate_portfolio_composition_chart(
         const std::unordered_map<std::string, Position>& positions,
-        const std::unordered_map<std::string, double>& current_prices
+        const std::unordered_map<std::string, double>& current_prices,
+        const std::string& date = ""
     );
 
     /**

@@ -577,7 +577,7 @@ std::string EmailSender::generate_trading_report_body(
        }
 
        // Generate daily PnL chart
-       daily_pnl_base64_ = ChartGenerator::generate_daily_pnl_chart(db, "LIVE_TREND_FOLLOWING", 30);
+       daily_pnl_base64_ = ChartGenerator::generate_daily_pnl_chart(db, "LIVE_TREND_FOLLOWING", date, 30);
        if (!daily_pnl_base64_.empty()) {
            html << "<h3 style=\"margin-top: 20px; color: #333;\">Daily PnL (Last 30 Days)</h3>\n";
            html << "<div style=\"width: 100%; max-width: 1000px; margin: 20px auto; text-align: center;\">\n";
@@ -587,9 +587,9 @@ std::string EmailSender::generate_trading_report_body(
 
         total_commissions_base64_ = ChartGenerator::generate_total_commissions_chart(db, "LIVE_TREND_FOLLOWING", date);
         if (!total_commissions_base64_.empty()) {
-            html << "<h3 style=\"margin-top: 20px; color: #333;\">Cumulative Commissions (All Time)</h3>\n";
+            html << "<h3 style=\"margin-top: 20px; color: #333;\">Cost per $1M Traded (Efficiency Metric)</h3>\n";
             html << "<div style=\"width: 100%; max-width: 1000px; margin: 20px auto; text-align: center;\">\n";
-            html << "<img src=\"cid:total_commissions\" alt=\"Cumulative Commissions\" style=\"max-width: 100%; height: auto; ""border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);\" />\n";
+            html << "<img src=\"cid:total_commissions\" alt=\"Cost per $1M Traded\" style=\"max-width: 100%; height: auto; ""border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);\" />\n";
             html << "</div>\n";
         }
 
@@ -605,8 +605,9 @@ std::string EmailSender::generate_trading_report_body(
         }
 
         portfolio_composition_base64_ = ChartGenerator::generate_portfolio_composition_chart(
-        positions, 
-        current_prices
+        positions,
+        current_prices,
+        date
         );
         if (!portfolio_composition_base64_.empty()) {
             html << "<h3 style=\"margin-top: 20px; color: #333;\">Portfolio Composition</h3>\n";
