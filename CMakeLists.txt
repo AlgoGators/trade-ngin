@@ -52,9 +52,10 @@ set(TRADE_NGIN_SOURCES
     src/core/state_manager.cpp
     src/core/config_manager.cpp
     src/core/config_version.cpp
-    src/core/config_base.cpp 
+    src/core/config_base.cpp
     src/core/logger.cpp
     src/core/email_sender.cpp
+    src/core/chart_generator.cpp
     src/data/postgres_database.cpp
     src/data/postgres_database_extensions.cpp
     src/data/market_data_bus.cpp

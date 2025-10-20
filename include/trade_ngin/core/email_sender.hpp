@@ -95,6 +95,13 @@ private:
     std::shared_ptr<CredentialStore> credentials_;
     EmailConfig config_;
     bool initialized_;
+    std::string chart_base64_;  // Store equity curve chart data for embedding in email
+    std::string pnl_by_symbol_base64_;  // Store PnL by symbol chart data
+    std::string daily_pnl_base64_;  // Store daily PnL chart data
+    std::string total_commissions_base64_; // Store cumalitive commisions 
+    std::string margin_posted_base64_; //Store total margin posted
+    std::string portfolio_composition_base64_; //Store portfolio composition
+    std::string cumulative_pnl_by_symbol_base64_; //Store cumalative pnl
 
     /**
      * @brief Load email configuration from credential store
@@ -161,6 +168,7 @@ private:
         const std::map<std::string, double>& strategy_metrics = {},
         const std::string& yesterday_date = ""
     );
+
 };
 
 } // namespace trade_ngin
