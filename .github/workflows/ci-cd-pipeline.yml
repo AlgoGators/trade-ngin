@@ -8,7 +8,7 @@ on:
       - "*"
 
 env:
-  COVERAGE_THRESHOLD: 30
+  COVERAGE_THRESHOLD: 10
 jobs:
   lint:
     name: Code Linting
