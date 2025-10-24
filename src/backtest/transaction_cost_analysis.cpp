@@ -113,69 +113,69 @@ Result<TransactionCostMetrics> TransactionCostAnalyzer::analyze_trade_sequence(
     }
 }
 
-// Result<TransactionCostMetrics> TransactionCostAnalyzer::calculate_implementation_shortfall(
-//     const Position& target_position, const std::vector<ExecutionReport>& actual_executions,
-//     const std::vector<Bar>& market_data) const {
-//     try {
-//         TransactionCostMetrics metrics;
-//
-//         // Find arrival price (price when decision was made)
-//         double arrival_price = 0.0;
-//         if (!market_data.empty()) {
-//             auto it = std::lower_bound(
-//                 market_data.begin(), market_data.end(), target_position.last_update,
-//                 [](const Bar& bar, const Timestamp& ts) { return bar.timestamp < ts; });
-//
-//             if (it != market_data.end()) {
-//                 arrival_price = it->close.as_double();
-//             }
-//         }
-//
-//         if (arrival_price > 0.0) {
-//             // Calculate VWAP of executions
-//             double total_value = 0.0;
-//             double total_quantity = 0.0;
-//
-//             for (const auto& exec : actual_executions) {
-//                 total_value += exec.fill_price.as_double() * exec.filled_quantity.as_double();
-//                 total_quantity += exec.filled_quantity.as_double();
-//             }
-//
-//             double vwap = total_quantity > 0.0 ? total_value / total_quantity : 0.0;
-//
-//             // Calculate implementation shortfall components
-//             if (target_position.quantity.as_double() > 0) {  // Buying
-//                 metrics.delay_cost = vwap - arrival_price;
-//             } else {  // Selling
-//                 metrics.delay_cost = arrival_price - vwap;
-//             }
-//
-//             // Calculate opportunity cost for unfilled portion
-//             double unfilled_quantity = target_position.quantity.as_double();
-//             for (const auto& exec : actual_executions) {
-//                 unfilled_quantity -= exec.filled_quantity.as_double();
-//             }
-//
-//             if (std::abs(unfilled_quantity) > 0.0 && !market_data.empty()) {
-//                 double final_price = market_data.back().close.as_double();
-//                 if (unfilled_quantity > 0) {  // Missed buy
-//                     metrics.opportunity_cost = final_price - arrival_price;
-//                 } else {  // Missed sell
-//                     metrics.opportunity_cost = arrival_price - final_price;
-//                 }
-//                 metrics.opportunity_cost *= std::abs(unfilled_quantity);
-//             }
-//         }
-//
-//         return Result<TransactionCostMetrics>(metrics);
-//
-//     } catch (const std::exception& e) {
-//         return make_error<TransactionCostMetrics>(
-//             ErrorCode::UNKNOWN_ERROR,
-//             std::string("Error calculating implementation shortfall: ") + e.what(),
-//             "TransactionCostAnalyzer");
-//     }
-// }
+Result<TransactionCostMetrics> TransactionCostAnalyzer::calculate_implementation_shortfall(
+    const Position& target_position, const std::vector<ExecutionReport>& actual_executions,
+    const std::vector<Bar>& market_data) const {
+    try {
+        TransactionCostMetrics metrics;
+
+        // Find arrival price (price when decision was made)
+        double arrival_price = 0.0;
+        if (!market_data.empty()) {
+            auto it = std::lower_bound(
+                market_data.begin(), market_data.end(), target_position.last_update,
+                [](const Bar& bar, const Timestamp& ts) { return bar.timestamp < ts; });
+
+            if (it != market_data.end()) {
+                arrival_price = it->close.as_double();
+            }
+        }
+
+        if (arrival_price > 0.0) {
+            // Calculate VWAP of executions
+            double total_value = 0.0;
+            double total_quantity = 0.0;
+
+            for (const auto& exec : actual_executions) {
+                total_value += exec.fill_price.as_double() * exec.filled_quantity.as_double();
+                total_quantity += exec.filled_quantity.as_double();
+            }
+
+            double vwap = total_quantity > 0.0 ? total_value / total_quantity : 0.0;
+
+            // Calculate implementation shortfall components
+            if (target_position.quantity.as_double() > 0) {  // Buying
+                metrics.delay_cost = vwap - arrival_price;
+            } else {  // Selling
+                metrics.delay_cost = arrival_price - vwap;
+            }
+
+            // Calculate opportunity cost for unfilled portion
+            double unfilled_quantity = target_position.quantity.as_double();
+            for (const auto& exec : actual_executions) {
+                unfilled_quantity -= exec.filled_quantity.as_double();
+            }
+
+            if (std::abs(unfilled_quantity) > 0.0 && !market_data.empty()) {
+                double final_price = market_data.back().close.as_double();
+                if (unfilled_quantity > 0) {  // Missed buy
+                    metrics.opportunity_cost = final_price - arrival_price;
+                } else {  // Missed sell
+                    metrics.opportunity_cost = arrival_price - final_price;
+                }
+                metrics.opportunity_cost *= std::abs(unfilled_quantity);
+            }
+        }
+
+        return Result<TransactionCostMetrics>(metrics);
+
+    } catch (const std::exception& e) {
+        return make_error<TransactionCostMetrics>(
+            ErrorCode::UNKNOWN_ERROR,
+            std::string("Error calculating implementation shortfall: ") + e.what(),
+            "TransactionCostAnalyzer");
+    }
+}
 
 Result<std::unordered_map<std::string, double>>
 TransactionCostAnalyzer::analyze_benchmark_performance(
