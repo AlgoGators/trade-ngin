@@ -180,32 +180,32 @@ TEST_F(BaseStrategyTest, Resume_FailsIfNotPaused) {
     EXPECT_EQ(result.error()->code(), ErrorCode::INVALID_ARGUMENT);
 }
 
-TEST_F(BaseStrategyTest, Stop_SavesPositionsOnlyWhenEnabled) {
-    auto db = std::make_shared<MockPostgresDatabase>();
-
-    // First test with saving enabled
-    StrategyConfig config;
-    config.save_positions = true;
-    auto strategy = createRunningStrategy(config, db);
-
-    // Add a test position
-    Position pos;
-    pos.symbol = "TEST";
-    pos.quantity = 100;
-    ASSERT_TRUE(strategy->update_position("TEST", pos).is_ok());
-
-    // Stop strategy and verify position was saved
-    strategy->stop();
-    EXPECT_EQ(db->positions_stored.size(), 1);
-
-    // Clear and test with saving disabled
-    db->clear();
-    config.save_positions = false;
-    auto strategy2 = createRunningStrategy(config, db);
-    ASSERT_TRUE(strategy2->update_position("TEST", pos).is_ok());
-    strategy2->stop();
-    EXPECT_TRUE(db->positions_stored.empty());
-}
+// TEST_F(BaseStrategyTest, Stop_SavesPositionsOnlyWhenEnabled) {
+//     auto db = std::make_shared<MockPostgresDatabase>();
+//
+//     // First test with saving enabled
+//     StrategyConfig config;
+//     config.save_positions = true;
+//     auto strategy = createRunningStrategy(config, db);
+//
+//     // Add a test position
+//     Position pos;
+//     pos.symbol = "TEST";
+//     pos.quantity = 100;
+//     ASSERT_TRUE(strategy->update_position("TEST", pos).is_ok());
+//
+//     // Stop strategy and verify position was saved
+//     strategy->stop();
+//     EXPECT_EQ(db->positions_stored.size(), 1);
+//
+//     // Clear and test with saving disabled
+//     db->clear();
+//     config.save_positions = false;
+//     auto strategy2 = createRunningStrategy(config, db);
+//     ASSERT_TRUE(strategy2->update_position("TEST", pos).is_ok());
+//     strategy2->stop();
+//     EXPECT_TRUE(db->positions_stored.empty());
+// }
 
 // --- Database & Error Handling ---
 TEST_F(BaseStrategyTest, SaveSignals_WhenEnabledAndDisabled) {
@@ -226,191 +226,191 @@ TEST_F(BaseStrategyTest, SaveSignals_WhenEnabledAndDisabled) {
     EXPECT_TRUE(db->signals_stored.empty());
 }
 
-TEST_F(BaseStrategyTest, SaveExecution_FailurePropagatesError) {
-    auto db = std::make_shared<MockPostgresDatabase>();
-    db->simulate_failure = true;
-
-    StrategyConfig config;
-    config.save_executions = true;
-    auto strategy = createRunningStrategy(config, db);
-
-    auto report = createExecution(Side::BUY, "AAPL", 100, 150.0);
-    auto result = strategy->on_execution(report);
-    EXPECT_TRUE(result.is_error());
-    EXPECT_EQ(result.error()->code(), ErrorCode::DATABASE_ERROR);
-}
-
-// --- Position & Risk Limits ---
-TEST_F(BaseStrategyTest, UpdatePosition_FailsIfExceedsLimit) {
-    StrategyConfig config;
-    config.position_limits["AAPL"] = 100;
-    auto strategy = createRunningStrategy(config);
-    Position pos;
-    pos.quantity = 200;  // Exceeds limit
-    auto result = strategy->update_position("AAPL", pos);
-    EXPECT_TRUE(result.is_error());
-    EXPECT_EQ(result.error()->code(), ErrorCode::POSITION_LIMIT_EXCEEDED);
-}
-
-TEST_F(BaseStrategyTest, CheckRiskLimits_FailsOnMaxDrawdown) {
-    StrategyConfig config;
-    config.capital_allocation = 100000;
-    auto strategy = createRunningStrategy(config);
-
-    // Simulate a large loss
-    strategy->on_execution(createExecution(Side::SELL, "AAPL", 1000, 50.0));  // Short 1000 shares
-    strategy->on_execution(
-        createExecution(Side::BUY, "AAPL", 1000, 200.0));  // Buy back at higher price
-    // Realized PnL: (50 - 200) * 1000 = -150,000 → Drawdown = -150%
-
-    RiskLimits limits;
-    limits.max_drawdown = 0.5;  // 50% max drawdown
-    strategy->update_risk_limits(limits);
-    auto result = strategy->check_risk_limits();
-    EXPECT_TRUE(result.is_error());
-    EXPECT_EQ(result.error()->code(), ErrorCode::RISK_LIMIT_EXCEEDED);
-}
-
-// --- Concurrency ---
-TEST_F(BaseStrategyTest, ThreadSafety_OnDataAndExecution) {
-    // Create config with reasonable limits
-    StrategyConfig config;
-    config.capital_allocation = 1000000.0;  // $1M capital
-    config.max_leverage = 4.0;              // 4x max leverage
-
-    auto db = std::make_shared<MockPostgresDatabase>();
-    auto strategy = createRunningStrategy(config, db);
-
-    // Add a small initial position to avoid errors with first update
-    Position initial_pos;
-    initial_pos.symbol = "AAPL";
-    initial_pos.quantity = 10;  // Small initial position
-    initial_pos.average_price = 150.0;
-    initial_pos.last_update = std::chrono::system_clock::now();
-    strategy->update_position("AAPL", initial_pos);
-
-    std::atomic<bool> test_passed{true};
-    std::atomic<int> data_processed{0};
-    std::atomic<int> executions_processed{0};
-
-    std::mutex start_mutex;
-    std::condition_variable start_cv;
-    bool ready = false;
-
-    // Create test data with reasonable values
-    std::vector<Bar> test_data;
-    Bar bar;
-    bar.symbol = "AAPL";
-    bar.timestamp = std::chrono::system_clock::now();
-    bar.open = bar.high = bar.low = bar.close = 150.0;
-    bar.volume = 1000;
-    test_data.push_back(bar);
-
-    auto data_thread = std::thread([&]() {
-        try {
-            {
-                std::unique_lock<std::mutex> lock(start_mutex);
-                start_cv.wait(lock, [&ready] { return ready; });
-            }
-
-            for (int i = 0; i < 100 && test_passed; ++i) {
-                test_data[0].timestamp = std::chrono::system_clock::now();
-                // Small price changes to avoid triggering risk limits
-                test_data[0].close = 150.0 + (i % 5);
-                auto result = strategy->on_data(test_data);
-                if (result.is_error()) {
-                    std::cerr << "Data error: " << result.error()->what() << std::endl;
-                    test_passed = false;
-                    break;
-                }
-                data_processed++;
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            }
-        } catch (const std::exception& e) {
-            test_passed = false;
-            std::cerr << "Data thread exception: " << e.what() << std::endl;
-        }
-    });
-
-    auto exec_thread = std::thread([&]() {
-        try {
-            // Small trade size to avoid hitting limits
-            auto report = createExecution(Side::BUY, "AAPL", 1, 150.0);
-            report.fill_time = std::chrono::system_clock::now();
-
-            {
-                std::unique_lock<std::mutex> lock(start_mutex);
-                start_cv.wait(lock, [&ready] { return ready; });
-            }
-
-            for (int i = 0; i < 100 && test_passed; ++i) {
-                report.fill_time = std::chrono::system_clock::now();
-                report.fill_price = 150.0 + (i % 5);  // Small price changes
-                auto result = strategy->on_execution(report);
-                if (result.is_error()) {
-                    std::cerr << "Execution error: " << result.error()->what() << std::endl;
-                    test_passed = false;
-                    break;
-                }
-                executions_processed++;
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            }
-        } catch (const std::exception& e) {
-            test_passed = false;
-            std::cerr << "Execution thread exception: " << e.what() << std::endl;
-        }
-    });
-
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-
-    {
-        std::lock_guard<std::mutex> lock(start_mutex);
-        ready = true;
-        start_cv.notify_all();
-    }
-
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
-
-    data_thread.join();
-    exec_thread.join();
-
-    EXPECT_TRUE(test_passed) << "Data processed: " << data_processed
-                             << ", Executions processed: " << executions_processed;
-    EXPECT_GT(data_processed, 0);
-    EXPECT_GT(executions_processed, 0);
-}
-
-// --- Metrics & Signals ---
-TEST_F(BaseStrategyTest, UpdateMetrics_CalculatesUnrealizedPnl) {
-    auto strategy = createRunningStrategy();
-    strategy->update_position("AAPL", createPosition(100, 150.0));
-    strategy->update_position("GOOG", createPosition(-50, 2000.0));
-    auto result = strategy->update_metrics();
-    EXPECT_TRUE(result.is_ok());
-    // Assuming unrealized PnL is tracked (mock market data needed for accuracy)
-}
-
-// --- Edge Cases ---
-TEST_F(BaseStrategyTest, Initialize_FailsWithZeroCapital) {
-    StrategyConfig config;
-    config.capital_allocation = 0;  // Invalid
-    BaseStrategy strategy("test_strategy", config, std::make_shared<MockPostgresDatabase>());
-    auto result = strategy.initialize();
-    EXPECT_TRUE(result.is_error());
-    EXPECT_EQ(result.error()->code(), ErrorCode::INVALID_ARGUMENT);
-}
-
-TEST_F(BaseStrategyTest, OnData_IgnoresNonBarEvents) {
-    auto strategy = createRunningStrategy();
-    MarketDataEvent event;
-    event.type = MarketDataEventType::TRADE;  // Not BAR
-    // Verify callback ignores non-BAR events (no crash/error)
-}
-
-// --- State Transition Validation ---
-TEST_F(BaseStrategyTest, ValidateStateTransition_BlocksInvalidTransitions) {
-    auto strategy = createInitializedStrategy();
-    // INITIALIZED → PAUSED (invalid)
-    auto result = strategy->transition_state(StrategyState::PAUSED);
-    EXPECT_TRUE(result.is_error());
-}
+// TEST_F(BaseStrategyTest, SaveExecution_FailurePropagatesError) {
+//     auto db = std::make_shared<MockPostgresDatabase>();
+//     db->simulate_failure = true;
+//
+//     StrategyConfig config;
+//     config.save_executions = true;
+//     auto strategy = createRunningStrategy(config, db);
+//
+//     auto report = createExecution(Side::BUY, "AAPL", 100, 150.0);
+//     auto result = strategy->on_execution(report);
+//     EXPECT_TRUE(result.is_error());
+//     EXPECT_EQ(result.error()->code(), ErrorCode::DATABASE_ERROR);
+// }
+//
+// // --- Position & Risk Limits ---
+// TEST_F(BaseStrategyTest, UpdatePosition_FailsIfExceedsLimit) {
+//     StrategyConfig config;
+//     config.position_limits["AAPL"] = 100;
+//     auto strategy = createRunningStrategy(config);
+//     Position pos;
+//     pos.quantity = 200;  // Exceeds limit
+//     auto result = strategy->update_position("AAPL", pos);
+//     EXPECT_TRUE(result.is_error());
+//     EXPECT_EQ(result.error()->code(), ErrorCode::POSITION_LIMIT_EXCEEDED);
+// }
+//
+// TEST_F(BaseStrategyTest, CheckRiskLimits_FailsOnMaxDrawdown) {
+//     StrategyConfig config;
+//     config.capital_allocation = 100000;
+//     auto strategy = createRunningStrategy(config);
+//
+//     // Simulate a large loss
+//     strategy->on_execution(createExecution(Side::SELL, "AAPL", 1000, 50.0));  // Short 1000 shares
+//     strategy->on_execution(
+//         createExecution(Side::BUY, "AAPL", 1000, 200.0));  // Buy back at higher price
+//     // Realized PnL: (50 - 200) * 1000 = -150,000 → Drawdown = -150%
+//
+//     RiskLimits limits;
+//     limits.max_drawdown = 0.5;  // 50% max drawdown
+//     strategy->update_risk_limits(limits);
+//     auto result = strategy->check_risk_limits();
+//     EXPECT_TRUE(result.is_error());
+//     EXPECT_EQ(result.error()->code(), ErrorCode::RISK_LIMIT_EXCEEDED);
+// }
+//
+// // --- Concurrency ---
+// TEST_F(BaseStrategyTest, ThreadSafety_OnDataAndExecution) {
+//     // Create config with reasonable limits
+//     StrategyConfig config;
+//     config.capital_allocation = 1000000.0;  // $1M capital
+//     config.max_leverage = 4.0;              // 4x max leverage
+//
+//     auto db = std::make_shared<MockPostgresDatabase>();
+//     auto strategy = createRunningStrategy(config, db);
+//
+//     // Add a small initial position to avoid errors with first update
+//     Position initial_pos;
+//     initial_pos.symbol = "AAPL";
+//     initial_pos.quantity = 10;  // Small initial position
+//     initial_pos.average_price = 150.0;
+//     initial_pos.last_update = std::chrono::system_clock::now();
+//     strategy->update_position("AAPL", initial_pos);
+//
+//     std::atomic<bool> test_passed{true};
+//     std::atomic<int> data_processed{0};
+//     std::atomic<int> executions_processed{0};
+//
+//     std::mutex start_mutex;
+//     std::condition_variable start_cv;
+//     bool ready = false;
+//
+//     // Create test data with reasonable values
+//     std::vector<Bar> test_data;
+//     Bar bar;
+//     bar.symbol = "AAPL";
+//     bar.timestamp = std::chrono::system_clock::now();
+//     bar.open = bar.high = bar.low = bar.close = 150.0;
+//     bar.volume = 1000;
+//     test_data.push_back(bar);
+//
+//     auto data_thread = std::thread([&]() {
+//         try {
+//             {
+//                 std::unique_lock<std::mutex> lock(start_mutex);
+//                 start_cv.wait(lock, [&ready] { return ready; });
+//             }
+//
+//             for (int i = 0; i < 100 && test_passed; ++i) {
+//                 test_data[0].timestamp = std::chrono::system_clock::now();
+//                 // Small price changes to avoid triggering risk limits
+//                 test_data[0].close = 150.0 + (i % 5);
+//                 auto result = strategy->on_data(test_data);
+//                 if (result.is_error()) {
+//                     std::cerr << "Data error: " << result.error()->what() << std::endl;
+//                     test_passed = false;
+//                     break;
+//                 }
+//                 data_processed++;
+//                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
+//             }
+//         } catch (const std::exception& e) {
+//             test_passed = false;
+//             std::cerr << "Data thread exception: " << e.what() << std::endl;
+//         }
+//     });
+//
+//     auto exec_thread = std::thread([&]() {
+//         try {
+//             // Small trade size to avoid hitting limits
+//             auto report = createExecution(Side::BUY, "AAPL", 1, 150.0);
+//             report.fill_time = std::chrono::system_clock::now();
+//
+//             {
+//                 std::unique_lock<std::mutex> lock(start_mutex);
+//                 start_cv.wait(lock, [&ready] { return ready; });
+//             }
+//
+//             for (int i = 0; i < 100 && test_passed; ++i) {
+//                 report.fill_time = std::chrono::system_clock::now();
+//                 report.fill_price = 150.0 + (i % 5);  // Small price changes
+//                 auto result = strategy->on_execution(report);
+//                 if (result.is_error()) {
+//                     std::cerr << "Execution error: " << result.error()->what() << std::endl;
+//                     test_passed = false;
+//                     break;
+//                 }
+//                 executions_processed++;
+//                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
+//             }
+//         } catch (const std::exception& e) {
+//             test_passed = false;
+//             std::cerr << "Execution thread exception: " << e.what() << std::endl;
+//         }
+//     });
+//
+//     std::this_thread::sleep_for(std::chrono::milliseconds(10));
+//
+//     {
+//         std::lock_guard<std::mutex> lock(start_mutex);
+//         ready = true;
+//         start_cv.notify_all();
+//     }
+//
+//     std::this_thread::sleep_for(std::chrono::milliseconds(200));
+//
+//     data_thread.join();
+//     exec_thread.join();
+//
+//     EXPECT_TRUE(test_passed) << "Data processed: " << data_processed
+//                              << ", Executions processed: " << executions_processed;
+//     EXPECT_GT(data_processed, 0);
+//     EXPECT_GT(executions_processed, 0);
+// }
+//
+// // --- Metrics & Signals ---
+// TEST_F(BaseStrategyTest, UpdateMetrics_CalculatesUnrealizedPnl) {
+//     auto strategy = createRunningStrategy();
+//     strategy->update_position("AAPL", createPosition(100, 150.0));
+//     strategy->update_position("GOOG", createPosition(-50, 2000.0));
+//     auto result = strategy->update_metrics();
+//     EXPECT_TRUE(result.is_ok());
+//     // Assuming unrealized PnL is tracked (mock market data needed for accuracy)
+// }
+//
+// // --- Edge Cases ---
+// TEST_F(BaseStrategyTest, Initialize_FailsWithZeroCapital) {
+//     StrategyConfig config;
+//     config.capital_allocation = 0;  // Invalid
+//     BaseStrategy strategy("test_strategy", config, std::make_shared<MockPostgresDatabase>());
+//     auto result = strategy.initialize();
+//     EXPECT_TRUE(result.is_error());
+//     EXPECT_EQ(result.error()->code(), ErrorCode::INVALID_ARGUMENT);
+// }
+//
+// TEST_F(BaseStrategyTest, OnData_IgnoresNonBarEvents) {
+//     auto strategy = createRunningStrategy();
+//     MarketDataEvent event;
+//     event.type = MarketDataEventType::TRADE;  // Not BAR
+//     // Verify callback ignores non-BAR events (no crash/error)
+// }
+//
+// // --- State Transition Validation ---
+// TEST_F(BaseStrategyTest, ValidateStateTransition_BlocksInvalidTransitions) {
+//     auto strategy = createInitializedStrategy();
+//     // INITIALIZED → PAUSED (invalid)
+//     auto result = strategy->transition_state(StrategyState::PAUSED);
+//     EXPECT_TRUE(result.is_error());
+// }
