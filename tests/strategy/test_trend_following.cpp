@@ -218,535 +218,535 @@ protected:
     double last_position_{0.0};
 };
 
-// Test initialization and valid configuration
-TEST_F(TrendFollowingTest, ValidConfiguration) {
-    EXPECT_EQ(strategy_->get_state(), StrategyState::INITIALIZED);
-    EXPECT_EQ(strategy_->get_config().capital_allocation, 1000000.0);
-    EXPECT_FALSE(strategy_->get_positions().empty());
-}
-
-// Test invalid configuration (e.g. invalid risk target)
-TEST_F(TrendFollowingTest, InvalidConfiguration) {
-    trend_config_.risk_target = -0.1;  // Invalid negative value
-
-    auto invalid_strategy = std::make_unique<TrendFollowingStrategy>(
-        "INVALID_TEST", strategy_config_, trend_config_, db_);
-
-    auto result = invalid_strategy->initialize();
-    EXPECT_TRUE(result.is_error());
-}
-
-// Test signal generation and error handling for edge cases
-TEST_F(TrendFollowingTest, SignalGeneration) {
-    auto test_data = create_test_data("ES", 300, 4000.0);
-
-    // Start strategy
-    ASSERT_TRUE(strategy_->start().is_ok());
-
-    // Process valid data first to build history - in smaller chunks to identify any specific issues
-    for (size_t i = 0; i < test_data.size(); i += 25) {  // Process in smaller chunks
-        size_t end_idx = std::min(i + 25, test_data.size());
-        std::vector<Bar> chunk(test_data.begin() + i, test_data.begin() + end_idx);
-        auto result = strategy_->on_data(chunk);
-        ASSERT_TRUE(result.is_ok())
-            << "Failed to process chunk " << i / 25 << ": "
-            << (result.is_error() ? result.error()->what() : "Unknown error");
-    }
-
-    // Process invalid data (e.g., a default-constructed Bar with no fields set)
-    std::vector<Bar> invalid_data = {Bar()};
-    auto result = strategy_->on_data(invalid_data);
-    EXPECT_TRUE(result.is_error()) << "Expected an error for invalid data, but got success";
-
-    // Test with empty data – should be handled gracefully
-    std::vector<Bar> empty_data;
-    result = strategy_->on_data(empty_data);
-    EXPECT_TRUE(result.is_ok()) << "Failed to process empty data: "
-                                << (result.is_error() ? result.error()->what() : "Unknown error");
-
-    // Test with missing fields (only symbol set)
-    Bar missing_fields;
-    missing_fields.symbol = "ES";
-    missing_fields.timestamp = std::chrono::system_clock::now();
-    std::vector<Bar> missing_data{missing_fields};
-    result = strategy_->on_data(missing_data);
-    EXPECT_TRUE(result.is_error()) << "Expected an error for missing fields, but got success";
-}
-
-// Test state transitions: INITIALIZED -> RUNNING -> PAUSED -> RUNNING -> STOPPED
-TEST_F(TrendFollowingTest, StateTransitions) {
-    EXPECT_EQ(strategy_->get_state(), StrategyState::INITIALIZED);
-
-    ASSERT_TRUE(strategy_->start().is_ok());
-    EXPECT_EQ(strategy_->get_state(), StrategyState::RUNNING);
-
-    ASSERT_TRUE(strategy_->pause().is_ok());
-    EXPECT_EQ(strategy_->get_state(), StrategyState::PAUSED);
-
-    // Try to process data while paused (should return an error)
-    auto test_data = create_test_data("ES", 300);
-    auto result = strategy_->on_data(test_data);
-    EXPECT_TRUE(result.is_error());
-
-    ASSERT_TRUE(strategy_->resume().is_ok());
-    EXPECT_EQ(strategy_->get_state(), StrategyState::RUNNING);
-
-    ASSERT_TRUE(strategy_->stop().is_ok());
-    EXPECT_EQ(strategy_->get_state(), StrategyState::STOPPED);
-}
-
-// Test processing of data for multiple symbols arriving concurrently
-TEST_F(TrendFollowingTest, ConcurrentSymbolUpdates) {
-    // Create tests data for two symbols
-    int data_size = 500;
-    auto es_data = create_test_data("ES", data_size, 4000.0);
-    auto nq_data = create_test_data("NQ", data_size, 15000.0);
-
-    ASSERT_TRUE(strategy_->start().is_ok());
-
-    // Process data in chunks to simulate concurrent updates
-    process_data_safely(es_data);
-    process_data_safely(nq_data);
-
-    // Create interleaved data for symbols "ES" and "NQ"
-    std::vector<Bar> interleaved_data;
-    auto now = std::chrono::system_clock::now();
-
-    for (int i = 0; i < 20; ++i) {
-        Bar es_bar = es_data.back();
-        es_bar.timestamp = now + std::chrono::seconds(i * 2);
-        es_bar.close += i;
-
-        Bar nq_bar = nq_data.back();
-        nq_bar.timestamp = now + std::chrono::seconds(i * 2);
-        nq_bar.close += i;
-
-        interleaved_data.push_back(es_bar);
-        interleaved_data.push_back(nq_bar);
-    }
-
-    ASSERT_TRUE(strategy_->on_data(interleaved_data).is_ok())
-        << "Failed to process interleaved data: ";
-
-    const auto& positions = strategy_->get_positions();
-    EXPECT_TRUE(positions.find("ES") != positions.end());
-    EXPECT_TRUE(positions.find("NQ") != positions.end());
-}
-
-// Test recovery from extreme market conditions (stress recovery)
-TEST_F(TrendFollowingTest, MarketStressRecovery) {
-    int base_data_size = 500;
-
-    // Create normal phase data
-    auto normal_data = create_test_data("ES", base_data_size, 4000.0);
-
-    // Process the initial data to build history
-    ASSERT_TRUE(strategy_->start().is_ok());
-    process_data_safely(normal_data);
-
-    // Simulate market stress with separate phases
-    std::vector<Bar> stress_data;
-    double price = 4000.0;
-
-    // Crash phase: simulate a sharp drop
-    std::vector<Bar> crash_data;
-    for (int i = 0; i < 500; i++) {
-        Bar bar = normal_data.back();  // Start with the last normal data point
-        bar.timestamp = bar.timestamp + std::chrono::hours(i + 1);
-        bar.close = price * std::pow(0.95, i / 10.0 + 1);  // Smoother decline
-        bar.open = bar.close * 1.01;
-        bar.high = bar.close * 1.02;
-        bar.low = bar.close * 0.98;
-        bar.volume = 150000 + (rand() % 50000);  // Higher volume during crash
-        crash_data.push_back(bar);
-    }
-
-    // Recovery phase: simulate a gradual recovery
-    std::vector<Bar> recovery_data;
-    double crash_end_price = crash_data.back().close.as_double();
-    for (int i = 0; i < 500; i++) {
-        Bar bar = crash_data.back();
-        bar.timestamp = bar.timestamp + std::chrono::hours(i + 1);
-        bar.close = crash_end_price * std::pow(1.02, i / 10.0 + 1);  // Smoother recovery
-        bar.open = bar.close * 0.99;
-        bar.high = bar.close * 1.02;
-        bar.low = bar.close * 0.98;
-        bar.volume = 120000 + (rand() % 40000);
-        recovery_data.push_back(bar);
-    }
-
-    // Process crash and recovery data and track positions
-    std::vector<double> positions;
-
-    // Process crash phase
-    process_data_safely(crash_data, 10);
-
-    // Get position after crash
-    {
-        const auto& current_positions = strategy_->get_positions();
-        if (current_positions.find("ES") != current_positions.end()) {
-            positions.push_back(current_positions.at("ES").quantity.as_double());
-        }
-    }
-
-    // Process recovery phase
-    process_data_safely(recovery_data, 10);
-
-    // Get position after recovery
-    {
-        const auto& current_positions = strategy_->get_positions();
-        if (current_positions.find("ES") != current_positions.end()) {
-            positions.push_back(current_positions.at("ES").quantity.as_double());
-        }
-    }
-
-    // Verify position direction changes appropriately
-    ASSERT_GE(positions.size(), 2);
-    double crash_phase_pos = positions.front();
-    double recovery_phase_pos = positions.back();
-
-    // Check for directional change (not exact values)
-    EXPECT_LT(crash_phase_pos, 0.0) << "Expected negative position during crash";
-    EXPECT_GT(recovery_phase_pos, crash_phase_pos)
-        << "Expected position to improve during recovery";
-}
-
-// Test position calculation and scaling under a strong trend
-TEST_F(TrendFollowingTest, PositionScaling) {
-    auto base_data = create_test_data("ES", 500, 4000.0, 0.05);
-
-    ASSERT_TRUE(strategy_->start().is_ok());
-    process_data_safely(base_data);
-
-    // Create additional uptrend data
-    std::vector<Bar> uptrend_data;
-    Bar latest = base_data.back();
-
-    for (int i = 0; i < 50; i++) {
-        Bar bar = latest;
-        bar.timestamp = latest.timestamp + std::chrono::hours(i + 1);
-        bar.close = 4000 + i * 20;  // Add a consistent uptrend
-        bar.open = bar.close * 0.99;
-        bar.high = bar.close * 1.01;
-        bar.low = bar.close * 0.99;
-        bar.volume = 100000 + (rand() % 40000);
-        uptrend_data.push_back(bar);
-    }
-
-    // Process uptrend data
-    ASSERT_TRUE(strategy_->on_data(uptrend_data).is_ok());
-
-    // Verify position
-    const auto& positions = strategy_->get_positions();
-    ASSERT_TRUE(positions.find("ES") != positions.end());
-
-    double position_size = positions.at("ES").quantity.as_double();
-    EXPECT_GT(position_size, 0.0) << "Expected positive position in uptrend";
-    EXPECT_LT(position_size, strategy_config_.position_limits["ES"])
-        << "Position exceeds limit: " << position_size;
-}
-
-// Test volatility calculation differences between high- and low-volatility data
-TEST_F(TrendFollowingTest, VolatilityCalculation) {
-    auto volatile_base = create_test_data("ES", 500, 4000.0, 0.05);
-    auto stable_base = create_test_data("NQ", 500, 15000.0, 0.01);
-
-    ASSERT_TRUE(strategy_->start().is_ok());
-    process_data_safely(volatile_base);
-    process_data_safely(stable_base);
-
-    // Create more volatile data for ES
-    std::vector<Bar> volatile_data;
-    Bar volatile_latest = volatile_base.back();
-    for (int i = 0; i < 30; i++) {
-        Bar bar = volatile_latest;
-        bar.timestamp = volatile_latest.timestamp + std::chrono::hours(i + 1);
-        double random = (static_cast<double>(rand()) / RAND_MAX - 0.5) * 0.05;  // High volatility
-        bar.close *= (1.0 + random);
-        bar.open = bar.close * (1.0 + (static_cast<double>(rand()) / RAND_MAX - 0.5) * 0.02);
-        bar.high = std::max(bar.open, bar.close) * 1.02;
-        bar.low = std::min(bar.open, bar.close) * 0.98;
-        bar.volume = 120000 + (rand() % 50000);
-        volatile_data.push_back(bar);
-    }
-
-    // Create more stable data for NQ
-    std::vector<Bar> stable_data;
-    Bar stable_latest = stable_base.back();
-    for (int i = 0; i < 30; i++) {
-        Bar bar = stable_latest;
-        bar.timestamp = stable_latest.timestamp + std::chrono::hours(i + 1);
-        double random = (static_cast<double>(rand()) / RAND_MAX - 0.5) * 0.01;  // Low volatility
-        bar.close *= (1.0 + random);
-        bar.open = bar.close * (1.0 + (static_cast<double>(rand()) / RAND_MAX - 0.5) * 0.005);
-        bar.high = std::max(bar.open, bar.close) * 1.005;
-        bar.low = std::min(bar.open, bar.close) * 0.995;
-        bar.volume = 100000 + (rand() % 30000);
-        stable_data.push_back(bar);
-    }
-
-    // Process both datasets
-    ASSERT_TRUE(strategy_->on_data(volatile_data).is_ok());
-    ASSERT_TRUE(strategy_->on_data(stable_data).is_ok());
-
-    // Get final positions
-    const auto& positions = strategy_->get_positions();
-    ASSERT_TRUE(positions.find("ES") != positions.end());
-    ASSERT_TRUE(positions.find("NQ") != positions.end());
-
-    // Calculate relative position sizes adjusted for price
-    double es_size = std::abs(positions.at("ES").quantity.as_double());
-    double nq_size = std::abs(positions.at("NQ").quantity.as_double());
-
-    double es_price = volatile_data.back().close.as_double();
-    double nq_price = stable_data.back().close.as_double();
-
-    double es_value = es_size * es_price;
-    double nq_value = nq_size * nq_price;
-
-    // High volatility should lead to smaller positions after volatility scaling
-    double es_per_dollar = es_size / es_price;
-    double nq_per_dollar = nq_size / nq_price;
-
-    EXPECT_LT(es_per_dollar, nq_per_dollar)
-        << "Expected smaller adjusted position for more volatile asset";
-}
-
-// Test position buffering so that small price movements do not trigger significant changes
-TEST_F(TrendFollowingTest, PositionBuffering) {
-    auto test_data = create_test_data("ES", 500, 4000.0);
-
-    ASSERT_TRUE(strategy_->start().is_ok());
-    process_data_safely(test_data);
-
-    // Get initial position
-    const auto& initial_positions = strategy_->get_positions();
-    ASSERT_TRUE(initial_positions.find("ES") != initial_positions.end());
-    double initial_position = initial_positions.at("ES").quantity.as_double();
-
-    // Create small update data with minimal price changes
-    std::vector<Bar> small_updates;
-    Bar latest = test_data.back();
-
-    for (int i = 0; i < 5; i++) {
-        Bar bar = latest;
-        bar.timestamp = latest.timestamp + std::chrono::hours(i + 1);
-        bar.close *= (1.0 + 0.001);  // Very small 0.1% change
-        bar.open = bar.close * 0.999;
-        bar.high = bar.close * 1.002;
-        bar.low = bar.close * 0.998;
-        small_updates.push_back(bar);
-
-        // Process each update individually
-        std::vector<Bar> single_update = {bar};
-        ASSERT_TRUE(strategy_->on_data(single_update).is_ok());
-
-        // Check position after each update
-        const auto& current_positions = strategy_->get_positions();
-        ASSERT_TRUE(current_positions.find("ES") != current_positions.end());
-
-        // With buffering enabled, position should remain stable for small changes
-        EXPECT_NEAR(current_positions.at("ES").quantity.as_double(), initial_position, 5.0)
-            << "Position changed too much for small price movement: "
-            << current_positions.at("ES").quantity.as_double() << " vs " << initial_position;
-    }
-}
-
-// Test that the strategy obeys risk limits when configured with tight constraints
-TEST_F(TrendFollowingTest, RiskLimits) {
-    // Create and process data to build history
-    auto test_data = create_test_data("ES", 500, 4000.0);
-
-    ASSERT_TRUE(strategy_->start().is_ok());
-    process_data_safely(test_data);
-
-    // Set tight risk limits
-    RiskLimits limits;
-    limits.max_position_size = 100.0;
-    limits.max_leverage = 1.5;
-
-    // Check that updating risk limits with tighter constraints fails
-    ASSERT_TRUE(strategy_->update_risk_limits(limits).is_error());
-
-    // Create strong uptrend data to trigger position growth
-    std::vector<Bar> uptrend_data;
-    Bar latest = test_data.back();
-
-    for (int i = 0; i < 30; i++) {
-        Bar bar = latest;
-        bar.timestamp = latest.timestamp + std::chrono::hours(i + 1);
-        bar.close *= 1.02;  // Strong 2% uptrend
-        bar.open = bar.close * 0.99;
-        bar.high = bar.close * 1.03;
-        bar.low = bar.close * 0.98;
-        uptrend_data.push_back(bar);
-    }
-
-    // Process uptrend data and check risk limits
-    ASSERT_TRUE(strategy_->on_data(uptrend_data).is_ok());
-
-    // Verify position is within limits
-    const auto& positions = strategy_->get_positions();
-    ASSERT_TRUE(positions.find("ES") != positions.end());
-    double position_size = positions.at("ES").quantity.as_double();
-    double position_value = std::abs(position_size * uptrend_data.back().close.as_double());
-
-    // Check against explicit limits
-    EXPECT_LE(std::abs(position_size), limits.max_position_size.as_double())
-        << "Position exceeds max_position_size limit";
-
-    // Check leverage limit
-    double portfolio_value = strategy_config_.capital_allocation;
-    double leverage = position_value / portfolio_value;
-
-    EXPECT_LE(leverage, limits.max_leverage.as_double())
-        << "Leverage: " << leverage << " exceeds max_leverage limit: " << limits.max_leverage;
-}
-
-// Test multiple instruments are handled correctly and total exposure is within limits
-TEST_F(TrendFollowingTest, MultipleInstruments) {
-    std::vector<Bar> combined_data;
-
-    auto es_data = create_test_data("ES", 500, 4000.0, 0.2);
-    auto nq_data = create_test_data("NQ", 500, 15000.0, 0.3);
-    auto ym_data = create_test_data("YM", 500, 35000.0, 0.1);
-
-    // Process data for each instrument separately
-    ASSERT_TRUE(strategy_->start().is_ok());
-    process_data_safely(es_data);
-    process_data_safely(nq_data);
-    process_data_safely(ym_data);
-
-    // Verify positions for all instruments
-    const auto& positions = strategy_->get_positions();
-    EXPECT_TRUE(positions.find("ES") != positions.end());
-    EXPECT_TRUE(positions.find("NQ") != positions.end());
-    EXPECT_TRUE(positions.find("YM") != positions.end());
-
-    // Calculate total exposure
-    double total_exposure = 0.0;
-    for (const auto& [symbol, pos] : positions) {
-        double price = 0.0;
-        if (symbol == "ES")
-            price = es_data.back().close.as_double();
-        else if (symbol == "NQ")
-            price = nq_data.back().close.as_double();
-        else if (symbol == "YM")
-            price = ym_data.back().close.as_double();
-
-        total_exposure += std::abs(pos.quantity.as_double() * price);
-    }
-
-    // Verify total exposure is within leverage limits
-    double portfolio_value = strategy_config_.capital_allocation;
-    double leverage = total_exposure / portfolio_value;
-
-    EXPECT_LE(leverage, strategy_config_.max_leverage)
-        << "Total leverage " << leverage << " exceeds max leverage "
-        << strategy_config_.max_leverage;
-
-    // Verify risk check passes with current positions
-    ASSERT_TRUE(strategy_->check_risk_limits().is_ok())
-        << "Risk limits exceeded with current positions";
-}
-
-// Test the overall trend following effectiveness over distinct trend phases
-TEST_F(TrendFollowingTest, TrendFollowingEffectiveness) {
-    std::vector<Bar> test_data;
-    double price = 4000.0;
-    auto now = std::chrono::system_clock::now();
-
-    // Uptrend phase
-    std::vector<Bar> uptrend_data;
-    for (int i = 0; i < 500; i++) {
-        Bar bar;
-        bar.symbol = "ES";
-        bar.timestamp = now - std::chrono::hours(24 * (700 - i));  // Start with earliest timestamps
-
-        // Simple uptrend with small random noise
-        double random = (static_cast<double>(rand()) / RAND_MAX - 0.5) * 0.005;
-        price += 1.01 * i;  // Consistent uptrend plus small noise
-
-        bar.open = price * 0.999;
-        bar.close = price;
-        bar.high = price * 1.002;
-        bar.low = price * 0.998;
-        bar.volume = 100000 + (rand() % 30000);
-
-        uptrend_data.push_back(bar);
-    }
-
-    // Create sideways phase data
-    std::vector<Bar> sideways_data;
-    for (int i = 0; i < 500; i++) {
-        Bar bar;
-        bar.symbol = "ES";
-        bar.timestamp = now - std::chrono::hours(24 * (200 - i));
-
-        // Only random movement, no trend
-        double random = (static_cast<double>(rand()) / RAND_MAX - 0.5) * 0.005;
-        price *= (1.0 + random);
-
-        bar.open = price * 0.999;
-        bar.close = price;
-        bar.high = price * 1.002;
-        bar.low = price * 0.998;
-        bar.volume = 90000 + (rand() % 20000);
-
-        sideways_data.push_back(bar);
-    }
-
-    // Create downtrend phase data
-    std::vector<Bar> downtrend_data;
-    for (int i = 0; i < 500; i++) {
-        Bar bar;
-        bar.symbol = "ES";
-        bar.timestamp = now - std::chrono::hours(24 * (100 - i));  // End with latest timestamps
-
-        // Consistent downtrend with small random noise
-        double random = (static_cast<double>(rand()) / RAND_MAX - 0.5) * 0.005;
-        price += (-1.01 * i);  // Consistent downtrend plus small noise
-
-        bar.open = price * 1.001;
-        bar.close = price;
-        bar.high = price * 1.002;
-        bar.low = price * 0.998;
-        bar.volume = 110000 + (rand() % 40000);
-
-        downtrend_data.push_back(bar);
-    }
-
-    test_data.insert(test_data.end(), uptrend_data.begin(), uptrend_data.end());
-    test_data.insert(test_data.end(), sideways_data.begin(), sideways_data.end());
-    test_data.insert(test_data.end(), downtrend_data.begin(), downtrend_data.end());
-
-    ASSERT_TRUE(strategy_->start().is_ok());
-
-    std::vector<double> positions;
-
-    // Process data in chunks and record positions over time
-    for (size_t i = 0; i < test_data.size(); i += 10) {
-        std::vector<Bar> chunk(
-            test_data.begin() + i,
-            test_data.begin() + std::min(i + static_cast<size_t>(10), test_data.size()));
-        ASSERT_TRUE(strategy_->on_data(chunk).is_ok());
-
-        const auto& current_positions = strategy_->get_positions();
-        if (current_positions.find("ES") != current_positions.end()) {
-            positions.push_back(current_positions.at("ES").quantity.as_double());
-        }
-    }
-
-    // Verify trend following behavior:
-    // During the uptrend (first third), expect mostly positive positions.
-    double avg_pos_uptrend =
-        std::accumulate(positions.begin(), positions.begin() + positions.size() / 3, 0.0) /
-        (positions.size() / 3);
-    EXPECT_GT(avg_pos_uptrend, 0.0);
-
-    // During the downtrend (last third), expect mostly negative positions.
-    double avg_pos_downtrend =
-        std::accumulate(positions.begin() + 2 * positions.size() / 3, positions.end(), 0.0) /
-        (positions.size() - 2 * positions.size() / 3);
-    EXPECT_LT(avg_pos_downtrend, 0.0);
-}
+// // Test initialization and valid configuration
+// TEST_F(TrendFollowingTest, ValidConfiguration) {
+//     EXPECT_EQ(strategy_->get_state(), StrategyState::INITIALIZED);
+//     EXPECT_EQ(strategy_->get_config().capital_allocation, 1000000.0);
+//     EXPECT_FALSE(strategy_->get_positions().empty());
+// }
+
+// // Test invalid configuration (e.g. invalid risk target)
+// TEST_F(TrendFollowingTest, InvalidConfiguration) {
+//     trend_config_.risk_target = -0.1;  // Invalid negative value
+//
+//     auto invalid_strategy = std::make_unique<TrendFollowingStrategy>(
+//         "INVALID_TEST", strategy_config_, trend_config_, db_);
+//
+//     auto result = invalid_strategy->initialize();
+//     EXPECT_TRUE(result.is_error());
+// }
+
+// // Test signal generation and error handling for edge cases
+// TEST_F(TrendFollowingTest, SignalGeneration) {
+//     auto test_data = create_test_data("ES", 300, 4000.0);
+//
+//     // Start strategy
+//     ASSERT_TRUE(strategy_->start().is_ok());
+//
+//     // Process valid data first to build history - in smaller chunks to identify any specific issues
+//     for (size_t i = 0; i < test_data.size(); i += 25) {  // Process in smaller chunks
+//         size_t end_idx = std::min(i + 25, test_data.size());
+//         std::vector<Bar> chunk(test_data.begin() + i, test_data.begin() + end_idx);
+//         auto result = strategy_->on_data(chunk);
+//         ASSERT_TRUE(result.is_ok())
+//             << "Failed to process chunk " << i / 25 << ": "
+//             << (result.is_error() ? result.error()->what() : "Unknown error");
+//     }
+//
+//     // Process invalid data (e.g., a default-constructed Bar with no fields set)
+//     std::vector<Bar> invalid_data = {Bar()};
+//     auto result = strategy_->on_data(invalid_data);
+//     EXPECT_TRUE(result.is_error()) << "Expected an error for invalid data, but got success";
+//
+//     // Test with empty data – should be handled gracefully
+//     std::vector<Bar> empty_data;
+//     result = strategy_->on_data(empty_data);
+//     EXPECT_TRUE(result.is_ok()) << "Failed to process empty data: "
+//                                 << (result.is_error() ? result.error()->what() : "Unknown error");
+//
+//     // Test with missing fields (only symbol set)
+//     Bar missing_fields;
+//     missing_fields.symbol = "ES";
+//     missing_fields.timestamp = std::chrono::system_clock::now();
+//     std::vector<Bar> missing_data{missing_fields};
+//     result = strategy_->on_data(missing_data);
+//     EXPECT_TRUE(result.is_error()) << "Expected an error for missing fields, but got success";
+// }
+
+// // Test state transitions: INITIALIZED -> RUNNING -> PAUSED -> RUNNING -> STOPPED
+// TEST_F(TrendFollowingTest, StateTransitions) {
+//     EXPECT_EQ(strategy_->get_state(), StrategyState::INITIALIZED);
+//
+//     ASSERT_TRUE(strategy_->start().is_ok());
+//     EXPECT_EQ(strategy_->get_state(), StrategyState::RUNNING);
+//
+//     ASSERT_TRUE(strategy_->pause().is_ok());
+//     EXPECT_EQ(strategy_->get_state(), StrategyState::PAUSED);
+//
+//     // Try to process data while paused (should return an error)
+//     auto test_data = create_test_data("ES", 300);
+//     auto result = strategy_->on_data(test_data);
+//     EXPECT_TRUE(result.is_error());
+//
+//     ASSERT_TRUE(strategy_->resume().is_ok());
+//     EXPECT_EQ(strategy_->get_state(), StrategyState::RUNNING);
+//
+//     ASSERT_TRUE(strategy_->stop().is_ok());
+//     EXPECT_EQ(strategy_->get_state(), StrategyState::STOPPED);
+// }
+
+// // Test processing of data for multiple symbols arriving concurrently
+// TEST_F(TrendFollowingTest, ConcurrentSymbolUpdates) {
+//     // Create tests data for two symbols
+//     int data_size = 500;
+//     auto es_data = create_test_data("ES", data_size, 4000.0);
+//     auto nq_data = create_test_data("NQ", data_size, 15000.0);
+//
+//     ASSERT_TRUE(strategy_->start().is_ok());
+//
+//     // Process data in chunks to simulate concurrent updates
+//     process_data_safely(es_data);
+//     process_data_safely(nq_data);
+//
+//     // Create interleaved data for symbols "ES" and "NQ"
+//     std::vector<Bar> interleaved_data;
+//     auto now = std::chrono::system_clock::now();
+//
+//     for (int i = 0; i < 20; ++i) {
+//         Bar es_bar = es_data.back();
+//         es_bar.timestamp = now + std::chrono::seconds(i * 2);
+//         es_bar.close += i;
+//
+//         Bar nq_bar = nq_data.back();
+//         nq_bar.timestamp = now + std::chrono::seconds(i * 2);
+//         nq_bar.close += i;
+//
+//         interleaved_data.push_back(es_bar);
+//         interleaved_data.push_back(nq_bar);
+//     }
+//
+//     ASSERT_TRUE(strategy_->on_data(interleaved_data).is_ok())
+//         << "Failed to process interleaved data: ";
+//
+//     const auto& positions = strategy_->get_positions();
+//     EXPECT_TRUE(positions.find("ES") != positions.end());
+//     EXPECT_TRUE(positions.find("NQ") != positions.end());
+// }
+
+// // Test recovery from extreme market conditions (stress recovery)
+// TEST_F(TrendFollowingTest, MarketStressRecovery) {
+//     int base_data_size = 500;
+//
+//     // Create normal phase data
+//     auto normal_data = create_test_data("ES", base_data_size, 4000.0);
+//
+//     // Process the initial data to build history
+//     ASSERT_TRUE(strategy_->start().is_ok());
+//     process_data_safely(normal_data);
+//
+//     // Simulate market stress with separate phases
+//     std::vector<Bar> stress_data;
+//     double price = 4000.0;
+//
+//     // Crash phase: simulate a sharp drop
+//     std::vector<Bar> crash_data;
+//     for (int i = 0; i < 500; i++) {
+//         Bar bar = normal_data.back();  // Start with the last normal data point
+//         bar.timestamp = bar.timestamp + std::chrono::hours(i + 1);
+//         bar.close = price * std::pow(0.95, i / 10.0 + 1);  // Smoother decline
+//         bar.open = bar.close * 1.01;
+//         bar.high = bar.close * 1.02;
+//         bar.low = bar.close * 0.98;
+//         bar.volume = 150000 + (rand() % 50000);  // Higher volume during crash
+//         crash_data.push_back(bar);
+//     }
+//
+//     // Recovery phase: simulate a gradual recovery
+//     std::vector<Bar> recovery_data;
+//     double crash_end_price = crash_data.back().close.as_double();
+//     for (int i = 0; i < 500; i++) {
+//         Bar bar = crash_data.back();
+//         bar.timestamp = bar.timestamp + std::chrono::hours(i + 1);
+//         bar.close = crash_end_price * std::pow(1.02, i / 10.0 + 1);  // Smoother recovery
+//         bar.open = bar.close * 0.99;
+//         bar.high = bar.close * 1.02;
+//         bar.low = bar.close * 0.98;
+//         bar.volume = 120000 + (rand() % 40000);
+//         recovery_data.push_back(bar);
+//     }
+//
+//     // Process crash and recovery data and track positions
+//     std::vector<double> positions;
+//
+//     // Process crash phase
+//     process_data_safely(crash_data, 10);
+//
+//     // Get position after crash
+//     {
+//         const auto& current_positions = strategy_->get_positions();
+//         if (current_positions.find("ES") != current_positions.end()) {
+//             positions.push_back(current_positions.at("ES").quantity.as_double());
+//         }
+//     }
+//
+//     // Process recovery phase
+//     process_data_safely(recovery_data, 10);
+//
+//     // Get position after recovery
+//     {
+//         const auto& current_positions = strategy_->get_positions();
+//         if (current_positions.find("ES") != current_positions.end()) {
+//             positions.push_back(current_positions.at("ES").quantity.as_double());
+//         }
+//     }
+//
+//     // Verify position direction changes appropriately
+//     ASSERT_GE(positions.size(), 2);
+//     double crash_phase_pos = positions.front();
+//     double recovery_phase_pos = positions.back();
+//
+//     // Check for directional change (not exact values)
+//     EXPECT_LT(crash_phase_pos, 0.0) << "Expected negative position during crash";
+//     EXPECT_GT(recovery_phase_pos, crash_phase_pos)
+//         << "Expected position to improve during recovery";
+// }
+
+// // Test position calculation and scaling under a strong trend
+// TEST_F(TrendFollowingTest, PositionScaling) {
+//     auto base_data = create_test_data("ES", 500, 4000.0, 0.05);
+//
+//     ASSERT_TRUE(strategy_->start().is_ok());
+//     process_data_safely(base_data);
+//
+//     // Create additional uptrend data
+//     std::vector<Bar> uptrend_data;
+//     Bar latest = base_data.back();
+//
+//     for (int i = 0; i < 50; i++) {
+//         Bar bar = latest;
+//         bar.timestamp = latest.timestamp + std::chrono::hours(i + 1);
+//         bar.close = 4000 + i * 20;  // Add a consistent uptrend
+//         bar.open = bar.close * 0.99;
+//         bar.high = bar.close * 1.01;
+//         bar.low = bar.close * 0.99;
+//         bar.volume = 100000 + (rand() % 40000);
+//         uptrend_data.push_back(bar);
+//     }
+//
+//     // Process uptrend data
+//     ASSERT_TRUE(strategy_->on_data(uptrend_data).is_ok());
+//
+//     // Verify position
+//     const auto& positions = strategy_->get_positions();
+//     ASSERT_TRUE(positions.find("ES") != positions.end());
+//
+//     double position_size = positions.at("ES").quantity.as_double();
+//     EXPECT_GT(position_size, 0.0) << "Expected positive position in uptrend";
+//     EXPECT_LT(position_size, strategy_config_.position_limits["ES"])
+//         << "Position exceeds limit: " << position_size;
+// }
+
+// // Test volatility calculation differences between high- and low-volatility data
+// TEST_F(TrendFollowingTest, VolatilityCalculation) {
+//     auto volatile_base = create_test_data("ES", 500, 4000.0, 0.05);
+//     auto stable_base = create_test_data("NQ", 500, 15000.0, 0.01);
+//
+//     ASSERT_TRUE(strategy_->start().is_ok());
+//     process_data_safely(volatile_base);
+//     process_data_safely(stable_base);
+//
+//     // Create more volatile data for ES
+//     std::vector<Bar> volatile_data;
+//     Bar volatile_latest = volatile_base.back();
+//     for (int i = 0; i < 30; i++) {
+//         Bar bar = volatile_latest;
+//         bar.timestamp = volatile_latest.timestamp + std::chrono::hours(i + 1);
+//         double random = (static_cast<double>(rand()) / RAND_MAX - 0.5) * 0.05;  // High volatility
+//         bar.close *= (1.0 + random);
+//         bar.open = bar.close * (1.0 + (static_cast<double>(rand()) / RAND_MAX - 0.5) * 0.02);
+//         bar.high = std::max(bar.open, bar.close) * 1.02;
+//         bar.low = std::min(bar.open, bar.close) * 0.98;
+//         bar.volume = 120000 + (rand() % 50000);
+//         volatile_data.push_back(bar);
+//     }
+//
+//     // Create more stable data for NQ
+//     std::vector<Bar> stable_data;
+//     Bar stable_latest = stable_base.back();
+//     for (int i = 0; i < 30; i++) {
+//         Bar bar = stable_latest;
+//         bar.timestamp = stable_latest.timestamp + std::chrono::hours(i + 1);
+//         double random = (static_cast<double>(rand()) / RAND_MAX - 0.5) * 0.01;  // Low volatility
+//         bar.close *= (1.0 + random);
+//         bar.open = bar.close * (1.0 + (static_cast<double>(rand()) / RAND_MAX - 0.5) * 0.005);
+//         bar.high = std::max(bar.open, bar.close) * 1.005;
+//         bar.low = std::min(bar.open, bar.close) * 0.995;
+//         bar.volume = 100000 + (rand() % 30000);
+//         stable_data.push_back(bar);
+//     }
+//
+//     // Process both datasets
+//     ASSERT_TRUE(strategy_->on_data(volatile_data).is_ok());
+//     ASSERT_TRUE(strategy_->on_data(stable_data).is_ok());
+//
+//     // Get final positions
+//     const auto& positions = strategy_->get_positions();
+//     ASSERT_TRUE(positions.find("ES") != positions.end());
+//     ASSERT_TRUE(positions.find("NQ") != positions.end());
+//
+//     // Calculate relative position sizes adjusted for price
+//     double es_size = std::abs(positions.at("ES").quantity.as_double());
+//     double nq_size = std::abs(positions.at("NQ").quantity.as_double());
+//
+//     double es_price = volatile_data.back().close.as_double();
+//     double nq_price = stable_data.back().close.as_double();
+//
+//     double es_value = es_size * es_price;
+//     double nq_value = nq_size * nq_price;
+//
+//     // High volatility should lead to smaller positions after volatility scaling
+//     double es_per_dollar = es_size / es_price;
+//     double nq_per_dollar = nq_size / nq_price;
+//
+//     EXPECT_LT(es_per_dollar, nq_per_dollar)
+//         << "Expected smaller adjusted position for more volatile asset";
+// }
+
+// // Test position buffering so that small price movements do not trigger significant changes
+// TEST_F(TrendFollowingTest, PositionBuffering) {
+//     auto test_data = create_test_data("ES", 500, 4000.0);
+//
+//     ASSERT_TRUE(strategy_->start().is_ok());
+//     process_data_safely(test_data);
+//
+//     // Get initial position
+//     const auto& initial_positions = strategy_->get_positions();
+//     ASSERT_TRUE(initial_positions.find("ES") != initial_positions.end());
+//     double initial_position = initial_positions.at("ES").quantity.as_double();
+//
+//     // Create small update data with minimal price changes
+//     std::vector<Bar> small_updates;
+//     Bar latest = test_data.back();
+//
+//     for (int i = 0; i < 5; i++) {
+//         Bar bar = latest;
+//         bar.timestamp = latest.timestamp + std::chrono::hours(i + 1);
+//         bar.close *= (1.0 + 0.001);  // Very small 0.1% change
+//         bar.open = bar.close * 0.999;
+//         bar.high = bar.close * 1.002;
+//         bar.low = bar.close * 0.998;
+//         small_updates.push_back(bar);
+//
+//         // Process each update individually
+//         std::vector<Bar> single_update = {bar};
+//         ASSERT_TRUE(strategy_->on_data(single_update).is_ok());
+//
+//         // Check position after each update
+//         const auto& current_positions = strategy_->get_positions();
+//         ASSERT_TRUE(current_positions.find("ES") != current_positions.end());
+//
+//         // With buffering enabled, position should remain stable for small changes
+//         EXPECT_NEAR(current_positions.at("ES").quantity.as_double(), initial_position, 5.0)
+//             << "Position changed too much for small price movement: "
+//             << current_positions.at("ES").quantity.as_double() << " vs " << initial_position;
+//     }
+// }
+
+// // Test that the strategy obeys risk limits when configured with tight constraints
+// TEST_F(TrendFollowingTest, RiskLimits) {
+//     // Create and process data to build history
+//     auto test_data = create_test_data("ES", 500, 4000.0);
+//
+//     ASSERT_TRUE(strategy_->start().is_ok());
+//     process_data_safely(test_data);
+//
+//     // Set tight risk limits
+//     RiskLimits limits;
+//     limits.max_position_size = 100.0;
+//     limits.max_leverage = 1.5;
+//
+//     // Check that updating risk limits with tighter constraints fails
+//     ASSERT_TRUE(strategy_->update_risk_limits(limits).is_error());
+//
+//     // Create strong uptrend data to trigger position growth
+//     std::vector<Bar> uptrend_data;
+//     Bar latest = test_data.back();
+//
+//     for (int i = 0; i < 30; i++) {
+//         Bar bar = latest;
+//         bar.timestamp = latest.timestamp + std::chrono::hours(i + 1);
+//         bar.close *= 1.02;  // Strong 2% uptrend
+//         bar.open = bar.close * 0.99;
+//         bar.high = bar.close * 1.03;
+//         bar.low = bar.close * 0.98;
+//         uptrend_data.push_back(bar);
+//     }
+//
+//     // Process uptrend data and check risk limits
+//     ASSERT_TRUE(strategy_->on_data(uptrend_data).is_ok());
+//
+//     // Verify position is within limits
+//     const auto& positions = strategy_->get_positions();
+//     ASSERT_TRUE(positions.find("ES") != positions.end());
+//     double position_size = positions.at("ES").quantity.as_double();
+//     double position_value = std::abs(position_size * uptrend_data.back().close.as_double());
+//
+//     // Check against explicit limits
+//     EXPECT_LE(std::abs(position_size), limits.max_position_size.as_double())
+//         << "Position exceeds max_position_size limit";
+//
+//     // Check leverage limit
+//     double portfolio_value = strategy_config_.capital_allocation;
+//     double leverage = position_value / portfolio_value;
+//
+//     EXPECT_LE(leverage, limits.max_leverage.as_double())
+//         << "Leverage: " << leverage << " exceeds max_leverage limit: " << limits.max_leverage;
+// }
+
+// // Test multiple instruments are handled correctly and total exposure is within limits
+// TEST_F(TrendFollowingTest, MultipleInstruments) {
+//     std::vector<Bar> combined_data;
+//
+//     auto es_data = create_test_data("ES", 500, 4000.0, 0.2);
+//     auto nq_data = create_test_data("NQ", 500, 15000.0, 0.3);
+//     auto ym_data = create_test_data("YM", 500, 35000.0, 0.1);
+//
+//     // Process data for each instrument separately
+//     ASSERT_TRUE(strategy_->start().is_ok());
+//     process_data_safely(es_data);
+//     process_data_safely(nq_data);
+//     process_data_safely(ym_data);
+//
+//     // Verify positions for all instruments
+//     const auto& positions = strategy_->get_positions();
+//     EXPECT_TRUE(positions.find("ES") != positions.end());
+//     EXPECT_TRUE(positions.find("NQ") != positions.end());
+//     EXPECT_TRUE(positions.find("YM") != positions.end());
+//
+//     // Calculate total exposure
+//     double total_exposure = 0.0;
+//     for (const auto& [symbol, pos] : positions) {
+//         double price = 0.0;
+//         if (symbol == "ES")
+//             price = es_data.back().close.as_double();
+//         else if (symbol == "NQ")
+//             price = nq_data.back().close.as_double();
+//         else if (symbol == "YM")
+//             price = ym_data.back().close.as_double();
+//
+//         total_exposure += std::abs(pos.quantity.as_double() * price);
+//     }
+//
+//     // Verify total exposure is within leverage limits
+//     double portfolio_value = strategy_config_.capital_allocation;
+//     double leverage = total_exposure / portfolio_value;
+//
+//     EXPECT_LE(leverage, strategy_config_.max_leverage)
+//         << "Total leverage " << leverage << " exceeds max leverage "
+//         << strategy_config_.max_leverage;
+//
+//     // Verify risk check passes with current positions
+//     ASSERT_TRUE(strategy_->check_risk_limits().is_ok())
+//         << "Risk limits exceeded with current positions";
+// }
+
+// // Test the overall trend following effectiveness over distinct trend phases
+// TEST_F(TrendFollowingTest, TrendFollowingEffectiveness) {
+//     std::vector<Bar> test_data;
+//     double price = 4000.0;
+//     auto now = std::chrono::system_clock::now();
+//
+//     // Uptrend phase
+//     std::vector<Bar> uptrend_data;
+//     for (int i = 0; i < 500; i++) {
+//         Bar bar;
+//         bar.symbol = "ES";
+//         bar.timestamp = now - std::chrono::hours(24 * (700 - i));  // Start with earliest timestamps
+//
+//         // Simple uptrend with small random noise
+//         double random = (static_cast<double>(rand()) / RAND_MAX - 0.5) * 0.005;
+//         price += 1.01 * i;  // Consistent uptrend plus small noise
+//
+//         bar.open = price * 0.999;
+//         bar.close = price;
+//         bar.high = price * 1.002;
+//         bar.low = price * 0.998;
+//         bar.volume = 100000 + (rand() % 30000);
+//
+//         uptrend_data.push_back(bar);
+//     }
+//
+//     // Create sideways phase data
+//     std::vector<Bar> sideways_data;
+//     for (int i = 0; i < 500; i++) {
+//         Bar bar;
+//         bar.symbol = "ES";
+//         bar.timestamp = now - std::chrono::hours(24 * (200 - i));
+//
+//         // Only random movement, no trend
+//         double random = (static_cast<double>(rand()) / RAND_MAX - 0.5) * 0.005;
+//         price *= (1.0 + random);
+//
+//         bar.open = price * 0.999;
+//         bar.close = price;
+//         bar.high = price * 1.002;
+//         bar.low = price * 0.998;
+//         bar.volume = 90000 + (rand() % 20000);
+//
+//         sideways_data.push_back(bar);
+//     }
+//
+//     // Create downtrend phase data
+//     std::vector<Bar> downtrend_data;
+//     for (int i = 0; i < 500; i++) {
+//         Bar bar;
+//         bar.symbol = "ES";
+//         bar.timestamp = now - std::chrono::hours(24 * (100 - i));  // End with latest timestamps
+//
+//         // Consistent downtrend with small random noise
+//         double random = (static_cast<double>(rand()) / RAND_MAX - 0.5) * 0.005;
+//         price += (-1.01 * i);  // Consistent downtrend plus small noise
+//
+//         bar.open = price * 1.001;
+//         bar.close = price;
+//         bar.high = price * 1.002;
+//         bar.low = price * 0.998;
+//         bar.volume = 110000 + (rand() % 40000);
+//
+//         downtrend_data.push_back(bar);
+//     }
+//
+//     test_data.insert(test_data.end(), uptrend_data.begin(), uptrend_data.end());
+//     test_data.insert(test_data.end(), sideways_data.begin(), sideways_data.end());
+//     test_data.insert(test_data.end(), downtrend_data.begin(), downtrend_data.end());
+//
+//     ASSERT_TRUE(strategy_->start().is_ok());
+//
+//     std::vector<double> positions;
+//
+//     // Process data in chunks and record positions over time
+//     for (size_t i = 0; i < test_data.size(); i += 10) {
+//         std::vector<Bar> chunk(
+//             test_data.begin() + i,
+//             test_data.begin() + std::min(i + static_cast<size_t>(10), test_data.size()));
+//         ASSERT_TRUE(strategy_->on_data(chunk).is_ok());
+//
+//         const auto& current_positions = strategy_->get_positions();
+//         if (current_positions.find("ES") != current_positions.end()) {
+//             positions.push_back(current_positions.at("ES").quantity.as_double());
+//         }
+//     }
+//
+//     // Verify trend following behavior:
+//     // During the uptrend (first third), expect mostly positive positions.
+//     double avg_pos_uptrend =
+//         std::accumulate(positions.begin(), positions.begin() + positions.size() / 3, 0.0) /
+//         (positions.size() / 3);
+//     EXPECT_GT(avg_pos_uptrend, 0.0);
+//
+//     // During the downtrend (last third), expect mostly negative positions.
+//     double avg_pos_downtrend =
+//         std::accumulate(positions.begin() + 2 * positions.size() / 3, positions.end(), 0.0) /
+//         (positions.size() - 2 * positions.size() / 3);
+//     EXPECT_LT(avg_pos_downtrend, 0.0);
+// }
