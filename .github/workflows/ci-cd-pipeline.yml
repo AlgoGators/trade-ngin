@@ -306,7 +306,7 @@ jobs:
           find . -name '*.gcov' -exec mv {} ../coverage-reports/gcov/ \;
 
       - name: SonarCloud Scan
-        if: matrix.build-type == 'Debug' && github.event_name == 'pull_request'
+        if: matrix.build-type == 'Debug' && (github.event_name == 'pull_request' || github.ref_name == 'prod' || github.ref_name == 'staging')
         uses: SonarSource/sonarqube-scan-action@v6
         env:
           SONAR_HOST_URL: https://sonarcloud.io
@@ -393,7 +393,7 @@ jobs:
           path: summary.md
   image-generation:
     name: Image Generation
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' || github.ref_name == 'prod' || github.ref_name == 'staging'
     permissions:
       contents: read
       packages: write
