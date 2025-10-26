@@ -80,6 +80,11 @@ set(TRADE_NGIN_SOURCES
     src/storage/results_manager_base.cpp
     src/storage/backtest_results_manager.cpp
     src/storage/live_results_manager.cpp
+    src/live/live_data_loader.cpp
+    src/live/live_metrics_calculator.cpp
+    src/live/live_trading_coordinator.cpp
+    src/live/live_price_manager.cpp
+    src/live/live_pnl_manager.cpp
 )
 
 # Add library target
