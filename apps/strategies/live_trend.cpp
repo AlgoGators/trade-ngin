@@ -21,6 +21,8 @@
 #include "trade_ngin/live/live_data_loader.hpp"
 #include "trade_ngin/live/live_metrics_calculator.hpp"
 #include "trade_ngin/live/live_trading_coordinator.hpp"
+#include "trade_ngin/live/live_price_manager.hpp"
+#include "trade_ngin/live/live_pnl_manager.hpp"
 
 using namespace trade_ngin;
 
@@ -443,6 +445,20 @@ int main(int argc, char* argv[]) {
         auto all_bars = conversion_result.value();
         INFO("Loaded " + std::to_string(all_bars.size()) + " total bars");
 
+        // Update price manager with bars to extract T-1 and T-2 prices
+        if (price_manager) {
+            auto price_update_result = price_manager->update_from_bars(all_bars);
+            if (price_update_result.is_error()) {
+                ERROR("Failed to update price manager with bar data: " +
+                      std::string(price_update_result.error()->what()));
+                return 1;
+            }
+            INFO("Price manager updated - extracted T-1 and T-2 prices from bars");
+        } else {
+            ERROR("Price manager not initialized");
+            return 1;
+        }
+
         if (all_bars.empty()) {
             ERROR("No historical data loaded. Cannot calculate positions.");
             ERROR("This may be due to missing market data for the requested date.");
@@ -494,101 +510,37 @@ int main(int argc, char* argv[]) {
             INFO("DEBUG: Previous position - " + symbol + ": " + std::to_string(pos.quantity.as_double()));
 }
         
-        // Get market prices - TWO sets needed for PnL lag model
-        INFO("Getting market prices for PnL lag model...");
+        // Get market prices from PriceManager - already extracted from bars
+        INFO("Getting market prices for PnL lag model from PriceManager...");
+
+        // PriceManager has already extracted T-1 and T-2 prices from bars
+        // Make copies since we need to use [] operator in many places
+        std::unordered_map<std::string, double> previous_day_close_prices = price_manager->get_all_previous_day_prices();
+        std::unordered_map<std::string, double> two_days_ago_close_prices = price_manager->get_all_two_days_ago_prices();
+
+        INFO("Retrieved prices from PriceManager: " +
+             std::to_string(previous_day_close_prices.size()) + " Day T-1, " +
+             std::to_string(two_days_ago_close_prices.size()) + " Day T-2");
+
+        // Verify we have prices for all required symbols
         std::set<std::string> all_symbols;
         for (const auto& [symbol, position] : positions) {
             if (position.quantity.as_double() != 0.0) {
                 all_symbols.insert(symbol);
             }
         }
-        // Also add symbols from previous positions that might have been closed
         for (const auto& [symbol, position] : previous_positions) {
             all_symbols.insert(symbol);
         }
 
-        std::vector<std::string> symbols_to_price(all_symbols.begin(), all_symbols.end());
-        INFO("Requesting prices for " + std::to_string(symbols_to_price.size()) + " symbols");
-
-        // For historical runs, use the close prices from the bars data for consistency
-        // For live runs, get real-time prices
-        // We need TWO price sets:
-        // 1. previous_day_close_prices (Day T-1 close) - for execution and market_price on Day T
-        // 2. two_days_ago_close_prices (Day T-2 close) - for finalizing Day T-1 PnL
-        std::unordered_map<std::string, double> previous_day_close_prices;  // Day T-1 close
-        std::unordered_map<std::string, double> two_days_ago_close_prices;  // Day T-2 close
-
-        if (use_override_date) {
-            // Historical run: Extract close prices from the bars data
-            INFO("Historical run detected - using close prices from bars data for date: " +
-                 std::to_string(std::chrono::system_clock::to_time_t(target_date)));
-
-            // Group bars by symbol and sort by timestamp
-            std::unordered_map<std::string, std::vector<Bar>> bars_by_symbol;
-            for (const auto& bar : all_bars) {
-                bars_by_symbol[bar.symbol].push_back(bar);
+        for (const auto& symbol : all_symbols) {
+            if (previous_day_close_prices.find(symbol) == previous_day_close_prices.end()) {
+                WARN("Missing T-1 price for symbol: " + symbol);
             }
-
-            for (auto& [symbol, symbol_bars] : bars_by_symbol) {
-                if (!symbol_bars.empty()) {
-                    // Sort by timestamp
-                    std::sort(symbol_bars.begin(), symbol_bars.end(),
-                             [](const Bar& a, const Bar& b) { return a.timestamp < b.timestamp; });
-
-                    // Last bar is Day T-1 (yesterday's close) - automatically falls back to last available trading day
-                    double yesterday_close = static_cast<double>(symbol_bars.back().close);
-                    previous_day_close_prices[symbol] = yesterday_close;
-                    
-                    // Log the actual date of the last bar for debugging
-                    auto last_bar_time = std::chrono::system_clock::to_time_t(symbol_bars.back().timestamp);
-                    DEBUG("Day T-1 close for " + symbol + ": " + std::to_string(yesterday_close) + 
-                          " (from " + std::to_string(last_bar_time) + ")");
-
-                    // Second-to-last bar is Day T-2 (two days ago close) - for finalizing Day T-1
-                    if (symbol_bars.size() >= 2) {
-                        double two_days_ago_close = static_cast<double>(symbol_bars[symbol_bars.size() - 2].close);
-                        two_days_ago_close_prices[symbol] = two_days_ago_close;
-                        auto second_last_bar_time = std::chrono::system_clock::to_time_t(symbol_bars[symbol_bars.size() - 2].timestamp);
-                        DEBUG("Day T-2 close for " + symbol + ": " + std::to_string(two_days_ago_close) + 
-                              " (from " + std::to_string(second_last_bar_time) + ")");
-                    }
-                } else {
-                    WARN("No bars data available for symbol: " + symbol);
-                }
+            if (two_days_ago_close_prices.find(symbol) == two_days_ago_close_prices.end() &&
+                previous_positions.find(symbol) != previous_positions.end()) {
+                WARN("Missing T-2 price for symbol: " + symbol + " (needed for PnL finalization)");
             }
-            INFO("Using historical close prices: " + std::to_string(previous_day_close_prices.size()) + " Day T-1, " +
-                 std::to_string(two_days_ago_close_prices.size()) + " Day T-2");
-            INFO("Note: For weekends/holidays, Day T-1 automatically falls back to last available trading day");
-        } else {
-            // Live run: Get yesterday's and two-days-ago close prices from database
-            // Query for yesterday's close
-            auto yesterday_date = now - std::chrono::hours(24);
-            auto yesterday_prices_result = db->get_latest_prices(symbols_to_price, trade_ngin::AssetClass::FUTURES);
-            if (yesterday_prices_result.is_ok()) {
-                previous_day_close_prices = yesterday_prices_result.value();
-                INFO("Retrieved Day T-1 (yesterday) close prices for " + std::to_string(previous_day_close_prices.size()) + " symbols");
-                
-                // Check if we have prices for all required symbols
-                if (previous_day_close_prices.size() < symbols_to_price.size()) {
-                    WARN("Missing prices for some symbols. Required: " + std::to_string(symbols_to_price.size()) + 
-                         ", Got: " + std::to_string(previous_day_close_prices.size()));
-                    for (const auto& symbol : symbols_to_price) {
-                        if (previous_day_close_prices.find(symbol) == previous_day_close_prices.end()) {
-                            WARN("Missing price for symbol: " + symbol);
-                        }
-                    }
-                }
-            } else {
-                ERROR("Failed to get yesterday's close prices: " + std::string(yesterday_prices_result.error()->what()));
-                ERROR("This may be due to missing market data for yesterday (" + std::to_string(std::chrono::system_clock::to_time_t(yesterday_date)) + ")");
-                ERROR("Continuing with empty price data - this may cause PnL calculation issues");
-            }
-
-            // Query for two-days-ago close (for finalizing yesterday's PnL)
-            auto two_days_ago_date = now - std::chrono::hours(48);
-            // TODO: Need database method to get historical close by specific date
-            // For now, we'll use the same approach as historical mode
-            WARN("Live mode two-days-ago close price retrieval not yet implemented - will skip Day T-1 finalization");
         }
 
         // ========================================
@@ -619,8 +571,16 @@ int main(int argc, char* argv[]) {
 
                 double prev_entry_price = prev_position.average_price.as_double();
 
-                // Get Day T-2 close (entry price for Day T-1 position) - NEVER change the original entry price
-                double day_t2_close = prev_entry_price;  // Use the original entry price from database
+                // Get Day T-2 close from market data (NOT position entry price!)
+                double day_t2_close = prev_entry_price;  // Default fallback only
+                auto t2_it = two_days_ago_close_prices.find(symbol);
+                if (t2_it != two_days_ago_close_prices.end()) {
+                    day_t2_close = t2_it->second;  // Use actual T-2 market close
+                    DEBUG("Using T-2 market close for " + symbol + ": " + std::to_string(day_t2_close));
+                } else {
+                    WARN("No T-2 close price for " + symbol + ", using entry price " +
+                         std::to_string(prev_entry_price) + " as fallback");
+                }
                 
                 // Get Day T-1 close (current market price for Day T-1 finalization)
                 double day_t1_close = prev_entry_price;  // Default fallback
@@ -644,7 +604,7 @@ int main(int argc, char* argv[]) {
                 yesterday_total_pnl += yesterday_position_pnl;
 
                 INFO("Day T-1 finalization for " + symbol + ": qty=" + std::to_string(prev_qty) +
-                     " Entry price (Day T-2)=" + std::to_string(day_t2_close) +
+                     " Day T-2 close=" + std::to_string(day_t2_close) +
                      " Day T-1 close=" + std::to_string(day_t1_close) +
                      " point_value=" + std::to_string(point_value) +
                      " Day T-1 PnL=" + std::to_string(yesterday_position_pnl));
@@ -657,8 +617,15 @@ int main(int argc, char* argv[]) {
             for (const auto& [symbol, prev_position] : previous_positions) {
                 double prev_qty = prev_position.quantity.as_double();
 
-                // Use the ORIGINAL entry price from the database - NEVER change it
-                double day_t2_close = prev_position.average_price.as_double();
+                // Get Day T-2 close from market data (NOT position entry price!)
+                double day_t2_close = prev_position.average_price.as_double();  // Default fallback only
+                auto t2_it = two_days_ago_close_prices.find(symbol);
+                if (t2_it != two_days_ago_close_prices.end()) {
+                    day_t2_close = t2_it->second;  // Use actual T-2 market close
+                } else {
+                    // If no T-2 price, use entry price as fallback
+                    DEBUG("No T-2 price for " + symbol + ", using entry price as fallback");
+                }
 
                 // Get Day T-1 close for PnL calculation
                 double day_t1_close = day_t2_close;  // Default fallback
