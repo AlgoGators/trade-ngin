@@ -1,6 +1,7 @@
 #include "trade_ngin/live/live_price_manager.hpp"
 #include "trade_ngin/core/logger.hpp"
 #include <sstream>
+#include <algorithm>
 
 namespace trade_ngin {
 
@@ -63,16 +64,52 @@ Result<void> LivePriceManager::load_two_days_ago_prices(
 }
 
 Result<void> LivePriceManager::update_from_bars(const std::vector<Bar>& bars) {
+    // Group bars by symbol and sort by timestamp to extract T-1 and T-2 prices
+    std::unordered_map<std::string, std::vector<Bar>> bars_by_symbol;
     for (const auto& bar : bars) {
-        double close_price = bar.close.as_double();
-        if (is_valid_price(close_price)) {
-            latest_prices_[bar.symbol] = close_price;
+        bars_by_symbol[bar.symbol].push_back(bar);
+    }
+
+    // Clear previous prices before updating
+    previous_day_prices_.clear();
+    two_days_ago_prices_.clear();
+    latest_prices_.clear();
+
+    for (auto& [symbol, symbol_bars] : bars_by_symbol) {
+        if (!symbol_bars.empty()) {
+            // Sort by timestamp to ensure proper ordering
+            std::sort(symbol_bars.begin(), symbol_bars.end(),
+                     [](const Bar& a, const Bar& b) { return a.timestamp < b.timestamp; });
+
+            // Last bar is Day T-1 (yesterday's close)
+            double yesterday_close = static_cast<double>(symbol_bars.back().close);
+            previous_day_prices_[symbol] = yesterday_close;
+            latest_prices_[symbol] = yesterday_close;  // Also update latest prices
+
+            auto last_bar_time = std::chrono::system_clock::to_time_t(symbol_bars.back().timestamp);
+            DEBUG("Day T-1 close for " + symbol + ": " + std::to_string(yesterday_close) +
+                  " (from " + std::to_string(last_bar_time) + ")");
+
+            // Second-to-last bar is Day T-2 (two days ago close) - CRITICAL for PnL calculation
+            if (symbol_bars.size() >= 2) {
+                double two_days_ago_close = static_cast<double>(symbol_bars[symbol_bars.size() - 2].close);
+                two_days_ago_prices_[symbol] = two_days_ago_close;
+                auto second_last_bar_time = std::chrono::system_clock::to_time_t(symbol_bars[symbol_bars.size() - 2].timestamp);
+                DEBUG("Day T-2 close for " + symbol + ": " + std::to_string(two_days_ago_close) +
+                      " (from " + std::to_string(second_last_bar_time) + ")");
+            } else {
+                WARN("No T-2 bar available for " + symbol + " - only " +
+                     std::to_string(symbol_bars.size()) + " bars");
+            }
         } else {
-            WARN("Invalid bar close price for " + bar.symbol + ": " + std::to_string(close_price));
+            WARN("No bars data available for symbol: " + symbol);
         }
     }
 
-    DEBUG("Updated latest prices for " + std::to_string(bars.size()) + " symbols from bars");
+    INFO("Updated prices from bars: " + std::to_string(previous_day_prices_.size()) + " Day T-1, " +
+         std::to_string(two_days_ago_prices_.size()) + " Day T-2");
+    INFO("Note: For weekends/holidays, Day T-1 automatically falls back to last available trading day");
+
     return Result<void>();
 }
 
