@@ -85,6 +85,9 @@ set(TRADE_NGIN_SOURCES
     src/live/live_trading_coordinator.cpp
     src/live/live_price_manager.cpp
     src/live/live_pnl_manager.cpp
+    src/live/execution_manager.cpp
+    src/live/margin_manager.cpp
+    src/live/csv_exporter.cpp
 )
 
 # Add library target
