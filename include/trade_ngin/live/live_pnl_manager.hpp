@@ -3,6 +3,7 @@
 #include "trade_ngin/live/pnl_manager_base.hpp"
 #include "trade_ngin/core/types.hpp"
 #include <memory>
+#include <functional>
 
 namespace trade_ngin {
 
@@ -122,6 +123,17 @@ public:
      * Helper to get point value for a symbol
      */
     double get_point_value(const std::string& symbol) const;
+
+    /**
+     * Set point value getter function (for integration with strategy)
+     */
+    using PointValueGetter = std::function<double(const std::string&)>;
+    void set_point_value_getter(PointValueGetter getter) {
+        point_value_getter_ = getter;
+    }
+
+private:
+    PointValueGetter point_value_getter_;
 };
 
 } // namespace trade_ngin
