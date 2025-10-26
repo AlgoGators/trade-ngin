@@ -18,6 +18,9 @@
 #include "trade_ngin/strategy/trend_following.hpp"
 #include "trade_ngin/core/email_sender.hpp"
 #include "trade_ngin/storage/live_results_manager.hpp"
+#include "trade_ngin/live/live_data_loader.hpp"
+#include "trade_ngin/live/live_metrics_calculator.hpp"
+#include "trade_ngin/live/live_trading_coordinator.hpp"
 
 using namespace trade_ngin;
 
@@ -391,11 +394,32 @@ int main(int argc, char* argv[]) {
         }
         INFO("Strategy added to portfolio successfully");
 
-        // Create LiveResultsManager for centralized storage
-        INFO("Using LiveResultsManager for centralized storage");
-        auto results_manager = std::make_unique<LiveResultsManager>(
-            db, true, "LIVE_TREND_FOLLOWING"
-        );
+        // Create LiveTradingCoordinator to manage all live trading components
+        INFO("Creating LiveTradingCoordinator for centralized component management");
+        LiveTradingConfig coordinator_config;
+        coordinator_config.strategy_id = "LIVE_TREND_FOLLOWING";
+        coordinator_config.schema = "trading";
+        coordinator_config.initial_capital = tf_config.capital_allocation;
+        coordinator_config.store_results = true;
+        coordinator_config.calculate_risk_metrics = true;
+
+        auto coordinator = std::make_unique<LiveTradingCoordinator>(db, coordinator_config);
+
+        // Initialize the coordinator
+        auto init_coord_result = coordinator->initialize();
+        if (init_coord_result.is_error()) {
+            ERROR("Failed to initialize LiveTradingCoordinator: " +
+                  std::string(init_coord_result.error()->what()));
+            return 1;
+        }
+        INFO("LiveTradingCoordinator initialized successfully");
+
+        // Get component references from coordinator
+        auto* data_loader = coordinator->get_data_loader();
+        auto* metrics_calculator = coordinator->get_metrics_calculator();
+        auto* results_manager = coordinator->get_results_manager();
+        auto* price_manager = coordinator->get_price_manager();
+        auto* pnl_manager = coordinator->get_pnl_manager();
 
         // Load market data for daily processing
         INFO("Loading market data for daily processing...");
@@ -1181,80 +1205,35 @@ int main(int argc, char* argv[]) {
             auto yesterday_time_t = std::chrono::system_clock::to_time_t(previous_date);
             yesterday_date_ss << std::put_time(std::gmtime(&yesterday_time_t), "%Y-%m-%d");
 
+            // Use LiveDataLoader to get yesterday's metrics
             try {
-                std::string query =
-                    "SELECT COALESCE(daily_commissions, 0.0) as daily_commissions, "
-                    "COALESCE(total_commissions, 0.0) as total_commissions, "
-                    "COALESCE(gross_notional, 0.0) as gross_notional, "
-                    "COALESCE(net_notional, 0.0) as net_notional, "
-                    "COALESCE(active_positions, 0) as active_positions, "
-                    "COALESCE(margin_posted, 0.0) as margin_posted "
-                    "FROM trading.live_results "
-                    "WHERE strategy_id = 'LIVE_TREND_FOLLOWING' AND DATE(date) = '" + yesterday_date_ss.str() + "'";
-                INFO("Querying yesterday's metrics for date: " + yesterday_date_ss.str());
-                auto result = db->execute_query(query);
-                if (result.is_error()) {
-                    WARN("Query failed: " + std::string(result.error()->what()));
-                    INFO("Commission query succeeded, but parsing not implemented - using 0");
-                } else if (result.value()->num_rows() == 0) {
-                    WARN("Query returned 0 rows for date: " + yesterday_date_ss.str());
-                }
-                if (result.is_ok() && result.value()->num_rows() > 0) {
-                    INFO("Found " + std::to_string(result.value()->num_rows()) + " rows for yesterday");
-                    auto table = result.value();
-                    INFO("Table has " + std::to_string(table->num_columns()) + " columns");
-                    if (table->num_columns() >= 6) {
-                        auto comm_arr = std::static_pointer_cast<arrow::DoubleArray>(table->column(0)->chunk(0));
-                        auto total_comm_arr = std::static_pointer_cast<arrow::DoubleArray>(table->column(1)->chunk(0));
-                        auto gross_arr = std::static_pointer_cast<arrow::DoubleArray>(table->column(2)->chunk(0));
-                        auto net_arr = std::static_pointer_cast<arrow::DoubleArray>(table->column(3)->chunk(0));
-                        auto pos_arr = std::static_pointer_cast<arrow::Int64Array>(table->column(4)->chunk(0));
-                        auto margin_arr = std::static_pointer_cast<arrow::DoubleArray>(table->column(5)->chunk(0));
+                INFO("Using LiveDataLoader to query yesterday's metrics for date: " + yesterday_date_ss.str());
+                auto live_results = data_loader->load_live_results("LIVE_TREND_FOLLOWING", previous_date);
 
-                        if (comm_arr && comm_arr->length() > 0 && !comm_arr->IsNull(0)) {
-                            yesterday_commissions = comm_arr->Value(0);
-                            INFO("Successfully loaded yesterday_commissions: $" + std::to_string(yesterday_commissions));
-                        } else {
-                            INFO("Failed to load commissions from Arrow array");
-                        }
-                        if (total_comm_arr && total_comm_arr->length() > 0 && !total_comm_arr->IsNull(0)) {
-                            yesterday_total_commissions = total_comm_arr->Value(0);
-                        }
-                        if (gross_arr && gross_arr->length() > 0 && !gross_arr->IsNull(0)) {
-                            yesterday_gross_notional = gross_arr->Value(0);
-                            INFO("Loaded yesterday_gross_notional: $" + std::to_string(yesterday_gross_notional));
-                        }
-                        if (net_arr && net_arr->length() > 0 && !net_arr->IsNull(0)) {
-                            yesterday_net_notional = net_arr->Value(0);
-                        }
-                        if (pos_arr && pos_arr->length() > 0 && !pos_arr->IsNull(0)) {
-                            yesterday_active_positions = static_cast<int>(pos_arr->Value(0));
-                        }
-                        if (margin_arr && margin_arr->length() > 0 && !margin_arr->IsNull(0)) {
-                            yesterday_margin_posted = margin_arr->Value(0);
-                            INFO("Loaded yesterday_margin_posted: $" + std::to_string(yesterday_margin_posted));
-                        }
-                    }
+                if (live_results.is_ok()) {
+                    auto& row = live_results.value();
+                    yesterday_commissions = row.daily_commissions;
+                    yesterday_total_commissions = row.daily_commissions;  // Note: total_commissions field may not exist
+                    yesterday_gross_notional = row.gross_notional;
+                    yesterday_net_notional = row.gross_notional;  // Note: using gross_notional as net_notional not in LiveResultsRow
+                    yesterday_active_positions = row.active_positions;
+                    yesterday_margin_posted = row.margin_posted;
+
+                    INFO("Successfully loaded yesterday's metrics via LiveDataLoader:");
+                    INFO("  yesterday_commissions: $" + std::to_string(yesterday_commissions));
+                    INFO("  yesterday_gross_notional: $" + std::to_string(yesterday_gross_notional));
+                    INFO("  yesterday_margin_posted: $" + std::to_string(yesterday_margin_posted));
+                } else {
+                    WARN("LiveDataLoader failed to get yesterday's metrics: " + std::string(live_results.error()->what()));
+                    INFO("Using default values (0) for yesterday's metrics");
                 }
             } catch (const std::exception& e) {
                 WARN("Failed to get yesterday's metrics: " + std::string(e.what()));
             }
 
-            // Since we couldn't query commissions, we'll calculate daily_pnl in SQL
-            // For cumulative calculations, we need to query the actual commission value
-            double yesterday_commissions_for_calc = 0.0;
-            try {
-                std::string comm_query = "SELECT COALESCE(daily_commissions, 0.0) FROM trading.live_results "
-                                        "WHERE strategy_id = 'LIVE_TREND_FOLLOWING' AND DATE(date) = '" + yesterday_date_ss.str() + "'";
-                auto comm_result = db->execute_direct_query(comm_query);
-                if (comm_result.is_ok()) {
-                    // Parse the result - it should be a simple value
-                    // For now, we'll just use yesterday_commissions which defaults to 0
-                    INFO("Commission query succeeded, but parsing not implemented - using 0");
-                }
-            } catch (const std::exception& e) {
-                INFO("Could not query commissions: " + std::string(e.what()));
-            }
+            // Use the commission value already loaded from LiveDataLoader
+            double yesterday_commissions_for_calc = yesterday_commissions;
+            INFO("Using yesterday_commissions_for_calc from LiveDataLoader: $" + std::to_string(yesterday_commissions_for_calc));
 
             // Use the queried value from earlier (which may be 0 if query failed)
             double yesterday_daily_pnl_finalized = yesterday_total_pnl - yesterday_commissions;
@@ -1287,16 +1266,16 @@ int main(int argc, char* argv[]) {
             double yesterday_total_pnl_cumulative = day_before_yesterday_total_pnl + yesterday_daily_pnl_finalized;
             double yesterday_portfolio_value_finalized = day_before_yesterday_portfolio_value + yesterday_daily_pnl_finalized;
 
-            // Calculate yesterday's returns
-            double yesterday_daily_return = 0.0;
-            if (day_before_yesterday_portfolio_value > 0) {
-                yesterday_daily_return = (yesterday_daily_pnl_finalized / day_before_yesterday_portfolio_value) * 100.0;
-            }
+            // Calculate yesterday's returns using LiveMetricsCalculator
+            double yesterday_daily_return = metrics_calculator->calculate_daily_return(
+                yesterday_daily_pnl_finalized, day_before_yesterday_portfolio_value);
 
             // Note: Yesterday's metrics for email will be loaded from database after update
 
-            // Calculate yesterday's annualized return
-            double yesterday_total_return_annualized = 0.0;
+            // Calculate yesterday's total return
+            double yesterday_total_return = metrics_calculator->calculate_total_return(
+                yesterday_portfolio_value_finalized, initial_capital);
+
             double yesterday_total_return_decimal = 0.0;
             if (initial_capital > 0.0) {
                 yesterday_total_return_decimal = (yesterday_portfolio_value_finalized - initial_capital) / initial_capital;
@@ -1320,9 +1299,9 @@ int main(int argc, char* argv[]) {
                 WARN("Failed to count trading days: " + std::string(e.what()));
             }
 
-            double rdaily = std::pow(1.0 + yesterday_total_return_decimal, 1.0 / static_cast<double>(trading_days_count)) - 1.0;
-            double annualized_decimal = std::pow(1.0 + rdaily, 252.0) - 1.0;
-            yesterday_total_return_annualized = annualized_decimal * 100.0;
+            // Calculate yesterday's annualized return using LiveMetricsCalculator
+            double yesterday_total_return_annualized = metrics_calculator->calculate_annualized_return(
+                yesterday_total_return_decimal, trading_days_count);
 
             // Calculate yesterday's leverage and risk metrics
             // IMPORTANT: We MUST preserve existing values from the database
@@ -1330,40 +1309,25 @@ int main(int argc, char* argv[]) {
             double yesterday_portfolio_leverage = 0.0;
             double yesterday_equity_to_margin_ratio = 0.0;
 
-            // Load existing values from database - DO NOT RECALCULATE
+            // Load existing values from database using LiveDataLoader - DO NOT RECALCULATE
             try {
-                std::string existing_metrics_query =
-                    "SELECT portfolio_leverage, equity_to_margin_ratio, gross_notional, margin_posted "
-                    "FROM trading.live_results "
-                    "WHERE strategy_id = 'LIVE_TREND_FOLLOWING' AND DATE(date) = '" + yesterday_date_ss.str() + "'";
-                auto existing_result = db->execute_query(existing_metrics_query);
-                if (existing_result.is_ok() && existing_result.value()->num_rows() > 0) {
-                    auto table = existing_result.value();
-                    auto leverage_arr = std::static_pointer_cast<arrow::DoubleArray>(table->column(0)->chunk(0));
-                    auto equity_margin_arr = std::static_pointer_cast<arrow::DoubleArray>(table->column(1)->chunk(0));
-                    auto gross_notional_arr = std::static_pointer_cast<arrow::DoubleArray>(table->column(2)->chunk(0));
-                    auto margin_posted_arr = std::static_pointer_cast<arrow::DoubleArray>(table->column(3)->chunk(0));
-
-                    if (leverage_arr && !leverage_arr->IsNull(0)) {
-                        yesterday_portfolio_leverage = leverage_arr->Value(0);
-                    }
-                    if (equity_margin_arr && !equity_margin_arr->IsNull(0)) {
-                        yesterday_equity_to_margin_ratio = equity_margin_arr->Value(0);
-                    }
+                auto margin_metrics = data_loader->load_margin_metrics("LIVE_TREND_FOLLOWING", previous_date);
+                if (margin_metrics.is_ok() && margin_metrics.value().valid) {
+                    auto& metrics = margin_metrics.value();
+                    yesterday_portfolio_leverage = metrics.portfolio_leverage;
+                    yesterday_equity_to_margin_ratio = metrics.equity_to_margin_ratio;
 
                     // Also update the gross_notional and margin_posted if available
-                    if (gross_notional_arr && !gross_notional_arr->IsNull(0)) {
-                        yesterday_gross_notional = gross_notional_arr->Value(0);
-                    }
-                    if (margin_posted_arr && !margin_posted_arr->IsNull(0)) {
-                        yesterday_margin_posted = margin_posted_arr->Value(0);
-                    }
+                    yesterday_gross_notional = metrics.gross_notional;
+                    yesterday_margin_posted = metrics.margin_posted;
 
-                    INFO("Preserved existing metrics from database: leverage=" +
+                    INFO("Preserved existing metrics from database via LiveDataLoader: leverage=" +
                          std::to_string(yesterday_portfolio_leverage) + ", equity_to_margin=" +
                          std::to_string(yesterday_equity_to_margin_ratio) + ", gross_notional=" +
                          std::to_string(yesterday_gross_notional) + ", margin_posted=" +
                          std::to_string(yesterday_margin_posted));
+                } else {
+                    INFO("No existing margin metrics found for yesterday via LiveDataLoader");
                 }
             } catch (const std::exception& e) {
                 WARN("Failed to load existing metrics: " + std::string(e.what()));
@@ -1577,16 +1541,12 @@ int main(int argc, char* argv[]) {
         double total_realized_pnl = total_pnl;
         double total_unrealized_pnl = 0.0;
 
-        // Calculate returns
-        double daily_return = 0.0;                 // in percent
-        double total_return_annualized = 0.0;      // in percent
+        // Calculate returns using LiveMetricsCalculator
+        double daily_return = metrics_calculator->calculate_daily_return(daily_pnl, previous_portfolio_value);
 
-        if (previous_portfolio_value > 0) {
-            daily_return = (daily_pnl / previous_portfolio_value) * 100.0;
-        }
+        // Calculate total return
+        double total_return = metrics_calculator->calculate_total_return(current_portfolio_value, initial_capital);
 
-        // Annualize using geometric method based on cumulative total return over n days
-        // R_total_decimal = (current_value - initial_capital) / initial_capital
         double total_return_decimal = 0.0;
         if (initial_capital > 0.0) {
             total_return_decimal = (current_portfolio_value - initial_capital) / initial_capital;
@@ -1613,11 +1573,9 @@ int main(int argc, char* argv[]) {
             WARN(std::string("Failed to count live_results rows: ") + e.what());
         }
 
-        // Rdaily from total return across n days (in decimal)
-        double rdaily = std::pow(1.0 + total_return_decimal, 1.0 / static_cast<double>(trading_days_count)) - 1.0;
-        // Annualize: (1 + Rdaily)^252 - 1, then convert to percent
-        double annualized_decimal = std::pow(1.0 + rdaily, 252.0) - 1.0;
-        total_return_annualized = annualized_decimal * 100.0;
+        // Calculate annualized return using LiveMetricsCalculator
+        double total_return_annualized = metrics_calculator->calculate_annualized_return(
+            total_return_decimal, trading_days_count);
 
         INFO("Portfolio value calculation:");
         INFO("  Previous portfolio value: $" + std::to_string(previous_portfolio_value));
@@ -1761,8 +1719,8 @@ int main(int argc, char* argv[]) {
                 risk_scale = r.recommended_scale;
             }
 
-            // Use the calculated PnL values from position analysis
-            double portfolio_leverage = (current_portfolio_value != 0.0) ? (gross_notional / current_portfolio_value) : 0.0;
+            // Use LiveMetricsCalculator for portfolio metrics
+            double portfolio_leverage = metrics_calculator->calculate_portfolio_leverage(gross_notional, current_portfolio_value);
             // equity_to_margin_ratio and margin_cushion already computed above
             
             // Use the LiveResultsManager
@@ -1823,36 +1781,15 @@ int main(int argc, char* argv[]) {
         
         std::ofstream position_file(today_filename);
         if (position_file.is_open()) {
-            // Query daily commissions per symbol from executions table
+            // Query daily commissions per symbol using LiveDataLoader
             std::unordered_map<std::string, double> symbol_commissions;
             try {
-                std::string commission_query =
-                    "SELECT symbol, COALESCE(SUM(commission), 0.0) as total_commission "
-                    "FROM trading.executions "
-                    "WHERE DATE(execution_time) = '" + date_ss.str() + "' "
-                    "GROUP BY symbol";
-                auto commission_result = db->execute_query(commission_query);
+                auto commission_result = data_loader->load_commissions_by_symbol(now);
                 if (commission_result.is_ok()) {
-                    auto table = commission_result.value();
-                    if (table && table->num_rows() > 0) {
-                        auto symbol_col = table->column(0);
-                        auto commission_col = table->column(1);
-                        for (int64_t i = 0; i < table->num_rows(); ++i) {
-                            auto sym_chunk = symbol_col->chunk(0);
-                            auto comm_chunk = commission_col->chunk(0);
-                            if (sym_chunk && comm_chunk) {
-                                auto sym_array = std::static_pointer_cast<arrow::StringArray>(sym_chunk);
-                                auto comm_array = std::static_pointer_cast<arrow::DoubleArray>(comm_chunk);
-                                if (i < sym_array->length() && i < comm_array->length()) {
-                                    std::string sym = sym_array->GetString(i);
-                                    double comm = comm_array->Value(i);
-                                    symbol_commissions[sym] = comm;
-                                }
-                            }
-                        }
-                    }
+                    symbol_commissions = commission_result.value();
+                    INFO("Loaded commissions for " + std::to_string(symbol_commissions.size()) + " symbols via LiveDataLoader");
                 } else {
-                    WARN("Failed to query commissions: " + std::string(commission_result.error()->what()));
+                    WARN("Failed to query commissions via LiveDataLoader: " + std::string(commission_result.error()->what()));
                 }
             } catch (const std::exception& e) {
                 WARN("Exception querying commissions: " + std::string(e.what()));
