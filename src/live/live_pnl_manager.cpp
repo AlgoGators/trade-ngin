@@ -199,24 +199,28 @@ double LivePnLManager::get_position_realized_pnl(const std::string& symbol) cons
 }
 
 double LivePnLManager::get_point_value(const std::string& symbol) const {
-    // if (!instrument_registry_) {
-        // Default point values if no registry
-        // This should match the values used in live_trend.cpp
-        if (symbol.find("NQ") != std::string::npos) return 20.0;
-        if (symbol.find("YM") != std::string::npos) return 5.0;
-        if (symbol.find("RTY") != std::string::npos) return 50.0;
-        if (symbol.find("CL") != std::string::npos) return 1000.0;
-        if (symbol.find("RB") != std::string::npos) return 42000.0;
-        if (symbol.find("HG") != std::string::npos) return 25000.0;
-        if (symbol.find("GC") != std::string::npos) return 100.0;
-        if (symbol.find("SI") != std::string::npos) return 5000.0;
-        if (symbol.find("6") == 0) return 100000.0;  // Currency futures
-        if (symbol.find("ZC") != std::string::npos) return 50.0;
-        if (symbol.find("ZS") != std::string::npos) return 50.0;
-        if (symbol.find("ZM") != std::string::npos) return 100.0;
-        if (symbol.find("ZL") != std::string::npos) return 60000.0;
-        if (symbol.find("ZW") != std::string::npos) return 50.0;
-        if (symbol.find("ZR") != std::string::npos) return 2000.0;
+    // Use the provided getter if available
+    if (point_value_getter_) {
+        return point_value_getter_(symbol);
+    }
+
+    // Fallback to hardcoded values if no getter provided
+    // These should match the values used in live_trend.cpp
+    if (symbol.find("NQ") != std::string::npos) return 20.0;
+    if (symbol.find("YM") != std::string::npos) return 5.0;
+    if (symbol.find("RTY") != std::string::npos) return 50.0;
+    if (symbol.find("CL") != std::string::npos) return 1000.0;
+    if (symbol.find("RB") != std::string::npos) return 42000.0;
+    if (symbol.find("HG") != std::string::npos) return 25000.0;
+    if (symbol.find("GC") != std::string::npos) return 100.0;
+    if (symbol.find("SI") != std::string::npos) return 5000.0;
+    if (symbol.find("6") == 0) return 100000.0;  // Currency futures
+    if (symbol.find("ZC") != std::string::npos) return 50.0;
+    if (symbol.find("ZS") != std::string::npos) return 50.0;
+    if (symbol.find("ZM") != std::string::npos) return 100.0;
+    if (symbol.find("ZL") != std::string::npos) return 60000.0;
+    if (symbol.find("ZW") != std::string::npos) return 50.0;
+    if (symbol.find("ZR") != std::string::npos) return 2000.0;
 
         WARN("Using default point value 1.0 for unknown symbol: " + symbol);
         return 1.0;

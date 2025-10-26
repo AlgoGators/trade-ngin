@@ -546,8 +546,8 @@ int main(int argc, char* argv[]) {
         // ========================================
         // STEP 1: FINALIZE YESTERDAY'S (Day T-1) PnL
         // ========================================
-        INFO("STEP 1: Finalizing Day T-1 PnL using Day T-1 close prices...");
-        
+        INFO("STEP 1: Finalizing Day T-1 PnL using PnLManager...");
+
         // Check if we have sufficient data for PnL finalization
         if (previous_day_close_prices.empty() && !previous_positions.empty()) {
             ERROR("CRITICAL: Cannot finalize yesterday's PnL - no close prices available!");
@@ -556,65 +556,63 @@ int main(int argc, char* argv[]) {
             return 1;
         }
 
-        // We need to UPDATE yesterday's positions with actual PnL
-        // Yesterday's positions were stored with realized_pnl = 0
-        // Now we have yesterday's close (Day T-1 close), so we can calculate actual PnL
+        // Set up PnLManager with strategy's point value getter
+        if (pnl_manager) {
+            pnl_manager->set_point_value_getter(
+                [&tf_strategy](const std::string& symbol) -> double {
+                    try {
+                        return tf_strategy->get_point_value_multiplier(symbol);
+                    } catch (const std::exception& e) {
+                        ERROR("Failed to get point value for " + symbol + ": " + e.what());
+                        throw;
+                    }
+                }
+            );
+        }
 
         double yesterday_total_pnl = 0.0;
+        std::vector<trade_ngin::Position> yesterday_finalized_positions;
 
-        if (!two_days_ago_close_prices.empty() && !previous_positions.empty()) {
-            INFO("Calculating Day T-1 finalized PnL...");
+        if (!two_days_ago_close_prices.empty() && !previous_positions.empty() && pnl_manager) {
+            INFO("Using PnLManager to finalize Day T-1 positions...");
 
-            for (const auto& [symbol, prev_position] : previous_positions) {
-                double prev_qty = prev_position.quantity.as_double();
-                if (prev_qty == 0.0) continue;
-
-                double prev_entry_price = prev_position.average_price.as_double();
-
-                // Get Day T-2 close from market data (NOT position entry price!)
-                double day_t2_close = prev_entry_price;  // Default fallback only
-                auto t2_it = two_days_ago_close_prices.find(symbol);
-                if (t2_it != two_days_ago_close_prices.end()) {
-                    day_t2_close = t2_it->second;  // Use actual T-2 market close
-                    DEBUG("Using T-2 market close for " + symbol + ": " + std::to_string(day_t2_close));
-                } else {
-                    WARN("No T-2 close price for " + symbol + ", using entry price " +
-                         std::to_string(prev_entry_price) + " as fallback");
-                }
-                
-                // Get Day T-1 close (current market price for Day T-1 finalization)
-                double day_t1_close = prev_entry_price;  // Default fallback
-                if (previous_day_close_prices.find(symbol) != previous_day_close_prices.end()) {
-                    day_t1_close = previous_day_close_prices[symbol];
-                } else {
-                    WARN("No Day T-1 close price available for " + symbol + ", using entry price as fallback");
-                }
-
-                // Get point value multiplier
-                double point_value = 0.0;
-                try {
-                    point_value = tf_strategy->get_point_value_multiplier(symbol);
-                } catch (const std::exception& e) {
-                    ERROR("CRITICAL: Cannot get point value for " + symbol + ": " + e.what());
-                    throw;
-                }
-
-                // Calculate Day T-1 PnL: qty * (Day T-1 close - Day T-2 close) * point_value
-                double yesterday_position_pnl = prev_qty * (day_t1_close - day_t2_close) * point_value;
-                yesterday_total_pnl += yesterday_position_pnl;
-
-                INFO("Day T-1 finalization for " + symbol + ": qty=" + std::to_string(prev_qty) +
-                     " Day T-2 close=" + std::to_string(day_t2_close) +
-                     " Day T-1 close=" + std::to_string(day_t1_close) +
-                     " point_value=" + std::to_string(point_value) +
-                     " Day T-1 PnL=" + std::to_string(yesterday_position_pnl));
+            // Convert map to vector for PnLManager
+            std::vector<Position> prev_positions_vec;
+            prev_positions_vec.reserve(previous_positions.size());
+            for (const auto& [symbol, pos] : previous_positions) {
+                prev_positions_vec.push_back(pos);
             }
 
-            // UPDATE yesterday's positions in database with finalized PnL
-            INFO("Updating Day T-1 positions with finalized PnL: $" + std::to_string(yesterday_total_pnl));
+            // Use PnLManager to finalize previous day
+            auto finalization_result = pnl_manager->finalize_previous_day(
+                prev_positions_vec,
+                previous_day_close_prices,  // T-1 prices
+                two_days_ago_close_prices,  // T-2 prices
+                initial_capital,  // Previous portfolio value (TODO: get actual previous value)
+                0.0  // Commissions (will be handled later)
+            );
 
-            std::vector<trade_ngin::Position> yesterday_finalized_positions;
-            for (const auto& [symbol, prev_position] : previous_positions) {
+            if (finalization_result.is_ok()) {
+                auto& result = finalization_result.value();
+                yesterday_total_pnl = result.finalized_daily_pnl;
+                yesterday_finalized_positions = result.finalized_positions;
+
+                INFO("PnLManager finalized Day T-1: Total PnL=$" + std::to_string(yesterday_total_pnl));
+
+                // Log individual position PnLs
+                for (const auto& [symbol, pnl] : result.position_realized_pnl) {
+                    DEBUG("Position " + symbol + " finalized PnL: $" + std::to_string(pnl));
+                }
+            } else {
+                ERROR("PnLManager failed to finalize Day T-1: " +
+                      std::string(finalization_result.error()->what()));
+                // Fall back to inline calculation
+                INFO("Falling back to inline PnL calculation...");
+
+                // UPDATE yesterday's positions in database with finalized PnL
+                INFO("Updating Day T-1 positions with finalized PnL: $" + std::to_string(yesterday_total_pnl));
+
+                for (const auto& [symbol, prev_position] : previous_positions) {
                 double prev_qty = prev_position.quantity.as_double();
 
                 // Get Day T-2 close from market data (NOT position entry price!)
@@ -657,6 +655,7 @@ int main(int argc, char* argv[]) {
                 updated_pos.last_update = previous_date;  // Keep yesterday's date
 
                 yesterday_finalized_positions.push_back(updated_pos);
+                }
             }
 
             // Store updated positions for yesterday (Day T-1) in database
@@ -1134,6 +1133,11 @@ int main(int argc, char* argv[]) {
         INFO("Total daily commissions: $" + std::to_string(total_daily_commissions));
 
         // Day T PnL is ZERO (placeholder) - positions were just opened at Day T-1 close
+        // Update PnLManager with today's positions (all with 0 PnL as placeholders)
+        for (const auto& [symbol, position] : positions) {
+            pnl_manager->update_position_pnl(symbol, 0.0, 0.0);  // Zero PnL for Day T
+        }
+
         double daily_realized_pnl = 0.0;
         double daily_unrealized_pnl = 0.0;
         double daily_pnl_for_today = -total_daily_commissions;  // Only commissions on Day T
