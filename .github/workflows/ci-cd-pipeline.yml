@@ -417,12 +417,14 @@ jobs:
         shell: bash
         run: |
           REPO="ghcr.io/${GITHUB_REPOSITORY,,}"
-          # Use the source branch name from PR
-          BRANCH="${GITHUB_HEAD_REF}"  # Changed from GITHUB_REF
-          BRANCH_SAFE=$(echo "$BRANCH" | tr '[:upper:]' '[:lower:]' | tr '/' '-')
-          DATE=$(date +%Y%m%d)
-          TIME=$(date +%H%M%S)
-          TAG="${BRANCH_SAFE}-${DATE}-${TIME}"
-
-          docker build -t "${REPO}:${TAG}" .
-          docker push "${REPO}:${TAG}"
+          # Use PR source branch, else push branch, else derive from ref, else 'unknown'
+            BRANCH="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME:-${GITHUB_REF#refs/heads/}}}"
+            BRANCH=${BRANCH:-unknown}
+          BRANCH_SAFE=$(echo "$BRANCH" | tr '[:upper:]' '[:lower:]' | tr '/@: ' '-')
+            
+            DATE=$(date +%Y%m%d)
+            TIME=$(date +%H%M%S)
+            TAG="${BRANCH_SAFE}-${DATE}-${TIME}"
+            
+            docker build -t "${REPO}:${TAG}" .
+            docker push "${REPO}:${TAG}"
