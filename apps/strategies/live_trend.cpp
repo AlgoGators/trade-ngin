@@ -623,56 +623,8 @@ int main(int argc, char* argv[]) {
             } else {
                 ERROR("PnLManager failed to finalize Day T-1: " +
                       std::string(finalization_result.error()->what()));
-                // Fall back to inline calculation
-                INFO("Falling back to inline PnL calculation...");
-
-                // UPDATE yesterday's positions in database with finalized PnL
-                INFO("Updating Day T-1 positions with finalized PnL: $" + std::to_string(yesterday_total_pnl));
-
-                for (const auto& [symbol, prev_position] : previous_positions) {
-                double prev_qty = prev_position.quantity.as_double();
-
-                // Get Day T-2 close from market data (NOT position entry price!)
-                double day_t2_close = prev_position.average_price.as_double();  // Default fallback only
-                auto t2_it = two_days_ago_close_prices.find(symbol);
-                if (t2_it != two_days_ago_close_prices.end()) {
-                    day_t2_close = t2_it->second;  // Use actual T-2 market close
-                } else {
-                    // If no T-2 price, use entry price as fallback
-                    DEBUG("No T-2 price for " + symbol + ", using entry price as fallback");
-                }
-
-                // Get Day T-1 close for PnL calculation
-                double day_t1_close = day_t2_close;  // Default fallback
-                if (previous_day_close_prices.find(symbol) != previous_day_close_prices.end()) {
-                    day_t1_close = previous_day_close_prices[symbol];
-                } else {
-                    WARN("No Day T-1 close price available for " + symbol + ", using entry price as fallback");
-                }
-
-                // Get point value
-                double point_value = 0.0;
-                try {
-                    point_value = tf_strategy->get_point_value_multiplier(symbol);
-                } catch (const std::exception& e) {
-                    ERROR("CRITICAL: Cannot get point value for " + symbol + ": " + e.what());
-                    throw;
-                }
-
-                // Calculate finalized PnL
-                double yesterday_position_pnl = prev_qty * (day_t1_close - day_t2_close) * point_value;
-
-                // Create updated position for Day T-1 - PRESERVE original entry price
-                trade_ngin::Position updated_pos;
-                updated_pos.symbol = symbol;
-                updated_pos.quantity = prev_position.quantity;
-                updated_pos.average_price = prev_position.average_price;  // KEEP original entry price
-                updated_pos.realized_pnl = Decimal(yesterday_position_pnl);  // FINALIZED PnL
-                updated_pos.unrealized_pnl = Decimal(0.0);
-                updated_pos.last_update = previous_date;  // Keep yesterday's date
-
-                yesterday_finalized_positions.push_back(updated_pos);
-                }
+                // No fallback - component is required to work
+                throw std::runtime_error("PnLManager finalization failed");
             }
 
             // Store updated positions for yesterday (Day T-1) in database
@@ -733,7 +685,7 @@ int main(int argc, char* argv[]) {
         // Generate execution reports for position changes using ExecutionManager
         INFO("Using ExecutionManager to generate execution reports...");
 
-        // Create date string for order/exec IDs (needed for fallback)
+        // Create date string for order/exec IDs
         std::stringstream date_ss;
         date_ss << std::setfill('0') << std::setw(4) << (now_tm->tm_year + 1900)
                 << std::setw(2) << (now_tm->tm_mon + 1)
@@ -753,116 +705,9 @@ int main(int argc, char* argv[]) {
             INFO("ExecutionManager generated " + std::to_string(daily_executions.size()) + " executions");
         } else {
             ERROR("ExecutionManager failed: " + std::string(execution_result.error()->what()));
-            // Fall back to inline generation
-            WARN("Falling back to inline execution generation...");
-
-            // Handle existing positions that changed
-            for (const auto& [symbol, current_position] : positions) {
-            double current_qty = current_position.quantity.as_double();
-            double prev_qty = 0.0;
-            
-            // Get previous quantity
-            auto prev_it = previous_positions.find(symbol);
-            if (prev_it != previous_positions.end()) {
-                prev_qty = prev_it->second.quantity.as_double();
-            }
-            INFO("DEBUG: Checking " + symbol + " - Current: " + std::to_string(current_qty) + 
-            ", Previous: " + std::to_string(prev_qty) + ", Diff: " + std::to_string(std::abs(current_qty - prev_qty)));
-
-            // Check if position changed
-            if (std::abs(current_qty - prev_qty) > 1e-6) {
-                double trade_size = current_qty - prev_qty;
-                Side side = trade_size > 0 ? Side::BUY : Side::SELL;
-                
-                // Get Day T-1 close price (execution price for Day T)
-                double market_price = current_position.average_price.as_double();
-                if (previous_day_close_prices.find(symbol) != previous_day_close_prices.end()) {
-                    market_price = previous_day_close_prices[symbol];
-                }
-                
-                // Create execution report
-                ExecutionReport exec;
-                exec.order_id = "DAILY_" + symbol + "_" + date_str;
-                // Make exec_id unique with timestamp to avoid duplicates
-                auto timestamp_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
-                exec.exec_id = "EXEC_" + symbol + "_" + std::to_string(timestamp_ms) + "_" + std::to_string(daily_executions.size());
-                exec.symbol = symbol;
-                exec.side = side;
-                exec.filled_quantity = std::abs(trade_size);
-
-                // Apply slippage to match backtest behavior
-                double slip_factor = slippage_model / 10000.0;  // Convert bps to decimal (1 bp = 0.0001)
-                double fill_price = side == Side::BUY ? market_price * (1.0 + slip_factor)
-                                                      : market_price * (1.0 - slip_factor);
-                exec.fill_price = fill_price;
-                exec.fill_time = now;
-                // Calculate transaction costs using the same model as backtesting
-                // Base commission: 5 basis points * quantity
-                double commission_cost = std::abs(trade_size) * commission_rate;
-                // Market impact: 5 basis points * quantity * price
-                double market_impact = std::abs(trade_size) * market_price * 0.0005;
-                // Fixed cost per trade
-                double fixed_cost = 1.0;
-                exec.commission = commission_cost + market_impact + fixed_cost;
-                exec.is_partial = false;
-                
-                daily_executions.push_back(exec);
-                
-                INFO("Generated execution: " + symbol + " " + 
-                     (side == Side::BUY ? "BUY" : "SELL") + " " +
-                     std::to_string(std::abs(trade_size)) + " at " + 
-                     std::to_string(market_price));
-            }
+            // No fallback - component is required to work
+            throw std::runtime_error("ExecutionManager failed");
         }
-
-        // Handle completely closed positions
-        for (const auto& [symbol, prev_position] : previous_positions) {
-            if (positions.find(symbol) == positions.end() && prev_position.quantity.as_double() != 0.0) {
-                // This position was completely closed
-                double prev_qty = prev_position.quantity.as_double();
-                
-                // Get Day T-1 close price (execution price for closing on Day T)
-                double market_price = prev_position.average_price.as_double(); // Default fallback
-                if (previous_day_close_prices.find(symbol) != previous_day_close_prices.end()) {
-                    market_price = previous_day_close_prices[symbol];
-                }
-                
-                // Create execution report for closing the position
-                ExecutionReport exec;
-                exec.order_id = "DAILY_" + symbol + "_" + date_str;
-                // Make exec_id unique with timestamp to avoid duplicates
-                auto timestamp_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
-                exec.exec_id = "EXEC_" + symbol + "_" + std::to_string(timestamp_ms) + "_" + std::to_string(daily_executions.size());
-                exec.symbol = symbol;
-                exec.side = prev_qty > 0 ? Side::SELL : Side::BUY; // Opposite of original position
-                exec.filled_quantity = std::abs(prev_qty);
-
-                // Apply slippage to match backtest behavior
-                double slip_factor = slippage_model / 10000.0;  // Convert bps to decimal (1 bp = 0.0001)
-                Side close_side = prev_qty > 0 ? Side::SELL : Side::BUY;
-                double fill_price = close_side == Side::BUY ? market_price * (1.0 + slip_factor)
-                                                            : market_price * (1.0 - slip_factor);
-                exec.fill_price = fill_price;
-                exec.fill_time = now;
-                // Calculate transaction costs using the same model as backtesting
-                // Base commission: 5 basis points * quantity
-                double commission_cost = std::abs(prev_qty) * commission_rate;
-                // Market impact: 5 basis points * quantity * price
-                double market_impact = std::abs(prev_qty) * market_price * 0.0005;
-                // Fixed cost per trade
-                double fixed_cost = 1.0;
-                exec.commission = commission_cost + market_impact + fixed_cost;
-                exec.is_partial = false;
-                
-                daily_executions.push_back(exec);
-                
-                INFO("Generated execution for closed position: " + symbol + " " + 
-                     (exec.side == Side::BUY ? "BUY" : "SELL") + " " +
-                     std::to_string(std::abs(prev_qty)) + " at " +
-                     std::to_string(market_price));
-            }
-        }
-        }  // End of fallback execution generation
 
         // Store executions in database
         // Store executions in database
@@ -966,98 +811,9 @@ int main(int argc, char* argv[]) {
                  ", active_positions=" + std::to_string(active_positions));
         } else {
             ERROR("MarginManager failed: " + std::string(margin_result.error()->what()));
-            WARN("Falling back to inline margin calculations...");
-
-        for (const auto& [symbol, position] : positions) {
-            if (position.quantity.as_double() != 0.0) {
-                active_positions++;
-                // Use Day T-1 close (market price for Day T positions)
-                double market_price = position.average_price.as_double();
-                auto itp = previous_day_close_prices.find(symbol);
-                if (itp != previous_day_close_prices.end()) {
-                    market_price = itp->second;
-                }
-                // Normalize variant suffixes for lookup only; keep original symbol for logging/DB
-                std::string lookup_sym = symbol;
-                auto dotpos = lookup_sym.find(".v.");
-                if (dotpos != std::string::npos) {
-                    lookup_sym = lookup_sym.substr(0, dotpos);
-                }
-                dotpos = lookup_sym.find(".c.");
-                if (dotpos != std::string::npos) {
-                    lookup_sym = lookup_sym.substr(0, dotpos);
-                }
-
-                // Get contract multiplier for proper notional calculation
-                double contract_multiplier = 1.0;
-
-                // ONLY use registry - no fallbacks allowed
-                try {
-                    auto instrument_ptr = registry.get_instrument(lookup_sym);
-                    if (!instrument_ptr) {
-                        ERROR("CRITICAL: Instrument " + lookup_sym + " not found in registry!");
-                        ERROR("Available instruments in registry:");
-                        auto all_instruments = registry.get_all_instruments();
-                        for (const auto& inst : all_instruments) {
-                            ERROR("  - " + inst.first);
-                        }
-                        ERROR("Cannot calculate margin or notional without proper data.");
-                        ERROR("This may cause segmentation faults. Exiting gracefully.");
-                        return 1;  // Exit gracefully instead of throwing
-                    }
-
-                    // Get the contract multiplier for notional calculation from registry (ONLY source)
-                    contract_multiplier = instrument_ptr->get_multiplier();
-                    if (contract_multiplier <= 0) {
-                        ERROR("CRITICAL: Invalid multiplier " + std::to_string(contract_multiplier) +
-                              " for " + lookup_sym);
-                        throw std::runtime_error("Invalid multiplier for: " + lookup_sym);
-                    }
-
-                    double contracts_abs = std::abs(position.quantity.as_double());
-                    double initial_margin_per_contract = instrument_ptr->get_margin_requirement();
-                    if (initial_margin_per_contract <= 0) {
-                        ERROR("CRITICAL: Invalid initial margin " + std::to_string(initial_margin_per_contract) +
-                              " for " + lookup_sym);
-                        throw std::runtime_error("Invalid initial margin for: " + lookup_sym);
-                    }
-                    total_posted_margin += contracts_abs * initial_margin_per_contract;
-
-                    // Try to get maintenance margin if available (e.g., futures)
-                    // If not available, use initial margin (conservative approach)
-                    double maintenance_margin_per_contract = initial_margin_per_contract;
-                    // FuturesInstrument has get_maintenance_margin(); detect via dynamic_cast
-                    if (auto futures_ptr = std::dynamic_pointer_cast<trade_ngin::FuturesInstrument>(instrument_ptr)) {
-                        maintenance_margin_per_contract = futures_ptr->get_maintenance_margin();
-                        if (maintenance_margin_per_contract <= 0) {
-                            ERROR("CRITICAL: Invalid maintenance margin " +
-                                  std::to_string(maintenance_margin_per_contract) + " for " + lookup_sym);
-                            throw std::runtime_error("Invalid maintenance margin for: " + lookup_sym);
-                        }
-                    }
-                    maintenance_requirement_today += contracts_abs * maintenance_margin_per_contract;
-                } catch (const std::exception& e) {
-                    ERROR("CRITICAL: Failed to get instrument data for " + symbol + ": " + e.what());
-                    throw;  // Re-throw the exception - don't hide the error
-                }
-
-                // Calculate notional with proper contract multiplier
-                double signed_notional = position.quantity.as_double() * market_price * contract_multiplier;
-                net_notional += signed_notional;
-                gross_notional += std::abs(signed_notional);
-
-                std::cout << std::setw(10) << symbol << " | "
-                          << std::setw(10) << std::fixed << std::setprecision(2) 
-                          << position.quantity.as_double() << " | "
-                          << std::setw(10) << std::fixed << std::setprecision(2) 
-                          << market_price << " | "
-                          << std::setw(12) << std::fixed << std::setprecision(2) 
-                          << signed_notional << " | "
-                          << std::setw(10) << std::fixed << std::setprecision(2) 
-                          << position.unrealized_pnl.as_double() << std::endl;
-            }
+            // No fallback - component is required to work
+            throw std::runtime_error("MarginManager failed");
         }
-        } // End of fallback margin calculations
 
         std::cout << std::endl;
         std::cout << "Active Positions: " << active_positions << std::endl;
