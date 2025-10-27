@@ -14,3 +14,7 @@ CLAUDE.md
 
 # Daily position CSV files
 daily_positions_*.csv
+
+.idea/
+
+cmake-build-debug/
