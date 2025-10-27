@@ -28,27 +28,29 @@ Result<LivePnLManager::FinalizationResult> LivePnLManager::finalize_previous_day
     double total_finalized_pnl = 0.0;
 
     INFO("Finalizing " + std::to_string(previous_positions.size()) + " positions for Day T-1");
+    INFO("DEBUG FINALIZATION: Starting finalize_previous_day()");
 
     for (const auto& position : previous_positions) {
         const std::string& symbol = position.symbol;
         double quantity = position.quantity.as_double();
 
+        // Get Day T-1 close (current close for Day T-1)
+        // T-1 data is REQUIRED - if missing, skip this symbol (no trading data for Day T-1)
+        auto t1_it = t1_close_prices.find(symbol);
+        if (t1_it == t1_close_prices.end()) {
+            WARN("No T-1 close price for " + symbol + ", skipping finalization (no Day T-1 data available, PnL = 0)");
+            continue;
+        }
+        double day_t1_close = t1_it->second;
+
         // Get Day T-2 close (previous close for Day T-1)
+        // T-2 can fall back to older data if needed (e.g., skip weekends for agriculture futures)
         auto t2_it = t2_close_prices.find(symbol);
         if (t2_it == t2_close_prices.end()) {
             WARN("No T-2 close price for " + symbol + ", skipping finalization");
             continue;
         }
         double day_t2_close = t2_it->second;
-
-        // Get Day T-1 close (current close for Day T-1)
-        double day_t1_close = day_t2_close;  // Default to T-2 if T-1 not available
-        auto t1_it = t1_close_prices.find(symbol);
-        if (t1_it != t1_close_prices.end()) {
-            day_t1_close = t1_it->second;
-        } else {
-            WARN("No T-1 close price for " + symbol + ", using T-2 close");
-        }
 
         // Get point value for the symbol
         double point_value = get_point_value(symbol);
@@ -72,6 +74,9 @@ Result<LivePnLManager::FinalizationResult> LivePnLManager::finalize_previous_day
         result.position_realized_pnl[symbol] = yesterday_position_pnl;
         total_finalized_pnl += yesterday_position_pnl;
 
+        INFO("DEBUG FINALIZATION: Added " + symbol + " PnL=" + std::to_string(yesterday_position_pnl) +
+             " to running sum, new total=" + std::to_string(total_finalized_pnl));
+
         // Create finalized position with realized PnL
         Position finalized_pos = position;
         finalized_pos.realized_pnl = Decimal(yesterday_position_pnl);
@@ -83,6 +88,9 @@ Result<LivePnLManager::FinalizationResult> LivePnLManager::finalize_previous_day
     // Calculate finalized portfolio value
     double net_pnl = calculate_net_pnl(total_finalized_pnl, commissions);
     result.finalized_daily_pnl = net_pnl;
+
+    INFO("DEBUG FINALIZATION: Final total_finalized_pnl=" + std::to_string(total_finalized_pnl));
+    INFO("DEBUG FINALIZATION: After calculate_net_pnl, result.finalized_daily_pnl=" + std::to_string(result.finalized_daily_pnl));
     result.finalized_portfolio_value = calculate_portfolio_value(previous_portfolio_value, net_pnl);
 
     INFO("Day T-1 finalization complete: Total PnL=" + std::to_string(total_finalized_pnl) +

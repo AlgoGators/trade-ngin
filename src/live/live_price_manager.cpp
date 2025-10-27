@@ -75,22 +75,43 @@ Result<void> LivePriceManager::update_from_bars(const std::vector<Bar>& bars) {
     two_days_ago_prices_.clear();
     latest_prices_.clear();
 
+    // Calculate expected T-1 date (should be yesterday)
+    auto now = std::chrono::system_clock::now();
+    auto expected_t1_date = now - std::chrono::hours(24);
+    auto expected_t1_date_only = std::chrono::floor<std::chrono::days>(expected_t1_date);
+
     for (auto& [symbol, symbol_bars] : bars_by_symbol) {
         if (!symbol_bars.empty()) {
             // Sort by timestamp to ensure proper ordering
             std::sort(symbol_bars.begin(), symbol_bars.end(),
                      [](const Bar& a, const Bar& b) { return a.timestamp < b.timestamp; });
 
-            // Last bar is Day T-1 (yesterday's close)
-            double yesterday_close = static_cast<double>(symbol_bars.back().close);
-            previous_day_prices_[symbol] = yesterday_close;
-            latest_prices_[symbol] = yesterday_close;  // Also update latest prices
+            // CRITICAL FIX: Only use last bar as T-1 if it's ACTUALLY from Day T-1
+            // Do NOT fall back to older data - if no T-1 data exists, symbol should be skipped in finalization
+            auto last_bar_date_only = std::chrono::floor<std::chrono::days>(symbol_bars.back().timestamp);
+            if (last_bar_date_only == expected_t1_date_only) {
+                // Last bar IS from Day T-1 - use it
+                double yesterday_close = static_cast<double>(symbol_bars.back().close);
+                previous_day_prices_[symbol] = yesterday_close;
+                latest_prices_[symbol] = yesterday_close;
 
-            auto last_bar_time = std::chrono::system_clock::to_time_t(symbol_bars.back().timestamp);
-            DEBUG("Day T-1 close for " + symbol + ": " + std::to_string(yesterday_close) +
-                  " (from " + std::to_string(last_bar_time) + ")");
+                auto last_bar_time = std::chrono::system_clock::to_time_t(symbol_bars.back().timestamp);
+                DEBUG("Day T-1 close for " + symbol + ": " + std::to_string(yesterday_close) +
+                      " (from " + std::to_string(last_bar_time) + ")");
+            } else {
+                // Last bar is NOT from Day T-1 (e.g., agriculture futures with no Sunday trading)
+                // Do NOT add to previous_day_prices_ - this will cause finalization to skip this symbol
+                auto last_bar_time = std::chrono::system_clock::to_time_t(symbol_bars.back().timestamp);
+                WARN("Skipping T-1 price for " + symbol + " - last bar is from " +
+                     std::to_string(last_bar_time) + ", not from Day T-1 (no trading data for yesterday)");
 
-            // Second-to-last bar is Day T-2 (two days ago close) - CRITICAL for PnL calculation
+                // Still set latest_prices_ for other uses, just not previous_day_prices_
+                double latest_close = static_cast<double>(symbol_bars.back().close);
+                latest_prices_[symbol] = latest_close;
+            }
+
+            // T-2 prices can fall back to last available - this is OK because we're calculating
+            // T-1's PnL which may span multiple days if there was no T-2 trading (e.g., weekends)
             if (symbol_bars.size() >= 2) {
                 double two_days_ago_close = static_cast<double>(symbol_bars[symbol_bars.size() - 2].close);
                 two_days_ago_prices_[symbol] = two_days_ago_close;
@@ -108,7 +129,7 @@ Result<void> LivePriceManager::update_from_bars(const std::vector<Bar>& bars) {
 
     INFO("Updated prices from bars: " + std::to_string(previous_day_prices_.size()) + " Day T-1, " +
          std::to_string(two_days_ago_prices_.size()) + " Day T-2");
-    INFO("Note: For weekends/holidays, Day T-1 automatically falls back to last available trading day");
+    INFO("Note: T-1 prices REQUIRE actual Day T-1 data (no fallback). T-2 prices can fall back for weekend/holiday gaps.");
 
     return Result<void>();
 }
