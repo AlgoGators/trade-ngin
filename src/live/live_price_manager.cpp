@@ -63,7 +63,7 @@ Result<void> LivePriceManager::load_two_days_ago_prices(
     return Result<void>();
 }
 
-Result<void> LivePriceManager::update_from_bars(const std::vector<Bar>& bars) {
+Result<void> LivePriceManager::update_from_bars(const std::vector<Bar>& bars, const Timestamp& reference_date) {
     // Group bars by symbol and sort by timestamp to extract T-1 and T-2 prices
     std::unordered_map<std::string, std::vector<Bar>> bars_by_symbol;
     for (const auto& bar : bars) {
@@ -75,9 +75,8 @@ Result<void> LivePriceManager::update_from_bars(const std::vector<Bar>& bars) {
     two_days_ago_prices_.clear();
     latest_prices_.clear();
 
-    // Calculate expected T-1 date (should be yesterday)
-    auto now = std::chrono::system_clock::now();
-    auto expected_t1_date = now - std::chrono::hours(24);
+    // Calculate expected T-1 date (should be yesterday relative to reference_date)
+    auto expected_t1_date = reference_date - std::chrono::hours(24);
     auto expected_t1_date_only = std::chrono::floor<std::chrono::days>(expected_t1_date);
 
     for (auto& [symbol, symbol_bars] : bars_by_symbol) {

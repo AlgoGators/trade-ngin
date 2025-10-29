@@ -58,8 +58,12 @@ public:
     /**
      * Update prices from live market data (bars)
      * Used during live trading to update latest prices
+     * @param bars Vector of bars to process
+     * @param reference_date The date to use as "today" for T-1 calculation (defaults to system time if not provided)
      */
-    Result<void> update_from_bars(const std::vector<Bar>& bars);
+    Result<void> update_from_bars(
+        const std::vector<Bar>& bars,
+        const Timestamp& reference_date = std::chrono::system_clock::now());
 
     /**
      * Get settlement/close price for a symbol on a date

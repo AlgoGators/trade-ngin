@@ -35,10 +35,19 @@ Result<LivePnLManager::FinalizationResult> LivePnLManager::finalize_previous_day
         double quantity = position.quantity.as_double();
 
         // Get Day T-1 close (current close for Day T-1)
-        // T-1 data is REQUIRED - if missing, skip this symbol (no trading data for Day T-1)
+        // T-1 data is REQUIRED - if missing, add position with 0 PnL to maintain continuity
         auto t1_it = t1_close_prices.find(symbol);
         if (t1_it == t1_close_prices.end()) {
-            WARN("No T-1 close price for " + symbol + ", skipping finalization (no Day T-1 data available, PnL = 0)");
+            WARN("No T-1 close price for " + symbol + ", recording position with 0 PnL (no Day T-1 data available)");
+            
+            // Still add this position to database with 0 PnL to maintain position continuity
+            Position finalized_pos = position;
+            finalized_pos.realized_pnl = Decimal(0.0);
+            finalized_pos.unrealized_pnl = Decimal(0.0);
+            result.position_realized_pnl[symbol] = 0.0;
+            result.finalized_positions.push_back(finalized_pos);
+            
+            INFO("Added " + symbol + " to finalized positions with 0 PnL (position continuity maintained)");
             continue;
         }
         double day_t1_close = t1_it->second;
@@ -47,7 +56,16 @@ Result<LivePnLManager::FinalizationResult> LivePnLManager::finalize_previous_day
         // T-2 can fall back to older data if needed (e.g., skip weekends for agriculture futures)
         auto t2_it = t2_close_prices.find(symbol);
         if (t2_it == t2_close_prices.end()) {
-            WARN("No T-2 close price for " + symbol + ", skipping finalization");
+            WARN("No T-2 close price for " + symbol + ", recording position with 0 PnL (T-2 data unavailable)");
+            
+            // Still add this position to database with 0 PnL to maintain position continuity
+            Position finalized_pos = position;
+            finalized_pos.realized_pnl = Decimal(0.0);
+            finalized_pos.unrealized_pnl = Decimal(0.0);
+            result.position_realized_pnl[symbol] = 0.0;
+            result.finalized_positions.push_back(finalized_pos);
+            
+            INFO("Added " + symbol + " to finalized positions with 0 PnL (position continuity maintained)");
             continue;
         }
         double day_t2_close = t2_it->second;
