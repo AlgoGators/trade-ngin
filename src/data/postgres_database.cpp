@@ -314,16 +314,19 @@ Result<void> PostgresDatabase::store_positions(const std::vector<Position>& posi
 
             // Build position value string matching the trading.positions table schema
             // Schema: symbol, quantity, average_price, daily_unrealized_pnl, daily_realized_pnl, last_update, updated_at, strategy_id
-            std::string value = "('" + pos.symbol + "', " +
-                               std::to_string(static_cast<double>(pos.quantity)) + ", " +
-                               std::to_string(static_cast<double>(pos.average_price)) + ", " +
-                               std::to_string(static_cast<double>(pos.unrealized_pnl)) + ", " +
-                               std::to_string(static_cast<double>(pos.realized_pnl)) + ", " +
-                               "'" + format_timestamp(pos.last_update) + "', " +
-                               "'" + format_timestamp(pos.last_update) + "', " +  // updated_at
-                               "'" + strategy_id + "')";
+            // Use stringstream with high precision to avoid rounding issues
+            std::stringstream ss;
+            ss << std::setprecision(17);  // Double precision
+            ss << "('" << pos.symbol << "', "
+               << static_cast<double>(pos.quantity) << ", "
+               << static_cast<double>(pos.average_price) << ", "
+               << static_cast<double>(pos.unrealized_pnl) << ", "
+               << static_cast<double>(pos.realized_pnl) << ", "
+               << "'" << format_timestamp(pos.last_update) << "', "
+               << "'" << format_timestamp(pos.last_update) << "', "  // updated_at
+               << "'" << strategy_id << "')";
 
-            position_values.push_back(value);
+            position_values.push_back(ss.str());
         }
 
         if (!position_values.empty()) {
@@ -342,14 +345,17 @@ Result<void> PostgresDatabase::store_positions(const std::vector<Position>& posi
                 // Rebuild position values without strategy_id
                 std::vector<std::string> position_values_no_strategy;
                 for (const auto& pos : positions) {
-                    std::string value = "('" + pos.symbol + "', " +
-                                       std::to_string(static_cast<double>(pos.quantity)) + ", " +
-                                       std::to_string(static_cast<double>(pos.average_price)) + ", " +
-                                       std::to_string(static_cast<double>(pos.unrealized_pnl)) + ", " +
-                                       std::to_string(static_cast<double>(pos.realized_pnl)) + ", " +
-                                       "'" + format_timestamp(pos.last_update) + "', " +
-                                       "'" + format_timestamp(pos.last_update) + "')";
-                    position_values_no_strategy.push_back(value);
+                    // Use stringstream with high precision to avoid rounding issues
+                    std::stringstream ss;
+                    ss << std::setprecision(17);  // Double precision
+                    ss << "('" << pos.symbol << "', "
+                       << static_cast<double>(pos.quantity) << ", "
+                       << static_cast<double>(pos.average_price) << ", "
+                       << static_cast<double>(pos.unrealized_pnl) << ", "
+                       << static_cast<double>(pos.realized_pnl) << ", "
+                       << "'" << format_timestamp(pos.last_update) << "', "
+                       << "'" << format_timestamp(pos.last_update) << "')";
+                    position_values_no_strategy.push_back(ss.str());
                 }
 
                 std::string query = "INSERT INTO " + table_name +
@@ -559,10 +565,27 @@ Result<std::unordered_map<std::string, Position>> PostgresDatabase::load_positio
             double avg_price = row[2].as<double>();
             double unrealized_pnl = row[3].as<double>();
             double realized_pnl = row[4].as<double>();
-            std::string last_update_str = row[5].as<std::string>();
-
-            // Parse timestamp - for now just use current time
-            auto last_update = std::chrono::system_clock::now();
+            
+            // Parse timestamp directly from database - pqxx handles the conversion
+            Timestamp last_update;
+            try {
+                // Try to parse as timestamp
+                std::string last_update_str = row[5].as<std::string>();
+                std::tm tm = {};
+                std::istringstream ss(last_update_str);
+                ss >> std::get_time(&tm, "%Y-%m-%d %H:%M:%S");
+                if (!ss.fail()) {
+                    auto time_c = std::mktime(&tm);
+                    last_update = std::chrono::system_clock::from_time_t(time_c);
+                } else {
+                    // Fall back to current time if parsing fails
+                    WARN("Failed to parse timestamp: " + last_update_str + ", using current time");
+                    last_update = std::chrono::system_clock::now();
+                }
+            } catch (const std::exception& e) {
+                WARN("Exception parsing timestamp: " + std::string(e.what()) + ", using current time");
+                last_update = std::chrono::system_clock::now();
+            }
 
             Position pos;
             pos.symbol = symbol;
