@@ -38,20 +38,19 @@ Result<void> PostgresDatabase::delete_stale_executions(
     try {
         pqxx::work txn(*connection_);
 
-        // Build parameterized query
-        std::string query = "DELETE FROM " + table_name +
-                           " WHERE DATE(execution_time) = $1 AND order_id = ANY($2)";
-
-        // Convert order_ids to PostgreSQL array
-        std::string order_ids_array = "{";
+        // Build a safe IN (...) clause for the provided order_ids
+        std::string in_list;
+        in_list.reserve(order_ids.size() * 20);
         for (size_t i = 0; i < order_ids.size(); ++i) {
-            if (i > 0) order_ids_array += ",";
-            order_ids_array += "'" + txn.esc(order_ids[i]) + "'";
+            if (i > 0) in_list += ", ";
+            in_list += txn.quote(order_ids[i]);
         }
-        order_ids_array += "}";
 
-        // Execute delete
-        txn.exec_params(query, format_timestamp(date).substr(0, 10), order_ids_array);
+        std::string query = "DELETE FROM " + table_name +
+                           " WHERE DATE(execution_time) = $1 AND order_id IN (" + in_list + ")";
+
+        // Execute delete for the specified date (YYYY-MM-DD)
+        txn.exec_params(query, format_timestamp(date).substr(0, 10));
 
         txn.commit();
 

@@ -177,8 +177,6 @@ Result<void> PostgresDatabase::store_executions(const std::vector<ExecutionRepor
     std::cout << "DEBUG: Connection validation passed" << std::endl;
 
     try {
-        pqxx::work txn(*connection_);
-
         // Validate table name
         std::cout << "DEBUG: Validating table name: " << table_name << std::endl;
         auto table_validation = validate_table_name(table_name);
@@ -187,6 +185,29 @@ Result<void> PostgresDatabase::store_executions(const std::vector<ExecutionRepor
             return table_validation;
         }
         std::cout << "DEBUG: Table validation passed" << std::endl;
+
+        // Defensive cleanup BEFORE starting the insert transaction to avoid nested transactions
+        if (!executions.empty()) {
+            std::vector<std::string> order_ids;
+            order_ids.reserve(executions.size());
+            for (const auto& e : executions) {
+                order_ids.push_back(e.order_id);
+            }
+            // Deduplicate order_ids
+            std::sort(order_ids.begin(), order_ids.end());
+            order_ids.erase(std::unique(order_ids.begin(), order_ids.end()), order_ids.end());
+
+            // Use the date from the first execution's fill_time
+            Timestamp date_for_delete = executions.front().fill_time;
+            auto del_result = delete_stale_executions(order_ids, date_for_delete, table_name);
+            if (del_result.is_error()) {
+                std::cout << "DEBUG: Pre-insert delete_stale_executions failed: "
+                          << del_result.error()->what() << std::endl;
+                return del_result;
+            }
+        }
+
+        pqxx::work txn(*connection_);
 
         for (const auto& exec : executions) {
             std::cout << "DEBUG: Processing execution for symbol: " << exec.symbol << std::endl;
