@@ -408,7 +408,7 @@ int main(int argc, char* argv[]) {
         coordinator_config.store_results = true;
         coordinator_config.calculate_risk_metrics = true;
 
-        auto coordinator = std::make_unique<LiveTradingCoordinator>(db, coordinator_config);
+        auto coordinator = std::make_unique<LiveTradingCoordinator>(db, registry, coordinator_config);
 
         // Initialize the coordinator
         auto init_coord_result = coordinator->initialize();
@@ -571,19 +571,8 @@ int main(int argc, char* argv[]) {
             INFO("This is expected behavior when Day T-1 (" + std::to_string(std::chrono::system_clock::to_time_t(previous_date)) + ") was a non-trading day");
         }
 
-        // Set up PnLManager with strategy's point value getter
-        if (pnl_manager) {
-            pnl_manager->set_point_value_getter(
-                [&tf_strategy](const std::string& symbol) -> double {
-                    try {
-                        return tf_strategy->get_point_value_multiplier(symbol);
-                    } catch (const std::exception& e) {
-                        ERROR("Failed to get point value for " + symbol + ": " + e.what());
-                        throw;
-                    }
-                }
-            );
-        }
+        // LivePnLManager now uses InstrumentRegistry directly (no callback needed)
+        INFO("PnLManager initialized with InstrumentRegistry access");
 
         double yesterday_total_pnl = 0.0;
         std::vector<trade_ngin::Position> yesterday_finalized_positions;

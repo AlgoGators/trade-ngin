@@ -15,8 +15,9 @@ namespace trade_ngin {
 
 LiveTradingCoordinator::LiveTradingCoordinator(
     std::shared_ptr<PostgresDatabase> db,
+    InstrumentRegistry& registry,
     const LiveTradingConfig& config)
-    : config_(config), db_(db) {
+    : config_(config), db_(db), registry_(&registry) {
 
     if (!db_) {
         throw std::invalid_argument("Database connection cannot be null");
@@ -49,8 +50,8 @@ Result<void> LiveTradingCoordinator::initialize() {
         // Initialize LivePriceManager
         price_manager_ = std::make_unique<LivePriceManager>(db_);
 
-        // Initialize LivePnLManager
-        pnl_manager_ = std::make_unique<LivePnLManager>(config_.initial_capital);
+        // Initialize LivePnLManager with InstrumentRegistry
+        pnl_manager_ = std::make_unique<LivePnLManager>(config_.initial_capital, *registry_);
 
         is_initialized_ = true;
 

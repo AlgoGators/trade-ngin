@@ -19,6 +19,7 @@ class LiveMetricsCalculator;
 class LiveResultsManager;
 class LivePriceManager;
 class LivePnLManager;
+class InstrumentRegistry;
 
 /**
  * @brief Configuration for LiveTradingCoordinator
@@ -76,6 +77,9 @@ private:
 
     // Shared database connection
     std::shared_ptr<PostgresDatabase> db_;
+    
+    // Reference to instrument registry
+    InstrumentRegistry* registry_;
 
     // Managed components
     std::unique_ptr<LiveDataLoader> data_loader_;
@@ -92,10 +96,12 @@ public:
     /**
      * @brief Constructor
      * @param db Shared database connection
+     * @param registry Reference to instrument registry
      * @param config Configuration for the coordinator
      */
     LiveTradingCoordinator(
         std::shared_ptr<PostgresDatabase> db,
+        InstrumentRegistry& registry,
         const LiveTradingConfig& config = {});
 
     /**
