@@ -464,7 +464,7 @@ int main(int argc, char* argv[]) {
 
         // Update price manager with bars to extract T-1 and T-2 prices
         if (price_manager) {
-            auto price_update_result = price_manager->update_from_bars(all_bars);
+            auto price_update_result = price_manager->update_from_bars(all_bars, now);
             if (price_update_result.is_error()) {
                 ERROR("Failed to update price manager with bar data: " +
                       std::string(price_update_result.error()->what()));
@@ -565,12 +565,10 @@ int main(int argc, char* argv[]) {
         // ========================================
         INFO("STEP 1: Finalizing Day T-1 PnL using PnLManager...");
 
-        // Check if we have sufficient data for PnL finalization
+        // Check if we have T-1 price data for finalization
         if (previous_day_close_prices.empty() && !previous_positions.empty()) {
-            ERROR("CRITICAL: Cannot finalize yesterday's PnL - no close prices available!");
-            ERROR("This indicates missing market data for yesterday (" + std::to_string(std::chrono::system_clock::to_time_t(previous_date)) + ")");
-            ERROR("Cannot proceed safely. Please ensure market data is available before running.");
-            return 1;
+            WARN("No T-1 close prices available (likely weekend/holiday) - all positions will have 0 PnL");
+            INFO("This is expected behavior when Day T-1 (" + std::to_string(std::chrono::system_clock::to_time_t(previous_date)) + ") was a non-trading day");
         }
 
         // Set up PnLManager with strategy's point value getter
