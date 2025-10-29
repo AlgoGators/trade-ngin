@@ -2,13 +2,11 @@
 
 #include "trade_ngin/live/pnl_manager_base.hpp"
 #include "trade_ngin/core/types.hpp"
+#include "trade_ngin/instruments/instrument_registry.hpp"
 #include <memory>
 #include <functional>
 
 namespace trade_ngin {
-
-// Forward declaration
-// class InstrumentRegistry;  // TODO: Add when available
 
 /**
  * Live implementation of PnL Manager
@@ -25,14 +23,16 @@ private:
     double cumulative_total_pnl_ = 0.0;
 
     // Reference to instrument registry for point values
-    // std::shared_ptr<InstrumentRegistry> instrument_registry_;  // TODO: Add when available
+    InstrumentRegistry& registry_;
 
 public:
     /**
      * Constructor
+     * @param initial_capital Starting capital
+     * @param registry Reference to instrument registry
      */
-    explicit LivePnLManager(double initial_capital = 500000.0)
-        : PnLManagerBase(initial_capital) {}
+    explicit LivePnLManager(double initial_capital, InstrumentRegistry& registry)
+        : PnLManagerBase(initial_capital), registry_(registry) {}
 
     /**
      * Finalization result structure for Day T-1
@@ -121,19 +121,16 @@ public:
 
     /**
      * Helper to get point value for a symbol
+     * Uses InstrumentRegistry with accurate fallback values
      */
     double get_point_value(const std::string& symbol) const;
 
-    /**
-     * Set point value getter function (for integration with strategy)
-     */
-    using PointValueGetter = std::function<double(const std::string&)>;
-    void set_point_value_getter(PointValueGetter getter) {
-        point_value_getter_ = getter;
-    }
-
 private:
-    PointValueGetter point_value_getter_;
+    /**
+     * Get fallback multiplier for known symbols
+     * These are calculated as: minimum_price_fluctuation / tick_size
+     */
+    double get_fallback_multiplier(const std::string& symbol) const;
 };
 
 } // namespace trade_ngin
