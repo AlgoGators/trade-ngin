@@ -1,1 +1,1 @@
-30 9 * * 1-6 cd /app && /app/build/bin/Release/live_trend >> /var/log/cron.log 2>&1
+30 9 * * 1-6 sh /app/scripts/run_live_trend.sh >> /var/log/cron.log 2>&1
