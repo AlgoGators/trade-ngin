@@ -118,6 +118,7 @@ RUN apt-get install -y \
     libarrow-dev \
     libarrow-dataset-dev \
     cron \
+    gnuplot \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
