@@ -169,6 +169,23 @@ private:
         const std::string& yesterday_date = ""
     );
 
+    /**
+     * @brief Format rollover warning for contracts approaching expiry
+     * @param positions Current portfolio positions
+     * @param date Current trading date (YYYY-MM-DD format)
+     * @param db Database interface to query contract metadata
+     * @param date_override_for_testing Optional date override for testing (YYYY-MM-DD format)
+     *        If empty, uses the 'date' parameter. Use this to simulate different dates
+     *        for testing rollover warnings without affecting actual data.
+     * @return Formatted rollover warning HTML (empty if no contracts in rollover window)
+     */
+    std::string format_rollover_warning(
+        const std::unordered_map<std::string, Position>& positions,
+        const std::string& date,
+        std::shared_ptr<DatabaseInterface> db,
+        const std::string& date_override_for_testing = ""
+    );
+
 };
 
 } // namespace trade_ngin
