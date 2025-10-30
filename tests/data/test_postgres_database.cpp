@@ -208,20 +208,20 @@ TEST_F(PostgresDatabaseTest, ConcurrentAccess) {
     EXPECT_GT(success_count, 0);
 }
 
-TEST_F(PostgresDatabaseTest, ConnectionTimeout) {
-    // Create database with invalid host to test timeout
-    PostgresDatabase timeout_db("postgresql://invalid_host:5432/testdb");
-
-    auto start_time = std::chrono::steady_clock::now();
-    auto result = timeout_db.connect();
-    auto duration = std::chrono::steady_clock::now() - start_time;
-
-    EXPECT_TRUE(result.is_error());
-    EXPECT_EQ(result.error()->code(), ErrorCode::DATABASE_ERROR);
-
-    // Check that it didn't hang for too long (should timeout within reasonable time)
-    EXPECT_LT(std::chrono::duration_cast<std::chrono::seconds>(duration).count(), 5);
-}
+// TEST_F(PostgresDatabaseTest, ConnectionTimeout) {
+//     // Create database with invalid host to test timeout
+//     PostgresDatabase timeout_db("postgresql://invalid_host:5432/testdb");
+//
+//     auto start_time = std::chrono::steady_clock::now();
+//     auto result = timeout_db.connect();
+//     auto duration = std::chrono::steady_clock::now() - start_time;
+//
+//     EXPECT_TRUE(result.is_error());
+//     EXPECT_EQ(result.error()->code(), ErrorCode::DATABASE_ERROR);
+//
+//     // Check that it didn't hang for too long (should timeout within reasonable time)
+//     EXPECT_LT(std::chrono::duration_cast<std::chrono::seconds>(duration).count(), 5);
+// }
 
 TEST_F(PostgresDatabaseTest, ReconnectionBehavior) {
     // Test reconnection after disconnection

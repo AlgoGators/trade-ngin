@@ -1,5 +1,5 @@
 # Builder Stage
-FROM ubuntu:22.04 AS builder
+FROM ubuntu:latest AS builder
 
 # Avoid prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
@@ -15,6 +15,7 @@ RUN apt-get update && apt-get install -y \
     libgtest-dev \
     pkg-config \
     libpq-dev \
+    cron \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
@@ -92,7 +93,7 @@ RUN echo "ALL EXECUTABLES:" && \
     find /app -type f -executable -not -path "*/\.*" | sort
 
 # Runtime Stage
-FROM ubuntu:22.04
+FROM ubuntu:latest
 
 # Avoid prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
@@ -116,6 +117,7 @@ RUN wget -O - https://apt.llvm.org/llvm-snapshot.gpg.key | apt-key add - && \
 RUN apt-get install -y \
     libarrow-dev \
     libarrow-dataset-dev \
+    cron \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
@@ -129,28 +131,18 @@ RUN ldconfig
 # Copy the entire app directory (including build artifacts)
 COPY --from=builder /app /app
 
-# Create the startup script using traditional RUN/echo commands
-RUN echo '#!/bin/bash' > /app/startup.sh && \
-    echo 'echo "Searching for trade_ngin executable..."' >> /app/startup.sh && \
-    echo 'EXES=$(find /app -type f -executable -name "*trade_ngin*" 2>/dev/null)' >> /app/startup.sh && \
-    echo 'if [ -n "$EXES" ]; then' >> /app/startup.sh && \
-    echo '  EXECUTABLE=$(echo "$EXES" | head -n 1)' >> /app/startup.sh && \
-    echo '  echo "Found executable: $EXECUTABLE"' >> /app/startup.sh && \
-    echo '  exec "$EXECUTABLE" "$@"' >> /app/startup.sh && \
-    echo 'else' >> /app/startup.sh && \
-    echo '  echo "Error: No trade_ngin executable found. Available executables:"' >> /app/startup.sh && \
-    echo '  find /app -type f -executable | sort' >> /app/startup.sh && \
-    echo '  exit 1' >> /app/startup.sh && \
-    echo 'fi' >> /app/startup.sh
-
-# Make the startup script executable
-RUN chmod +x /app/startup.sh
-
 # Set the library path
 ENV LD_LIBRARY_PATH=/usr/local/lib:/app/build:/app/lib
+
+# Set timezone
+ENV TZ=America/New_York
 
 # Set the working directory
 WORKDIR /app
 
-# Set the entry point to our startup script
-ENTRYPOINT ["/app/startup.sh"]
+COPY live_trend.cron /etc/cron.d/live_trend
+RUN chmod 0644 /etc/cron.d/live_trend && \
+    crontab /etc/cron.d/live_trend && \
+    touch /var/log/cron.log
+
+CMD ["cron", "-f"]
