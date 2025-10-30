@@ -73,7 +73,7 @@ int main(int argc, char* argv[]) {
         // Initialize the logger
         auto& logger = Logger::instance();
         LoggerConfig logger_config;
-        logger_config.min_level = LogLevel::DEBUG;
+        logger_config.min_level = LogLevel::INFO;
         logger_config.destination = LogDestination::BOTH;
         logger_config.log_directory = "logs";
         logger_config.filename_prefix = "live_trend";
