@@ -1103,8 +1103,10 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
 
         auto daily_commissions_it = strategy_metrics.find("Daily Commissions");
         if (daily_commissions_it != strategy_metrics.end()) {
-            // Display commissions as negative and red for clarity
-            html << format_metric_display("Daily Commissions", -daily_commissions_it->second, false);
+            // Display commissions as positive value in black font (no color coding)
+            double commission_value = std::abs(daily_commissions_it->second);
+            std::string formatted_commission = "$" + format_with_commas(commission_value, 2);
+            html << "<div class=\"metric\"><strong>Daily Commissions:</strong> <span>" << formatted_commission << "</span></div>\n";
         }
 
         auto daily_total_it = strategy_metrics.find("Daily Total PnL");

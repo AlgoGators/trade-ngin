@@ -103,14 +103,15 @@ Result<LivePnLManager::FinalizationResult> LivePnLManager::finalize_previous_day
     }
 
     // Calculate finalized portfolio value
+    // NOTE: Return GROSS PnL in finalized_daily_pnl (commissions will be subtracted elsewhere)
     double net_pnl = calculate_net_pnl(total_finalized_pnl, commissions);
-    result.finalized_daily_pnl = net_pnl;
+    result.finalized_daily_pnl = total_finalized_pnl;  // GROSS PnL
 
     INFO("DEBUG FINALIZATION: Final total_finalized_pnl=" + std::to_string(total_finalized_pnl));
-    INFO("DEBUG FINALIZATION: After calculate_net_pnl, result.finalized_daily_pnl=" + std::to_string(result.finalized_daily_pnl));
+    INFO("DEBUG FINALIZATION: Result.finalized_daily_pnl (GROSS)=" + std::to_string(result.finalized_daily_pnl));
     result.finalized_portfolio_value = calculate_portfolio_value(previous_portfolio_value, net_pnl);
 
-    INFO("Day T-1 finalization complete: Total PnL=" + std::to_string(total_finalized_pnl) +
+    INFO("Day T-1 finalization complete: Total PnL (Gross)=" + std::to_string(total_finalized_pnl) +
          ", Net PnL=" + std::to_string(net_pnl) +
          ", Portfolio Value=" + std::to_string(result.finalized_portfolio_value));
 

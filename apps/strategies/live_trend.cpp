@@ -1015,17 +1015,19 @@ int main(int argc, char* argv[]) {
             INFO("  Commissions (yesterday_commissions): $" + std::to_string(yesterday_commissions));
             INFO("  Net PnL (yesterday_daily_pnl_finalized): $" + std::to_string(yesterday_daily_pnl_finalized));
 
-            // Get the day BEFORE yesterday's portfolio value and total_pnl
+            // Get the day BEFORE yesterday's portfolio value, total_pnl, and total_commissions
             double day_before_yesterday_portfolio_value = initial_capital;
             double day_before_yesterday_total_pnl = 0.0;
+            double day_before_yesterday_total_commissions = 0.0;
             try {
                 auto db_ptr = std::dynamic_pointer_cast<PostgresDatabase>(db);
                 if (db_ptr) {
                     auto prev_agg = db_ptr->get_previous_live_aggregates("LIVE_TREND_FOLLOWING", previous_date, "trading.live_results");
                     if (prev_agg.is_ok()) {
-                        std::tie(day_before_yesterday_portfolio_value, day_before_yesterday_total_pnl, std::ignore) = prev_agg.value();
+                        std::tie(day_before_yesterday_portfolio_value, day_before_yesterday_total_pnl, day_before_yesterday_total_commissions) = prev_agg.value();
                         INFO("Loaded day-before-yesterday aggregates: portfolio=$" + std::to_string(day_before_yesterday_portfolio_value) +
-                             ", total_pnl=$" + std::to_string(day_before_yesterday_total_pnl));
+                             ", total_pnl=$" + std::to_string(day_before_yesterday_total_pnl) +
+                             ", total_commissions=$" + std::to_string(day_before_yesterday_total_commissions));
                     }
                 }
             } catch (const std::exception& e) {
@@ -1036,6 +1038,8 @@ int main(int argc, char* argv[]) {
             // NOTE: Since we may not have correct commissions, the cumulative values will be recalculated by SQL
             // using the daily_pnl formula (daily_realized_pnl - daily_commissions)
             double yesterday_total_pnl_cumulative = day_before_yesterday_total_pnl + yesterday_daily_pnl_finalized;
+            double yesterday_total_commissions_cumulative = day_before_yesterday_total_commissions + yesterday_commissions;
+            double yesterday_total_realized_pnl_cumulative = yesterday_total_pnl_cumulative + yesterday_total_commissions_cumulative;
             double yesterday_portfolio_value_finalized = day_before_yesterday_portfolio_value + yesterday_daily_pnl_finalized;
 
             // Calculate yesterday's returns using LiveMetricsCalculator
@@ -1124,7 +1128,8 @@ int main(int argc, char* argv[]) {
             std::string update_query =
                 "WITH day_before AS ("
                 "  SELECT COALESCE(current_portfolio_value, " + std::to_string(initial_capital) + ") as portfolio, "
-                "         COALESCE(total_pnl, 0.0) as total_pnl "
+                "         COALESCE(total_pnl, 0.0) as total_pnl, "
+                "         COALESCE(total_realized_pnl, 0.0) as total_realized_pnl_prev "
                 "  FROM trading.live_results "
                 "  WHERE strategy_id = 'LIVE_TREND_FOLLOWING' AND DATE(date) < '" + yesterday_date_ss.str() + "' "
                 "  ORDER BY date DESC LIMIT 1"
@@ -1133,7 +1138,7 @@ int main(int argc, char* argv[]) {
                 "daily_realized_pnl = " + std::to_string(yesterday_total_pnl) + ", "
                 "daily_pnl = " + std::to_string(yesterday_total_pnl) + " - COALESCE(daily_commissions, 0.0), "
                 "total_pnl = COALESCE((SELECT total_pnl FROM day_before), 0.0) + (" + std::to_string(yesterday_total_pnl) + " - COALESCE(daily_commissions, 0.0)), "
-                "total_realized_pnl = COALESCE((SELECT total_pnl FROM day_before), 0.0) + (" + std::to_string(yesterday_total_pnl) + " - COALESCE(daily_commissions, 0.0)), "
+                "total_realized_pnl = " + std::to_string(yesterday_total_realized_pnl_cumulative) + ", "
                 "current_portfolio_value = COALESCE((SELECT portfolio FROM day_before), " + std::to_string(initial_capital) + ") + (" + std::to_string(yesterday_total_pnl) + " - COALESCE(daily_commissions, 0.0)), "
                 "daily_return = CASE WHEN COALESCE((SELECT portfolio FROM day_before), " + std::to_string(initial_capital) + ") > 0 "
                 "               THEN ((" + std::to_string(yesterday_total_pnl) + " - COALESCE(daily_commissions, 0.0)) / COALESCE((SELECT portfolio FROM day_before), " + std::to_string(initial_capital) + ")) * 100.0 "
@@ -1319,7 +1324,8 @@ int main(int argc, char* argv[]) {
         double total_commissions_cumulative = previous_total_commissions + total_daily_commissions;
 
         // Since it's futures, all PnL is realized
-        double total_realized_pnl = total_pnl;
+        // total_realized_pnl = total_pnl + total_commissions (GROSS)
+        double total_realized_pnl = total_pnl + total_commissions_cumulative;
         double total_unrealized_pnl = 0.0;
 
         // Calculate returns using LiveMetricsCalculator
