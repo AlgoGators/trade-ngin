@@ -38,8 +38,8 @@ struct LiveTradingConfig {
 struct TradingMetrics {
     // From LiveMetricsCalculator
     double daily_return = 0.0;
-    double total_return = 0.0;
-    double annualized_return = 0.0;
+    double total_cumulative_return = 0.0;  // Total return since inception (non-annualized)
+    double total_annualized_return = 0.0;  // Annualized return
     double portfolio_leverage = 0.0;
     double equity_to_margin_ratio = 0.0;
     double margin_cushion = 0.0;

@@ -1206,6 +1206,7 @@ std::string EmailSender::format_strategy_metrics(const std::map<std::string, dou
 
     // Define the exact order for Portfolio Snapshot
     std::vector<std::string> portfolio_order = {
+        "Total Cumulative Return",
         "Total Annualized Return",
         "Total Unrealized PnL",
         "Total Realized PnL",
