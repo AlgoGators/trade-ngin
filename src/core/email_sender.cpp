@@ -1081,10 +1081,10 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
 
         // Extract and display metrics in the specified order:
         // 1. Daily Return (as percentage)
-        // 2. Daily Unrealized PnL (as dollar amount)
-        // 3. Daily Realized PnL (as dollar amount)
+        // 2. Daily Unrealized PnL (Gross) (as dollar amount)
+        // 3. Daily Realized PnL (Gross) (as dollar amount)
         // 4. Daily Commissions (as dollar amount)
-        // 5. Daily Total PnL (as dollar amount)
+        // 5. Daily Total PnL (Net) (as dollar amount)
 
         auto daily_return_it = strategy_metrics.find("Daily Return");
         if (daily_return_it != strategy_metrics.end()) {
@@ -1093,12 +1093,12 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
 
         auto daily_unrealized_it = strategy_metrics.find("Daily Unrealized PnL");
         if (daily_unrealized_it != strategy_metrics.end()) {
-            html << format_metric_display("Daily Unrealized PnL", daily_unrealized_it->second, false);
+            html << format_metric_display("Daily Unrealized PnL (Gross)", daily_unrealized_it->second, false);
         }
 
         auto daily_realized_it = strategy_metrics.find("Daily Realized PnL");
         if (daily_realized_it != strategy_metrics.end()) {
-            html << format_metric_display("Daily Realized PnL", daily_realized_it->second, false);
+            html << format_metric_display("Daily Realized PnL (Gross)", daily_realized_it->second, false);
         }
 
         auto daily_commissions_it = strategy_metrics.find("Daily Commissions");
@@ -1109,7 +1109,7 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
 
         auto daily_total_it = strategy_metrics.find("Daily Total PnL");
         if (daily_total_it != strategy_metrics.end()) {
-            html << format_metric_display("Daily Total PnL", daily_total_it->second, false);
+            html << format_metric_display("Daily Total PnL (Net)", daily_total_it->second, false);
         }
 
         html << "</div>\n";
@@ -1211,21 +1211,43 @@ std::string EmailSender::format_strategy_metrics(const std::map<std::string, dou
     html << "<h2>Portfolio Snapshot</h2>\n";
     html << "<div class=\"metrics-category\">\n";
 
-    // Define the exact order for Portfolio Snapshot
-    std::vector<std::string> portfolio_order = {
-        "Total Cumulative Return",
-        "Total Annualized Return",
-        "Total Unrealized PnL",
-        "Total Realized PnL",
-        "Total PnL"
-    };
+    // Total Cumulative Return
+    auto total_cumulative_return = strategy_metrics.find("Total Cumulative Return");
+    if (total_cumulative_return != strategy_metrics.end()) {
+        html << format_metric("Total Cumulative Return", total_cumulative_return->second);
+    }
 
-    // Add total metrics
-    for (const auto& metric_name : portfolio_order) {
-        auto it = strategy_metrics.find(metric_name);
-        if (it != strategy_metrics.end()) {
-            html << format_metric(it->first, it->second);
-        }
+
+    // Total Annualized Return
+    auto total_annualized_return = strategy_metrics.find("Total Annualized Return");
+    if (total_annualized_return != strategy_metrics.end()) {
+        html << format_metric("Total Annualized Return", total_annualized_return->second);
+    }
+    
+    html << "<br>\n";
+
+    // Total Unrealized PnL (Gross)
+    auto total_unrealized = strategy_metrics.find("Total Unrealized PnL");
+    if (total_unrealized != strategy_metrics.end()) {
+        html << format_metric("Total Unrealized PnL (Gross)", total_unrealized->second);
+    }
+
+    // Total Realized PnL (Gross)
+    auto total_realized = strategy_metrics.find("Total Realized PnL");
+    if (total_realized != strategy_metrics.end()) {
+        html << format_metric("Total Realized PnL (Gross)", total_realized->second);
+    }
+
+    // Total Commissions
+    auto total_comm = strategy_metrics.find("Total Commissions");
+    if (total_comm != strategy_metrics.end()) {
+        html << format_metric("Total Commissions", total_comm->second);
+    }
+
+    // Total PnL (Net)
+    auto total_pnl = strategy_metrics.find("Total PnL");
+    if (total_pnl != strategy_metrics.end()) {
+        html << format_metric("Total PnL (Net)", total_pnl->second);
     }
 
     html << "<br>\n";
@@ -1249,14 +1271,6 @@ std::string EmailSender::format_strategy_metrics(const std::map<std::string, dou
         if (port_lev_gross != strategy_metrics.end()) {
             html << format_metric("Portfolio Leverage", port_lev_gross->second);
         }
-    }
-
-    html << "<br>\n";
-
-    // Total Commissions
-    auto total_comm = strategy_metrics.find("Total Commissions");
-    if (total_comm != strategy_metrics.end()) {
-        html << format_metric("Total Commissions", total_comm->second);
     }
 
     html << "<br>\n";
@@ -1555,10 +1569,6 @@ std::string EmailSender::format_symbols_table_for_positions(
        };
 
        // Render
-      html << "<table>\n";
-      html << "<tr><th>Databento Symbol</th><th>IB Symbol</th>"
-              "<th>Name</th><th>Contract Months</th><th>Front Month</th></tr>\n";
-      html << "</table>\n";
       html << "<div class=\"summary-stats\" style=\"margin-top:6px;\">"
               "<strong>Month Codes:</strong> F=Jan, G=Feb, H=Mar, J=Apr, K=May, M=Jun, N=Jul, Q=Aug, U=Sep, V=Oct, X=Nov, Z=Dec"
               "</div>\n";
