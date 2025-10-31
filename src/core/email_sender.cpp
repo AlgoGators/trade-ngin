@@ -1083,7 +1083,8 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
         // 1. Daily Return (as percentage)
         // 2. Daily Unrealized PnL (as dollar amount)
         // 3. Daily Realized PnL (as dollar amount)
-        // 4. Daily Total PnL (as dollar amount)
+        // 4. Daily Commissions (as dollar amount)
+        // 5. Daily Total PnL (as dollar amount)
 
         auto daily_return_it = strategy_metrics.find("Daily Return");
         if (daily_return_it != strategy_metrics.end()) {
@@ -1098,6 +1099,12 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
         auto daily_realized_it = strategy_metrics.find("Daily Realized PnL");
         if (daily_realized_it != strategy_metrics.end()) {
             html << format_metric_display("Daily Realized PnL", daily_realized_it->second, false);
+        }
+
+        auto daily_commissions_it = strategy_metrics.find("Daily Commissions");
+        if (daily_commissions_it != strategy_metrics.end()) {
+            // Display commissions as negative and red for clarity
+            html << format_metric_display("Daily Commissions", -daily_commissions_it->second, false);
         }
 
         auto daily_total_it = strategy_metrics.find("Daily Total PnL");

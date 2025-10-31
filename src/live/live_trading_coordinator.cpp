@@ -339,7 +339,7 @@ TradingMetrics LiveTradingCoordinator::convert_calculated_metrics(
 
     // Return metrics
     metrics.daily_return = calc_metrics.daily_return;
-    metrics.total_cumulative_return = calc_metrics.total_return;  // total_return from calculator is cumulative
+    metrics.total_cumulative_return = calc_metrics.total_return;
     metrics.total_annualized_return = calc_metrics.annualized_return;
 
     // Portfolio metrics
