@@ -1736,7 +1736,7 @@ int main(int argc, char* argv[]) {
 
                     // Load yesterday's daily metrics from database for accurate display
                     std::string yesterday_metrics_query =
-                        "SELECT daily_return, daily_unrealized_pnl, daily_realized_pnl, daily_pnl "
+                        "SELECT daily_return, daily_unrealized_pnl, daily_realized_pnl, daily_pnl, daily_commissions "
                         "FROM trading.live_results "
                         "WHERE strategy_id = 'LIVE_TREND_FOLLOWING' AND date = '" + yesterday_date_for_email + "' "
                         "ORDER BY date DESC LIMIT 1";
@@ -1752,6 +1752,7 @@ int main(int argc, char* argv[]) {
                         auto daily_unrealized_arr = std::static_pointer_cast<arrow::StringArray>(metrics_table->column(1)->chunk(0));
                         auto daily_realized_arr = std::static_pointer_cast<arrow::StringArray>(metrics_table->column(2)->chunk(0));
                         auto daily_total_arr = std::static_pointer_cast<arrow::StringArray>(metrics_table->column(3)->chunk(0));
+                        auto daily_commissions_arr = std::static_pointer_cast<arrow::StringArray>(metrics_table->column(4)->chunk(0));
 
                         if (!daily_return_arr->IsNull(0)) {
                             yesterday_daily_metrics_final["Daily Return"] = std::stod(daily_return_arr->GetString(0));
@@ -1768,6 +1769,11 @@ int main(int argc, char* argv[]) {
                         if (!daily_total_arr->IsNull(0)) {
                             yesterday_daily_metrics_final["Daily Total PnL"] = std::stod(daily_total_arr->GetString(0));
                             INFO("Daily Total PnL: " + daily_total_arr->GetString(0));
+                        }
+
+                        if (!daily_commissions_arr->IsNull(0)) {
+                            yesterday_daily_metrics_final["Daily Commissions"] = std::stod(daily_commissions_arr->GetString(0));
+                            INFO("Daily Commissions: " + daily_commissions_arr->GetString(0));
                         }
 
                         INFO("Successfully loaded yesterday's daily metrics from live_results");
