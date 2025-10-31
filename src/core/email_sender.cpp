@@ -640,7 +640,7 @@ std::string EmailSender::generate_trading_report_body(
    html << "<h2>Symbols Reference</h2>\n";
    if (db) {
        try {
-           html << format_symbols_table_for_positions(positions, db);
+           html << format_symbols_table_for_positions(positions, db, date);
        } catch (const std::exception& e) {
            html << "<p>Error loading symbols data: " << e.what() << "</p>\n";
        }
@@ -1296,7 +1296,8 @@ std::string EmailSender::format_strategy_metrics(const std::map<std::string, dou
 }
 std::string EmailSender::format_symbols_table_for_positions(
    const std::unordered_map<std::string, Position>& positions,
-   std::shared_ptr<DatabaseInterface> db) {
+   std::shared_ptr<DatabaseInterface> db,
+   const std::string& date) {
 
 
    std::ostringstream html;
@@ -1410,11 +1411,160 @@ std::string EmailSender::format_symbols_table_for_positions(
 
        auto col_symbol = combined->column(idx_symbol)->chunk(0);
 
+      // Helper function to get front month contract symbol (advances on/after expiry)
+      auto get_front_month_symbol = [](const std::string& ib_symbol, const std::string& contract_months, const std::string& date_str) -> std::string {
+           // Parse the date
+           std::tm current_tm = {};
+           std::istringstream ss(date_str);
+           ss >> std::get_time(&current_tm, "%Y-%m-%d");
+           if (ss.fail()) {
+               return "";
+           }
+           
+         // Helpers for business day calculations
+         auto is_business_day = [](const std::tm& tm) { return tm.tm_wday != 0 && tm.tm_wday != 6; };
+         auto get_previous_business_day = [&is_business_day](std::tm tm) { do { tm.tm_mday--; std::mktime(&tm); } while (!is_business_day(tm)); return tm; };
+         auto get_next_business_day = [&is_business_day](std::tm tm) { do { tm.tm_mday++; std::mktime(&tm); } while (!is_business_day(tm)); return tm; };
+         auto get_last_day_of_month = [](int year, int month){ std::tm r{}; r.tm_year=year-1900; r.tm_mon=month; r.tm_mday=0; std::mktime(&r); return r; };
+         auto get_nth_weekday = [](int year,int month,int weekday,int n){ std::tm r{}; r.tm_year=year-1900; r.tm_mon=month-1; r.tm_mday=1; std::mktime(&r); int first=r.tm_wday; int delta=(weekday-first+7)%7; r.tm_mday=1+delta+(n-1)*7; std::mktime(&r); return r; };
+         auto get_nth_business_day = [&get_next_business_day](int year,int month,int n){ std::tm r{}; r.tm_year=year-1900; r.tm_mon=month-1; r.tm_mday=0; int c=0; while(c<n){ r=get_next_business_day(r); c++; } return r; };
+
+         // Compute exchange-specific expiry for a given symbol/month/year
+         auto compute_expiry = [&](const std::string& sym,int y,int m){
+             std::tm e{};
+             if (sym=="MES" || sym=="MYM" || sym=="MNQ" || sym=="RTY" || sym=="ES" || sym=="YM" || sym=="NQ") {
+                 e = get_nth_weekday(y,m,5,3); // 3rd Friday
+             } else if (sym=="ZC"||sym=="ZW"||sym=="ZM"||sym=="ZL"||sym=="ZS"||sym=="ZR"||sym=="KE") {
+                 e.tm_year=y-1900; e.tm_mon=m-1; e.tm_mday=14; std::mktime(&e); if (!is_business_day(e)) e=get_previous_business_day(e);
+             } else if (sym=="GC"||sym=="PL"||sym=="SI") {
+                 e=get_last_day_of_month(y,m); e=get_previous_business_day(e); e=get_previous_business_day(e); e=get_previous_business_day(e);
+             } else if (sym=="6B"||sym=="6E"||sym=="6J"||sym=="6M"||sym=="6N"||sym=="6S") {
+                 e=get_nth_weekday(y,m,3,3); e=get_previous_business_day(e); e=get_previous_business_day(e);
+             } else if (sym=="6C") {
+                 e=get_nth_weekday(y,m,3,3); e=get_previous_business_day(e);
+             } else if (sym=="ZN"||sym=="UB") {
+                 e=get_last_day_of_month(y,m); if (!is_business_day(e)) e=get_previous_business_day(e); for(int j=0;j<7;++j) e=get_previous_business_day(e);
+             } else if (sym=="HE") {
+                 e=get_nth_business_day(y,m,10);
+             } else if (sym=="LE") {
+                 e=get_last_day_of_month(y,m); if (!is_business_day(e)) e=get_previous_business_day(e);
+             } else if (sym=="GF") {
+                 e=get_last_day_of_month(y,m); while(e.tm_wday!=4){ e.tm_mday--; std::mktime(&e); }
+             } else {
+                 e=get_nth_weekday(y,m,5,3);
+             }
+             return e;
+         };
+
+          // Check for monthly contracts (all months or consecutive)
+          if (contract_months.find("All Months") != std::string::npos ||
+              contract_months.find("consecutive") != std::string::npos) {
+             int month = current_tm.tm_mon + 1;
+             int year = current_tm.tm_year + 1900;
+             // Advance only AFTER actual expiry for this symbol/month
+             std::tm expiry = compute_expiry(ib_symbol, year, month);
+             if (std::difftime(std::mktime(&current_tm), std::mktime(&expiry)) > 0) {
+                 month += 1;
+                 if (month > 12) { month = 1; year += 1; }
+             }
+
+              char month_code = '\0';
+              switch (month) {
+                  case 1: month_code = 'F'; break; // January
+                  case 2: month_code = 'G'; break; // February
+                  case 3: month_code = 'H'; break; // March
+                  case 4: month_code = 'J'; break; // April
+                  case 5: month_code = 'K'; break; // May
+                  case 6: month_code = 'M'; break; // June
+                  case 7: month_code = 'N'; break; // July
+                  case 8: month_code = 'Q'; break; // August
+                  case 9: month_code = 'U'; break; // September
+                  case 10: month_code = 'V'; break; // October
+                  case 11: month_code = 'X'; break; // November
+                  case 12: month_code = 'Z'; break; // December
+              }
+              int year_digit = year % 10;
+              return ib_symbol + month_code + std::to_string(year_digit);
+          }
+           
+           // For quarterly contracts, find the next contract month
+           std::vector<int> month_codes;
+           if (contract_months.find("MAR") != std::string::npos) month_codes.push_back(3);
+           if (contract_months.find("JUN") != std::string::npos) month_codes.push_back(6);
+           if (contract_months.find("SEP") != std::string::npos) month_codes.push_back(9);
+           if (contract_months.find("DEC") != std::string::npos) month_codes.push_back(12);
+           if (contract_months.find("JAN") != std::string::npos && month_codes.empty()) month_codes.push_back(1);
+           if (contract_months.find("FEB") != std::string::npos) month_codes.push_back(2);
+           if (contract_months.find("APR") != std::string::npos) month_codes.push_back(4);
+           if (contract_months.find("MAY") != std::string::npos) month_codes.push_back(5);
+           if (contract_months.find("JULY") != std::string::npos) month_codes.push_back(7);
+           if (contract_months.find("AUG") != std::string::npos) month_codes.push_back(8);
+           if (contract_months.find("OCT") != std::string::npos) month_codes.push_back(10);
+           if (contract_months.find("NOV") != std::string::npos) month_codes.push_back(11);
+           
+           if (month_codes.empty()) return "";
+           
+           int current_month = current_tm.tm_mon + 1;
+           int current_year = current_tm.tm_year + 1900;
+           
+           std::sort(month_codes.begin(), month_codes.end());
+          int next_month = -1, next_year = current_year;
+           for (int m : month_codes) {
+               if (m >= current_month) {
+                   next_month = m;
+                   break;
+               }
+           }
+           if (next_month == -1) {
+               next_month = month_codes[0];
+               next_year++;
+           }
+          
+          // compute_expiry already defined above
+
+          // If current date is after expiry of the candidate month, advance to the next listed month
+          std::tm expiry_candidate = compute_expiry(ib_symbol, next_year, next_month);
+          if (std::difftime(std::mktime(&current_tm), std::mktime(&expiry_candidate)) > 0) {
+              // advance to next contract in list
+              auto it = std::find(month_codes.begin(), month_codes.end(), next_month);
+              if (it != month_codes.end()) {
+                  ++it;
+                  if (it == month_codes.end()) { it = month_codes.begin(); next_year++; }
+                  next_month = *it;
+              }
+          }
+
+          char month_code = '\0';
+           switch (next_month) {
+               case 1: month_code = 'F'; break;
+               case 2: month_code = 'G'; break;
+               case 3: month_code = 'H'; break;
+               case 4: month_code = 'J'; break;
+               case 5: month_code = 'K'; break;
+               case 6: month_code = 'M'; break;
+               case 7: month_code = 'N'; break;
+               case 8: month_code = 'Q'; break;
+               case 9: month_code = 'U'; break;
+               case 10: month_code = 'V'; break;
+               case 11: month_code = 'X'; break;
+               case 12: month_code = 'Z'; break;
+           }
+           
+          int year_digit = next_year % 10;
+          return ib_symbol + month_code + std::to_string(year_digit);
+       };
 
        // Render
-       html << "<table>\n";
-       html << "<tr><th>Databento Symbol</th><th>IB Symbol</th>"
-               "<th>Name</th><th>Contract Months</th></tr>\n";
+      html << "<table>\n";
+      html << "<tr><th>Databento Symbol</th><th>IB Symbol</th>"
+              "<th>Name</th><th>Contract Months</th><th>Front Month</th></tr>\n";
+      html << "</table>\n";
+      html << "<div class=\"summary-stats\" style=\"margin-top:6px;\">"
+              "<strong>Month Codes:</strong> F=Jan, G=Feb, H=Mar, J=Apr, K=May, M=Jun, N=Jul, Q=Aug, U=Sep, V=Oct, X=Nov, Z=Dec"
+              "</div>\n";
+      html << "<table>\n";
+      html << "<tr><th>Databento Symbol</th><th>IB Symbol</th>"
+              "<th>Name</th><th>Contract Months</th><th>Front Month</th></tr>\n";
 
 
        // Track matched symbols to detect gaps
@@ -1438,11 +1588,13 @@ std::string EmailSender::format_symbols_table_for_positions(
 
 
        for (const auto& r : hardcoded) {
+           std::string front_month = get_front_month_symbol(r.ib, r.months, date);
            html << "<tr>\n"
                << "<td>" << r.db     << "</td>\n"
                << "<td>" << r.ib     << "</td>\n"
                << "<td>" << r.name   << "</td>\n"
                << "<td>" << r.months << "</td>\n"
+               << "<td>" << front_month << "</td>\n"
                << "</tr>\n";
            matched.insert(up(r.db));
            matched.insert(up(r.ib));
@@ -1470,11 +1622,13 @@ std::string EmailSender::format_symbols_table_for_positions(
            if (!ib_sym.empty()) matched.insert(up(ib_sym));
 
 
+           std::string front_month = get_front_month_symbol(ib_sym, months, date);
            html << "<tr>\n";
            html << "<td>" << db_sym << "</td>\n";
            html << "<td>" << ib_sym << "</td>\n";
            html << "<td>" << name   << "</td>\n";
            html << "<td>" << months << "</td>\n";
+           html << "<td>" << front_month << "</td>\n";
            html << "</tr>\n";
        }
 
@@ -1599,6 +1753,27 @@ std::string EmailSender::format_rollover_warning(
         return static_cast<int>((to_time - from_time) / (60 * 60 * 24));
     };
 
+    // Helper: Convert month and year to IB contract format (e.g., 12, 2025 -> "Z5")
+    auto month_year_to_contract = [](int month, int year) -> std::string {
+        char month_code = '\0';
+        switch (month) {
+            case 1: month_code = 'F'; break;  // January
+            case 2: month_code = 'G'; break;  // February
+            case 3: month_code = 'H'; break;  // March
+            case 4: month_code = 'J'; break;  // April
+            case 5: month_code = 'K'; break;  // May
+            case 6: month_code = 'M'; break;  // June
+            case 7: month_code = 'N'; break;  // July
+            case 8: month_code = 'Q'; break;  // August
+            case 9: month_code = 'U'; break;  // September
+            case 10: month_code = 'V'; break; // October
+            case 11: month_code = 'X'; break; // November
+            case 12: month_code = 'Z'; break; // December
+        }
+        int year_digit = year % 10;
+        return std::string(1, month_code) + std::to_string(year_digit);
+    };
+
     // Get contract month info from database
     std::set<std::string> active_symbols;
     for (const auto& [symbol, pos] : positions) {
@@ -1653,8 +1828,8 @@ std::string EmailSender::format_rollover_warning(
         // Create mapping from Databento symbol to IB symbol for display
         std::unordered_map<std::string, std::string> databento_to_ib;
 
-        std::vector<std::string> quarterly_rollover_symbols;
-        std::vector<std::string> monthly_rollover_symbols;
+        // Unified rollover info: (ib_symbol, current_front_month, next_front_month)
+        std::vector<std::tuple<std::string, std::string, std::string>> rollover_info;
 
         // Process each contract
         for (int64_t i = 0; i < combined->num_rows(); ++i) {
@@ -1674,10 +1849,59 @@ std::string EmailSender::format_rollover_warning(
             // Check for monthly contracts
             if (contract_months.find("All Months") != std::string::npos ||
                 contract_months.find("consecutive") != std::string::npos) {
-                // Check if we're holding this contract, if yes add IB symbol to list
                 for (const auto& [pos_symbol, pos] : positions) {
                     if (pos.quantity.as_double() != 0.0 && pos_symbol.find(symbol) == 0) {
-                        monthly_rollover_symbols.push_back(ib_symbol);
+                        // Compute this month's expiry using symbol-specific rules
+                        int disp_month = current_tm.tm_mon + 1;
+                        int disp_year  = current_tm.tm_year + 1900;
+                        std::tm expiry_date = {};
+                        // Reuse the same expiry mapping as below defaults
+                        // Equity index style default: 3rd Friday; Metals/Agriculture/FX handled below in quarterly branch, but here monthly energy defaults apply as 3rd Friday
+                        // We'll use a simplified mapping consistent with compute_expiry behavior in get_front_month_symbol
+                        auto is_business_day_local = [](const std::tm& tm) { return tm.tm_wday != 0 && tm.tm_wday != 6; };
+                        auto get_previous_business_day_local = [&is_business_day_local](std::tm tm) { do { tm.tm_mday--; std::mktime(&tm); } while (!is_business_day_local(tm)); return tm; };
+                        auto get_last_day_of_month_local = [](int year, int month){ std::tm r{}; r.tm_year=year-1900; r.tm_mon=month; r.tm_mday=0; std::mktime(&r); return r; };
+                        auto get_nth_weekday_local = [](int year,int month,int weekday,int n){ std::tm r{}; r.tm_year=year-1900; r.tm_mon=month-1; r.tm_mday=1; std::mktime(&r); int first=r.tm_wday; int delta=(weekday-first+7)%7; r.tm_mday=1+delta+(n-1)*7; std::mktime(&r); return r; };
+                        auto get_next_business_day_local = [&is_business_day_local](std::tm tm) { do { tm.tm_mday++; std::mktime(&tm); } while (!is_business_day_local(tm)); return tm; };
+                        auto get_nth_business_day_local = [&get_next_business_day_local](int year,int month,int n){ std::tm r{}; r.tm_year=year-1900; r.tm_mon=month-1; r.tm_mday=0; int c=0; while(c<n){ r=get_next_business_day_local(r); c++; } return r; };
+
+                        if (symbol == "GC" || symbol == "PL" || symbol == "SI") {
+                            expiry_date = get_last_day_of_month_local(disp_year, disp_month);
+                            expiry_date = get_previous_business_day_local(expiry_date);
+                            expiry_date = get_previous_business_day_local(expiry_date);
+                            expiry_date = get_previous_business_day_local(expiry_date);
+                        } else if (symbol == "HE") {
+                            expiry_date = get_nth_business_day_local(disp_year, disp_month, 10);
+                        } else if (symbol == "LE") {
+                            expiry_date = get_last_day_of_month_local(disp_year, disp_month);
+                            if (!is_business_day_local(expiry_date)) expiry_date = get_previous_business_day_local(expiry_date);
+                        } else if (symbol == "GF") {
+                            expiry_date = get_last_day_of_month_local(disp_year, disp_month);
+                            while (expiry_date.tm_wday != 4) { expiry_date.tm_mday--; std::mktime(&expiry_date); }
+                        } else if (symbol == "ZN" || symbol == "UB") {
+                            expiry_date = get_last_day_of_month_local(disp_year, disp_month);
+                            if (!is_business_day_local(expiry_date)) expiry_date = get_previous_business_day_local(expiry_date);
+                            for (int j = 0; j < 7; ++j) expiry_date = get_previous_business_day_local(expiry_date);
+                        } else if (symbol == "6B" || symbol == "6E" || symbol == "6J" || symbol == "6M" || symbol == "6N" || symbol == "6S") {
+                            expiry_date = get_nth_weekday_local(disp_year, disp_month, 3, 3);
+                            expiry_date = get_previous_business_day_local(expiry_date);
+                            expiry_date = get_previous_business_day_local(expiry_date);
+                        } else if (symbol == "6C") {
+                            expiry_date = get_nth_weekday_local(disp_year, disp_month, 3, 3);
+                            expiry_date = get_previous_business_day_local(expiry_date);
+                        } else {
+                            // Default monthly (e.g., energy like CL, RB): 3rd Friday
+                            expiry_date = get_nth_weekday_local(disp_year, disp_month, 5, 3);
+                        }
+
+                        int days_to_expiry = days_between(current_tm, expiry_date);
+                        if (days_to_expiry > 0 && days_to_expiry <= 15) {
+                            auto to_code = [](int month){ switch(month){case 1:return 'F';case 2:return 'G';case 3:return 'H';case 4:return 'J';case 5:return 'K';case 6:return 'M';case 7:return 'N';case 8:return 'Q';case 9:return 'U';case 10:return 'V';case 11:return 'X';default:return 'Z';} };
+                            std::string current_front = ib_symbol + std::string(1, to_code(disp_month)) + std::to_string(disp_year % 10);
+                            int next_m = disp_month + 1; int next_y = disp_year; if (next_m > 12){ next_m = 1; next_y++; }
+                            std::string next_front = ib_symbol + std::string(1, to_code(next_m)) + std::to_string(next_y % 10);
+                            rollover_info.push_back(std::make_tuple(ib_symbol, current_front, next_front));
+                        }
                         break;
                     }
                 }
@@ -1690,22 +1914,22 @@ std::string EmailSender::format_rollover_warning(
 
             // Parse contract months (MAR, JUN, SEP, DEC, etc.)
             std::vector<int> month_codes; // 1=JAN, 3=MAR, etc.
-            if (contract_months.find("MAR") != std::string::npos) month_codes.push_back(3);
-            if (contract_months.find("JUN") != std::string::npos) month_codes.push_back(6);
-            if (contract_months.find("SEP") != std::string::npos) month_codes.push_back(9);
-            if (contract_months.find("DEC") != std::string::npos) month_codes.push_back(12);
-            if (contract_months.find("JAN") != std::string::npos && month_codes.empty()) month_codes.push_back(1);
+            if (contract_months.find("JAN") != std::string::npos) month_codes.push_back(1);
             if (contract_months.find("FEB") != std::string::npos) month_codes.push_back(2);
+            if (contract_months.find("MAR") != std::string::npos) month_codes.push_back(3);
             if (contract_months.find("APR") != std::string::npos) month_codes.push_back(4);
             if (contract_months.find("MAY") != std::string::npos) month_codes.push_back(5);
+            if (contract_months.find("JUN") != std::string::npos) month_codes.push_back(6);
             if (contract_months.find("JULY") != std::string::npos) month_codes.push_back(7);
             if (contract_months.find("AUG") != std::string::npos) month_codes.push_back(8);
+            if (contract_months.find("SEP") != std::string::npos) month_codes.push_back(9);
             if (contract_months.find("OCT") != std::string::npos) month_codes.push_back(10);
             if (contract_months.find("NOV") != std::string::npos) month_codes.push_back(11);
+            if (contract_months.find("DEC") != std::string::npos) month_codes.push_back(12);
 
             if (month_codes.empty()) continue;
 
-            // Find next contract month
+            // Find next contract month (this is the candidate - may need to check expiry)
             std::sort(month_codes.begin(), month_codes.end());
             int next_month = -1, next_year = current_year;
             for (int m : month_codes) {
@@ -1718,6 +1942,10 @@ std::string EmailSender::format_rollover_warning(
                 next_month = month_codes[0];
                 next_year++;
             }
+            
+            // Store the initially found month for potential rollover warning display
+            int expiring_month = next_month;
+            int expiring_year = next_year;
 
             // Calculate expiry date based on contract-specific rules
             std::tm expiry_date = {};
@@ -1793,41 +2021,58 @@ std::string EmailSender::format_rollover_warning(
             // Calculate days to expiry
             int days_to_expiry = days_between(current_tm, expiry_date);
 
-            // Check if within 14-day rollover window
-            if (days_to_expiry > 0 && days_to_expiry <= 14) {
-                // Check if we're holding this contract, if yes add IB symbol to list
+            // Check if within 15-day rollover window
+            if (days_to_expiry > 0 && days_to_expiry <= 15) {
+                // Check if we're holding this contract, if yes calculate and store contract info
                 for (const auto& [pos_symbol, pos] : positions) {
                     if (pos.quantity.as_double() != 0.0 && pos_symbol.find(symbol) == 0) {
-                        quarterly_rollover_symbols.push_back(ib_symbol);
+                        // Current front month: the contract that's expiring (use expiring_month, not next_month)
+                        std::string current_contract = ib_symbol + month_year_to_contract(expiring_month, expiring_year);
+                        
+                        // Next front month: the contract after expiring_month in the cycle
+                        int next_contract_month = -1, next_contract_year = expiring_year;
+                        auto it = std::find(month_codes.begin(), month_codes.end(), expiring_month);
+                        if (it != month_codes.end()) {
+                            ++it;
+                            if (it == month_codes.end()) {
+                                // Wrap to first month of next year
+                                next_contract_month = month_codes[0];
+                                next_contract_year++;
+                            } else {
+                                next_contract_month = *it;
+                            }
+                        } else {
+                            // Fallback: should not happen, but use next month in list
+                            next_contract_month = month_codes[0];
+                            if (expiring_month >= month_codes.back()) {
+                                next_contract_year++;
+                            }
+                        }
+                        
+                        std::string next_contract = ib_symbol + month_year_to_contract(next_contract_month, next_contract_year);
+                        
+                        rollover_info.push_back(std::make_tuple(ib_symbol, current_contract, next_contract));
                         break;
                     }
                 }
             }
         }
 
-        // Generate warnings
-        if (!quarterly_rollover_symbols.empty()) {
-            std::sort(quarterly_rollover_symbols.begin(), quarterly_rollover_symbols.end());
+        // Generate unified warnings
+        if (!rollover_info.empty()) {
+            std::sort(rollover_info.begin(), rollover_info.end(),
+                     [](const auto& a, const auto& b) { return std::get<0>(a) < std::get<0>(b); });
             html << "<div style=\"background-color: #fff5f5; border-left: 4px solid #dc2626; padding: 15px; margin: 20px 0; font-size: 13px; font-family: Arial, sans-serif;\">\n";
             html << "<p style=\"color: #991b1b; margin: 0 0 10px 0;\"><strong>Rollover Notice:</strong> ";
             html << "These securities contracts are approaching their rollover period. ";
             html << "Please consider rolling over to the next contract month unless you intend to take delivery.</p>\n";
             html << "<ul style=\"color: #991b1b; margin: 5px 0 0 20px; padding: 0;\">\n";
-            for (const auto& sym : quarterly_rollover_symbols) {
-                html << "<li>" << sym << "</li>\n";
-            }
-            html << "</ul>\n";
-            html << "</div>\n";
-        }
-
-        if (!monthly_rollover_symbols.empty()) {
-            std::sort(monthly_rollover_symbols.begin(), monthly_rollover_symbols.end());
-            html << "<div style=\"background-color: #eff6ff; border-left: 4px solid #3b82f6; padding: 15px; margin: 20px 0; font-size: 13px; font-family: Arial, sans-serif;\">\n";
-            html << "<p style=\"color: #1e40af; margin: 0 0 10px 0;\"><strong>Monthly Rollover Notice:</strong> ";
-            html << "These contracts expire every month. Please ensure to roll over to the next month's contract in advance to maintain continuous exposure.</p>\n";
-            html << "<ul style=\"color: #1e40af; margin: 5px 0 0 20px; padding: 0;\">\n";
-            for (const auto& sym : monthly_rollover_symbols) {
-                html << "<li>" << sym << "</li>\n";
+            for (const auto& info : rollover_info) {
+                const std::string& ib_symbol = std::get<0>(info);
+                const std::string& current_contract = std::get<1>(info);
+                const std::string& next_contract = std::get<2>(info);
+                html << "<li><strong>" << ib_symbol << ":</strong> Currently holding <strong>" << current_contract 
+                     << "</strong> → Switch to <strong>" << next_contract << "</strong></li>\n";
             }
             html << "</ul>\n";
             html << "</div>\n";

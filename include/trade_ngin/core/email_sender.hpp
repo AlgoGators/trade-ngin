@@ -145,10 +145,12 @@ private:
 
     /**
      * @brief Format symbols reference table for email
+     * @param positions Current portfolio positions
      * @param db Database interface to query symbols
+     * @param date Current date for front month calculation
      * @return Formatted symbols table HTML
      */
-    std::string format_symbols_table_for_positions(const std::unordered_map<std::string, Position>& positions,std::shared_ptr<DatabaseInterface> db);
+    std::string format_symbols_table_for_positions(const std::unordered_map<std::string, Position>& positions,std::shared_ptr<DatabaseInterface> db, const std::string& date);
 
     /**
      * @brief Format yesterday's finalized positions table with actual PnL
