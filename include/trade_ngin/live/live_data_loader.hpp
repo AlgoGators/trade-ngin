@@ -25,7 +25,8 @@ struct LiveResultsRow {
     double daily_realized_pnl = 0.0;
     double daily_unrealized_pnl = 0.0;
     double daily_return = 0.0;
-    double total_return = 0.0;
+    double total_cumulative_return = 0.0;  // Total return since inception (non-annualized)
+    double total_annualized_return = 0.0;  // Annualized return
     double current_portfolio_value = 0.0;
     double portfolio_leverage = 0.0;
     double equity_to_margin_ratio = 0.0;

@@ -146,7 +146,7 @@ Result<LiveResultsRow> LiveDataLoader::load_live_results(
     std::string query =
         "SELECT "
         "daily_pnl, total_pnl, daily_realized_pnl, daily_unrealized_pnl, "
-        "daily_return, total_return, current_portfolio_value, "
+        "daily_return, total_cumulative_return, total_annualized_return, current_portfolio_value, "
         "portfolio_leverage, equity_to_margin_ratio, gross_notional, "
         "margin_posted, cash_available, daily_commissions, "
         "sharpe_ratio, sortino_ratio, max_drawdown, volatility, "
@@ -192,7 +192,8 @@ Result<LiveResultsRow> LiveDataLoader::load_live_results(
     row.daily_realized_pnl = get_double();
     row.daily_unrealized_pnl = get_double();
     row.daily_return = get_double();
-    row.total_return = get_double();
+    row.total_cumulative_return = get_double();
+    row.total_annualized_return = get_double();
     row.current_portfolio_value = get_double();
     row.portfolio_leverage = get_double();
     row.equity_to_margin_ratio = get_double();
