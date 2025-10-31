@@ -1053,22 +1053,29 @@ int main(int argc, char* argv[]) {
                 yesterday_total_return_decimal = (yesterday_portfolio_value_finalized - initial_capital) / initial_capital;
             }
 
-            // Get trading days count for annualization
+            // Get trading days count for annualization using PostgreSQL function
+            // This avoids issues with row multiplication/duplication in the database
             int trading_days_count = 1;
             try {
-                auto count_result = db->execute_query(
-                    "SELECT COUNT(*) AS cnt FROM trading.live_results WHERE strategy_id = 'LIVE_TREND_FOLLOWING'");
-                if (count_result.is_ok()) {
-                    auto table = count_result.value();
+                // Call PostgreSQL function to calculate trading days
+                auto trading_days_result = db->execute_query(
+                    "SELECT trading.get_trading_days('LIVE_TREND_FOLLOWING', DATE '" + yesterday_date_ss.str() + "')");
+                
+                if (trading_days_result.is_ok()) {
+                    auto table = trading_days_result.value();
                     if (table && table->num_rows() > 0 && table->num_columns() > 0) {
-                        auto arr = std::static_pointer_cast<arrow::Int64Array>(table->column(0)->chunk(0));
+                        // execute_query returns StringArray for all columns
+                        auto arr = std::static_pointer_cast<arrow::StringArray>(table->column(0)->chunk(0));
                         if (arr && arr->length() > 0 && !arr->IsNull(0)) {
-                            trading_days_count = std::max<int>(1, static_cast<int>(arr->Value(0)));
+                            trading_days_count = std::max<int>(1, std::stoi(arr->GetString(0)));
+                            INFO("Trading days for yesterday (" + yesterday_date_ss.str() + "): " + std::to_string(trading_days_count));
                         }
                     }
+                } else {
+                    WARN("Could not call get_trading_days function: " + std::string(trading_days_result.error()->what()));
                 }
             } catch (const std::exception& e) {
-                WARN("Failed to count trading days: " + std::string(e.what()));
+                WARN("Failed to get trading days: " + std::string(e.what()));
             }
 
             // Calculate yesterday's annualized return using LiveMetricsCalculator
@@ -1324,25 +1331,33 @@ int main(int argc, char* argv[]) {
             total_return_decimal = (current_portfolio_value - initial_capital) / initial_capital;
         }
 
-        // Get n = number of trading days (rows in live_results for this strategy)
+        // Get n = number of trading days using PostgreSQL function (robust against row duplication)
         int trading_days_count = 1; // Default to 1 to avoid division by zero on first day
         try {
-            auto count_result = db->execute_query(
-                "SELECT COUNT(*) AS cnt FROM trading.live_results WHERE strategy_id = 'LIVE_TREND_FOLLOWING'");
-            if (count_result.is_ok()) {
-                auto table = count_result.value();
+            // Format today's date for SQL query
+            auto now_time_t_for_query = std::chrono::system_clock::to_time_t(now);
+            std::stringstream now_date_ss;
+            now_date_ss << std::put_time(std::gmtime(&now_time_t_for_query), "%Y-%m-%d");
+            
+            // Call PostgreSQL function to calculate trading days
+            auto trading_days_result = db->execute_query(
+                "SELECT trading.get_trading_days('LIVE_TREND_FOLLOWING', DATE '" + now_date_ss.str() + "')");
+            
+            if (trading_days_result.is_ok()) {
+                auto table = trading_days_result.value();
                 if (table && table->num_rows() > 0 && table->num_columns() > 0) {
-                    auto col = table->column(0);
-                    if (col->num_chunks() > 0) {
-                        auto arr = std::static_pointer_cast<arrow::Int64Array>(col->chunk(0));
-                        if (arr && arr->length() > 0 && !arr->IsNull(0)) {
-                            trading_days_count = std::max<int>(1, static_cast<int>(arr->Value(0)));
-                        }
+                    // execute_query returns StringArray for all columns
+                    auto arr = std::static_pointer_cast<arrow::StringArray>(table->column(0)->chunk(0));
+                    if (arr && arr->length() > 0 && !arr->IsNull(0)) {
+                        trading_days_count = std::max<int>(1, std::stoi(arr->GetString(0)));
+                        INFO("Trading days for today (" + now_date_ss.str() + "): " + std::to_string(trading_days_count));
                     }
                 }
+            } else {
+                WARN("Could not call get_trading_days function: " + std::string(trading_days_result.error()->what()));
             }
         } catch (const std::exception& e) {
-            WARN(std::string("Failed to count live_results rows: ") + e.what());
+            WARN(std::string("Failed to get trading days: ") + e.what());
         }
 
         // Calculate annualized return using LiveMetricsCalculator
