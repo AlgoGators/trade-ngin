@@ -1044,14 +1044,15 @@ int main(int argc, char* argv[]) {
 
             // Note: Yesterday's metrics for email will be loaded from database after update
 
-            // Calculate yesterday's total return
-            double yesterday_total_return = metrics_calculator->calculate_total_return(
+            // Calculate yesterday's total cumulative return (non-annualized)
+            double yesterday_total_cumulative_return = metrics_calculator->calculate_total_return(
                 yesterday_portfolio_value_finalized, initial_capital);
 
             double yesterday_total_return_decimal = 0.0;
             if (initial_capital > 0.0) {
                 yesterday_total_return_decimal = (yesterday_portfolio_value_finalized - initial_capital) / initial_capital;
             }
+            double yesterday_total_cumulative_return_pct = yesterday_total_cumulative_return;  // Already in %
 
             // Get trading days count for annualization using PostgreSQL function
             // This avoids issues with row multiplication/duplication in the database
@@ -1137,7 +1138,8 @@ int main(int argc, char* argv[]) {
                 "daily_return = CASE WHEN COALESCE((SELECT portfolio FROM day_before), " + std::to_string(initial_capital) + ") > 0 "
                 "               THEN ((" + std::to_string(yesterday_total_pnl) + " - COALESCE(daily_commissions, 0.0)) / COALESCE((SELECT portfolio FROM day_before), " + std::to_string(initial_capital) + ")) * 100.0 "
                 "               ELSE 0.0 END, "
-                "total_return = " + std::to_string(yesterday_total_return_annualized) + ", "
+                "total_cumulative_return = " + std::to_string(yesterday_total_cumulative_return_pct) + ", "
+                "total_annualized_return = " + std::to_string(yesterday_total_return_annualized) + ", "
                 "portfolio_leverage = CASE WHEN portfolio_leverage IS NULL OR portfolio_leverage = 0 THEN " + std::to_string(yesterday_portfolio_leverage) + " ELSE portfolio_leverage END, "
                 "equity_to_margin_ratio = CASE WHEN equity_to_margin_ratio IS NULL OR equity_to_margin_ratio = 0 THEN " + std::to_string(yesterday_equity_to_margin_ratio) + " ELSE equity_to_margin_ratio END, "
                 "cash_available = COALESCE((SELECT portfolio FROM day_before), " + std::to_string(initial_capital) + ") + (" + std::to_string(yesterday_total_pnl) + " - COALESCE(daily_commissions, 0.0)) - COALESCE(margin_posted, 0.0) "
@@ -1323,13 +1325,14 @@ int main(int argc, char* argv[]) {
         // Calculate returns using LiveMetricsCalculator
         double daily_return = metrics_calculator->calculate_daily_return(daily_pnl, previous_portfolio_value);
 
-        // Calculate total return
-        double total_return = metrics_calculator->calculate_total_return(current_portfolio_value, initial_capital);
+        // Calculate total cumulative return (non-annualized)
+        double total_cumulative_return = metrics_calculator->calculate_total_return(current_portfolio_value, initial_capital);
 
         double total_return_decimal = 0.0;
         if (initial_capital > 0.0) {
             total_return_decimal = (current_portfolio_value - initial_capital) / initial_capital;
         }
+        double total_cumulative_return_pct = total_cumulative_return;  // Already in %
 
         // Get n = number of trading days using PostgreSQL function (robust against row duplication)
         int trading_days_count = 1; // Default to 1 to avoid division by zero on first day
@@ -1376,6 +1379,7 @@ int main(int argc, char* argv[]) {
         std::cout << "Realized P&L: $" << std::fixed << std::setprecision(2) << total_realized_pnl << std::endl;
         std::cout << "Unrealized P&L: $" << std::fixed << std::setprecision(2) << total_unrealized_pnl << std::endl;
         std::cout << "Current Portfolio Value: $" << std::fixed << std::setprecision(2) << current_portfolio_value << std::endl;
+        std::cout << "Total Return (Cumulative): " << std::fixed << std::setprecision(2) << total_cumulative_return_pct << "%" << std::endl;
         std::cout << "Total Return (Annualized): " << std::fixed << std::setprecision(2) << total_return_annualized << "%" << std::endl;
         std::cout << "Daily Return: " << std::fixed << std::setprecision(2) << daily_return << "%" << std::endl;
         std::cout << "Portfolio Leverage: " << std::fixed << std::setprecision(2) 
@@ -1515,7 +1519,8 @@ int main(int argc, char* argv[]) {
 
             // Prepare metrics maps
             std::unordered_map<std::string, double> double_metrics = {
-                {"total_return", total_return_annualized},
+                {"total_cumulative_return", total_cumulative_return_pct},
+                {"total_annualized_return", total_return_annualized},
                 {"volatility", volatility},
                 {"total_pnl", total_pnl},
                 {"total_unrealized_pnl", total_unrealized_pnl},
@@ -1793,6 +1798,7 @@ int main(int argc, char* argv[]) {
                 strategy_metrics["Daily Unrealized PnL"] = daily_unrealized_pnl;
                 strategy_metrics["Daily Realized PnL"] = daily_realized_pnl;
                 strategy_metrics["Daily Total PnL"] = daily_pnl;
+                strategy_metrics["Total Cumulative Return"] = total_cumulative_return_pct;
                 strategy_metrics["Total Annualized Return"] = total_return_annualized;
                 strategy_metrics["Total Unrealized PnL"] = total_unrealized_pnl;
                 strategy_metrics["Total Realized PnL"] = total_realized_pnl;
