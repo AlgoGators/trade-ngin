@@ -10,6 +10,7 @@
 #include "trade_ngin/core/types.hpp"
 #include "trade_ngin/data/credential_store.hpp"
 #include "trade_ngin/data/database_interface.hpp"
+#include "trade_ngin/core/holiday_checker.hpp"
 #include "trade_ngin/risk/risk_manager.hpp"
 
 namespace trade_ngin {
@@ -102,6 +103,7 @@ private:
     std::string margin_posted_base64_; //Store total margin posted
     std::string portfolio_composition_base64_; //Store portfolio composition
     std::string cumulative_pnl_by_symbol_base64_; //Store cumalative pnl
+    HolidayChecker holiday_checker_; //Holiday Checking
 
     /**
      * @brief Load email configuration from credential store
