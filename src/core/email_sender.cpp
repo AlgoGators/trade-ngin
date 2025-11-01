@@ -1,6 +1,8 @@
 #include "trade_ngin/core/email_sender.hpp"
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/core/chart_generator.hpp"
+#include "trade_ngin/core/holiday_checker.hpp"
+#include "trade_ngin/core/chart_generator.hpp"
 #include <curl/curl.h>
 #include <sstream>
 #include <iomanip>
@@ -34,7 +36,7 @@ size_t read_callback(char* buffer, size_t size, size_t nitems, void* userdata) {
 }
 
 EmailSender::EmailSender(std::shared_ptr<CredentialStore> credentials)
-    : credentials_(credentials), initialized_(false) {
+    : credentials_(credentials), initialized_(false), holiday_checker_("/Users/pratheek.nathani/trade-ngin/include/trade_ngin/core/holidays.json") {
 }
 
 Result<void> EmailSender::initialize() {
@@ -438,6 +440,47 @@ Result<void> EmailSender::send_email(const std::string& subject, const std::stri
     }
 }
 
+namespace {
+    // Helper function to check if a symbol is an agricultural future
+    bool is_agricultural_future(const std::string& symbol) {
+        // Extract base symbol (remove .v.0, .c.0 suffixes)
+        std::string base_symbol = symbol;
+        auto dot_pos = base_symbol.find('.');
+        if (dot_pos != std::string::npos) {
+            base_symbol = base_symbol.substr(0, dot_pos);
+        }
+        
+        // Agricultural futures list
+        static const std::set<std::string> ag_futures = {
+            "ZC",  // Corn
+            "ZS",  // Soybeans
+            "ZW",  // Wheat
+            "ZL",  // Soybean Oil
+            "ZM",  // Soybean Meal
+            "ZR",  // Rough Rice
+            "KE",  // KC HRW Wheat
+            "HE",  // Lean Hogs
+            "LE",  // Live Cattle
+            "GF"   // Feeder Cattle
+        };
+        
+        return ag_futures.find(base_symbol) != ag_futures.end();
+    }
+    
+    // Helper function to filter out agricultural positions
+    std::unordered_map<std::string, Position> filter_non_agricultural_positions(
+        const std::unordered_map<std::string, Position>& positions)
+    {
+        std::unordered_map<std::string, Position> filtered;
+        for (const auto& [symbol, position] : positions) {
+            if (!is_agricultural_future(symbol)) {
+                filtered[symbol] = position;
+            }
+        }
+        return filtered;
+    }
+}
+
 std::string EmailSender::generate_trading_report_body(
    const std::unordered_map<std::string, Position>& positions,
    const std::optional<RiskResult>& risk_metrics,
@@ -454,7 +497,60 @@ std::string EmailSender::generate_trading_report_body(
 {
    std::ostringstream html;
 
+   // Parse the date to check day of week
+   std::tm tm = {};
+   std::istringstream ss(date);
+   ss >> std::get_time(&tm, "%Y-%m-%d");
+   std::mktime(&tm);
+   int day_of_week = tm.tm_wday;  // 0=Sunday, 1=Monday, ..., 6=Saturday
 
+   // Calculate yesterday's date
+   std::string yesterday_date_str;
+   std::string yesterday_holiday_name;
+   bool is_yesterday_holiday = false;
+   try {
+       auto time_point = std::chrono::system_clock::from_time_t(std::mktime(&tm));
+       auto yesterday = time_point - std::chrono::hours(24);
+       auto yesterday_time_t = std::chrono::system_clock::to_time_t(yesterday);
+       std::tm yesterday_tm = *std::gmtime(&yesterday_time_t);
+       std::ostringstream oss;
+       oss << std::put_time(&yesterday_tm, "%Y-%m-%d");
+       yesterday_date_str = oss.str();
+       
+       INFO("Checking holiday for yesterday's date: " + yesterday_date_str);
+       
+       // Check if yesterday was a holiday
+       is_yesterday_holiday = holiday_checker_.is_holiday(yesterday_date_str);
+       
+       INFO("Is yesterday (" + yesterday_date_str + ") a holiday? " + std::string(is_yesterday_holiday ? "YES" : "NO"));
+       
+       if (is_yesterday_holiday) {
+           yesterday_holiday_name = holiday_checker_.get_holiday_name(yesterday_date_str);
+           INFO("Holiday name: " + yesterday_holiday_name);
+       }
+   } catch (...) {
+       ERROR("Exception while calculating yesterday's date");
+       yesterday_date_str = "Previous Day";
+   }
+
+   // Check if today is Monday
+   bool is_monday = (day_of_week == 1);
+   bool is_sunday = (day_of_week == 0);
+
+   // Note: If yesterday was a holiday, we'll show a banner but continue with full report
+   // The show_yesterday_pnl flag below will hide the Yesterday's PnL table
+
+   // Determine if we should show yesterday's PnL table AND chart
+   bool show_yesterday_pnl = true;
+   
+   // Hide yesterday's PnL if:
+   // 1. Today is Sunday (Saturday has no data)
+   // 2. Yesterday was a holiday
+   if (is_sunday || is_yesterday_holiday) {
+       show_yesterday_pnl = false;
+   }
+
+   // Generate HTML header and styles
    html << "<!DOCTYPE html>\n";
    html << "<html>\n<head>\n";
    html << "<meta charset=\"UTF-8\" />\n";
@@ -481,10 +577,10 @@ std::string EmailSender::generate_trading_report_body(
    html << ".footer-note { background-color: #fff9e6; border-left: 4px solid #ffc107; padding: 15px; margin: 20px 0; font-size: 13px; color: #666; font-family: Arial, sans-serif; }\n";
    html << ".summary-stats { background-color: #fff5e6; padding: 15px; margin: 15px 0; border-radius: 5px; font-family: Arial, sans-serif; font-size: 14px; }\n";
    html << ".chart-container { margin: 20px 0; padding: 20px; background-color: #f8f9fa; border-radius: 8px; text-align: center; }\n";
+   html << ".weekend-message { background-color: #e6f3ff; border-left: 4px solid #2c5aa0; padding: 20px; margin: 20px 0; font-size: 16px; }\n";
    html << "</style>\n";
    html << "</head>\n<body>\n";
    html << "<div class=\"container\">\n";
-
 
    // Header with logo and branding
    html << "<div class=\"header-section\">\n";
@@ -496,11 +592,36 @@ std::string EmailSender::generate_trading_report_body(
    html << "</div>\n";
    html << "</div>\n";
 
+   // Weekend/Holiday banners
+   if (is_sunday) {
+       // Sunday banner (yesterday was Saturday)
+       html << "<div style=\"background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%); border: 2px solid #f59e0b; border-radius: 8px; padding: 20px 30px; margin: 20px 0 30px 0; box-shadow: 0 4px 6px rgba(0,0,0,0.1);\">\n";
+       html << "<h2 style=\"margin: 0 0 10px 0; color: #92400e; font-size: 20px; border-bottom: 2px solid #92400e; padding-bottom: 8px; display: inline-block;\">Yesterday was Saturday</h2>\n";
+       html << "<p style=\"margin: 15px 0 5px 0; color: #78350f; font-size: 15px; line-height: 1.6;\">The latest futures settlement prices are not available, as futures markets were closed yesterday (" << yesterday_date_str << ") due to it being a Saturday. The PnL for these contracts will be updated in the next report once settlement data is released.</p>\n";
+       html << "<p style=\"margin: 5px 0 0 0; color: #92400e; font-weight: 600; font-size: 14px;\">Please continue to monitor your positions closely.</p>\n";
+       html << "</div>\n";
+   }
+   else if (is_monday) {
+       // Monday banner (agricultural futures issue)
+       html << "<div style=\"background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%); border: 2px solid #f59e0b; border-radius: 8px; padding: 20px 30px; margin: 20px 0 30px 0; box-shadow: 0 4px 6px rgba(0,0,0,0.1);\">\n";
+       html << "<h2 style=\"margin: 0 0 10px 0; color: #92400e; font-size: 20px; border-bottom: 2px solid #92400e; padding-bottom: 8px; display: inline-block;\">Yesterday was Sunday</h2>\n";
+       html << "<p style=\"margin: 15px 0 5px 0; color: #78350f; font-size: 15px; line-height: 1.6;\">Agricultural futures settlement prices for Sunday (" << yesterday_date_str << ") are not yet available, as these contracts begin trading Sunday evening. The PnL for these contracts will be updated in the next report once settlement data is released.</p>\n";
+       html << "<p style=\"margin: 5px 0 0 0; color: #92400e; font-weight: 600; font-size: 14px;\">Please monitor these positions closely.</p>\n";
+       html << "</div>\n";
+   }
+   else if (is_yesterday_holiday) {
+       // Holiday banner
+       html << "<div style=\"background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%); border: 2px solid #f59e0b; border-radius: 8px; padding: 20px 30px; margin: 20px 0 30px 0; box-shadow: 0 4px 6px rgba(0,0,0,0.1);\">\n";
+       html << "<h2 style=\"margin: 0 0 10px 0; color: #92400e; font-size: 20px; border-bottom: 2px solid #92400e; padding-bottom: 8px; display: inline-block;\">Yesterday was " << yesterday_holiday_name << "</h2>\n";
+       html << "<p style=\"margin: 15px 0 5px 0; color: #78350f; font-size: 15px; line-height: 1.6;\">The latest futures settlement prices are not available, as futures markets were closed yesterday (" << yesterday_date_str << ") due to a federal holiday. The PnL for these contracts will be updated in the next report once settlement data is released.</p>\n";
+       html << "<p style=\"margin: 5px 0 0 0; color: #92400e; font-weight: 600; font-size: 14px;\">Please continue to monitor your positions closely.</p>\n";
+       html << "</div>\n";
+   }
 
    // Today's Positions (Forward-Looking - no PnL shown as it will be zero)
    html << "<h2>Today's Positions</h2>\n";
+      
    html << format_positions_table(positions, is_daily_strategy, current_prices, strategy_metrics);
-
 
    // Executions (if any)
    if (!executions.empty()) {
@@ -508,39 +629,31 @@ std::string EmailSender::generate_trading_report_body(
        html << format_executions_table(executions);
    }
 
-
-   // Calculate yesterday's date for display
-   std::string yesterday_date_str;
-   try {
-       // Parse the date string to calculate yesterday
-       std::tm tm = {};
-       std::istringstream ss(date);
-       ss >> std::get_time(&tm, "%Y-%m-%d");
-       if (!ss.fail()) {
-           auto time_point = std::chrono::system_clock::from_time_t(std::mktime(&tm));
-           auto yesterday = time_point - std::chrono::hours(24);
-           auto yesterday_time_t = std::chrono::system_clock::to_time_t(yesterday);
-           std::ostringstream oss;
-           oss << std::put_time(std::gmtime(&yesterday_time_t), "%Y-%m-%d");
-           yesterday_date_str = oss.str();
-       }
-   } catch (...) {
-       yesterday_date_str = "Previous Day";
-   }
-
-
-   // Yesterday's Finalized Positions (with actual PnL)
-   if (!yesterday_positions.empty() && !yesterday_close_prices.empty() && !two_days_ago_close_prices.empty()) {
+   // Yesterday's Finalized Positions (with actual PnL) - show on all days except Sunday and after holidays
+   if (show_yesterday_pnl && !yesterday_positions.empty() && !yesterday_close_prices.empty() && !two_days_ago_close_prices.empty()) {
        html << format_yesterday_finalized_positions_table(
            yesterday_positions,
            two_days_ago_close_prices,  // Entry prices (Day T-2)
            yesterday_close_prices,      // Exit prices (Day T-1)
            db,
-           yesterday_daily_metrics,    // Yesterday's daily metrics (not today's strategy_metrics)
+           yesterday_daily_metrics,    // Yesterday's daily metrics
            yesterday_date_str
        );
    }
-
+   else if (!show_yesterday_pnl) {
+       // Add a note explaining why yesterday's PnL is not shown
+       html << "<div class=\"footer-note\">\n";
+       if (is_sunday) {
+           html << "<strong>Note:</strong> Yesterday's PnL data is not available.\n";
+       }
+       else if (is_monday) {
+           html << "<strong>Note:</strong> Yesterday's PnL data is not available for agricultural contracts.\n";
+       }
+       else if (is_yesterday_holiday) {
+           html << "<strong>Note:</strong> Yesterday's PnL data is not available.\n";
+       }
+       html << "</div>\n";
+   }
 
    /*    // Risk snapshot (if provided)
    if (risk_metrics.has_value()) {
@@ -548,7 +661,6 @@ std::string EmailSender::generate_trading_report_body(
        html << format_risk_metrics(*risk_metrics);
    }
        */
-
 
    // Strategy metrics
    if (!strategy_metrics.empty()) {
@@ -568,13 +680,15 @@ std::string EmailSender::generate_trading_report_body(
            html << "</div>\n";
        }
 
-       // Generate PnL by symbol chart
-       pnl_by_symbol_base64_ = ChartGenerator::generate_pnl_by_symbol_chart(db, "LIVE_TREND_FOLLOWING", date);
-       if (!pnl_by_symbol_base64_.empty()) {
-           html << "<h3 style=\"margin-top: 20px; color: #333;\">Yesterday's PnL by Symbol</h3>\n";
-           html << "<div style=\"width: 100%; max-width: 800px; margin: 20px auto; text-align: center;\">\n";
-           html << "<img src=\"cid:pnl_by_symbol\" alt=\"PnL by Symbol\" style=\"max-width: 100%; height: auto; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);\" />\n";
-           html << "</div>\n";
+       // Generate PnL by symbol chart - ONLY if show_yesterday_pnl is true
+       if (show_yesterday_pnl) {
+           pnl_by_symbol_base64_ = ChartGenerator::generate_pnl_by_symbol_chart(db, "LIVE_TREND_FOLLOWING", date);
+           if (!pnl_by_symbol_base64_.empty()) {
+               html << "<h3 style=\"margin-top: 20px; color: #333;\">Yesterday's PnL by Symbol</h3>\n";
+               html << "<div style=\"width: 100%; max-width: 800px; margin: 20px auto; text-align: center;\">\n";
+               html << "<img src=\"cid:pnl_by_symbol\" alt=\"PnL by Symbol\" style=\"max-width: 100%; height: auto; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);\" />\n";
+               html << "</div>\n";
+           }
        }
 
        // Generate daily PnL chart
@@ -632,15 +746,13 @@ std::string EmailSender::generate_trading_report_body(
                     "box-shadow: 0 2px 8px rgba(0,0,0,0.1);\" />\n";
             html << "</div>\n";
         }
-
-
    }
 
    // Symbols Reference (moved after Portfolio Snapshot)
    html << "<h2>Symbols Reference</h2>\n";
    if (db) {
        try {
-           html << format_symbols_table_for_positions(positions, db, date);
+           html << format_symbols_table_for_positions(positions, db, yesterday_date_str);
        } catch (const std::exception& e) {
            html << "<p>Error loading symbols data: " << e.what() << "</p>\n";
        }
@@ -669,7 +781,6 @@ std::string EmailSender::generate_trading_report_body(
    html << "<p style=\"text-align: center; color: #999; font-size: 12px; margin-top: 20px; font-family: Arial, sans-serif;\">Generated by AlgoGator's Trade-ngin</p>\n";
    html << "</div>\n";
    html << "</body>\n</html>\n";
-
 
    return html.str();
 }
@@ -1033,6 +1144,32 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
     std::sort(position_data.begin(), position_data.end(),
               [](const auto& a, const auto& b) { return std::get<0>(a) < std::get<0>(b); });
 
+    // Helper to check if a symbol is an agricultural future
+    auto is_ag_future = [](const std::string& sym) -> bool {
+        std::string base = sym;
+        auto dotpos = base.find(".v.");
+        if (dotpos != std::string::npos) base = base.substr(0, dotpos);
+        dotpos = base.find(".c.");
+        if (dotpos != std::string::npos) base = base.substr(0, dotpos);
+        
+        static const std::set<std::string> ag_futures = {
+            "ZC", "ZS", "ZW", "ZL", "ZM", "ZR", "KE", "HE", "LE", "GF"
+        };
+        return ag_futures.find(base) != ag_futures.end();
+    };
+
+    // Check if yesterday was Sunday (meaning today is Monday)
+    bool is_monday = false;
+    if (!yesterday_date.empty()) {
+        std::tm tm = {};
+        std::istringstream ss(yesterday_date);
+        ss >> std::get_time(&tm, "%Y-%m-%d");
+        if (!ss.fail()) {
+            std::mktime(&tm);
+            is_monday = (tm.tm_wday == 0);  // 0 = Sunday
+        }
+    }
+
     // Render table rows
     for (const auto& [symbol, qty, entry_price, exit_price, realized_pnl] : position_data) {
 
@@ -1040,13 +1177,24 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
         html << "<td>" << symbol << "</td>";
         html << "<td>" << std::fixed << std::setprecision(2) << qty << "</td>";
         html << "<td>" << format_with_commas(entry_price, 2) << "</td>";
-        html << "<td>" << format_with_commas(exit_price, 2) << "</td>";
+        
+        // Show N/A for exit price if ag future on Monday
+        if (is_monday && is_ag_future(symbol) && exit_price == 0.0) {
+            html << "<td>N/A</td>";
+        } else {
+            html << "<td>" << format_with_commas(exit_price, 2) << "</td>";
+        }
 
-        // Realized PnL with color (GROSS PnL from positions table)
-        std::string realized_pnl_class = (realized_pnl >= 0) ? "positive" : "negative";
-        html << "<td class=\"" << realized_pnl_class << "\">";
-        html << "$" << format_with_commas(realized_pnl, 2);
-        html << "</td>";
+        // Show N/A for realized PnL if ag future on Monday with zero PnL
+        if (is_monday && is_ag_future(symbol) && std::abs(realized_pnl) < 0.01) {
+            html << "<td>N/A</td>";
+        } else {
+            // Realized PnL with color (GROSS PnL from positions table)
+            std::string realized_pnl_class = (realized_pnl >= 0) ? "positive" : "negative";
+            html << "<td class=\"" << realized_pnl_class << "\">";
+            html << "$" << format_with_commas(realized_pnl, 2);
+            html << "</td>";
+        }
 
         html << "</tr>\n";
     }
