@@ -36,7 +36,7 @@ size_t read_callback(char* buffer, size_t size, size_t nitems, void* userdata) {
 }
 
 EmailSender::EmailSender(std::shared_ptr<CredentialStore> credentials)
-    : credentials_(credentials), initialized_(false), holiday_checker_("/Users/pratheek.nathani/trade-ngin/include/trade_ngin/core/holidays.json") {
+    : credentials_(credentials), initialized_(false), holiday_checker_("include/trade_ngin/core/holidays.json") {
 }
 
 Result<void> EmailSender::initialize() {
