@@ -1,102 +1,65 @@
-# ======================================================================
-#  credit_doc_extractor.py  (single-file "multi-module" toolkit)
-#
-#  Purpose:
-#    Offline extraction of key leveraged-finance provisions from legal PDFs:
-#      • Debt baskets (incremental / starter / ratio-based / 1st / 2nd / unsecured lien / general / CF / other)
-#      • MFN provisions
-#      • Negative covenants & Restricted Payments (starter, builder, general RP, RP ratio basket, investments/JV/JDP, etc.)
-#      • Financial covenants (maintenance + incurrence; total & lien-based leverage; gross/net; testing cadence; step-downs)
-#      • EBITDA definitions (standard add-backs; pro forma; synergy/cost savings caps & look-forward)
-#      • Pricing grid (leverage tiers; applicable margin; SOFR/benchmark & floor)
-#      • Call protection; cash carve-outs; maturity; change of control
-#      • Asset sale sweeps; ECF sweeps; mandatory prepayments
-#
-#  Design:
-#    - No external web requests.
-#    - Text extraction with pdfminer.six; optional OCR (pytesseract) for scanned PDFs.
-#    - Heading-aware segmentation; configurable ontology of regex patterns.
-#    - Windowed context (neighbor blocks) for clauses that spill across headings.
-#    - Structured JSON output (+ confidence) and optional sections dump for QA.
-#
-#  CLI:
-#    python credit_doc_extractor.py input.pdf --out results.json --min_conf 0.55
-#    python credit_doc_extractor.py input.pdf --ocr
-#    python credit_doc_extractor.py input.pdf --dump-sections sections.txt
-#    python credit_doc_extractor.py input.pdf --ontology my_patterns.yaml   # optional, if PyYAML installed
-#
-#  Dependencies:
-#    pip install pdfminer.six
-#    # Optional OCR:
-#    pip install pytesseract pdf2image pillow
-#    # Optional external ontology:
-#    pip install pyyaml
-#
-#  Note:
-#    This code favors readability and extensibility. The default ontology covers
-#    your requested classes, but you’ll likely iterate patterns to your house style.
-# ======================================================================
+#!/usr/bin/env python3
+"""
+summarize_credit_extractions.py
 
-# === file: core/types.py =================================================
+Purpose
+-------
+Summarize and structure the large JSON output produced by credit_doc_extractor.py.
+Outputs:
+  1) Console summary of counts by provision
+  2) Markdown report grouping provisions with top-N highlights
+  3) Per-provision CSVs under an output folder
+  4) Optional single "all_matches.csv" for spreadsheet pivots
+
+Usage
+-----
+python summarize_credit_extractions.py extracted.json --out-dir reports --top-n 3 --min-conf 0.65 --write-all-csv
+
+Design Notes
+------------
+- No external requests. Pure Python stdlib (plus optional pandas if you enable --write-all-csv-fast).
+- Works directly with the schema produced by credit_doc_extractor.py:
+    {
+      "file": "...",
+      "total_blocks": int,
+      "total_matches": int,
+      "retained": int,
+      "results": [
+        {
+          "provision": str,
+          "section_ref": str | null,
+          "block_idxs": [int, ...],
+          "text": str,
+          "amounts": [str, ...],
+          "ratios": [str, ...],
+          "percents": [str, ...],
+          "dates": [str, ...],
+          "years_terms": [str, ...],
+          "confidence": float
+        }, ...
+      ]
+    }
+
+Author: (you)
+"""
+
 from __future__ import annotations
 
+import argparse
+import csv
 import json
-import re
-from dataclasses import dataclass, asdict
+from collections import defaultdict
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Iterable, Any, Callable
+from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Optional, Sequence, Tuple
 
 
-@dataclass
-class Block:
-    """
-    A logical block of text (typically under a heading).
+# -----------------------------
+# Data structures
+# -----------------------------
 
-    Attributes
-    ----------
-    heading : Optional[str]
-        Heading line that precedes the block (e.g., "SECTION 6.01 Restricted Payments").
-    text : str
-        Body text for this block.
-    idx : int
-        Block index in document order.
-    page_hint : Optional[int]
-        Reserved for future layout-aware extraction; unused here.
-    """
-    heading: Optional[str]
-    text: str
-    idx: int
-    page_hint: Optional[int] = None
-
-
-@dataclass
+@dataclass(frozen=True)
 class Match:
-    """
-    A provision match extracted from a block or window of blocks.
-
-    Attributes
-    ----------
-    provision : str
-        Canonical provision name (e.g., "Debt_Basket_Incremental").
-    section_ref : Optional[str]
-        Closest heading reference for reviewer navigation.
-    block_idxs : List[int]
-        One or more block indices that contributed to the snippet (for windowed captures).
-    text : str
-        Extracted snippet (sentence/paragraph region).
-    amounts : List[str]
-        Dollar amounts captured (e.g., "$100,000,000").
-    ratios : List[str]
-        Ratio tokens (e.g., "3.00x").
-    percents : List[str]
-        Percent tokens (e.g., "50%").
-    dates : List[str]
-        Date-like tokens (e.g., "July 1, 2029", "2029-07-01", "7/1/2029").
-    years_terms : List[str]
-        Tenor expressions (e.g., "5 years", "sixty (60) months").
-    confidence : float
-        Heuristic in [0, 1].
-    """
     provision: str
     section_ref: Optional[str]
     block_idxs: List[int]
@@ -108,669 +71,266 @@ class Match:
     years_terms: List[str]
     confidence: float
 
-    def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
 
-
-@dataclass
-class ExtractionResult:
-    """
-    Container for an extraction run.
-    """
+@dataclass(frozen=True)
+class Extraction:
     file: str
     total_blocks: int
     total_matches: int
     retained: int
     results: List[Match]
 
-    def to_json(self, indent: int = 2) -> str:
-        payload = {
-            "file": self.file,
-            "total_blocks": self.total_blocks,
-            "total_matches": self.total_matches,
-            "retained": self.retained,
-            "results": [m.to_dict() for m in self.results],
-        }
-        return json.dumps(payload, indent=indent)
+
+# -----------------------------
+# Load / filter helpers
+# -----------------------------
+
+def load_extraction(path: Path) -> Extraction:
+    """Load the extractor JSON into typed objects."""
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    results = [
+        Match(
+            provision=m["provision"],
+            section_ref=m.get("section_ref"),
+            block_idxs=list(m.get("block_idxs", [])),
+            text=m.get("text", ""),
+            amounts=list(m.get("amounts", [])),
+            ratios=list(m.get("ratios", [])),
+            percents=list(m.get("percents", [])),
+            dates=list(m.get("dates", [])),
+            years_terms=list(m.get("years_terms", [])),
+            confidence=float(m.get("confidence", 0.0)),
+        )
+        for m in raw.get("results", [])
+    ]
+    return Extraction(
+        file=str(raw.get("file", "")),
+        total_blocks=int(raw.get("total_blocks", 0)),
+        total_matches=int(raw.get("total_matches", 0)),
+        retained=int(raw.get("retained", 0)),
+        results=results,
+    )
 
 
-# === file: core/regexes.py ==============================================
-# Common token extractors you can reuse in downstream analytics.
-AMOUNT_REGEX = re.compile(r"\$\s?\d[\d,]*(?:\.\d+)?")
-RATIO_REGEX = re.compile(r"\b\d+(?:\.\d+)?x\b", re.IGNORECASE)
-PCT_REGEX   = re.compile(r"\b\d+(?:\.\d+)?\s?%\b")
+def filter_by_confidence(matches: Sequence[Match], min_conf: float) -> List[Match]:
+    """Keep matches >= min_conf."""
+    return [m for m in matches if m.confidence >= min_conf]
 
-# Dates: textual and numeric (very permissive)
-MONTHS = r"January|February|March|April|May|June|July|August|September|October|November|December"
-DATE_REGEX = re.compile(
-    rf"\b(?:\d{{1,2}}/\d{{1,2}}/\d{{2,4}}|(?:{MONTHS})\s+\d{{1,2}},\s+\d{{4}}|\d{{4}}-\d{{2}}-\d{{2}})\b",
-    re.IGNORECASE
-)
 
-# Tenor / maturity terms
-YEARS_TERMS_REGEX = re.compile(
-    r"\b(?:(\d{1,2})\s+years?|(\d{1,3})\s+months?|(\w+)\s*\(\d{1,3}\)\s+months?)\b",
-    re.IGNORECASE
-)
+def group_by_provision(matches: Sequence[Match]) -> Dict[str, List[Match]]:
+    """Group matches by provision key."""
+    groups: Dict[str, List[Match]] = defaultdict(list)
+    for m in matches:
+        groups[m.provision].append(m)
+    # sort each group by confidence desc, then by snippet length (shorter first)
+    for k in groups:
+        groups[k].sort(key=lambda x: (-x.confidence, len(x.text)))
+    return groups
 
-# Heading detection for segmentation
-HEADING_PATTERNS: List[re.Pattern] = [
-    re.compile(r"^\s*ARTICLE\s+[IVXLC]+\b.*", re.IGNORECASE),
-    re.compile(r"^\s*SECTION\s+\d+(?:\.\d+)*\b.*", re.IGNORECASE),
-    re.compile(r"^\s*\d+(?:\.\d+)+\s+.+$"),                  # 1.1, 2.3.4 etc.
-    re.compile(r"^\s*[A-Z][A-Z \-/]{4,}\s*$"),               # SHOUTY headings
-    re.compile(r"^\s*Pricing\s+Grid\b.*", re.IGNORECASE),    # explicit grid headings
+
+# -----------------------------
+# Summaries
+# -----------------------------
+
+def summarize_counts(groups: Mapping[str, Sequence[Match]]) -> List[Tuple[str, int, float]]:
+    """
+    Returns a list of (provision, count, avg_confidence) sorted by count desc.
+    """
+    rows: List[Tuple[str, int, float]] = []
+    for prov, items in groups.items():
+        n = len(items)
+        avg = sum(m.confidence for m in items) / max(1, n)
+        rows.append((prov, n, round(avg, 3)))
+    rows.sort(key=lambda r: (-r[1], r[0]))
+    return rows
+
+
+def extract_key_values(m: Match) -> Dict[str, str]:
+    """
+    Pull a compact set of key value tokens to display alongside the snippet.
+    """
+    def join_or_dash(items: Sequence[str], maxn: int = 6) -> str:
+        if not items:
+            return "—"
+        cut = items[:maxn]
+        s = ", ".join(cut)
+        if len(items) > maxn:
+            s += " …"
+        return s
+
+    return {
+        "Amounts": join_or_dash(m.amounts),
+        "Ratios": join_or_dash(m.ratios),
+        "Percents": join_or_dash(m.percents),
+        "Dates": join_or_dash(m.dates),
+        "Tenor": join_or_dash(m.years_terms),
+    }
+
+
+# -----------------------------
+# Markdown report
+# -----------------------------
+
+def write_markdown_report(
+    out_md: Path,
+    extraction: Extraction,
+    groups: Mapping[str, Sequence[Match]],
+    top_n: int = 3,
+) -> None:
+    """
+    Write a concise Markdown report with top-N matches per provision.
+    """
+    lines: List[str] = []
+    lines.append(f"# Credit Provisions Summary")
+    lines.append("")
+    lines.append(f"**Source file:** `{extraction.file}`")
+    lines.append(f"**Blocks:** {extraction.total_blocks} | **Raw matches:** {extraction.total_matches} | **Retained:** {extraction.retained}")
+    lines.append("")
+    lines.append("## Counts by Provision")
+    lines.append("")
+    lines.append("| Provision | Matches | Avg Confidence |")
+    lines.append("|---|---:|---:|")
+    for prov, cnt, avg in summarize_counts(groups):
+        lines.append(f"| `{prov}` | {cnt} | {avg:.3f} |")
+    lines.append("")
+
+    # Detailed sections
+    for prov, items in groups.items():
+        lines.append(f"## {prov}")
+        for i, m in enumerate(items[:top_n]):
+            kv = extract_key_values(m)
+            lines.append(f"**Top {i+1} • conf={m.confidence:.3f} • section:** {m.section_ref or '(none)'}  ")
+            lines.append(f"- Amounts: {kv['Amounts']}")
+            lines.append(f"- Ratios: {kv['Ratios']}")
+            lines.append(f"- Percents: {kv['Percents']}")
+            lines.append(f"- Dates: {kv['Dates']}")
+            lines.append(f"- Tenor: {kv['Tenor']}")
+            lines.append("")
+            # Show a trimmed snippet (avoid flooding)
+            snippet = m.text.strip()
+            snippet = snippet.replace("\n", " ").strip()
+            if len(snippet) > 800:
+                snippet = snippet[:800] + " …"
+            lines.append(f"> {snippet}")
+            lines.append("")
+        lines.append("---")
+        lines.append("")
+
+    out_md.write_text("\n".join(lines), encoding="utf-8")
+
+
+# -----------------------------
+# CSV exports
+# -----------------------------
+
+CSV_HEADER = [
+    "provision", "confidence", "section_ref", "block_idxs",
+    "amounts", "ratios", "percents", "dates", "years_terms", "text",
 ]
 
-# Line-level noise removal during normalization
-HEADER_FOOTER_NOISE = re.compile(
-    r"^\s*(Page\s+\d+\s+of\s+\d+|Execution\s+Version|Confidential|Draft\s+for\s+Discussion)\s*$",
-    re.IGNORECASE
-)
+def serialize_list(items: Sequence[Any]) -> str:
+    """Serialize lists for CSV (compact)."""
+    if not items:
+        return ""
+    return "; ".join(str(x) for x in items)
 
 
-# === file: io/pdf_reader.py =============================================
-from typing import List
-
-from pdfminer.high_level import extract_text
-
-def extract_pdf_text(pdf_path: Path) -> str:
+def write_per_provision_csvs(groups: Mapping[str, Sequence[Match]], out_dir: Path) -> None:
     """
-    Extract text via pdfminer.six (no layout coordinates to keep deps minimal).
+    Write one CSV per provision for easy inspection in Excel.
     """
-    return extract_text(str(pdf_path))
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for prov, items in groups.items():
+        safe = prov.replace("/", "_").replace(" ", "_")
+        out_csv = out_dir / f"{safe}.csv"
+        with out_csv.open("w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(CSV_HEADER)
+            for m in items:
+                w.writerow([
+                    m.provision, f"{m.confidence:.3f}", m.section_ref or "",
+                    ",".join(str(i) for i in m.block_idxs),
+                    serialize_list(m.amounts),
+                    serialize_list(m.ratios),
+                    serialize_list(m.percents),
+                    serialize_list(m.dates),
+                    serialize_list(m.years_terms),
+                    m.text.replace("\n", " ").strip(),
+                ])
 
 
-def extract_pdf_text_with_ocr(pdf_path: Path) -> str:
+def write_all_csv(matches: Sequence[Match], out_csv: Path) -> None:
     """
-    OCR fallback for scanned PDFs (requires pytesseract/pdf2image/Pillow + Tesseract binary).
+    Write a single wide CSV for all matches (slower but no pandas dependency).
     """
-    try:
-        from pdf2image import convert_from_path
-        from PIL import Image
-        import pytesseract
-    except Exception as exc:  # pragma: no cover
-        raise RuntimeError(
-            "OCR requested but pytesseract/pdf2image/Pillow are not available. "
-            "Install them and ensure Tesseract is installed."
-        ) from exc
-
-    pages = convert_from_path(str(pdf_path))
-    texts: List[str] = []
-    for page_img in pages:
-        gray = page_img.convert("L")
-        texts.append(pytesseract.image_to_string(gray))
-    return "\n\n".join(texts)
-
-
-# === file: nlp/normalize.py =============================================
-def normalize_text(doc_text: str) -> str:
-    """
-    Normalize extraction quirks:
-      1) Drop header/footer boilerplate.
-      2) Fix hyphenation across line breaks.
-      3) Collapse excessive blank lines.
-    """
-    kept: List[str] = []
-    for ln in doc_text.splitlines():
-        if HEADER_FOOTER_NOISE.match(ln or ""):
-            continue
-        kept.append(ln)
-    text = "\n".join(kept)
-    text = re.sub(r"(\w)-\n(\s*)(\w)", r"\1\3", text)   # "addi-\n tional" -> "additional"
-    text = re.sub(r"\n{3,}", "\n\n", text)              # collapse 3+ blank lines
-    return text
+    out_csv.parent.mkdir(parents=True, exist_ok=True)
+    with out_csv.open("w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(CSV_HEADER)
+        for m in matches:
+            w.writerow([
+                m.provision, f"{m.confidence:.3f}", m.section_ref or "",
+                ",".join(str(i) for i in m.block_idxs),
+                serialize_list(m.amounts),
+                serialize_list(m.ratios),
+                serialize_list(m.percents),
+                serialize_list(m.dates),
+                serialize_list(m.years_terms),
+                m.text.replace("\n", " ").strip(),
+            ])
 
 
-# === file: nlp/segment.py ===============================================
-def is_heading_line(line: str) -> bool:
-    """Heuristic heading detector."""
-    return any(p.search(line) for p in HEADING_PATTERNS)
-
-
-def split_into_blocks(doc_text: str) -> List[Block]:
-    """
-    Heading-aware segmentation:
-    - Flush a block whenever we see a new heading-like line.
-    - Drop micro-fragments (<= 5 words).
-    """
-    lines = doc_text.splitlines()
-    blocks: List[Block] = []
-    buf: List[str] = []
-    current_heading: Optional[str] = None
-    idx = 0
-
-    def flush():
-        nonlocal buf, current_heading, idx
-        if buf:
-            body = "\n".join(buf).strip()
-            if len(body.split()) > 5:
-                blocks.append(Block(heading=current_heading, text=body, idx=idx))
-                idx += 1
-            buf = []
-
-    for ln in lines:
-        if is_heading_line(ln):
-            flush()
-            current_heading = ln.strip()
-        else:
-            buf.append(ln)
-    flush()
-    return blocks
-
-
-# === file: core/ontology.py =============================================
-"""
-Expanded provision ontology for leveraged-finance docs.
-
-Each provision entry can define:
-  - include:  list of compiled regex patterns that indicate a positive hit
-  - boost:    list of compiled regex patterns that increase confidence when present
-  - window:   int number of neighbor blocks to include around the matching block
-              (captures cross-heading grids, step-down tables, etc.)
-"""
-
-def rx(p: str, flags: int = re.IGNORECASE | re.DOTALL) -> re.Pattern:
-    """Helper to compile concise regex strings."""
-    return re.compile(p, flags)
-
-# --- Common phrases / helpers
-RATIO_TOKEN      = r"\b\d+(?:\.\d+)?x\b"
-DOLLAR_TOKEN     = r"\$\s?\d[\d,]*(?:\.\d+)?"
-PERCENT_TOKEN    = r"\b\d+(?:\.\d+)?\s?%\b"
-LOOK_FORWARD     = r"(look[-\s]?forward\s+period|projected\s+run[-\s]?rate|future\s+synergies)"
-CAP_WORDS        = r"(cap|capped|limit|limited\s+to|not\s+to\s+exceed)"
-SYNERGY_WORDS    = r"(synergies?|cost\s+savings?)"
-ADD_BACK_WORDS   = r"(add[-\s]?backs?|adjustments?|restructuring|non[-\s]?cash)"
-PRO_FORMA        = r"(pro\s*forma|PF\s+adjustments?)"
-COVENANT_TESTING = r"(tested\s+(?:quarterly|semi[-\s]?annually|monthly)|test\s+date|testing\s+period|quarter[-\s]?end)"
-STEP_DOWN        = r"(step[-\s]?down|step[-\s]?up|pricing\s+stepdown)"
-BENCHMARK_WORDS  = r"(SOFR|Term\s+SOFR|Daily\s+Simple\s+SOFR|Benchmark|Base\s+Rate|Prime\s+Rate)"
-FLOOR_WORDS      = r"(floor|rate\s+floor)"
-MARGIN_WORDS     = r"(Applicable\s+Margin|interest\s+margin|spread)"
-GRID_WORDS       = r"(Pricing\s+Grid|Applicable\s+Rate|Grid\s+Levels?|Level\s+[I|II|III|IV|V])"
-CALL_PROTECT     = r"(call\s+protection|soft\s+call|prepayment\s+premium|make[-\s]?whole)"
-CARVE_OUTS       = r"(cash\s+carve[-\s]?out|carve[-\s]?out|available\s+amount)"
-CHANGE_CONTROL   = r"(Change\s+of\s+Control|CoC)"
-ASSET_SALE       = r"(Asset\s+Sale|Dispositions?)"
-ECF_SWEEP        = r"(Excess\s+Cash\s+Flow|ECF)"
-MANDATORY_PP     = r"(Mandatory\s+Prepayments?|mandatory\s+prepayment)"
-MFN_PHRASE       = r"(Most\s+Favored\s+Nation|MFN)"
-MATURITY         = r"(Maturity\s+Date|Scheduled\s+Maturity|Final\s+Maturity)"
-LIEN_TYPES       = r"(First\s+Lien|1st\s+Lien|Second\s+Lien|2nd\s+Lien|Unsecured)"
-DEBT_INC         = r"(Incremental\s+Facilities?|Incremental\s+Term|Incremental\s+Revolver|Additional\s+Debt|Ratio\s+Debt|Starter\s+Basket)"
-NEG_COV_WORDS    = r"(Negative\s+Covenants?|Covenants?)"
-RP_WORDS         = r"(Restricted\s+Payments?|Dividends?|Distributions?)"
-INVEST_WORDS     = r"(Investments?|JVP?|Joint\s+Ventures?|JDP?)"
-
-# --- Ontology
-ONTOLOGY: Dict[str, Dict[str, Any]] = {
-    # Debt baskets
-    "Debt_Basket_Incremental": {
-        "include": [
-            rx(rf"{DEBT_INC}.*?(?:{DOLLAR_TOKEN}|{RATIO_TOKEN}|cap|limit|basket)"),
-        ],
-        "boost": [rx(LIEN_TYPES), rx(r"(free\s+and\s+clear|most\s+favored\s+nation|MFN)")],
-        "window": 1,
-    },
-    "Debt_Basket_Starter": {
-        "include": [rx(r"(Starter\s+Basket).*?(?:Indebtedness|Debt).*?(?:permitted|allowed|available).+?(?:\.\s|\n\n)")],
-        "boost": [rx(DOLLAR_TOKEN), rx("builder|grower|available\s+amount")],
-        "window": 0,
-    },
-    "Debt_Basket_Ratio_Based": {
-        "include": [rx(r"(Ratio\s+Debt|Debt\s+incurrence\s+based\s+on\s+ratio).*?(?:{RATIO_TOKEN})".format(RATIO_TOKEN=RATIO_TOKEN))],
-        "boost": [rx(r"(incurrence\s+test|pro\s+forma|Senior\s+Secured\s+Leverage|Total\s+Leverage)")],
-        "window": 1,
-    },
-    "Debt_Basket_Lien_Tiering": {
-        "include": [rx(rf"{LIEN_TYPES}.*?(Indebtedness|Debt).+?(?:permitted|basket|cap)")],
-        "boost": [rx(DOLLAR_TOKEN), rx(RATIO_TOKEN)],
-        "window": 0,
-    },
-    "Debt_Basket_General_and_CF": {
-        "include": [rx(r"(General\s+(?:Debt|Indebtedness)\s+Basket|Credit\s+Facilities?).*?(?:permitted|cap|limit|basket)")],
-        "boost": [rx(DOLLAR_TOKEN), rx(PERCENT_TOKEN)],
-        "window": 0,
-    },
-
-    # MFN
-    "MFN_Protection": {
-        "include": [rx(rf"{MFN_PHRASE}.*?(?:protection|appl(?:y|ies)|spread|margin).*?(?:\.\s|\n\n)")],
-        "boost": [rx(r"(incremental|add[-\s]?on|spread|margin)")],
-        "window": 0,
-    },
-
-    # Negative covenants / RPs / Investments & baskets
-    "Negative_Covenants_Header": {
-        "include": [rx(rf"{NEG_COV_WORDS}.*")],
-        "boost": [],
-        "window": 1,
-    },
-    "Restricted_Payments_General": {
-        "include": [rx(rf"{RP_WORDS}.*?(?:shall\s+not|may\s+not|permitted).*?(?:\.\s|\n\n)")],
-        "boost": [rx(r"(builder|available\s+amount|CNI|grower|general\s+RP\s+basket)")],
-        "window": 0,
-    },
-    "RP_Starter_Basket": {
-        "include": [rx(r"(Starter\s+Basket).*?(Restricted\s+Payments?|RP).*?(?:permitted|cap|limit).*?(?:\.\s|\n\n)")],
-        "boost": [rx(DOLLAR_TOKEN)],
-        "window": 0,
-    },
-    "RP_Builder_Basket": {
-        "include": [rx(r"(Builder\s+Basket|Available\s+Amount).*?(Restricted\s+Payments?).*?(?:permitted|cap|limit).*?(?:\.\s|\n\n)")],
-        "boost": [rx(r"(CNI|Cumulative\s+Credit|builder)"), rx(PERCENT_TOKEN)],
-        "window": 0,
-    },
-    "RP_Ratio_Basket": {
-        "include": [rx(r"(RP\s+Ratio\s+Basket|ratio\s+based\s+RP).*?(?:{RATIO_TOKEN}).*?(?:\.\s|\n\n)".format(RATIO_TOKEN=RATIO_TOKEN))],
-        "boost": [rx(r"(incurrence\s+test|no\s+default|pro\s+forma)")],
-        "window": 0,
-    },
-    "Investments_General": {
-        "include": [rx(rf"{INVEST_WORDS}.*?(?:shall\s+not|permitted|allowed).*?(?:\.\s|\n\n)")],
-        "boost": [rx(r"(permitted\s+investment|unrestricted\s+subsidiar(y|ies)|non[-\s]?guarantor)")],
-        "window": 0,
-    },
-    "Investments_JV_JDP": {
-        "include": [rx(r"(Joint\s+Venture|JV|JDP)\s+Investments?.*?(?:permitted|cap|limit|basket).*?(?:\.\s|\n\n)")],
-        "boost": [rx(DOLLAR_TOKEN), rx(PERCENT_TOKEN)],
-        "window": 0,
-    },
-
-    # Financial covenants (maintenance & incurrence)
-    "Maintenance_Financial_Covenant": {
-        "include": [rx(r"(Maintenance\s+(?:Covenant|Test)).*?(?:{RATIO_TOKEN}|not\s+less\s+than|not\s+greater\s+than)".format(RATIO_TOKEN=RATIO_TOKEN))],
-        "boost": [rx(COVENANT_TESTING), rx(STEP_DOWN)],
-        "window": 1,
-    },
-    "Incurrence_Covenants": {
-        "include": [rx(r"(Incurrence\s+Covenants?).*?(?:{RATIO_TOKEN}|Total\s+Leverage|Secured\s+Leverage|Interest\s+Coverage)".format(RATIO_TOKEN=RATIO_TOKEN))],
-        "boost": [rx(PRO_FORMA), rx(r"(no\s+Default|no\s+Event\s+of\s+Default)")],
-        "window": 1,
-    },
-    "Leverage_Total": {
-        "include": [rx(r"(Total\s+Leverage\s+Ratio|Debt\s*/\s*EBITDA).*?(?:means|not\s+exceed|not\s+be\s+greater).*?(?:\.\s|\n\n)")],
-        "boost": [rx(RATIO_TOKEN), rx(r"(Gross|Net)\s+Debt")],
-        "window": 0,
-    },
-    "Leverage_First_Lien": {
-        "include": [rx(r"(First\s+Lien\s+Leverage\s+Ratio|Senior\s+Secured\s+Leverage).*?(?:means|not\s+exceed).*?(?:\.\s|\n\n)")],
-        "boost": [rx(RATIO_TOKEN)],
-        "window": 0,
-    },
-    "Interest_or_Fixed_Charge_Coverage": {
-        "include": [rx(r"(Interest\s+Coverage|Fixed\s+Charge\s+Coverage)\s+Ratio.*?(?:means|not\s+less\s+than|not\s+be).*?(?:\.\s|\n\n)")],
-        "boost": [rx(RATIO_TOKEN)],
-        "window": 0,
-    },
-    "Testing_Frequency_and_StepDowns": {
-        "include": [rx(rf"{COVENANT_TESTING}.*?(?:{STEP_DOWN})?.*")]
-        ,
-        "boost": [rx(STEP_DOWN)],
-        "window": 1,
-    },
-
-    # EBITDA definitions
-    "EBITDA_Definition_Core": {
-        "include": [rx(r"(Consolidated\s+)?EBITDA\s*(?:shall\s+mean|means)\b.*?(?:\.\s|\n\n)")],
-        "boost": [rx(ADD_BACK_WORDS), rx(PRO_FORMA)],
-        "window": 0,
-    },
-    "EBITDA_AddBacks_and_Synergies": {
-        "include": [rx(rf"{ADD_BACK_WORDS}.*?(?:{SYNERGY_WORDS})?.*")],
-        "boost": [rx(rf"{CAP_WORDS}"), rx(LOOK_FORWARD)],
-        "window": 0,
-    },
-    "EBITDA_Synergy_Cap_and_LookForward": {
-        "include": [rx(rf"{SYNERGY_WORDS}.*?(?:{CAP_WORDS}).*?(?:{LOOK_FORWARD})?")],
-        "boost": [rx(PERCENT_TOKEN), rx(DOLLAR_TOKEN)],
-        "window": 0,
-    },
-
-    # Pricing grid and economics
-    "Pricing_Grid_and_Margins": {
-        "include": [rx(rf"{GRID_WORDS}.*?(?:{MARGIN_WORDS}).*")],
-        "boost": [rx(BENCHMARK_WORDS), rx(FLOOR_WORDS), rx(RATIO_TOKEN)],
-        "window": 2,   # capture surrounding blocks for multi-level grids
-    },
-    "Benchmark_and_Floor": {
-        "include": [rx(rf"{BENCHMARK_WORDS}.*?(?:{FLOOR_WORDS}|floor\s+of\s+{PERCENT_TOKEN}|floor\s+of\s+{DOLLAR_TOKEN})")],
-        "boost": [rx(MARGIN_WORDS)],
-        "window": 1,
-    },
-    "Call_Protection": {
-        "include": [rx(rf"{CALL_PROTECT}.*?(?:\.\s|\n\n)")],
-        "boost": [rx(PERCENT_TOKEN), rx(DOLLAR_TOKEN)],
-        "window": 0,
-    },
-    "Cash_Carve_Outs": {
-        "include": [rx(rf"{CARVE_OUTS}.*?(?:\.\s|\n\n)")],
-        "boost": [rx(DOLLAR_TOKEN), rx(PERCENT_TOKEN)],
-        "window": 0,
-    },
-    "Maturity_Date": {
-        "include": [rx(rf"{MATURITY}.*?(?:{DATE_REGEX.pattern}|{YEARS_TERMS_REGEX.pattern})")],
-        "boost": [],
-        "window": 0,
-    },
-    "Change_of_Control": {
-        "include": [rx(rf"{CHANGE_CONTROL}.*?(?:offer|repurchase|trigger|event).*?(?:\.\s|\n\n)")],
-        "boost": [rx(PERCENT_TOKEN)],
-        "window": 0,
-    },
-
-    # Sweeps & mandatory prepayments
-    "Asset_Sale_Sweeps": {
-        "include": [rx(rf"{ASSET_SALE}.*?(?:net\s+proceeds|reinvest|reinvestment|sweep|prepay).*?(?:\.\s|\n\n)")],
-        "boost": [rx(PERCENT_TOKEN), rx(DOLLAR_TOKEN)],
-        "window": 0,
-    },
-    "ECF_Sweeps": {
-        "include": [rx(rf"{ECF_SWEEP}.*?(?:sweep|percentage|excess).*?(?:\.\s|\n\n)")],
-        "boost": [rx(PERCENT_TOKEN)],
-        "window": 0,
-    },
-    "Mandatory_Prepayments": {
-        "include": [rx(rf"{MANDATORY_PP}.*?(?:asset\s+sales?|ECF|debt\s+incurrence|insurance\s+proceeds).*?(?:\.\s|\n\n)")],
-        "boost": [rx(PERCENT_TOKEN)],
-        "window": 0,
-    },
-}
-
-
-# === file: nlp/score.py ==================================================
-def score_snippet(snippet: str, heading: Optional[str], boost_patterns: List[re.Pattern]) -> float:
-    """
-    Simple heuristic:
-      + baseline for length
-      + boosts for keyword hits
-      + soft bump for presence of tokens (amounts/ratios/%)
-    """
-    base = 0.5 + min(len(snippet) / 2200.0, 0.2)
-    for pat in boost_patterns:
-        hits = len(pat.findall(snippet))
-        base += min(hits * 0.08, 0.32)
-    # Token presence bump
-    if AMOUNT_REGEX.search(snippet):
-        base += 0.04
-    if RATIO_REGEX.search(snippet):
-        base += 0.04
-    if PCT_REGEX.search(snippet):
-        base += 0.04
-    return max(0.0, min(base, 1.0))
-
-
-# === file: nlp/match.py ==================================================
-def window_blocks(blocks: List[Block], center_idx: int, span: int) -> Tuple[List[int], str]:
-    """
-    Build a window of neighboring blocks around center_idx.
-
-    Parameters
-    ----------
-    blocks : List[Block]
-    center_idx : int
-    span : int
-
-    Returns
-    -------
-    (indices, text)
-        indices: list of block indices contributing to the window
-        text: concatenated text (with headings inline for context)
-    """
-    start = max(0, center_idx - span)
-    end = min(len(blocks), center_idx + span + 1)
-    idxs = list(range(start, end))
-    texts: List[str] = []
-    for i in idxs:
-        h = blocks[i].heading or ""
-        t = blocks[i].text
-        # Include heading inline to help regex that look for "Pricing Grid" etc.
-        if h:
-            texts.append(f"{h}\n{t}")
-        else:
-            texts.append(t)
-    return idxs, "\n\n".join(texts)
-
-
-def regex_search_in_text(
-    provision: str,
-    include_patterns: List[re.Pattern],
-    boost_patterns: List[re.Pattern],
-    text: str,
-    section_ref: Optional[str],
-    idxs: List[int],
-) -> Iterable[Match]:
-    """
-    Run include regex over a given text chunk and yield matches.
-    """
-    for inc in include_patterns:
-        for m in inc.finditer(text):
-            snippet = m.group(0).strip()
-            amounts = AMOUNT_REGEX.findall(snippet)
-            ratios  = RATIO_REGEX.findall(snippet)
-            perc    = PCT_REGEX.findall(snippet)
-            dates   = DATE_REGEX.findall(snippet)
-            years   = YEARS_TERMS_REGEX.findall(snippet)
-            # Flatten tenor tuple matches to a readable token list
-            years_terms = []
-            for y in years:
-                tok = " ".join([s for s in y if s])
-                if tok:
-                    years_terms.append(tok)
-
-            conf = round(score_snippet(snippet, section_ref, boost_patterns), 3)
-            yield Match(
-                provision=provision,
-                section_ref=section_ref,
-                block_idxs=idxs,
-                text=snippet,
-                amounts=amounts,
-                ratios=ratios,
-                percents=perc,
-                dates=[d[0] if isinstance(d, tuple) else d for d in dates] if dates else [],
-                years_terms=years_terms,
-                confidence=conf,
-            )
-
-
-def run_extraction(blocks: List[Block], ontology: Dict[str, Dict[str, Any]]) -> List[Match]:
-    """
-    Execute ontology-driven extraction using windowed context.
-    """
-    raw: List[Match] = []
-    for i, blk in enumerate(blocks):
-        for prov, spec in ontology.items():
-            include: List[re.Pattern] = spec.get("include", [])
-            boost:   List[re.Pattern] = spec.get("boost", [])
-            span:    int = int(spec.get("window", 0))
-
-            idxs, win_text = window_blocks(blocks, i, span)
-            section_ref = blk.heading
-            raw.extend(regex_search_in_text(prov, include, boost, win_text, section_ref, idxs))
-    # Deduplicate by (provision, first 140 chars)
-    seen: set[Tuple[str, str]] = set()
-    uniq: List[Match] = []
-    for m in raw:
-        key = (m.provision, m.text[:140])
-        if key in seen:
-            continue
-        seen.add(key)
-        uniq.append(m)
-    return uniq
-
-
-# === file: io/ontology_loader.py ========================================
-def maybe_load_external_ontology(path: Optional[str]) -> Optional[Dict[str, Dict[str, Any]]]:
-    """
-    Optionally load ontology from a YAML file if provided and PyYAML is installed.
-    The YAML should map provision -> { include: [regex...], boost: [regex...], window: int }
-    Regex strings will be compiled with IGNORECASE|DOTALL.
-
-    Example YAML snippet:
-      Debt_Basket_Incremental:
-        include:
-          - "(?i)(Incremental\\s+Facilities?).*"
-        boost:
-          - "(?i)(First\\s+Lien|Second\\s+Lien)"
-        window: 1
-    """
-    if not path:
-        return None
-    p = Path(path)
-    if not p.exists():
-        raise FileNotFoundError(f"Ontology YAML not found: {p}")
-    try:
-        import yaml  # type: ignore
-    except Exception as exc:  # pragma: no cover
-        raise RuntimeError("PyYAML is required to load an external ontology (pip install pyyaml).") from exc
-
-    data = yaml.safe_load(p.read_text(encoding="utf-8"))
-    compiled: Dict[str, Dict[str, Any]] = {}
-    for prov, spec in data.items():
-        inc_raw = spec.get("include", []) or []
-        boo_raw = spec.get("boost", []) or []
-        win_raw = spec.get("window", 0)
-        compiled[prov] = {
-            "include": [rx(s) for s in inc_raw],
-            "boost":   [rx(s) for s in boo_raw],
-            "window":  int(win_raw),
-        }
-    return compiled
-
-
-# === file: cli/main.py ===================================================
-import argparse
-from textwrap import dedent
+# -----------------------------
+# CLI
+# -----------------------------
 
 def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="credit_doc_extractor",
-        formatter_class=argparse.RawTextHelpFormatter,
-        description=dedent(
-            """\
-            Leveraged-finance provision extractor (offline).
-
-            Examples:
-              python credit_doc_extractor.py input.pdf --out results.json
-              python credit_doc_extractor.py input.pdf --ocr --dump-sections sections.txt
-              python credit_doc_extractor.py input.pdf --ontology my_patterns.yaml
-            """
-        ),
+        prog="summarize_credit_extractions",
+        description="Turn extractor JSON into a concise report and CSVs.",
     )
-    p.add_argument("pdf", type=str, help="Path to input PDF")
-    p.add_argument("--out", type=str, default="", help="JSON output path (stdout if omitted)")
-    p.add_argument("--min_conf", type=float, default=0.55, help="Minimum confidence to retain")
-    p.add_argument("--ocr", action="store_true", help="Use OCR for scanned PDFs (pytesseract required)")
-    p.add_argument("--dump-sections", type=str, default="", help="Write segmented sections to this file")
-    p.add_argument("--ontology", type=str, default="", help="Path to external YAML ontology (optional)")
+    p.add_argument("json", type=str, help="Path to extractor JSON")
+    p.add_argument("--out-dir", type=str, default="summary_out", help="Output directory for report/CSVs")
+    p.add_argument("--top-n", type=int, default=3, help="Top N matches per provision in the Markdown report")
+    p.add_argument("--min-conf", type=float, default=0.60, help="Minimum confidence to include in summaries/CSVs")
+    p.add_argument("--write-all-csv", action="store_true", help="Also write a single all_matches.csv")
     return p
-
-
-def write_sections_dump(blocks: List[Block], out_path: Path) -> None:
-    lines: List[str] = []
-    for b in blocks:
-        lines.append(f"--- Block #{b.idx} ---")
-        lines.append(f"HEADING: {b.heading or '(None)'}")
-        lines.append(b.text)
-        lines.append("")
-    Path(out_path).write_text("\n".join(lines), encoding="utf-8")
 
 
 def main() -> None:
     args = build_arg_parser().parse_args()
-    pdf_path = Path(args.pdf)
-    if not pdf_path.exists():
-        raise FileNotFoundError(f"PDF not found: {pdf_path}")
+    json_path = Path(args.json)
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-    # 1) Text extraction
-    if args.ocr:
-        raw = extract_pdf_text_with_ocr(pdf_path)
-    else:
-        raw = extract_pdf_text(pdf_path)
+    extraction = load_extraction(json_path)
+    # Filter and group
+    kept = filter_by_confidence(extraction.results, args.min_conf)
+    groups = group_by_provision(kept)
 
-    # 2) Normalize + segment
-    norm = normalize_text(raw)
-    blocks = split_into_blocks(norm)
+    # Console summary
+    print(f"File: {extraction.file}")
+    print(f"Blocks: {extraction.total_blocks} | Raw matches: {extraction.total_matches} | Retained (>= {args.min_conf}): {len(kept)}")
+    print("\nCounts by provision (retained):")
+    for prov, cnt, avg in summarize_counts(groups):
+        print(f"  {prov:35s}  {cnt:4d}  avg_conf={avg:.3f}")
 
-    if args.dump_sections:
-        write_sections_dump(blocks, Path(args.dump_sections))
+    # Markdown report
+    out_md = out_dir / "report.md"
+    write_markdown_report(out_md, extraction, groups, top_n=args.top_n)
+    print(f"\nMarkdown report: {out_md}")
 
-    # 3) Ontology selection (external overrides default)
-    external = maybe_load_external_ontology(args.ontology) if args.ontology else None
-    ontology = external if external else ONTOLOGY
+    # Per-provision CSVs
+    csv_dir = out_dir / "provisions"
+    write_per_provision_csvs(groups, csv_dir)
+    print(f"Per-provision CSVs: {csv_dir}")
 
-    # 4) Run extraction, threshold, package
-    matches = run_extraction(blocks, ontology)
-    kept = [m for m in matches if m.confidence >= args.min_conf]
-    result = ExtractionResult(
-        file=str(pdf_path),
-        total_blocks=len(blocks),
-        total_matches=len(matches),
-        retained=len(kept),
-        results=kept,
-    )
-
-    # 5) Emit JSON
-    payload = result.to_json(indent=2)
-    if args.out:
-        Path(args.out).write_text(payload, encoding="utf-8")
-    else:
-        print(payload)
+    # Optional single CSV
+    if args.write_all_csv:
+        out_csv = out_dir / "all_matches.csv"
+        write_all_csv(kept, out_csv)
+        print(f"All-matches CSV: {out_csv}")
 
 
-# === file: __main__ guard ===============================================
 if __name__ == "__main__":
     main()
-
-
-# ======================================================================
-#  Developer Notes & Extension Guide
-#
-#  1) Pattern Tuning
-#     - The ONTOLOGY above encodes your requested coverage. Adjust or add entries:
-#         key: {
-#           "include": [regex...],
-#           "boost":   [regex...],
-#           "window":  int
-#         }
-#       'window' pulls neighbor blocks to capture grids or multi-paragraph clauses.
-#
-#  2) Captured Values
-#     - Amounts ($...), ratios (x), percents (%), dates, and tenor terms are extracted
-#       per match for downstream quantification (e.g., grid tiers, sweep percentages).
-#
-#  3) Pricing Grids
-#     - Grids are often tables; pure text extraction can interleave columns.
-#       We use windowed captures and broad patterns (GRID_WORDS, MARGIN_WORDS,
-#       BENCHMARK_WORDS, FLOOR_WORDS). If your documents are consistently two-column,
-#       consider migrating to pdfplumber with x/y coordinate heuristics in the future.
-#
-#  4) External Ontology (Optional)
-#     - Provide a YAML file with your firm-specific patterns:
-#         Debt_Basket_Incremental:
-#           include:
-#             - "(?is)(Incremental\\s+Facilities?).*?(\\$\\s?\\d[\\d,]*)"
-#           boost:
-#             - "(?i)(First\\s+Lien|Second\\s+Lien)"
-#           window: 1
-#       Then run:  --ontology my_patterns.yaml
-#
-#  5) OCR
-#     - For scanned docs, use --ocr (install pytesseract/pdf2image/Pillow and OS Tesseract).
-#       OCR is slower and noisier; increase --min_conf or tighten patterns as needed.
-#
-#  6) Quality Workflow
-#     - Start by running with --dump-sections to see segmentation; refine headings if your
-#       templates use custom section labels.
-#     - Iterate on regexes to your drafting conventions. Keep include patterns as specific
-#       as possible while still generalizing across firms.
-#
-#  7) Future Ideas (still offline)
-#     - Add a tiny local re-ranker (TF-IDF + logistic) trained on labeled snippets.
-#     - Add cross-reference resolution (e.g., find the EBITDA definition referenced by leverage).
-#     - Normalize extracted numerics (e.g., parse "$100mm" variants, worded numbers).
-#
-#  8) Safety
-#     - Always have a human reviewer confirm outputs before downstream use.
-# ======================================================================
