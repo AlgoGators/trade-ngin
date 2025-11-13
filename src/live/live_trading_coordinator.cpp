@@ -102,7 +102,8 @@ Result<std::pair<double, TradingMetrics>> LiveTradingCoordinator::load_previous_
         metrics.gross_notional = row.gross_notional;
         metrics.margin_posted = row.margin_posted;
         metrics.daily_return = row.daily_return;
-        metrics.total_return = row.total_return;
+        metrics.total_cumulative_return = row.total_cumulative_return;
+        metrics.total_annualized_return = row.total_annualized_return;
         metrics.portfolio_leverage = row.portfolio_leverage;
         metrics.equity_to_margin_ratio = row.equity_to_margin_ratio;
         metrics.active_positions = row.active_positions;
@@ -234,7 +235,8 @@ Result<void> LiveTradingCoordinator::store_results(
     try {
         // Set metrics in results manager
         std::unordered_map<std::string, double> double_metrics = {
-            {"total_return", metrics.annualized_return},
+            {"total_cumulative_return", metrics.total_cumulative_return},
+            {"total_annualized_return", metrics.total_annualized_return},
             {"total_pnl", metrics.total_pnl},
             {"total_unrealized_pnl", metrics.unrealized_pnl},
             {"total_realized_pnl", metrics.realized_pnl},
@@ -337,8 +339,8 @@ TradingMetrics LiveTradingCoordinator::convert_calculated_metrics(
 
     // Return metrics
     metrics.daily_return = calc_metrics.daily_return;
-    metrics.total_return = calc_metrics.total_return;
-    metrics.annualized_return = calc_metrics.annualized_return;
+    metrics.total_cumulative_return = calc_metrics.total_return;
+    metrics.total_annualized_return = calc_metrics.annualized_return;
 
     // Portfolio metrics
     metrics.portfolio_leverage = calc_metrics.portfolio_leverage;

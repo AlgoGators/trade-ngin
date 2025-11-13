@@ -146,7 +146,7 @@ Result<LiveResultsRow> LiveDataLoader::load_live_results(
     std::string query =
         "SELECT "
         "daily_pnl, total_pnl, daily_realized_pnl, daily_unrealized_pnl, "
-        "daily_return, total_return, current_portfolio_value, "
+        "daily_return, total_cumulative_return, total_annualized_return, current_portfolio_value, "
         "portfolio_leverage, equity_to_margin_ratio, gross_notional, "
         "margin_posted, cash_available, daily_commissions, "
         "sharpe_ratio, sortino_ratio, max_drawdown, volatility, "
@@ -192,7 +192,8 @@ Result<LiveResultsRow> LiveDataLoader::load_live_results(
     row.daily_realized_pnl = get_double();
     row.daily_unrealized_pnl = get_double();
     row.daily_return = get_double();
-    row.total_return = get_double();
+    row.total_cumulative_return = get_double();
+    row.total_annualized_return = get_double();
     row.current_portfolio_value = get_double();
     row.portfolio_leverage = get_double();
     row.equity_to_margin_ratio = get_double();
@@ -593,7 +594,7 @@ Result<std::unordered_map<std::string, double>> LiveDataLoader::load_daily_metri
     date_ss << std::put_time(std::gmtime(&time_t), "%Y-%m-%d");
 
     std::string query =
-        "SELECT daily_return, daily_unrealized_pnl, daily_realized_pnl, daily_pnl "
+        "SELECT daily_return, daily_unrealized_pnl, daily_realized_pnl, daily_pnl, daily_commissions "
         "FROM " + schema_ + ".live_results "
         "WHERE strategy_id = '" + strategy_id + "' "
         "AND DATE(date) = '" + date_ss.str() + "'";
@@ -620,11 +621,13 @@ Result<std::unordered_map<std::string, double>> LiveDataLoader::load_daily_metri
     auto daily_unrealized = std::static_pointer_cast<arrow::DoubleArray>(table->column(1)->chunk(0));
     auto daily_realized = std::static_pointer_cast<arrow::DoubleArray>(table->column(2)->chunk(0));
     auto daily_total = std::static_pointer_cast<arrow::DoubleArray>(table->column(3)->chunk(0));
+    auto daily_commissions = std::static_pointer_cast<arrow::DoubleArray>(table->column(4)->chunk(0));
 
     metrics["Daily Return"] = daily_return->IsNull(0) ? 0.0 : daily_return->Value(0);
     metrics["Daily Unrealized PnL"] = daily_unrealized->IsNull(0) ? 0.0 : daily_unrealized->Value(0);
     metrics["Daily Realized PnL"] = daily_realized->IsNull(0) ? 0.0 : daily_realized->Value(0);
     metrics["Daily Total PnL"] = daily_total->IsNull(0) ? 0.0 : daily_total->Value(0);
+    metrics["Daily Commissions"] = daily_commissions->IsNull(0) ? 0.0 : daily_commissions->Value(0);
 
     INFO("Loaded email metrics: Return=" + std::to_string(metrics["Daily Return"]) + "%");
 

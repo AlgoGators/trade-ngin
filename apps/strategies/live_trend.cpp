@@ -1015,17 +1015,19 @@ int main(int argc, char* argv[]) {
             INFO("  Commissions (yesterday_commissions): $" + std::to_string(yesterday_commissions));
             INFO("  Net PnL (yesterday_daily_pnl_finalized): $" + std::to_string(yesterday_daily_pnl_finalized));
 
-            // Get the day BEFORE yesterday's portfolio value and total_pnl
+            // Get the day BEFORE yesterday's portfolio value, total_pnl, and total_commissions
             double day_before_yesterday_portfolio_value = initial_capital;
             double day_before_yesterday_total_pnl = 0.0;
+            double day_before_yesterday_total_commissions = 0.0;
             try {
                 auto db_ptr = std::dynamic_pointer_cast<PostgresDatabase>(db);
                 if (db_ptr) {
                     auto prev_agg = db_ptr->get_previous_live_aggregates("LIVE_TREND_FOLLOWING", previous_date, "trading.live_results");
                     if (prev_agg.is_ok()) {
-                        std::tie(day_before_yesterday_portfolio_value, day_before_yesterday_total_pnl, std::ignore) = prev_agg.value();
+                        std::tie(day_before_yesterday_portfolio_value, day_before_yesterday_total_pnl, day_before_yesterday_total_commissions) = prev_agg.value();
                         INFO("Loaded day-before-yesterday aggregates: portfolio=$" + std::to_string(day_before_yesterday_portfolio_value) +
-                             ", total_pnl=$" + std::to_string(day_before_yesterday_total_pnl));
+                             ", total_pnl=$" + std::to_string(day_before_yesterday_total_pnl) +
+                             ", total_commissions=$" + std::to_string(day_before_yesterday_total_commissions));
                     }
                 }
             } catch (const std::exception& e) {
@@ -1036,6 +1038,8 @@ int main(int argc, char* argv[]) {
             // NOTE: Since we may not have correct commissions, the cumulative values will be recalculated by SQL
             // using the daily_pnl formula (daily_realized_pnl - daily_commissions)
             double yesterday_total_pnl_cumulative = day_before_yesterday_total_pnl + yesterday_daily_pnl_finalized;
+            double yesterday_total_commissions_cumulative = day_before_yesterday_total_commissions + yesterday_commissions;
+            double yesterday_total_realized_pnl_cumulative = yesterday_total_pnl_cumulative + yesterday_total_commissions_cumulative;
             double yesterday_portfolio_value_finalized = day_before_yesterday_portfolio_value + yesterday_daily_pnl_finalized;
 
             // Calculate yesterday's returns using LiveMetricsCalculator
@@ -1044,31 +1048,39 @@ int main(int argc, char* argv[]) {
 
             // Note: Yesterday's metrics for email will be loaded from database after update
 
-            // Calculate yesterday's total return
-            double yesterday_total_return = metrics_calculator->calculate_total_return(
+            // Calculate yesterday's total cumulative return (non-annualized)
+            double yesterday_total_cumulative_return = metrics_calculator->calculate_total_return(
                 yesterday_portfolio_value_finalized, initial_capital);
 
             double yesterday_total_return_decimal = 0.0;
             if (initial_capital > 0.0) {
                 yesterday_total_return_decimal = (yesterday_portfolio_value_finalized - initial_capital) / initial_capital;
             }
+            double yesterday_total_cumulative_return_pct = yesterday_total_cumulative_return;  // Already in %
 
-            // Get trading days count for annualization
+            // Get trading days count for annualization using PostgreSQL function
+            // This avoids issues with row multiplication/duplication in the database
             int trading_days_count = 1;
             try {
-                auto count_result = db->execute_query(
-                    "SELECT COUNT(*) AS cnt FROM trading.live_results WHERE strategy_id = 'LIVE_TREND_FOLLOWING'");
-                if (count_result.is_ok()) {
-                    auto table = count_result.value();
+                // Call PostgreSQL function to calculate trading days
+                auto trading_days_result = db->execute_query(
+                    "SELECT trading.get_trading_days('LIVE_TREND_FOLLOWING', DATE '" + yesterday_date_ss.str() + "')");
+                
+                if (trading_days_result.is_ok()) {
+                    auto table = trading_days_result.value();
                     if (table && table->num_rows() > 0 && table->num_columns() > 0) {
-                        auto arr = std::static_pointer_cast<arrow::Int64Array>(table->column(0)->chunk(0));
+                        // execute_query returns StringArray for all columns
+                        auto arr = std::static_pointer_cast<arrow::StringArray>(table->column(0)->chunk(0));
                         if (arr && arr->length() > 0 && !arr->IsNull(0)) {
-                            trading_days_count = std::max<int>(1, static_cast<int>(arr->Value(0)));
+                            trading_days_count = std::max<int>(1, std::stoi(arr->GetString(0)));
+                            INFO("Trading days for yesterday (" + yesterday_date_ss.str() + "): " + std::to_string(trading_days_count));
                         }
                     }
+                } else {
+                    WARN("Could not call get_trading_days function: " + std::string(trading_days_result.error()->what()));
                 }
             } catch (const std::exception& e) {
-                WARN("Failed to count trading days: " + std::string(e.what()));
+                WARN("Failed to get trading days: " + std::string(e.what()));
             }
 
             // Calculate yesterday's annualized return using LiveMetricsCalculator
@@ -1116,7 +1128,8 @@ int main(int argc, char* argv[]) {
             std::string update_query =
                 "WITH day_before AS ("
                 "  SELECT COALESCE(current_portfolio_value, " + std::to_string(initial_capital) + ") as portfolio, "
-                "         COALESCE(total_pnl, 0.0) as total_pnl "
+                "         COALESCE(total_pnl, 0.0) as total_pnl, "
+                "         COALESCE(total_realized_pnl, 0.0) as total_realized_pnl_prev "
                 "  FROM trading.live_results "
                 "  WHERE strategy_id = 'LIVE_TREND_FOLLOWING' AND DATE(date) < '" + yesterday_date_ss.str() + "' "
                 "  ORDER BY date DESC LIMIT 1"
@@ -1125,12 +1138,13 @@ int main(int argc, char* argv[]) {
                 "daily_realized_pnl = " + std::to_string(yesterday_total_pnl) + ", "
                 "daily_pnl = " + std::to_string(yesterday_total_pnl) + " - COALESCE(daily_commissions, 0.0), "
                 "total_pnl = COALESCE((SELECT total_pnl FROM day_before), 0.0) + (" + std::to_string(yesterday_total_pnl) + " - COALESCE(daily_commissions, 0.0)), "
-                "total_realized_pnl = COALESCE((SELECT total_pnl FROM day_before), 0.0) + (" + std::to_string(yesterday_total_pnl) + " - COALESCE(daily_commissions, 0.0)), "
+                "total_realized_pnl = " + std::to_string(yesterday_total_realized_pnl_cumulative) + ", "
                 "current_portfolio_value = COALESCE((SELECT portfolio FROM day_before), " + std::to_string(initial_capital) + ") + (" + std::to_string(yesterday_total_pnl) + " - COALESCE(daily_commissions, 0.0)), "
                 "daily_return = CASE WHEN COALESCE((SELECT portfolio FROM day_before), " + std::to_string(initial_capital) + ") > 0 "
                 "               THEN ((" + std::to_string(yesterday_total_pnl) + " - COALESCE(daily_commissions, 0.0)) / COALESCE((SELECT portfolio FROM day_before), " + std::to_string(initial_capital) + ")) * 100.0 "
                 "               ELSE 0.0 END, "
-                "total_return = " + std::to_string(yesterday_total_return_annualized) + ", "
+                "total_cumulative_return = " + std::to_string(yesterday_total_cumulative_return_pct) + ", "
+                "total_annualized_return = " + std::to_string(yesterday_total_return_annualized) + ", "
                 "portfolio_leverage = CASE WHEN portfolio_leverage IS NULL OR portfolio_leverage = 0 THEN " + std::to_string(yesterday_portfolio_leverage) + " ELSE portfolio_leverage END, "
                 "equity_to_margin_ratio = CASE WHEN equity_to_margin_ratio IS NULL OR equity_to_margin_ratio = 0 THEN " + std::to_string(yesterday_equity_to_margin_ratio) + " ELSE equity_to_margin_ratio END, "
                 "cash_available = COALESCE((SELECT portfolio FROM day_before), " + std::to_string(initial_capital) + ") + (" + std::to_string(yesterday_total_pnl) + " - COALESCE(daily_commissions, 0.0)) - COALESCE(margin_posted, 0.0) "
@@ -1310,39 +1324,49 @@ int main(int argc, char* argv[]) {
         double total_commissions_cumulative = previous_total_commissions + total_daily_commissions;
 
         // Since it's futures, all PnL is realized
-        double total_realized_pnl = total_pnl;
+        // total_realized_pnl = total_pnl + total_commissions (GROSS)
+        double total_realized_pnl = total_pnl + total_commissions_cumulative;
         double total_unrealized_pnl = 0.0;
 
         // Calculate returns using LiveMetricsCalculator
         double daily_return = metrics_calculator->calculate_daily_return(daily_pnl, previous_portfolio_value);
 
-        // Calculate total return
-        double total_return = metrics_calculator->calculate_total_return(current_portfolio_value, initial_capital);
+        // Calculate total cumulative return (non-annualized)
+        double total_cumulative_return = metrics_calculator->calculate_total_return(current_portfolio_value, initial_capital);
 
         double total_return_decimal = 0.0;
         if (initial_capital > 0.0) {
             total_return_decimal = (current_portfolio_value - initial_capital) / initial_capital;
         }
+        double total_cumulative_return_pct = total_cumulative_return;  // Already in %
 
-        // Get n = number of trading days (rows in live_results for this strategy)
+        // Get n = number of trading days using PostgreSQL function (robust against row duplication)
         int trading_days_count = 1; // Default to 1 to avoid division by zero on first day
         try {
-            auto count_result = db->execute_query(
-                "SELECT COUNT(*) AS cnt FROM trading.live_results WHERE strategy_id = 'LIVE_TREND_FOLLOWING'");
-            if (count_result.is_ok()) {
-                auto table = count_result.value();
+            // Format today's date for SQL query
+            auto now_time_t_for_query = std::chrono::system_clock::to_time_t(now);
+            std::stringstream now_date_ss;
+            now_date_ss << std::put_time(std::gmtime(&now_time_t_for_query), "%Y-%m-%d");
+            
+            // Call PostgreSQL function to calculate trading days
+            auto trading_days_result = db->execute_query(
+                "SELECT trading.get_trading_days('LIVE_TREND_FOLLOWING', DATE '" + now_date_ss.str() + "')");
+            
+            if (trading_days_result.is_ok()) {
+                auto table = trading_days_result.value();
                 if (table && table->num_rows() > 0 && table->num_columns() > 0) {
-                    auto col = table->column(0);
-                    if (col->num_chunks() > 0) {
-                        auto arr = std::static_pointer_cast<arrow::Int64Array>(col->chunk(0));
-                        if (arr && arr->length() > 0 && !arr->IsNull(0)) {
-                            trading_days_count = std::max<int>(1, static_cast<int>(arr->Value(0)));
-                        }
+                    // execute_query returns StringArray for all columns
+                    auto arr = std::static_pointer_cast<arrow::StringArray>(table->column(0)->chunk(0));
+                    if (arr && arr->length() > 0 && !arr->IsNull(0)) {
+                        trading_days_count = std::max<int>(1, std::stoi(arr->GetString(0)));
+                        INFO("Trading days for today (" + now_date_ss.str() + "): " + std::to_string(trading_days_count));
                     }
                 }
+            } else {
+                WARN("Could not call get_trading_days function: " + std::string(trading_days_result.error()->what()));
             }
         } catch (const std::exception& e) {
-            WARN(std::string("Failed to count live_results rows: ") + e.what());
+            WARN(std::string("Failed to get trading days: ") + e.what());
         }
 
         // Calculate annualized return using LiveMetricsCalculator
@@ -1361,6 +1385,7 @@ int main(int argc, char* argv[]) {
         std::cout << "Realized P&L: $" << std::fixed << std::setprecision(2) << total_realized_pnl << std::endl;
         std::cout << "Unrealized P&L: $" << std::fixed << std::setprecision(2) << total_unrealized_pnl << std::endl;
         std::cout << "Current Portfolio Value: $" << std::fixed << std::setprecision(2) << current_portfolio_value << std::endl;
+        std::cout << "Total Return (Cumulative): " << std::fixed << std::setprecision(2) << total_cumulative_return_pct << "%" << std::endl;
         std::cout << "Total Return (Annualized): " << std::fixed << std::setprecision(2) << total_return_annualized << "%" << std::endl;
         std::cout << "Daily Return: " << std::fixed << std::setprecision(2) << daily_return << "%" << std::endl;
         std::cout << "Portfolio Leverage: " << std::fixed << std::setprecision(2) 
@@ -1500,7 +1525,8 @@ int main(int argc, char* argv[]) {
 
             // Prepare metrics maps
             std::unordered_map<std::string, double> double_metrics = {
-                {"total_return", total_return_annualized},
+                {"total_cumulative_return", total_cumulative_return_pct},
+                {"total_annualized_return", total_return_annualized},
                 {"volatility", volatility},
                 {"total_pnl", total_pnl},
                 {"total_unrealized_pnl", total_unrealized_pnl},
@@ -1716,7 +1742,7 @@ int main(int argc, char* argv[]) {
 
                     // Load yesterday's daily metrics from database for accurate display
                     std::string yesterday_metrics_query =
-                        "SELECT daily_return, daily_unrealized_pnl, daily_realized_pnl, daily_pnl "
+                        "SELECT daily_return, daily_unrealized_pnl, daily_realized_pnl, daily_pnl, daily_commissions "
                         "FROM trading.live_results "
                         "WHERE strategy_id = 'LIVE_TREND_FOLLOWING' AND date = '" + yesterday_date_for_email + "' "
                         "ORDER BY date DESC LIMIT 1";
@@ -1732,6 +1758,7 @@ int main(int argc, char* argv[]) {
                         auto daily_unrealized_arr = std::static_pointer_cast<arrow::StringArray>(metrics_table->column(1)->chunk(0));
                         auto daily_realized_arr = std::static_pointer_cast<arrow::StringArray>(metrics_table->column(2)->chunk(0));
                         auto daily_total_arr = std::static_pointer_cast<arrow::StringArray>(metrics_table->column(3)->chunk(0));
+                        auto daily_commissions_arr = std::static_pointer_cast<arrow::StringArray>(metrics_table->column(4)->chunk(0));
 
                         if (!daily_return_arr->IsNull(0)) {
                             yesterday_daily_metrics_final["Daily Return"] = std::stod(daily_return_arr->GetString(0));
@@ -1748,6 +1775,11 @@ int main(int argc, char* argv[]) {
                         if (!daily_total_arr->IsNull(0)) {
                             yesterday_daily_metrics_final["Daily Total PnL"] = std::stod(daily_total_arr->GetString(0));
                             INFO("Daily Total PnL: " + daily_total_arr->GetString(0));
+                        }
+
+                        if (!daily_commissions_arr->IsNull(0)) {
+                            yesterday_daily_metrics_final["Daily Commissions"] = std::stod(daily_commissions_arr->GetString(0));
+                            INFO("Daily Commissions: " + daily_commissions_arr->GetString(0));
                         }
 
                         INFO("Successfully loaded yesterday's daily metrics from live_results");
@@ -1778,6 +1810,7 @@ int main(int argc, char* argv[]) {
                 strategy_metrics["Daily Unrealized PnL"] = daily_unrealized_pnl;
                 strategy_metrics["Daily Realized PnL"] = daily_realized_pnl;
                 strategy_metrics["Daily Total PnL"] = daily_pnl;
+                strategy_metrics["Total Cumulative Return"] = total_cumulative_return_pct;
                 strategy_metrics["Total Annualized Return"] = total_return_annualized;
                 strategy_metrics["Total Unrealized PnL"] = total_unrealized_pnl;
                 strategy_metrics["Total Realized PnL"] = total_realized_pnl;
