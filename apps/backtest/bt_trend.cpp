@@ -122,9 +122,18 @@ int main() {
         config.strategy_config.slippage_model = Decimal(0.5);
 
         // Strategy symbols - use .v.0 suffix format as database stores them
-        // Note: Only include symbols that have data in the database
-        // 6A.v.0 appears to have no data, so use only the 4 symbols with data
-        config.strategy_config.symbols = {"6C.v.0", "6E.v.0", "6J.v.0", "6B.v.0"};
+        // FX futures symbols: AUD, GBP, CAD, EUR, JPY, BRL, MXN, NZD, CHF
+        config.strategy_config.symbols = {
+            "6A.v.0",  // AUD/USD
+            "6B.v.0",  // GBP/USD
+            "6C.v.0",  // CAD/USD
+            "6E.v.0",  // EUR/USD
+            "6J.v.0",  // JPY/USD
+            "6L.v.0",  // BRL/USD
+            "6M.v.0",  // MXN/USD
+            "6N.v.0",  // NZD/USD
+            "6S.v.0"   // CHF/USD
+        };
 
         std::cout << "Symbols: ";
         for (const auto& symbol : config.strategy_config.symbols) {
@@ -188,10 +197,13 @@ int main() {
         fx_config.use_volatility_scaling = true;
         fx_config.stop_loss_pct = 0.10;
 
-        // Persistence settings - disabled for faster backtesting
-        fx_config.save_positions = true;
-        fx_config.save_signals = false;  // Disabled to prevent stalling with large datasets
-        fx_config.save_executions = true;
+        // Persistence settings - disable strategy-level persistence for backtests
+        // The BacktestEngine will handle saving all results to backtest.* tables at the end
+        // Strategy-level persistence (save_positions, save_executions) saves to trading.* tables
+        // which is only needed for live trading, not backtests
+        fx_config.save_positions = false;  // Disabled - BacktestEngine handles saving to backtest.final_positions
+        fx_config.save_signals = false;    // Disabled to prevent stalling with large datasets
+        fx_config.save_executions = false; // Disabled - BacktestEngine handles saving to backtest.executions
 
         // Add position limits and costs
         for (const auto& symbol : config.strategy_config.symbols) {
