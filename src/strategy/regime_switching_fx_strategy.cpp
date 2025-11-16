@@ -345,6 +345,13 @@ Result<void> RegimeSwitchingFXStrategy::on_data(const std::vector<Bar>& data) {
 
         // STEP 7: Calculate and apply positions
         for (auto& [symbol, data] : instrument_data_) {
+            // Skip if we don't have bars for this symbol
+            auto bars_it = bars_by_symbol.find(symbol);
+            if (bars_it == bars_by_symbol.end() || bars_it->second.empty()) {
+                WARN("No bars available for symbol " + symbol + ", skipping position update");
+                continue;
+            }
+
             // Calculate raw position
             double raw_position = calculate_position_size(symbol, data.current_signal);
             data.target_position = raw_position;
@@ -363,10 +370,11 @@ Result<void> RegimeSwitchingFXStrategy::on_data(const std::vector<Bar>& data) {
             Position pos;
             pos.symbol = symbol;
             pos.quantity = final_position;
-            pos.last_update = bars_by_symbol[symbol].back().timestamp;
+            const auto& symbol_bars = bars_it->second;
+            pos.last_update = symbol_bars.back().timestamp;
 
             // Get current price for average price
-            pos.average_price = static_cast<double>(bars_by_symbol[symbol].back().close);
+            pos.average_price = static_cast<double>(symbol_bars.back().close);
 
             auto pos_result = update_position(symbol, pos);
             if (pos_result.is_error()) {
@@ -695,6 +703,13 @@ double RegimeSwitchingFXStrategy::apply_volatility_scaling(
 double RegimeSwitchingFXStrategy::apply_risk_controls(
     const std::string& symbol,
     double position) const {
+
+    // Apply position limits first (before stop loss check)
+    double position_limit = 1000.0;
+    if (fx_config_.position_limits.count(symbol) > 0) {
+        position_limit = fx_config_.position_limits.at(symbol);
+    }
+    position = std::clamp(position, -position_limit, position_limit);
 
     // Get current position
     double current_position = 0.0;

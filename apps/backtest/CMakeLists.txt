@@ -5,7 +5,6 @@
 # Backtest application source files
 set(BT_TREND_SOURCES
     bt_trend.cpp
-        bt_regime_switching_fx_strategy.cpp
 )
 
 # Create trend following backtest executable
