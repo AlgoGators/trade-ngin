@@ -88,6 +88,7 @@ set(TRADE_NGIN_SOURCES
     src/live/execution_manager.cpp
     src/live/margin_manager.cpp
     src/live/csv_exporter.cpp
+        src/strategy/regime_switching_fx_strategy.cpp
 )
 
 # Add library target
