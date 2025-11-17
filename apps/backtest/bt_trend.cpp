@@ -4,7 +4,6 @@
 #include "trade_ngin/backtest/backtest_engine.hpp"
 #include "trade_ngin/backtest/transaction_cost_analysis.hpp"
 #include "trade_ngin/core/logger.hpp"
-#include "trade_ngin/core/state_manager.hpp"
 #include "trade_ngin/core/time_utils.hpp"
 #include "trade_ngin/data/credential_store.hpp"
 #include "trade_ngin/data/database_pooling.hpp"
@@ -25,7 +24,7 @@ int main() {
         // Initialize logger
         auto& logger = Logger::instance();
         LoggerConfig logger_config;
-        logger_config.min_level = LogLevel::DEBUG;
+        logger_config.min_level = LogLevel::INFO;
         logger_config.destination = LogDestination::BOTH;
         logger_config.log_directory = "logs";
         logger_config.filename_prefix = "bt_regime_fx";
@@ -104,37 +103,26 @@ int main() {
         INFO("Loading configuration...");
         trade_ngin::backtest::BacktestConfig config;
 
-        // Set start/end dates
-        auto now = std::chrono::system_clock::now();
-        auto now_time_t = std::chrono::system_clock::to_time_t(now);
-        std::tm* now_tm = std::localtime(&now_time_t);
-
-        // Start from 6 months ago for faster testing (can change back to 2 years after testing)
-        std::tm start_tm = *now_tm;
-        start_tm.tm_mon -= 6;  // 6 months instead of 2 years for faster testing
+        // Set start/end dates - Use a date range with sufficient history
+        std::tm start_tm = {};
+        start_tm.tm_year = 2020 - 1900;
+        start_tm.tm_mon = 0;
+        start_tm.tm_mday = 1;
         auto start_time_t = std::mktime(&start_tm);
         config.strategy_config.start_date = std::chrono::system_clock::from_time_t(start_time_t);
+
+        auto now = std::chrono::system_clock::now();
         config.strategy_config.end_date = now;
 
         config.strategy_config.asset_class = trade_ngin::AssetClass::FUTURES;
         config.strategy_config.data_freq = trade_ngin::DataFrequency::DAILY;
-        config.strategy_config.commission_rate = Decimal(0.0002);
-        config.strategy_config.slippage_model = Decimal(0.5);
+        config.strategy_config.commission_rate = 0.0002;
+        config.strategy_config.slippage_model = 0.5;
 
-        // Strategy symbols - use .v.0 suffix format as database stores them
-        // FX futures symbols: AUD, GBP, CAD, EUR, JPY, BRL, MXN, NZD, CHF
-        config.strategy_config.symbols = {
-            "6A.v.0",  // AUD/USD
-            "6B.v.0",  // GBP/USD
-            "6C.v.0",  // CAD/USD
-            "6E.v.0",  // EUR/USD
-            "6J.v.0",  // JPY/USD
-            "6L.v.0",  // BRL/USD
-            "6M.v.0",  // MXN/USD
-            "6N.v.0",  // NZD/USD
-            "6S.v.0"   // CHF/USD
-        };
+        // Strategy symbols - 7 major FX futures
+        config.strategy_config.symbols = {"6C.v.0", "6A.v.0", "6J.v.0", "6B.v.0", "6E.v.0", "6M.v.0", "6N.v.0"};
 
+        std::cout << "\n=== Backtest Configuration ===" << std::endl;
         std::cout << "Symbols: ";
         for (const auto& symbol : config.strategy_config.symbols) {
             std::cout << symbol << " ";
@@ -142,16 +130,15 @@ int main() {
         std::cout << std::endl;
 
         // Portfolio settings
-        config.portfolio_config.initial_capital = Decimal(1000000.0);
-        config.portfolio_config.use_risk_management = true;
-        config.portfolio_config.use_optimization = false;  // Disable for initial test
+        config.portfolio_config.initial_capital = 1000000.0;
+        config.portfolio_config.use_risk_management = false;
+        config.portfolio_config.use_optimization = false;
 
-        std::cout << "Retrieved " << config.strategy_config.symbols.size() << " symbols"
-                  << std::endl;
-        std::cout << "Initial capital: $" << config.portfolio_config.initial_capital << std::endl;
+        std::cout << "Initial capital: $" << std::fixed << std::setprecision(0)
+                  << config.portfolio_config.initial_capital << std::endl;
+        std::cout << "================================\n" << std::endl;
 
-        INFO("Configuration loaded successfully. Testing " +
-             std::to_string(config.strategy_config.symbols.size()) + " symbols.");
+        INFO("Configuration loaded successfully.");
 
         // Configure risk management
         config.portfolio_config.risk_config.capital = config.portfolio_config.initial_capital;
@@ -180,44 +167,55 @@ int main() {
         INFO("Configuring RegimeSwitchingFXStrategy...");
         trade_ngin::RegimeSwitchingFXConfig fx_config;
 
-        // Basic settings
         fx_config.capital_allocation = config.portfolio_config.initial_capital.as_double();
         fx_config.symbols = config.strategy_config.symbols;
         fx_config.max_leverage = 5.0;
 
-        fx_config.volatility_window = 30;           // 30-day rolling volatility
-        fx_config.performance_lookback = 5;         // 5-day return for ranking
-        fx_config.zscore_lookback = 60;             // 60-day z-score window
-        fx_config.low_dispersion_threshold = -0.5;  // Momentum threshold
-        fx_config.high_dispersion_threshold = 0.5;  // Mean reversion threshold
+        // Calculation windows
+        fx_config.volatility_window = 30;
+        fx_config.momentum_lookback = 120;
+        fx_config.ewmac_short_lookback = 8;
+        fx_config.ewmac_long_lookback = 32;
+        fx_config.zscore_lookback = 60;
+        fx_config.regime_threshold = 0.5;
 
         // Position settings
         fx_config.num_long_positions = 2;
         fx_config.num_short_positions = 2;
         fx_config.use_volatility_scaling = true;
+
+        // Rebalancing settings
+        fx_config.momentum_rebalance_days = 20;
+        fx_config.mean_reversion_rebalance_days = 5;
+
+        // Risk settings
         fx_config.stop_loss_pct = 0.10;
 
-        // Persistence settings - disable strategy-level persistence for backtests
-        // The BacktestEngine will handle saving all results to backtest.* tables at the end
-        // Strategy-level persistence (save_positions, save_executions) saves to trading.* tables
-        // which is only needed for live trading, not backtests
-        fx_config.save_positions = false;  // Disabled - BacktestEngine handles saving to backtest.final_positions
-        fx_config.save_signals = false;    // Disabled to prevent stalling with large datasets
-        fx_config.save_executions = false; // Disabled - BacktestEngine handles saving to backtest.executions
+        // Persistence settings
+        fx_config.save_positions = false;
+        fx_config.save_signals = false;
+        fx_config.save_executions = false;
 
         // Add position limits and costs
         for (const auto& symbol : config.strategy_config.symbols) {
-            fx_config.position_limits[symbol] = 300.0;  // Increased to allow volatility scaling (base 100 * 3x max)
+            fx_config.position_limits[symbol] = 100.0;
             fx_config.costs[symbol] = config.strategy_config.commission_rate.as_double();
         }
 
-        // Create and initialize the strategy
-        INFO("Initializing RegimeSwitchingFXStrategy...");
-        std::cout << "Strategy capital allocation: $" << fx_config.capital_allocation << std::endl;
+        // Display strategy parameters
+        std::cout << "\n=== Strategy Parameters ===" << std::endl;
+        std::cout << "Capital: $" << std::fixed << std::setprecision(0)
+                  << fx_config.capital_allocation << std::endl;
         std::cout << "Volatility window: " << fx_config.volatility_window << " days" << std::endl;
         std::cout << "Z-score lookback: " << fx_config.zscore_lookback << " days" << std::endl;
-        std::cout << "Performance lookback: " << fx_config.performance_lookback << " days" << std::endl;
+        std::cout << "Momentum lookback: " << fx_config.momentum_lookback << " days" << std::endl;
+        std::cout << "EWMAC: " << fx_config.ewmac_short_lookback << "/"
+                  << fx_config.ewmac_long_lookback << " days" << std::endl;
+        std::cout << "Positions: " << fx_config.num_long_positions << " long, "
+                  << fx_config.num_short_positions << " short" << std::endl;
+        std::cout << "============================\n" << std::endl;
 
+        // Create and initialize strategy
         std::string strategy_id = "REGIME_SWITCHING_FX";
         auto fx_strategy = std::make_shared<trade_ngin::RegimeSwitchingFXStrategy>(
             strategy_id, fx_config, db);
@@ -228,100 +226,62 @@ int main() {
                       << std::endl;
             return 1;
         }
-        INFO("Strategy initialization successful");
 
-        // Start the strategy
-        INFO("Starting strategy...");
         auto start_result = fx_strategy->start();
         if (start_result.is_error()) {
             std::cerr << "Failed to start strategy: " << start_result.error()->what() << std::endl;
             return 1;
         }
-        INFO("Strategy started successfully");
 
-        // Create portfolio manager and add strategy
-        INFO("Creating portfolio manager...");
+        // Create portfolio and add strategy
         auto portfolio = std::make_shared<trade_ngin::PortfolioManager>(portfolio_config);
         auto add_result =
             portfolio->add_strategy(fx_strategy, 1.0, config.portfolio_config.use_optimization,
                                     config.portfolio_config.use_risk_management);
         if (add_result.is_error()) {
-            std::cerr << "Failed to add strategy to portfolio: " << add_result.error()->what()
-                      << std::endl;
+            std::cerr << "Failed to add strategy: " << add_result.error()->what() << std::endl;
             return 1;
         }
-        INFO("Strategy added to portfolio successfully");
 
-        // Run the backtest
-        INFO("Running backtest for time period: " +
-             std::to_string(
-                 std::chrono::system_clock::to_time_t(config.strategy_config.start_date)) +
-             " to " +
-             std::to_string(std::chrono::system_clock::to_time_t(config.strategy_config.end_date)));
-
-        INFO("NOTE: Strategy requires warm-up period (volatility_window + zscore_lookback = ~90 days)");
+        // Run backtest
+        std::cout << "=== Running Backtest ===" << std::endl;
+        std::cout << "NOTE: ~90 day warm-up period required" << std::endl;
+        std::cout << "========================\n" << std::endl;
 
         auto result = engine->run_portfolio(portfolio);
 
         if (result.is_error()) {
             std::cerr << "Backtest failed: " << result.error()->what() << std::endl;
-            std::cerr << "Error code: " << static_cast<int>(result.error()->code()) << std::endl;
             return 1;
         }
 
-        INFO("Backtest completed successfully");
-
-        // Analyze and display results
+        // Display results
         const auto& backtest_results = result.value();
 
-        INFO("Analyzing performance metrics...");
-
-        std::cout << "\n======= Backtest Results (Regime Switching FX) =======" << std::endl;
-        std::cout << "Total Return: " << std::fixed << std::setprecision(2)
+        std::cout << "\n=== Backtest Results ===" << std::endl;
+        std::cout << "Total Return:    " << std::fixed << std::setprecision(2)
                   << (backtest_results.total_return * 100.0) << "%" << std::endl;
-        std::cout << "Sharpe Ratio: " << std::fixed << std::setprecision(3)
+        std::cout << "Sharpe Ratio:    " << std::fixed << std::setprecision(3)
                   << backtest_results.sharpe_ratio << std::endl;
-        std::cout << "Sortino Ratio: " << std::fixed << std::setprecision(3)
-                  << backtest_results.sortino_ratio << std::endl;
-        std::cout << "Max Drawdown: " << std::fixed << std::setprecision(2)
+        std::cout << "Max Drawdown:    " << std::fixed << std::setprecision(2)
                   << (backtest_results.max_drawdown * 100.0) << "%" << std::endl;
-        std::cout << "Calmar Ratio: " << std::fixed << std::setprecision(3)
-                  << backtest_results.calmar_ratio << std::endl;
-        std::cout << "Volatility: " << std::fixed << std::setprecision(2)
-                  << (backtest_results.volatility * 100.0) << "%" << std::endl;
-        std::cout << "Win Rate: " << std::fixed << std::setprecision(2)
+        std::cout << "Win Rate:        " << std::fixed << std::setprecision(2)
                   << (backtest_results.win_rate * 100.0) << "%" << std::endl;
-        std::cout << "Total Trades: " << backtest_results.total_trades << std::endl;
-        std::cout << "========================================================\n" << std::endl;
+        std::cout << "Total Trades:    " << backtest_results.total_trades << std::endl;
+        std::cout << "========================\n" << std::endl;
 
-        // Save results to database
-        INFO("Saving backtest results to database...");
-        try {
-            auto save_result = engine->save_results_to_db(backtest_results);
-            if (save_result.is_error()) {
-                WARN("Failed to save backtest results to database: " +
-                     std::string(save_result.error()->what()));
-            } else {
-                INFO("Successfully saved backtest results to database");
-            }
-        } catch (const std::exception& e) {
-            WARN("Exception during database save: " + std::string(e.what()));
+        // Save results
+        auto save_result = engine->save_results_to_db(backtest_results);
+        if (save_result.is_error()) {
+            WARN("Failed to save results: " + std::string(save_result.error()->what()));
         }
 
-        // Cleanup
-        INFO("Cleaning up backtest engine...");
         engine.reset();
-
-        INFO("Backtest application completed successfully");
+        INFO("Backtest completed successfully");
         return 0;
 
     } catch (const std::exception& e) {
-        std::cerr << "Unexpected error: " << e.what() << std::endl;
-        ERROR("Unexpected error: " + std::string(e.what()));
-        return 1;
-    } catch (...) {
-        std::cerr << "Unknown error occurred" << std::endl;
-        ERROR("Unknown error occurred");
+        std::cerr << "Error: " << e.what() << std::endl;
         return 1;
     }
 }
