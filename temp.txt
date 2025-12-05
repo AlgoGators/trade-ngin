@@ -1,107 +1,75 @@
 graph TD
     %% ================= STYLE DEFINITIONS =================
-    classDef process fill:#E1F5FE,stroke:#0288D1,stroke-width:1px;
-    classDef decision fill:#FFF9C4,stroke:#FBC02D,stroke-width:1px;
+    classDef main fill:#C8E6C9,stroke:#388E3C,stroke-width:2px;
+    classDef proc fill:#BBDEFB,stroke:#1976D2,stroke-width:2px;
+    classDef extract fill:#FFECB3,stroke:#FFA000,stroke-width:2px;
+    classDef handle fill:#F8BBD0,stroke:#D81B60,stroke-width:2px;
     classDef data fill:#E8F5E9,stroke:#388E3C,stroke-width:1px,stroke-dasharray: 5 5;
-    classDef storage fill:#D7CCC8,stroke:#5D4037,stroke-width:2px;
-    classDef human fill:#FFCCBC,stroke:#D84315,stroke-width:1px;
-    classDef container fill:#FFFFFF,stroke:#666666,stroke-width:2px,stroke-dasharray: 5 5;
+    classDef model fill:#CFD8DC,stroke:#607D8B,stroke-width:1px;
 
-    %% ================= MAIN FLOW =================
-
-    InputDoc[/"Input: Raw Legal Documents<br>(PDF, Scanned IMG, DOCX)"/]---|Start|P1_Start
-
-    %% ----- PHASE 1: Ingestion and Normalization -----
-    subgraph P1 ["PHASE 1: Ingestion and Document Normalization"]
-        P1_Start(( )):::hidden
-        DocType{"Is Document<br>Image-based?"}
-        OCR["Process: OCR with<br>Layout Preservation"]
-        TextExt["Process: Native Text<br>Extraction"]
-        Clean["Process: Basic Text Cleaning<br>(Headers, footers, noise removal)"]
-        P1_Out[/"Data: Normalized Raw Text"/]
+    %% ================= CLASS / MODULE DEFINITIONS =================
+    subgraph S1 ["main.py (Orchestrator)"]
+        A[run_pipeline(document_path)]:::main
+        B{Iterate Segments?}:::main
     end
 
-    P1_Out --> P2_Start
-
-    %% ----- PHASE 2: Structural Layout Analysis -----
-    subgraph P2 ["PHASE 2: Structural Layout Analysis"]
-        P2_Start(( )):::hidden
-        Segment["Process: Document Segmentation<br>(Regex based on Articles/Sections)"]
-        TableDetect{"Is Segment a Table?"}
-        ProcTable["Process: Table Structure Extraction<br>(Convert to DataFrame)"]
-        ProcText["Process: Clause Tokenization<br>(Sentence splitting with context)"]
-        P2_Out[/"Data: Structured Segments<br>(Labeled clauses & Table objects)"/]
+    subgraph S2 ["src/document_processor.py"]
+        P1["DocumentProcessor.load_document()"]:::proc
+        P2["DocumentProcessor.preprocess_text()"]:::proc
+        P3["DocumentProcessor.segment_document()"]:::proc
+        P4["DocumentProcessor.extract_tables()"]:::proc
     end
 
-    P2_Out --> P3_Start
-
-    %% ----- PHASE 3: The NLP Extraction Core -----
-    subgraph P3 ["PHASE 3: The NLP Extraction Core (The Brain)"]
-        P3_Start(( )):::hidden
-        Router{"Route Segment Type"}
-
-        %% Path A: Hard Numbers & Specific Terms
-        subgraph P3A ["Path A: Covenants & Baskets"]
-            NERModel[("Model: FinLegal NER")]
-            NER["Process: Fine-Tuned NER<br>(Targeting: $Amounts, %, Dates)"]
-            Ontology[("KB: Credit Provision Ontology")]
-            RE["Process: Relation Extraction<br>(Linking values to provision names)"]
-        end
-
-        %% Path B: Definitions & Narratives
-        subgraph P3B ["Path B: Complex Definitions"]
-            QueryGen["Process: Query Generation<br>(e.g., 'Define EBITDA')"]
-            EmbedModel[("Model: Legal Embeddings<br>(e.g., Legal-BERT)")]
-            Semantic["Process: Semantic Retrieval<br>(Find relevant paragraphs)"]
-        end
-
-        P3_Out[/"Data: Candidate Extracted Facts"/]
+    subgraph S3 ["src/extraction_core.py"]
+        E1["ExtractionCore.extract_provision(segment)"]:::extract
+        E2["ExtractionCore.run_ner(text)"]:::extract
+        E3["ExtractionCore.run_relation_extraction(entities)"]:::extract
+        E4["ExtractionCore.find_definition(query, text)"]:::extract
     end
 
-    P3_Out --> P4_Start
-
-    %% ----- PHASE 4: Post-Processing and Output -----
-    subgraph P4 ["PHASE 4: Post-Processing and Output Generation"]
-        P4_Start(( )):::hidden
-        Dedupe["Process: Deduplication & Resolution<br>(Resolve conflicting extractions)"]
-        Standardize["Process: Value Standardization<br>(Normalize currencies/numbers)"]
-        Validation{"Business Logic Validation<br>(Does value make sense?)"}
-        HumanReview["Process: Human-in-the-Loop Review<br>(Manual check for low confidence)"]
+    subgraph S4 ["src/data_handler.py"]
+        H1["ProvisionHandler.deduplicate(facts)"]:::handle
+        H2["ProvisionHandler.standardize_value(facts)"]:::handle
+        H3["ProvisionHandler.validate_fact(fact)"]:::handle
+        H4["ProvisionHandler.write_to_output(facts)"]:::handle
     end
 
-    Validation -- "Pass" --> FinalOut
-    HumanReview --> FinalOut
-    FinalOut[/"Final Output: Structured JSON/DB Record<br>(Ready for Analysis)"/]:::data
+    subgraph M ["External Resources / Models"]
+        M1[NER_Model]:::model
+        M2[Provision_Ontology]:::model
+        M3[Embedding_Model]:::model
+        D1[Document_Data]:::data
+        D2[Structured_Segments]:::data
+        D3[Candidate_Facts]:::data
+    end
 
-    %% ================= CONNECTIONS =================
-    %% Phase 1 internal
-    P1_Start --> DocType
-    DocType -- Yes --> OCR --> Clean
-    DocType -- No --> TextExt --> Clean
-    Clean --> P1_Out
+    %% ================= FLOW CONNECTIONS =================
 
-    %% Phase 2 internal
-    P2_Start --> Segment --> TableDetect
-    TableDetect -- Yes --> ProcTable --> P2_Out
-    TableDetect -- No --> ProcText --> P2_Out
+    A --> P1
+    P1 --> P2
+    P2 --> P3
+    P3 --> B
+    D1 -.-> P2
+    D2 -.-> B
 
-    %% Phase 3 internal
-    P3_Start --> Router
-    Router -- "Narrative/Negative Covenants" --> NER
-    NERModel -.-> NER --> RE
-    Ontology -.-> RE --> P3_Out
-    Router -- "Definitions/General Terms" --> QueryGen
-    QueryGen --> Semantic
-    EmbedModel -.-> Semantic --> P3_Out
+    %% --- Extraction Loop ---
+    B -- Yes --> E1
+    B -- No --> H1
 
-    %% Phase 4 internal
-    P4_Start --> Dedupe --> Standardize --> Validation
-    Validation -- "Flagged" --> HumanReview
+    E1 --> P4
+    E1 --> E2
+    E2 --> E3
+    E3 --> E4
+    E1 --> D3
 
-    %% ================= APPLY STYLES =================
-    class InputDoc,P1_Out,P2_Out,P3_Out,FinalOut data;
-    class OCR,TextExt,Clean,Segment,ProcTable,ProcText,NER,RE,QueryGen,Semantic,Dedupe,Standardize process;
-    class DocType,TableDetect,Router,Validation decision;
-    class NERModel,Ontology,EmbedModel storage;
-    class HumanReview human;
-    class P1,P2,P3,P4,P3A,P3B container;
+    M1 -.-> E2
+    M2 -.-> E3
+    M3 -.-> E4
+
+    %% --- Post-Processing ---
+    D3 -.-> H1
+    H1 --> H2
+    H2 --> H3
+
+    H3 -- Pass --> H4
+    H3 -- Flag --> Z[Manual/Review Log]
