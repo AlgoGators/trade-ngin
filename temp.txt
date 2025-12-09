@@ -1,372 +1,21 @@
 # =====================================================================
-# file: models.py
-# =====================================================================
-
-"""
-Core data models for credit agreement extraction.
-
-These dataclasses represent the main logical units:
-- Section: a top-level legal section (e.g., "Section 6.01 Indebtedness").
-- Definition: a defined term from the definitions article.
-- BasketInfo: a covenant basket / clause with extracted numerical info.
-- ExtractionResult: container for all extracted KCPs.
-"""
-
-from __future__ import annotations
-
-from dataclasses import dataclass, field
-from typing import List, Optional, Tuple, Dict
-
-
-@dataclass
-class Section:
-    """
-    Represents a logical section of the credit agreement.
-
-    Attributes
-    ----------
-    id : str
-        Section identifier, e.g., "Section 6.01".
-    title : str
-        Title of the section, e.g., "Indebtedness".
-    text : str
-        Full text content of the section (including subclauses).
-    article : Optional[str]
-        Higher-level grouping (e.g., "ARTICLE VI COVENANTS"), if detected.
-    """
-
-    id: str
-    title: str
-    text: str
-    article: Optional[str] = None
-
-
-@dataclass
-class Definition:
-    """
-    Represents a defined term in the agreement.
-
-    Attributes
-    ----------
-    term : str
-        Defined term, e.g., "Consolidated EBITDA".
-    definition : str
-        Full definition text, typically from the definitions article.
-    location_hint : Optional[str]
-        Optional hint where this definition was found (e.g., section id).
-    """
-
-    term: str
-    definition: str
-    location_hint: Optional[str] = None
-
-
-@dataclass
-class BasketInfo:
-    """
-    Represents a covenant basket / clause with extracted quantitative features.
-
-    Attributes
-    ----------
-    section_id : str
-        Section identifier where the clause resides.
-    section_title : str
-        Section title where the clause resides.
-    clause_label : Optional[str]
-        Label of the clause, typically "(a)", "(b)", etc., if found.
-    raw_text : str
-        Full clause text.
-    dollar_amounts : List[str]
-        Extracted dollar amounts (as raw strings, e.g., "$200,000,000").
-    percentages : List[str]
-        Extracted percentage expressions (raw strings, e.g., "25%").
-    ratios : List[str]
-        Extracted ratio-like expressions (e.g., "2.00 to 1.00").
-    greater_of_expressions : List[Tuple[str, str]]
-        Extracted "(greater of X and Y)" patterns as tuples (X, Y).
-    """
-
-    section_id: str
-    section_title: str
-    clause_label: Optional[str]
-    raw_text: str
-    dollar_amounts: List[str] = field(default_factory=list)
-    percentages: List[str] = field(default_factory=list)
-    ratios: List[str] = field(default_factory=list)
-    greater_of_expressions: List[Tuple[str, str]] = field(default_factory=list)
-
-
-@dataclass
-class ExtractionResult:
-    """
-    Container for all key credit provisions extracted from a credit agreement.
-
-    Attributes
-    ----------
-    sections : List[Section]
-        All parsed sections from the agreement.
-    definitions : List[Definition]
-        All parsed defined terms from the definitions article(s).
-    ebitda_definition : Optional[Definition]
-        The specific "Consolidated EBITDA" (or similar) definition, if found.
-    indebtedness_baskets : List[BasketInfo]
-        Parsed clauses from the Indebtedness section (debt baskets).
-    restricted_payment_baskets : List[BasketInfo]
-        Parsed clauses from the Restricted Payments section (RP baskets).
-    metadata : Dict[str, str]
-        Optional metadata (e.g., filename, parsing notes).
-    """
-
-    sections: List[Section]
-    definitions: List[Definition]
-    ebitda_definition: Optional[Definition]
-    indebtedness_baskets: List[BasketInfo]
-    restricted_payment_baskets: List[BasketInfo]
-    metadata: Dict[str, str] = field(default_factory=dict)
-
-
-# =====================================================================
-# file: pdf_utils.py
-# =====================================================================
-
-"""
-Utilities for extracting text from PDFs.
-
-This module hides the choice of backend (pdfplumber vs PyPDF2) behind a
-single `extract_text_from_pdf` function.
-"""
-
-from __future__ import annotations
-
-from typing import List
-
-
-def extract_text_from_pdf(pdf_path: str) -> str:
-    """
-    Extract raw text from a PDF file.
-
-    The function first attempts to use `pdfplumber` (which tends to preserve
-    layout reasonably well), and falls back to `PyPDF2` if pdfplumber is not
-    installed.
-
-    Parameters
-    ----------
-    pdf_path : str
-        Path to the PDF file.
-
-    Returns
-    -------
-    str
-        Concatenated text from all pages in reading order.
-
-    Raises
-    ------
-    ImportError
-        If neither `pdfplumber` nor `PyPDF2` is available.
-    """
-    # Try pdfplumber first
-    try:
-        import pdfplumber  # type: ignore
-
-        text_chunks: List[str] = []
-        with pdfplumber.open(pdf_path) as pdf:
-            for page in pdf.pages:
-                page_text = page.extract_text() or ""
-                text_chunks.append(page_text)
-        return "\n".join(text_chunks)
-    except ImportError:
-        pass  # If pdfplumber is not installed, fall through to PyPDF2
-
-    # Fallback to PyPDF2
-    try:
-        from PyPDF2 import PdfReader  # type: ignore
-    except ImportError as exc:
-        raise ImportError(
-            "You must install either 'pdfplumber' or 'PyPDF2' to extract "
-            "text from PDFs. Try: pip install pdfplumber PyPDF2"
-        ) from exc
-
-    reader = PdfReader(pdf_path)
-    text_chunks = []
-    for page in reader.pages:
-        page_text = page.extract_text() or ""
-        text_chunks.append(page_text)
-
-    return "\n".join(text_chunks)
-
-
-# =====================================================================
-# file: text_segmentation.py
-# =====================================================================
-
-"""
-Segment raw agreement text into structured sections.
-
-The primary goal is to detect:
-- ARTICLE headings (e.g., "ARTICLE VI NEGATIVE COVENANTS")
-- SECTION headings (e.g., "Section 6.01 Indebtedness")
-
-and attach subsequent text to the appropriate Section objects.
-"""
-
-from __future__ import annotations
-
-import re
-from typing import List, Optional
-
-from models import Section
-
-
-ARTICLE_HEADER_RE = re.compile(
-    r"^\s*(ARTICLE|Article)\s+([IVXLC]+)\s*(.*)$",
-    re.MULTILINE,
-)
-
-SECTION_HEADER_RE = re.compile(
-    r"^\s*(Section|SECTION)\s+(\d+(?:\.\d+)*)\s*(.*)$",
-    re.MULTILINE,
-)
-
-
-def normalize_whitespace(text: str) -> str:
-    """
-    Perform minimal whitespace normalization.
-
-    - Ensure consistent line breaks.
-    - Strip trailing spaces.
-
-    Parameters
-    ----------
-    text : str
-        Raw extracted text.
-
-    Returns
-    -------
-    str
-        Normalized text.
-    """
-    # Replace Windows-style line endings if present
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
-    # Optionally collapse excessive blank lines if needed
-    return text
-
-
-def parse_sections(raw_text: str) -> List[Section]:
-    """
-    Parse the raw agreement text into a list of Section objects.
-
-    The parser operates line-by-line and uses regex patterns to detect
-    ARTICLE and SECTION headings. Subsequent lines are attached to the
-    current section until a new section header is encountered.
-
-    Parameters
-    ----------
-    raw_text : str
-        Raw text extracted from the PDF.
-
-    Returns
-    -------
-    List[Section]
-        List of parsed sections in document order.
-    """
-    text = normalize_whitespace(raw_text)
-    lines = text.split("\n")
-
-    current_article: Optional[str] = None
-    current_section_id: Optional[str] = None
-    current_section_title: str = ""
-    current_section_lines: List[str] = []
-    sections: List[Section] = []
-
-    for line in lines:
-        # Check for ARTICLE header
-        article_match = ARTICLE_HEADER_RE.match(line)
-        if article_match:
-            # If we were already building a section, flush it
-            if current_section_id is not None:
-                section_text = "\n".join(current_section_lines).strip()
-                sections.append(
-                    Section(
-                        id=current_section_id,
-                        title=current_section_title.strip(),
-                        text=section_text,
-                        article=current_article,
-                    )
-                )
-                current_section_lines = []
-
-            # Update current article
-            article_label = article_match.group(0).strip()
-            current_article = article_label
-            # Do not treat article line as section content
-            continue
-
-        # Check for SECTION header
-        section_match = SECTION_HEADER_RE.match(line)
-        if section_match:
-            # Flush previous section, if any
-            if current_section_id is not None:
-                section_text = "\n".join(current_section_lines).strip()
-                sections.append(
-                    Section(
-                        id=current_section_id,
-                        title=current_section_title.strip(),
-                        text=section_text,
-                        article=current_article,
-                    )
-                )
-                current_section_lines = []
-
-            section_number = section_match.group(2).strip()
-            section_title = section_match.group(3).strip()
-
-            current_section_id = f"Section {section_number}"
-            current_section_title = section_title if section_title else current_section_id
-
-            # Do not include the header line in the content; we already captured title.
-            continue
-
-        # If we're inside a section, accumulate lines
-        if current_section_id is not None:
-            current_section_lines.append(line)
-
-    # Flush the final section, if any
-    if current_section_id is not None:
-        section_text = "\n".join(current_section_lines).strip()
-        sections.append(
-            Section(
-                id=current_section_id,
-                title=current_section_title.strip(),
-                text=section_text,
-                article=current_article,
-            )
-        )
-
-    # If for some reason no sections were detected, return a fallback single section
-    if not sections:
-        sections.append(
-            Section(
-                id="FULL_DOCUMENT",
-                title="Full Document",
-                text=text,
-                article=None,
-            )
-        )
-
-    return sections
-
-
-# =====================================================================
-# file: definitions_extractor.py
+# file: definitions_extractor.py  (REVISED)
 # =====================================================================
 
 """
 Extract defined terms from definitions article(s).
 
-This module focuses on:
-- Locating sections that contain definitions (e.g., "Section 1.01 Definitions").
-- Using regex to capture lines of the form: "“Term” means ..." or "'Term' means ..."
-- Specifically highlighting "Consolidated EBITDA" or similar EBITDA definitions.
+This version is more robust to ugly PDF line breaks:
+
+- It does NOT rely on a huge multi-line regex.
+- It scans line-by-line for patterns like:
+    "Consolidated EBITDA" means ...
+    “Consolidated EBITDA” shall mean ...
+- Once it finds a term line, it appends subsequent lines until:
+    * It hits another line that looks like a new definition, or
+    * It hits a strong break (blank line / section-like line).
+
+We still highlight "Consolidated EBITDA" (or similar) as the EBITDA definition.
 """
 
 from __future__ import annotations
@@ -377,31 +26,117 @@ from typing import List, Optional
 from models import Section, Definition
 
 
-# Regex to capture definitions like:
-# “Consolidated EBITDA” means ...
-# "Consolidated EBITDA" shall mean ...
-DEFINITION_RE = re.compile(
-    r"""[\"“'](?P<term>[^\"”']+)[\"”']\s+  # opening quote + term + closing quote
-        (?:means|shall\s+mean)\s+        # "means" or "shall mean"
-        (?P<definition>                  # start of definition capture
-            .*?                          # lazily capture until next definition-like pattern
-        )
-        (?=                              # lookahead: next definition or end
-            (?:\n\s*[\"“'][^\"”']+[\"”']\s+(?:means|shall\s+mean))  # next def
-            | \Z                         # or end of text
-        )
+# Matches the *start* of a definition on a single line, e.g.:
+#   "Consolidated EBITDA" means ...
+#   “Consolidated EBITDA” shall mean ...
+DEF_START_RE = re.compile(
+    r"""
+    ^\s*
+    [\"“']                         # opening quote
+    (?P<term>[^\"”']+?)            # term text
+    [\"”']                         # closing quote
+    \s+
+    (?P<verb>means|shall\s+mean)   # "means" or "shall mean"
+    \s+
+    (?P<rest>.+?)                  # rest of the line (start of definition)
+    $
     """,
-    re.IGNORECASE | re.DOTALL | re.VERBOSE,
+    re.IGNORECASE | re.VERBOSE,
 )
+
+
+def _looks_like_definition_start(line: str) -> bool:
+    """
+    Heuristic: does a line look like the start of a new definition?
+
+    Parameters
+    ----------
+    line : str
+        A single line of text.
+
+    Returns
+    -------
+    bool
+        True if the line looks like "Term" means/shall mean ...
+    """
+    return DEF_START_RE.match(line) is not None
+
+
+def _extract_definitions_from_text(text: str, location_hint: str) -> List[Definition]:
+    """
+    Extract definitions from the given raw text by scanning line-by-line.
+
+    Parameters
+    ----------
+    text : str
+        Text that may contain multiple definitions.
+    location_hint : str
+        Hint about where this text came from (e.g. section id).
+
+    Returns
+    -------
+    List[Definition]
+        Parsed definitions from the text.
+    """
+    lines = text.split("\n")
+    definitions: List[Definition] = []
+
+    idx = 0
+    n = len(lines)
+
+    while idx < n:
+        line = lines[idx].rstrip()
+
+        start_match = DEF_START_RE.match(line)
+        if not start_match:
+            idx += 1
+            continue
+
+        # We found a term line
+        term = start_match.group("term").strip()
+        definition_parts: List[str] = [start_match.group("rest").strip()]
+
+        idx += 1
+
+        # Accumulate subsequent lines that appear to be part of the same definition
+        while idx < n:
+            next_line = lines[idx].rstrip()
+
+            # Stop if the next line looks like a new definition
+            if _looks_like_definition_start(next_line):
+                break
+
+            # Stop if the line is empty and we already have some content
+            if not next_line.strip() and definition_parts:
+                break
+
+            # Otherwise, treat as continuation of current definition
+            # (common for long legal definitions)
+            definition_parts.append(next_line.strip())
+            idx += 1
+
+        full_definition = " ".join(part for part in definition_parts if part)
+
+        definitions.append(
+            Definition(
+                term=term,
+                definition=full_definition,
+                location_hint=location_hint,
+            )
+        )
+
+    return definitions
 
 
 def find_definition_sections(sections: List[Section]) -> List[Section]:
     """
     Identify sections that likely contain the main definitions article(s).
 
-    Heuristics:
+    Heuristics (in order):
     - Section titles containing the word "definition".
-    - Fallback: Section "Section 1.01" if present.
+    - Section "Section 1.01" (very common).
+    - If nothing matches, we return an empty list and the caller can
+      decide to scan *all* sections.
 
     Parameters
     ----------
@@ -411,56 +146,47 @@ def find_definition_sections(sections: List[Section]) -> List[Section]:
     Returns
     -------
     List[Section]
-        Sections that likely contain defined terms.
+        Candidate definition sections.
     """
     candidates: List[Section] = [
         s for s in sections if "definition" in s.title.lower()
     ]
-
     if candidates:
         return candidates
 
-    # Fallback to Section 1.01, which commonly holds definitions
     for s in sections:
         if s.id.lower().startswith("section 1.01"):
             return [s]
 
-    # Fallback: no dedicated definition sections detected
     return []
 
 
-def extract_definitions_from_section(
-    section: Section,
-) -> List[Definition]:
+def extract_definitions_from_section(section: Section) -> List[Definition]:
     """
-    Extract defined terms within a given definitions section using regex.
+    Extract defined terms within a given section using the line-based scanner.
 
     Parameters
     ----------
     section : Section
-        A section believed to contain defined terms.
+        A section that may contain defined terms.
 
     Returns
     -------
     List[Definition]
-        List of Definition objects extracted from the section.
+        List of Definition objects from that section.
     """
-    text = section.text
-
-    definitions: List[Definition] = []
-    for match in DEFINITION_RE.finditer(text):
-        term = match.group("term").strip()
-        definition_text = match.group("definition").strip()
-        definitions.append(
-            Definition(term=term, definition=definition_text, location_hint=section.id)
-        )
-
-    return definitions
+    return _extract_definitions_from_text(section.text, location_hint=section.id)
 
 
 def extract_all_definitions(sections: List[Section]) -> List[Definition]:
     """
-    Extract all definitions from all definition sections in the agreement.
+    Extract all definitions from the agreement.
+
+    Strategy:
+    - First, try the definition sections (if we can identify them).
+    - If that yields very few definitions (e.g., 0 or 1), we fall back
+      to scanning *all* sections, since some docs scatter definitions
+      across multiple places.
 
     Parameters
     ----------
@@ -470,12 +196,20 @@ def extract_all_definitions(sections: List[Section]) -> List[Definition]:
     Returns
     -------
     List[Definition]
-        Aggregated list of all definitions from all definition sections.
+        Aggregated list of definitions.
     """
+    # Pass 1: use obvious definition sections
     def_sections = find_definition_sections(sections)
     all_defs: List[Definition] = []
     for sec in def_sections:
         all_defs.extend(extract_definitions_from_section(sec))
+
+    # If we basically got nothing, fall back to scanning everything
+    if len(all_defs) <= 1:
+        all_defs = []
+        for sec in sections:
+            all_defs.extend(extract_definitions_from_section(sec))
+
     return all_defs
 
 
@@ -493,32 +227,32 @@ def find_ebitda_definition(definitions: List[Definition]) -> Optional[Definition
     Optional[Definition]
         The most relevant EBITDA definition, if found.
     """
-    # Normalize term names for comparison
     ebitda_like_defs = [d for d in definitions if "ebitda" in d.term.lower()]
 
     if not ebitda_like_defs:
         return None
 
-    # Prefer something explicitly named "Consolidated EBITDA"
     for d in ebitda_like_defs:
         if "consolidated ebitda" in d.term.lower():
             return d
 
-    # Fallback: just return the first EBITDA-like definition
     return ebitda_like_defs[0]
 
-
 # =====================================================================
-# file: covenant_extractor.py
+# file: covenant_extractor.py  (REVISED)
 # =====================================================================
 
 """
 Extract covenant baskets from key sections (Indebtedness, Restricted Payments).
 
-This module is purely regex/rule-based:
-- Locate relevant sections by title keywords.
-- Split section text into clause-level items ((a), (b), etc.).
-- Extract dollar amounts, percentages, ratios, and "greater of" patterns.
+This module is purely regex / rule-based and designed to be robust to
+messy section titles:
+
+- We search both section titles AND body text for keywords.
+- We pick the section with the strongest signal (most keyword hits).
+- Within each section, we split into clauses ((a), (b), etc.) and
+  extract numeric features: dollar amounts, percentages, ratios,
+  "greater of X and Y" patterns.
 """
 
 from __future__ import annotations
@@ -529,37 +263,11 @@ from typing import List, Optional, Tuple
 from models import Section, BasketInfo
 
 
-def find_section_by_keywords(
-    sections: List[Section],
-    keywords: List[str],
-) -> Optional[Section]:
-    """
-    Find the first section whose title contains any of the given keywords.
-
-    Title matching is case-insensitive.
-
-    Parameters
-    ----------
-    sections : List[Section]
-        All parsed sections.
-    keywords : List[str]
-        List of lowercase keywords to search for in section titles.
-
-    Returns
-    -------
-    Optional[Section]
-        The first matching section, or None if none found.
-    """
-    keywords_lower = [k.lower() for k in keywords]
-    for sec in sections:
-        title_lower = sec.title.lower()
-        if any(k in title_lower for k in keywords_lower):
-            return sec
-    return None
-
+# ---------------------------- Regex patterns -----------------------------
 
 CLAUSE_SPLIT_RE = re.compile(
-    r"\n\s*\(([a-z])\)\s", re.IGNORECASE
+    r"\n\s*\(([a-z])\)\s",  # newline + "(a) ", "(b) ", etc.
+    re.IGNORECASE,
 )
 
 DOLLAR_AMOUNT_RE = re.compile(
@@ -583,13 +291,11 @@ GREATER_OF_RE = re.compile(
 )
 
 
+# ---------------------------- Core helpers -------------------------------
+
 def split_section_into_clauses(section_text: str) -> List[Tuple[Optional[str], str]]:
     """
     Split a section's text into clause-level items based on "(a)", "(b)" etc.
-
-    The function searches for patterns like "\\n   (a) " and uses them as
-    boundaries between clause texts. If no such patterns are found, the
-    entire section is returned as a single clause.
 
     Parameters
     ----------
@@ -605,10 +311,10 @@ def split_section_into_clauses(section_text: str) -> List[Tuple[Optional[str], s
         - clause_text: full text of the clause including the label.
     """
     text = section_text
-
     matches = list(CLAUSE_SPLIT_RE.finditer(text))
+
+    # No clause markers; treat entire section as a single clause
     if not matches:
-        # No clause markers; treat the entire section as one clause.
         return [(None, text.strip())]
 
     clauses: List[Tuple[Optional[str], str]] = []
@@ -620,25 +326,17 @@ def split_section_into_clauses(section_text: str) -> List[Tuple[Optional[str], s
 
         end_idx = matches[idx + 1].start() if idx + 1 < len(matches) else len(text)
         clause_text = text[start_idx:end_idx].strip()
+
         clauses.append((label, clause_text))
 
     return clauses
 
 
-def extract_numeric_features(text: str) -> Tuple[List[str], List[str], List[str], List[Tuple[str, str]]]:
+def extract_numeric_features(
+    text: str,
+) -> Tuple[List[str], List[str], List[str], List[Tuple[str, str]]]:
     """
     Extract numeric patterns from a clause of text.
-
-    Specifically:
-    - Dollar amounts (e.g., "$200,000,000", "$50 million").
-    - Percentages (e.g., "25%").
-    - Ratios (e.g., "2.00 to 1.00").
-    - "Greater of X and Y" expressions (returning (X, Y) tuples).
-
-    Parameters
-    ----------
-    text : str
-        Clause text.
 
     Returns
     -------
@@ -662,11 +360,6 @@ def extract_baskets_from_section(section: Section) -> List[BasketInfo]:
     """
     Extract basket-level information from a covenant section.
 
-    Steps:
-    - Split the section into clauses ((a), (b), etc.).
-    - For each clause, extract numeric features.
-    - Construct BasketInfo objects.
-
     Parameters
     ----------
     section : Section
@@ -685,268 +378,129 @@ def extract_baskets_from_section(section: Section) -> List[BasketInfo]:
             clause_text
         )
 
-        basket = BasketInfo(
-            section_id=section.id,
-            section_title=section.title,
-            clause_label=clause_label,
-            raw_text=clause_text,
-            dollar_amounts=dollar_amounts,
-            percentages=percentages,
-            ratios=ratios,
-            greater_of_expressions=greater_of_expressions,
+        baskets.append(
+            BasketInfo(
+                section_id=section.id,
+                section_title=section.title,
+                clause_label=clause_label,
+                raw_text=clause_text,
+                dollar_amounts=dollar_amounts,
+                percentages=percentages,
+                ratios=ratios,
+                greater_of_expressions=greater_of_expressions,
+            )
         )
-        baskets.append(basket)
 
     return baskets
 
 
-def find_indebtedness_section(sections: List[Section]) -> Optional[Section]:
+# ---------------------- Section selection heuristics ---------------------
+
+def _score_section_for_keywords(
+    section: Section,
+    keywords: List[str],
+    weight_title: float = 2.0,
+) -> float:
     """
-    Convenience wrapper to locate the "Indebtedness" section.
+    Compute a simple relevance score for a section given a list of keywords.
+
+    - Each occurrence of a keyword in the title is given `weight_title`.
+    - Each occurrence in the body text is given weight 1.0.
+
+    Parameters
+    ----------
+    section : Section
+        Section to score.
+    keywords : List[str]
+        Lowercase keywords to look for.
+    weight_title : float
+        Weight multiplier for matches in the title.
+
+    Returns
+    -------
+    float
+        Relevance score (higher is better).
+    """
+    score = 0.0
+    title_lower = section.title.lower()
+    text_lower = section.text.lower()
+
+    for kw in keywords:
+        score += weight_title * title_lower.count(kw)
+        score += text_lower.count(kw)
+
+    return score
+
+
+def _find_best_section(
+    sections: List[Section],
+    keywords: List[str],
+    min_score: float = 1.0,
+) -> Optional[Section]:
+    """
+    Find the section with the highest keyword-based relevance score.
 
     Parameters
     ----------
     sections : List[Section]
         All parsed sections.
+    keywords : List[str]
+        Lowercase keywords for this covenant type.
+    min_score : float
+        Minimum score required to accept a match.
 
     Returns
     -------
     Optional[Section]
-        The first section whose title suggests Indebtedness.
+        The best matching section, or None if no section exceeds min_score.
     """
-    return find_section_by_keywords(
-        sections,
-        keywords=["indebtedness", "debt"],
-    )
+    best_section: Optional[Section] = None
+    best_score: float = 0.0
+
+    for sec in sections:
+        score = _score_section_for_keywords(sec, keywords)
+        if score > best_score:
+            best_score = score
+            best_section = sec
+
+    if best_section is not None and best_score >= min_score:
+        return best_section
+
+    return None
+
+
+def find_indebtedness_section(sections: List[Section]) -> Optional[Section]:
+    """
+    Locate the section that governs limitations on Indebtedness.
+
+    We look for:
+    - Titles and text containing words like "indebtedness", "debt",
+      "incur indebtedness", etc.
+    """
+    keywords = [
+        "indebtedness",
+        "debt",
+        "incur indebtedness",
+        "incurrence of indebtedness",
+    ]
+    return _find_best_section(sections, keywords, min_score=1.0)
 
 
 def find_restricted_payments_section(sections: List[Section]) -> Optional[Section]:
     """
-    Convenience wrapper to locate the "Restricted Payments" section.
+    Locate the section that governs Restricted Payments.
 
-    Parameters
-    ----------
-    sections : List[Section]
-        All parsed sections.
-
-    Returns
-    -------
-    Optional[Section]
-        The first section whose title suggests Restricted Payments.
+    We look for:
+    - Titles/text containing "restricted payments", "restricted payment",
+      and also common phrasing about dividends / distributions.
     """
-    return find_section_by_keywords(
-        sections,
-        keywords=["restricted payments", "restricted payment"],
-    )
+    keywords = [
+        "restricted payments",
+        "restricted payment",
+        "dividends",
+        "distributions",
+        "stock repurchases",
+    ]
+    return _find_best_section(sections, keywords, min_score=1.0)
 
 
-# =====================================================================
-# file: extract_kcps.py
-# =====================================================================
-
-"""
-High-level orchestration logic for extracting key credit provisions (KCPs)
-from a credit agreement PDF.
-"""
-
-from __future__ import annotations
-
-from typing import Optional
-
-from models import ExtractionResult, Section
-from pdf_utils import extract_text_from_pdf
-from text_segmentation import parse_sections
-from definitions_extractor import extract_all_definitions, find_ebitda_definition
-from covenant_extractor import (
-    find_indebtedness_section,
-    find_restricted_payments_section,
-    extract_baskets_from_section,
-)
-
-
-def extract_kcps_from_pdf(pdf_path: str) -> ExtractionResult:
-    """
-    End-to-end extraction pipeline for key credit provisions.
-
-    Steps
-    -----
-    1. Extract raw text from the PDF.
-    2. Parse the text into structured sections.
-    3. Extract defined terms from the definitions article(s).
-    4. Identify and surface the EBITDA definition.
-    5. Locate key covenant sections:
-       - Indebtedness (debt baskets)
-       - Restricted Payments (RP baskets)
-    6. Within those sections, extract clause-level baskets using regex.
-
-    Parameters
-    ----------
-    pdf_path : str
-        Path to the credit agreement PDF.
-
-    Returns
-    -------
-    ExtractionResult
-        Container with all extracted information.
-    """
-    raw_text = extract_text_from_pdf(pdf_path)
-    sections = parse_sections(raw_text)
-
-    # Definitions
-    definitions = extract_all_definitions(sections)
-    ebitda_def = find_ebitda_definition(definitions)
-
-    # Indebtedness
-    indebtedness_sec: Optional[Section] = find_indebtedness_section(sections)
-    indebtedness_baskets = (
-        extract_baskets_from_section(indebtedness_sec)
-        if indebtedness_sec is not None
-        else []
-    )
-
-    # Restricted Payments
-    rp_sec: Optional[Section] = find_restricted_payments_section(sections)
-    rp_baskets = (
-        extract_baskets_from_section(rp_sec)
-        if rp_sec is not None
-        else []
-    )
-
-    result = ExtractionResult(
-        sections=sections,
-        definitions=definitions,
-        ebitda_definition=ebitda_def,
-        indebtedness_baskets=indebtedness_baskets,
-        restricted_payment_baskets=rp_baskets,
-        metadata={"source_pdf": pdf_path},
-    )
-    return result
-
-
-# =====================================================================
-# file: main.py
-# =====================================================================
-
-"""
-Command-line interface (CLI) entry point.
-
-Usage
------
-    python main.py path/to/credit_agreement.pdf
-
-This will:
-- Parse the PDF.
-- Extract key credit provisions (KCPs).
-- Print a readable summary to stdout.
-"""
-
-from __future__ import annotations
-
-import argparse
-from textwrap import indent
-
-from extract_kcps import extract_kcps_from_pdf
-from models import BasketInfo, Definition, ExtractionResult
-
-
-def print_ebitda_definition(defn: Definition | None) -> None:
-    """
-    Pretty-print the EBITDA definition, if available.
-
-    Parameters
-    ----------
-    defn : Optional[Definition]
-        EBITDA-style definition to print.
-    """
-    print("=" * 80)
-    print("EBITDA DEFINITION")
-    print("=" * 80)
-
-    if defn is None:
-        print("No EBITDA-style definition found.\n")
-        return
-
-    print(f"Term: {defn.term}")
-    if defn.location_hint:
-        print(f"Location: {defn.location_hint}")
-    print("\nDefinition (truncated to 800 chars for display):")
-    truncated = (defn.definition[:800] + " ...") if len(defn.definition) > 800 else defn.definition
-    print(indent(truncated, "  "))
-    print()
-
-
-def print_basket_list(title: str, baskets: list[BasketInfo]) -> None:
-    """
-    Pretty-print a list of BasketInfo records under a section heading.
-
-    Parameters
-    ----------
-    title : str
-        Heading for this set of baskets (e.g., "INDEBTEDNESS BASKETS").
-    baskets : List[BasketInfo]
-        List of basket records.
-    """
-    print("=" * 80)
-    print(title)
-    print("=" * 80)
-
-    if not baskets:
-        print("No baskets extracted for this category.\n")
-        return
-
-    for idx, b in enumerate(baskets, start=1):
-        print(f"[{idx}] Section: {b.section_id} - {b.section_title}")
-        if b.clause_label:
-            print(f"    Clause: {b.clause_label}")
-
-        # Show a short preview of the clause text
-        snippet = b.raw_text.replace("\n", " ")
-        snippet = " ".join(snippet.split())  # collapse whitespace
-        if len(snippet) > 300:
-            snippet = snippet[:300] + " ..."
-
-        print("    Text:")
-        print(indent(snippet, "      "))
-
-        if b.dollar_amounts:
-            print(f"    Dollar amounts: {', '.join(b.dollar_amounts)}")
-        if b.percentages:
-            print(f"    Percentages: {', '.join(b.percentages)}")
-        if b.ratios:
-            print(f"    Ratios: {', '.join(b.ratios)}")
-        if b.greater_of_expressions:
-            printable = [f"(X: {x}; Y: {y})" for x, y in b.greater_of_expressions]
-            print(f"    Greater-of expressions: {', '.join(printable)}")
-
-        print()
-
-
-def main() -> None:
-    """
-    Parse CLI arguments, run the extraction pipeline, and print results.
-    """
-    parser = argparse.ArgumentParser(
-        description="Extract key credit provisions from a credit agreement PDF."
-    )
-    parser.add_argument(
-        "pdf_path",
-        type=str,
-        help="Path to the credit agreement PDF file.",
-    )
-
-    args = parser.parse_args()
-
-    result: ExtractionResult = extract_kcps_from_pdf(args.pdf_path)
-
-    # Print summary
-    print(f"Source PDF: {result.metadata.get('source_pdf', 'N/A')}")
-    print(f"Total sections parsed: {len(result.sections)}")
-    print(f"Total definitions parsed: {len(result.definitions)}\n")
-
-    print_ebitda_definition(result.ebitda_definition)
-    print_basket_list("INDEBTEDNESS BASKETS (Debt)", result.indebtedness_baskets)
-    print_basket_list("RESTRICTED PAYMENT BASKETS (RPs)", result.restricted_payment_baskets)
-
-
-if __name__ == "__main__":
-    main()
