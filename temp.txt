@@ -1,221 +1,13 @@
-# =====================================================================
-# file: definitions_extractor.py  (REVISED)
-# =====================================================================
-
-"""
-Extract defined terms from definitions article(s).
-
-This version is more robust to ugly PDF line breaks:
-
-- It does NOT rely on a huge multi-line regex.
-- It scans line-by-line for patterns like:
-    "Consolidated EBITDA" means ...
-    “Consolidated EBITDA” shall mean ...
-- Once it finds a term line, it appends subsequent lines until:
-    * It hits another line that looks like a new definition, or
-    * It hits a strong break (blank line / section-like line).
-
-We still highlight "Consolidated EBITDA" (or similar) as the EBITDA definition.
-"""
-
-from __future__ import annotations
-
-import re
-from typing import List, Optional
-
-from models import Section, Definition
-
-
-# Matches the *start* of a definition on a single line, e.g.:
-#   "Consolidated EBITDA" means ...
-#   “Consolidated EBITDA” shall mean ...
-DEF_START_RE = re.compile(
-    r"""
-    ^\s*
-    [\"“']                         # opening quote
-    (?P<term>[^\"”']+?)            # term text
-    [\"”']                         # closing quote
-    \s+
-    (?P<verb>means|shall\s+mean)   # "means" or "shall mean"
-    \s+
-    (?P<rest>.+?)                  # rest of the line (start of definition)
-    $
-    """,
-    re.IGNORECASE | re.VERBOSE,
-)
-
-
-def _looks_like_definition_start(line: str) -> bool:
-    """
-    Heuristic: does a line look like the start of a new definition?
-
-    Parameters
-    ----------
-    line : str
-        A single line of text.
-
-    Returns
-    -------
-    bool
-        True if the line looks like "Term" means/shall mean ...
-    """
-    return DEF_START_RE.match(line) is not None
-
-
-def _extract_definitions_from_text(text: str, location_hint: str) -> List[Definition]:
-    """
-    Extract definitions from the given raw text by scanning line-by-line.
-
-    Parameters
-    ----------
-    text : str
-        Text that may contain multiple definitions.
-    location_hint : str
-        Hint about where this text came from (e.g. section id).
-
-    Returns
-    -------
-    List[Definition]
-        Parsed definitions from the text.
-    """
-    lines = text.split("\n")
-    definitions: List[Definition] = []
-
-    idx = 0
-    n = len(lines)
-
-    while idx < n:
-        line = lines[idx].rstrip()
-
-        start_match = DEF_START_RE.match(line)
-        if not start_match:
-            idx += 1
-            continue
-
-        # We found a term line
-        term = start_match.group("term").strip()
-        definition_parts: List[str] = [start_match.group("rest").strip()]
-
-        idx += 1
-
-        # Accumulate subsequent lines that appear to be part of the same definition
-        while idx < n:
-            next_line = lines[idx].rstrip()
-
-            # Stop if the next line looks like a new definition
-            if _looks_like_definition_start(next_line):
-                break
-
-            # Stop if the line is empty and we already have some content
-            if not next_line.strip() and definition_parts:
-                break
-
-            # Otherwise, treat as continuation of current definition
-            # (common for long legal definitions)
-            definition_parts.append(next_line.strip())
-            idx += 1
-
-        full_definition = " ".join(part for part in definition_parts if part)
-
-        definitions.append(
-            Definition(
-                term=term,
-                definition=full_definition,
-                location_hint=location_hint,
-            )
-        )
-
-    return definitions
-
-
-def find_definition_sections(sections: List[Section]) -> List[Section]:
-    """
-    Identify sections that likely contain the main definitions article(s).
-
-    Heuristics (in order):
-    - Section titles containing the word "definition".
-    - Section "Section 1.01" (very common).
-    - If nothing matches, we return an empty list and the caller can
-      decide to scan *all* sections.
-
-    Parameters
-    ----------
-    sections : List[Section]
-        All parsed sections.
-
-    Returns
-    -------
-    List[Section]
-        Candidate definition sections.
-    """
-    candidates: List[Section] = [
-        s for s in sections if "definition" in s.title.lower()
-    ]
-    if candidates:
-        return candidates
-
-    for s in sections:
-        if s.id.lower().startswith("section 1.01"):
-            return [s]
-
-    return []
-
-
-def extract_definitions_from_section(section: Section) -> List[Definition]:
-    """
-    Extract defined terms within a given section using the line-based scanner.
-
-    Parameters
-    ----------
-    section : Section
-        A section that may contain defined terms.
-
-    Returns
-    -------
-    List[Definition]
-        List of Definition objects from that section.
-    """
-    return _extract_definitions_from_text(section.text, location_hint=section.id)
-
-
-def extract_all_definitions(sections: List[Section]) -> List[Definition]:
-    """
-    Extract all definitions from the agreement.
-
-    Strategy:
-    - First, try the definition sections (if we can identify them).
-    - If that yields very few definitions (e.g., 0 or 1), we fall back
-      to scanning *all* sections, since some docs scatter definitions
-      across multiple places.
-
-    Parameters
-    ----------
-    sections : List[Section]
-        All parsed sections.
-
-    Returns
-    -------
-    List[Definition]
-        Aggregated list of definitions.
-    """
-    # Pass 1: use obvious definition sections
-    def_sections = find_definition_sections(sections)
-    all_defs: List[Definition] = []
-    for sec in def_sections:
-        all_defs.extend(extract_definitions_from_section(sec))
-
-    # If we basically got nothing, fall back to scanning everything
-    if len(all_defs) <= 1:
-        all_defs = []
-        for sec in sections:
-            all_defs.extend(extract_definitions_from_section(sec))
-
-    return all_defs
-
-
 def find_ebitda_definition(definitions: List[Definition]) -> Optional[Definition]:
     """
     Identify the EBITDA-style definition, preferring "Consolidated EBITDA".
+
+    Heuristic scoring:
+    - +4 if term contains "consolidated ebitda"
+    - +2 if term contains "ebitda" and "consolidated" (any order)
+    - +1 if term contains "adjusted"
+    - +1 if the definition is relatively long (more detailed)
+    - baseline: any term containing "ebitda"
 
     Parameters
     ----------
@@ -225,282 +17,779 @@ def find_ebitda_definition(definitions: List[Definition]) -> Optional[Definition
     Returns
     -------
     Optional[Definition]
-        The most relevant EBITDA definition, if found.
+        The highest-scoring EBITDA definition, if any.
     """
-    ebitda_like_defs = [d for d in definitions if "ebitda" in d.term.lower()]
+    candidates: List[tuple[int, Definition]] = []
 
-    if not ebitda_like_defs:
+    for d in definitions:
+        term_lower = d.term.lower()
+        if "ebitda" not in term_lower:
+            continue
+
+        score = 1  # baseline for any EBITDA-like term
+
+        if "consolidated ebitda" in term_lower:
+            score += 4
+        elif "ebitda" in term_lower and "consolidated" in term_lower:
+            score += 2
+
+        if "adjusted" in term_lower:
+            score += 1
+
+        # Slight preference for longer / more detailed definitions
+        if len(d.definition) > 200:
+            score += 1
+
+        candidates.append((score, d))
+
+    if not candidates:
         return None
 
-    for d in ebitda_like_defs:
-        if "consolidated ebitda" in d.term.lower():
-            return d
+    # Pick the highest-score; tie-breaker = longer definition
+    candidates.sort(key=lambda x: (x[0], len(x[1].definition)), reverse=True)
+    return candidates[0][1]
 
-    return ebitda_like_defs[0]
-
-# =====================================================================
-# file: covenant_extractor.py  (REVISED)
-# =====================================================================
-
-"""
-Extract covenant baskets from key sections (Indebtedness, Restricted Payments).
-
-This module is purely regex / rule-based and designed to be robust to
-messy section titles:
-
-- We search both section titles AND body text for keywords.
-- We pick the section with the strongest signal (most keyword hits).
-- Within each section, we split into clauses ((a), (b), etc.) and
-  extract numeric features: dollar amounts, percentages, ratios,
-  "greater of X and Y" patterns.
-"""
-
-from __future__ import annotations
-
-import re
-from typing import List, Optional, Tuple
-
-from models import Section, BasketInfo
-
-
-# ---------------------------- Regex patterns -----------------------------
-
-CLAUSE_SPLIT_RE = re.compile(
-    r"\n\s*\(([a-z])\)\s",  # newline + "(a) ", "(b) ", etc.
-    re.IGNORECASE,
-)
-
-DOLLAR_AMOUNT_RE = re.compile(
-    r"\$[\s]*[\d,]+(?:\.\d+)?(?:\s*(?:million|billion|thousand))?",
-    re.IGNORECASE,
-)
-
-PERCENTAGE_RE = re.compile(
-    r"\b\d+(?:\.\d+)?\s*%",
-    re.IGNORECASE,
-)
-
-RATIO_RE = re.compile(
-    r"\b\d+(?:\.\d+)?\s*(?:to|:|-)\s*\d+(?:\.\d+)?\b",
-    re.IGNORECASE,
-)
-
-GREATER_OF_RE = re.compile(
-    r"greater\s+of\s+(?P<x>.+?)\s+and\s+(?P<y>.+?)(?:[.;,]|$)",
-    re.IGNORECASE | re.DOTALL,
-)
-
-
-# ---------------------------- Core helpers -------------------------------
-
-def split_section_into_clauses(section_text: str) -> List[Tuple[Optional[str], str]]:
+@dataclass
+class ExtractionResult:
     """
-    Split a section's text into clause-level items based on "(a)", "(b)" etc.
+    Container for all key credit provisions extracted from a credit agreement.
 
-    Parameters
+    Attributes
     ----------
-    section_text : str
-        Full text of a covenant section.
-
-    Returns
-    -------
-    List[Tuple[Optional[str], str]]
-        List of (clause_label, clause_text) tuples.
-
-        - clause_label: e.g., "(a)", "(b)", or None if no labels detected.
-        - clause_text: full text of the clause including the label.
+    sections : List[Section]
+        All parsed sections from the agreement.
+    definitions : List[Definition]
+        All parsed defined terms from the definitions article(s).
+    ebitda_definition : Optional[Definition]
+        The specific "Consolidated EBITDA" (or similar) definition, if found.
+    indebtedness_baskets : List[BasketInfo]
+        Parsed clauses from the Indebtedness section (debt baskets).
+    restricted_payment_baskets : List[BasketInfo]
+        Parsed clauses from the Restricted Payments section (RP baskets).
+    affirmative_covenant_clauses : List[BasketInfo]
+        Parsed clauses from the Affirmative Covenants section.
+    metadata : Dict[str, str]
+        Optional metadata (e.g., filename, parsing notes).
     """
-    text = section_text
-    matches = list(CLAUSE_SPLIT_RE.finditer(text))
 
-    # No clause markers; treat entire section as a single clause
-    if not matches:
-        return [(None, text.strip())]
+    sections: List[Section]
+    definitions: List[Definition]
+    ebitda_definition: Optional[Definition]
+    indebtedness_baskets: List[BasketInfo]
+    restricted_payment_baskets: List[BasketInfo]
+    affirmative_covenant_clauses: List[BasketInfo]
+    metadata: Dict[str, str] = field(default_factory=dict)
 
-    clauses: List[Tuple[Optional[str], str]] = []
-
-    for idx, match in enumerate(matches):
-        start_idx = match.start()
-        label_char = match.group(1).lower()
-        label = f"({label_char})"
-
-        end_idx = matches[idx + 1].start() if idx + 1 < len(matches) else len(text)
-        clause_text = text[start_idx:end_idx].strip()
-
-        clauses.append((label, clause_text))
-
-    return clauses
-
-
-def extract_numeric_features(
-    text: str,
-) -> Tuple[List[str], List[str], List[str], List[Tuple[str, str]]]:
+def find_affirmative_covenants_section(sections: List[Section]) -> Optional[Section]:
     """
-    Extract numeric patterns from a clause of text.
+    Locate the section that governs Affirmative Covenants.
 
-    Returns
-    -------
-    Tuple[List[str], List[str], List[str], List[Tuple[str, str]]]
-        (dollar_amounts, percentages, ratios, greater_of_expressions)
-    """
-    dollar_amounts = [m.group(0).strip() for m in DOLLAR_AMOUNT_RE.finditer(text)]
-    percentages = [m.group(0).strip() for m in PERCENTAGE_RE.finditer(text)]
-    ratios = [m.group(0).strip() for m in RATIO_RE.finditer(text)]
-
-    greater_of_expressions: List[Tuple[str, str]] = []
-    for m in GREATER_OF_RE.finditer(text):
-        x_raw = m.group("x").strip()
-        y_raw = m.group("y").strip()
-        greater_of_expressions.append((x_raw, y_raw))
-
-    return dollar_amounts, percentages, ratios, greater_of_expressions
-
-
-def extract_baskets_from_section(section: Section) -> List[BasketInfo]:
-    """
-    Extract basket-level information from a covenant section.
-
-    Parameters
-    ----------
-    section : Section
-        The covenant section (e.g., Indebtedness, Restricted Payments).
-
-    Returns
-    -------
-    List[BasketInfo]
-        List of BasketInfo instances for each clause.
-    """
-    clauses = split_section_into_clauses(section.text)
-    baskets: List[BasketInfo] = []
-
-    for clause_label, clause_text in clauses:
-        dollar_amounts, percentages, ratios, greater_of_expressions = extract_numeric_features(
-            clause_text
-        )
-
-        baskets.append(
-            BasketInfo(
-                section_id=section.id,
-                section_title=section.title,
-                clause_label=clause_label,
-                raw_text=clause_text,
-                dollar_amounts=dollar_amounts,
-                percentages=percentages,
-                ratios=ratios,
-                greater_of_expressions=greater_of_expressions,
-            )
-        )
-
-    return baskets
-
-
-# ---------------------- Section selection heuristics ---------------------
-
-def _score_section_for_keywords(
-    section: Section,
-    keywords: List[str],
-    weight_title: float = 2.0,
-) -> float:
-    """
-    Compute a simple relevance score for a section given a list of keywords.
-
-    - Each occurrence of a keyword in the title is given `weight_title`.
-    - Each occurrence in the body text is given weight 1.0.
-
-    Parameters
-    ----------
-    section : Section
-        Section to score.
-    keywords : List[str]
-        Lowercase keywords to look for.
-    weight_title : float
-        Weight multiplier for matches in the title.
-
-    Returns
-    -------
-    float
-        Relevance score (higher is better).
-    """
-    score = 0.0
-    title_lower = section.title.lower()
-    text_lower = section.text.lower()
-
-    for kw in keywords:
-        score += weight_title * title_lower.count(kw)
-        score += text_lower.count(kw)
-
-    return score
-
-
-def _find_best_section(
-    sections: List[Section],
-    keywords: List[str],
-    min_score: float = 1.0,
-) -> Optional[Section]:
-    """
-    Find the section with the highest keyword-based relevance score.
+    We look for:
+    - Titles containing "affirmative covenants" or "affirmative covenant".
+    - Fallback: sections whose title/body contain "affirmative" together
+      with "covenants" or "covenant".
 
     Parameters
     ----------
     sections : List[Section]
         All parsed sections.
-    keywords : List[str]
-        Lowercase keywords for this covenant type.
-    min_score : float
-        Minimum score required to accept a match.
 
     Returns
     -------
     Optional[Section]
-        The best matching section, or None if no section exceeds min_score.
+        The most relevant Affirmative Covenants section.
     """
-    best_section: Optional[Section] = None
-    best_score: float = 0.0
+    keywords = [
+        "affirmative covenants",
+        "affirmative covenant",
+        "affirmative",
+        "covenants",
+    ]
+    return _find_best_section(sections, keywords, min_score=1.0)
+
+# =====================================================================
+# file: extract_kcps.py  (REVISED)
+# =====================================================================
+
+from __future__ import annotations
+
+from typing import Optional
+
+from models import ExtractionResult, Section
+from pdf_utils import extract_text_from_pdf
+from text_segmentation import parse_sections
+from definitions_extractor import extract_all_definitions, find_ebitda_definition
+from covenant_extractor import (
+    find_indebtedness_section,
+    find_restricted_payments_section,
+    find_affirmative_covenants_section,
+    extract_baskets_from_section,
+)
+
+
+def extract_kcps_from_pdf(pdf_path: str) -> ExtractionResult:
+    """
+    End-to-end extraction pipeline for key credit provisions.
+
+    Steps
+    -----
+    1. Extract raw text from the PDF.
+    2. Parse the text into structured sections.
+    3. Extract defined terms from the definitions article(s).
+    4. Identify and surface the EBITDA definition.
+    5. Locate key covenant sections:
+       - Indebtedness (debt baskets)
+       - Restricted Payments (RP baskets)
+       - Affirmative Covenants
+    6. Within those sections, extract clause-level baskets using regex.
+
+    Parameters
+    ----------
+    pdf_path : str
+        Path to the credit agreement PDF.
+
+    Returns
+    -------
+    ExtractionResult
+        Container with all extracted information.
+    """
+    raw_text = extract_text_from_pdf(pdf_path)
+    sections = parse_sections(raw_text)
+
+    # Definitions
+    definitions = extract_all_definitions(sections)
+    ebitda_def = find_ebitda_definition(definitions)
+
+    # Indebtedness
+    indebtedness_sec: Optional[Section] = find_indebtedness_section(sections)
+    indebtedness_baskets = (
+        extract_baskets_from_section(indebtedness_sec)
+        if indebtedness_sec is not None
+        else []
+    )
+
+    # Restricted Payments
+    rp_sec: Optional[Section] = find_restricted_payments_section(sections)
+    rp_baskets = (
+        extract_baskets_from_section(rp_sec)
+        if rp_sec is not None
+        else []
+    )
+
+    # Affirmative Covenants
+    aff_sec: Optional[Section] = find_affirmative_covenants_section(sections)
+    aff_baskets = (
+        extract_baskets_from_section(aff_sec)
+        if aff_sec is not None
+        else []
+    )
+
+    result = ExtractionResult(
+        sections=sections,
+        definitions=definitions,
+        ebitda_definition=ebitda_def,
+        indebtedness_baskets=indebtedness_baskets,
+        restricted_payment_baskets=rp_baskets,
+        affirmative_covenant_clauses=aff_baskets,
+        metadata={"source_pdf": pdf_path},
+    )
+    return result
+
+# =====================================================================
+# file: main.py  (REVISED)
+# =====================================================================
+
+from __future__ import annotations
+
+import argparse
+import re
+from textwrap import indent
+
+from extract_kcps import extract_kcps_from_pdf
+from models import BasketInfo, Definition, ExtractionResult
+
+
+def _first_sentence(text: str, max_len: int = 220) -> str:
+    """
+    Extract a short, readable snippet from a longer legal clause.
+
+    Strategy:
+    - Collapse whitespace.
+    - Take up to the first period. If that is too long, cut at max_len.
+    - Append "..." if truncated.
+
+    Parameters
+    ----------
+    text : str
+        Full clause text.
+    max_len : int
+        Maximum length of the returned snippet.
+
+    Returns
+    -------
+    str
+        Concise snippet of the clause.
+    """
+    flat = " ".join(text.replace("\n", " ").split())
+    # Try up to first sentence
+    m = re.search(r"\.(\s|$)", flat)
+    if m:
+        candidate = flat[: m.end()].strip()
+    else:
+        candidate = flat
+
+    if len(candidate) > max_len:
+        candidate = candidate[:max_len].rstrip() + " ..."
+    return candidate
+
+
+def print_ebitda_definition(defn: Definition | None) -> None:
+    """
+    Pretty-print the EBITDA definition, if available.
+    """
+    print("=" * 80)
+    print("EBITDA DEFINITION")
+    print("=" * 80)
+
+    if defn is None:
+        print("No EBITDA-style definition found.\n")
+        return
+
+    print(f"Term: {defn.term}")
+    if defn.location_hint:
+        print(f"Location: {defn.location_hint}")
+    print("\nDefinition (short snippet):")
+    snippet = _first_sentence(defn.definition, max_len=400)
+    print(indent(snippet, "  "))
+    print()
+
+
+def print_basket_list(title: str, baskets: list[BasketInfo]) -> None:
+    """
+    Pretty-print a list of BasketInfo records under a section heading.
+
+    Rather than dumping full legal text, show:
+    - Section and clause label
+    - A short natural-language snippet (first sentence or truncated)
+    - Key numeric features (dollar amounts, percentages, ratios, greater-of)
+    """
+    print("=" * 80)
+    print(title)
+    print("=" * 80)
+
+    if not baskets:
+        print("No items extracted for this category.\n")
+        return
+
+    for idx, b in enumerate(baskets, start=1):
+        print(f"[{idx}] Section: {b.section_id} - {b.section_title}")
+        if b.clause_label:
+            print(f"    Clause: {b.clause_label}")
+
+        snippet = _first_sentence(b.raw_text, max_len=260)
+        print("    Snippet:")
+        print(indent(snippet, "      "))
+
+        # Structured numeric highlights
+        if b.dollar_amounts:
+            print(f"    Dollar amounts: {', '.join(b.dollar_amounts)}")
+        if b.percentages:
+            print(f"    Percentages: {', '.join(b.percentages)}")
+        if b.ratios:
+            print(f"    Ratios: {', '.join(b.ratios)}")
+        if b.greater_of_expressions:
+            printable = [f"(X: {x}; Y: {y})" for x, y in b.greater_of_expressions]
+            print(f"    Greater-of expressions: {', '.join(printable)}")
+
+        print()
+
+
+def main() -> None:
+    """
+    Parse CLI arguments, run the extraction pipeline, and print results.
+    """
+    parser = argparse.ArgumentParser(
+        description="Extract key credit provisions from a credit agreement PDF."
+    )
+    parser.add_argument(
+        "pdf_path",
+        type=str,
+        help="Path to the credit agreement PDF file.",
+    )
+
+    args = parser.parse_args()
+
+    result: ExtractionResult = extract_kcps_from_pdf(args.pdf_path)
+
+    # Print summary
+    print(f"Source PDF: {result.metadata.get('source_pdf', 'N/A')}")
+    print(f"Total sections parsed: {len(result.sections)}")
+    print(f"Total definitions parsed: {len(result.definitions)}\n")
+
+    print_ebitda_definition(result.ebitda_definition)
+    print_basket_list("INDEBTEDNESS BASKETS (Debt)", result.indebtedness_baskets)
+    print_basket_list("RESTRICTED PAYMENT BASKETS (RPs)", result.restricted_payment_baskets)
+    print_basket_list("AFFIRMATIVE COVENANTS", result.affirmative_covenant_clauses)
+
+
+if __name__ == "__main__":
+    main()
+
+@dataclass
+class FacilityCommitment:
+    """
+    Represents a facility-level commitment / size.
+
+    Attributes
+    ----------
+    name : str
+        Name of the facility or commitment (e.g. "Term Loan B Facility",
+        "Revolving Credit Commitments").
+    amount_raw : Optional[str]
+        Extracted dollar amount as raw text (e.g. "$1,250,000,000").
+    context_snippet : Optional[str]
+        Short snippet of the text around the amount (for verification).
+    location_hint : Optional[str]
+        Where this was found (e.g. section id or "definitions").
+    """
+
+    name: str
+    amount_raw: Optional[str]
+    context_snippet: Optional[str] = None
+    location_hint: Optional[str] = None
+
+
+@dataclass
+class PricingTerm:
+    """
+    Represents a key pricing concept (margin / fees / floors).
+
+    Attributes
+    ----------
+    name : str
+        Label for the pricing term (e.g. "Applicable Margin - Term Loans",
+        "Commitment Fee Rate").
+    benchmark_hint : Optional[str]
+        Benchmark mentioned nearby (e.g. "Term SOFR", "Base Rate").
+    margins : List[str]
+        Percentage margins captured (e.g. ["3.50%"]).
+    floors : List[str]
+        Floors captured (e.g. ["0.50%"]).
+    other_rates : List[str]
+        Other relevant percentage rates (e.g. commitment fees).
+    location_hint : Optional[str]
+        Where this was found (e.g. section id).
+    context_snippet : Optional[str]
+        Short snippet of the underlying legal text.
+    """
+
+    name: str
+    benchmark_hint: Optional[str]
+    margins: List[str] = field(default_factory=list)
+    floors: List[str] = field(default_factory=list)
+    other_rates: List[str] = field(default_factory=list)
+    location_hint: Optional[str] = None
+    context_snippet: Optional[str] = None
+
+
+@dataclass
+class ExtractionResult:
+    """
+    Container for all key credit provisions extracted from a credit agreement.
+    """
+
+    sections: List[Section]
+    definitions: List[Definition]
+    ebitda_definition: Optional[Definition]
+    indebtedness_baskets: List[BasketInfo]
+    restricted_payment_baskets: List[BasketInfo]
+    affirmative_covenant_clauses: List[BasketInfo]
+    facility_commitments: List[FacilityCommitment]
+    pricing_terms: List[PricingTerm]
+    metadata: Dict[str, str] = field(default_factory=dict)
+
+# =====================================================================
+# file: commitments_pricing_extractor.py
+# =====================================================================
+
+"""
+Extraction of facility commitments (sizes) and core pricing terms
+(Applicable Margin / Rates, floors, commitment fees) using only
+regex + simple heuristics.
+
+Strategy
+--------
+1. Commitments:
+   - Look at definitions containing "commitment".
+   - Extract the first dollar amount in those definitions.
+   - Also scan sections whose titles mention "Commitments" or "Amount";
+     extract patterns like "$1,250,000,000 Term Loan B Facility".
+
+2. Pricing:
+   - Scan sections whose titles or text contain "Applicable Margin",
+     "Applicable Rate", "Interest", or "Fees".
+   - Pull percentage values near phrases like "Applicable Margin",
+     "Applicable Rate", "commitment fee", "floor".
+"""
+
+from __future__ import annotations
+
+import re
+from typing import List
+
+from models import (
+    Section,
+    Definition,
+    FacilityCommitment,
+    PricingTerm,
+)
+
+# Reuse the same dollar / percentage regex styles as covenant_extractor
+DOLLAR_RE = re.compile(
+    r"\$[\s]*[\d,]+(?:\.\d+)?(?:\s*(?:million|billion|thousand))?",
+    re.IGNORECASE,
+)
+
+PCT_RE = re.compile(
+    r"\b\d+(?:\.\d+)?\s*%",
+    re.IGNORECASE,
+)
+
+
+# ---------------------- small helper: snippet maker ----------------------
+
+def _snippet(text: str, max_len: int = 220) -> str:
+    flat = " ".join(text.replace("\n", " ").split())
+    if len(flat) > max_len:
+        return flat[:max_len].rstrip() + " ..."
+    return flat
+
+
+# ---------------------- facility commitments -----------------------------
+
+def extract_facility_commitments_from_definitions(
+    definitions: List[Definition],
+) -> List[FacilityCommitment]:
+    """
+    Use definitions containing "commitment" to infer facility sizes.
+
+    Example:
+        "Revolving Credit Commitments" means, at any time, the aggregate
+        principal amount of $500,000,000 ...
+
+    We grab the first dollar amount and use the term as the facility name.
+    """
+    results: List[FacilityCommitment] = []
+
+    for d in definitions:
+        if "commitment" not in d.term.lower():
+            continue
+
+        m = DOLLAR_RE.search(d.definition)
+        amount = m.group(0).strip() if m else None
+        snippet = _snippet(d.definition)
+
+        results.append(
+            FacilityCommitment(
+                name=d.term,
+                amount_raw=amount,
+                context_snippet=snippet,
+                location_hint=d.location_hint,
+            )
+        )
+
+    return results
+
+
+COMMITMENT_SECTION_KEYWORDS = [
+    "commitments",
+    "commitment",
+    "aggregate principal amount",
+    "amount of the term loans",
+]
+
+
+def extract_facility_commitments_from_sections(
+    sections: List[Section],
+) -> List[FacilityCommitment]:
+    """
+    Look for obvious facility sizes directly in the body text of sections
+    whose titles mention "Commitments" or whose text mentions phrases
+    like "aggregate principal amount of $... Term Loan".
+    """
+    results: List[FacilityCommitment] = []
+
+    FACILITY_REGEX = re.compile(
+        r"(aggregate\s+principal\s+amount\s+of\s+"
+        r"(?P<amount>\$[\d,\.\s]+(?:million|billion|thousand)?)"
+        r"\s+"
+        r"(?P<name>(?:[A-Za-z]+\s+){1,5}(?:facility|facilities|term loans|revolving credit commitments)))",
+        re.IGNORECASE,
+    )
 
     for sec in sections:
-        score = _score_section_for_keywords(sec, keywords)
-        if score > best_score:
-            best_score = score
-            best_section = sec
+        text_lower = sec.text.lower()
+        if not any(k in text_lower or k in sec.title.lower() for k in COMMITMENT_SECTION_KEYWORDS):
+            continue
 
-    if best_section is not None and best_score >= min_score:
-        return best_section
+        for match in FACILITY_REGEX.finditer(sec.text):
+            amount = match.group("amount").strip()
+            name = match.group("name").strip()
+            context = _snippet(match.group(0))
 
-    return None
+            results.append(
+                FacilityCommitment(
+                    name=name,
+                    amount_raw=amount,
+                    context_snippet=context,
+                    location_hint=sec.id,
+                )
+            )
+
+    return results
 
 
-def find_indebtedness_section(sections: List[Section]) -> Optional[Section]:
+def extract_facility_commitments(
+    sections: List[Section],
+    definitions: List[Definition],
+) -> List[FacilityCommitment]:
     """
-    Locate the section that governs limitations on Indebtedness.
+    Combine definition-based and section-based commitment detection,
+    de-duplicating by (name, amount_raw).
+    """
+    from_defs = extract_facility_commitments_from_definitions(definitions)
+    from_secs = extract_facility_commitments_from_sections(sections)
+
+    combined: List[FacilityCommitment] = []
+    seen = set()
+
+    for fc in from_defs + from_secs:
+        key = (fc.name.lower(), (fc.amount_raw or "").lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        combined.append(fc)
+
+    return combined
+
+
+# --------------------------- pricing terms -------------------------------
+
+PRICING_SECTION_KEYWORDS = [
+    "applicable margin",
+    "applicable rate",
+    "interest rate",
+    "interest; fees",
+    "commitment fee",
+    "unused fee",
+    "default interest",
+]
+
+
+BENCHMARK_HINT_RE = re.compile(
+    r"(term\s+sofr|sofr|libor|eurodollar|base rate|alternate base rate|prime rate)",
+    re.IGNORECASE,
+)
+
+
+def extract_pricing_terms(sections: List[Section]) -> List[PricingTerm]:
+    """
+    Extract core pricing concepts from sections mentioning interest / fees.
 
     We look for:
-    - Titles and text containing words like "indebtedness", "debt",
-      "incur indebtedness", etc.
+    - Lines with "Applicable Margin" / "Applicable Rate"
+    - Lines with "commitment fee" / "unused fee"
+    - Any nearby percentages, plus benchmark hints and floors.
     """
-    keywords = [
-        "indebtedness",
-        "debt",
-        "incur indebtedness",
-        "incurrence of indebtedness",
-    ]
-    return _find_best_section(sections, keywords, min_score=1.0)
+    results: List[PricingTerm] = []
+
+    for sec in sections:
+        sec_text_lower = sec.text.lower()
+        title_lower = sec.title.lower()
+        if not any(k in sec_text_lower or k in title_lower for k in PRICING_SECTION_KEYWORDS):
+            continue
+
+        # Split section into sentences-ish chunks
+        chunks = re.split(r"(?<=[.;])\s+", sec.text)
+        for chunk in chunks:
+            chunk_lower = chunk.lower()
+            if not any(word in chunk_lower for word in ["applicable margin", "applicable rate", "commitment fee", "unused fee", "floor"]):
+                continue
+
+            pct_matches = [m.group(0).strip() for m in PCT_RE.finditer(chunk)]
+            if not pct_matches:
+                continue
+
+            benchmark_match = BENCHMARK_HINT_RE.search(chunk)
+            benchmark_hint = benchmark_match.group(0).strip() if benchmark_match else None
+
+            # Heuristically classify this line
+            name = "Pricing Term"
+            if "applicable margin" in chunk_lower:
+                name = "Applicable Margin"
+            elif "applicable rate" in chunk_lower:
+                name = "Applicable Rate"
+            elif "commitment fee" in chunk_lower or "unused fee" in chunk_lower:
+                name = "Commitment Fee Rate"
+
+            floors: List[str] = []
+            other_rates: List[str] = pct_matches.copy()
+            if "floor" in chunk_lower:
+                # crude: treat all % in a 'floor' clause as floors
+                floors = pct_matches.copy()
+            else:
+                floors = []
+
+            pt = PricingTerm(
+                name=name,
+                benchmark_hint=benchmark_hint,
+                margins=pct_matches if "margin" in chunk_lower or "rate" in chunk_lower else [],
+                floors=floors,
+                other_rates=other_rates,
+                location_hint=sec.id,
+                context_snippet=_snippet(chunk),
+            )
+            results.append(pt)
+
+    return results
+
+from __future__ import annotations
+
+from typing import Optional
+
+from models import ExtractionResult, Section
+from pdf_utils import extract_text_from_pdf
+from text_segmentation import parse_sections
+from definitions_extractor import extract_all_definitions, find_ebitda_definition
+from covenant_extractor import (
+    find_indebtedness_section,
+    find_restricted_payments_section,
+    find_affirmative_covenants_section,
+    extract_baskets_from_section,
+)
+from commitments_pricing_extractor import (
+    extract_facility_commitments,
+    extract_pricing_terms,
+)
 
 
-def find_restricted_payments_section(sections: List[Section]) -> Optional[Section]:
+def extract_kcps_from_pdf(pdf_path: str) -> ExtractionResult:
     """
-    Locate the section that governs Restricted Payments.
-
-    We look for:
-    - Titles/text containing "restricted payments", "restricted payment",
-      and also common phrasing about dividends / distributions.
+    End-to-end extraction pipeline for key credit provisions.
     """
-    keywords = [
-        "restricted payments",
-        "restricted payment",
-        "dividends",
-        "distributions",
-        "stock repurchases",
-    ]
-    return _find_best_section(sections, keywords, min_score=1.0)
+    raw_text = extract_text_from_pdf(pdf_path)
+    sections = parse_sections(raw_text)
 
+    # Definitions and EBITDA
+    definitions = extract_all_definitions(sections)
+    ebitda_def = find_ebitda_definition(definitions)
+
+    # Negative covenants
+    indebtedness_sec: Optional[Section] = find_indebtedness_section(sections)
+    indebtedness_baskets = (
+        extract_baskets_from_section(indebtedness_sec)
+        if indebtedness_sec is not None
+        else []
+    )
+
+    rp_sec: Optional[Section] = find_restricted_payments_section(sections)
+    rp_baskets = (
+        extract_baskets_from_section(rp_sec)
+        if rp_sec is not None
+        else []
+    )
+
+    # Affirmative covenants
+    aff_sec: Optional[Section] = find_affirmative_covenants_section(sections)
+    aff_baskets = (
+        extract_baskets_from_section(aff_sec)
+        if aff_sec is not None
+        else []
+    )
+
+    # Economics
+    facility_commitments = extract_facility_commitments(sections, definitions)
+    pricing_terms = extract_pricing_terms(sections)
+
+    return ExtractionResult(
+        sections=sections,
+        definitions=definitions,
+        ebitda_definition=ebitda_def,
+        indebtedness_baskets=indebtedness_baskets,
+        restricted_payment_baskets=rp_baskets,
+        affirmative_covenant_clauses=aff_baskets,
+        facility_commitments=facility_commitments,
+        pricing_terms=pricing_terms,
+        metadata={"source_pdf": pdf_path},
+    )
+
+def print_facility_commitments(title: str, items: list[FacilityCommitment]) -> None:
+    print("=" * 80)
+    print(title)
+    print("=" * 80)
+    if not items:
+        print("No facility commitments detected.\n")
+        return
+
+    for idx, fc in enumerate(items, start=1):
+        print(f"[{idx}] Name: {fc.name}")
+        if fc.amount_raw:
+            print(f"    Amount: {fc.amount_raw}")
+        if fc.location_hint:
+            print(f"    Location: {fc.location_hint}")
+        if fc.context_snippet:
+            print("    Snippet:")
+            print(indent(fc.context_snippet, "      "))
+        print()
+
+
+def print_pricing_terms(title: str, items: list[PricingTerm]) -> None:
+    print("=" * 80)
+    print(title)
+    print("=" * 80)
+    if not items:
+        print("No pricing terms detected.\n")
+        return
+
+    for idx, pt in enumerate(items, start=1):
+        print(f"[{idx}] {pt.name}")
+        if pt.location_hint:
+            print(f"    Location: {pt.location_hint}")
+        if pt.benchmark_hint:
+            print(f"    Benchmark: {pt.benchmark_hint}")
+        if pt.margins:
+            print(f"    Margins: {', '.join(pt.margins)}")
+        if pt.floors:
+            print(f"    Floors: {', '.join(pt.floors)}")
+        if pt.other_rates and not pt.margins:
+            print(f"    Rates: {', '.join(pt.other_rates)}")
+        if pt.context_snippet:
+            print("    Snippet:")
+            print(indent(pt.context_snippet, "      "))
+        print()
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Extract key credit provisions from a credit agreement PDF."
+    )
+    parser.add_argument("pdf_path", type=str, help="Path to the credit agreement PDF file.")
+    args = parser.parse_args()
+
+    result: ExtractionResult = extract_kcps_from_pdf(args.pdf_path)
+
+    print(f"Source PDF: {result.metadata.get('source_pdf', 'N/A')}")
+    print(f"Total sections parsed: {len(result.sections)}")
+    print(f"Total definitions parsed: {len(result.definitions)}\n")
+
+    print_ebitda_definition(result.ebitda_definition)
+    print_basket_list("INDEBTEDNESS BASKETS (Debt)", result.indebtedness_baskets)
+    print_basket_list("RESTRICTED PAYMENT BASKETS (RPs)", result.restricted_payment_baskets)
+    print_basket_list("AFFIRMATIVE COVENANTS", result.affirmative_covenant_clauses)
+    print_facility_commitments("FACILITY COMMITMENTS / SIZES", result.facility_commitments)
+    print_pricing_terms("PRICING TERMS (MARGINS / FEES / FLOORS)", result.pricing_terms)
+
+
+if __name__ == "__main__":
+    main()
 
