@@ -234,7 +234,7 @@ Result<void> PostgresDatabase::store_executions(const std::vector<ExecutionRepor
             txn.exec_params(query, exec.exec_id, exec.order_id, exec.symbol,
                             side_to_string(exec.side), static_cast<double>(exec.filled_quantity),
                             static_cast<double>(exec.fill_price), format_timestamp(exec.fill_time),
-                            static_cast<double>(exec.commission), exec.is_partial);
+                            static_cast<double>(exec.transaction_cost), exec.is_partial);
             
             std::cout << "DEBUG: SQL executed successfully for " << exec.symbol << std::endl;
         }
@@ -1523,9 +1523,9 @@ Result<void> PostgresDatabase::validate_execution_report(const ExecutionReport& 
                                 "PostgresDatabase");
     }
 
-    if (exec.commission.is_negative() || static_cast<double>(exec.commission) > 1e12) {
+    if (exec.transaction_cost.is_negative() || static_cast<double>(exec.transaction_cost) > 1e12) {
         return make_error<void>(ErrorCode::INVALID_ARGUMENT,
-                                "Invalid commission: must be between 0 and 1e12",
+                                "Invalid transaction_cost: must be between 0 and 1e12",
                                 "PostgresDatabase");
     }
 
@@ -1615,11 +1615,11 @@ Result<void> PostgresDatabase::store_backtest_executions(const std::vector<Execu
             value_strings.reserve(executions.size());
             
             for (const auto& exec : executions) {
-                std::string values = "('" + run_id + "', '" + exec.exec_id + "', '" + exec.order_id + "', '" + 
-                                   format_timestamp(exec.fill_time) + "', '" + exec.symbol + "', '" + 
-                                   side_to_string(exec.side) + "', " + std::to_string(static_cast<double>(exec.filled_quantity)) + 
-                                   ", " + std::to_string(static_cast<double>(exec.fill_price)) + ", " + 
-                                   std::to_string(static_cast<double>(exec.commission)) + ", " + 
+                std::string values = "('" + run_id + "', '" + exec.exec_id + "', '" + exec.order_id + "', '" +
+                                   format_timestamp(exec.fill_time) + "', '" + exec.symbol + "', '" +
+                                   side_to_string(exec.side) + "', " + std::to_string(static_cast<double>(exec.filled_quantity)) +
+                                   ", " + std::to_string(static_cast<double>(exec.fill_price)) + ", " +
+                                   std::to_string(static_cast<double>(exec.transaction_cost)) + ", " +
                                    (exec.is_partial ? "true" : "false") + ")";
                 value_strings.push_back(values);
             }
@@ -1635,7 +1635,7 @@ Result<void> PostgresDatabase::store_backtest_executions(const std::vector<Execu
 
                 txn.exec_params(query, run_id, exec.exec_id, exec.order_id, format_timestamp(exec.fill_time),
                                 exec.symbol, side_to_string(exec.side), static_cast<double>(exec.filled_quantity),
-                                static_cast<double>(exec.fill_price), static_cast<double>(exec.commission), exec.is_partial);
+                                static_cast<double>(exec.fill_price), static_cast<double>(exec.transaction_cost), exec.is_partial);
             }
         }
 

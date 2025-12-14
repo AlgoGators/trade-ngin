@@ -709,7 +709,7 @@ int main(int argc, char* argv[]) {
                 INFO("DEBUG: Execution data - side: " + std::to_string(static_cast<int>(exec.side)));
                 INFO("DEBUG: Execution data - quantity: " + std::to_string(exec.filled_quantity));
                 INFO("DEBUG: Execution data - price: " + std::to_string(exec.fill_price));
-                INFO("DEBUG: Execution data - commission: " + std::to_string(exec.commission));
+                INFO("DEBUG: Execution data - transaction_cost: " + std::to_string(exec.transaction_cost));
                 INFO("DEBUG: Execution data - is_partial: " + std::to_string(exec.is_partial));
             }
             // Before inserting, delete any stale executions for today with the same order_ids
@@ -927,9 +927,9 @@ int main(int argc, char* argv[]) {
         // ========================================
         INFO("STEP 3: Calculating commissions and Day T PnL...");
 
-        // Calculate commissions from executions
+        // Calculate transaction costs from executions
         for (const auto& exec : daily_executions) {
-            total_daily_commissions += exec.commission.as_double();
+            total_daily_commissions += exec.transaction_cost.as_double();
         }
         INFO("Total daily commissions: $" + std::to_string(total_daily_commissions));
 

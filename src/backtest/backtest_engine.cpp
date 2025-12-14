@@ -632,7 +632,7 @@ Result<void> BacktestEngine::process_bar(
                 exec.filled_quantity = Quantity(std::abs(trade_size));
                 exec.fill_price = fill_price;
                 exec.fill_time = bars[0].timestamp;  // Use timestamp of current batch
-                exec.commission = Decimal(calculate_transaction_costs(exec));
+                exec.transaction_cost = Decimal(calculate_transaction_costs(exec));
                 exec.is_partial = false;
 
                 // Update position
@@ -873,7 +873,7 @@ Result<void> BacktestEngine::process_strategy_signals(
                 exec.filled_quantity = Quantity(std::abs(trade_size));
                 exec.fill_price = fill_price;
                 exec.fill_time = bars[0].timestamp;  // Use timestamp of current batch
-                exec.commission = Decimal(calculate_transaction_costs(exec));
+                exec.transaction_cost = Decimal(calculate_transaction_costs(exec));
                 exec.is_partial = false;
 
                 // Update position
@@ -1216,7 +1216,7 @@ Result<void> BacktestEngine::process_portfolio_data(
                 }
 
                 // Calculate and add commission
-                exec.commission = Decimal(calculate_transaction_costs(exec));
+                exec.transaction_cost = Decimal(calculate_transaction_costs(exec));
 
                 // Add to overall executions list
                 executions.push_back(exec);
@@ -1596,13 +1596,13 @@ BacktestResults BacktestEngine::calculate_metrics(
         const std::string& symbol = exec.symbol;
         double fill_price = static_cast<double>(exec.fill_price);
         double quantity = static_cast<double>(exec.filled_quantity);
-        double commission = static_cast<double>(exec.commission);
+        double transaction_cost = static_cast<double>(exec.transaction_cost);
 
         // Adjust quantity based on side (BUY = positive, SELL = negative)
         double signed_qty = (exec.side == Side::BUY) ? quantity : -quantity;
 
         double current_pos = positions[symbol];
-        double trade_pnl = -commission;  // Start with commission cost
+        double trade_pnl = -transaction_cost;  // Start with transaction cost
 
         if (current_pos == 0.0) {
             // Opening new position
@@ -1761,13 +1761,13 @@ BacktestResults BacktestEngine::calculate_metrics(
         const std::string& symbol = exec.symbol;
         double fill_price = static_cast<double>(exec.fill_price);
         double quantity = static_cast<double>(exec.filled_quantity);
-        double commission = static_cast<double>(exec.commission);
+        double transaction_cost = static_cast<double>(exec.transaction_cost);
 
         // Adjust quantity based on side (BUY = positive, SELL = negative)
         double signed_qty = (exec.side == Side::BUY) ? quantity : -quantity;
 
         double current_pos = symbol_positions[symbol];
-        double trade_pnl = -commission;  // Start with commission cost
+        double trade_pnl = -transaction_cost;  // Start with transaction cost
 
         if (current_pos == 0.0) {
             // Opening new position
@@ -2076,7 +2076,7 @@ Result<void> BacktestEngine::save_results_to_csv(const BacktestResults& results,
                         executions_file << actual_run_id << "," << exec.exec_id << ","
                                         << time_ss.str() << "," << exec.symbol << "," << side_str
                                         << "," << exec.filled_quantity << "," << exec.fill_price
-                                        << "," << exec.commission << "\n";
+                                        << "," << exec.transaction_cost << "\n";
                     }
                 }
             }
