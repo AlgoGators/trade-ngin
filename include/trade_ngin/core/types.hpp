@@ -404,7 +404,7 @@ struct ExecutionReport {
     Quantity filled_quantity;
     Price fill_price;
     Timestamp fill_time;
-    Decimal commission;
+    Decimal transaction_cost;
     bool is_partial;
 };
 

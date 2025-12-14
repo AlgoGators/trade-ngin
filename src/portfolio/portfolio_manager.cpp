@@ -544,11 +544,11 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                     // Calculate transaction costs using the same model as backtesting
                     // Base commission: 5 basis points * quantity
                     double commission = std::abs(trade_size) * 0.0005;
-                    // Market impact: 5 basis points * quantity * price  
+                    // Market impact: 5 basis points * quantity * price
                     double market_impact = std::abs(trade_size) * latest_price * 0.0005;
                     // Fixed cost per trade
                     double fixed_cost = 1.0;
-                    exec.commission = commission + market_impact + fixed_cost;
+                    exec.transaction_cost = commission + market_impact + fixed_cost;
                     exec.is_partial = false;
 
                     // Add to recent executions (portfolio-level)

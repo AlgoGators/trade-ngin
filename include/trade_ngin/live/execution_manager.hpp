@@ -92,13 +92,13 @@ public:
         size_t exec_sequence);
 
     /**
-     * Calculate commission for a trade
+     * Calculate transaction cost for a trade
      *
      * @param quantity Absolute quantity traded
      * @param price Execution price
-     * @return Total commission including all components
+     * @return Total transaction cost including commission, market impact, and fixed costs
      */
-    double calculate_commission(double quantity, double price) const;
+    double calculate_transaction_cost(double quantity, double price) const;
 
     /**
      * Apply slippage to market price

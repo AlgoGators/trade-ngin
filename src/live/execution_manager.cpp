@@ -114,14 +114,14 @@ ExecutionReport ExecutionManager::generate_execution(
     exec.fill_price = apply_slippage(market_price, side);
     exec.fill_time = timestamp;
 
-    // Calculate commission
-    exec.commission = calculate_commission(exec.filled_quantity.as_double(), market_price);
+    // Calculate transaction cost
+    exec.transaction_cost = calculate_transaction_cost(exec.filled_quantity.as_double(), market_price);
     exec.is_partial = false;
 
     return exec;
 }
 
-double ExecutionManager::calculate_commission(double quantity, double price) const {
+double ExecutionManager::calculate_transaction_cost(double quantity, double price) const {
     // Base commission: commission_rate * quantity
     double commission_cost = std::abs(quantity) * commission_rate_;
 
