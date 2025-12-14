@@ -44,7 +44,7 @@ Result<void> EmailSender::initialize() {
     if (load_result.is_error()) {
         return load_result;
     }
-    
+
     initialized_ = true;
     INFO("Email sender initialized successfully");
     return Result<void>();
@@ -795,9 +795,9 @@ std::string EmailSender::format_executions_table(const std::vector<ExecutionRepo
     }
 
     html << "<table>\n";
-    html << "<tr><th>Symbol</th><th>Side</th><th>Quantity</th><th>Price</th><th>Notional</th><th>Commission</th></tr>\n";
+    html << "<tr><th>Symbol</th><th>Side</th><th>Quantity</th><th>Price</th><th>Notional</th><th>Transaction Cost</th></tr>\n";
 
-    double total_commission = 0.0;
+    double total_transaction_cost = 0.0;
     double total_notional_traded = 0.0;
 
     for (const auto& exec : executions) {
@@ -850,7 +850,7 @@ std::string EmailSender::format_executions_table(const std::vector<ExecutionRepo
 
         double notional = exec.filled_quantity.as_double() * exec.fill_price.as_double() * contract_multiplier;
         total_notional_traded += notional;
-        total_commission += exec.commission.as_double();
+        total_transaction_cost += exec.transaction_cost.as_double();
 
         std::string side_str = exec.side == Side::BUY ? "BUY" : "SELL";
         std::string side_class = exec.side == Side::BUY ? "positive" : "negative";
@@ -861,7 +861,7 @@ std::string EmailSender::format_executions_table(const std::vector<ExecutionRepo
         html << "<td>" << std::fixed << std::setprecision(0) << exec.filled_quantity.as_double() << "</td>\n";
         html << "<td>$" << std::fixed << std::setprecision(2) << exec.fill_price.as_double() << "</td>\n";
         html << "<td>$" << std::fixed << std::setprecision(2) << notional << "</td>\n";
-        html << "<td>$" << std::fixed << std::setprecision(2) << exec.commission.as_double() << "</td>\n";
+        html << "<td>$" << std::fixed << std::setprecision(2) << exec.transaction_cost.as_double() << "</td>\n";
         html << "</tr>\n";
     }
 
@@ -892,7 +892,7 @@ std::string EmailSender::format_executions_table(const std::vector<ExecutionRepo
     html << "<div class=\"summary-stats\">\n";
     html << "<strong>Trades:</strong> " << executions.size() << "<br>\n";
     html << "<strong>Notional Traded:</strong> $" << format_with_commas(total_notional_traded) << "<br>\n";
-    html << "<strong>Commissions:</strong> $" << format_with_commas(total_commission) << "\n";
+    html << "<strong>Transaction Costs:</strong> $" << format_with_commas(total_transaction_cost) << "\n";
     html << "</div>\n";
 
     return html.str();

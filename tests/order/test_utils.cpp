@@ -47,7 +47,7 @@ ExecutionReport create_test_execution(const std::string& order_id, double filled
     exec.filled_quantity = filled_qty;
     exec.fill_price = 150.0;
     exec.fill_time = std::chrono::system_clock::now();
-    exec.commission = 1.0;
+    exec.transaction_cost = 1.0;
     exec.is_partial = is_partial;
     return exec;
 }
