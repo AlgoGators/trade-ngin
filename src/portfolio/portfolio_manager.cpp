@@ -1174,9 +1174,18 @@ std::vector<std::shared_ptr<StrategyInterface>> PortfolioManager::get_strategies
 
 double PortfolioManager::get_portfolio_value(
     const std::unordered_map<std::string, double>& current_prices) const {
-    // Start with initial capital (not reduced by reserves for portfolio value calculation)
-    double portfolio_value = static_cast<double>(config_.total_capital);
-    DEBUG("Portfolio value calculation starting with initial capital: $" +
+    static int call_count = 0;
+    call_count++;
+
+    // Start with deployed capital (total - reserve) to match equity curve initialization
+    double portfolio_value = static_cast<double>(config_.total_capital - config_.reserve_capital);
+
+    if (call_count <= 3) {
+        INFO("PV_CALL #" + std::to_string(call_count) + ": starting with deployed capital: $" +
+              std::to_string(portfolio_value));
+    }
+
+    DEBUG("Portfolio value calculation starting with deployed capital: $" +
           std::to_string(portfolio_value));
 
     // Acquire the mutex and get a copy of the portfolio positions
@@ -1184,6 +1193,18 @@ double PortfolioManager::get_portfolio_value(
     {
         std::lock_guard<std::mutex> lock(mutex_);
         positions_copy = get_positions_internal();
+    }
+
+    // Log position PnL values for first call only
+    if (call_count == 1) {
+        double total_rpnl = 0.0;
+        for (const auto& [symbol, pos] : positions_copy) {
+            double rpnl = static_cast<double>(pos.realized_pnl);
+            total_rpnl += rpnl;
+            INFO("FIRST_PV: " + symbol + " realized_pnl=$" + std::to_string(rpnl) +
+                  " qty=" + std::to_string(static_cast<double>(pos.quantity)));
+        }
+        INFO("FIRST_PV TOTAL realized_pnl=$" + std::to_string(total_rpnl));
     }
 
     DEBUG("Found " + std::to_string(positions_copy.size()) +
@@ -1202,9 +1223,14 @@ double PortfolioManager::get_portfolio_value(
             double avg_price = static_cast<double>(pos.average_price);
             double quantity = static_cast<double>(pos.quantity);
 
-            // For futures: unrealized_pnl = quantity * (current_price - avg_price)
-            double unrealized_pnl = quantity * (current_price - avg_price);
-            portfolio_value += unrealized_pnl;
+            // Only calculate fresh unrealized if position has non-zero unrealized stored
+            // For REALIZED_ONLY accounting (futures), unrealized_pnl is always 0
+            // and this fresh calculation would be incorrect (missing point_value multiplier)
+            if (std::abs(static_cast<double>(pos.unrealized_pnl)) > 1e-6) {
+                // For equities: unrealized_pnl = quantity * (current_price - avg_price)
+                double unrealized_pnl = quantity * (current_price - avg_price);
+                portfolio_value += unrealized_pnl;
+            }
             positions_with_prices++;
         } else {
             // If no current price available, use the stored unrealized P&L
@@ -1215,7 +1241,8 @@ double PortfolioManager::get_portfolio_value(
         }
 
         // Add realized P&L for this position
-        portfolio_value += static_cast<double>(pos.realized_pnl);
+        double rpnl = static_cast<double>(pos.realized_pnl);
+        portfolio_value += rpnl;
     }
 
     if (positions_without_prices > 0) {

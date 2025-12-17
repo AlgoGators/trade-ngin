@@ -76,6 +76,19 @@ public:
     void publish(const MarketDataEvent& event);
 
     /**
+     * @brief Enable or disable publishing
+     * @param enabled True to enable, false to disable
+     * @note Use this during backtest data loading to prevent duplicate processing
+     */
+    void set_publish_enabled(bool enabled) { publish_enabled_ = enabled; }
+
+    /**
+     * @brief Check if publishing is enabled
+     * @return True if publishing is enabled
+     */
+    bool is_publish_enabled() const { return publish_enabled_; }
+
+    /**
      * @brief Get singleton instance
      */
     static MarketDataBus& instance() {
@@ -85,6 +98,7 @@ public:
 
 private:
     MarketDataBus() = default;
+    bool publish_enabled_{true};  // Can be disabled during backtest data loading
 
     struct Subscription {
         std::vector<MarketDataEventType> event_types;

@@ -86,6 +86,15 @@ public:
     Result<void> initialize() override;
 
     /**
+     * @brief Handle execution reports
+     * @note Override to prevent base class from corrupting PnL data.
+     *       TrendFollowingStrategy calculates PnL in on_data() with proper point_value multiplier.
+     * @param report Execution report
+     * @return Result indicating success or failure
+     */
+    Result<void> on_execution(const ExecutionReport& report) override;
+
+    /**
      * @brief Return price history for a symbol
      * @param symbol Instrument symbol
      */

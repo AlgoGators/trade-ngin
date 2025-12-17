@@ -13,8 +13,10 @@
 #include "trade_ngin/data/conversion_utils.hpp"
 #include "trade_ngin/data/database_interface.hpp"
 #include "trade_ngin/data/database_pooling.hpp"
+#include "trade_ngin/data/market_data_bus.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
 #include "trade_ngin/storage/backtest_results_manager.hpp"
+#include "trade_ngin/strategy/trend_following.hpp"
 
 namespace {
 std::string join(const std::vector<std::string>& elements, const std::string& delimiter) {
@@ -301,6 +303,32 @@ Result<BacktestResults> BacktestEngine::run(std::shared_ptr<StrategyInterface> s
         INFO("Backtest complete, stopping strategy");
         strategy->stop();
 
+        // Filter out warmup period from equity curve
+        if (config_.strategy_config.warmup_days > 0 &&
+            equity_curve.size() > static_cast<size_t>(config_.strategy_config.warmup_days)) {
+            INFO("Filtering out " + std::to_string(config_.strategy_config.warmup_days) +
+                 " warmup days from equity curve (total points: " +
+                 std::to_string(equity_curve.size()) + ")");
+
+            // Get the equity value at the end of warmup to use as the new starting value
+            double warmup_end_equity = equity_curve[config_.strategy_config.warmup_days].second;
+
+            // Erase the warmup period
+            equity_curve.erase(equity_curve.begin(),
+                              equity_curve.begin() + config_.strategy_config.warmup_days);
+
+            // Normalize the equity curve to start at initial capital
+            double initial_capital = static_cast<double>(config_.portfolio_config.initial_capital);
+            double scale_factor = initial_capital / warmup_end_equity;
+
+            for (auto& point : equity_curve) {
+                point.second *= scale_factor;
+            }
+
+            INFO("Equity curve after warmup filter: " + std::to_string(equity_curve.size()) +
+                 " points, starting at $" + std::to_string(equity_curve.front().second));
+        }
+
         // Calculate final results
         INFO("Calculating backtest metrics");
         auto results = calculate_metrics(equity_curve, executions);
@@ -392,8 +420,19 @@ Result<BacktestResults> BacktestEngine::run_portfolio(std::shared_ptr<PortfolioM
                 std::shared_ptr<RiskManager>(risk_manager_.get(), [](RiskManager*) {}));
         }
 
+        // CRITICAL: Disable MarketDataBus publishing during backtest data loading
+        // This prevents the PortfolioManager callback from processing data twice
+        // (once during loading, once during the main backtest loop)
+        INFO("Disabling MarketDataBus publishing during data loading");
+        MarketDataBus::instance().set_publish_enabled(false);
+
         // Load historical market data
         auto data_result = load_market_data();
+
+        // Re-enable publishing after loading (though not strictly needed for backtests)
+        MarketDataBus::instance().set_publish_enabled(true);
+        INFO("Re-enabled MarketDataBus publishing");
+
         if (data_result.is_error()) {
             ERROR("Failed to load market data: " + std::string(data_result.error()->what()));
 
@@ -430,7 +469,15 @@ Result<BacktestResults> BacktestEngine::run_portfolio(std::shared_ptr<PortfolioM
         size_t processed_bars = 0;
 
         // Process bars in chronological order
+        int loop_count = 0;  // NOT static - reset each backtest run
         for (const auto& [timestamp, bars] : bars_by_time) {
+            if (++loop_count <= 3) {
+                auto time_t = std::chrono::system_clock::to_time_t(timestamp);
+                std::tm tm = *std::gmtime(&time_t);
+                char time_str[64];
+                std::strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", &tm);
+                INFO("LOOP_ITER #" + std::to_string(loop_count) + ": processing timestamp=" + std::string(time_str));
+            }
             try {
                 // Process portfolio time step
                 auto result = process_portfolio_data(timestamp, bars, portfolio, executions,
@@ -478,6 +525,32 @@ Result<BacktestResults> BacktestEngine::run_portfolio(std::shared_ptr<PortfolioM
                     risk_metrics.erase(risk_metrics.begin(), risk_metrics.begin() + 250);
                 }
             }
+        }
+
+        // Filter out warmup period from equity curve
+        if (config_.strategy_config.warmup_days > 0 &&
+            equity_curve.size() > static_cast<size_t>(config_.strategy_config.warmup_days)) {
+            INFO("Filtering out " + std::to_string(config_.strategy_config.warmup_days) +
+                 " warmup days from equity curve (total points: " +
+                 std::to_string(equity_curve.size()) + ")");
+
+            // Get the equity value at the end of warmup to use as the new starting value
+            double warmup_end_equity = equity_curve[config_.strategy_config.warmup_days].second;
+
+            // Erase the warmup period
+            equity_curve.erase(equity_curve.begin(),
+                              equity_curve.begin() + config_.strategy_config.warmup_days);
+
+            // Normalize the equity curve to start at initial capital
+            double initial_capital_norm = static_cast<double>(config_.portfolio_config.initial_capital);
+            double scale_factor = initial_capital_norm / warmup_end_equity;
+
+            for (auto& point : equity_curve) {
+                point.second *= scale_factor;
+            }
+
+            INFO("Equity curve after warmup filter: " + std::to_string(equity_curve.size()) +
+                 " points, starting at $" + std::to_string(equity_curve.front().second));
         }
 
         // Calculate final results
@@ -664,11 +737,20 @@ Result<void> BacktestEngine::process_bar(
             }
             
             if (current_price > 0.0 && previous_day_close_prices.find(symbol) != previous_day_close_prices.end()) {
-                // Get point value multiplier (assuming $20 for NQ, adjust as needed)
-                double point_value = 20.0;  // TODO: Get from instrument registry
-                
+                // Get point value multiplier from strategy (correct symbol-specific value)
+                double point_value = 1.0;
+                auto trend_strategy = std::dynamic_pointer_cast<TrendFollowingStrategy>(strategy);
+                if (trend_strategy) {
+                    try {
+                        point_value = trend_strategy->get_point_value_multiplier(symbol);
+                    } catch (const std::exception& e) {
+                        WARN("Failed to get point value for " + symbol + ": " + e.what() + ". Using 1.0");
+                        point_value = 1.0;
+                    }
+                }
+
                 // Calculate daily PnL: quantity * (current_close - previous_close) * point_value
-                double daily_pnl = static_cast<double>(pos.quantity) * 
+                double daily_pnl = static_cast<double>(pos.quantity) *
                                   (current_price - previous_day_close_prices[symbol]) * point_value;
                 portfolio_value += daily_pnl;
             }
@@ -906,11 +988,20 @@ Result<void> BacktestEngine::process_strategy_signals(
             }
             
             if (current_price > 0.0 && previous_day_close_prices.find(symbol) != previous_day_close_prices.end()) {
-                // Get point value multiplier (assuming $20 for NQ, adjust as needed)
-                double point_value = 20.0;  // TODO: Get from instrument registry
-                
+                // Get point value multiplier from strategy (correct symbol-specific value)
+                double point_value = 1.0;
+                auto trend_strategy = std::dynamic_pointer_cast<TrendFollowingStrategy>(strategy);
+                if (trend_strategy) {
+                    try {
+                        point_value = trend_strategy->get_point_value_multiplier(symbol);
+                    } catch (const std::exception& e) {
+                        WARN("Failed to get point value for " + symbol + ": " + e.what() + ". Using 1.0");
+                        point_value = 1.0;
+                    }
+                }
+
                 // Calculate daily PnL: quantity * (current_close - previous_close) * point_value
-                double daily_pnl = static_cast<double>(pos.quantity) * 
+                double daily_pnl = static_cast<double>(pos.quantity) *
                                   (current_price - previous_day_close_prices[symbol]) * point_value;
                 portfolio_value += daily_pnl;
             }
@@ -1259,6 +1350,17 @@ Result<void> BacktestEngine::process_portfolio_data(
         try {
             portfolio_value = portfolio->get_portfolio_value(current_prices);
             equity_curve.emplace_back(timestamp, portfolio_value);
+
+            // Log first few equity curve entries
+            static int ec_count = 0;
+            if (++ec_count <= 5) {
+                auto time_t = std::chrono::system_clock::to_time_t(timestamp);
+                std::tm tm = *std::gmtime(&time_t);
+                char time_str[64];
+                std::strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", &tm);
+                INFO("EQUITY_CURVE #" + std::to_string(ec_count) + ": timestamp=" + std::string(time_str) +
+                     ", value=$" + std::to_string(portfolio_value));
+            }
 
             // Debug: Log portfolio value periodically (every 10 periods)
             static int debug_counter = 0;

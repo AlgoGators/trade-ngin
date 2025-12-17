@@ -52,6 +52,11 @@ Result<void> MarketDataBus::unsubscribe(const std::string& subscriber_id) {
 }
 
 void MarketDataBus::publish(const MarketDataEvent& event) {
+    // Early return if publishing is disabled (e.g., during backtest data loading)
+    if (!publish_enabled_) {
+        return;
+    }
+
     try {
         std::lock_guard<std::mutex> lock(mutex_);
 
