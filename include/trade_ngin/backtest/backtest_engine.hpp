@@ -48,6 +48,7 @@ struct StrategyBacktestConfig : public ConfigBase {
     Decimal commission_rate = Decimal(0.0005);     // 5 basis points
     Decimal slippage_model = Decimal(1.0);         // 1 bp
     bool store_trade_details = true;
+    int warmup_days = 0;  // Number of trading days to exclude from results (for strategy warmup)
 
     // Configuration metadata
     std::string version{"1.0.0"};
