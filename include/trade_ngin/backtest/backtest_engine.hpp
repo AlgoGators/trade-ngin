@@ -274,11 +274,21 @@ public:
     /**
      * @brief Save backtest results to database
      * @param results Results to save
+     * @param strategy_id Strategy identifier (used for run_id generation if run_id is empty)
      * @param run_id Optional identifier for this run
      * @return Result indicating success or failure
      */
     Result<void> save_results_to_db(const BacktestResults& results,
+                                    const std::string& strategy_id = "TREND_FOLLOWING",
                                     const std::string& run_id = "") const;
+
+    // Multi-strategy version: save portfolio-level results with per-strategy attribution
+    Result<void> save_portfolio_results_to_db(
+        const BacktestResults& results,
+        const std::vector<std::string>& strategy_names,
+        const std::unordered_map<std::string, double>& strategy_allocations,
+        std::shared_ptr<PortfolioManager> portfolio,
+        const nlohmann::json& portfolio_config) const;
 
     /**
      * @brief Save backtest results to CSV

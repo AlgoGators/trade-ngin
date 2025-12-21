@@ -1649,6 +1649,68 @@ Result<void> PostgresDatabase::store_backtest_executions(const std::vector<Execu
     }
 }
 
+Result<void> PostgresDatabase::store_backtest_executions_with_strategy(
+    const std::vector<ExecutionReport>& executions,
+    const std::string& run_id,
+    const std::string& strategy_id,
+    const std::string& table_name) {
+    auto validation = validate_connection();
+    if (validation.is_error())
+        return validation;
+
+    try {
+        pqxx::work txn(*connection_);
+
+        // Validate table name
+        auto table_validation = validate_table_name(table_name);
+        if (table_validation.is_error()) {
+            return table_validation;
+        }
+
+        // Use batch insert for better performance with large execution sets
+        if (executions.size() > 100) {
+            // Build a single multi-value INSERT for large batches with strategy_id
+            std::string query = "INSERT INTO " + table_name +
+                                " (run_id, strategy_id, execution_id, order_id, timestamp, symbol, side, quantity, price, commission, is_partial) VALUES ";
+            
+            std::vector<std::string> value_strings;
+            value_strings.reserve(executions.size());
+            
+            for (const auto& exec : executions) {
+                std::string values = "('" + run_id + "', '" + strategy_id + "', '" + exec.exec_id + "', '" + exec.order_id + "', '" + 
+                                   format_timestamp(exec.fill_time) + "', '" + exec.symbol + "', '" + 
+                                   side_to_string(exec.side) + "', " + std::to_string(static_cast<double>(exec.filled_quantity)) + 
+                                   ", " + std::to_string(static_cast<double>(exec.fill_price)) + ", " + 
+                                   std::to_string(static_cast<double>(exec.commission)) + ", " + 
+                                   (exec.is_partial ? "true" : "false") + ")";
+                value_strings.push_back(values);
+            }
+            
+            query += pqxx::separated_list(",", value_strings.begin(), value_strings.end());
+            txn.exec(query);
+        } else {
+            // Use parameterized queries for smaller batches with strategy_id
+            for (const auto& exec : executions) {
+                std::string query = "INSERT INTO " + table_name +
+                                    " (run_id, strategy_id, execution_id, order_id, timestamp, symbol, side, quantity, price, commission, is_partial) "
+                                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)";
+
+                txn.exec_params(query, run_id, strategy_id, exec.exec_id, exec.order_id, format_timestamp(exec.fill_time),
+                                exec.symbol, side_to_string(exec.side), static_cast<double>(exec.filled_quantity),
+                                static_cast<double>(exec.fill_price), static_cast<double>(exec.commission), exec.is_partial);
+            }
+        }
+
+        txn.commit();
+        INFO("Successfully stored " + std::to_string(executions.size()) + " backtest executions for run: " + run_id + ", strategy_id: " + strategy_id);
+        return Result<void>();
+    } catch (const std::exception& e) {
+        return make_error<void>(ErrorCode::DATABASE_ERROR,
+                                "Failed to store backtest executions with strategy: " + std::string(e.what()),
+                                "PostgresDatabase");
+    }
+}
+
 Result<void> PostgresDatabase::store_backtest_signals(const std::unordered_map<std::string, double>& signals,
                                                       const std::string& strategy_id, const std::string& run_id,
                                                       const Timestamp& timestamp,
@@ -1708,6 +1770,50 @@ Result<void> PostgresDatabase::store_backtest_metadata(const std::string& run_id
     } catch (const std::exception& e) {
         return make_error<void>(ErrorCode::DATABASE_ERROR,
                                 "Failed to store backtest metadata: " + std::string(e.what()),
+                                "PostgresDatabase");
+    }
+}
+
+Result<void> PostgresDatabase::store_backtest_metadata_with_portfolio(
+    const std::string& run_id,
+    const std::string& portfolio_run_id,
+    const std::string& strategy_id,
+    double strategy_allocation,
+    const nlohmann::json& portfolio_config,
+    const std::string& name,
+    const std::string& description,
+    const Timestamp& start_date,
+    const Timestamp& end_date,
+    const nlohmann::json& hyperparameters,
+    const std::string& table_name) {
+    auto validation = validate_connection();
+    if (validation.is_error())
+        return validation;
+
+    try {
+        pqxx::work txn(*connection_);
+
+        std::string query = "INSERT INTO " + table_name +
+                            " (run_id, portfolio_run_id, strategy_id, strategy_allocation, portfolio_config, name, description, start_date, end_date, hyperparameters) "
+                            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) "
+                            "ON CONFLICT (run_id, strategy_id) "
+                            "DO UPDATE SET portfolio_run_id = EXCLUDED.portfolio_run_id, "
+                            "strategy_allocation = EXCLUDED.strategy_allocation, "
+                            "portfolio_config = EXCLUDED.portfolio_config, "
+                            "name = EXCLUDED.name, description = EXCLUDED.description, "
+                            "start_date = EXCLUDED.start_date, end_date = EXCLUDED.end_date, "
+                            "hyperparameters = EXCLUDED.hyperparameters";
+
+        txn.exec_params(query, run_id, portfolio_run_id, strategy_id, strategy_allocation, portfolio_config.dump(),
+                        name, description, format_timestamp(start_date), format_timestamp(end_date),
+                        hyperparameters.dump());
+
+        txn.commit();
+        INFO("Successfully stored backtest metadata with portfolio for run: " + run_id + ", portfolio_run_id: " + portfolio_run_id);
+        return Result<void>();
+    } catch (const std::exception& e) {
+        return make_error<void>(ErrorCode::DATABASE_ERROR,
+                                "Failed to store backtest metadata with portfolio: " + std::string(e.what()),
                                 "PostgresDatabase");
     }
 }

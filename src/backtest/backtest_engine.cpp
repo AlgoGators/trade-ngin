@@ -8,6 +8,7 @@
 #include <set>
 #include <sstream>
 #include "trade_ngin/core/logger.hpp"
+#include "trade_ngin/core/run_id_generator.hpp"
 #include "trade_ngin/core/state_manager.hpp"
 #include "trade_ngin/core/time_utils.hpp"
 #include "trade_ngin/data/conversion_utils.hpp"
@@ -17,6 +18,7 @@
 #include "trade_ngin/data/postgres_database.hpp"
 #include "trade_ngin/storage/backtest_results_manager.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
+#include "trade_ngin/instruments/instrument_registry.hpp"
 
 namespace {
 std::string join(const std::vector<std::string>& elements, const std::string& delimiter) {
@@ -329,6 +331,12 @@ Result<BacktestResults> BacktestEngine::run(std::shared_ptr<StrategyInterface> s
                  " points, starting at $" + std::to_string(equity_curve.front().second));
         }
 
+        // Sort executions by timestamp to ensure chronological order
+        std::sort(executions.begin(), executions.end(), 
+                  [](const ExecutionReport& a, const ExecutionReport& b) {
+                      return a.fill_time < b.fill_time;
+                  });
+
         // Calculate final results
         INFO("Calculating backtest metrics");
         auto results = calculate_metrics(equity_curve, executions);
@@ -552,6 +560,12 @@ Result<BacktestResults> BacktestEngine::run_portfolio(std::shared_ptr<PortfolioM
             INFO("Equity curve after warmup filter: " + std::to_string(equity_curve.size()) +
                  " points, starting at $" + std::to_string(equity_curve.front().second));
         }
+
+        // Sort executions by timestamp to ensure chronological order
+        std::sort(executions.begin(), executions.end(), 
+                  [](const ExecutionReport& a, const ExecutionReport& b) {
+                      return a.fill_time < b.fill_time;
+                  });
 
         // Calculate final results
         INFO("Calculating portfolio backtest metrics");
@@ -1220,6 +1234,30 @@ Result<void> BacktestEngine::process_portfolio_data(
                                     "BacktestEngine");
         }
 
+        // CRITICAL: Track T-1 close prices for matching live trading methodology
+        // At START of Day T processing, previous_day_close_prices contains T-1 closes
+        // We use these for average_price and PnL calculations
+        // At END, we update to T closes (which become T-1 for next day)
+        static std::unordered_map<std::string, double> previous_day_close_prices;
+        
+        // Extract T-1 close prices BEFORE processing (for use during this period)
+        std::unordered_map<std::string, double> t1_close_prices;
+        for (const auto& bar : bars) {
+            auto prev_it = previous_day_close_prices.find(bar.symbol);
+            if (prev_it != previous_day_close_prices.end()) {
+                t1_close_prices[bar.symbol] = prev_it->second;  // T-1 close
+            } else {
+                // First day: use current close as fallback (will be T-1 for next day)
+                t1_close_prices[bar.symbol] = static_cast<double>(bar.close);
+            }
+        }
+        
+        // Extract T close prices (current bar closes) for PnL calculation
+        std::unordered_map<std::string, double> t_close_prices;
+        for (const auto& bar : bars) {
+            t_close_prices[bar.symbol] = static_cast<double>(bar.close);  // T close
+        }
+
         // Update slippage model
         if (slippage_model_) {
             for (const auto& bar : bars) {
@@ -1412,6 +1450,156 @@ Result<void> BacktestEngine::process_portfolio_data(
             } catch (const std::exception& e) {
                 WARN("Exception calculating risk metrics: " + std::string(e.what()) +
                      ". Continuing without risk metrics for this period.");
+            }
+        }
+
+        // Save positions with timestamp for historical tracking (if storage enabled)
+        if (config_.store_trade_details && db_) {
+            try {
+                auto db_ptr = std::dynamic_pointer_cast<PostgresDatabase>(db_);
+                if (db_ptr) {
+                    // Get per-strategy positions
+                    auto strategy_positions_map = portfolio->get_strategy_positions();
+                    
+                    // Generate portfolio run_id (needed for saving)
+                    // Get strategy names from portfolio
+                    std::vector<std::string> strategy_names;
+                    for (const auto& [strategy_id, _] : strategy_positions_map) {
+                        strategy_names.push_back(strategy_id);
+                    }
+                    std::string portfolio_run_id = RunIdGenerator::generate_portfolio_run_id(
+                        strategy_names, config_.strategy_config.end_date);
+                    
+                    // Save positions for each strategy with current timestamp
+                    // Update PnL based on current market prices to match live trading methodology
+                    for (const auto& [strategy_id, positions_map] : strategy_positions_map) {
+                        std::vector<Position> positions_vec;
+                        positions_vec.reserve(positions_map.size());
+                        
+                        // Create price map from current bars for PnL calculation
+                        std::unordered_map<std::string, double> current_prices;
+                        for (const auto& bar : bars) {
+                            current_prices[bar.symbol] = static_cast<double>(bar.close);
+                        }
+                        
+                        for (const auto& [symbol, pos] : positions_map) {
+                            Position pos_with_timestamp = pos;
+                            pos_with_timestamp.last_update = timestamp;  // Set current timestamp
+                            
+                            // CRITICAL: Match live trading methodology
+                            // average_price should be T-1 close (entry price for Day T)
+                            // PnL calculated using T close (current day's close)
+                            
+                            // Get T-1 close price (entry price for Day T)
+                            double t1_close = static_cast<double>(pos.average_price);  // Default fallback
+                            auto t1_it = t1_close_prices.find(symbol);
+                            if (t1_it != t1_close_prices.end()) {
+                                t1_close = t1_it->second;  // Use T-1 close
+                            }
+                            
+                            // Get T close price (current day's close) for PnL calculation
+                            double t_close = 0.0;
+                            auto t_it = t_close_prices.find(symbol);
+                            if (t_it != t_close_prices.end()) {
+                                t_close = t_it->second;  // T close
+                            } else {
+                                // Last day case: T close not available, set PnL to 0
+                                t_close = t1_close;  // Use T-1 close as fallback (PnL will be 0)
+                            }
+                            
+                            // Set average_price to T-1 close (matches live trading)
+                            pos_with_timestamp.average_price = Decimal(t1_close);
+                            
+                            // Get point value multiplier (for futures contracts)
+                            double point_value = 1.0;
+                            try {
+                                auto& registry = InstrumentRegistry::instance();
+                                // Normalize symbol (remove .v./.c. suffix) for registry lookup
+                                std::string base_symbol = symbol;
+                                size_t dotpos = base_symbol.find(".v.");
+                                if (dotpos != std::string::npos) {
+                                    base_symbol = base_symbol.substr(0, dotpos);
+                                }
+                                dotpos = base_symbol.find(".c.");
+                                if (dotpos != std::string::npos) {
+                                    base_symbol = base_symbol.substr(0, dotpos);
+                                }
+                                
+                                if (registry.has_instrument(base_symbol)) {
+                                    auto instrument = registry.get_instrument(base_symbol);
+                                    if (instrument) {
+                                        point_value = instrument->get_multiplier();
+                                    }
+                                }
+                            } catch (...) {
+                                // Use default 1.0 if unable to get point value
+                                point_value = 1.0;
+                            }
+                            
+                            // Calculate mark-to-market PnL: quantity * (T_close - T-1_close) * point_value
+                            // This matches live trading methodology (daily mark-to-market)
+                            double quantity = static_cast<double>(pos.quantity);
+                            double mark_to_market_pnl = 0.0;
+                            
+                            if (std::abs(quantity) > 1e-6 && t_close > 0.0) {
+                                mark_to_market_pnl = quantity * (t_close - t1_close) * point_value;
+                            }
+                            
+                            // For REALIZED_ONLY accounting (futures), all PnL is realized via mark-to-market
+                            // Add mark-to-market PnL to realized_pnl
+                            double current_realized_pnl = static_cast<double>(pos.realized_pnl);
+                            pos_with_timestamp.realized_pnl = Decimal(current_realized_pnl + mark_to_market_pnl);
+                            pos_with_timestamp.unrealized_pnl = Decimal(0.0);  // Always 0 for futures
+                            
+                            // Update average_price to T close at end of day (becomes T-1 for next day)
+                            // This matches live trading: average_price updates daily to previous day's close
+                            pos_with_timestamp.average_price = Decimal(t_close);
+                            
+                            positions_vec.push_back(pos_with_timestamp);
+                        }
+                        
+                        if (!positions_vec.empty()) {
+                            auto save_result = db_ptr->store_backtest_positions_with_strategy(
+                                positions_vec, portfolio_run_id, strategy_id, "backtest.final_positions");
+                            if (save_result.is_error()) {
+                                DEBUG("Failed to save positions for strategy " + strategy_id + 
+                                      " at timestamp: " + std::string(save_result.error()->what()));
+                            }
+                            
+                            // CRITICAL: Update strategy positions so next period uses correct average_price (T close)
+                            // This ensures average_price = T-1 close for the next period
+                            // Match live trading: average_price updates daily to previous day's close
+                            // Note: We update strategy positions so the next period uses T close as T-1 close
+                            // This is safe because:
+                            // 1. In backtest, we control the flow completely
+                            // 2. In live trading, positions are loaded from DB each day (strategy positions reset)
+                            // 3. Live trading overwrites average_price anyway (line 658 in live_portfolio.cpp)
+                            auto strategies = portfolio->get_strategies();
+                            for (auto strategy_ptr : strategies) {
+                                // Match strategy by ID (strategy_id from positions_map should match strategy metadata.id)
+                                if (strategy_ptr->get_metadata().id == strategy_id) {
+                                    for (const auto& updated_pos : positions_vec) {
+                                        auto update_result = strategy_ptr->update_position(updated_pos.symbol, updated_pos);
+                                        if (update_result.is_error()) {
+                                            DEBUG("Failed to update position " + updated_pos.symbol + " in strategy " + strategy_id + ": " + 
+                                                  std::string(update_result.error()->what()));
+                                        }
+                                    }
+                                    break;  // Found matching strategy, no need to check others
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                // Update previous_day_close_prices to T closes AFTER all processing
+                // These T closes will become T-1 closes for the next period
+                for (const auto& bar : bars) {
+                    previous_day_close_prices[bar.symbol] = static_cast<double>(bar.close);
+                }
+            } catch (const std::exception& e) {
+                DEBUG("Exception saving positions during backtest: " + std::string(e.what()) +
+                      ". Continuing without position save for this period.");
             }
         }
 
@@ -1694,6 +1882,18 @@ BacktestResults BacktestEngine::calculate_metrics(
     double total_loss = 0.0;
     int winning_trades = 0;
 
+    // Debug: Log first few executions to understand the data
+    if (!executions.empty()) {
+        DEBUG("Processing " + std::to_string(executions.size()) + " executions for trade metrics");
+        for (size_t i = 0; i < std::min(size_t(5), executions.size()); ++i) {
+            const auto& exec = executions[i];
+            std::string side_str = (exec.side == Side::BUY) ? "BUY" : "SELL";
+            DEBUG("Execution " + std::to_string(i) + ": " + exec.symbol + " " + side_str + 
+                  " qty=" + std::to_string(static_cast<double>(exec.filled_quantity)) +
+                  " price=" + std::to_string(static_cast<double>(exec.fill_price)));
+        }
+    }
+
     for (const auto& exec : executions) {
         const std::string& symbol = exec.symbol;
         double fill_price = static_cast<double>(exec.fill_price);
@@ -1728,8 +1928,15 @@ BacktestResults BacktestEngine::calculate_metrics(
         }
 
         // Count all trades that close positions (have realized P&L)
-        if (std::abs(signed_qty) > 1e-6 && current_pos != 0.0 &&
-            ((current_pos > 0 && signed_qty < 0) || (current_pos < 0 && signed_qty > 0))) {
+        // A trade closes a position when:
+        // 1. We have an existing position (current_pos != 0)
+        // 2. The execution is in the opposite direction (reducing or closing the position)
+        bool is_closing_trade = std::abs(signed_qty) > 1e-6 && current_pos != 0.0 &&
+            ((current_pos > 0 && signed_qty < 0) || (current_pos < 0 && signed_qty > 0));
+        
+        if (is_closing_trade) {
+            // Count all position-closing trades, regardless of P&L magnitude
+            // This includes partial closes and full closes
             trade_pnls.push_back(trade_pnl);
             // Add to actual_trades for database logging (only position-closing trades)
             actual_trades.push_back(exec);
@@ -1747,16 +1954,30 @@ BacktestResults BacktestEngine::calculate_metrics(
     results.total_trades = static_cast<int>(trade_pnls.size());
     results.actual_trades = actual_trades;  // Save only the actual trades
 
+    // Debug logging for trade metrics
+    DEBUG("Trade metrics calculation: total_trades=" + std::to_string(results.total_trades) +
+          ", winning_trades=" + std::to_string(winning_trades) +
+          ", total_profit=" + std::to_string(total_profit) +
+          ", total_loss=" + std::to_string(total_loss) +
+          ", executions_count=" + std::to_string(executions.size()));
+
     if (results.total_trades > 0) {
         results.win_rate = static_cast<double>(winning_trades) / results.total_trades;
         results.avg_win = winning_trades > 0 ? total_profit / winning_trades : 0.0;
         results.avg_loss = (results.total_trades - winning_trades) > 0
                                ? total_loss / (results.total_trades - winning_trades)
                                : 0.0;
+    } else {
+        // If no closing trades, log a warning
+        WARN("No position-closing trades found in " + std::to_string(executions.size()) + 
+             " executions. All trades may be position-opening or position-increasing.");
     }
 
     if (total_loss > 0) {
         results.profit_factor = total_profit / total_loss;
+    } else if (results.total_trades > 0 && total_profit > 0) {
+        // If we have trades but no losses, profit factor is infinite (cap at reasonable value)
+        results.profit_factor = 999.0;
     }
 
     // Calculate drawdown metrics
@@ -1961,6 +2182,7 @@ std::unordered_map<std::string, double> BacktestEngine::calculate_risk_metrics(
 }
 
 Result<void> BacktestEngine::save_results_to_db(const BacktestResults& results,
+                                                const std::string& strategy_id,
                                                 const std::string& run_id) const {
     if (!config_.store_trade_details) {
         return Result<void>();
@@ -1976,20 +2198,24 @@ Result<void> BacktestEngine::save_results_to_db(const BacktestResults& results,
                                "Invalid database type", "BacktestEngine");
     }
 
-    // Create and configure the results manager
+    // Create and configure the results manager with the provided strategy ID
     auto results_manager = std::make_unique<BacktestResultsManager>(
         db_ptr,
         config_.store_trade_details,
-        "TREND_FOLLOWING"  // Default strategy ID
+        strategy_id
     );
 
-    // Set all the data
+    // Set metadata with full config structure (matching previous format)
+    // Use the config's to_json() method to get the complete structure
+    nlohmann::json hyperparameters = config_.to_json();
+    hyperparameters["version"] = config_.version;
+    
     results_manager->set_metadata(
         config_.strategy_config.start_date,
         config_.strategy_config.end_date,
-        nlohmann::json{},  // TODO: Add hyperparameters from config
-        "Backtest Run",
-        "Automated backtest run"
+        hyperparameters,
+        "Backtest Run: " + strategy_id,
+        "Automated backtest run for strategy: " + strategy_id
     );
 
     // Convert performance metrics
@@ -2031,7 +2257,7 @@ Result<void> BacktestEngine::save_results_to_db(const BacktestResults& results,
 
     // Generate run_id if not provided
     std::string actual_run_id = run_id.empty()
-        ? BacktestResultsManager::generate_run_id("TREND_FOLLOWING")
+        ? BacktestResultsManager::generate_run_id(strategy_id)
         : run_id;
 
     // Save all results
@@ -2045,6 +2271,153 @@ Result<void> BacktestEngine::save_results_to_db(const BacktestResults& results,
     }
 
     INFO("Successfully saved backtest results using new storage manager");
+    return Result<void>();
+}
+
+Result<void> BacktestEngine::save_portfolio_results_to_db(
+    const BacktestResults& results,
+    const std::vector<std::string>& strategy_names,
+    const std::unordered_map<std::string, double>& strategy_allocations,
+    std::shared_ptr<PortfolioManager> portfolio,
+    const nlohmann::json& portfolio_config) const {
+    
+    if (!config_.store_trade_details) {
+        return Result<void>();
+    }
+
+    INFO("Using BacktestResultsManager for portfolio-level storage");
+
+    auto db_ptr = std::dynamic_pointer_cast<PostgresDatabase>(db_);
+    if (!db_ptr) {
+        ERROR("Database is not a PostgresDatabase instance");
+        return make_error<void>(ErrorCode::DATABASE_ERROR,
+                               "Invalid database type", "BacktestEngine");
+    }
+
+    // Generate portfolio run_id (combined strategy names)
+    std::string portfolio_run_id = RunIdGenerator::generate_portfolio_run_id(
+        strategy_names, config_.strategy_config.end_date);
+
+    INFO("Generated portfolio run_id: " + portfolio_run_id);
+
+    // Create results manager for portfolio-level storage
+    // Use portfolio_run_id as the strategy_id for the manager
+    auto results_manager = std::make_unique<BacktestResultsManager>(
+        db_ptr,
+        config_.store_trade_details,
+        portfolio_run_id  // Use portfolio run_id as identifier
+    );
+
+    // Set metadata with full config structure
+    nlohmann::json hyperparameters = config_.to_json();
+    hyperparameters["version"] = config_.version;
+    
+    results_manager->set_metadata(
+        config_.strategy_config.start_date,
+        config_.strategy_config.end_date,
+        hyperparameters,
+        "Portfolio Backtest Run: " + portfolio_run_id,
+        "Multi-strategy portfolio backtest"
+    );
+
+    // Convert performance metrics (portfolio-level)
+    std::unordered_map<std::string, double> metrics = {
+        {"total_return", results.total_return},
+        {"sharpe_ratio", results.sharpe_ratio},
+        {"sortino_ratio", results.sortino_ratio},
+        {"max_drawdown", results.max_drawdown},
+        {"calmar_ratio", results.calmar_ratio},
+        {"volatility", results.volatility},
+        {"total_trades", static_cast<double>(results.total_trades)},
+        {"win_rate", results.win_rate},
+        {"profit_factor", results.profit_factor},
+        {"avg_win", results.avg_win},
+        {"avg_loss", results.avg_loss},
+        {"max_win", results.max_win},
+        {"max_loss", results.max_loss},
+        {"avg_holding_period", results.avg_holding_period},
+        {"var_95", results.var_95},
+        {"cvar_95", results.cvar_95},
+        {"beta", results.beta},
+        {"correlation", results.correlation},
+        {"downside_volatility", results.downside_volatility}
+    };
+    results_manager->set_performance_metrics(metrics);
+
+    // Set portfolio-level equity curve
+    std::vector<std::pair<Timestamp, double>> equity_points;
+    for (const auto& [timestamp, equity] : results.equity_curve) {
+        equity_points.push_back({timestamp, equity});
+    }
+    results_manager->set_equity_curve(equity_points);
+
+    // Collect per-strategy positions and executions
+    if (portfolio) {
+        // Get per-strategy optimized positions from PortfolioManager (after optimization/rounding)
+        auto strategy_positions_map = portfolio->get_strategy_positions();
+        
+        // Get per-strategy executions from PortfolioManager
+        auto strategy_executions_map = portfolio->get_strategy_executions();
+        
+        // Process each strategy
+        for (const auto& [strategy_id, positions_map] : strategy_positions_map) {
+            // Convert optimized positions to vector
+            std::vector<Position> strategy_positions;
+            strategy_positions.reserve(positions_map.size());
+            for (const auto& [symbol, pos] : positions_map) {
+                strategy_positions.push_back(pos);
+            }
+            results_manager->set_strategy_positions(strategy_id, strategy_positions);
+
+            // Get executions for this strategy
+            auto strategy_execs_it = strategy_executions_map.find(strategy_id);
+            if (strategy_execs_it != strategy_executions_map.end()) {
+                results_manager->set_strategy_executions(strategy_id, strategy_execs_it->second);
+            } else {
+                // No executions for this strategy (empty vector)
+                results_manager->set_strategy_executions(strategy_id, {});
+            }
+        }
+    }
+
+    // Don't save portfolio-level executions - we save per-strategy executions instead
+    // (Portfolio-level executions are aggregated and don't have strategy_id attribution)
+    // results_manager->set_executions(results.executions);  // Skip for portfolio runs
+
+    // Save portfolio-level results (summary, equity curve)
+    // Note: save_all_results will skip executions since we didn't set them
+    auto save_result = results_manager->save_all_results(portfolio_run_id,
+                                                          config_.strategy_config.end_date);
+
+    if (save_result.is_error()) {
+        ERROR("Failed to save portfolio results: " + std::string(save_result.error()->what()));
+        return save_result;
+    }
+
+    // Save per-strategy positions (Approach B - multiple rows)
+    auto positions_result = results_manager->save_strategy_positions(portfolio_run_id);
+    if (positions_result.is_error()) {
+        WARN("Failed to save strategy positions: " + std::string(positions_result.error()->what()));
+        // Non-fatal, continue
+    }
+
+    // Save per-strategy executions (Approach B - multiple rows)
+    // Executions are now tracked per strategy in PortfolioManager
+    auto executions_result = results_manager->save_strategy_executions(portfolio_run_id);
+    if (executions_result.is_error()) {
+        WARN("Failed to save strategy executions: " + std::string(executions_result.error()->what()));
+        // Non-fatal, continue
+    }
+
+    // Save per-strategy metadata
+    auto metadata_result = results_manager->save_strategy_metadata(
+        portfolio_run_id, strategy_allocations, portfolio_config);
+    if (metadata_result.is_error()) {
+        WARN("Failed to save strategy metadata: " + std::string(metadata_result.error()->what()));
+        // Non-fatal, continue
+    }
+
+    INFO("Successfully saved portfolio backtest results");
     return Result<void>();
 }
 

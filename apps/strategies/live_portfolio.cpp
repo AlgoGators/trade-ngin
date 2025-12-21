@@ -15,7 +15,7 @@
 #include "trade_ngin/instruments/instrument_registry.hpp"
 #include "trade_ngin/instruments/futures.hpp"
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
-#include "trade_ngin/strategy/trend_following.hpp"
+#include "trade_ngin/strategy/trend_following_slow.hpp"
 #include "trade_ngin/core/email_sender.hpp"
 #include "trade_ngin/storage/live_results_manager.hpp"
 #include "trade_ngin/live/live_data_loader.hpp"
@@ -344,21 +344,22 @@ int main(int argc, char* argv[]) {
         }
 
         // Configure trend following parameters
-        trade_ngin::TrendFollowingConfig trend_config;
+        trade_ngin::TrendFollowingSlowConfig trend_config;
         trend_config.weight = 0.03;       // Match backtest defaults
-        trend_config.risk_target = 0.2;
+        trend_config.risk_target = 0.15;  // Lower risk target for slow strategy
         trend_config.idm = 2.5;           // Instrument diversification multiplier
         trend_config.use_position_buffering = true;  // Use buffering for daily trading
-        trend_config.ema_windows = {{2, 8}, {4, 16}, {8, 32}, {16, 64}, {32, 128}, {64, 256}};
-        trend_config.vol_lookback_short = 32;
+        // Slower EMA windows (longer lookback periods)
+        trend_config.ema_windows = {{4, 16}, {8, 32}, {16, 64}, {32, 128}, {64, 256}, {128, 512}};
+        trend_config.vol_lookback_short = 64;  // Longer short vol lookback
         trend_config.vol_lookback_long = 252;
         trend_config.fdm = {{1, 1.0}, {2, 1.03}, {3, 1.08}, {4, 1.13}, {5, 1.19}, {6, 1.26}};
 
         // Create and initialize the strategies
-        // Before TrendFollowingStrategy
-        std::cerr << "Before TrendFollowingStrategy: initialized="
+        // Before TrendFollowingSlowStrategy
+        std::cerr << "Before TrendFollowingSlowStrategy: initialized="
                   << Logger::instance().is_initialized() << std::endl;
-        INFO("Initializing TrendFollowingStrategy...");
+        INFO("Initializing TrendFollowingSlowStrategy...");
         std::cout << "Strategy capital allocation: $" << tf_config.capital_allocation << std::endl;
         std::cout << "Max leverage: " << tf_config.max_leverage << "x" << std::endl;
 
@@ -366,8 +367,8 @@ int main(int argc, char* argv[]) {
         auto registry_ptr =
             std::shared_ptr<InstrumentRegistry>(&registry, [](InstrumentRegistry*) {});
 
-        auto tf_strategy = std::make_shared<trade_ngin::TrendFollowingStrategy>(
-            "LIVE_TREND_FOLLOWING", tf_config, trend_config, db, registry_ptr);
+        auto tf_strategy = std::make_shared<trade_ngin::TrendFollowingSlowStrategy>(
+            "LIVE_TREND_FOLLOWING_SLOW", tf_config, trend_config, db, registry_ptr);
 
         auto init_result = tf_strategy->initialize();
         if (init_result.is_error()) {
@@ -402,7 +403,7 @@ int main(int argc, char* argv[]) {
         // Create LiveTradingCoordinator to manage all live trading components
         INFO("Creating LiveTradingCoordinator for centralized component management");
         LiveTradingConfig coordinator_config;
-        coordinator_config.strategy_id = "LIVE_TREND_FOLLOWING";
+        coordinator_config.strategy_id = "LIVE_TREND_FOLLOWING_SLOW";
         coordinator_config.schema = "trading";
         coordinator_config.initial_capital = tf_config.capital_allocation;
         coordinator_config.store_results = true;
@@ -510,7 +511,7 @@ int main(int argc, char* argv[]) {
         // Load previous day positions for PnL calculation
         INFO("Loading previous day positions for PnL calculation...");
         auto previous_date = now - std::chrono::hours(24);
-        auto previous_positions_result = db->load_positions_by_date("LIVE_TREND_FOLLOWING", previous_date, "trading.positions");
+        auto previous_positions_result = db->load_positions_by_date("LIVE_TREND_FOLLOWING_SLOW", previous_date, "trading.positions");
         std::unordered_map<std::string, Position> previous_positions;
         
         if (previous_positions_result.is_ok()) {
@@ -618,7 +619,7 @@ int main(int argc, char* argv[]) {
             if (!yesterday_finalized_positions.empty()) {
                 // Always save yesterday's finalized positions immediately (not queued)
                 // These are updates to existing positions from the previous day
-                auto update_result = db->store_positions(yesterday_finalized_positions, "LIVE_TREND_FOLLOWING", "trading.positions");
+                auto update_result = db->store_positions(yesterday_finalized_positions, "LIVE_TREND_FOLLOWING_SLOW", "trading.positions");
                 if (update_result.is_error()) {
                     ERROR("Failed to update Day T-1 positions: " + std::string(update_result.error()->what()));
                 } else {
@@ -980,7 +981,7 @@ int main(int argc, char* argv[]) {
             // Use LiveDataLoader to get yesterday's metrics
             try {
                 INFO("Using LiveDataLoader to query yesterday's metrics for date: " + yesterday_date_ss.str());
-                auto live_results = data_loader->load_live_results("LIVE_TREND_FOLLOWING", previous_date);
+                auto live_results = data_loader->load_live_results("LIVE_TREND_FOLLOWING_SLOW", previous_date);
 
                 if (live_results.is_ok()) {
                     auto& row = live_results.value();
@@ -1022,7 +1023,7 @@ int main(int argc, char* argv[]) {
             try {
                 auto db_ptr = std::dynamic_pointer_cast<PostgresDatabase>(db);
                 if (db_ptr) {
-                    auto prev_agg = db_ptr->get_previous_live_aggregates("LIVE_TREND_FOLLOWING", previous_date, "trading.live_results");
+                    auto prev_agg = db_ptr->get_previous_live_aggregates("LIVE_TREND_FOLLOWING_SLOW", previous_date, "trading.live_results");
                     if (prev_agg.is_ok()) {
                         std::tie(day_before_yesterday_portfolio_value, day_before_yesterday_total_pnl, day_before_yesterday_total_commissions) = prev_agg.value();
                         INFO("Loaded day-before-yesterday aggregates: portfolio=$" + std::to_string(day_before_yesterday_portfolio_value) +
@@ -1064,7 +1065,7 @@ int main(int argc, char* argv[]) {
             try {
                 // Call PostgreSQL function to calculate trading days
                 auto trading_days_result = db->execute_query(
-                    "SELECT trading.get_trading_days('LIVE_TREND_FOLLOWING', DATE '" + yesterday_date_ss.str() + "')");
+                    "SELECT trading.get_trading_days('LIVE_TREND_FOLLOWING_SLOW', DATE '" + yesterday_date_ss.str() + "')");
                 
                 if (trading_days_result.is_ok()) {
                     auto table = trading_days_result.value();
@@ -1095,7 +1096,7 @@ int main(int argc, char* argv[]) {
 
             // Load existing values from database using LiveDataLoader - DO NOT RECALCULATE
             try {
-                auto margin_metrics = data_loader->load_margin_metrics("LIVE_TREND_FOLLOWING", previous_date);
+                auto margin_metrics = data_loader->load_margin_metrics("LIVE_TREND_FOLLOWING_SLOW", previous_date);
                 if (margin_metrics.is_ok() && margin_metrics.value().valid) {
                     auto& metrics = margin_metrics.value();
                     yesterday_portfolio_leverage = metrics.portfolio_leverage;
@@ -1131,7 +1132,7 @@ int main(int argc, char* argv[]) {
                 "         COALESCE(total_pnl, 0.0) as total_pnl, "
                 "         COALESCE(total_realized_pnl, 0.0) as total_realized_pnl_prev "
                 "  FROM trading.live_results "
-                "  WHERE strategy_id = 'LIVE_TREND_FOLLOWING' AND DATE(date) < '" + yesterday_date_ss.str() + "' "
+                "  WHERE strategy_id = 'LIVE_TREND_FOLLOWING_SLOW' AND DATE(date) < '" + yesterday_date_ss.str() + "' "
                 "  ORDER BY date DESC LIMIT 1"
                 ") "
                 "UPDATE trading.live_results SET "
@@ -1148,7 +1149,7 @@ int main(int argc, char* argv[]) {
                 "portfolio_leverage = CASE WHEN portfolio_leverage IS NULL OR portfolio_leverage = 0 THEN " + std::to_string(yesterday_portfolio_leverage) + " ELSE portfolio_leverage END, "
                 "equity_to_margin_ratio = CASE WHEN equity_to_margin_ratio IS NULL OR equity_to_margin_ratio = 0 THEN " + std::to_string(yesterday_equity_to_margin_ratio) + " ELSE equity_to_margin_ratio END, "
                 "cash_available = COALESCE((SELECT portfolio FROM day_before), " + std::to_string(initial_capital) + ") + (" + std::to_string(yesterday_total_pnl) + " - COALESCE(daily_commissions, 0.0)) - COALESCE(margin_posted, 0.0) "
-                "WHERE strategy_id = 'LIVE_TREND_FOLLOWING' AND DATE(date) = '" + yesterday_date_ss.str() + "'";
+                "WHERE strategy_id = 'LIVE_TREND_FOLLOWING_SLOW' AND DATE(date) = '" + yesterday_date_ss.str() + "'";
 
             INFO("Executing UPDATE query for Day T-1 live_results...");
             INFO("UPDATE will set current_portfolio_value for date: " + yesterday_date_ss.str());
@@ -1171,7 +1172,7 @@ int main(int argc, char* argv[]) {
             // Query the current portfolio value from updated live_results
             std::string get_equity_query =
                 "SELECT current_portfolio_value FROM trading.live_results "
-                "WHERE strategy_id = 'LIVE_TREND_FOLLOWING' AND DATE(date) = '" + yesterday_date_ss.str() + "'";
+                "WHERE strategy_id = 'LIVE_TREND_FOLLOWING_SLOW' AND DATE(date) = '" + yesterday_date_ss.str() + "'";
 
             INFO("Querying for portfolio value with date: " + yesterday_date_ss.str());
 
@@ -1205,7 +1206,7 @@ int main(int argc, char* argv[]) {
 
                             // Create a temporary LiveResultsManager for Day T-1 equity update
                             auto yesterday_manager = std::make_unique<LiveResultsManager>(
-                                db, true, "LIVE_TREND_FOLLOWING"
+                                db, true, "LIVE_TREND_FOLLOWING_SLOW"
                             );
                             yesterday_manager->set_equity(portfolio_value);
 
@@ -1228,7 +1229,7 @@ int main(int argc, char* argv[]) {
                     "SELECT daily_return, daily_pnl, daily_realized_pnl, daily_unrealized_pnl, "
                     "portfolio_leverage, equity_to_margin_ratio "
                     "FROM trading.live_results "
-                    "WHERE strategy_id = 'LIVE_TREND_FOLLOWING' AND DATE(date) = '" + yesterday_date_ss.str() + "'";
+                    "WHERE strategy_id = 'LIVE_TREND_FOLLOWING_SLOW' AND DATE(date) = '" + yesterday_date_ss.str() + "'";
 
                 INFO("Loading yesterday's metrics from database with query: " + metrics_query);
                 auto metrics_result = db->execute_query(metrics_query);
@@ -1303,7 +1304,7 @@ int main(int argc, char* argv[]) {
         try {
             auto db_ptr = std::dynamic_pointer_cast<PostgresDatabase>(db);
             if (db_ptr) {
-                auto prev_agg = db_ptr->get_previous_live_aggregates("LIVE_TREND_FOLLOWING", now, "trading.live_results");
+                auto prev_agg = db_ptr->get_previous_live_aggregates("LIVE_TREND_FOLLOWING_SLOW", now, "trading.live_results");
                 if (prev_agg.is_ok()) {
                     std::tie(previous_portfolio_value, previous_total_pnl, previous_total_commissions) = prev_agg.value();
                     INFO("Loaded updated previous aggregates - portfolio_value: $" + std::to_string(previous_portfolio_value) +
@@ -1350,7 +1351,7 @@ int main(int argc, char* argv[]) {
             
             // Call PostgreSQL function to calculate trading days
             auto trading_days_result = db->execute_query(
-                "SELECT trading.get_trading_days('LIVE_TREND_FOLLOWING', DATE '" + now_date_ss.str() + "')");
+                "SELECT trading.get_trading_days('LIVE_TREND_FOLLOWING_SLOW', DATE '" + now_date_ss.str() + "')");
             
             if (trading_days_result.is_ok()) {
                 auto table = trading_days_result.value();
@@ -1482,7 +1483,7 @@ int main(int argc, char* argv[]) {
             
             // Create configuration JSON
             nlohmann::json config_json;
-            config_json["strategy_type"] = "LIVE_TREND_FOLLOWING";
+            config_json["strategy_type"] = "LIVE_TREND_FOLLOWING_SLOW";
             config_json["capital_allocation"] = tf_config.capital_allocation;
             config_json["max_leverage"] = tf_config.max_leverage;
             config_json["weight"] = trend_config.weight;
@@ -1633,7 +1634,7 @@ int main(int argc, char* argv[]) {
         // Use the new LiveResultsManager - save all results at once
         INFO("Saving all live trading results using LiveResultsManager...");
 
-        auto save_result = results_manager->save_all_results("LIVE_TREND_FOLLOWING", now);
+        auto save_result = results_manager->save_all_results("LIVE_TREND_FOLLOWING_SLOW", now);
         if (save_result.is_error()) {
             ERROR("Failed to save all live results: " + std::string(save_result.error()->what()));
         } else {
@@ -1698,7 +1699,7 @@ int main(int argc, char* argv[]) {
 
                 std::string positions_query_email = "SELECT symbol, quantity, average_price, daily_realized_pnl, daily_unrealized_pnl, last_update "
                                                    "FROM trading.positions "
-                                                   "WHERE strategy_id = 'LIVE_TREND_FOLLOWING' AND DATE(last_update) = '" + yesterday_date_for_email + "'";
+                                                   "WHERE strategy_id = 'LIVE_TREND_FOLLOWING_SLOW' AND DATE(last_update) = '" + yesterday_date_for_email + "'";
 
                 auto positions_result_email = db->execute_query(positions_query_email);
 
@@ -1744,7 +1745,7 @@ int main(int argc, char* argv[]) {
                     std::string yesterday_metrics_query =
                         "SELECT daily_return, daily_unrealized_pnl, daily_realized_pnl, daily_pnl, daily_commissions "
                         "FROM trading.live_results "
-                        "WHERE strategy_id = 'LIVE_TREND_FOLLOWING' AND date = '" + yesterday_date_for_email + "' "
+                        "WHERE strategy_id = 'LIVE_TREND_FOLLOWING_SLOW' AND date = '" + yesterday_date_for_email + "' "
                         "ORDER BY date DESC LIMIT 1";
 
                     INFO("Loading yesterday's daily metrics from live_results: " + yesterday_metrics_query);

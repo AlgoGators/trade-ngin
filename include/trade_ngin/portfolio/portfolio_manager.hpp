@@ -152,6 +152,12 @@ public:
     std::vector<ExecutionReport> get_recent_executions() const;
 
     /**
+     * @brief Get recent execution reports per strategy
+     * @return Map of strategy ID to vector of execution reports
+     */
+    std::unordered_map<std::string, std::vector<ExecutionReport>> get_strategy_executions() const;
+
+    /**
      * @brief Clear the execution history (useful after retrieving them)
      */
     void clear_execution_history();
@@ -161,6 +167,12 @@ public:
      * @return Vector of strategy interfaces
      */
     std::vector<std::shared_ptr<StrategyInterface>> get_strategies() const;
+
+    /**
+     * @brief Get optimized positions per strategy (after optimization/rounding)
+     * @return Map of strategy ID to map of symbol to position
+     */
+    std::unordered_map<std::string, std::unordered_map<std::string, Position>> get_strategy_positions() const;
 
     /**
      * @brief Get portfolio's current total value
@@ -209,7 +221,11 @@ private:
     };
 
     std::unordered_map<std::string, StrategyInfo> strategies_;
-    std::vector<ExecutionReport> recent_executions_;
+    std::vector<ExecutionReport> recent_executions_;  // Portfolio-level (aggregated)
+    std::unordered_map<std::string, std::vector<ExecutionReport>> strategy_executions_;  // Per-strategy executions
+    
+    // Track previous day close prices for PnL Lag Model (prevents lookahead bias)
+    std::unordered_map<std::string, double> previous_day_close_prices_;
 
     mutable std::mutex mutex_;
     const std::string instance_id_;

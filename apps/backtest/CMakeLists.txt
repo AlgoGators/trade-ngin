@@ -3,21 +3,21 @@
 # ==========================================
 
 # Backtest application source files
-set(BT_TREND_SOURCES
-    bt_trend.cpp
+set(BT_PORTFOLIO_SOURCES
+    bt_portfolio.cpp
 )
 
-# Create trend following backtest executable
-add_executable(bt_trend ${BT_TREND_SOURCES})
+# Create portfolio backtest executable (runs multiple strategies)
+add_executable(bt_portfolio ${BT_PORTFOLIO_SOURCES})
 
 # Link against the trade_ngin library
-target_link_libraries(bt_trend
+target_link_libraries(bt_portfolio
     PRIVATE
         trade_ngin
 )
 
 # Set output directory
-set_target_properties(bt_trend
+set_target_properties(bt_portfolio
     PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
     RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/bin/Debug"

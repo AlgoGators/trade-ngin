@@ -26,6 +26,10 @@ private:
     std::vector<ExecutionReport> executions_;
     std::map<Timestamp, std::unordered_map<std::string, double>> signals_history_;
 
+    // Multi-strategy support: per-strategy data
+    std::unordered_map<std::string, std::vector<Position>> strategy_positions_;
+    std::unordered_map<std::string, std::vector<ExecutionReport>> strategy_executions_;
+
     // Metadata
     Timestamp start_date_;
     Timestamp end_date_;
@@ -61,6 +65,15 @@ public:
         executions_ = executions;
     }
 
+    // Multi-strategy support: per-strategy positions and executions
+    void set_strategy_positions(const std::string& strategy_id, const std::vector<Position>& positions) {
+        strategy_positions_[strategy_id] = positions;
+    }
+
+    void set_strategy_executions(const std::string& strategy_id, const std::vector<ExecutionReport>& executions) {
+        strategy_executions_[strategy_id] = executions;
+    }
+
     void add_signals(const Timestamp& timestamp,
                     const std::unordered_map<std::string, double>& signals) {
         signals_history_[timestamp] = signals;
@@ -85,6 +98,17 @@ public:
     Result<void> save_executions_batch(const std::string& run_id);
     Result<void> save_signals_batch(const std::string& run_id);
     Result<void> save_metadata(const std::string& run_id);
+
+    // Multi-strategy storage methods
+    Result<void> save_strategy_positions(const std::string& portfolio_run_id);
+    Result<void> save_strategy_executions(const std::string& portfolio_run_id);
+    Result<void> save_strategy_metadata(const std::string& portfolio_run_id,
+                                       const std::unordered_map<std::string, double>& strategy_allocations,
+                                       const nlohmann::json& portfolio_config);
+    
+    // Save positions with timestamps during backtest (for historical tracking)
+    Result<void> save_strategy_positions_with_timestamp(const std::string& portfolio_run_id, 
+                                                        const Timestamp& timestamp);
 
     // Utility method to generate run_id if not provided
     static std::string generate_run_id(const std::string& strategy_id);

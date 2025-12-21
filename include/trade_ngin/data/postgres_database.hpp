@@ -164,6 +164,12 @@ public:
     Result<void> store_backtest_executions(const std::vector<ExecutionReport>& executions,
                                            const std::string& run_id,
                                            const std::string& table_name = "backtest.executions") override;
+    
+    // Multi-strategy version: store executions with strategy_id
+    Result<void> store_backtest_executions_with_strategy(const std::vector<ExecutionReport>& executions,
+                                                          const std::string& run_id,
+                                                          const std::string& strategy_id,
+                                                          const std::string& table_name = "backtest.executions");
 
     /**
      * @brief Store backtest signals
@@ -194,6 +200,19 @@ public:
                                          const std::string& description, const Timestamp& start_date,
                                          const Timestamp& end_date, const nlohmann::json& hyperparameters,
                                          const std::string& table_name = "backtest.run_metadata") override;
+    
+    // Multi-strategy version: store metadata with portfolio_run_id, strategy_allocation, portfolio_config
+    Result<void> store_backtest_metadata_with_portfolio(const std::string& run_id,
+                                                         const std::string& portfolio_run_id,
+                                                         const std::string& strategy_id,
+                                                         double strategy_allocation,
+                                                         const nlohmann::json& portfolio_config,
+                                                         const std::string& name,
+                                                         const std::string& description,
+                                                         const Timestamp& start_date,
+                                                         const Timestamp& end_date,
+                                                         const nlohmann::json& hyperparameters,
+                                                         const std::string& table_name = "backtest.run_metadata");
 
     // ============================================================================
     // LIVE TRADING DATA STORAGE METHODS
@@ -349,6 +368,12 @@ public:
     Result<void> store_backtest_positions(const std::vector<Position>& positions,
                                           const std::string& run_id,
                                           const std::string& table_name = "backtest.final_positions");
+    
+    // Multi-strategy version: store positions with strategy_id
+    Result<void> store_backtest_positions_with_strategy(const std::vector<Position>& positions,
+                                                        const std::string& run_id,
+                                                        const std::string& strategy_id,
+                                                        const std::string& table_name = "backtest.final_positions");
 
     /**
      * @brief Update live results for previous day finalization (replaces raw SQL UPDATE)
