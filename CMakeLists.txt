@@ -56,6 +56,7 @@ set(TRADE_NGIN_SOURCES
     src/core/logger.cpp
     src/core/email_sender.cpp
     src/core/chart_generator.cpp
+    src/core/run_id_generator.cpp
     src/data/postgres_database.cpp
     src/data/postgres_database_extensions.cpp
     src/data/market_data_bus.cpp
@@ -76,6 +77,8 @@ set(TRADE_NGIN_SOURCES
     src/backtest/slippage_model.cpp
     src/strategy/base_strategy.cpp
     src/strategy/trend_following.cpp
+    src/strategy/trend_following_slow.cpp
+    src/strategy/trend_following_fast.cpp
     src/strategy/regime_detector.cpp
     src/storage/results_manager_base.cpp
     src/storage/backtest_results_manager.cpp

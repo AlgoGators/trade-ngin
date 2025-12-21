@@ -169,6 +169,11 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data)
                                         "PortfolioManager");
             }
 
+            // CRITICAL: At START of Day T processing, previous_day_close_prices_ contains T-1 closes
+            // We use these T-1 closes for executions (prevents lookahead bias)
+            // At END of processing, we'll update previous_day_close_prices_ to T closes (for next period)
+            // DO NOT update here - we need T-1 closes for executions
+
             // Update historical returns for all symbols
             update_historical_returns(data);
 
@@ -393,6 +398,12 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data)
                     }
                 }
             }
+            
+            // CRITICAL FIX: Update current_positions with optimized/rounded target_positions
+            // This ensures get_strategy_positions() returns integer positions, not fractional ones
+            for (auto& [id, info] : strategies_) {
+                info.current_positions = info.target_positions;
+            }
         }
 
         // Get optimized positions (should be whole numbers after dynamic optimization)
@@ -408,8 +419,98 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data)
         {
             std::lock_guard<std::mutex> lock(mutex_);
 
-            // CRITICAL FIX: Generate execution reports using optimized positions (whole numbers)
-            // instead of fractional target_positions from strategies
+            // DO NOT clear strategy_executions_ here - they need to accumulate across all periods
+            // for saving at the end of the backtest. Each period's executions are appended.
+            // Only clear at the very beginning of the backtest (handled elsewhere if needed)
+
+            // Generate execution reports per strategy (before aggregation)
+            // This allows accurate per-strategy execution tracking
+            for (const auto& [strategy_id, info] : strategies_) {
+                auto& strategy_execs = strategy_executions_[strategy_id];
+                // Start counter from current size to ensure unique IDs across all periods
+                int exec_counter = static_cast<int>(strategy_execs.size());
+
+                INFO("Generating executions for strategy " + strategy_id + 
+                      ", target_positions size: " + std::to_string(info.target_positions.size()) +
+                      ", existing executions: " + std::to_string(exec_counter));
+
+                // Get previous positions for this strategy
+                const auto& prev_strategy_positions = prev_positions[strategy_id];
+                INFO("Previous positions for strategy " + strategy_id + 
+                      " size: " + std::to_string(prev_strategy_positions.size()));
+
+                // Generate executions based on individual strategy position changes
+                for (const auto& [symbol, new_pos] : info.target_positions) {
+                    double current_qty = 0.0;
+                    auto prev_pos_it = prev_strategy_positions.find(symbol);
+                    if (prev_pos_it != prev_strategy_positions.end()) {
+                        current_qty = static_cast<double>(prev_pos_it->second.quantity);
+                    }
+
+                    double new_qty = static_cast<double>(new_pos.quantity);
+
+                    // If position changed, create execution report for this strategy
+                    if (std::abs(new_qty - current_qty) > 1e-6) {
+                        // Calculate trade size
+                        double trade_size = new_qty - current_qty;
+                        Side side = trade_size > 0 ? Side::BUY : Side::SELL;
+
+                        // PnL Lag Model: Use T-1 close (previous day's close) for execution price
+                        // This matches live trading methodology and prevents lookahead bias
+                        double execution_price = 0.0;
+                        auto prev_price_it = previous_day_close_prices_.find(symbol);
+                        if (prev_price_it != previous_day_close_prices_.end()) {
+                            execution_price = prev_price_it->second;  // T-1 close
+                            DEBUG("Using T-1 close for " + symbol + " execution: " + std::to_string(execution_price));
+                        } else {
+                            // Fallback: if no T-1 price available, use current bar's close (first day case)
+                            for (const auto& bar : data) {
+                                if (bar.symbol == symbol) {
+                                    execution_price = static_cast<double>(bar.close);
+                                    DEBUG("First day fallback for " + symbol + " execution: " + std::to_string(execution_price));
+                                    break;
+                                }
+                            }
+                        }
+
+                        if (execution_price == 0.0) {
+                            continue;  // Skip if price not available
+                        }
+
+                        // Create execution report for this strategy
+                        ExecutionReport exec;
+                        exec.order_id = "PM-" + strategy_id + "-" + std::to_string(exec_counter);
+                        exec.exec_id = "EX-" + strategy_id + "-" + std::to_string(exec_counter);
+                        exec.symbol = symbol;
+                        exec.side = side;
+                        exec.filled_quantity = std::abs(trade_size);
+                        exec.fill_price = execution_price;  // T-1 close (matches live trading)
+                        exec.fill_time =
+                            data.empty() ? std::chrono::system_clock::now() : data[0].timestamp;
+                        // Calculate transaction costs using the same model as backtesting
+                        // Base commission: 5 basis points * quantity
+                        double commission = std::abs(trade_size) * 0.0005;
+                        // Market impact: 5 basis points * quantity * price (use execution_price = T-1 close)
+                        double market_impact = std::abs(trade_size) * execution_price * 0.0005;
+                        // Fixed cost per trade
+                        double fixed_cost = 1.0;
+                        exec.commission = commission + market_impact + fixed_cost;
+                        exec.is_partial = false;
+
+                        // Add to strategy-specific executions
+                        strategy_execs.push_back(exec);
+                        exec_counter++;
+                        INFO("Generated execution for strategy " + strategy_id + 
+                             ": " + symbol + " " + (side == Side::BUY ? "BUY" : "SELL") + 
+                             " qty=" + std::to_string(exec.filled_quantity));
+                    }
+                }
+                INFO("Total executions generated for strategy " + strategy_id + 
+                     ": " + std::to_string(strategy_execs.size()));
+            }
+
+            // Also generate portfolio-level executions (aggregated) for backward compatibility
+            recent_executions_.clear();
             for (const auto& [symbol, new_pos] : post_opt) {
                 double current_qty = 0.0;
 
@@ -425,16 +526,25 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data)
                     double trade_size = static_cast<double>(new_pos.quantity) - current_qty;
                     Side side = trade_size > 0 ? Side::BUY : Side::SELL;
 
-                    // Find latest price for symbol
-                    double latest_price = 0.0;
-                    for (const auto& bar : data) {
-                        if (bar.symbol == symbol) {
-                            latest_price = static_cast<double>(bar.close);
-                            break;
+                    // PnL Lag Model: Use T-1 close (previous day's close) for execution price
+                    // This matches live trading methodology and prevents lookahead bias
+                    double execution_price = 0.0;
+                    auto prev_price_it = previous_day_close_prices_.find(symbol);
+                    if (prev_price_it != previous_day_close_prices_.end()) {
+                        execution_price = prev_price_it->second;  // T-1 close
+                        DEBUG("Using T-1 close for portfolio-level " + symbol + " execution: " + std::to_string(execution_price));
+                    } else {
+                        // Fallback: if no T-1 price available, use current bar's close (first day case)
+                        for (const auto& bar : data) {
+                            if (bar.symbol == symbol) {
+                                execution_price = static_cast<double>(bar.close);
+                                DEBUG("First day fallback for portfolio-level " + symbol + " execution: " + std::to_string(execution_price));
+                                break;
+                            }
                         }
                     }
 
-                    if (latest_price == 0.0) {
+                    if (execution_price == 0.0) {
                         continue;  // Skip if price not available
                     }
 
@@ -445,22 +555,31 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data)
                     exec.symbol = symbol;
                     exec.side = side;
                     exec.filled_quantity = std::abs(trade_size);
-                    exec.fill_price = latest_price;
+                    exec.fill_price = execution_price;  // T-1 close (matches live trading)
                     exec.fill_time =
                         data.empty() ? std::chrono::system_clock::now() : data[0].timestamp;
                     // Calculate transaction costs using the same model as backtesting
                     // Base commission: 5 basis points * quantity
                     double commission = std::abs(trade_size) * 0.0005;
-                    // Market impact: 5 basis points * quantity * price  
-                    double market_impact = std::abs(trade_size) * latest_price * 0.0005;
+                    // Market impact: 5 basis points * quantity * price (use execution_price = T-1 close)
+                    double market_impact = std::abs(trade_size) * execution_price * 0.0005;
                     // Fixed cost per trade
                     double fixed_cost = 1.0;
                     exec.commission = commission + market_impact + fixed_cost;
                     exec.is_partial = false;
 
-                    // Add to recent executions
+                    // Add to recent executions (portfolio-level)
                     recent_executions_.push_back(exec);
                 }
+            }
+
+            // CRITICAL: Update previous_day_close_prices_ to T closes AFTER all processing
+            // These T closes will become T-1 closes for the next period
+            // This ensures executions in the next period use the correct T-1 close
+            for (const auto& bar : data) {
+                previous_day_close_prices_[bar.symbol] = static_cast<double>(bar.close);
+                DEBUG("Updated previous_day_close_prices_[" + bar.symbol + "] = " + 
+                      std::to_string(static_cast<double>(bar.close)) + " (T close, will be T-1 for next period)");
             }
         }
         return Result<void>();
@@ -1155,9 +1274,18 @@ std::vector<ExecutionReport> PortfolioManager::get_recent_executions() const {
     return recent_executions_;
 }
 
+std::unordered_map<std::string, std::vector<ExecutionReport>> PortfolioManager::get_strategy_executions() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return strategy_executions_;
+}
+
 void PortfolioManager::clear_execution_history() {
     std::lock_guard<std::mutex> lock(mutex_);
+    // Only clear portfolio-level executions (recent_executions_)
+    // DO NOT clear strategy_executions_ - they need to accumulate across all periods
+    // for saving at the end of the backtest
     recent_executions_.clear();
+    // strategy_executions_ is NOT cleared here - it accumulates for final save
 }
 
 std::vector<std::shared_ptr<StrategyInterface>> PortfolioManager::get_strategies() const {
@@ -1169,6 +1297,17 @@ std::vector<std::shared_ptr<StrategyInterface>> PortfolioManager::get_strategies
         result.push_back(info.strategy);
     }
 
+    return result;
+}
+
+std::unordered_map<std::string, std::unordered_map<std::string, Position>> PortfolioManager::get_strategy_positions() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::unordered_map<std::string, std::unordered_map<std::string, Position>> result;
+    
+    for (const auto& [strategy_id, info] : strategies_) {
+        result[strategy_id] = info.current_positions;  // These are the optimized positions
+    }
+    
     return result;
 }
 

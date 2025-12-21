@@ -247,6 +247,81 @@ Result<void> PostgresDatabase::store_backtest_positions(
     }
 }
 
+Result<void> PostgresDatabase::store_backtest_positions_with_strategy(
+    const std::vector<Position>& positions,
+    const std::string& run_id,
+    const std::string& strategy_id,
+    const std::string& table_name) {
+
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    // Validate connection
+    auto validation = validate_connection();
+    if (validation.is_error()) {
+        return validation;
+    }
+
+    // Validate table name
+    auto table_validation = validate_table_name(table_name);
+    if (table_validation.is_error()) {
+        return table_validation;
+    }
+
+    if (positions.empty()) {
+        return Result<void>();
+    }
+
+    try {
+        pqxx::work txn(*connection_);
+
+        // Build batch INSERT query with strategy_id and timestamps
+        // Include last_update, updated_at, and date columns for historical tracking
+        std::string query = "INSERT INTO " + table_name +
+                           " (run_id, strategy_id, symbol, quantity, average_price, realized_pnl, unrealized_pnl, last_update, updated_at, date) VALUES ";
+
+        bool first = true;
+        for (const auto& pos : positions) {
+            // Skip zero positions
+            if (std::abs(static_cast<double>(pos.quantity)) < 1e-10) {
+                continue;
+            }
+
+            if (!first) query += ", ";
+            first = false;
+
+            // Format timestamp from position's last_update
+            std::string timestamp_str = format_timestamp(pos.last_update);
+            // Extract date from timestamp
+            std::string date_str = timestamp_str.substr(0, 10);  // YYYY-MM-DD
+
+            query += "(" + txn.quote(run_id) + ", " +
+                     txn.quote(strategy_id) + ", " +
+                     txn.quote(pos.symbol) + ", " +
+                     std::to_string(static_cast<double>(pos.quantity)) + ", " +
+                     std::to_string(static_cast<double>(pos.average_price)) + ", " +
+                     std::to_string(static_cast<double>(pos.realized_pnl)) + ", " +
+                     std::to_string(static_cast<double>(pos.unrealized_pnl)) + ", " +
+                     "'" + timestamp_str + "', " +  // last_update
+                     "'" + timestamp_str + "', " +  // updated_at
+                     "'" + date_str + "')";         // date
+        }
+
+        if (!first) {  // Only execute if we have non-zero positions
+            txn.exec(query);
+            txn.commit();
+
+            INFO("Stored " + std::to_string(positions.size()) +
+                 " final positions for run_id: " + run_id + ", strategy_id: " + strategy_id);
+        }
+
+        return Result<void>();
+
+    } catch (const std::exception& e) {
+        ERROR("Failed to store backtest positions with strategy: " + std::string(e.what()));
+        return make_error<void>(ErrorCode::DATABASE_ERROR, e.what(), component_id_);
+    }
+}
+
 Result<void> PostgresDatabase::update_live_results(
     const std::string& strategy_id,
     const Timestamp& date,

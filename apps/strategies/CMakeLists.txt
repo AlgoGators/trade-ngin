@@ -2,21 +2,21 @@
 # TRADE_NGIN - STRATEGIES CMAKE CONFIGURATION
 # ============================================
 
-set(LIVE_TREND_SOURCES
-    live_trend.cpp
+set(LIVE_PORTFOLIO_SOURCES
+    live_portfolio.cpp
 )
 
-# Create live trend following executable
-add_executable(live_trend ${LIVE_TREND_SOURCES})
+# Create live portfolio executable (runs multiple strategies)
+add_executable(live_portfolio ${LIVE_PORTFOLIO_SOURCES})
 
 # Link against the trade_ngin library
-target_link_libraries(live_trend
+target_link_libraries(live_portfolio
     PRIVATE
         trade_ngin
 )
 
 # Set output directory
-set_target_properties(live_trend
+set_target_properties(live_portfolio
     PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
     RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/bin/Debug"
