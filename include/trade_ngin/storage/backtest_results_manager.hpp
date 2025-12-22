@@ -105,10 +105,6 @@ public:
     Result<void> save_strategy_metadata(const std::string& portfolio_run_id,
                                        const std::unordered_map<std::string, double>& strategy_allocations,
                                        const nlohmann::json& portfolio_config);
-    
-    // Save positions with timestamps during backtest (for historical tracking)
-    Result<void> save_strategy_positions_with_timestamp(const std::string& portfolio_run_id, 
-                                                        const Timestamp& timestamp);
 
     // Utility method to generate run_id if not provided
     static std::string generate_run_id(const std::string& strategy_id);

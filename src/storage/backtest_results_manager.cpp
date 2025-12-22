@@ -258,48 +258,6 @@ Result<void> BacktestResultsManager::save_strategy_positions(const std::string& 
     return Result<void>();
 }
 
-Result<void> BacktestResultsManager::save_strategy_positions_with_timestamp(
-    const std::string& portfolio_run_id, 
-    const Timestamp& timestamp) {
-    if (!store_enabled_) {
-        return Result<void>();
-    }
-
-    if (strategy_positions_.empty()) {
-        DEBUG("No strategy positions to save for portfolio_run_id: " + portfolio_run_id);
-        return Result<void>();
-    }
-
-    // Save positions for each strategy with the provided timestamp
-    for (const auto& [strategy_id, positions] : strategy_positions_) {
-        if (positions.empty()) {
-            continue;
-        }
-
-        // Update positions with the current timestamp
-        std::vector<Position> positions_with_timestamp = positions;
-        for (auto& pos : positions_with_timestamp) {
-            pos.last_update = timestamp;  // Set timestamp for this period
-        }
-
-        auto result = db_->store_backtest_positions_with_strategy(
-            positions_with_timestamp, portfolio_run_id, strategy_id, "backtest.final_positions");
-        
-        if (result.is_error()) {
-            ERROR("Failed to save positions for strategy " + strategy_id + " at timestamp " + 
-                  std::to_string(std::chrono::system_clock::to_time_t(timestamp)) + ": " + 
-                  std::string(result.error()->what()));
-            // Continue with other strategies
-        } else {
-            DEBUG("Saved " + std::to_string(positions_with_timestamp.size()) + 
-                 " positions for strategy: " + strategy_id + " at timestamp " +
-                 std::to_string(std::chrono::system_clock::to_time_t(timestamp)));
-        }
-    }
-
-    return Result<void>();
-}
-
 Result<void> BacktestResultsManager::save_strategy_executions(const std::string& portfolio_run_id) {
     if (!store_enabled_) {
         return Result<void>();
