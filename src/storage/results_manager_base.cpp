@@ -70,11 +70,18 @@ Result<void> ResultsManagerBase::save_positions(const std::vector<Position>& pos
     }
 
     INFO("Storing " + std::to_string(positions.size()) +
-         " positions to " + table_name + " for run_id: " + run_id);
+         " positions to " + table_name + " for run_id: " + run_id + " on date: " + 
+         std::to_string(std::chrono::system_clock::to_time_t(date)));
 
-    // Use appropriate storage method based on schema
+    // For backtest, ensure positions have the correct timestamp (date parameter)
+    // This allows storing positions daily throughout the backtest run
     if (schema_ == "backtest") {
-        return db_->store_backtest_positions(positions, run_id, table_name);
+        // Update positions with the provided date timestamp
+        std::vector<Position> positions_with_date = positions;
+        for (auto& pos : positions_with_date) {
+            pos.last_update = date;  // Set timestamp to the date being processed
+        }
+        return db_->store_backtest_positions(positions_with_date, run_id, table_name);
     } else {
         // For live trading, use regular store_positions
         return db_->store_positions(positions, strategy_id_, table_name);
