@@ -272,6 +272,13 @@ Result<void> BaseStrategy::on_execution(const ExecutionReport& report) {
 
         pos.last_update = report.fill_time;
 
+        // Always subtract transaction costs from realized PnL (for all trades, not just closing)
+        // This ensures transaction costs are accounted for in opening positions too
+        double transaction_cost = static_cast<double>(report.transaction_cost);
+        pos.realized_pnl -= Decimal(transaction_cost);
+        metrics_.realized_pnl -= transaction_cost;
+        metrics_.total_pnl -= transaction_cost;
+
         // Update metrics
         metrics_.total_trades++;
         if (report.fill_price > pos.average_price) {
