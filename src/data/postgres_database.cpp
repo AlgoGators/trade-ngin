@@ -1723,13 +1723,26 @@ Result<void> PostgresDatabase::store_backtest_signals(const std::unordered_map<s
         pqxx::work txn(*connection_);
 
         for (const auto& [symbol, signal_value] : signals) {
-            std::string query = "INSERT INTO " + table_name +
-                                " (run_id, strategy_id, symbol, signal_value, timestamp) "
-                                "VALUES ($1, $2, $3, $4, $5) "
-                                "ON CONFLICT (run_id, strategy_id, symbol, timestamp) "
-                                "DO UPDATE SET signal_value = EXCLUDED.signal_value";
-
-            txn.exec_params(query, run_id, strategy_id, symbol, signal_value, format_timestamp(timestamp));
+            // For backtest.signals, include portfolio_run_id if run_id looks like a portfolio run_id (contains '&')
+            // Schema has portfolio_run_id column (nullable)
+            std::string query;
+            if (table_name == "backtest.signals" && run_id.find('&') != std::string::npos) {
+                // Portfolio run: run_id is portfolio_run_id format, use it for portfolio_run_id column
+                query = "INSERT INTO " + table_name +
+                        " (run_id, strategy_id, symbol, signal_value, timestamp, portfolio_run_id) "
+                        "VALUES ($1, $2, $3, $4, $5, $6) "
+                        "ON CONFLICT (run_id, strategy_id, symbol, timestamp) "
+                        "DO UPDATE SET signal_value = EXCLUDED.signal_value, portfolio_run_id = EXCLUDED.portfolio_run_id";
+                txn.exec_params(query, run_id, strategy_id, symbol, signal_value, format_timestamp(timestamp), run_id);
+            } else {
+                // Single strategy run or other table: no portfolio_run_id
+                query = "INSERT INTO " + table_name +
+                        " (run_id, strategy_id, symbol, signal_value, timestamp) "
+                        "VALUES ($1, $2, $3, $4, $5) "
+                        "ON CONFLICT (run_id, strategy_id, symbol, timestamp) "
+                        "DO UPDATE SET signal_value = EXCLUDED.signal_value";
+                txn.exec_params(query, run_id, strategy_id, symbol, signal_value, format_timestamp(timestamp));
+            }
         }
 
         txn.commit();

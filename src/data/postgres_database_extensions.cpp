@@ -3,8 +3,10 @@
 // This file contains new methods to eliminate raw SQL from backtest and live trading
 
 #include "trade_ngin/data/postgres_database.hpp"
+#include "trade_ngin/core/time_utils.hpp"
 #include <sstream>
 #include <iomanip>
+#include <ctime>
 
 namespace trade_ngin {
 
@@ -274,10 +276,11 @@ Result<void> PostgresDatabase::store_backtest_positions_with_strategy(
     try {
         pqxx::work txn(*connection_);
 
-        // Build batch INSERT query with strategy_id and timestamps
-        // Include last_update, updated_at, and date columns for historical tracking
+        // Build batch INSERT query with strategy_id and all required columns
+        // Schema requires: run_id, strategy_id, date, symbol, quantity, average_price, 
+        //                  realized_pnl, unrealized_pnl, last_update, updated_at
         std::string query = "INSERT INTO " + table_name +
-                           " (run_id, strategy_id, symbol, quantity, average_price, realized_pnl, unrealized_pnl, last_update, updated_at, date) VALUES ";
+                           " (run_id, strategy_id, date, symbol, quantity, average_price, realized_pnl, unrealized_pnl, last_update, updated_at) VALUES ";
 
         bool first = true;
         for (const auto& pos : positions) {
@@ -289,21 +292,28 @@ Result<void> PostgresDatabase::store_backtest_positions_with_strategy(
             if (!first) query += ", ";
             first = false;
 
-            // Format timestamp from position's last_update
-            std::string timestamp_str = format_timestamp(pos.last_update);
-            // Extract date from timestamp
-            std::string date_str = timestamp_str.substr(0, 10);  // YYYY-MM-DD
+            // Extract date from last_update timestamp (thread-safe)
+            auto time_t = std::chrono::system_clock::to_time_t(pos.last_update);
+            std::stringstream date_ss;
+            std::tm time_info;
+            trade_ngin::core::safe_gmtime(&time_t, &time_info);
+            date_ss << std::put_time(&time_info, "%Y-%m-%d");
+            std::string date_str = date_ss.str();
 
+            // Format timestamps using member function
+            std::string last_update_str = format_timestamp(pos.last_update);
+            
             query += "(" + txn.quote(run_id) + ", " +
                      txn.quote(strategy_id) + ", " +
+                     "'" + date_str + "', " +  // date column
                      txn.quote(pos.symbol) + ", " +
                      std::to_string(static_cast<double>(pos.quantity)) + ", " +
                      std::to_string(static_cast<double>(pos.average_price)) + ", " +
                      std::to_string(static_cast<double>(pos.realized_pnl)) + ", " +
                      std::to_string(static_cast<double>(pos.unrealized_pnl)) + ", " +
-                     "'" + timestamp_str + "', " +  // last_update
-                     "'" + timestamp_str + "', " +  // updated_at
-                     "'" + date_str + "')";         // date
+                     "'" + last_update_str + "', " +  // last_update
+                     "'" + last_update_str + "'" +    // updated_at (same as last_update)
+                     ")";
         }
 
         if (!first) {  // Only execute if we have non-zero positions
