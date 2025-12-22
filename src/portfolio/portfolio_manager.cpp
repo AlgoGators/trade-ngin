@@ -169,11 +169,6 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data)
                                         "PortfolioManager");
             }
 
-            // CRITICAL: At START of Day T processing, previous_day_close_prices_ contains T-1 closes
-            // We use these T-1 closes for executions (prevents lookahead bias)
-            // At END of processing, we'll update previous_day_close_prices_ to T closes (for next period)
-            // DO NOT update here - we need T-1 closes for executions
-
             // Update historical returns for all symbols
             update_historical_returns(data);
 
@@ -455,25 +450,16 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data)
                         double trade_size = new_qty - current_qty;
                         Side side = trade_size > 0 ? Side::BUY : Side::SELL;
 
-                        // PnL Lag Model: Use T-1 close (previous day's close) for execution price
-                        // This matches live trading methodology and prevents lookahead bias
-                        double execution_price = 0.0;
-                        auto prev_price_it = previous_day_close_prices_.find(symbol);
-                        if (prev_price_it != previous_day_close_prices_.end()) {
-                            execution_price = prev_price_it->second;  // T-1 close
-                            DEBUG("Using T-1 close for " + symbol + " execution: " + std::to_string(execution_price));
-                        } else {
-                            // Fallback: if no T-1 price available, use current bar's close (first day case)
-                            for (const auto& bar : data) {
-                                if (bar.symbol == symbol) {
-                                    execution_price = static_cast<double>(bar.close);
-                                    DEBUG("First day fallback for " + symbol + " execution: " + std::to_string(execution_price));
-                                    break;
-                                }
+                        // Find latest price for symbol
+                        double latest_price = 0.0;
+                        for (const auto& bar : data) {
+                            if (bar.symbol == symbol) {
+                                latest_price = static_cast<double>(bar.close);
+                                break;
                             }
                         }
 
-                        if (execution_price == 0.0) {
+                        if (latest_price == 0.0) {
                             continue;  // Skip if price not available
                         }
 
@@ -484,14 +470,14 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data)
                         exec.symbol = symbol;
                         exec.side = side;
                         exec.filled_quantity = std::abs(trade_size);
-                        exec.fill_price = execution_price;  // T-1 close (matches live trading)
+                        exec.fill_price = latest_price;
                         exec.fill_time =
                             data.empty() ? std::chrono::system_clock::now() : data[0].timestamp;
                         // Calculate transaction costs using the same model as backtesting
                         // Base commission: 5 basis points * quantity
                         double commission = std::abs(trade_size) * 0.0005;
-                        // Market impact: 5 basis points * quantity * price (use execution_price = T-1 close)
-                        double market_impact = std::abs(trade_size) * execution_price * 0.0005;
+                        // Market impact: 5 basis points * quantity * price  
+                        double market_impact = std::abs(trade_size) * latest_price * 0.0005;
                         // Fixed cost per trade
                         double fixed_cost = 1.0;
                         exec.commission = commission + market_impact + fixed_cost;
@@ -526,25 +512,16 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data)
                     double trade_size = static_cast<double>(new_pos.quantity) - current_qty;
                     Side side = trade_size > 0 ? Side::BUY : Side::SELL;
 
-                    // PnL Lag Model: Use T-1 close (previous day's close) for execution price
-                    // This matches live trading methodology and prevents lookahead bias
-                    double execution_price = 0.0;
-                    auto prev_price_it = previous_day_close_prices_.find(symbol);
-                    if (prev_price_it != previous_day_close_prices_.end()) {
-                        execution_price = prev_price_it->second;  // T-1 close
-                        DEBUG("Using T-1 close for portfolio-level " + symbol + " execution: " + std::to_string(execution_price));
-                    } else {
-                        // Fallback: if no T-1 price available, use current bar's close (first day case)
-                        for (const auto& bar : data) {
-                            if (bar.symbol == symbol) {
-                                execution_price = static_cast<double>(bar.close);
-                                DEBUG("First day fallback for portfolio-level " + symbol + " execution: " + std::to_string(execution_price));
-                                break;
-                            }
+                    // Find latest price for symbol
+                    double latest_price = 0.0;
+                    for (const auto& bar : data) {
+                        if (bar.symbol == symbol) {
+                            latest_price = static_cast<double>(bar.close);
+                            break;
                         }
                     }
 
-                    if (execution_price == 0.0) {
+                    if (latest_price == 0.0) {
                         continue;  // Skip if price not available
                     }
 
@@ -555,14 +532,14 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data)
                     exec.symbol = symbol;
                     exec.side = side;
                     exec.filled_quantity = std::abs(trade_size);
-                    exec.fill_price = execution_price;  // T-1 close (matches live trading)
+                    exec.fill_price = latest_price;
                     exec.fill_time =
                         data.empty() ? std::chrono::system_clock::now() : data[0].timestamp;
                     // Calculate transaction costs using the same model as backtesting
                     // Base commission: 5 basis points * quantity
                     double commission = std::abs(trade_size) * 0.0005;
-                    // Market impact: 5 basis points * quantity * price (use execution_price = T-1 close)
-                    double market_impact = std::abs(trade_size) * execution_price * 0.0005;
+                    // Market impact: 5 basis points * quantity * price  
+                    double market_impact = std::abs(trade_size) * latest_price * 0.0005;
                     // Fixed cost per trade
                     double fixed_cost = 1.0;
                     exec.commission = commission + market_impact + fixed_cost;
@@ -571,15 +548,6 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data)
                     // Add to recent executions (portfolio-level)
                     recent_executions_.push_back(exec);
                 }
-            }
-
-            // CRITICAL: Update previous_day_close_prices_ to T closes AFTER all processing
-            // These T closes will become T-1 closes for the next period
-            // This ensures executions in the next period use the correct T-1 close
-            for (const auto& bar : data) {
-                previous_day_close_prices_[bar.symbol] = static_cast<double>(bar.close);
-                DEBUG("Updated previous_day_close_prices_[" + bar.symbol + "] = " + 
-                      std::to_string(static_cast<double>(bar.close)) + " (T close, will be T-1 for next period)");
             }
         }
         return Result<void>();
