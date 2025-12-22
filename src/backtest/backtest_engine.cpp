@@ -206,6 +206,24 @@ Result<BacktestResults> BacktestEngine::run(std::shared_ptr<StrategyInterface> s
                                                start_result.error()->what(), "BacktestEngine");
         }
 
+        // Generate run_id at the start for daily position storage
+        // This will be used for daily position saves and can be passed to save_results_to_db
+        // Use strategy metadata ID or default to "TREND_FOLLOWING"
+        std::string strategy_id = "TREND_FOLLOWING";  // Default
+        try {
+            const auto& metadata = strategy->get_metadata();
+            if (!metadata.id.empty()) {
+                strategy_id = metadata.id;
+            }
+        } catch (...) {
+            // Use default if metadata access fails
+        }
+        std::string backtest_run_id = BacktestResultsManager::generate_run_id(strategy_id);
+        INFO("Generated backtest run_id: " + backtest_run_id + " for daily position storage");
+
+        // Track last date we saved positions for (to avoid saving multiple times per day)
+        std::string last_saved_date = "";
+
         // Process each bar
         INFO("Starting backtest simulation with " + std::to_string(data_result.value().size()) +
              " bars");
@@ -289,6 +307,51 @@ Result<BacktestResults> BacktestEngine::run(std::shared_ptr<StrategyInterface> s
                     return make_error<BacktestResults>(constraint_result.error()->code(),
                                                        constraint_result.error()->what(),
                                                        "BacktestEngine");
+                }
+            }
+
+            // Save positions daily if storage is enabled (once per unique date)
+            if (config_.store_trade_details && db_ && !bars.empty()) {
+                // Extract date from current timestamp
+                Timestamp current_timestamp = bars[0].timestamp;
+                auto time_t = std::chrono::system_clock::to_time_t(current_timestamp);
+                std::stringstream date_ss;
+                std::tm time_info;
+                trade_ngin::core::safe_gmtime(&time_t, &time_info);
+                date_ss << std::put_time(&time_info, "%Y-%m-%d");
+                std::string current_date = date_ss.str();
+                
+                // Only save positions if this is a new date (avoid saving multiple times per day)
+                if (current_date != last_saved_date) {
+                    // Convert positions map to vector
+                    std::vector<Position> positions_vec;
+                    positions_vec.reserve(current_positions.size());
+                    
+                    for (const auto& [symbol, pos] : current_positions) {
+                        // Create a copy with updated timestamp
+                        Position pos_with_date = pos;
+                        pos_with_date.last_update = current_timestamp;
+                        positions_vec.push_back(pos_with_date);
+                    }
+                    
+                    // Save positions for this day using the run_id generated at the start
+                    if (!positions_vec.empty()) {
+                        auto save_result = db_->store_backtest_positions(positions_vec, backtest_run_id, 
+                                                                          "backtest.final_positions");
+                        if (save_result.is_error()) {
+                            // Log error but don't fail the backtest
+                            ERROR("Failed to save daily positions for date " + current_date + 
+                                  ", run_id: " + backtest_run_id + 
+                                  ", error: " + std::string(save_result.error()->what()));
+                        } else {
+                            INFO("Saved " + std::to_string(positions_vec.size()) + 
+                                  " positions for run_id: " + backtest_run_id + 
+                                  " on date: " + current_date);
+                            last_saved_date = current_date;  // Update last saved date
+                        }
+                    } else {
+                        DEBUG("No positions to save for date " + current_date);
+                    }
                 }
             }
 
@@ -463,6 +526,31 @@ Result<BacktestResults> BacktestEngine::run_portfolio(std::shared_ptr<PortfolioM
         // Initialize equity curve with starting point
         equity_curve.emplace_back(config_.strategy_config.start_date, initial_capital);
 
+        // Generate run_id at the start for daily position storage
+        // Use the same format as RunIdGenerator::generate_portfolio_run_id for consistency
+        std::vector<std::string> strategy_names_for_id;
+        for (const auto& strategy : portfolio->get_strategies()) {
+            try {
+                const auto& metadata = strategy->get_metadata();
+                if (!metadata.id.empty()) {
+                    strategy_names_for_id.push_back(metadata.id);
+                } else {
+                    strategy_names_for_id.push_back("TREND_FOLLOWING");  // Default
+                }
+            } catch (...) {
+                strategy_names_for_id.push_back("TREND_FOLLOWING");  // Default
+            }
+        }
+        
+        // Use RunIdGenerator to match the format used in save_portfolio_results_to_db
+        std::string backtest_run_id = RunIdGenerator::generate_portfolio_run_id(
+            strategy_names_for_id, config_.strategy_config.end_date);
+        current_run_id_ = backtest_run_id;  // Store for use in save_portfolio_results_to_db
+        INFO("Generated portfolio backtest run_id: " + backtest_run_id + " for daily position storage");
+
+        // Track last saved date (to avoid saving multiple times per day)
+        std::string last_saved_date = "";
+
         // Group bars by timestamp for realistic simulation
         std::map<Timestamp, std::vector<Bar>> bars_by_time;
         for (const auto& bar : data_result.value()) {
@@ -512,6 +600,53 @@ Result<BacktestResults> BacktestEngine::run_portfolio(std::shared_ptr<PortfolioM
                 if (!equity_curve.empty()) {
                     // Use previous value for equity curve
                     equity_curve.emplace_back(timestamp, equity_curve.back().second);
+                }
+            }
+
+            // Save positions daily if storage is enabled (once per unique date)
+            if (config_.store_trade_details && db_ && !bars.empty()) {
+                // Extract date from current timestamp
+                auto time_t = std::chrono::system_clock::to_time_t(timestamp);
+                std::stringstream date_ss;
+                std::tm time_info;
+                trade_ngin::core::safe_gmtime(&time_t, &time_info);
+                date_ss << std::put_time(&time_info, "%Y-%m-%d");
+                std::string current_date = date_ss.str();
+                
+                // Only save positions if this is a new date (avoid saving multiple times per day)
+                if (current_date != last_saved_date) {
+                    // Get portfolio positions
+                    auto portfolio_positions = portfolio->get_portfolio_positions();
+                    
+                    // Convert positions map to vector
+                    std::vector<Position> positions_vec;
+                    positions_vec.reserve(portfolio_positions.size());
+                    
+                    for (const auto& [symbol, pos] : portfolio_positions) {
+                        // Create a copy with updated timestamp
+                        Position pos_with_date = pos;
+                        pos_with_date.last_update = timestamp;
+                        positions_vec.push_back(pos_with_date);
+                    }
+                    
+                    // Save positions for this day using the run_id generated at the start
+                    if (!positions_vec.empty()) {
+                        auto save_result = db_->store_backtest_positions(positions_vec, backtest_run_id, 
+                                                                          "backtest.final_positions");
+                        if (save_result.is_error()) {
+                            // Log error but don't fail the backtest
+                            ERROR("Failed to save daily portfolio positions for date " + current_date + 
+                                  ", run_id: " + backtest_run_id + 
+                                  ", error: " + std::string(save_result.error()->what()));
+                        } else {
+                            INFO("Saved " + std::to_string(positions_vec.size()) + 
+                                  " portfolio positions for run_id: " + backtest_run_id + 
+                                  " on date: " + current_date);
+                            last_saved_date = current_date;  // Update last saved date
+                        }
+                    } else {
+                        DEBUG("No portfolio positions to save for date " + current_date);
+                    }
                 }
             }
 
@@ -858,7 +993,9 @@ Result<void> BacktestEngine::process_bar(
 }
 
 // Process market data through each strategy and collect their positions
-// PnL Lag Model Implementation: Use previous day's close for executions to eliminate lookahead bias
+// BEGINNING-OF-DAY MODEL (no lookahead in signals):
+// - Use previous day's bars for signal generation (strategy->on_data)
+// - Use today's bars for executions and PnL, priced off previous day's close
 Result<void> BacktestEngine::process_strategy_signals(
     const std::vector<Bar>& bars, std::shared_ptr<StrategyInterface> strategy,
     std::map<std::string, Position>& current_positions,
@@ -866,37 +1003,45 @@ Result<void> BacktestEngine::process_strategy_signals(
     std::vector<std::pair<Timestamp, double>>& equity_curve,
     std::map<std::pair<Timestamp, std::string>, double>& signals) {
     try {
-        // PnL Lag Model: Store previous day's close prices for execution pricing
+        // Static state for PnL lag model (previous day's close) and signal lag (previous bars)
         static std::unordered_map<std::string, double> previous_day_close_prices;
-        static std::unordered_map<std::string, double> two_days_ago_close_prices;
-        
-        // Update price history for PnL lag model
-        for (const auto& bar : bars) {
-            const std::string& symbol = bar.symbol;
-            double current_close = static_cast<double>(bar.close);
-            
-            // Shift prices: T-2 becomes T-1, T-1 becomes current
-            if (previous_day_close_prices.find(symbol) != previous_day_close_prices.end()) {
-                two_days_ago_close_prices[symbol] = previous_day_close_prices[symbol];
-            }
-            previous_day_close_prices[symbol] = current_close;
+        static bool has_previous_bars = false;
+        static std::vector<Bar> previous_bars;
+
+        if (bars.empty()) {
+            return Result<void>();
         }
 
-        // Pass market data to strategy
-        auto data_result = strategy->on_data(bars);
+        // If this is the first bar set, initialize previous_day_close_prices and previous_bars
+        // but do NOT trade yet – we don't have T-1 data to generate T positions.
+        if (!has_previous_bars) {
+            for (const auto& bar : bars) {
+                previous_day_close_prices[bar.symbol] = static_cast<double>(bar.close);
+            }
+            previous_bars = bars;
+            has_previous_bars = true;
+            return Result<void>();
+        }
+
+        // BEGINNING-OF-DAY MODEL:
+        // - Use previous day's bars (previous_bars) to generate signals / positions for "today".
+        // - Use today's bars (bars) together with previous_day_close_prices to compute PnL.
+
+        // 1) Pass previous day's market data to strategy for signal generation (no lookahead)
+        auto data_result = strategy->on_data(previous_bars);
         if (data_result.is_error()) {
             return data_result;
         }
 
-        // Get updated positions from strategy
+        // 2) Get updated positions from strategy
         const auto& new_positions = strategy->get_positions();
         std::vector<ExecutionReport> period_executions;
-        
-        // Collect signals - for now, use position changes as proxy for signals
-        // In a full implementation, strategies would expose actual signal values
-        Timestamp current_time = bars.empty() ? std::chrono::system_clock::now() : bars[0].timestamp;
 
-        // Process position changes
+        // Collect signals - for now, use position changes as proxy for signals
+        Timestamp current_time =
+            bars.empty() ? std::chrono::system_clock::now() : bars[0].timestamp;
+
+        // 3) Process position changes and generate executions priced at previous close
         for (const auto& [symbol, new_pos] : new_positions) {
             const auto current_it = current_positions.find(symbol);
             double current_qty = (current_it != current_positions.end())
@@ -907,25 +1052,29 @@ Result<void> BacktestEngine::process_strategy_signals(
                 // Collect signal: position change represents a trading signal
                 double signal_strength = static_cast<double>(new_pos.quantity) - current_qty;
                 signals[{current_time, symbol}] = signal_strength;
-                
-                DEBUG("📊 Signal collected: " + symbol + " = " + std::to_string(signal_strength) + 
-                      " (pos change: " + std::to_string(current_qty) + " -> " + 
+
+                DEBUG("📊 Signal collected: " + symbol + " = " +
+                      std::to_string(signal_strength) + " (pos change: " +
+                      std::to_string(current_qty) + " -> " +
                       std::to_string(static_cast<double>(new_pos.quantity)) + ")");
-                
-                // PnL Lag Model: Use previous day's close for execution price (eliminate lookahead bias)
+
+                // Use previous day's close for execution price (BOD model, no lookahead)
                 double execution_price = 0.0;
-                if (previous_day_close_prices.find(symbol) != previous_day_close_prices.end()) {
-                    execution_price = previous_day_close_prices[symbol];
-                    DEBUG("PnL Lag Model: Using previous day close for " + symbol + " execution: " + std::to_string(execution_price));
+                auto price_it = previous_day_close_prices.find(symbol);
+                if (price_it != previous_day_close_prices.end()) {
+                    execution_price = price_it->second;
+                    DEBUG("PnL Lag Model: Using previous day close for " + symbol +
+                          " execution: " + std::to_string(execution_price));
                 } else {
-                    // Fallback: if no previous price available, use current close (first day case)
+                    // Fallback: if no previous price available, use today's close (first trade case)
                     for (const auto& bar : bars) {
                         if (bar.symbol == symbol) {
                             execution_price = static_cast<double>(bar.close);
                             break;
                         }
                     }
-                    DEBUG("PnL Lag Model: First day fallback for " + symbol + " execution: " + std::to_string(execution_price));
+                    DEBUG("PnL Lag Model: Fallback for " + symbol +
+                          " execution: " + std::to_string(execution_price));
                 }
 
                 if (execution_price == 0.0) {
@@ -939,7 +1088,7 @@ Result<void> BacktestEngine::process_strategy_signals(
                 // Apply slippage to price
                 double fill_price;
                 if (slippage_model_) {
-                    // Find the bar for this symbol
+                    // Find the bar for this symbol (today's bar)
                     std::optional<Bar> symbol_bar;
                     for (const auto& bar : bars) {
                         if (bar.symbol == symbol) {
@@ -986,12 +1135,13 @@ Result<void> BacktestEngine::process_strategy_signals(
             }
         }
 
-        // Calculate current portfolio value using PnL Lag Model
+        // 4) Calculate current portfolio value using close-to-close PnL (no lookahead)
         double portfolio_value = static_cast<double>(config_.portfolio_config.initial_capital);
         for (const auto& [symbol, pos] : current_positions) {
-            if (static_cast<double>(pos.quantity) == 0.0) continue;
-            
-            // PnL Lag Model: Daily PnL = (current_day_close - previous_day_close) * quantity * point_value
+            if (static_cast<double>(pos.quantity) == 0.0)
+                continue;
+
+            // Today's close
             double current_price = 0.0;
             for (const auto& bar : bars) {
                 if (bar.symbol == symbol) {
@@ -999,8 +1149,11 @@ Result<void> BacktestEngine::process_strategy_signals(
                     break;
                 }
             }
-            
-            if (current_price > 0.0 && previous_day_close_prices.find(symbol) != previous_day_close_prices.end()) {
+
+            auto prev_it = previous_day_close_prices.find(symbol);
+            if (current_price > 0.0 && prev_it != previous_day_close_prices.end()) {
+                double previous_close = prev_it->second;
+
                 // Get point value multiplier from strategy (correct symbol-specific value)
                 double point_value = 1.0;
                 auto trend_strategy = std::dynamic_pointer_cast<TrendFollowingStrategy>(strategy);
@@ -1008,22 +1161,28 @@ Result<void> BacktestEngine::process_strategy_signals(
                     try {
                         point_value = trend_strategy->get_point_value_multiplier(symbol);
                     } catch (const std::exception& e) {
-                        WARN("Failed to get point value for " + symbol + ": " + e.what() + ". Using 1.0");
+                        WARN("Failed to get point value for " + symbol + ": " + e.what() +
+                             ". Using 1.0");
                         point_value = 1.0;
                     }
                 }
 
                 // Calculate daily PnL: quantity * (current_close - previous_close) * point_value
                 double daily_pnl = static_cast<double>(pos.quantity) *
-                                  (current_price - previous_day_close_prices[symbol]) * point_value;
+                                   (current_price - previous_close) * point_value;
                 portfolio_value += daily_pnl;
             }
         }
 
-        // Update equity curve
-        if (!bars.empty()) {
-            equity_curve.emplace_back(bars[0].timestamp, portfolio_value);
+        // 5) Update equity curve for today
+        equity_curve.emplace_back(bars[0].timestamp, portfolio_value);
+
+        // 6) Update previous_day_close_prices and previous_bars for next day
+        for (const auto& bar : bars) {
+            previous_day_close_prices[bar.symbol] = static_cast<double>(bar.close);
         }
+        previous_bars = bars;
+        has_previous_bars = true;
 
         return Result<void>();
 
@@ -1217,6 +1376,14 @@ Result<void> BacktestEngine::process_portfolio_data(
     std::vector<std::pair<Timestamp, double>>& equity_curve,
     std::vector<RiskResult>& risk_metrics) {
     try {
+        // BEGINNING-OF-DAY MODEL FOR PORTFOLIO BACKTEST:
+        // - Use previous day's bars for signal generation via PortfolioManager
+        // - Use today's bars for executions' slippage/valuation and equity curve
+
+        // Static storage for previous day's bars (for signal generation) and a flag
+        static bool has_previous_bars = false;
+        static std::vector<Bar> previous_bars;
+
         // Check for empty data
         if (bars.empty()) {
             ERROR("Empty market data provided for portfolio backtest");
@@ -1233,6 +1400,15 @@ Result<void> BacktestEngine::process_portfolio_data(
                                     "BacktestEngine");
         }
 
+        // If this is the first bar set, initialize previous_bars but do NOT trade yet
+        // We still allow equity curve to be updated from existing positions,
+        // but no new signals/positions are generated using same-day data.
+        bool had_previous_bars = has_previous_bars;
+        if (!has_previous_bars) {
+            previous_bars = bars;
+            has_previous_bars = true;
+        }
+
         // Update slippage model
         if (slippage_model_) {
             for (const auto& bar : bars) {
@@ -1246,19 +1422,24 @@ Result<void> BacktestEngine::process_portfolio_data(
         }
 
         // Process market data through portfolio manager
+        // BEGINNING-OF-DAY: use previous day's bars for signal generation when available
         try {
-            DEBUG("Processing market data for " + std::to_string(bars.size()) +
+            const auto& bars_for_signals = had_previous_bars ? previous_bars : bars;
+
+            DEBUG("Processing market data for " +
+                  std::to_string(bars_for_signals.size()) +
                   " symbols at timestamp " +
                   std::to_string(
                       std::chrono::duration_cast<std::chrono::seconds>(timestamp.time_since_epoch())
                           .count()));
-            for (const auto& bar : bars) {
+            for (const auto& bar : bars_for_signals) {
                 DEBUG("Market data: " + bar.symbol +
                       " close=" + std::to_string(static_cast<double>(bar.close)) +
                       " volume=" + std::to_string(static_cast<double>(bar.volume)));
             }
 
-            auto data_result = portfolio->process_market_data(bars);
+            // Use previous day's bars when available to avoid lookahead in signals
+            auto data_result = portfolio->process_market_data(bars_for_signals);
             if (data_result.is_error()) {
                 ERROR("Portfolio process_market_data failed: " +
                       std::string(data_result.error()->what()));
@@ -1273,21 +1454,24 @@ Result<void> BacktestEngine::process_portfolio_data(
 
         // Get executions from the portfolio manager
         std::vector<ExecutionReport> period_executions;
-        try {
-            period_executions = portfolio->get_recent_executions();
-            DEBUG("Period executions count: " + std::to_string(period_executions.size()));
-            for (const auto& exec : period_executions) {
-                DEBUG("Execution: symbol=" + exec.symbol +
-                      ", side=" + (exec.side == Side::BUY ? "BUY" : "SELL") +
-                      ", qty=" + std::to_string(static_cast<double>(exec.filled_quantity)) +
-                      ", price=" + std::to_string(static_cast<double>(exec.fill_price)));
+        // Only retrieve executions if we actually processed signals this period
+        if (had_previous_bars) {
+            try {
+                period_executions = portfolio->get_recent_executions();
+                DEBUG("Period executions count: " + std::to_string(period_executions.size()));
+                for (const auto& exec : period_executions) {
+                    DEBUG("Execution: symbol=" + exec.symbol +
+                          ", side=" + (exec.side == Side::BUY ? "BUY" : "SELL") +
+                          ", qty=" + std::to_string(static_cast<double>(exec.filled_quantity)) +
+                          ", price=" + std::to_string(static_cast<double>(exec.fill_price)));
+                }
+                // CRITICAL FIX: Clear executions immediately after retrieval to prevent accumulation
+                portfolio->clear_execution_history();
+            } catch (const std::exception& e) {
+                WARN("Exception getting recent executions: " + std::string(e.what()) +
+                     ". Continuing with empty executions list.");
+                period_executions.clear();
             }
-            // CRITICAL FIX: Clear executions immediately after retrieval to prevent accumulation
-            portfolio->clear_execution_history();
-        } catch (const std::exception& e) {
-            WARN("Exception getting recent executions: " + std::string(e.what()) +
-                 ". Continuing with empty executions list.");
-            period_executions.clear();
         }
 
         // Apply slippage and transaction costs to executions
@@ -1429,6 +1613,10 @@ Result<void> BacktestEngine::process_portfolio_data(
         }
 
         // Execution history already cleared after retrieval to prevent accumulation
+
+        // Update previous_bars for next day
+        previous_bars = bars;
+        has_previous_bars = true;
 
         return Result<void>();
 
@@ -2119,11 +2307,17 @@ Result<void> BacktestEngine::save_portfolio_results_to_db(
                                "Invalid database type", "BacktestEngine");
     }
 
-    // Generate portfolio run_id (combined strategy names)
-    std::string portfolio_run_id = RunIdGenerator::generate_portfolio_run_id(
-        strategy_names, config_.strategy_config.end_date);
-
-    INFO("Generated portfolio run_id: " + portfolio_run_id);
+    // Use the run_id from daily position storage if available, otherwise generate a new one
+    std::string portfolio_run_id;
+    if (!current_run_id_.empty()) {
+        portfolio_run_id = current_run_id_;
+        INFO("Using run_id from daily position storage: " + portfolio_run_id);
+    } else {
+        // Fallback: Generate portfolio run_id (combined strategy names)
+        portfolio_run_id = RunIdGenerator::generate_portfolio_run_id(
+            strategy_names, config_.strategy_config.end_date);
+        INFO("Generated new portfolio run_id: " + portfolio_run_id);
+    }
 
     // Create results manager for portfolio-level storage
     // Use portfolio_run_id as the strategy_id for the manager
@@ -2177,32 +2371,20 @@ Result<void> BacktestEngine::save_portfolio_results_to_db(
     results_manager->set_equity_curve(equity_points);
 
     // Collect per-strategy positions and executions
+    // NOTE: We skip saving final positions here because positions are already saved daily
+    // during the backtest run. The last day's positions are already in the database.
     if (portfolio) {
-        // Get per-strategy optimized positions from PortfolioManager (after optimization/rounding)
-        auto strategy_positions_map = portfolio->get_strategy_positions();
-        
         // Get per-strategy executions from PortfolioManager
         auto strategy_executions_map = portfolio->get_strategy_executions();
         
-        // Process each strategy
-        for (const auto& [strategy_id, positions_map] : strategy_positions_map) {
-            // Convert optimized positions to vector
-            std::vector<Position> strategy_positions;
-            strategy_positions.reserve(positions_map.size());
-            for (const auto& [symbol, pos] : positions_map) {
-                strategy_positions.push_back(pos);
-            }
-            results_manager->set_strategy_positions(strategy_id, strategy_positions);
-
-            // Get executions for this strategy
-            auto strategy_execs_it = strategy_executions_map.find(strategy_id);
-            if (strategy_execs_it != strategy_executions_map.end()) {
-                results_manager->set_strategy_executions(strategy_id, strategy_execs_it->second);
-            } else {
-                // No executions for this strategy (empty vector)
-                results_manager->set_strategy_executions(strategy_id, {});
-            }
+        // Process each strategy - only save executions, not positions (positions saved daily)
+        for (const auto& [strategy_id, executions] : strategy_executions_map) {
+            results_manager->set_strategy_executions(strategy_id, executions);
         }
+        
+        // Don't set strategy positions - they're already saved daily
+        // If we need final positions separately, we can add a flag to control this
+        INFO("Skipping final positions save - positions already saved daily during backtest");
     }
 
     // Don't save portfolio-level executions - we save per-strategy executions instead
@@ -2219,12 +2401,9 @@ Result<void> BacktestEngine::save_portfolio_results_to_db(
         return save_result;
     }
 
-    // Save per-strategy positions (Approach B - multiple rows)
-    auto positions_result = results_manager->save_strategy_positions(portfolio_run_id);
-    if (positions_result.is_error()) {
-        WARN("Failed to save strategy positions: " + std::string(positions_result.error()->what()));
-        // Non-fatal, continue
-    }
+    // Skip saving per-strategy positions - positions are already saved daily during backtest
+    // The last day's positions are already in the database, so no need to save again
+    INFO("Skipping save_strategy_positions - positions already saved daily during backtest run");
 
     // Save per-strategy executions (Approach B - multiple rows)
     // Executions are now tracked per strategy in PortfolioManager

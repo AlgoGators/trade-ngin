@@ -321,6 +321,7 @@ private:
     std::unique_ptr<DynamicOptimizer> optimizer_;
     std::unique_ptr<SlippageModel> slippage_model_;
     std::string backtest_component_id_;
+    mutable std::string current_run_id_;  // Store run_id for daily position storage
 
     /**
      * @brief Load market data for simulation

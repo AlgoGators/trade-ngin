@@ -213,32 +213,118 @@ Result<void> PostgresDatabase::store_backtest_positions(
     try {
         pqxx::work txn(*connection_);
 
-        // Build batch INSERT query
+        // Get the date from the first position (all positions should be from the same date)
+        // Extract date from last_update timestamp
+        auto time_t = std::chrono::system_clock::to_time_t(positions[0].last_update);
+        std::stringstream date_ss;
+        std::tm time_info;
+        trade_ngin::core::safe_gmtime(&time_t, &time_info);
+        date_ss << std::put_time(&time_info, "%Y-%m-%d");
+        std::string position_date = date_ss.str();
+
+        // Clear existing positions for this run_id and date (like trading.positions does)
+        // This allows storing positions daily without duplicates
+        try {
+            std::string delete_query = "DELETE FROM " + table_name + 
+                " WHERE run_id = " + txn.quote(run_id) + 
+                " AND DATE(date) = '" + position_date + "'";
+            txn.exec(delete_query);
+        } catch (const std::exception& e) {
+            // If date column doesn't exist yet (old schema), try without it
+            WARN("date column may not exist, trying delete without date: " + std::string(e.what()));
+            try {
+                std::string delete_query = "DELETE FROM " + table_name + 
+                    " WHERE run_id = " + txn.quote(run_id) + 
+                    " AND DATE(last_update) = '" + position_date + "'";
+                txn.exec(delete_query);
+            } catch (const std::exception& e2) {
+                // If last_update doesn't exist either, skip delete (old schema)
+                WARN("Could not delete existing positions, continuing with insert: " + std::string(e2.what()));
+            }
+        }
+
+        // Build batch INSERT query with all required columns for daily storage
+        // Try new schema first (with date, last_update, unrealized_pnl, realized_pnl)
         std::string query = "INSERT INTO " + table_name +
-                           " (run_id, symbol, quantity, average_price) VALUES ";
+                           " (run_id, strategy_id, date, symbol, quantity, average_price, unrealized_pnl, realized_pnl, last_update, updated_at) VALUES ";
 
         bool first = true;
+        std::vector<std::string> position_values;
+        
         for (const auto& pos : positions) {
             // Skip zero positions
             if (std::abs(static_cast<double>(pos.quantity)) < 1e-10) {
                 continue;
             }
 
-            if (!first) query += ", ";
-            first = false;
+            // Extract date from last_update timestamp
+            auto pos_time_t = std::chrono::system_clock::to_time_t(pos.last_update);
+            std::stringstream pos_date_ss;
+            std::tm pos_time_info;
+            trade_ngin::core::safe_gmtime(&pos_time_t, &pos_time_info);
+            pos_date_ss << std::put_time(&pos_time_info, "%Y-%m-%d");
+            std::string pos_date_str = pos_date_ss.str();
 
-            query += "(" + txn.quote(run_id) + ", " +
-                     txn.quote(pos.symbol) + ", " +
-                     std::to_string(static_cast<double>(pos.quantity)) + ", " +
-                     std::to_string(static_cast<double>(pos.average_price)) + ")";
+            // Format timestamps
+            std::string last_update_str = format_timestamp(pos.last_update);
+            
+            // Use default strategy_id if not available (for backward compatibility)
+            std::string strategy_id = "TREND_FOLLOWING";  // Default, can be overridden if needed
+            
+            std::stringstream value_ss;
+            value_ss << "(" << txn.quote(run_id) << ", "
+                     << txn.quote(strategy_id) << ", "
+                     << "'" << pos_date_str << "', "
+                     << txn.quote(pos.symbol) << ", "
+                     << std::to_string(static_cast<double>(pos.quantity)) << ", "
+                     << std::to_string(static_cast<double>(pos.average_price)) << ", "
+                     << std::to_string(static_cast<double>(pos.unrealized_pnl)) << ", "
+                     << std::to_string(static_cast<double>(pos.realized_pnl)) << ", "
+                     << "'" << last_update_str << "', "
+                     << "'" << last_update_str << "'"
+                     << ")";
+            
+            position_values.push_back(value_ss.str());
         }
 
-        if (!first) {  // Only execute if we have non-zero positions
-            txn.exec(query);
-            txn.commit();
+        if (!position_values.empty()) {
+            // Try new schema first
+            try {
+                // Join position values
+                bool first_val = true;
+                for (const auto& val : position_values) {
+                    if (!first_val) query += ", ";
+                    first_val = false;
+                    query += val;
+                }
+                
+                DEBUG("Executing position insert query for run_id: " + run_id + ", date: " + position_date);
+                DEBUG("Query: " + query.substr(0, 200) + "...");  // Log first 200 chars
+                
+                txn.exec(query);
+                txn.commit();
 
-            INFO("Stored " + std::to_string(positions.size()) +
-                 " final positions for run_id: " + run_id);
+                INFO("Successfully stored " + std::to_string(position_values.size()) +
+                     " positions for run_id: " + run_id + " on date: " + position_date);
+            } catch (const std::exception& e) {
+                // Log the actual error for debugging
+                ERROR("Failed to insert positions with new schema: " + std::string(e.what()));
+                ERROR("run_id: " + run_id + ", date: " + position_date);
+                if (query.length() > 1000) {
+                    ERROR("Query (first 1000 chars): " + query.substr(0, 1000));
+                } else {
+                    ERROR("Full query: " + query);
+                }
+                txn.abort();
+                
+                // Don't fallback to old schema if date column exists (it's required)
+                // The error should be fixed, not worked around
+                return make_error<void>(ErrorCode::DATABASE_ERROR, 
+                                       "Failed to store positions: " + std::string(e.what()), 
+                                       component_id_);
+            }
+        } else {
+            DEBUG("No position values to insert (all positions were zero or empty)");
         }
 
         return Result<void>();
@@ -278,9 +364,9 @@ Result<void> PostgresDatabase::store_backtest_positions_with_strategy(
 
         // Build batch INSERT query with strategy_id and all required columns
         // Schema requires: run_id, strategy_id, date, symbol, quantity, average_price, 
-        //                  realized_pnl, unrealized_pnl, last_update, updated_at
+        //                  unrealized_pnl, realized_pnl, last_update, updated_at
         std::string query = "INSERT INTO " + table_name +
-                           " (run_id, strategy_id, date, symbol, quantity, average_price, realized_pnl, unrealized_pnl, last_update, updated_at) VALUES ";
+                           " (run_id, strategy_id, date, symbol, quantity, average_price, unrealized_pnl, realized_pnl, last_update, updated_at) VALUES ";
 
         bool first = true;
         for (const auto& pos : positions) {

@@ -334,7 +334,7 @@ Result<void> PostgresDatabase::store_positions(const std::vector<Position>& posi
             }
 
             // Build position value string matching the trading.positions table schema
-            // Schema: symbol, quantity, average_price, daily_unrealized_pnl, daily_realized_pnl, last_update, updated_at, strategy_id
+            // Schema: symbol, quantity, average_price, unrealized_pnl, realized_pnl, last_update, updated_at, strategy_id
             // Use stringstream with high precision to avoid rounding issues
             std::stringstream ss;
             ss << std::setprecision(17);  // Double precision
@@ -354,7 +354,7 @@ Result<void> PostgresDatabase::store_positions(const std::vector<Position>& posi
             // Try with strategy_id column first
             try {
                 std::string query = "INSERT INTO " + table_name +
-                                    " (symbol, quantity, average_price, daily_unrealized_pnl, daily_realized_pnl, last_update, updated_at, strategy_id) VALUES " +
+                                    " (symbol, quantity, average_price, unrealized_pnl, realized_pnl, last_update, updated_at, strategy_id) VALUES " +
                                     join(position_values, ", ");
 
                 DEBUG("Executing position insert query: " + query);
@@ -380,7 +380,7 @@ Result<void> PostgresDatabase::store_positions(const std::vector<Position>& posi
                 }
 
                 std::string query = "INSERT INTO " + table_name +
-                                    " (symbol, quantity, average_price, daily_unrealized_pnl, daily_realized_pnl, last_update, updated_at) VALUES " +
+                                    " (symbol, quantity, average_price, unrealized_pnl, realized_pnl, last_update, updated_at) VALUES " +
                                     join(position_values_no_strategy, ", ");
 
                 DEBUG("Executing position insert query without strategy_id: " + query);
