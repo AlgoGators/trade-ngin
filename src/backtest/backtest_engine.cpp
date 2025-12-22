@@ -18,7 +18,6 @@
 #include "trade_ngin/data/postgres_database.hpp"
 #include "trade_ngin/storage/backtest_results_manager.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
-#include "trade_ngin/instruments/instrument_registry.hpp"
 
 namespace {
 std::string join(const std::vector<std::string>& elements, const std::string& delimiter) {
@@ -1234,30 +1233,6 @@ Result<void> BacktestEngine::process_portfolio_data(
                                     "BacktestEngine");
         }
 
-        // CRITICAL: Track T-1 close prices for matching live trading methodology
-        // At START of Day T processing, previous_day_close_prices contains T-1 closes
-        // We use these for average_price and PnL calculations
-        // At END, we update to T closes (which become T-1 for next day)
-        static std::unordered_map<std::string, double> previous_day_close_prices;
-        
-        // Extract T-1 close prices BEFORE processing (for use during this period)
-        std::unordered_map<std::string, double> t1_close_prices;
-        for (const auto& bar : bars) {
-            auto prev_it = previous_day_close_prices.find(bar.symbol);
-            if (prev_it != previous_day_close_prices.end()) {
-                t1_close_prices[bar.symbol] = prev_it->second;  // T-1 close
-            } else {
-                // First day: use current close as fallback (will be T-1 for next day)
-                t1_close_prices[bar.symbol] = static_cast<double>(bar.close);
-            }
-        }
-        
-        // Extract T close prices (current bar closes) for PnL calculation
-        std::unordered_map<std::string, double> t_close_prices;
-        for (const auto& bar : bars) {
-            t_close_prices[bar.symbol] = static_cast<double>(bar.close);  // T close
-        }
-
         // Update slippage model
         if (slippage_model_) {
             for (const auto& bar : bars) {
@@ -1450,156 +1425,6 @@ Result<void> BacktestEngine::process_portfolio_data(
             } catch (const std::exception& e) {
                 WARN("Exception calculating risk metrics: " + std::string(e.what()) +
                      ". Continuing without risk metrics for this period.");
-            }
-        }
-
-        // Save positions with timestamp for historical tracking (if storage enabled)
-        if (config_.store_trade_details && db_) {
-            try {
-                auto db_ptr = std::dynamic_pointer_cast<PostgresDatabase>(db_);
-                if (db_ptr) {
-                    // Get per-strategy positions
-                    auto strategy_positions_map = portfolio->get_strategy_positions();
-                    
-                    // Generate portfolio run_id (needed for saving)
-                    // Get strategy names from portfolio
-                    std::vector<std::string> strategy_names;
-                    for (const auto& [strategy_id, _] : strategy_positions_map) {
-                        strategy_names.push_back(strategy_id);
-                    }
-                    std::string portfolio_run_id = RunIdGenerator::generate_portfolio_run_id(
-                        strategy_names, config_.strategy_config.end_date);
-                    
-                    // Save positions for each strategy with current timestamp
-                    // Update PnL based on current market prices to match live trading methodology
-                    for (const auto& [strategy_id, positions_map] : strategy_positions_map) {
-                        std::vector<Position> positions_vec;
-                        positions_vec.reserve(positions_map.size());
-                        
-                        // Create price map from current bars for PnL calculation
-                        std::unordered_map<std::string, double> current_prices;
-                        for (const auto& bar : bars) {
-                            current_prices[bar.symbol] = static_cast<double>(bar.close);
-                        }
-                        
-                        for (const auto& [symbol, pos] : positions_map) {
-                            Position pos_with_timestamp = pos;
-                            pos_with_timestamp.last_update = timestamp;  // Set current timestamp
-                            
-                            // CRITICAL: Match live trading methodology
-                            // average_price should be T-1 close (entry price for Day T)
-                            // PnL calculated using T close (current day's close)
-                            
-                            // Get T-1 close price (entry price for Day T)
-                            double t1_close = static_cast<double>(pos.average_price);  // Default fallback
-                            auto t1_it = t1_close_prices.find(symbol);
-                            if (t1_it != t1_close_prices.end()) {
-                                t1_close = t1_it->second;  // Use T-1 close
-                            }
-                            
-                            // Get T close price (current day's close) for PnL calculation
-                            double t_close = 0.0;
-                            auto t_it = t_close_prices.find(symbol);
-                            if (t_it != t_close_prices.end()) {
-                                t_close = t_it->second;  // T close
-                            } else {
-                                // Last day case: T close not available, set PnL to 0
-                                t_close = t1_close;  // Use T-1 close as fallback (PnL will be 0)
-                            }
-                            
-                            // Set average_price to T-1 close (matches live trading)
-                            pos_with_timestamp.average_price = Decimal(t1_close);
-                            
-                            // Get point value multiplier (for futures contracts)
-                            double point_value = 1.0;
-                            try {
-                                auto& registry = InstrumentRegistry::instance();
-                                // Normalize symbol (remove .v./.c. suffix) for registry lookup
-                                std::string base_symbol = symbol;
-                                size_t dotpos = base_symbol.find(".v.");
-                                if (dotpos != std::string::npos) {
-                                    base_symbol = base_symbol.substr(0, dotpos);
-                                }
-                                dotpos = base_symbol.find(".c.");
-                                if (dotpos != std::string::npos) {
-                                    base_symbol = base_symbol.substr(0, dotpos);
-                                }
-                                
-                                if (registry.has_instrument(base_symbol)) {
-                                    auto instrument = registry.get_instrument(base_symbol);
-                                    if (instrument) {
-                                        point_value = instrument->get_multiplier();
-                                    }
-                                }
-                            } catch (...) {
-                                // Use default 1.0 if unable to get point value
-                                point_value = 1.0;
-                            }
-                            
-                            // Calculate mark-to-market PnL: quantity * (T_close - T-1_close) * point_value
-                            // This matches live trading methodology (daily mark-to-market)
-                            double quantity = static_cast<double>(pos.quantity);
-                            double mark_to_market_pnl = 0.0;
-                            
-                            if (std::abs(quantity) > 1e-6 && t_close > 0.0) {
-                                mark_to_market_pnl = quantity * (t_close - t1_close) * point_value;
-                            }
-                            
-                            // For REALIZED_ONLY accounting (futures), all PnL is realized via mark-to-market
-                            // Add mark-to-market PnL to realized_pnl
-                            double current_realized_pnl = static_cast<double>(pos.realized_pnl);
-                            pos_with_timestamp.realized_pnl = Decimal(current_realized_pnl + mark_to_market_pnl);
-                            pos_with_timestamp.unrealized_pnl = Decimal(0.0);  // Always 0 for futures
-                            
-                            // Update average_price to T close at end of day (becomes T-1 for next day)
-                            // This matches live trading: average_price updates daily to previous day's close
-                            pos_with_timestamp.average_price = Decimal(t_close);
-                            
-                            positions_vec.push_back(pos_with_timestamp);
-                        }
-                        
-                        if (!positions_vec.empty()) {
-                            auto save_result = db_ptr->store_backtest_positions_with_strategy(
-                                positions_vec, portfolio_run_id, strategy_id, "backtest.final_positions");
-                            if (save_result.is_error()) {
-                                DEBUG("Failed to save positions for strategy " + strategy_id + 
-                                      " at timestamp: " + std::string(save_result.error()->what()));
-                            }
-                            
-                            // CRITICAL: Update strategy positions so next period uses correct average_price (T close)
-                            // This ensures average_price = T-1 close for the next period
-                            // Match live trading: average_price updates daily to previous day's close
-                            // Note: We update strategy positions so the next period uses T close as T-1 close
-                            // This is safe because:
-                            // 1. In backtest, we control the flow completely
-                            // 2. In live trading, positions are loaded from DB each day (strategy positions reset)
-                            // 3. Live trading overwrites average_price anyway (line 658 in live_portfolio.cpp)
-                            auto strategies = portfolio->get_strategies();
-                            for (auto strategy_ptr : strategies) {
-                                // Match strategy by ID (strategy_id from positions_map should match strategy metadata.id)
-                                if (strategy_ptr->get_metadata().id == strategy_id) {
-                                    for (const auto& updated_pos : positions_vec) {
-                                        auto update_result = strategy_ptr->update_position(updated_pos.symbol, updated_pos);
-                                        if (update_result.is_error()) {
-                                            DEBUG("Failed to update position " + updated_pos.symbol + " in strategy " + strategy_id + ": " + 
-                                                  std::string(update_result.error()->what()));
-                                        }
-                                    }
-                                    break;  // Found matching strategy, no need to check others
-                                }
-                            }
-                        }
-                    }
-                }
-                
-                // Update previous_day_close_prices to T closes AFTER all processing
-                // These T closes will become T-1 closes for the next period
-                for (const auto& bar : bars) {
-                    previous_day_close_prices[bar.symbol] = static_cast<double>(bar.close);
-                }
-            } catch (const std::exception& e) {
-                DEBUG("Exception saving positions during backtest: " + std::string(e.what()) +
-                      ". Continuing without position save for this period.");
             }
         }
 
