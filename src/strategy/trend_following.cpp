@@ -88,7 +88,7 @@ Result<void> TrendFollowingStrategy::initialize() {
             Position pos;
             pos.symbol = symbol;
             pos.quantity = 0.0;
-            pos.average_price = 1.0;
+            pos.average_price = 0.0;  // Safe default - won't cause calculation errors with qty=0
             pos.last_update = std::chrono::system_clock::now();
             positions_[symbol] = pos;
         }
@@ -104,12 +104,41 @@ Result<void> TrendFollowingStrategy::initialize() {
     }
 }
 
+Result<void> TrendFollowingStrategy::on_execution(const ExecutionReport& report) {
+    // Override base class to prevent PnL corruption.
+    // TrendFollowingStrategy calculates PnL in on_data() with proper point_value multiplier.
+    // The base class on_execution() calculates PnL without point_value, which would corrupt
+    // the realized_pnl values that were correctly calculated in on_data().
+
+    // Only update trade count metric - don't modify positions or PnL
+    std::lock_guard<std::mutex> lock(mutex_);
+    metrics_.total_trades++;
+
+    return Result<void>();
+}
+
 Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
     // Validate data
     if (data.empty()) {
         return Result<void>();
     }
 
+    // Debug: Track on_data calls
+    static int on_data_call_count = 0;
+    ++on_data_call_count;
+    if (on_data_call_count <= 5 || on_data_call_count % 1000 == 0) {
+        auto ts_str = data.empty() ? "N/A" :
+            std::to_string(std::chrono::system_clock::to_time_t(data[0].timestamp));
+        INFO("ON_DATA #" + std::to_string(on_data_call_count) + ": called with " +
+             std::to_string(data.size()) + " bars, first timestamp=" + ts_str);
+    }
+
+    // Log total on_data calls when we see the first loop iteration
+    static bool logged_total = false;
+    if (!logged_total && on_data_call_count > 100) {
+        INFO("TOTAL ON_DATA CALLS before main loop: " + std::to_string(on_data_call_count));
+        logged_total = true;
+    }
 
     // Load previous positions if not already loaded (only once per run)
     static bool previous_positions_loaded = false;
@@ -412,16 +441,27 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
             // Get current market price
             double current_price = static_cast<double>(symbol_bars.back().close);
             
-            // Get previous position for PnL calculation from loaded previous day positions
+            // Get previous position for PnL calculation
+            // First try previous_positions_ (DB data for live trading first day)
+            // Then fall back to positions_ (in-memory data for backtest/subsequent days)
             auto prev_pos_it = previous_positions_.find(symbol);
             double previous_quantity = 0.0;
             double previous_avg_price = current_price;
             double previous_realized_pnl = 0.0;
-            
+
             if (prev_pos_it != previous_positions_.end()) {
+                // Use DB-loaded previous positions (live trading first day)
                 previous_quantity = static_cast<double>(prev_pos_it->second.quantity);
                 previous_avg_price = static_cast<double>(prev_pos_it->second.average_price);
                 previous_realized_pnl = static_cast<double>(prev_pos_it->second.realized_pnl);
+            } else {
+                // Fallback to in-memory positions (backtest or subsequent live days)
+                auto pos_it = positions_.find(symbol);
+                if (pos_it != positions_.end()) {
+                    previous_quantity = static_cast<double>(pos_it->second.quantity);
+                    previous_avg_price = static_cast<double>(pos_it->second.average_price);
+                    previous_realized_pnl = static_cast<double>(pos_it->second.realized_pnl);
+                }
             }
             
             // Calculate realized PnL from position changes
@@ -496,6 +536,9 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
                 pos.realized_pnl += Decimal(mark_to_market_pnl);
                 pos.unrealized_pnl = Decimal(0.0);  // Always zero for futures
                 pnl_accounting_.add_realized_pnl(mark_to_market_pnl);
+                // Reset average price to current price after daily settlement
+                // This prevents double-counting: next day's mark-to-market only captures that day's change
+                pos.average_price = current_price;
             } else {
                 // For other accounting methods, use traditional unrealized PnL
                 pos.unrealized_pnl = Decimal(mark_to_market_pnl);
@@ -516,6 +559,10 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
                 WARN("Failed to update position for " + symbol + ": " + pos_result.error()->what());
                 // Continue processing despite position update failure
             }
+
+            // Update previous_positions_ for next iteration
+            // This ensures PnL accumulates correctly in backtests and subsequent live days
+            previous_positions_[symbol] = pos;
 
             instrument_data.last_update = symbol_bars.back().timestamp;
         }

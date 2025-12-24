@@ -146,7 +146,7 @@ int main() {
 
         // Set start date to 2 years ago
         std::tm start_tm = *now_tm;
-        start_tm.tm_year -= 1;  // 2 years ago
+        start_tm.tm_year -= 2;  // 2 years ago
         auto start_time_t = std::mktime(&start_tm);
         config.strategy_config.start_date = std::chrono::system_clock::from_time_t(start_time_t);
 
@@ -157,6 +157,7 @@ int main() {
         config.strategy_config.data_freq = trade_ngin::DataFrequency::DAILY;
         config.strategy_config.commission_rate = 0.0005;  // 5 basis points
         config.strategy_config.slippage_model = 1.0;      // 1 basis point
+        config.strategy_config.warmup_days = 260;         // ~1 year warmup for EMA windows (max 256)
 
         // MEMORY FIXED: Restored original symbol loading with memory management
         auto symbols_result = db->get_symbols(trade_ngin::AssetClass::FUTURES);
