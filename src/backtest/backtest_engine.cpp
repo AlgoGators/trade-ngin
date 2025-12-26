@@ -615,37 +615,61 @@ Result<BacktestResults> BacktestEngine::run_portfolio(std::shared_ptr<PortfolioM
                 
                 // Only save positions if this is a new date (avoid saving multiple times per day)
                 if (current_date != last_saved_date) {
-                    // Get portfolio positions
-                    auto portfolio_positions = portfolio->get_portfolio_positions();
+                    // Get per-strategy positions (not aggregated portfolio positions)
+                    // This ensures each strategy's positions are saved separately with strategy_id
+                    auto strategy_positions = portfolio->get_strategy_positions();
                     
-                    // Convert positions map to vector
-                    std::vector<Position> positions_vec;
-                    positions_vec.reserve(portfolio_positions.size());
+                    int total_positions_saved = 0;
+                    int strategies_with_positions = 0;
                     
-                    for (const auto& [symbol, pos] : portfolio_positions) {
-                        // Create a copy with updated timestamp
-                        Position pos_with_date = pos;
-                        pos_with_date.last_update = timestamp;
-                        positions_vec.push_back(pos_with_date);
+                    // Save positions for each strategy separately
+                    for (const auto& [strategy_id, positions_map] : strategy_positions) {
+                        if (positions_map.empty()) {
+                            continue;
+                        }
+                        
+                        // Convert positions map to vector
+                        std::vector<Position> positions_vec;
+                        positions_vec.reserve(positions_map.size());
+                        
+                        for (const auto& [symbol, pos] : positions_map) {
+                            // Create a copy with updated timestamp and strategy_id
+                            Position pos_with_date = pos;
+                            pos_with_date.last_update = timestamp;
+                            // Note: strategy_id is embedded in the run_id for the table structure
+                            positions_vec.push_back(pos_with_date);
+                        }
+                        
+                        // Save positions for this strategy using composite run_id
+                        // Format: "backtest_run_id|strategy_id" to preserve both
+                        if (!positions_vec.empty()) {
+                            std::string composite_run_id = backtest_run_id + "|" + strategy_id;
+                            auto save_result = db_->store_backtest_positions(
+                                positions_vec, 
+                                composite_run_id,  // Composite ID allows extracting both
+                                "backtest.final_positions");
+                            
+                            if (save_result.is_error()) {
+                                ERROR("Failed to save daily positions for strategy " + strategy_id + 
+                                      " on date " + current_date + 
+                                      ", error: " + std::string(save_result.error()->what()));
+                            } else {
+                                DEBUG("Saved " + std::to_string(positions_vec.size()) + 
+                                      " positions for strategy " + strategy_id + 
+                                      " on date: " + current_date);
+                                total_positions_saved += positions_vec.size();
+                                strategies_with_positions++;
+                            }
+                        }
                     }
                     
-                    // Save positions for this day using the run_id generated at the start
-                    if (!positions_vec.empty()) {
-                        auto save_result = db_->store_backtest_positions(positions_vec, backtest_run_id, 
-                                                                          "backtest.final_positions");
-                        if (save_result.is_error()) {
-                            // Log error but don't fail the backtest
-                            ERROR("Failed to save daily portfolio positions for date " + current_date + 
-                                  ", run_id: " + backtest_run_id + 
-                                  ", error: " + std::string(save_result.error()->what()));
-                        } else {
-                            INFO("Saved " + std::to_string(positions_vec.size()) + 
-                                  " portfolio positions for run_id: " + backtest_run_id + 
-                                  " on date: " + current_date);
-                            last_saved_date = current_date;  // Update last saved date
-                        }
+                    if (strategies_with_positions > 0) {
+                        INFO("Saved " + std::to_string(total_positions_saved) + 
+                              " positions across " + std::to_string(strategies_with_positions) + 
+                              " strategies for date: " + current_date);
+                        last_saved_date = current_date;  // Update last saved date
                     } else {
-                        DEBUG("No portfolio positions to save for date " + current_date);
+                        DEBUG("No strategy positions to save for date " + current_date);
                     }
                 }
             }
@@ -871,7 +895,10 @@ Result<void> BacktestEngine::process_bar(
         }
 
         // Calculate current portfolio value using PnL Lag Model
-        double portfolio_value = static_cast<double>(config_.portfolio_config.initial_capital);
+        // Use last equity point as the starting value so PnL and commissions accumulate
+        double initial_capital = static_cast<double>(config_.portfolio_config.initial_capital);
+        double portfolio_value =
+            equity_curve.empty() ? initial_capital : equity_curve.back().second;
         for (const auto& [symbol, pos] : current_positions) {
             if (static_cast<double>(pos.quantity) == 0.0) continue;
             
@@ -902,6 +929,17 @@ Result<void> BacktestEngine::process_bar(
                                   (current_price - previous_day_close_prices[symbol]) * point_value;
                 portfolio_value += daily_pnl;
             }
+        }
+
+        // Subtract total commissions for this period to get NET portfolio value
+        double total_commissions = 0.0;
+        for (const auto& exec : period_executions) {
+            total_commissions += static_cast<double>(exec.commission);
+        }
+        if (total_commissions != 0.0) {
+            DEBUG("Applying commission costs for period: " +
+                  std::to_string(total_commissions));
+            portfolio_value -= total_commissions;
         }
 
         // Update equity curve
@@ -948,21 +986,34 @@ Result<void> BacktestEngine::process_bar(
                 target_pos.push_back(
                     static_cast<double>(pos.quantity));  // Use current as starting point
 
-                // Default cost is 1.0, can be refined with specific costs per symbol
-                costs.push_back(1.0);
+                // Use strategy-specific cost from backtest config
+                double cost = static_cast<double>(config_.strategy_config.commission_rate);
+                costs.push_back(cost);
 
                 // Equal weights to start, could be refined based on market cap, etc.
                 weights.push_back(1.0);
             }
 
-            // Simple diagonal covariance matrix as placeholder
-            // In production, would use actual market data to calculate
-            std::vector<std::vector<double>> covariance(symbols.size(),
-                                                        std::vector<double>(symbols.size(), 0.0));
+            // Update price history and returns from current bars
+            update_historical_returns(bars);
 
-            // Set diagonal elements (variances)
-            for (size_t i = 0; i < symbols.size(); ++i) {
-                covariance[i][i] = 0.01;  // Default variance value
+            // Calculate real covariance matrix from historical returns
+            std::unordered_map<std::string, std::vector<double>> returns_by_symbol;
+            for (const auto& symbol : symbols) {
+                if (historical_returns_.count(symbol) > 0) {
+                    returns_by_symbol[symbol] = historical_returns_[symbol];
+                }
+            }
+
+            std::vector<std::vector<double>> covariance = calculate_covariance_matrix(returns_by_symbol);
+            
+            // If covariance calculation failed or returned empty, use default diagonal
+            if (covariance.empty() || covariance.size() != symbols.size()) {
+                WARN("Covariance calculation failed or insufficient data, using default diagonal matrix");
+                covariance.resize(symbols.size(), std::vector<double>(symbols.size(), 0.0));
+                for (size_t i = 0; i < symbols.size(); ++i) {
+                    covariance[i][i] = 0.01;  // Default variance
+                }
             }
 
             // Run optimization
@@ -1136,7 +1187,10 @@ Result<void> BacktestEngine::process_strategy_signals(
         }
 
         // 4) Calculate current portfolio value using close-to-close PnL (no lookahead)
-        double portfolio_value = static_cast<double>(config_.portfolio_config.initial_capital);
+        // Use last equity point as the starting value so PnL and commissions accumulate
+        double initial_capital = static_cast<double>(config_.portfolio_config.initial_capital);
+        double portfolio_value =
+            equity_curve.empty() ? initial_capital : equity_curve.back().second;
         for (const auto& [symbol, pos] : current_positions) {
             if (static_cast<double>(pos.quantity) == 0.0)
                 continue;
@@ -1172,6 +1226,17 @@ Result<void> BacktestEngine::process_strategy_signals(
                                    (current_price - previous_close) * point_value;
                 portfolio_value += daily_pnl;
             }
+        }
+
+        // Subtract total commissions for this period to get NET portfolio value
+        double total_commissions = 0.0;
+        for (const auto& exec : period_executions) {
+            total_commissions += static_cast<double>(exec.commission);
+        }
+        if (total_commissions != 0.0) {
+            DEBUG("Applying commission costs for period: " +
+                  std::to_string(total_commissions));
+            portfolio_value -= total_commissions;
         }
 
         // 5) Update equity curve for today
@@ -1238,21 +1303,34 @@ Result<void> BacktestEngine::apply_portfolio_constraints(
                 target_pos.push_back(
                     static_cast<double>(pos.quantity));  // Use current as starting point
 
-                // Default cost is 1.0, can be refined with specific costs per symbol
-                costs.push_back(1.0);
+                // Use strategy-specific cost from backtest config
+                double cost = static_cast<double>(config_.strategy_config.commission_rate);
+                costs.push_back(cost);
 
                 // Equal weights to start, could be refined based on market cap, etc.
                 weights.push_back(1.0);
             }
 
-            // Simple diagonal covariance matrix as placeholder
-            // In production, would use actual market data to calculate
-            std::vector<std::vector<double>> covariance(symbols.size(),
-                                                        std::vector<double>(symbols.size(), 0.0));
+            // Update price history and returns from current bars
+            update_historical_returns(bars);
 
-            // Set diagonal elements (variances)
-            for (size_t i = 0; i < symbols.size(); ++i) {
-                covariance[i][i] = 0.01;  // Default variance value
+            // Calculate real covariance matrix from historical returns
+            std::unordered_map<std::string, std::vector<double>> returns_by_symbol;
+            for (const auto& symbol : symbols) {
+                if (historical_returns_.count(symbol) > 0) {
+                    returns_by_symbol[symbol] = historical_returns_[symbol];
+                }
+            }
+
+            std::vector<std::vector<double>> covariance = calculate_covariance_matrix(returns_by_symbol);
+            
+            // If covariance calculation failed or returned empty, use default diagonal
+            if (covariance.empty() || covariance.size() != symbols.size()) {
+                WARN("Covariance calculation failed or insufficient data, using default diagonal matrix");
+                covariance.resize(symbols.size(), std::vector<double>(symbols.size(), 0.0));
+                for (size_t i = 0; i < symbols.size(); ++i) {
+                    covariance[i][i] = 0.01;  // Default variance
+                }
             }
 
             // Run optimization
@@ -1311,59 +1389,6 @@ void BacktestEngine::combine_positions(
                                      static_cast<double>(pos.quantity)) /
                                 total_quantity);
                 }
-            }
-        }
-    }
-}
-
-// Helper method for portfolio backtesting: distributes portfolio positions back to strategies
-void BacktestEngine::redistribute_positions(
-    const std::map<std::string, Position>& portfolio_positions,
-    std::vector<std::map<std::string, Position>>& strategy_positions,
-    const std::vector<std::shared_ptr<StrategyInterface>>& strategies) {
-    // Calculate the total quantity for each symbol across all strategies
-    std::map<std::string, double> total_quantities;
-    for (const auto& strategy_pos_map : strategy_positions) {
-        for (const auto& [symbol, pos] : strategy_pos_map) {
-            total_quantities[symbol] += std::abs(static_cast<double>(pos.quantity));
-        }
-    }
-
-    // Distribute portfolio positions based on original allocation ratios
-    for (size_t i = 0; i < strategy_positions.size(); ++i) {
-        auto& strategy_pos_map = strategy_positions[i];
-
-        // Since std::map is already sorted, no need for explicit sorting
-        for (auto& [symbol, pos] : strategy_pos_map) {
-            // Calculate the original ratio this strategy had of this symbol
-            double original_ratio = 0.0;
-            if (total_quantities[symbol] > 1e-4) {
-                original_ratio =
-                    std::abs(static_cast<double>(pos.quantity)) / total_quantities[symbol];
-            }
-
-            // Get the new portfolio position
-            auto portfolio_it = portfolio_positions.find(symbol);
-            if (portfolio_it != portfolio_positions.end()) {
-                // Update the strategy position based on the ratio
-                double new_quantity =
-                    static_cast<double>(portfolio_it->second.quantity) * original_ratio;
-                if (static_cast<double>(pos.quantity) < 0) {
-                    // Maintain original direction (long/short)
-                    new_quantity = -std::abs(new_quantity);
-                }
-
-                pos.quantity = Quantity(new_quantity);
-            } else {
-                // Symbol no longer in portfolio, zero out
-                pos.quantity = Quantity(0.0);
-            }
-        }
-
-        // Update the strategy with new positions
-        if (i < strategies.size()) {
-            for (const auto& [symbol, pos] : strategy_pos_map) {
-                strategies[i]->update_position(symbol, pos);
             }
         }
     }
@@ -1545,7 +1570,22 @@ Result<void> BacktestEngine::process_portfolio_data(
         // Calculate portfolio value and update equity curve
         double portfolio_value = 0.0;
         try {
+            // PortfolioManager::get_portfolio_value returns portfolio value based on
+            // positions' realized/unrealized PnL, which are assumed to be GROSS (no costs).
+            // To ensure the equity curve is NET of transaction costs, subtract today's
+            // total commissions here using the executions generated in this period.
             portfolio_value = portfolio->get_portfolio_value(current_prices);
+
+            double total_commissions = 0.0;
+            for (const auto& exec : period_executions) {
+                total_commissions += static_cast<double>(exec.commission);
+            }
+            if (total_commissions != 0.0) {
+                DEBUG("Applying commission costs for portfolio period: " +
+                      std::to_string(total_commissions));
+                portfolio_value -= total_commissions;
+            }
+
             equity_curve.emplace_back(timestamp, portfolio_value);
 
             // Log first few equity curve entries
@@ -2836,6 +2876,140 @@ Result<std::unordered_map<std::string, double>> BacktestEngine::compare_results(
     comparison["return_stddev"] = std::sqrt(return_variance / results.size());
 
     return Result<std::unordered_map<std::string, double>>(comparison);
+}
+
+void BacktestEngine::update_historical_returns(const std::vector<Bar>& bars) {
+    if (bars.empty())
+        return;
+
+    // Update price history for each symbol
+    for (const auto& bar : bars) {
+        price_history_[bar.symbol].push_back(static_cast<double>(bar.close));
+        
+        // Limit history length
+        if (price_history_[bar.symbol].size() > max_history_length_) {
+            price_history_[bar.symbol].erase(price_history_[bar.symbol].begin(),
+                                            price_history_[bar.symbol].begin() + 
+                                            (price_history_[bar.symbol].size() - max_history_length_));
+        }
+    }
+
+    // Calculate returns for each symbol that has price history
+    for (const auto& [symbol, prices] : price_history_) {
+        if (prices.size() < 2) {
+            continue;
+        }
+
+        // Clear previous returns for this symbol
+        historical_returns_[symbol].clear();
+
+        // Calculate returns
+        for (size_t i = 1; i < prices.size(); ++i) {
+            double prev_price = prices[i - 1];
+            double curr_price = prices[i];
+
+            if (prev_price <= 0.0)
+                continue;
+
+            double ret = (curr_price - prev_price) / prev_price;
+
+            if (std::isfinite(ret)) {
+                historical_returns_[symbol].push_back(ret);
+            }
+        }
+
+        // Limit history length
+        if (historical_returns_[symbol].size() > max_history_length_) {
+            size_t excess = historical_returns_[symbol].size() - max_history_length_;
+            historical_returns_[symbol].erase(historical_returns_[symbol].begin(),
+                                             historical_returns_[symbol].begin() + excess);
+        }
+    }
+}
+
+std::vector<std::vector<double>> BacktestEngine::calculate_covariance_matrix(
+    const std::unordered_map<std::string, std::vector<double>>& returns_by_symbol) const {
+    // Get all symbols in a consistent order
+    std::vector<std::string> ordered_symbols;
+    for (const auto& [symbol, _] : returns_by_symbol) {
+        ordered_symbols.push_back(symbol);
+    }
+    std::sort(ordered_symbols.begin(), ordered_symbols.end());
+
+    size_t num_assets = ordered_symbols.size();
+
+    if (num_assets == 0) {
+        // Return empty matrix
+        return std::vector<std::vector<double>>();
+    }
+
+    // Find minimum length of return series for all symbols
+    size_t min_periods = SIZE_MAX;
+    for (const auto& symbol : ordered_symbols) {
+        if (returns_by_symbol.at(symbol).empty()) {
+            continue;
+        }
+        min_periods = std::min(min_periods, returns_by_symbol.at(symbol).size());
+    }
+
+    if (min_periods == SIZE_MAX)
+        min_periods = 0;
+
+    if (min_periods < 20) {  // Need sufficient data
+        // Return diagonal matrix with default variance
+        std::vector<std::vector<double>> default_cov(num_assets,
+                                                     std::vector<double>(num_assets, 0.0));
+        for (size_t i = 0; i < num_assets; ++i) {
+            default_cov[i][i] = 0.01;  // Default variance on diagonal
+        }
+        return default_cov;
+    }
+
+    // Create a matrix of aligned returns
+    std::vector<std::vector<double>> aligned_returns(min_periods,
+                                                     std::vector<double>(num_assets, 0.0));
+
+    for (size_t i = 0; i < num_assets; ++i) {
+        const auto& symbol = ordered_symbols[i];
+        const auto& returns = returns_by_symbol.at(symbol);
+
+        // Take the most recent min_periods returns
+        size_t start_idx = returns.size() - min_periods;
+        for (size_t j = 0; j < min_periods; ++j) {
+            aligned_returns[j][i] = returns[start_idx + j];
+        }
+    }
+
+    // Calculate means for each asset using aligned returns
+    std::vector<double> means(num_assets, 0.0);
+    for (size_t i = 0; i < num_assets; ++i) {
+        for (size_t t = 0; t < min_periods; ++t) {
+            means[i] += aligned_returns[t][i];
+        }
+        means[i] /= min_periods;
+    }
+
+    // Calculate covariance matrix
+    std::vector<std::vector<double>> covariance(num_assets, std::vector<double>(num_assets, 0.0));
+
+    // Avoid division by zero when min_periods == 1
+    double divisor = (min_periods > 1) ? (min_periods - 1) : 1.0;
+
+    for (size_t i = 0; i < num_assets; ++i) {
+        for (size_t j = 0; j < num_assets; ++j) {
+            double cov_sum = 0.0;
+            for (size_t t = 0; t < min_periods; ++t) {
+                cov_sum += (aligned_returns[t][i] - means[i]) * (aligned_returns[t][j] - means[j]);
+            }
+
+            covariance[i][j] = cov_sum / divisor;
+
+            // Annualize the covariance (assuming daily data with 252 trading days)
+            covariance[i][j] *= 252.0;
+        }
+    }
+
+    return covariance;
 }
 
 }  // namespace backtest

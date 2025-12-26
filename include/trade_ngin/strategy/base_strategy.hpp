@@ -121,6 +121,14 @@ public:
     const std::unordered_map<std::string, Position>& get_positions() const override;
 
     /**
+     * @brief Get target positions for portfolio allocation
+     * @note Default implementation returns a copy of get_positions()
+     *       Override in strategies that compute positions differently (e.g., from instrument_data_)
+     * @return Map of positions by symbol
+     */
+    std::unordered_map<std::string, Position> get_target_positions() const override;
+
+    /**
      * @brief Update a position for a symbol
      * @param symbol Symbol to update
      * @param position New position

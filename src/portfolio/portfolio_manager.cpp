@@ -209,59 +209,14 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data)
                                   << result.error()->what() << std::endl;
                     }
 
-                    // Check if it's a TrendFollowingStrategy and use instrument data if available
-                    auto trend_strategy =
-                        std::dynamic_pointer_cast<TrendFollowingStrategy>(info.strategy);
-                    if (trend_strategy) {
-                        DEBUG("Getting trading data from trend strategy");
-                        // Access the instrument data directly
-                        const auto& trading_data = trend_strategy->get_all_instrument_data();
-                        DEBUG("Retrieved trading data with " + std::to_string(trading_data.size()) +
-                              " symbols");
-
-                        // Use final positions from instrument data
-                        size_t processed_count = 0;
-                        for (const auto& [symbol, symbol_data] : trading_data) {
-                            try {
-                                DEBUG("Processing symbol " + symbol + " (" +
-                                      std::to_string(++processed_count) + "/" +
-                                      std::to_string(trading_data.size()) + ")");
-                                Position pos;
-                                pos.symbol = symbol;
-                                pos.quantity = symbol_data.final_position;
-
-                                // Use the latest price with bounds checking
-                                if (!symbol_data.price_history.empty() &&
-                                    symbol_data.price_history.size() > 0) {
-                                    pos.average_price = symbol_data.price_history.back();
-                                } else {
-                                    pos.average_price = 1.0;
-                                }
-
-                                // CRITICAL FIX: Copy PnL values from strategy's calculated position
-                                const auto& strategy_positions = info.strategy->get_positions();
-                                if (strategy_positions.find(symbol) != strategy_positions.end()) {
-                                    const auto& strategy_pos = strategy_positions.at(symbol);
-                                    pos.realized_pnl = strategy_pos.realized_pnl;
-                                    pos.unrealized_pnl = strategy_pos.unrealized_pnl;
-                                    pos.average_price = strategy_pos.average_price;  // Use strategy's average price
-                                }
-
-                                // Use latest timestamp if available
-                                pos.last_update = symbol_data.last_update;
-                                info.target_positions[symbol] = pos;
-                                DEBUG("Successfully processed symbol " + symbol);
-                            } catch (const std::exception& e) {
-                                ERROR("Exception processing symbol " + symbol + ": " +
-                                      std::string(e.what()));
-                                continue;
-                            }
-                        }
-                        DEBUG("Completed processing all symbols for target positions");
-                    } else {
-                        // For non-trend strategies, use the regular positions
-                        info.target_positions = info.strategy->get_positions();
-                    }
+                    // Get target positions using polymorphic dispatch
+                    // Each strategy type implements get_target_positions() appropriately:
+                    // - BaseStrategy: returns get_positions() (standard positions map)
+                    // - TrendFollowing/Fast/Slow: returns positions from instrument_data_
+                    // This automatically handles all strategy types without type-checking
+                    info.target_positions = info.strategy->get_target_positions();
+                    DEBUG("Retrieved " + std::to_string(info.target_positions.size()) + 
+                          " target positions from strategy " + id);
 
                     processed_strategies.push_back(id);
 
@@ -833,6 +788,11 @@ Result<void> PortfolioManager::optimize_positions() {
         std::vector<double> weights_per_contract;
         std::vector<double> costs;
         std::unordered_map<std::string, std::vector<double>> returns_by_symbol;
+        
+        // Store original contributions per strategy per symbol for proportional distribution
+        // Map: symbol -> strategy_id -> contribution (quantity * allocation * weight_per_contract)
+        std::unordered_map<std::string, std::unordered_map<std::string, double>> original_contribs;
+        std::unordered_map<std::string, double> total_contribs;
 
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -920,7 +880,7 @@ Result<void> PortfolioManager::optimize_positions() {
                 const std::string& symbol = symbols[i];
 
                 // Aggregate across strategies
-                for (const auto& [_, info] : strategies_) {
+                for (const auto& [strat_id, info] : strategies_) {
                     if (!info.use_optimization)
                         continue;
 
@@ -931,9 +891,13 @@ Result<void> PortfolioManager::optimize_positions() {
                             weights_per_contract[i] * allocation;
                     }
                     if (info.target_positions.count(symbol)) {
-                        target_weights[i] +=
-                            static_cast<double>(info.target_positions.at(symbol).quantity) *
-                            weights_per_contract[i] * allocation;
+                        double contrib = static_cast<double>(info.target_positions.at(symbol).quantity) *
+                                        weights_per_contract[i] * allocation;
+                        target_weights[i] += contrib;
+                        
+                        // Store original contribution for proportional distribution after optimization
+                        original_contribs[symbol][strat_id] = contrib;
+                        total_contribs[symbol] += contrib;
                     }
                 }
             }
@@ -976,22 +940,31 @@ Result<void> PortfolioManager::optimize_positions() {
             for (size_t i = 0; i < symbols.size(); ++i) {
                 const auto& symbol = symbols[i];
 
-                // Compute raw contract count
+                // Compute raw contract count from optimized weight
                 double raw_contracts = optimized_positions[i] / weights_per_contract[i];
-                // Round magnitude, then restore sign
+                // Round to integer contracts
                 int rounded_contracts = static_cast<int>(std::round(raw_contracts));
-                double signed_contracts =
-                    std::copysign(static_cast<double>(rounded_contracts), raw_contracts);
 
-                // Distribute into strategy target_positions
-                for (auto& [_, info] : strategies_) {
+                // Distribute proportionally based on each strategy's original contribution
+                double total_original = total_contribs[symbol];
+                
+                for (auto& [strat_id, info] : strategies_) {
                     if (!info.use_optimization)
                         continue;
-                    if (info.target_positions.count(symbols[i])) {
-                        // undo the earlier allocation-scale
-                        info.target_positions[symbols[i]].quantity =
-                            static_cast<Decimal>(rounded_contracts / info.allocation);
+                    if (!info.target_positions.count(symbol))
+                        continue;
+                    
+                    // Calculate this strategy's share of the optimized position
+                    double share = 0.0;
+                    if (total_original > 1e-8 && original_contribs[symbol].count(strat_id) > 0) {
+                        share = original_contribs[symbol][strat_id] / total_original;
                     }
+                    
+                    // Distribute proportionally, then undo allocation scaling for storage
+                    // Strategy gets: (optimized_contracts * share) / allocation
+                    double strategy_contracts = rounded_contracts * share / info.allocation;
+                    info.target_positions[symbol].quantity = 
+                        static_cast<Decimal>(std::round(strategy_contracts));
                 }
             }
 
@@ -1115,6 +1088,20 @@ Result<void> PortfolioManager::apply_risk_management(const std::vector<Bar>& dat
                 WARN("Risk limits exceeded, scaling positions by " +
                      std::to_string(risk_result.recommended_scale));
 
+                // DESIGN DECISION: Risk scaling applies to target_positions only (Approach A)
+                // Rationale: Risk management reduces the strategy's desired exposure, not actual holdings.
+                // When current_positions ≈ target_positions (normal case), this behaves correctly.
+                // Edge cases (current ≠ target) result in slightly more aggressive de-risking,
+                // which is acceptable for risk management purposes.
+                // Alternative Approach B (scale both current and target) would provide immediate
+                // proportional de-risking but changes "what we think we hold" which could confuse
+                // PnL tracking. We keep Approach A for consistency and simplicity.
+                //
+                // Example: current=+12, target=+10, scale=0.5
+                //   new_target = 10 × 0.5 = +5
+                //   trade = 5 - 12 = sell 7 contracts
+                //   end position = +5 (50% of desired, not 50% of actual)
+                
                 // Scale positions in all strategies under lock
                 {
                     std::lock_guard<std::mutex> lock(mutex_);

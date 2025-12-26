@@ -577,6 +577,35 @@ Result<void> TrendFollowingFastStrategy::on_data(const std::vector<Bar>& data) {
     }
 }
 
+std::unordered_map<std::string, Position> TrendFollowingFastStrategy::get_target_positions() const {
+    std::unordered_map<std::string, Position> target_positions;
+
+    // Build positions from instrument_data_ which has the calculated final_position values
+    for (const auto& [symbol, instrument_data] : instrument_data_) {
+        Position pos;
+        pos.symbol = symbol;
+        pos.quantity = instrument_data.final_position;
+
+        // Use the latest price from price history as default
+        if (!instrument_data.price_history.empty()) {
+            pos.average_price = instrument_data.price_history.back();
+        }
+
+        // Copy PnL values from the standard positions_ map (which has calculated PnL)
+        auto pos_it = positions_.find(symbol);
+        if (pos_it != positions_.end()) {
+            pos.realized_pnl = pos_it->second.realized_pnl;
+            pos.unrealized_pnl = pos_it->second.unrealized_pnl;
+            pos.average_price = pos_it->second.average_price;  // Use calculated avg price
+        }
+
+        pos.last_update = instrument_data.last_update;
+        target_positions[symbol] = pos;
+    }
+
+    return target_positions;
+}
+
 std::vector<double> TrendFollowingFastStrategy::calculate_ewma(const std::vector<double>& prices,
                                                            int window) const {
     std::vector<double> ewma(prices.size(), 0.0);

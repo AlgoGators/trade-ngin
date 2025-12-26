@@ -159,6 +159,14 @@ public:
     }
 
     /**
+     * @brief Get target positions from instrument data
+     * @note Overrides base class to return positions calculated from instrument_data_
+     *       which contains the properly computed final_position values
+     * @return Map of positions by symbol with correct quantities and PnL
+     */
+    std::unordered_map<std::string, Position> get_target_positions() const override;
+
+    /**
      * @brief Get the correct point value multiplier for a futures symbol
      * @note Made public for use by live_trend.cpp to calculate PnL consistently
      */
