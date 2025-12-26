@@ -222,11 +222,23 @@ Result<void> PostgresDatabase::store_backtest_positions(
         date_ss << std::put_time(&time_info, "%Y-%m-%d");
         std::string position_date = date_ss.str();
 
-        // Clear existing positions for this run_id and date (like trading.positions does)
+        // Extract actual_run_id and strategy_id from composite run_id
+        // Format: "backtest_run_id|strategy_id" OR just "run_id" for legacy
+        std::string actual_run_id_for_delete = run_id;
+        std::string strategy_id_for_delete = run_id;
+        
+        size_t pipe_pos = run_id.find('|');
+        if (pipe_pos != std::string::npos) {
+            actual_run_id_for_delete = run_id.substr(0, pipe_pos);
+            strategy_id_for_delete = run_id.substr(pipe_pos + 1);
+        }
+
+        // Clear existing positions for this run_id, strategy_id, and date
         // This allows storing positions daily without duplicates
         try {
             std::string delete_query = "DELETE FROM " + table_name + 
-                " WHERE run_id = " + txn.quote(run_id) + 
+                " WHERE run_id = " + txn.quote(actual_run_id_for_delete) + 
+                " AND strategy_id = " + txn.quote(strategy_id_for_delete) +
                 " AND DATE(date) = '" + position_date + "'";
             txn.exec(delete_query);
         } catch (const std::exception& e) {
@@ -234,7 +246,8 @@ Result<void> PostgresDatabase::store_backtest_positions(
             WARN("date column may not exist, trying delete without date: " + std::string(e.what()));
             try {
                 std::string delete_query = "DELETE FROM " + table_name + 
-                    " WHERE run_id = " + txn.quote(run_id) + 
+                    " WHERE run_id = " + txn.quote(actual_run_id_for_delete) + 
+                    " AND strategy_id = " + txn.quote(strategy_id_for_delete) +
                     " AND DATE(last_update) = '" + position_date + "'";
                 txn.exec(delete_query);
             } catch (const std::exception& e2) {
@@ -268,12 +281,21 @@ Result<void> PostgresDatabase::store_backtest_positions(
             // Format timestamps
             std::string last_update_str = format_timestamp(pos.last_update);
             
-            // Use default strategy_id if not available (for backward compatibility)
-            std::string strategy_id = "TREND_FOLLOWING";  // Default, can be overridden if needed
+            // Extract strategy_id from run_id if it contains a pipe separator
+            // Format: "backtest_run_id|strategy_id" OR just "strategy_id" for legacy
+            std::string actual_run_id = run_id;
+            std::string strategy_id_for_db = run_id;  // Default to run_id
+            
+            size_t pipe_pos = run_id.find('|');
+            if (pipe_pos != std::string::npos) {
+                // New format: backtest_run_id|strategy_id
+                actual_run_id = run_id.substr(0, pipe_pos);
+                strategy_id_for_db = run_id.substr(pipe_pos + 1);
+            }
             
             std::stringstream value_ss;
-            value_ss << "(" << txn.quote(run_id) << ", "
-                     << txn.quote(strategy_id) << ", "
+            value_ss << "(" << txn.quote(actual_run_id) << ", "
+                     << txn.quote(strategy_id_for_db) << ", "
                      << "'" << pos_date_str << "', "
                      << txn.quote(pos.symbol) << ", "
                      << std::to_string(static_cast<double>(pos.quantity)) << ", "

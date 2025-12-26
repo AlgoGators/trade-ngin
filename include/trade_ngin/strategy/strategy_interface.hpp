@@ -36,6 +36,14 @@ public:
     virtual const std::unordered_map<std::string, Position>& get_positions() const = 0;
     virtual Result<void> update_position(const std::string& symbol, const Position& position) = 0;
 
+    /**
+     * @brief Get target positions for portfolio allocation
+     * @note Override in derived classes that calculate positions differently
+     *       (e.g., trend-following strategies using instrument_data_)
+     * @return Map of positions by symbol (copy, not reference)
+     */
+    virtual std::unordered_map<std::string, Position> get_target_positions() const = 0;
+
     // Risk management
     virtual Result<void> update_risk_limits(const RiskLimits& limits) = 0;
     virtual Result<void> check_risk_limits() = 0;

@@ -272,13 +272,6 @@ Result<void> BaseStrategy::on_execution(const ExecutionReport& report) {
 
         pos.last_update = report.fill_time;
 
-        // Always subtract transaction costs from realized PnL (for all trades, not just closing)
-        // This ensures transaction costs are accounted for in opening positions too
-        double transaction_cost = static_cast<double>(report.commission);
-        pos.realized_pnl -= Decimal(transaction_cost);
-        metrics_.realized_pnl -= transaction_cost;
-        metrics_.total_pnl -= transaction_cost;
-
         // Update metrics
         metrics_.total_trades++;
         if (report.fill_price > pos.average_price) {
@@ -347,6 +340,13 @@ std::unordered_map<std::string, std::vector<double>> BaseStrategy::get_price_his
 }
 
 const std::unordered_map<std::string, Position>& BaseStrategy::get_positions() const {
+    return positions_;
+}
+
+std::unordered_map<std::string, Position> BaseStrategy::get_target_positions() const {
+    // Default implementation: return a copy of the standard positions map
+    // Derived classes (e.g., trend-following strategies) can override to return
+    // positions from their own data structures (e.g., instrument_data_)
     return positions_;
 }
 

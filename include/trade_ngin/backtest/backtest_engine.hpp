@@ -322,6 +322,11 @@ private:
     std::unique_ptr<SlippageModel> slippage_model_;
     std::string backtest_component_id_;
     mutable std::string current_run_id_;  // Store run_id for daily position storage
+    
+    // Price history and returns for covariance calculation (similar to PortfolioManager)
+    std::unordered_map<std::string, std::vector<double>> price_history_;
+    std::unordered_map<std::string, std::vector<double>> historical_returns_;
+    size_t max_history_length_ = 2520;  // Keep up to 1 year of return data
 
     /**
      * @brief Load market data for simulation
@@ -364,16 +369,6 @@ private:
         const std::vector<std::map<std::string, Position>>& strategy_positions,
         std::map<std::string, Position>& portfolio_positions);
 
-    /**
-     * @brief Redistribute positions based on strategy weights
-     * @param portfolio_positions Current portfolio positions
-     * @param strategy_positions Vector of strategy positions
-     * @param strategies Vector of strategy instances
-     */
-    void redistribute_positions(
-        const std::map<std::string, Position>& portfolio_positions,
-        std::vector<std::map<std::string, Position>>& strategy_positions,
-        const std::vector<std::shared_ptr<StrategyInterface>>& strategies);
 
     /**
      * @brief Process portfolio data for a single time step
@@ -455,6 +450,20 @@ private:
      * @return Formatted string
      */
     std::string format_timestamp(const Timestamp& ts) const;
+
+    /**
+     * @brief Update price history and calculate returns from new bars
+     * @param bars New market data bars
+     */
+    void update_historical_returns(const std::vector<Bar>& bars);
+
+    /**
+     * @brief Calculate covariance matrix from historical returns
+     * @param returns_by_symbol Map of symbol to returns vector
+     * @return Covariance matrix
+     */
+    std::vector<std::vector<double>> calculate_covariance_matrix(
+        const std::unordered_map<std::string, std::vector<double>>& returns_by_symbol) const;
 };
 
 }  // namespace backtest
