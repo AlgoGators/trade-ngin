@@ -180,6 +180,12 @@ public:
      */
     std::unordered_map<int, double> get_ema_values(const std::string& symbol, const std::vector<int>& windows) const;
 
+    /**
+     * @brief Get the maximum required lookback period for this strategy
+     * @return Maximum lookback in days (max of EMA windows, volatility lookback, etc.)
+     */
+    int get_max_required_lookback() const;
+
 protected:
     /**
      * @brief Validate strategy configuration

@@ -47,6 +47,21 @@ public:
     // Risk management
     virtual Result<void> update_risk_limits(const RiskLimits& limits) = 0;
     virtual Result<void> check_risk_limits() = 0;
+
+    /**
+     * @brief Set backtest mode for this strategy
+     * @param is_backtest True if running in backtest mode (stores daily PnL), false for live (cumulative PnL)
+     * @note Default implementation does nothing. Override in BaseStrategy for backtest-specific behavior.
+     *       In backtest mode, realized_pnl stores DAILY PnL for correct equity curve accumulation.
+     *       In live mode, realized_pnl stores CUMULATIVE PnL for compatibility with existing systems.
+     */
+    virtual void set_backtest_mode(bool /*is_backtest*/) {}
+
+    /**
+     * @brief Check if strategy is running in backtest mode
+     * @return True if in backtest mode, false by default
+     */
+    virtual bool is_backtest_mode() const { return false; }
 };
 
 }  // namespace trade_ngin

@@ -515,12 +515,6 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
             
             // Set position values
             pos.average_price = new_avg_price;
-            pos.realized_pnl = Decimal(previous_realized_pnl + position_realized_pnl);
-            
-            // Add position-specific realized PnL to accounting system
-            if (std::abs(position_realized_pnl) > 1e-6) {
-                pnl_accounting_.add_realized_pnl(position_realized_pnl);
-            }
             
             // For futures (marked-to-market): calculate mark-to-market PnL
             // In REALIZED_ONLY accounting, this becomes realized PnL due to daily settlement
@@ -531,28 +525,48 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
                 mark_to_market_pnl = final_position * (current_price - new_avg_price) * point_value;
             }
             
+            // Calculate the daily PnL for this position
+            double daily_realized_pnl = position_realized_pnl;
+            
             // For futures with REALIZED_ONLY accounting: all PnL is realized due to daily settlement
             if (pnl_accounting_.method == PnLAccountingMethod::REALIZED_ONLY) {
-                pos.realized_pnl += Decimal(mark_to_market_pnl);
+                daily_realized_pnl += mark_to_market_pnl;
                 pos.unrealized_pnl = Decimal(0.0);  // Always zero for futures
-                pnl_accounting_.add_realized_pnl(mark_to_market_pnl);
                 // Reset average price to current price after daily settlement
                 // This prevents double-counting: next day's mark-to-market only captures that day's change
                 pos.average_price = current_price;
             } else {
                 // For other accounting methods, use traditional unrealized PnL
                 pos.unrealized_pnl = Decimal(mark_to_market_pnl);
+            }
+            
+            // Store PnL based on mode:
+            // - Backtest mode: store DAILY PnL only (for correct equity curve accumulation)
+            // - Live mode: store CUMULATIVE PnL (for compatibility with existing systems)
+            if (is_backtest_mode()) {
+                // Backtest: store only today's daily PnL
+                pos.realized_pnl = Decimal(daily_realized_pnl);
+            } else {
+                // Live: accumulate PnL across days
+                pos.realized_pnl = Decimal(previous_realized_pnl + daily_realized_pnl);
+            }
+            
+            // Add position-specific realized PnL to accounting system
+            if (std::abs(daily_realized_pnl) > 1e-6) {
+                pnl_accounting_.add_realized_pnl(daily_realized_pnl);
+            }
+            if (std::abs(mark_to_market_pnl) > 1e-6 && pnl_accounting_.method != PnLAccountingMethod::REALIZED_ONLY) {
                 pnl_accounting_.add_unrealized_pnl(mark_to_market_pnl);
             }
             
             INFO("Position update for " + symbol + ": prev_qty=" + std::to_string(previous_quantity) + 
                   " new_qty=" + std::to_string(final_position) + 
                   " prev_avg=" + std::to_string(previous_avg_price) + 
-                  " new_avg=" + std::to_string(new_avg_price) + 
+                  " new_avg=" + std::to_string(static_cast<double>(pos.average_price)) + 
                   " current_price=" + std::to_string(current_price) + 
-                  " realized_pnl_change=" + std::to_string(position_realized_pnl) + 
-                  " total_realized_pnl=" + std::to_string(static_cast<double>(pos.realized_pnl)) + 
-                  " mark_to_market_pnl=" + std::to_string(mark_to_market_pnl));
+                  " daily_pnl=" + std::to_string(daily_realized_pnl) + 
+                  " stored_realized_pnl=" + std::to_string(static_cast<double>(pos.realized_pnl)) + 
+                  " backtest_mode=" + std::string(is_backtest_mode() ? "true" : "false"));
 
             auto pos_result = update_position(symbol, pos);
             if (pos_result.is_error()) {
@@ -1401,6 +1415,23 @@ std::unordered_map<int, double> TrendFollowingStrategy::get_ema_values(const std
     }
 
     return ema_values;
+}
+
+int TrendFollowingStrategy::get_max_required_lookback() const {
+    int max_lookback = 0;
+
+    // Find the maximum EMA window (use the second value in each pair, which is the longer window)
+    for (const auto& [short_window, long_window] : trend_config_.ema_windows) {
+        max_lookback = std::max(max_lookback, long_window);
+    }
+
+    // Also consider volatility lookback (though vol_lookback_long is typically for historical averaging,
+    // not for indicator validity, but we include it for completeness)
+    max_lookback = std::max(max_lookback, trend_config_.vol_lookback_short);
+    // Note: vol_lookback_long (typically 2520) is for long-term averaging and doesn't affect
+    // when indicators become valid, so we don't include it in warmup calculation
+
+    return max_lookback;
 }
 
 }  // namespace trade_ngin

@@ -230,6 +230,7 @@ struct BacktestResults {
     std::vector<Position> positions;
     std::vector<std::pair<Timestamp, double>> equity_curve;
     std::vector<std::pair<Timestamp, double>> drawdown_curve;
+    int warmup_days{0};  // Number of warmup days (calculated dynamically from strategy lookbacks)
 
     // Additional analysis
     std::unordered_map<std::string, double> monthly_returns;
@@ -378,13 +379,22 @@ private:
      * @param executions Vector to store generated executions
      * @param equity_curve Vector to store equity curve points
      * @param risk_metrics Vector to store risk metrics
+     * @param is_warmup Whether we're in the warmup period (no trading, flat equity)
+     * @param initial_capital Initial capital for flat equity during warmup
      * @return Result indicating success or failure
      */
     Result<void> process_portfolio_data(const Timestamp& timestamp, const std::vector<Bar>& bars,
                                         std::shared_ptr<PortfolioManager> portfolio,
                                         std::vector<ExecutionReport>& executions,
                                         std::vector<std::pair<Timestamp, double>>& equity_curve,
-                                        std::vector<RiskResult>& risk_metrics);
+                                        std::vector<RiskResult>& risk_metrics,
+                                        bool is_warmup = false, double initial_capital = 0.0);
+
+    /**
+     * @brief Reset static state used by portfolio backtest
+     * Must be called at the start of each new backtest run to ensure clean state
+     */
+    void reset_portfolio_backtest_state();
 
     /**
      * @brief Process strategy signals and generate executions
@@ -421,12 +431,14 @@ private:
 
     /**
      * @brief Calculate performance metrics
-     * @param equity_curve Vector of equity points
+     * @param equity_curve Vector of equity points (includes warmup period)
      * @param executions Vector of trades
+     * @param warmup_days Number of warmup days to exclude from calculations (0 = no filtering)
      * @return Performance metrics
      */
     BacktestResults calculate_metrics(const std::vector<std::pair<Timestamp, double>>& equity_curve,
-                                      const std::vector<ExecutionReport>& executions) const;
+                                      const std::vector<ExecutionReport>& executions,
+                                      int warmup_days = 0) const;
 
     /**
      * @brief Calculate drawdown series
@@ -438,11 +450,20 @@ private:
 
     /**
      * @brief Calculate risk metrics
-     * @param returns Vector of returns
+     * @param returns Vector of returns (from filtered data, excluding warmup)
+     * @param trading_days Actual number of trading days for annualization
      * @return Risk metrics
      */
     std::unordered_map<std::string, double> calculate_risk_metrics(
-        const std::vector<double>& returns) const;
+        const std::vector<double>& returns, int trading_days = 252) const;
+
+    /**
+     * @brief Calculate maximum required lookback days from all strategies
+     * @param strategies Vector of strategies to check
+     * @return Maximum lookback required (EMA windows, volatility lookback, etc.)
+     */
+    static int calculate_warmup_days(
+        const std::vector<std::shared_ptr<StrategyInterface>>& strategies);
 
     /**
      * @brief Helper function for timestamp formatting
