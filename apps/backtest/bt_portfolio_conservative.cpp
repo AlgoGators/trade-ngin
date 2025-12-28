@@ -30,10 +30,11 @@ int main() {
         logger_config.min_level = LogLevel::DEBUG;
         logger_config.destination = LogDestination::BOTH;
         logger_config.log_directory = "logs";
-        logger_config.filename_prefix = "bt_portfolio";
+        logger_config.filename_prefix = "bt_portfolio_conservative";
         
-        // Determine config file name (default to config.json)
-        std::string config_filename = "./config.json";
+        // Use conservative config file
+        std::string config_filename = "./config_conservative.json";
+        
         logger.initialize(logger_config);
 
         std::atomic_thread_fence(std::memory_order_seq_cst);
@@ -44,6 +45,7 @@ int main() {
         }
 
         INFO("Logger initialized successfully");
+        INFO("Using conservative portfolio configuration from: " + config_filename);
 
         std::cerr << "After Logger initialization: initialized="
                   << Logger::instance().is_initialized() << std::endl;
@@ -141,24 +143,24 @@ int main() {
         INFO("Registry contains " + std::to_string(all_instruments.size()) + " instruments");
 
         // Configure backtest parameters
-        INFO("Loading configuration...");
+        INFO("Loading conservative portfolio configuration...");
 
-        // Load portfolio configuration from config.json FIRST (before creating engine)
+        // Load portfolio configuration from config_conservative.json FIRST (before creating engine)
         std::ifstream config_file(config_filename);
         if (!config_file.is_open()) {
-            ERROR("Failed to open config.json");
+            ERROR("Failed to open " + config_filename);
             return 1;
         }
         nlohmann::json config_json;
         try {
             config_file >> config_json;
         } catch (const std::exception& e) {
-            ERROR("Failed to parse config.json: " + std::string(e.what()));
+            ERROR("Failed to parse " + config_filename + ": " + std::string(e.what()));
             return 1;
         }
 
-        // Read portfolio_id from config (default to BASE_PORTFOLIO)
-        std::string portfolio_id = "BASE_PORTFOLIO";
+        // Read portfolio_id from config (default to CONSERVATIVE_PORTFOLIO)
+        std::string portfolio_id = "CONSERVATIVE_PORTFOLIO";
         if (config_json.contains("portfolio_id")) {
             portfolio_id = config_json["portfolio_id"].get<std::string>();
         } else if (config_json.contains("portfolio") && config_json["portfolio"].contains("portfolio_id")) {
@@ -218,8 +220,8 @@ int main() {
         }
         std::cout << std::endl;
 
-        // Configure portfolio settings
-        config.portfolio_config.initial_capital = 500000.0;  // $500k
+        // CONSERVATIVE PORTFOLIO SETTINGS: Lower capital, lower risk limits
+        config.portfolio_config.initial_capital = 300000.0;  // $300k (lower than base $500k)
         config.portfolio_config.use_risk_management = true;
         config.portfolio_config.use_optimization = true;
         
@@ -229,7 +231,7 @@ int main() {
 
         std::cout << "Retrieved " << config.strategy_config.symbols.size() << " symbols"
                   << std::endl;
-        std::cout << "Initial capital: $" << config.portfolio_config.initial_capital << std::endl;
+        std::cout << "Initial capital: $" << config.portfolio_config.initial_capital << " (CONSERVATIVE)" << std::endl;
         std::cout << "Commission rate: " << (config.strategy_config.commission_rate * 100) << " bps"
                   << std::endl;
         std::cout << "Slippage model: " << config.strategy_config.slippage_model << " bps"
@@ -242,17 +244,17 @@ int main() {
              " to " +
              std::to_string(std::chrono::system_clock::to_time_t(config.strategy_config.end_date)));
 
-        // Configure portfolio risk management
+        // CONSERVATIVE PORTFOLIO RISK MANAGEMENT: Lower risk limits
         config.portfolio_config.risk_config.capital = config.portfolio_config.initial_capital;
         config.portfolio_config.risk_config.confidence_level = 0.99;
         config.portfolio_config.risk_config.lookback_period = 252;
-        config.portfolio_config.risk_config.var_limit = 0.15;
-        config.portfolio_config.risk_config.jump_risk_limit = 0.10;
+        config.portfolio_config.risk_config.var_limit = 0.10;  // Lower than base 0.15
+        config.portfolio_config.risk_config.jump_risk_limit = 0.05;  // Lower than base 0.10
         config.portfolio_config.risk_config.max_correlation = 0.7;
-        config.portfolio_config.risk_config.max_gross_leverage = 4.0;
-        config.portfolio_config.risk_config.max_net_leverage = 2.0;
+        config.portfolio_config.risk_config.max_gross_leverage = 2.0;  // Lower than base 4.0
+        config.portfolio_config.risk_config.max_net_leverage = 1.0;    // Lower than base 2.0
 
-        // Configure portfolio optimization
+        // Configure portfolio optimization (same as base)
         config.portfolio_config.opt_config.tau = 1.0;
         config.portfolio_config.opt_config.capital =
             config.portfolio_config.initial_capital.as_double();
@@ -277,7 +279,7 @@ int main() {
         trade_ngin::PortfolioConfig portfolio_config;
         portfolio_config.total_capital = config.portfolio_config.initial_capital;
         portfolio_config.reserve_capital =
-            config.portfolio_config.initial_capital * 0.1;  // 10% reserve
+            config.portfolio_config.initial_capital * 0.15;  // 15% reserve (higher than base 10%)
         portfolio_config.max_strategy_allocation = 1.0;
         portfolio_config.min_strategy_allocation = 0.1;
         portfolio_config.use_optimization = true;
@@ -292,7 +294,7 @@ int main() {
         std::unordered_map<std::string, nlohmann::json> strategy_configs;
 
         if (!config_json.contains("portfolio") || !config_json["portfolio"].contains("strategies")) {
-            ERROR("No portfolio.strategies section found in config.json");
+            ERROR("No portfolio.strategies section found in " + config_filename);
             return 1;
         }
 
@@ -309,7 +311,7 @@ int main() {
         }
 
         if (strategy_names.empty()) {
-            ERROR("No enabled strategies found in config.json for backtest");
+            ERROR("No enabled strategies found in " + config_filename + " for backtest");
             return 1;
         }
 
@@ -324,35 +326,18 @@ int main() {
             }
         }
 
-        // Step 3: Override allocations in code (optional - uncomment to use hardcoded values)
-        // This will override whatever is in config.json
-        // Uncomment the lines below to set 90-10 allocation:
-        // strategy_allocations["TREND_FOLLOWING"] = 0.9;      // 90% normal trend following
-        // strategy_allocations["TREND_FOLLOWING_FAST"] = 0.1;  // 10% fast trend following
-        
-        // Re-normalize after override to ensure they sum to 1.0 (uncomment if using override above)
-        // total_allocation = 0.0;
-        // for (const auto& [_, alloc] : strategy_allocations) {
-        //     total_allocation += alloc;
-        // }
-        // if (total_allocation > 0.0) {
-        //     for (auto& [_, alloc] : strategy_allocations) {
-        //         alloc /= total_allocation;
-        //     }
-        // }
-
-        INFO("Loading " + std::to_string(strategy_names.size()) + " strategies from config");
+        INFO("Loading " + std::to_string(strategy_names.size()) + " strategies from " + config_filename);
 
         // Create a shared_ptr that doesn't own the singleton registry
         auto registry_ptr =
             std::shared_ptr<InstrumentRegistry>(&registry, [](InstrumentRegistry*) {});
 
-        // Create base strategy configuration
+        // Create base strategy configuration (conservative settings)
         trade_ngin::StrategyConfig base_strategy_config;
         base_strategy_config.asset_classes = {trade_ngin::AssetClass::FUTURES};
         base_strategy_config.frequencies = {config.strategy_config.data_freq};
-        base_strategy_config.max_drawdown = 0.4;
-        base_strategy_config.max_leverage = 4.0;
+        base_strategy_config.max_drawdown = 0.3;  // Lower than base 0.4
+        base_strategy_config.max_leverage = 2.0;  // Lower than base 4.0
         base_strategy_config.save_positions = false;
         base_strategy_config.save_signals = false;
         base_strategy_config.save_executions = false;
@@ -384,7 +369,7 @@ int main() {
                 if (strategy_def.contains("config")) {
                     const auto& cfg = strategy_def["config"];
                     trend_config.weight = cfg.value("weight", 0.03);
-                    trend_config.risk_target = cfg.value("risk_target", 0.2);
+                    trend_config.risk_target = cfg.value("risk_target", 0.15);  // Lower than base 0.2
                     trend_config.idm = cfg.value("idm", 2.5);
                     trend_config.use_position_buffering = cfg.value("use_position_buffering", true);
                     if (cfg.contains("ema_windows")) {
@@ -410,7 +395,7 @@ int main() {
                 if (strategy_def.contains("config")) {
                     const auto& cfg = strategy_def["config"];
                     trend_config.weight = cfg.value("weight", 0.03);
-                    trend_config.risk_target = cfg.value("risk_target", 0.25);
+                    trend_config.risk_target = cfg.value("risk_target", 0.20);  // Lower than base 0.25
                     trend_config.idm = cfg.value("idm", 2.5);
                     trend_config.use_position_buffering = cfg.value("use_position_buffering", false);
                     if (cfg.contains("ema_windows")) {
@@ -476,7 +461,7 @@ int main() {
         }
 
         // Run the backtest
-        INFO("Running backtest for time period: " +
+        INFO("Running conservative portfolio backtest for time period: " +
              std::to_string(
                  std::chrono::system_clock::to_time_t(config.strategy_config.start_date)) +
              " to " +
@@ -497,7 +482,7 @@ int main() {
 
         INFO("Analyzing performance metrics...");
 
-        std::cout << "======= Backtest Results =======" << std::endl;
+        std::cout << "======= Conservative Portfolio Backtest Results =======" << std::endl;
         std::cout << "Total Return: " << (backtest_results.total_return * 100.0) << "%"
                   << std::endl;
         std::cout << "Sharpe Ratio: " << backtest_results.sharpe_ratio << std::endl;
@@ -510,7 +495,7 @@ int main() {
         std::cout << "Total Trades: " << backtest_results.total_trades << std::endl;
 
         // Save portfolio results to database with enhanced error handling
-        INFO("Saving portfolio backtest results to database...");
+        INFO("Saving conservative portfolio backtest results to database...");
         try {
             // Generate portfolio config JSON
             nlohmann::json portfolio_config_json = portfolio_config.to_json();
@@ -530,7 +515,7 @@ int main() {
                 std::cerr << "Failed to save portfolio backtest results to database: " << save_result.error()->what() << std::endl;
                 ERROR("Failed to save portfolio backtest results to database: " + std::string(save_result.error()->what()));
             } else {
-                INFO("Successfully saved portfolio backtest results to database");
+                INFO("Successfully saved conservative portfolio backtest results to database");
             }
         } catch (const std::exception& e) {
             std::cerr << "Exception during database save: " << e.what() << std::endl;
@@ -541,7 +526,7 @@ int main() {
         INFO("Cleaning up backtest engine...");
         engine.reset();
         
-        INFO("Backtest application completed successfully");
+        INFO("Conservative portfolio backtest application completed successfully");
 
         std::cerr << "At end of main: initialized=" << Logger::instance().is_initialized()
                   << std::endl;
@@ -558,3 +543,4 @@ int main() {
         return 1;
     }
 }
+

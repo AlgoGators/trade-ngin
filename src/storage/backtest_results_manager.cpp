@@ -13,12 +13,14 @@ namespace trade_ngin {
 
 BacktestResultsManager::BacktestResultsManager(std::shared_ptr<PostgresDatabase> db,
                                              bool store_enabled,
-                                             const std::string& strategy_id)
+                                             const std::string& strategy_id,
+                                             const std::string& portfolio_id)
     : ResultsManagerBase(db, store_enabled, "backtest", strategy_id),
       start_date_(std::chrono::system_clock::now()),
-      end_date_(std::chrono::system_clock::now()) {
+      end_date_(std::chrono::system_clock::now()),
+      portfolio_id_(portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id) {
 
-    INFO("Initialized BacktestResultsManager for strategy: " + strategy_id);
+    INFO("Initialized BacktestResultsManager for strategy: " + strategy_id + ", portfolio: " + portfolio_id_);
 }
 
 std::string BacktestResultsManager::generate_run_id(const std::string& strategy_id) {
@@ -123,7 +125,7 @@ Result<void> BacktestResultsManager::save_summary_results(const std::string& run
 
     // Use the new database extension method
     return db_->store_backtest_summary(run_id, start_date_, end_date_,
-                                      performance_metrics_, "backtest.results");
+                                      performance_metrics_, portfolio_id_, "backtest.results");
 }
 
 Result<void> BacktestResultsManager::save_equity_curve(const std::string& run_id) {
@@ -141,7 +143,7 @@ Result<void> BacktestResultsManager::save_equity_curve(const std::string& run_id
 
     // Use the new database extension method
     return db_->store_backtest_equity_curve_batch(run_id, equity_curve_,
-                                                 "backtest.equity_curve");
+                                                 portfolio_id_, "backtest.equity_curve");
 }
 
 Result<void> BacktestResultsManager::save_final_positions(const std::string& run_id) {
@@ -159,7 +161,7 @@ Result<void> BacktestResultsManager::save_final_positions(const std::string& run
 
     // Use the new database extension method
     return db_->store_backtest_positions(final_positions_, run_id,
-                                        "backtest.final_positions");
+                                        portfolio_id_, "backtest.final_positions");
 }
 
 Result<void> BacktestResultsManager::save_executions_batch(const std::string& run_id) {
@@ -175,8 +177,12 @@ Result<void> BacktestResultsManager::save_executions_batch(const std::string& ru
     INFO("Saving " + std::to_string(executions_.size()) +
          " executions for run_id: " + run_id);
 
-    // Use the base class method which will route to appropriate storage
-    return save_executions(executions_, run_id, end_date_);
+    // Override base class method to pass portfolio_id for backtest
+    if (executions_.empty()) {
+        return Result<void>();
+    }
+    std::string table_name = "backtest.executions";
+    return db_->store_backtest_executions(executions_, run_id, portfolio_id_, table_name);
 }
 
 Result<void> BacktestResultsManager::save_signals_batch(const std::string& run_id) {
@@ -195,7 +201,7 @@ Result<void> BacktestResultsManager::save_signals_batch(const std::string& run_i
     // Save signals for each timestamp
     for (const auto& [timestamp, signals] : signals_history_) {
         auto result = db_->store_backtest_signals(signals, strategy_id_, run_id,
-                                                 timestamp, "backtest.signals");
+                                                 timestamp, portfolio_id_, "backtest.signals");
         if (result.is_error()) {
             ERROR("Failed to save signals for timestamp: " +
                   std::to_string(std::chrono::system_clock::to_time_t(timestamp)));
@@ -221,7 +227,7 @@ Result<void> BacktestResultsManager::save_metadata(const std::string& run_id) {
     // Use existing database method
     return db_->store_backtest_metadata(run_id, run_name_, run_description_,
                                        start_date_, end_date_, hyperparameters_,
-                                       "backtest.run_metadata");
+                                       portfolio_id_, "backtest.run_metadata");
 }
 
 Result<void> BacktestResultsManager::save_strategy_positions(const std::string& portfolio_run_id) {
@@ -243,7 +249,7 @@ Result<void> BacktestResultsManager::save_strategy_positions(const std::string& 
         }
 
         auto result = db_->store_backtest_positions_with_strategy(
-            positions, portfolio_run_id, strategy_id, "backtest.final_positions");
+            positions, portfolio_run_id, strategy_id, portfolio_id_, "backtest.final_positions");
         
         if (result.is_error()) {
             ERROR("Failed to save positions for strategy " + strategy_id + ": " + 
@@ -281,7 +287,7 @@ Result<void> BacktestResultsManager::save_strategy_executions(const std::string&
         INFO("Attempting to save " + std::to_string(executions.size()) + 
              " executions for strategy: " + strategy_id);
         auto result = db_->store_backtest_executions_with_strategy(
-            executions, portfolio_run_id, strategy_id, "backtest.executions");
+            executions, portfolio_run_id, strategy_id, portfolio_id_, "backtest.executions");
         
         if (result.is_error()) {
             ERROR("Failed to save executions for strategy " + strategy_id + ": " + 
@@ -324,6 +330,7 @@ Result<void> BacktestResultsManager::save_strategy_metadata(
             start_date_,               // Start date
             end_date_,                 // End date
             hyperparameters_,         // Hyperparameters
+            portfolio_id_,             // Portfolio ID
             "backtest.run_metadata");
 
         if (result.is_error()) {

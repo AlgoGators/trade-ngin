@@ -186,6 +186,7 @@ public:
     // Backtest data storage methods
     Result<void> store_backtest_executions(const std::vector<ExecutionReport>& executions,
                                            const std::string& run_id,
+                                           const std::string& portfolio_id,
                                            const std::string& table_name) override {
         if (!connected_) {
             return make_error<void>(ErrorCode::DATABASE_ERROR, "Not connected");
@@ -196,6 +197,7 @@ public:
     Result<void> store_backtest_signals(const std::unordered_map<std::string, double>& signals,
                                          const std::string& strategy_id, const std::string& run_id,
                                          const Timestamp& timestamp,
+                                         const std::string& portfolio_id,
                                          const std::string& table_name) override {
         if (!connected_) {
             return make_error<void>(ErrorCode::DATABASE_ERROR, "Not connected");
@@ -206,6 +208,7 @@ public:
     Result<void> store_backtest_metadata(const std::string& run_id, const std::string& name,
                                          const std::string& description, const Timestamp& start_date,
                                          const Timestamp& end_date, const nlohmann::json& hyperparameters,
+                                         const std::string& portfolio_id,
                                          const std::string& table_name) override {
         if (!connected_) {
             return make_error<void>(ErrorCode::DATABASE_ERROR, "Not connected");
