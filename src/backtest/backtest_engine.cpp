@@ -1,5 +1,6 @@
 // src/backtest/backtest_engine.cpp
 #include "trade_ngin/backtest/backtest_engine.hpp"
+#include "trade_ngin/backtest/backtest_pnl_manager.hpp"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -101,6 +102,14 @@ BacktestEngine::BacktestEngine(BacktestConfig config, std::shared_ptr<PostgresDa
 
         slippage_model_ = SlippageModelFactory::create_spread_model(slippage_config);
     }
+
+    // Initialize PnL Manager - SINGLE SOURCE OF TRUTH for all PnL calculations
+    // Uses InstrumentRegistry for consistent point value multipliers
+    double initial_capital = static_cast<double>(config_.portfolio_config.initial_capital);
+    pnl_manager_ = std::make_unique<BacktestPnLManager>(
+        initial_capital, InstrumentRegistry::instance());
+    INFO("[BACKTEST_PNL] Initialized BacktestPnLManager with capital=" + 
+         std::to_string(initial_capital));
 
     INFO("Backtest engine initialized successfully with " +
          std::to_string(config_.strategy_config.symbols.size()) + " symbols and " +
@@ -1396,6 +1405,11 @@ static bool portfolio_backtest_needs_reset = false;
 
 void BacktestEngine::reset_portfolio_backtest_state() {
     portfolio_backtest_needs_reset = true;
+    // Also reset the PnL manager if it exists
+    if (pnl_manager_) {
+        pnl_manager_->reset();
+        INFO("[BACKTEST_PNL] Reset PnL manager state for new backtest run");
+    }
 }
 
 Result<void> BacktestEngine::process_portfolio_data(
@@ -1518,19 +1532,28 @@ Result<void> BacktestEngine::process_portfolio_data(
                 previous_day_close_prices[bar.symbol] = static_cast<double>(bar.close);
             }
             
+            // Also update PnL manager's previous closes during warmup
+            if (pnl_manager_) {
+                std::unordered_map<std::string, double> warmup_closes;
+                for (const auto& bar : bars) {
+                    warmup_closes[bar.symbol] = static_cast<double>(bar.close);
+                }
+                pnl_manager_->update_previous_closes(warmup_closes);
+            }
+            
             // Debug: Log what we're storing for first post-warmup day
             if (bars.size() > 0) {
                 auto time_t = std::chrono::system_clock::to_time_t(timestamp);
                 std::tm tm = *std::gmtime(&time_t);
                 char time_str[64];
                 std::strftime(time_str, sizeof(time_str), "%Y-%m-%d", &tm);
-                DEBUG("WARMUP: Updated previous_day_close_prices for date " + std::string(time_str) + 
+                DEBUG("[BACKTEST_PNL] WARMUP: Updated previous close prices for date " + std::string(time_str) + 
                       " (will be used as previous close for first post-warmup day)");
                 // Log a sample of stored prices for debugging
                 int count = 0;
                 for (const auto& bar : bars) {
                     if (count++ < 3) {
-                        DEBUG("WARMUP: Stored previous_day_close_prices[" + bar.symbol + "] = " + 
+                        DEBUG("[BACKTEST_PNL] WARMUP: Stored previous_close[" + bar.symbol + "] = " + 
                               std::to_string(static_cast<double>(bar.close)));
                     }
                 }
@@ -1638,251 +1661,150 @@ Result<void> BacktestEngine::process_portfolio_data(
         // Note: Portfolio manager will now read positions directly from strategies
         // via the modified get_positions_internal() method
 
-        // FIX: Calculate portfolio value using CORRECT close-to-close PnL calculation
-        // This ensures positions table stores the same PnL as equity curve
-        // Formula: daily_pnl = quantity * (Day T close - Day T-1 close) * point_value
+        // ================================================================
+        // PNL CALCULATION PER-STRATEGY (SINGLE SOURCE OF TRUTH)
+        // ================================================================
+        // Calculate PnL for each strategy using its individual quantities
+        // (not aggregated portfolio quantities with allocation multipliers)
+        //
+        // Formula: daily_pnl = qty * (close[T] - close[T-1]) * point_value
+        // Where qty = individual strategy quantity (e.g., 1, 2, 3...)
+        //
+        // DEBUG: Look for log tags [BACKTEST_PNL] STRATEGY to verify
+        // ================================================================
+        
         double portfolio_value = 0.0;
+        double total_portfolio_pnl = 0.0;
+        
         try {
-            // Start from previous equity value (or initial capital if first entry)
-            portfolio_value = equity_curve.empty() 
-                ? initial_capital 
-                : equity_curve.back().second;
-
-            // Get current portfolio positions
-            auto portfolio_positions = portfolio->get_portfolio_positions();
-            
-            // Get strategies to access point value multipliers
-            auto strategies = portfolio->get_strategies();
-            
-            // Map to store calculated PnL per position (for updating positions later)
-            std::unordered_map<std::string, double> position_pnl_map;
-            
-            // Calculate daily PnL using close-to-close (correct method)
-            double daily_pnl = 0.0;
-            for (const auto& [symbol, pos] : portfolio_positions) {
-                if (static_cast<double>(pos.quantity) == 0.0) {
-                    // Zero quantity position - no PnL
-                    position_pnl_map[symbol] = 0.0;
-                    continue;
-                }
-                
-                // Get current day's close price from bars
-                double current_close = 0.0;
-                for (const auto& bar : bars) {
-                    if (bar.symbol == symbol) {
-                        current_close = static_cast<double>(bar.close);
-                        break;
-                    }
-                }
-                
-                if (current_close <= 0.0) {
-                    WARN("Invalid current_close for " + symbol + ": " + std::to_string(current_close) + 
-                         ". Skipping PnL calculation for this position.");
-                    position_pnl_map[symbol] = 0.0;
-                    continue;
-                }
-                
-                // Get previous day's close price
-                auto prev_it = previous_day_close_prices.find(symbol);
-                if (prev_it == previous_day_close_prices.end()) {
-                    // First time seeing this symbol - no previous close, so no PnL yet
-                    DEBUG("No previous close price for " + symbol + " (first occurrence). PnL = 0.");
-                    position_pnl_map[symbol] = 0.0;
-                    // Store current close for next iteration
-                    previous_day_close_prices[symbol] = current_close;
-                    continue;
-                }
-                
-                double previous_close = prev_it->second;
-                
-                // Debug: Log PnL calculation details for first post-warmup day
-                static bool first_post_warmup_logged = false;
-                static bool needs_reset_pnl_log = false;
-                if (needs_reset) {
-                    first_post_warmup_logged = false;
-                    needs_reset_pnl_log = true;
-                }
-                if (!first_post_warmup_logged && !is_warmup && needs_reset_pnl_log) {
-                    auto time_t = std::chrono::system_clock::to_time_t(timestamp);
-                    std::tm tm = *std::gmtime(&time_t);
-                    char time_str[64];
-                    std::strftime(time_str, sizeof(time_str), "%Y-%m-%d", &tm);
-                    // Also get the timestamp from bars to verify
-                    auto bars_time_t = std::chrono::system_clock::to_time_t(bars[0].timestamp);
-                    std::tm bars_tm = *std::gmtime(&bars_time_t);
-                    char bars_time_str[64];
-                    std::strftime(bars_time_str, sizeof(bars_time_str), "%Y-%m-%d", &bars_tm);
-                    INFO("PnL CALC DEBUG: " + symbol + " on " + std::string(time_str) + 
-                          " (bars date: " + std::string(bars_time_str) + ")" +
-                          ": current_close=" + std::to_string(current_close) + 
-                          ", previous_close=" + std::to_string(previous_close) +
-                          ", pnl=" + std::to_string(static_cast<double>(pos.quantity) * (current_close - previous_close)));
-                    if (symbol == bars[0].symbol) {  // Log once per day
-                        first_post_warmup_logged = true;
-                        needs_reset_pnl_log = false;
-                    }
-                }
-                
-                // Safety check: ensure we're not using the same close (would give 0 PnL incorrectly)
-                if (std::abs(current_close - previous_close) < 1e-8) {
-                    DEBUG("WARNING: current_close and previous_close are identical for " + symbol + 
-                          " (" + std::to_string(current_close) + "). This may indicate a data issue.");
-                    // Still calculate PnL (will be 0, which is correct if price didn't change)
-                }
-                
-                // Get point value multiplier from strategies
-                double point_value = 1.0;
-                bool found_point_value = false;
-                for (const auto& strategy : strategies) {
-                    if (!strategy) continue;
-                    auto trend_strategy = std::dynamic_pointer_cast<TrendFollowingStrategy>(strategy);
-                    if (!trend_strategy) {
-                        // Try trend_following_fast as well
-                        auto trend_fast_strategy = std::dynamic_pointer_cast<TrendFollowingFastStrategy>(strategy);
-                        if (trend_fast_strategy) {
-                            try {
-                                point_value = trend_fast_strategy->get_point_value_multiplier(symbol);
-                                found_point_value = true;
-                                break;
-                            } catch (const std::exception& e) {
-                                // Continue to next strategy
-                            }
-                        }
-                        continue;
-                    }
-                    try {
-                        point_value = trend_strategy->get_point_value_multiplier(symbol);
-                        found_point_value = true;
-                        break;
-                    } catch (const std::exception& e) {
-                        // Continue to next strategy
-                    }
-                }
-                
-                if (!found_point_value) {
-                    DEBUG("Could not find point value for " + symbol + " from strategies. Using 1.0");
-                }
-                
-                // Calculate daily PnL: quantity * (current_close - previous_close) * point_value
-                double position_daily_pnl = static_cast<double>(pos.quantity) *
-                                          (current_close - previous_close) * point_value;
-                
-                // Store PnL for this position
-                position_pnl_map[symbol] = position_daily_pnl;
-                daily_pnl += position_daily_pnl;
-                
-                DEBUG("PnL calculation for " + symbol + 
-                      ": qty=" + std::to_string(static_cast<double>(pos.quantity)) +
-                      ", current_close=" + std::to_string(current_close) +
-                      ", previous_close=" + std::to_string(previous_close) +
-                      ", point_value=" + std::to_string(point_value) +
-                      ", daily_pnl=" + std::to_string(position_daily_pnl));
+            // Ensure PnL manager is initialized
+            if (!pnl_manager_) {
+                ERROR("[BACKTEST_PNL] PnL manager not initialized!");
+                double last_value = equity_curve.empty() ? initial_capital : equity_curve.back().second;
+                equity_curve.emplace_back(timestamp, last_value);
+                previous_bars = bars;
+                return Result<void>();
             }
             
-            // Update positions with correct PnL before saving to database
-            // This ensures positions table has the same PnL as equity curve
-            // We update strategy positions directly, and portfolio will read from them
-            for (const auto& [symbol, calculated_pnl] : position_pnl_map) {
-                // Find which strategy owns this position and update it
-                bool position_updated = false;
-                for (const auto& strategy : strategies) {
-                    if (!strategy) continue;
-                    const auto& strategy_positions = strategy->get_positions();
-                    auto strategy_pos_it = strategy_positions.find(symbol);
-                    if (strategy_pos_it != strategy_positions.end()) {
-                        // This strategy owns this position - update it with correct PnL
-                        Position updated_pos = strategy_pos_it->second;
-                        // Update the position's PnL fields with calculated PnL
-                        // For futures with REALIZED_ONLY accounting, all PnL is realized
-                        updated_pos.realized_pnl = Decimal(calculated_pnl);
-                        updated_pos.unrealized_pnl = Decimal(0.0);
-                        
-                        auto update_result = strategy->update_position(symbol, updated_pos);
-                        if (update_result.is_error()) {
-                            WARN("Failed to update position PnL for " + symbol + 
-                                 " in strategy: " + update_result.error()->what());
-                        } else {
-                            DEBUG("Updated position " + symbol + " PnL to " + 
-                                  std::to_string(calculated_pnl) + " (from close-to-close calculation)");
-                            position_updated = true;
-                        }
-                        break; // Found the strategy, no need to check others
-                    }
-                }
-                
-                if (!position_updated) {
-                    DEBUG("Position " + symbol + " not found in any strategy. This may be expected for closed positions.");
-                }
+            // Reset PnL manager state on fresh backtest run
+            if (needs_reset) {
+                pnl_manager_->reset();
+                pnl_manager_->set_portfolio_value(initial_capital);
+                INFO("[BACKTEST_PNL] PnL manager reset for new backtest run, initial_capital=" + 
+                     std::to_string(initial_capital));
             }
             
-            // Update previous_day_close_prices for next iteration
+            // Build current close prices map from bars
+            std::unordered_map<std::string, double> current_close_prices;
             for (const auto& bar : bars) {
-                previous_day_close_prices[bar.symbol] = static_cast<double>(bar.close);
+                current_close_prices[bar.symbol] = static_cast<double>(bar.close);
             }
-
-            // Accumulate daily PnL to portfolio value
-            portfolio_value += daily_pnl;
             
-            // Enhanced debug logging for PnL calculation verification
-            static int pnl_debug_count = 0;
-            if (++pnl_debug_count <= 10 || daily_pnl != 0.0) {
-                auto time_t = std::chrono::system_clock::to_time_t(timestamp);
-                std::tm tm = *std::gmtime(&time_t);
-                char time_str[64];
-                std::strftime(time_str, sizeof(time_str), "%Y-%m-%d", &tm);
-                INFO("PnL CALCULATION FIX: Date=" + std::string(time_str) + 
-                     ", Total daily PnL=$" + std::to_string(daily_pnl) +
-                     ", Positions with PnL=" + std::to_string(position_pnl_map.size()) +
-                     ", Portfolio positions=" + std::to_string(portfolio_positions.size()));
-            }
-
-            // Subtract commissions for this period to get NET portfolio value
+            // Get per-strategy positions (NOT aggregated portfolio positions)
+            auto strategy_positions = portfolio->get_strategy_positions();
+            
+            // Calculate commissions for this period
             double total_commissions = 0.0;
             for (const auto& exec : period_executions) {
                 total_commissions += static_cast<double>(exec.commission);
             }
-            if (total_commissions != 0.0) {
-                DEBUG("Applying commission costs for portfolio period: " +
-                      std::to_string(total_commissions));
-                portfolio_value -= total_commissions;
+            
+            // Calculate PnL for each strategy using its individual quantities
+            for (const auto& [strategy_id, positions_map] : strategy_positions) {
+                for (const auto& [symbol, pos] : positions_map) {
+                    double qty = static_cast<double>(pos.quantity);
+                    
+                    // Skip zero quantity positions
+                    if (std::abs(qty) < 1e-8) continue;
+                    
+                    // Get current close price
+                    auto curr_it = current_close_prices.find(symbol);
+                    if (curr_it == current_close_prices.end()) {
+                        WARN("[BACKTEST_PNL] No current close price for " + symbol);
+                        continue;
+                    }
+                    double current_close = curr_it->second;
+                    
+                    // Check if we have previous close
+                    if (!pnl_manager_->has_previous_close(symbol)) {
+                        // First day for this symbol - store close for next day
+                        pnl_manager_->set_previous_close(symbol, current_close);
+                        INFO("[BACKTEST_PNL] STRATEGY " + strategy_id + " - " + symbol + 
+                             ": First day, storing close=" + std::to_string(current_close));
+                        continue;
+                    }
+                    
+                    double prev_close = pnl_manager_->get_previous_close(symbol);
+                    
+                    // Calculate PnL using BacktestPnLManager
+                    auto pnl_result = pnl_manager_->calculate_position_pnl(
+                        symbol, qty, prev_close, current_close);
+                    
+                    if (pnl_result.valid) {
+                        // Update this strategy's position with calculated PnL
+                        Position updated_pos = pos;
+                        updated_pos.realized_pnl = Decimal(pnl_result.daily_pnl);
+                        updated_pos.unrealized_pnl = Decimal(0.0);
+                        
+                        // Update in portfolio manager so it gets saved to database
+                        auto update_result = portfolio->update_strategy_position(
+                            strategy_id, symbol, updated_pos);
+                        
+                        if (update_result.is_error()) {
+                            WARN("[BACKTEST_PNL] Failed to update strategy position: " +
+                                 std::string(update_result.error()->what()));
+                        } else {
+                            total_portfolio_pnl += pnl_result.daily_pnl;
+                            
+                            INFO("[BACKTEST_PNL] STRATEGY " + strategy_id + " - " + symbol +
+                                 ": qty=" + std::to_string(qty) +
+                                 ", prev_close=" + std::to_string(prev_close) +
+                                 ", curr_close=" + std::to_string(current_close) +
+                                 ", point_value=" + std::to_string(pnl_result.point_value) +
+                                 ", pnl=" + std::to_string(pnl_result.daily_pnl));
+                        }
+                    }
+                }
             }
-
+            
+            // Update previous closes for next iteration
+            pnl_manager_->update_previous_closes(current_close_prices);
+            for (const auto& bar : bars) {
+                previous_day_close_prices[bar.symbol] = static_cast<double>(bar.close);
+            }
+            
+            // Calculate portfolio value: previous value + daily PnL - commissions
+            portfolio_value = equity_curve.empty() ? initial_capital : equity_curve.back().second;
+            portfolio_value += (total_portfolio_pnl - total_commissions);
+            
+            // Add to equity curve
             equity_curve.emplace_back(timestamp, portfolio_value);
+            
+            // Format date for logging
+            auto time_t = std::chrono::system_clock::to_time_t(timestamp);
+            std::tm tm;
+            #ifdef _WIN32
+                gmtime_s(&tm, &time_t);
+            #else
+                gmtime_r(&time_t, &tm);
+            #endif
+            std::ostringstream date_ss;
+            date_ss << std::put_time(&tm, "%Y-%m-%d");
+            std::string date_str = date_ss.str();
 
-            // Log first few equity curve entries with detailed breakdown
+            // Log equity curve entries with detailed breakdown
             static int ec_count = 0;
-            static int debug_counter = 0;
-            if (++ec_count <= 5) {
-                auto time_t = std::chrono::system_clock::to_time_t(timestamp);
-                std::tm tm = *std::gmtime(&time_t);
-                char time_str[64];
-                std::strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", &tm);
-                INFO("EQUITY_CURVE #" + std::to_string(ec_count) + ": timestamp=" + std::string(time_str) +
-                     ", daily_pnl=$" + std::to_string(daily_pnl) +
+            if (++ec_count <= 10) {
+                INFO("[BACKTEST_PNL] EQUITY_CURVE #" + std::to_string(ec_count) + 
+                     ": date=" + date_str +
+                     ", gross_pnl=$" + std::to_string(total_portfolio_pnl) +
                      ", commissions=$" + std::to_string(total_commissions) +
+                     ", net_pnl=$" + std::to_string(total_portfolio_pnl - total_commissions) +
                      ", portfolio_value=$" + std::to_string(portfolio_value));
             }
 
-            // Debug: Log portfolio value periodically (every 10 periods)
-            if (++debug_counter % 10 == 0) {
-                DEBUG("Portfolio value at period " + std::to_string(debug_counter) + ": $" +
-                      std::to_string(portfolio_value) +
-                      ", daily_pnl: $" + std::to_string(daily_pnl) +
-                      ", positions: " + std::to_string(portfolio_positions.size()));
-
-                // Log detailed position information
-                for (const auto& [symbol, pos] : portfolio_positions) {
-                    DEBUG(
-                        "Position " + symbol +
-                        ": qty=" + std::to_string(static_cast<double>(pos.quantity)) +
-                        ", avg_price=" + std::to_string(static_cast<double>(pos.average_price)) +
-                        ", daily_realized_pnl=" + std::to_string(static_cast<double>(pos.realized_pnl)) +
-                        ", unrealized_pnl=" +
-                        std::to_string(static_cast<double>(pos.unrealized_pnl)));
-                }
-            }
         } catch (const std::exception& e) {
-            WARN("Exception calculating portfolio value: " + std::string(e.what()) +
+            WARN("[BACKTEST_PNL] Exception calculating portfolio value: " + std::string(e.what()) +
                  ". Using previous value for equity curve.");
 
             // Use previous value if available, otherwise use initial capital

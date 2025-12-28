@@ -7,11 +7,13 @@
 #include <unordered_map>
 #include <vector>
 #include "trade_ngin/backtest/slippage_models.hpp"
+#include "trade_ngin/backtest/backtest_pnl_manager.hpp"
 #include "trade_ngin/core/config_base.hpp"
 #include "trade_ngin/core/error.hpp"
 #include "trade_ngin/core/time_utils.hpp"
 #include "trade_ngin/core/types.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
+#include "trade_ngin/instruments/instrument_registry.hpp"
 #include "trade_ngin/optimization/dynamic_optimizer.hpp"
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
 #include "trade_ngin/risk/risk_manager.hpp"
@@ -323,6 +325,13 @@ private:
     std::unique_ptr<SlippageModel> slippage_model_;
     std::string backtest_component_id_;
     mutable std::string current_run_id_;  // Store run_id for daily position storage
+    
+    // SINGLE SOURCE OF TRUTH for PnL calculations
+    // Uses BacktestPnLManager to ensure consistent:
+    // - Date alignment (PnL for date T uses close[T] - close[T-1])
+    // - Quantity scaling (qty * price_change * point_value)
+    // - Point value multiplier usage (from InstrumentRegistry)
+    std::unique_ptr<BacktestPnLManager> pnl_manager_;
     
     // Price history and returns for covariance calculation (similar to PortfolioManager)
     std::unordered_map<std::string, std::vector<double>> price_history_;

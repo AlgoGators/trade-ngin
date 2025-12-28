@@ -1326,6 +1326,27 @@ std::unordered_map<std::string, std::unordered_map<std::string, Position>> Portf
     return result;
 }
 
+Result<void> PortfolioManager::update_strategy_position(
+    const std::string& strategy_id,
+    const std::string& symbol,
+    const Position& updated_pos) {
+    
+    std::lock_guard<std::mutex> lock(mutex_);
+    
+    auto it = strategies_.find(strategy_id);
+    if (it == strategies_.end()) {
+        return make_error<void>(ErrorCode::INVALID_ARGUMENT,
+            "Strategy not found: " + strategy_id, "PortfolioManager");
+    }
+    
+    // Update both current_positions and target_positions
+    // current_positions is what gets returned by get_strategy_positions() and saved to DB
+    it->second.current_positions[symbol] = updated_pos;
+    it->second.target_positions[symbol] = updated_pos;
+    
+    return Result<void>();
+}
+
 double PortfolioManager::get_portfolio_value(
     const std::unordered_map<std::string, double>& current_prices) const {
     static int call_count = 0;
