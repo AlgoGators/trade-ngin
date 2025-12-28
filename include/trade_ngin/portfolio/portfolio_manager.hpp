@@ -122,9 +122,12 @@ public:
     /**
      * @brief Process new market data
      * @param data New market data
+     * @param skip_execution_generation If true, skip execution generation (used during warmup)
+     * @param current_timestamp Optional current day's timestamp for execution fill_time (if not provided, uses data[0].timestamp)
      * @return Result indicating success or failure
      */
-    Result<void> process_market_data(const std::vector<Bar>& data);
+    Result<void> process_market_data(const std::vector<Bar>& data, bool skip_execution_generation = false, 
+                                     std::optional<Timestamp> current_timestamp = std::nullopt);
 
     /**
      * @brief Update strategy allocations
@@ -161,6 +164,11 @@ public:
      * @brief Clear the execution history (useful after retrieving them)
      */
     void clear_execution_history();
+
+    /**
+     * @brief Clear all executions including strategy-level (used during warmup)
+     */
+    void clear_all_executions();
 
     /**
      * @brief Get all strategies managed by this portfolio

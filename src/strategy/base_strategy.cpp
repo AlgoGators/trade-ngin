@@ -648,4 +648,8 @@ void BaseStrategy::set_backtest_mode(bool is_backtest) {
     DEBUG("Strategy backtest mode set to: " + std::string(is_backtest ? "true" : "false"));
 }
 
+bool BaseStrategy::is_backtest_mode() const {
+    return is_backtest_mode_;
+}
+
 }  // namespace trade_ngin

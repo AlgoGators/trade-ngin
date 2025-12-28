@@ -16,6 +16,7 @@
 #include "trade_ngin/data/database_pooling.hpp"
 #include "trade_ngin/data/market_data_bus.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
+#include "trade_ngin/instruments/instrument_registry.hpp"
 #include "trade_ngin/storage/backtest_results_manager.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
 #include "trade_ngin/strategy/trend_following_fast.hpp"
@@ -1410,6 +1411,8 @@ Result<void> BacktestEngine::process_portfolio_data(
         // Static storage for previous day's bars (for signal generation) and a flag
         static bool has_previous_bars = false;
         static std::vector<Bar> previous_bars;
+        // Static storage for previous day's close prices (for PnL calculation)
+        static std::unordered_map<std::string, double> previous_day_close_prices;
 
         // Capture reset flag at start and clear it immediately
         // (so subsequent calls in this backtest run don't reset again)
@@ -1418,6 +1421,7 @@ Result<void> BacktestEngine::process_portfolio_data(
             portfolio_backtest_needs_reset = false;
             has_previous_bars = false;
             previous_bars.clear();
+            previous_day_close_prices.clear();
             DEBUG("Portfolio backtest state reset for new run");
         }
 
@@ -1472,7 +1476,9 @@ Result<void> BacktestEngine::process_portfolio_data(
                           .count()) + (is_warmup ? " [WARMUP]" : ""));
 
             // Use previous day's bars when available to avoid lookahead in signals
-            auto data_result = portfolio->process_market_data(bars_for_signals);
+            // Skip execution generation during warmup to prevent warmup executions from being created
+            // Pass current day's timestamp so executions have the correct fill_time
+            auto data_result = portfolio->process_market_data(bars_for_signals, is_warmup, timestamp);
             if (data_result.is_error()) {
                 ERROR("Portfolio process_market_data failed: " +
                       std::string(data_result.error()->what()));
@@ -1485,29 +1491,49 @@ Result<void> BacktestEngine::process_portfolio_data(
                 "BacktestEngine");
         }
 
-        // WARMUP HANDLING: keep equity flat, no executions, no positions
+        // WARMUP HANDLING: keep equity flat, no executions, no positions saved to DB
+        // OPTION 3 FIX: Do NOT zero out positions during warmup - this allows the optimizer
+        // to see realistic starting positions on the first post-warmup day, preventing
+        // the optimizer from scaling all positions to zero due to high tracking error.
+        // Positions are still not saved to DB during warmup, and equity stays flat.
         if (is_warmup) {
-            // Clear any executions that might have been generated
-            portfolio->clear_execution_history();
+            // Clear any executions that might have been generated (including strategy-level)
+            // This ensures no executions from warmup period persist
+            portfolio->clear_all_executions();
 
-            // Force all strategy positions to zero so warmup does not accumulate holdings
-            try {
-                auto strategies = portfolio->get_strategies();
-                for (const auto& strat : strategies) {
-                    if (!strat) continue;
-                    const auto& positions = strat->get_positions();
-                    for (const auto& [sym, _] : positions) {
-                        Position zero{};
-                        zero.symbol = sym;
-                        zero.quantity = Quantity(0.0);
-                        zero.average_price = Decimal(0.0);
-                        zero.realized_pnl = Decimal(0.0);
-                        zero.unrealized_pnl = Decimal(0.0);
-                        strat->update_position(sym, zero);
+            // NOTE: We intentionally do NOT zero out strategy positions during warmup.
+            // This allows positions to accumulate naturally during warmup, giving the
+            // optimizer realistic starting positions on the first post-warmup day.
+            // - Executions are still cleared (no trading during warmup)
+            // - Positions are still not saved to DB (warmup data not persisted)
+            // - Equity curve still stays flat (no PnL during warmup)
+            // The only change: positions_ map is preserved, which is what we want.
+
+            // CRITICAL FIX: Update previous_day_close_prices during warmup with the CURRENT day's close
+            // (from bars, not bars_for_signals). This ensures that on the first post-warmup day,
+            // previous_day_close_prices contains the close from the LAST warmup day, which is correct
+            // for PnL calculation (Day T close - Day T-1 close, where T-1 is the last warmup day).
+            // Note: bars contains the current day's data, which becomes the "previous" day for the next iteration.
+            for (const auto& bar : bars) {
+                previous_day_close_prices[bar.symbol] = static_cast<double>(bar.close);
+            }
+            
+            // Debug: Log what we're storing for first post-warmup day
+            if (bars.size() > 0) {
+                auto time_t = std::chrono::system_clock::to_time_t(timestamp);
+                std::tm tm = *std::gmtime(&time_t);
+                char time_str[64];
+                std::strftime(time_str, sizeof(time_str), "%Y-%m-%d", &tm);
+                DEBUG("WARMUP: Updated previous_day_close_prices for date " + std::string(time_str) + 
+                      " (will be used as previous close for first post-warmup day)");
+                // Log a sample of stored prices for debugging
+                int count = 0;
+                for (const auto& bar : bars) {
+                    if (count++ < 3) {
+                        DEBUG("WARMUP: Stored previous_day_close_prices[" + bar.symbol + "] = " + 
+                              std::to_string(static_cast<double>(bar.close)));
                     }
                 }
-            } catch (const std::exception& e) {
-                WARN("Failed to clear positions during warmup: " + std::string(e.what()));
             }
 
             // Keep equity curve flat at initial capital during warmup
@@ -1548,6 +1574,11 @@ Result<void> BacktestEngine::process_portfolio_data(
         // Apply slippage and transaction costs to executions
         for (auto& exec : period_executions) {
             try {
+                // CRITICAL FIX: Set execution fill_time to the CURRENT day's timestamp
+                // (not the previous day's bars timestamp that was used for signal generation)
+                // This ensures executions appear on the correct day in the database
+                exec.fill_time = timestamp;
+                
                 // Apply slippage
                 if (slippage_model_) {
                     // Find the bar for this symbol
@@ -1607,11 +1638,9 @@ Result<void> BacktestEngine::process_portfolio_data(
         // Note: Portfolio manager will now read positions directly from strategies
         // via the modified get_positions_internal() method
 
-        // Calculate portfolio value by ACCUMULATING daily PnL from positions
-        // In backtest mode, positions store DAILY PnL (not cumulative), so we:
-        // 1. Start from the previous equity value
-        // 2. Add today's daily PnL from all positions
-        // 3. Subtract today's commissions
+        // FIX: Calculate portfolio value using CORRECT close-to-close PnL calculation
+        // This ensures positions table stores the same PnL as equity curve
+        // Formula: daily_pnl = quantity * (Day T close - Day T-1 close) * point_value
         double portfolio_value = 0.0;
         try {
             // Start from previous equity value (or initial capital if first entry)
@@ -1619,22 +1648,193 @@ Result<void> BacktestEngine::process_portfolio_data(
                 ? initial_capital 
                 : equity_curve.back().second;
 
-            // Get current portfolio positions (with daily PnL in backtest mode)
+            // Get current portfolio positions
             auto portfolio_positions = portfolio->get_portfolio_positions();
-
-            // Sum daily PnL from all positions
+            
+            // Get strategies to access point value multipliers
+            auto strategies = portfolio->get_strategies();
+            
+            // Map to store calculated PnL per position (for updating positions later)
+            std::unordered_map<std::string, double> position_pnl_map;
+            
+            // Calculate daily PnL using close-to-close (correct method)
             double daily_pnl = 0.0;
             for (const auto& [symbol, pos] : portfolio_positions) {
-                // Add daily realized PnL (this is daily in backtest mode, not cumulative)
-                daily_pnl += static_cast<double>(pos.realized_pnl);
+                if (static_cast<double>(pos.quantity) == 0.0) {
+                    // Zero quantity position - no PnL
+                    position_pnl_map[symbol] = 0.0;
+                    continue;
+                }
                 
-                // Add daily unrealized PnL (for non-REALIZED_ONLY accounting)
-                // Note: For REALIZED_ONLY (futures), unrealized_pnl is always 0
-                daily_pnl += static_cast<double>(pos.unrealized_pnl);
+                // Get current day's close price from bars
+                double current_close = 0.0;
+                for (const auto& bar : bars) {
+                    if (bar.symbol == symbol) {
+                        current_close = static_cast<double>(bar.close);
+                        break;
+                    }
+                }
+                
+                if (current_close <= 0.0) {
+                    WARN("Invalid current_close for " + symbol + ": " + std::to_string(current_close) + 
+                         ". Skipping PnL calculation for this position.");
+                    position_pnl_map[symbol] = 0.0;
+                    continue;
+                }
+                
+                // Get previous day's close price
+                auto prev_it = previous_day_close_prices.find(symbol);
+                if (prev_it == previous_day_close_prices.end()) {
+                    // First time seeing this symbol - no previous close, so no PnL yet
+                    DEBUG("No previous close price for " + symbol + " (first occurrence). PnL = 0.");
+                    position_pnl_map[symbol] = 0.0;
+                    // Store current close for next iteration
+                    previous_day_close_prices[symbol] = current_close;
+                    continue;
+                }
+                
+                double previous_close = prev_it->second;
+                
+                // Debug: Log PnL calculation details for first post-warmup day
+                static bool first_post_warmup_logged = false;
+                static bool needs_reset_pnl_log = false;
+                if (needs_reset) {
+                    first_post_warmup_logged = false;
+                    needs_reset_pnl_log = true;
+                }
+                if (!first_post_warmup_logged && !is_warmup && needs_reset_pnl_log) {
+                    auto time_t = std::chrono::system_clock::to_time_t(timestamp);
+                    std::tm tm = *std::gmtime(&time_t);
+                    char time_str[64];
+                    std::strftime(time_str, sizeof(time_str), "%Y-%m-%d", &tm);
+                    // Also get the timestamp from bars to verify
+                    auto bars_time_t = std::chrono::system_clock::to_time_t(bars[0].timestamp);
+                    std::tm bars_tm = *std::gmtime(&bars_time_t);
+                    char bars_time_str[64];
+                    std::strftime(bars_time_str, sizeof(bars_time_str), "%Y-%m-%d", &bars_tm);
+                    INFO("PnL CALC DEBUG: " + symbol + " on " + std::string(time_str) + 
+                          " (bars date: " + std::string(bars_time_str) + ")" +
+                          ": current_close=" + std::to_string(current_close) + 
+                          ", previous_close=" + std::to_string(previous_close) +
+                          ", pnl=" + std::to_string(static_cast<double>(pos.quantity) * (current_close - previous_close)));
+                    if (symbol == bars[0].symbol) {  // Log once per day
+                        first_post_warmup_logged = true;
+                        needs_reset_pnl_log = false;
+                    }
+                }
+                
+                // Safety check: ensure we're not using the same close (would give 0 PnL incorrectly)
+                if (std::abs(current_close - previous_close) < 1e-8) {
+                    DEBUG("WARNING: current_close and previous_close are identical for " + symbol + 
+                          " (" + std::to_string(current_close) + "). This may indicate a data issue.");
+                    // Still calculate PnL (will be 0, which is correct if price didn't change)
+                }
+                
+                // Get point value multiplier from strategies
+                double point_value = 1.0;
+                bool found_point_value = false;
+                for (const auto& strategy : strategies) {
+                    if (!strategy) continue;
+                    auto trend_strategy = std::dynamic_pointer_cast<TrendFollowingStrategy>(strategy);
+                    if (!trend_strategy) {
+                        // Try trend_following_fast as well
+                        auto trend_fast_strategy = std::dynamic_pointer_cast<TrendFollowingFastStrategy>(strategy);
+                        if (trend_fast_strategy) {
+                            try {
+                                point_value = trend_fast_strategy->get_point_value_multiplier(symbol);
+                                found_point_value = true;
+                                break;
+                            } catch (const std::exception& e) {
+                                // Continue to next strategy
+                            }
+                        }
+                        continue;
+                    }
+                    try {
+                        point_value = trend_strategy->get_point_value_multiplier(symbol);
+                        found_point_value = true;
+                        break;
+                    } catch (const std::exception& e) {
+                        // Continue to next strategy
+                    }
+                }
+                
+                if (!found_point_value) {
+                    DEBUG("Could not find point value for " + symbol + " from strategies. Using 1.0");
+                }
+                
+                // Calculate daily PnL: quantity * (current_close - previous_close) * point_value
+                double position_daily_pnl = static_cast<double>(pos.quantity) *
+                                          (current_close - previous_close) * point_value;
+                
+                // Store PnL for this position
+                position_pnl_map[symbol] = position_daily_pnl;
+                daily_pnl += position_daily_pnl;
+                
+                DEBUG("PnL calculation for " + symbol + 
+                      ": qty=" + std::to_string(static_cast<double>(pos.quantity)) +
+                      ", current_close=" + std::to_string(current_close) +
+                      ", previous_close=" + std::to_string(previous_close) +
+                      ", point_value=" + std::to_string(point_value) +
+                      ", daily_pnl=" + std::to_string(position_daily_pnl));
+            }
+            
+            // Update positions with correct PnL before saving to database
+            // This ensures positions table has the same PnL as equity curve
+            // We update strategy positions directly, and portfolio will read from them
+            for (const auto& [symbol, calculated_pnl] : position_pnl_map) {
+                // Find which strategy owns this position and update it
+                bool position_updated = false;
+                for (const auto& strategy : strategies) {
+                    if (!strategy) continue;
+                    const auto& strategy_positions = strategy->get_positions();
+                    auto strategy_pos_it = strategy_positions.find(symbol);
+                    if (strategy_pos_it != strategy_positions.end()) {
+                        // This strategy owns this position - update it with correct PnL
+                        Position updated_pos = strategy_pos_it->second;
+                        // Update the position's PnL fields with calculated PnL
+                        // For futures with REALIZED_ONLY accounting, all PnL is realized
+                        updated_pos.realized_pnl = Decimal(calculated_pnl);
+                        updated_pos.unrealized_pnl = Decimal(0.0);
+                        
+                        auto update_result = strategy->update_position(symbol, updated_pos);
+                        if (update_result.is_error()) {
+                            WARN("Failed to update position PnL for " + symbol + 
+                                 " in strategy: " + update_result.error()->what());
+                        } else {
+                            DEBUG("Updated position " + symbol + " PnL to " + 
+                                  std::to_string(calculated_pnl) + " (from close-to-close calculation)");
+                            position_updated = true;
+                        }
+                        break; // Found the strategy, no need to check others
+                    }
+                }
+                
+                if (!position_updated) {
+                    DEBUG("Position " + symbol + " not found in any strategy. This may be expected for closed positions.");
+                }
+            }
+            
+            // Update previous_day_close_prices for next iteration
+            for (const auto& bar : bars) {
+                previous_day_close_prices[bar.symbol] = static_cast<double>(bar.close);
             }
 
             // Accumulate daily PnL to portfolio value
             portfolio_value += daily_pnl;
+            
+            // Enhanced debug logging for PnL calculation verification
+            static int pnl_debug_count = 0;
+            if (++pnl_debug_count <= 10 || daily_pnl != 0.0) {
+                auto time_t = std::chrono::system_clock::to_time_t(timestamp);
+                std::tm tm = *std::gmtime(&time_t);
+                char time_str[64];
+                std::strftime(time_str, sizeof(time_str), "%Y-%m-%d", &tm);
+                INFO("PnL CALCULATION FIX: Date=" + std::string(time_str) + 
+                     ", Total daily PnL=$" + std::to_string(daily_pnl) +
+                     ", Positions with PnL=" + std::to_string(position_pnl_map.size()) +
+                     ", Portfolio positions=" + std::to_string(portfolio_positions.size()));
+            }
 
             // Subtract commissions for this period to get NET portfolio value
             double total_commissions = 0.0;
