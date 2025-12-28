@@ -1478,6 +1478,17 @@ Result<void> BacktestEngine::process_portfolio_data(
 
         // Process market data through portfolio manager
         // BEGINNING-OF-DAY: use previous day's bars for signal generation when available
+        // CRITICAL FIX: Track strategy execution counts BEFORE process_market_data generates new executions
+        // This allows us to identify which executions were generated this period
+        // (Declare outside try block so it's accessible later for commission calculation)
+        std::unordered_map<std::string, size_t> strategy_exec_counts_before;
+        if (had_previous_bars && !is_warmup) {
+            auto strategy_execs_before = portfolio->get_strategy_executions();
+            for (const auto& [strategy_id, execs] : strategy_execs_before) {
+                strategy_exec_counts_before[strategy_id] = execs.size();
+            }
+        }
+        
         // During warmup: strategies still see data to build indicators, but we block trading below
         try {
             const auto& bars_for_signals = had_previous_bars ? previous_bars : bars;
@@ -1574,6 +1585,7 @@ Result<void> BacktestEngine::process_portfolio_data(
         // POST-WARMUP: Normal trading logic
         // Get executions from the portfolio manager
         std::vector<ExecutionReport> period_executions;
+        
         // Only retrieve executions if we actually processed signals this period
         if (had_previous_bars) {
             try {
@@ -1703,10 +1715,50 @@ Result<void> BacktestEngine::process_portfolio_data(
             // Get per-strategy positions (NOT aggregated portfolio positions)
             auto strategy_positions = portfolio->get_strategy_positions();
             
-            // Calculate commissions for this period
+            // CRITICAL FIX: Calculate commissions from per-strategy executions (not aggregated)
+            // This ensures equity curve commissions match what's saved to the database
+            // The database saves per-strategy executions, so we must use the same for equity curve
+            // Simply sum commissions from executions table for this date
             double total_commissions = 0.0;
-            for (const auto& exec : period_executions) {
+            
+            // Get per-strategy executions and extract only the ones generated this period
+            auto all_strategy_executions = portfolio->get_strategy_executions();
+            std::vector<ExecutionReport> period_strategy_executions;
+            
+            // Extract executions that were added this period (by comparing counts)
+            for (const auto& [strategy_id, execs] : all_strategy_executions) {
+                size_t count_before = strategy_exec_counts_before.count(strategy_id) > 0 
+                                    ? strategy_exec_counts_before[strategy_id] 
+                                    : 0;
+                
+                // Get only the new executions (those added after count_before)
+                for (size_t i = count_before; i < execs.size(); ++i) {
+                    period_strategy_executions.push_back(execs[i]);
+                }
+            }
+            
+            // CRITICAL FIX: Use commissions AS-IS from per-strategy executions
+            // DO NOT recalculate commissions - they're already calculated and stored in the database
+            // The database has the correct commissions, so we must use those exact values
+            // Recalculating with slippage-adjusted prices causes mismatches
+            for (const auto& exec : period_strategy_executions) {
+                // Use commission directly from execution (already calculated by PortfolioManager)
+                // This ensures equity curve commissions match exactly what's in the database
                 total_commissions += static_cast<double>(exec.commission);
+            }
+            
+            // Log commission calculation for debugging
+            DEBUG("[BACKTEST_PNL] Commission calculation: period_executions (aggregated)=" + 
+                  std::to_string(period_executions.size()) + 
+                  ", period_strategy_executions (per-strategy)=" + 
+                  std::to_string(period_strategy_executions.size()) +
+                  ", total_commissions=$" + std::to_string(total_commissions));
+            
+            // DO NOT use fallback to aggregated executions - this causes double-counting
+            // If no per-strategy executions found, commissions should be $0.00
+            // (This is correct - no executions means no commissions)
+            if (period_strategy_executions.empty() && !period_executions.empty()) {
+                DEBUG("[BACKTEST_PNL] No per-strategy executions found for this period. Commissions = $0.00 (correct - no executions means no commissions)");
             }
             
             // Calculate PnL for each strategy using its individual quantities
