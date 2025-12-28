@@ -153,7 +153,8 @@ Result<void> PortfolioManager::add_strategy(std::shared_ptr<StrategyInterface> s
     return Result<void>();
 }
 
-Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data) {
+Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data, bool skip_execution_generation, 
+                                                    std::optional<Timestamp> current_timestamp) {
     std::vector<std::string> processed_strategies;
 
     try {
@@ -373,9 +374,22 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data)
             // for saving at the end of the backtest. Each period's executions are appended.
             // Only clear at the very beginning of the backtest (handled elsewhere if needed)
 
-            // Generate execution reports per strategy (before aggregation)
-            // This allows accurate per-strategy execution tracking
-            for (const auto& [strategy_id, info] : strategies_) {
+            // Skip execution generation during warmup to prevent warmup executions from being created
+            if (!skip_execution_generation) {
+                // Check if this is first post-warmup day for portfolio-level executions
+                // (check BEFORE generating strategy executions)
+                bool is_first_post_warmup_day_portfolio = true;
+                for (const auto& [strategy_id, _] : strategies_) {
+                    if (strategy_executions_[strategy_id].size() > 0) {
+                        is_first_post_warmup_day_portfolio = false;
+                        break;
+                    }
+                }
+                bool should_generate_portfolio_establishment_execs = is_first_post_warmup_day_portfolio;
+
+                // Generate execution reports per strategy (before aggregation)
+                // This allows accurate per-strategy execution tracking
+                for (const auto& [strategy_id, info] : strategies_) {
                 auto& strategy_execs = strategy_executions_[strategy_id];
                 // Start counter from current size to ensure unique IDs across all periods
                 int exec_counter = static_cast<int>(strategy_execs.size());
@@ -389,6 +403,15 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data)
                 INFO("Previous positions for strategy " + strategy_id + 
                       " size: " + std::to_string(prev_strategy_positions.size()));
 
+                // OPTION 3 ENHANCEMENT: Detect first post-warmup day by checking if no executions
+                // have been generated yet (exec_counter == 0). On the first post-warmup day, 
+                // generate "establishment executions" for all non-zero positions, even if they 
+                // match previous positions. This ensures executions show how we got to the positions,
+                // not just changes. With Option 3, positions accumulate during warmup but executions
+                // are cleared, so exec_counter == 0 indicates first post-warmup day.
+                bool is_first_post_warmup_day = (exec_counter == 0);
+                bool should_generate_establishment_execs = is_first_post_warmup_day;
+
                 // Generate executions based on individual strategy position changes
                 for (const auto& [symbol, new_pos] : info.target_positions) {
                     double current_qty = 0.0;
@@ -399,10 +422,18 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data)
 
                     double new_qty = static_cast<double>(new_pos.quantity);
 
-                    // If position changed, create execution report for this strategy
-                    if (std::abs(new_qty - current_qty) > 1e-6) {
+                    // Generate execution if:
+                    // 1. Position changed (normal case), OR
+                    // 2. This is first post-warmup day and position is non-zero (establishment execution)
+                    bool position_changed = (std::abs(new_qty - current_qty) > 1e-6);
+                    bool is_establishment_exec = should_generate_establishment_execs && 
+                                                 (std::abs(new_qty) > 1e-6);
+                    
+                    if (position_changed || is_establishment_exec) {
                         // Calculate trade size
-                        double trade_size = new_qty - current_qty;
+                        // For establishment executions, use the full new_qty (we're establishing the position)
+                        // For normal changes, use the difference
+                        double trade_size = is_establishment_exec ? new_qty : (new_qty - current_qty);
                         Side side = trade_size > 0 ? Side::BUY : Side::SELL;
 
                         // Find latest price for symbol
@@ -426,8 +457,12 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data)
                         exec.side = side;
                         exec.filled_quantity = std::abs(trade_size);
                         exec.fill_price = latest_price;
-                        exec.fill_time =
-                            data.empty() ? std::chrono::system_clock::now() : data[0].timestamp;
+                        // CRITICAL FIX: Execution fill_time should use the CURRENT day's timestamp,
+                        // not the previous day's bars timestamp. The 'data' parameter contains
+                        // previous day's bars (for signal generation), but executions happen on
+                        // the current day. Use current_timestamp if provided, otherwise fall back to data timestamp.
+                        exec.fill_time = current_timestamp.has_value() ? current_timestamp.value() : 
+                                        (data.empty() ? std::chrono::system_clock::now() : data[0].timestamp);
                         // Calculate transaction costs using the same model as backtesting
                         // Base commission: 5 basis points * quantity
                         double commission = std::abs(trade_size) * 0.0005;
@@ -441,9 +476,10 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data)
                         // Add to strategy-specific executions
                         strategy_execs.push_back(exec);
                         exec_counter++;
+                        std::string exec_type = is_establishment_exec ? " [ESTABLISHMENT]" : "";
                         INFO("Generated execution for strategy " + strategy_id + 
                              ": " + symbol + " " + (side == Side::BUY ? "BUY" : "SELL") + 
-                             " qty=" + std::to_string(exec.filled_quantity));
+                             " qty=" + std::to_string(exec.filled_quantity) + exec_type);
                     }
                 }
                 INFO("Total executions generated for strategy " + strategy_id + 
@@ -452,6 +488,7 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data)
 
             // Also generate portfolio-level executions (aggregated) for backward compatibility
             recent_executions_.clear();
+            
             for (const auto& [symbol, new_pos] : post_opt) {
                 double current_qty = 0.0;
 
@@ -461,10 +498,20 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data)
                     current_qty = static_cast<double>(prev_pos_it->second.quantity);
                 }
 
-                // If position changed, create execution report
-                if (std::abs(static_cast<double>(new_pos.quantity) - current_qty) > 1e-6) {
+                double new_qty = static_cast<double>(new_pos.quantity);
+                
+                // Generate execution if:
+                // 1. Position changed (normal case), OR
+                // 2. This is first post-warmup day and position is non-zero (establishment execution)
+                bool position_changed = (std::abs(new_qty - current_qty) > 1e-6);
+                bool is_establishment_exec = should_generate_portfolio_establishment_execs && 
+                                             (std::abs(new_qty) > 1e-6);
+                
+                if (position_changed || is_establishment_exec) {
                     // Calculate trade size
-                    double trade_size = static_cast<double>(new_pos.quantity) - current_qty;
+                    // For establishment executions, use the full new_qty (we're establishing the position)
+                    // For normal changes, use the difference
+                    double trade_size = is_establishment_exec ? new_qty : (new_qty - current_qty);
                     Side side = trade_size > 0 ? Side::BUY : Side::SELL;
 
                     // Find latest price for symbol
@@ -488,8 +535,12 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data)
                     exec.side = side;
                     exec.filled_quantity = std::abs(trade_size);
                     exec.fill_price = latest_price;
-                    exec.fill_time =
-                        data.empty() ? std::chrono::system_clock::now() : data[0].timestamp;
+                    // CRITICAL FIX: Execution fill_time should use the CURRENT day's timestamp,
+                    // not the previous day's bars timestamp. The 'data' parameter contains
+                    // previous day's bars (for signal generation), but executions happen on
+                    // the current day. Use current_timestamp if provided, otherwise fall back to data timestamp.
+                    exec.fill_time = current_timestamp.has_value() ? current_timestamp.value() : 
+                                    (data.empty() ? std::chrono::system_clock::now() : data[0].timestamp);
                     // Calculate transaction costs using the same model as backtesting
                     // Base commission: 5 basis points * quantity
                     double commission = std::abs(trade_size) * 0.0005;
@@ -504,6 +555,7 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data)
                     recent_executions_.push_back(exec);
                 }
             }
+            }  // End of if (!skip_execution_generation) block
         }
         return Result<void>();
 
@@ -1241,6 +1293,14 @@ void PortfolioManager::clear_execution_history() {
     // for saving at the end of the backtest
     recent_executions_.clear();
     // strategy_executions_ is NOT cleared here - it accumulates for final save
+}
+
+void PortfolioManager::clear_all_executions() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    // Clear both portfolio-level and strategy-level executions
+    // Used during warmup to ensure no executions from warmup period persist
+    recent_executions_.clear();
+    strategy_executions_.clear();
 }
 
 std::vector<std::shared_ptr<StrategyInterface>> PortfolioManager::get_strategies() const {

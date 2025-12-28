@@ -122,9 +122,7 @@ public:
 
     /**
      * @brief Get target positions for portfolio allocation
-     * @note Default implementation returns a copy of get_positions()
-     *       Override in strategies that compute positions differently (e.g., from instrument_data_)
-     * @return Map of positions by symbol
+     * @return Map of positions by symbol (copy, not reference)
      */
     std::unordered_map<std::string, Position> get_target_positions() const override;
 
@@ -175,16 +173,14 @@ public:
     /**
      * @brief Set backtest mode for this strategy
      * @param is_backtest True if running in backtest mode (stores daily PnL), false for live (cumulative PnL)
-     * @note In backtest mode, realized_pnl stores DAILY PnL for correct equity curve accumulation
-     *       In live mode, realized_pnl stores CUMULATIVE PnL for compatibility with existing systems
      */
     void set_backtest_mode(bool is_backtest) override;
 
     /**
      * @brief Check if strategy is running in backtest mode
-     * @return True if in backtest mode
+     * @return True if in backtest mode, false otherwise
      */
-    bool is_backtest_mode() const override { return is_backtest_mode_; }
+    bool is_backtest_mode() const override;
 
     /**
      * @brief Transition the strategy to a new state
@@ -216,6 +212,9 @@ protected:
 
     std::shared_ptr<PostgresDatabase> db_;
     mutable std::mutex mutex_;
+    
+    // Backtest mode flag
+    bool is_backtest_mode_{false};
 
 private:
     /**
@@ -228,9 +227,6 @@ private:
     std::string registered_component_id_;
     bool is_initialized_{false};
     std::atomic<bool> running_{false};
-    
-    // Backtest mode flag - when true, stores daily PnL; when false, stores cumulative PnL
-    bool is_backtest_mode_{false};
 };
 
 }  // namespace trade_ngin
