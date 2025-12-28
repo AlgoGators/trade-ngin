@@ -168,6 +168,7 @@ struct BacktestConfig : public ConfigBase {
     std::string results_db_schema = "backtest";
     bool store_trade_details = true;
     std::string csv_output_path = "apps/backtest/results";
+    std::string portfolio_id{"BASE_PORTFOLIO"};  // Portfolio identifier for multiple portfolios
 
     // Configuration metadata
     std::string version{"1.0.0"};
@@ -179,6 +180,7 @@ struct BacktestConfig : public ConfigBase {
         j["portfolio_config"] = portfolio_config.to_json();
         j["results_db_schema"] = results_db_schema;
         j["store_trade_details"] = store_trade_details;
+        j["portfolio_id"] = portfolio_id;
         j["version"] = version;
         return j;
     }
@@ -192,6 +194,8 @@ struct BacktestConfig : public ConfigBase {
             results_db_schema = j.at("results_db_schema").get<std::string>();
         if (j.contains("store_trade_details"))
             store_trade_details = j.at("store_trade_details").get<bool>();
+        if (j.contains("portfolio_id"))
+            portfolio_id = j.at("portfolio_id").get<std::string>();
         if (j.contains("version"))
             version = j.at("version").get<std::string>();
     }

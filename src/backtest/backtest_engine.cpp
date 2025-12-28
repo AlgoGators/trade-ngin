@@ -353,6 +353,7 @@ Result<BacktestResults> BacktestEngine::run(std::shared_ptr<StrategyInterface> s
                     // Save positions for this day using the run_id generated at the start
                     if (!positions_vec.empty()) {
                         auto save_result = db_->store_backtest_positions(positions_vec, backtest_run_id, 
+                                                                          config_.portfolio_id,
                                                                           "backtest.final_positions");
                         if (save_result.is_error()) {
                             // Log error but don't fail the backtest
@@ -673,6 +674,7 @@ Result<BacktestResults> BacktestEngine::run_portfolio(std::shared_ptr<PortfolioM
                             auto save_result = db_->store_backtest_positions(
                                 positions_vec, 
                                 composite_run_id,  // Composite ID allows extracting both
+                                config_.portfolio_id,
                                 "backtest.final_positions");
                             
                             if (save_result.is_error()) {
@@ -2534,7 +2536,8 @@ Result<void> BacktestEngine::save_results_to_db(const BacktestResults& results,
     auto results_manager = std::make_unique<BacktestResultsManager>(
         db_ptr,
         config_.store_trade_details,
-        strategy_id
+        strategy_id,
+        config_.portfolio_id
     );
 
     // Set metadata with full config structure (matching previous format)
@@ -2643,7 +2646,8 @@ Result<void> BacktestEngine::save_portfolio_results_to_db(
     auto results_manager = std::make_unique<BacktestResultsManager>(
         db_ptr,
         config_.store_trade_details,
-        portfolio_run_id  // Use portfolio run_id as identifier
+        portfolio_run_id,  // Use portfolio run_id as identifier
+        config_.portfolio_id  // Pass portfolio_id
     );
 
     // Set metadata with full config structure

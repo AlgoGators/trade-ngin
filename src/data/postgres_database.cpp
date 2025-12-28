@@ -1591,6 +1591,7 @@ Result<void> PostgresDatabase::validate_signal_data(const std::string& symbol,
 
 Result<void> PostgresDatabase::store_backtest_executions(const std::vector<ExecutionReport>& executions,
                                                          const std::string& run_id,
+                                                         const std::string& portfolio_id,
                                                          const std::string& table_name) {
     auto validation = validate_connection();
     if (validation.is_error())
@@ -1605,17 +1606,19 @@ Result<void> PostgresDatabase::store_backtest_executions(const std::vector<Execu
             return table_validation;
         }
 
+        std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
+        
         // Use batch insert for better performance with large execution sets
         if (executions.size() > 100) {
             // Build a single multi-value INSERT for large batches
             std::string query = "INSERT INTO " + table_name +
-                                " (run_id, execution_id, order_id, timestamp, symbol, side, quantity, price, commission, is_partial) VALUES ";
+                                " (run_id, portfolio_id, execution_id, order_id, timestamp, symbol, side, quantity, price, commission, is_partial) VALUES ";
             
             std::vector<std::string> value_strings;
             value_strings.reserve(executions.size());
             
             for (const auto& exec : executions) {
-                std::string values = "('" + run_id + "', '" + exec.exec_id + "', '" + exec.order_id + "', '" + 
+                std::string values = "('" + run_id + "', '" + actual_portfolio_id + "', '" + exec.exec_id + "', '" + exec.order_id + "', '" + 
                                    format_timestamp(exec.fill_time) + "', '" + exec.symbol + "', '" + 
                                    side_to_string(exec.side) + "', " + std::to_string(static_cast<double>(exec.filled_quantity)) + 
                                    ", " + std::to_string(static_cast<double>(exec.fill_price)) + ", " + 
@@ -1630,10 +1633,10 @@ Result<void> PostgresDatabase::store_backtest_executions(const std::vector<Execu
             // Use parameterized queries for smaller batches
             for (const auto& exec : executions) {
                 std::string query = "INSERT INTO " + table_name +
-                                    " (run_id, execution_id, order_id, timestamp, symbol, side, quantity, price, commission, is_partial) "
-                                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)";
+                                    " (run_id, portfolio_id, execution_id, order_id, timestamp, symbol, side, quantity, price, commission, is_partial) "
+                                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)";
 
-                txn.exec_params(query, run_id, exec.exec_id, exec.order_id, format_timestamp(exec.fill_time),
+                txn.exec_params(query, run_id, actual_portfolio_id, exec.exec_id, exec.order_id, format_timestamp(exec.fill_time),
                                 exec.symbol, side_to_string(exec.side), static_cast<double>(exec.filled_quantity),
                                 static_cast<double>(exec.fill_price), static_cast<double>(exec.commission), exec.is_partial);
             }
@@ -1653,6 +1656,7 @@ Result<void> PostgresDatabase::store_backtest_executions_with_strategy(
     const std::vector<ExecutionReport>& executions,
     const std::string& run_id,
     const std::string& strategy_id,
+    const std::string& portfolio_id,
     const std::string& table_name) {
     auto validation = validate_connection();
     if (validation.is_error())
@@ -1667,17 +1671,19 @@ Result<void> PostgresDatabase::store_backtest_executions_with_strategy(
             return table_validation;
         }
 
+        std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
+        
         // Use batch insert for better performance with large execution sets
         if (executions.size() > 100) {
             // Build a single multi-value INSERT for large batches with strategy_id
             std::string query = "INSERT INTO " + table_name +
-                                " (run_id, strategy_id, execution_id, order_id, timestamp, symbol, side, quantity, price, commission, is_partial) VALUES ";
+                                " (run_id, portfolio_id, strategy_id, execution_id, order_id, timestamp, symbol, side, quantity, price, commission, is_partial) VALUES ";
             
             std::vector<std::string> value_strings;
             value_strings.reserve(executions.size());
             
             for (const auto& exec : executions) {
-                std::string values = "('" + run_id + "', '" + strategy_id + "', '" + exec.exec_id + "', '" + exec.order_id + "', '" + 
+                std::string values = "('" + run_id + "', '" + actual_portfolio_id + "', '" + strategy_id + "', '" + exec.exec_id + "', '" + exec.order_id + "', '" + 
                                    format_timestamp(exec.fill_time) + "', '" + exec.symbol + "', '" + 
                                    side_to_string(exec.side) + "', " + std::to_string(static_cast<double>(exec.filled_quantity)) + 
                                    ", " + std::to_string(static_cast<double>(exec.fill_price)) + ", " + 
@@ -1692,10 +1698,10 @@ Result<void> PostgresDatabase::store_backtest_executions_with_strategy(
             // Use parameterized queries for smaller batches with strategy_id
             for (const auto& exec : executions) {
                 std::string query = "INSERT INTO " + table_name +
-                                    " (run_id, strategy_id, execution_id, order_id, timestamp, symbol, side, quantity, price, commission, is_partial) "
-                                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)";
+                                    " (run_id, portfolio_id, strategy_id, execution_id, order_id, timestamp, symbol, side, quantity, price, commission, is_partial) "
+                                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)";
 
-                txn.exec_params(query, run_id, strategy_id, exec.exec_id, exec.order_id, format_timestamp(exec.fill_time),
+                txn.exec_params(query, run_id, actual_portfolio_id, strategy_id, exec.exec_id, exec.order_id, format_timestamp(exec.fill_time),
                                 exec.symbol, side_to_string(exec.side), static_cast<double>(exec.filled_quantity),
                                 static_cast<double>(exec.fill_price), static_cast<double>(exec.commission), exec.is_partial);
             }
@@ -1714,6 +1720,7 @@ Result<void> PostgresDatabase::store_backtest_executions_with_strategy(
 Result<void> PostgresDatabase::store_backtest_signals(const std::unordered_map<std::string, double>& signals,
                                                       const std::string& strategy_id, const std::string& run_id,
                                                       const Timestamp& timestamp,
+                                                      const std::string& portfolio_id,
                                                       const std::string& table_name) {
     auto validation = validate_connection();
     if (validation.is_error())
@@ -1722,26 +1729,28 @@ Result<void> PostgresDatabase::store_backtest_signals(const std::unordered_map<s
     try {
         pqxx::work txn(*connection_);
 
+        std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
+        
         for (const auto& [symbol, signal_value] : signals) {
             // For backtest.signals, include portfolio_run_id if run_id looks like a portfolio run_id (contains '&')
-            // Schema has portfolio_run_id column (nullable)
+            // Schema has portfolio_run_id column (nullable) and portfolio_id column
             std::string query;
             if (table_name == "backtest.signals" && run_id.find('&') != std::string::npos) {
                 // Portfolio run: run_id is portfolio_run_id format, use it for portfolio_run_id column
                 query = "INSERT INTO " + table_name +
-                        " (run_id, strategy_id, symbol, signal_value, timestamp, portfolio_run_id) "
+                        " (run_id, portfolio_id, strategy_id, symbol, signal_value, timestamp, portfolio_run_id) "
+                        "VALUES ($1, $2, $3, $4, $5, $6, $7) "
+                        "ON CONFLICT (run_id, strategy_id, symbol, timestamp) "
+                        "DO UPDATE SET signal_value = EXCLUDED.signal_value, portfolio_id = EXCLUDED.portfolio_id, portfolio_run_id = EXCLUDED.portfolio_run_id";
+                txn.exec_params(query, run_id, actual_portfolio_id, strategy_id, symbol, signal_value, format_timestamp(timestamp), run_id);
+            } else {
+                // Single strategy run or other table: include portfolio_id
+                query = "INSERT INTO " + table_name +
+                        " (run_id, portfolio_id, strategy_id, symbol, signal_value, timestamp) "
                         "VALUES ($1, $2, $3, $4, $5, $6) "
                         "ON CONFLICT (run_id, strategy_id, symbol, timestamp) "
-                        "DO UPDATE SET signal_value = EXCLUDED.signal_value, portfolio_run_id = EXCLUDED.portfolio_run_id";
-                txn.exec_params(query, run_id, strategy_id, symbol, signal_value, format_timestamp(timestamp), run_id);
-            } else {
-                // Single strategy run or other table: no portfolio_run_id
-                query = "INSERT INTO " + table_name +
-                        " (run_id, strategy_id, symbol, signal_value, timestamp) "
-                        "VALUES ($1, $2, $3, $4, $5) "
-                        "ON CONFLICT (run_id, strategy_id, symbol, timestamp) "
-                        "DO UPDATE SET signal_value = EXCLUDED.signal_value";
-                txn.exec_params(query, run_id, strategy_id, symbol, signal_value, format_timestamp(timestamp));
+                        "DO UPDATE SET signal_value = EXCLUDED.signal_value, portfolio_id = EXCLUDED.portfolio_id";
+                txn.exec_params(query, run_id, actual_portfolio_id, strategy_id, symbol, signal_value, format_timestamp(timestamp));
             }
         }
 
@@ -1758,6 +1767,7 @@ Result<void> PostgresDatabase::store_backtest_signals(const std::unordered_map<s
 Result<void> PostgresDatabase::store_backtest_metadata(const std::string& run_id, const std::string& name,
                                                        const std::string& description, const Timestamp& start_date,
                                                        const Timestamp& end_date, const nlohmann::json& hyperparameters,
+                                                       const std::string& portfolio_id,
                                                        const std::string& table_name) {
     auto validation = validate_connection();
     if (validation.is_error())
@@ -1766,15 +1776,17 @@ Result<void> PostgresDatabase::store_backtest_metadata(const std::string& run_id
     try {
         pqxx::work txn(*connection_);
 
+        std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
+        
         std::string query = "INSERT INTO " + table_name +
-                            " (run_id, name, description, start_date, end_date, hyperparameters) "
-                            "VALUES ($1, $2, $3, $4, $5, $6) "
+                            " (run_id, portfolio_id, name, description, start_date, end_date, hyperparameters) "
+                            "VALUES ($1, $2, $3, $4, $5, $6, $7) "
                             "ON CONFLICT (run_id) "
-                            "DO UPDATE SET name = EXCLUDED.name, description = EXCLUDED.description, "
+                            "DO UPDATE SET portfolio_id = EXCLUDED.portfolio_id, name = EXCLUDED.name, description = EXCLUDED.description, "
                             "start_date = EXCLUDED.start_date, end_date = EXCLUDED.end_date, "
                             "hyperparameters = EXCLUDED.hyperparameters";
 
-        txn.exec_params(query, run_id, name, description, format_timestamp(start_date), format_timestamp(end_date),
+        txn.exec_params(query, run_id, actual_portfolio_id, name, description, format_timestamp(start_date), format_timestamp(end_date),
                         hyperparameters.dump());
 
         txn.commit();
@@ -1798,6 +1810,7 @@ Result<void> PostgresDatabase::store_backtest_metadata_with_portfolio(
     const Timestamp& start_date,
     const Timestamp& end_date,
     const nlohmann::json& hyperparameters,
+    const std::string& portfolio_id,
     const std::string& table_name) {
     auto validation = validate_connection();
     if (validation.is_error())
@@ -1806,18 +1819,20 @@ Result<void> PostgresDatabase::store_backtest_metadata_with_portfolio(
     try {
         pqxx::work txn(*connection_);
 
+        std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
+        
         std::string query = "INSERT INTO " + table_name +
-                            " (run_id, portfolio_run_id, strategy_id, strategy_allocation, portfolio_config, name, description, start_date, end_date, hyperparameters) "
-                            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) "
+                            " (run_id, portfolio_id, portfolio_run_id, strategy_id, strategy_allocation, portfolio_config, name, description, start_date, end_date, hyperparameters) "
+                            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) "
                             "ON CONFLICT (run_id, strategy_id) "
-                            "DO UPDATE SET portfolio_run_id = EXCLUDED.portfolio_run_id, "
+                            "DO UPDATE SET portfolio_id = EXCLUDED.portfolio_id, portfolio_run_id = EXCLUDED.portfolio_run_id, "
                             "strategy_allocation = EXCLUDED.strategy_allocation, "
                             "portfolio_config = EXCLUDED.portfolio_config, "
                             "name = EXCLUDED.name, description = EXCLUDED.description, "
                             "start_date = EXCLUDED.start_date, end_date = EXCLUDED.end_date, "
                             "hyperparameters = EXCLUDED.hyperparameters";
 
-        txn.exec_params(query, run_id, portfolio_run_id, strategy_id, strategy_allocation, portfolio_config.dump(),
+        txn.exec_params(query, run_id, actual_portfolio_id, portfolio_run_id, strategy_id, strategy_allocation, portfolio_config.dump(),
                         name, description, format_timestamp(start_date), format_timestamp(end_date),
                         hyperparameters.dump());
 

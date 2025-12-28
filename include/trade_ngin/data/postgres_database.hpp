@@ -163,12 +163,14 @@ public:
      */
     Result<void> store_backtest_executions(const std::vector<ExecutionReport>& executions,
                                            const std::string& run_id,
+                                           const std::string& portfolio_id = "BASE_PORTFOLIO",
                                            const std::string& table_name = "backtest.executions") override;
     
     // Multi-strategy version: store executions with strategy_id
     Result<void> store_backtest_executions_with_strategy(const std::vector<ExecutionReport>& executions,
                                                           const std::string& run_id,
                                                           const std::string& strategy_id,
+                                                          const std::string& portfolio_id = "BASE_PORTFOLIO",
                                                           const std::string& table_name = "backtest.executions");
 
     /**
@@ -183,6 +185,7 @@ public:
     Result<void> store_backtest_signals(const std::unordered_map<std::string, double>& signals,
                                         const std::string& strategy_id, const std::string& run_id,
                                         const Timestamp& timestamp,
+                                        const std::string& portfolio_id = "BASE_PORTFOLIO",
                                         const std::string& table_name = "backtest.signals") override;
 
     /**
@@ -199,6 +202,7 @@ public:
     Result<void> store_backtest_metadata(const std::string& run_id, const std::string& name,
                                          const std::string& description, const Timestamp& start_date,
                                          const Timestamp& end_date, const nlohmann::json& hyperparameters,
+                                         const std::string& portfolio_id = "BASE_PORTFOLIO",
                                          const std::string& table_name = "backtest.run_metadata") override;
     
     // Multi-strategy version: store metadata with portfolio_run_id, strategy_allocation, portfolio_config
@@ -212,6 +216,7 @@ public:
                                                          const Timestamp& start_date,
                                                          const Timestamp& end_date,
                                                          const nlohmann::json& hyperparameters,
+                                                         const std::string& portfolio_id = "BASE_PORTFOLIO",
                                                          const std::string& table_name = "backtest.run_metadata");
 
     // ============================================================================
@@ -345,6 +350,7 @@ public:
                                         const Timestamp& start_date,
                                         const Timestamp& end_date,
                                         const std::unordered_map<std::string, double>& metrics,
+                                        const std::string& portfolio_id = "BASE_PORTFOLIO",
                                         const std::string& table_name = "backtest.results");
 
     /**
@@ -356,6 +362,7 @@ public:
      */
     Result<void> store_backtest_equity_curve_batch(const std::string& run_id,
                                                    const std::vector<std::pair<Timestamp, double>>& equity_points,
+                                                   const std::string& portfolio_id = "BASE_PORTFOLIO",
                                                    const std::string& table_name = "backtest.equity_curve");
 
     /**
@@ -367,12 +374,14 @@ public:
      */
     Result<void> store_backtest_positions(const std::vector<Position>& positions,
                                           const std::string& run_id,
+                                          const std::string& portfolio_id = "BASE_PORTFOLIO",
                                           const std::string& table_name = "backtest.final_positions");
     
     // Multi-strategy version: store positions with strategy_id
     Result<void> store_backtest_positions_with_strategy(const std::vector<Position>& positions,
                                                         const std::string& run_id,
                                                         const std::string& strategy_id,
+                                                        const std::string& portfolio_id = "BASE_PORTFOLIO",
                                                         const std::string& table_name = "backtest.final_positions");
 
     /**

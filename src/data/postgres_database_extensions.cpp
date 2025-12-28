@@ -72,6 +72,7 @@ Result<void> PostgresDatabase::store_backtest_summary(
     const Timestamp& start_date,
     const Timestamp& end_date,
     const std::unordered_map<std::string, double>& metrics,
+    const std::string& portfolio_id,
     const std::string& table_name) {
 
     std::lock_guard<std::mutex> lock(mutex_);
@@ -91,15 +92,18 @@ Result<void> PostgresDatabase::store_backtest_summary(
     try {
         pqxx::work txn(*connection_);
 
+        std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
+        
         // Build INSERT query with all metrics
         std::string query = "INSERT INTO " + table_name + " ("
-            "run_id, start_date, end_date, total_return, sharpe_ratio, sortino_ratio, "
+            "run_id, portfolio_id, start_date, end_date, total_return, sharpe_ratio, sortino_ratio, "
             "max_drawdown, calmar_ratio, volatility, total_trades, win_rate, profit_factor, "
             "avg_win, avg_loss, max_win, max_loss, avg_holding_period, var_95, cvar_95, "
             "beta, correlation, downside_volatility) VALUES (";
 
         // Add parameters
         query += txn.quote(run_id) + ", ";
+        query += txn.quote(actual_portfolio_id) + ", ";
         query += "'" + format_timestamp(start_date) + "', ";
         query += "'" + format_timestamp(end_date) + "', ";
 
@@ -139,6 +143,7 @@ Result<void> PostgresDatabase::store_backtest_summary(
 Result<void> PostgresDatabase::store_backtest_equity_curve_batch(
     const std::string& run_id,
     const std::vector<std::pair<Timestamp, double>>& equity_points,
+    const std::string& portfolio_id,
     const std::string& table_name) {
 
     std::lock_guard<std::mutex> lock(mutex_);
@@ -162,13 +167,15 @@ Result<void> PostgresDatabase::store_backtest_equity_curve_batch(
     try {
         pqxx::work txn(*connection_);
 
+        std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
+        
         // Build batch INSERT query
         std::string query = "INSERT INTO " + table_name +
-                           " (run_id, timestamp, equity) VALUES ";
+                           " (run_id, portfolio_id, timestamp, equity) VALUES ";
 
         for (size_t i = 0; i < equity_points.size(); ++i) {
             if (i > 0) query += ", ";
-            query += "(" + txn.quote(run_id) + ", '" +
+            query += "(" + txn.quote(run_id) + ", " + txn.quote(actual_portfolio_id) + ", '" +
                      format_timestamp(equity_points[i].first) + "', " +
                      std::to_string(equity_points[i].second) + ")";
         }
@@ -190,6 +197,7 @@ Result<void> PostgresDatabase::store_backtest_equity_curve_batch(
 Result<void> PostgresDatabase::store_backtest_positions(
     const std::vector<Position>& positions,
     const std::string& run_id,
+    const std::string& portfolio_id,
     const std::string& table_name) {
 
     std::lock_guard<std::mutex> lock(mutex_);
@@ -256,10 +264,12 @@ Result<void> PostgresDatabase::store_backtest_positions(
             }
         }
 
+        std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
+        
         // Build batch INSERT query with all required columns for daily storage
         // Try new schema first (with date, last_update, unrealized_pnl, realized_pnl)
         std::string query = "INSERT INTO " + table_name +
-                           " (run_id, strategy_id, date, symbol, quantity, average_price, unrealized_pnl, realized_pnl, last_update, updated_at) VALUES ";
+                           " (run_id, portfolio_id, strategy_id, date, symbol, quantity, average_price, unrealized_pnl, realized_pnl, last_update, updated_at) VALUES ";
 
         bool first = true;
         std::vector<std::string> position_values;
@@ -295,6 +305,7 @@ Result<void> PostgresDatabase::store_backtest_positions(
             
             std::stringstream value_ss;
             value_ss << "(" << txn.quote(actual_run_id) << ", "
+                     << txn.quote(actual_portfolio_id) << ", "
                      << txn.quote(strategy_id_for_db) << ", "
                      << "'" << pos_date_str << "', "
                      << txn.quote(pos.symbol) << ", "
@@ -361,6 +372,7 @@ Result<void> PostgresDatabase::store_backtest_positions_with_strategy(
     const std::vector<Position>& positions,
     const std::string& run_id,
     const std::string& strategy_id,
+    const std::string& portfolio_id,
     const std::string& table_name) {
 
     std::lock_guard<std::mutex> lock(mutex_);
@@ -384,11 +396,13 @@ Result<void> PostgresDatabase::store_backtest_positions_with_strategy(
     try {
         pqxx::work txn(*connection_);
 
+        std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
+        
         // Build batch INSERT query with strategy_id and all required columns
-        // Schema requires: run_id, strategy_id, date, symbol, quantity, average_price, 
+        // Schema requires: run_id, portfolio_id, strategy_id, date, symbol, quantity, average_price, 
         //                  unrealized_pnl, realized_pnl, last_update, updated_at
         std::string query = "INSERT INTO " + table_name +
-                           " (run_id, strategy_id, date, symbol, quantity, average_price, unrealized_pnl, realized_pnl, last_update, updated_at) VALUES ";
+                           " (run_id, portfolio_id, strategy_id, date, symbol, quantity, average_price, unrealized_pnl, realized_pnl, last_update, updated_at) VALUES ";
 
         bool first = true;
         for (const auto& pos : positions) {
@@ -412,6 +426,7 @@ Result<void> PostgresDatabase::store_backtest_positions_with_strategy(
             std::string last_update_str = format_timestamp(pos.last_update);
             
             query += "(" + txn.quote(run_id) + ", " +
+                     txn.quote(actual_portfolio_id) + ", " +
                      txn.quote(strategy_id) + ", " +
                      "'" + date_str + "', " +  // date column
                      txn.quote(pos.symbol) + ", " +
