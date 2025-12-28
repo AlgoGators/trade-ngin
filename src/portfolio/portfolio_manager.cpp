@@ -1271,15 +1271,15 @@ double PortfolioManager::get_portfolio_value(
     static int call_count = 0;
     call_count++;
 
-    // Start with deployed capital (total - reserve) to match equity curve initialization
-    double portfolio_value = static_cast<double>(config_.total_capital - config_.reserve_capital);
+    // Start with total capital (reserve is for margin, not excluded from portfolio value)
+    double portfolio_value = static_cast<double>(config_.total_capital);
 
     if (call_count <= 3) {
-        INFO("PV_CALL #" + std::to_string(call_count) + ": starting with deployed capital: $" +
+        INFO("PV_CALL #" + std::to_string(call_count) + ": starting with total capital: $" +
               std::to_string(portfolio_value));
     }
 
-    DEBUG("Portfolio value calculation starting with deployed capital: $" +
+    DEBUG("Portfolio value calculation starting with total capital: $" +
           std::to_string(portfolio_value));
 
     // Acquire the mutex and get a copy of the portfolio positions

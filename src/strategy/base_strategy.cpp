@@ -643,4 +643,9 @@ void BaseStrategy::reset_daily_pnl() {
     INFO("Daily PnL counters reset");
 }
 
+void BaseStrategy::set_backtest_mode(bool is_backtest) {
+    is_backtest_mode_ = is_backtest;
+    DEBUG("Strategy backtest mode set to: " + std::string(is_backtest ? "true" : "false"));
+}
+
 }  // namespace trade_ngin

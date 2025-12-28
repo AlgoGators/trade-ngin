@@ -160,7 +160,7 @@ int main() {
         config.strategy_config.data_freq = trade_ngin::DataFrequency::DAILY;
         config.strategy_config.commission_rate = 0.0005;  // 5 basis points
         config.strategy_config.slippage_model = 1.0;      // 1 basis point
-        config.strategy_config.warmup_days = 260;         // ~1 year warmup for EMA windows (max 256)
+        // warmup_days will be calculated dynamically from strategy lookbacks
 
         // MEMORY FIXED: Restored original symbol loading with memory management
         auto symbols_result = db->get_symbols(trade_ngin::AssetClass::FUTURES);

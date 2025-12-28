@@ -173,6 +173,20 @@ public:
     void reset_daily_pnl();
 
     /**
+     * @brief Set backtest mode for this strategy
+     * @param is_backtest True if running in backtest mode (stores daily PnL), false for live (cumulative PnL)
+     * @note In backtest mode, realized_pnl stores DAILY PnL for correct equity curve accumulation
+     *       In live mode, realized_pnl stores CUMULATIVE PnL for compatibility with existing systems
+     */
+    void set_backtest_mode(bool is_backtest) override;
+
+    /**
+     * @brief Check if strategy is running in backtest mode
+     * @return True if in backtest mode
+     */
+    bool is_backtest_mode() const override { return is_backtest_mode_; }
+
+    /**
      * @brief Transition the strategy to a new state
      * @param new_state New state to transition to
      * @return Result indicating success or failure
@@ -214,6 +228,9 @@ private:
     std::string registered_component_id_;
     bool is_initialized_{false};
     std::atomic<bool> running_{false};
+    
+    // Backtest mode flag - when true, stores daily PnL; when false, stores cumulative PnL
+    bool is_backtest_mode_{false};
 };
 
 }  // namespace trade_ngin

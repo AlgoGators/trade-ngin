@@ -18,6 +18,7 @@
 #include "trade_ngin/data/postgres_database.hpp"
 #include "trade_ngin/storage/backtest_results_manager.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
+#include "trade_ngin/strategy/trend_following_fast.hpp"
 
 namespace {
 std::string join(const std::vector<std::string>& elements, const std::string& delimiter) {
@@ -179,6 +180,11 @@ Result<BacktestResults> BacktestEngine::run(std::shared_ptr<StrategyInterface> s
 
         // Initialize equity curve with starting point
         equity_curve.emplace_back(config_.strategy_config.start_date, current_equity);
+
+        // Enable backtest mode on strategy - this makes it store daily PnL (not cumulative)
+        // so that the equity curve can correctly accumulate daily changes
+        strategy->set_backtest_mode(true);
+        INFO("Backtest mode enabled on strategy - positions will store daily PnL");
 
         // Initialize strategy
         INFO("Initializing strategy for backtest");
@@ -367,31 +373,14 @@ Result<BacktestResults> BacktestEngine::run(std::shared_ptr<StrategyInterface> s
         INFO("Backtest complete, stopping strategy");
         strategy->stop();
 
-        // Filter out warmup period from equity curve
-        if (config_.strategy_config.warmup_days > 0 &&
-            equity_curve.size() > static_cast<size_t>(config_.strategy_config.warmup_days)) {
-            INFO("Filtering out " + std::to_string(config_.strategy_config.warmup_days) +
-                 " warmup days from equity curve (total points: " +
-                 std::to_string(equity_curve.size()) + ")");
+        // Calculate warmup days dynamically from strategy lookbacks
+        std::vector<std::shared_ptr<StrategyInterface>> strategies = {strategy};
+        int calculated_warmup_days = calculate_warmup_days(strategies);
+        INFO("Calculated warmup days from strategy: " + std::to_string(calculated_warmup_days));
 
-            // Get the equity value at the end of warmup to use as the new starting value
-            double warmup_end_equity = equity_curve[config_.strategy_config.warmup_days].second;
-
-            // Erase the warmup period
-            equity_curve.erase(equity_curve.begin(),
-                              equity_curve.begin() + config_.strategy_config.warmup_days);
-
-            // Normalize the equity curve to start at initial capital
-            double initial_capital = static_cast<double>(config_.portfolio_config.initial_capital);
-            double scale_factor = initial_capital / warmup_end_equity;
-
-            for (auto& point : equity_curve) {
-                point.second *= scale_factor;
-            }
-
-            INFO("Equity curve after warmup filter: " + std::to_string(equity_curve.size()) +
-                 " points, starting at $" + std::to_string(equity_curve.front().second));
-        }
+        // Store warmup days in results (no longer erasing warmup data from equity curve)
+        INFO("Equity curve contains " + std::to_string(equity_curve.size()) + 
+             " points (including " + std::to_string(calculated_warmup_days) + " warmup days)");
 
         // Sort executions by timestamp to ensure chronological order
         std::sort(executions.begin(), executions.end(), 
@@ -399,9 +388,10 @@ Result<BacktestResults> BacktestEngine::run(std::shared_ptr<StrategyInterface> s
                       return a.fill_time < b.fill_time;
                   });
 
-        // Calculate final results
+        // Calculate final results (will filter warmup data internally)
         INFO("Calculating backtest metrics");
-        auto results = calculate_metrics(equity_curve, executions);
+        auto results = calculate_metrics(equity_curve, executions, calculated_warmup_days);
+        results.warmup_days = calculated_warmup_days;
 
         // Add position and execution history
         results.executions = std::move(executions);
@@ -411,8 +401,7 @@ Result<BacktestResults> BacktestEngine::run(std::shared_ptr<StrategyInterface> s
         }
         results.equity_curve = std::move(equity_curve);
 
-        // Calculate drawdown curve
-        results.drawdown_curve = calculate_drawdowns(results.equity_curve);
+        // Drawdown curve is already calculated in calculate_metrics (from filtered data, excluding warmup)
 
         // Add risk metrics history
         results.risk_metrics.reserve(risk_metrics.size());
@@ -513,6 +502,10 @@ Result<BacktestResults> BacktestEngine::run_portfolio(std::shared_ptr<PortfolioM
                                                data_result.error()->what(), "BacktestEngine");
         }
 
+        // Reset static state in process_portfolio_data for fresh backtest run
+        // (These statics would otherwise persist from previous runs)
+        reset_portfolio_backtest_state();
+
         // Initialize tracking variables
         std::vector<ExecutionReport> executions;
         std::vector<std::pair<Timestamp, double>> equity_curve;
@@ -520,8 +513,8 @@ Result<BacktestResults> BacktestEngine::run_portfolio(std::shared_ptr<PortfolioM
 
         // Get initial portfolio config
         const auto& portfolio_config = portfolio->get_config();
-        double initial_capital =
-            static_cast<double>(portfolio_config.total_capital - portfolio_config.reserve_capital);
+        // Use full initial capital for equity curve (reserve is for margin, not excluded from equity)
+        double initial_capital = static_cast<double>(portfolio_config.total_capital);
 
         // Initialize equity curve with starting point
         equity_curve.emplace_back(config_.strategy_config.start_date, initial_capital);
@@ -548,6 +541,14 @@ Result<BacktestResults> BacktestEngine::run_portfolio(std::shared_ptr<PortfolioM
         current_run_id_ = backtest_run_id;  // Store for use in save_portfolio_results_to_db
         INFO("Generated portfolio backtest run_id: " + backtest_run_id + " for daily position storage");
 
+        // Enable backtest mode on all strategies - this makes them store daily PnL (not cumulative)
+        // so that the equity curve can correctly accumulate daily changes
+        for (auto& strategy : portfolio->get_strategies()) {
+            strategy->set_backtest_mode(true);
+        }
+        INFO("Backtest mode enabled on " + std::to_string(portfolio->get_strategies().size()) + 
+             " portfolio strategies - positions will store daily PnL");
+
         // Track last saved date (to avoid saving multiple times per day)
         std::string last_saved_date = "";
 
@@ -557,6 +558,11 @@ Result<BacktestResults> BacktestEngine::run_portfolio(std::shared_ptr<PortfolioM
             bars_by_time[bar.timestamp].push_back(bar);
         }
 
+        // Calculate warmup days dynamically from strategy lookbacks
+        int calculated_warmup_days = calculate_warmup_days(portfolio->get_strategies());
+        INFO("Calculated warmup days from strategies: " + std::to_string(calculated_warmup_days) +
+             ", total available days: " + std::to_string(bars_by_time.size()));
+
         INFO("Starting portfolio backtest simulation with " +
              std::to_string(portfolio->get_strategies().size()) + " strategies and " +
              std::to_string(data_result.value().size()) + " bars");
@@ -565,18 +571,25 @@ Result<BacktestResults> BacktestEngine::run_portfolio(std::shared_ptr<PortfolioM
 
         // Process bars in chronological order
         int loop_count = 0;  // NOT static - reset each backtest run
+        int day_index = 0;   // Track day number for warmup logic (0-indexed)
         for (const auto& [timestamp, bars] : bars_by_time) {
-            if (++loop_count <= 3) {
+            // Determine if we're still in warmup period
+            bool is_warmup = (day_index < calculated_warmup_days);
+
+            if (loop_count < 3 || (day_index >= calculated_warmup_days - 1 && day_index <= calculated_warmup_days + 1)) {
                 auto time_t = std::chrono::system_clock::to_time_t(timestamp);
                 std::tm tm = *std::gmtime(&time_t);
                 char time_str[64];
                 std::strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", &tm);
-                INFO("LOOP_ITER #" + std::to_string(loop_count) + ": processing timestamp=" + std::string(time_str));
+                INFO("LOOP_ITER day=" + std::to_string(day_index) + " (warmup=" + (is_warmup ? "true" : "false") + 
+                     "): processing timestamp=" + std::string(time_str));
             }
+            ++loop_count;
+
             try {
-                // Process portfolio time step
+                // Process portfolio time step with warmup flag
                 auto result = process_portfolio_data(timestamp, bars, portfolio, executions,
-                                                     equity_curve, risk_metrics);
+                                                     equity_curve, risk_metrics, is_warmup, initial_capital);
 
                 if (result.is_error()) {
                     WARN("Portfolio data processing failed for timestamp " +
@@ -603,8 +616,11 @@ Result<BacktestResults> BacktestEngine::run_portfolio(std::shared_ptr<PortfolioM
                 }
             }
 
-            // Save positions daily if storage is enabled (once per unique date)
-            if (config_.store_trade_details && db_ && !bars.empty()) {
+            // Increment day index after processing
+            day_index++;
+
+            // Save positions daily if storage is enabled (once per unique date) - skip during warmup
+            if (!is_warmup && config_.store_trade_details && db_ && !bars.empty()) {
                 // Extract date from current timestamp
                 auto time_t = std::chrono::system_clock::to_time_t(timestamp);
                 std::stringstream date_ss;
@@ -693,31 +709,10 @@ Result<BacktestResults> BacktestEngine::run_portfolio(std::shared_ptr<PortfolioM
             }
         }
 
-        // Filter out warmup period from equity curve
-        if (config_.strategy_config.warmup_days > 0 &&
-            equity_curve.size() > static_cast<size_t>(config_.strategy_config.warmup_days)) {
-            INFO("Filtering out " + std::to_string(config_.strategy_config.warmup_days) +
-                 " warmup days from equity curve (total points: " +
-                 std::to_string(equity_curve.size()) + ")");
-
-            // Get the equity value at the end of warmup to use as the new starting value
-            double warmup_end_equity = equity_curve[config_.strategy_config.warmup_days].second;
-
-            // Erase the warmup period
-            equity_curve.erase(equity_curve.begin(),
-                              equity_curve.begin() + config_.strategy_config.warmup_days);
-
-            // Normalize the equity curve to start at initial capital
-            double initial_capital_norm = static_cast<double>(config_.portfolio_config.initial_capital);
-            double scale_factor = initial_capital_norm / warmup_end_equity;
-
-            for (auto& point : equity_curve) {
-                point.second *= scale_factor;
-            }
-
-            INFO("Equity curve after warmup filter: " + std::to_string(equity_curve.size()) +
-                 " points, starting at $" + std::to_string(equity_curve.front().second));
-        }
+        // Store warmup days in results (no longer erasing warmup data from equity curve)
+        // Warmup data will be filtered during metric calculations instead
+        INFO("Equity curve contains " + std::to_string(equity_curve.size()) + 
+             " points (including " + std::to_string(calculated_warmup_days) + " warmup days)");
 
         // Sort executions by timestamp to ensure chronological order
         std::sort(executions.begin(), executions.end(), 
@@ -725,9 +720,10 @@ Result<BacktestResults> BacktestEngine::run_portfolio(std::shared_ptr<PortfolioM
                       return a.fill_time < b.fill_time;
                   });
 
-        // Calculate final results
+        // Calculate final results (will filter warmup data internally)
         INFO("Calculating portfolio backtest metrics");
-        auto results = calculate_metrics(equity_curve, executions);
+        auto results = calculate_metrics(equity_curve, executions, calculated_warmup_days);
+        results.warmup_days = calculated_warmup_days;
 
         // Add position and execution history
         results.executions = std::move(executions);
@@ -746,8 +742,7 @@ Result<BacktestResults> BacktestEngine::run_portfolio(std::shared_ptr<PortfolioM
 
         results.equity_curve = std::move(equity_curve);
 
-        // Calculate drawdown curve
-        results.drawdown_curve = calculate_drawdowns(results.equity_curve);
+        // Drawdown curve is already calculated in calculate_metrics (from filtered data, excluding warmup)
 
         // Add risk metrics history
         results.risk_metrics.reserve(risk_metrics.size());
@@ -1395,11 +1390,18 @@ void BacktestEngine::combine_positions(
 }
 
 // Main portfolio backtesting loop
+// Static flag to signal state reset (set by reset_portfolio_backtest_state)
+static bool portfolio_backtest_needs_reset = false;
+
+void BacktestEngine::reset_portfolio_backtest_state() {
+    portfolio_backtest_needs_reset = true;
+}
+
 Result<void> BacktestEngine::process_portfolio_data(
     const Timestamp& timestamp, const std::vector<Bar>& bars,
     std::shared_ptr<PortfolioManager> portfolio, std::vector<ExecutionReport>& executions,
     std::vector<std::pair<Timestamp, double>>& equity_curve,
-    std::vector<RiskResult>& risk_metrics) {
+    std::vector<RiskResult>& risk_metrics, bool is_warmup, double initial_capital) {
     try {
         // BEGINNING-OF-DAY MODEL FOR PORTFOLIO BACKTEST:
         // - Use previous day's bars for signal generation via PortfolioManager
@@ -1408,6 +1410,16 @@ Result<void> BacktestEngine::process_portfolio_data(
         // Static storage for previous day's bars (for signal generation) and a flag
         static bool has_previous_bars = false;
         static std::vector<Bar> previous_bars;
+
+        // Capture reset flag at start and clear it immediately
+        // (so subsequent calls in this backtest run don't reset again)
+        bool needs_reset = portfolio_backtest_needs_reset;
+        if (needs_reset) {
+            portfolio_backtest_needs_reset = false;
+            has_previous_bars = false;
+            previous_bars.clear();
+            DEBUG("Portfolio backtest state reset for new run");
+        }
 
         // Check for empty data
         if (bars.empty()) {
@@ -1434,7 +1446,7 @@ Result<void> BacktestEngine::process_portfolio_data(
             has_previous_bars = true;
         }
 
-        // Update slippage model
+        // Update slippage model (always, even during warmup, to keep model state current)
         if (slippage_model_) {
             for (const auto& bar : bars) {
                 try {
@@ -1448,6 +1460,7 @@ Result<void> BacktestEngine::process_portfolio_data(
 
         // Process market data through portfolio manager
         // BEGINNING-OF-DAY: use previous day's bars for signal generation when available
+        // During warmup: strategies still see data to build indicators, but we block trading below
         try {
             const auto& bars_for_signals = had_previous_bars ? previous_bars : bars;
 
@@ -1456,12 +1469,7 @@ Result<void> BacktestEngine::process_portfolio_data(
                   " symbols at timestamp " +
                   std::to_string(
                       std::chrono::duration_cast<std::chrono::seconds>(timestamp.time_since_epoch())
-                          .count()));
-            for (const auto& bar : bars_for_signals) {
-                DEBUG("Market data: " + bar.symbol +
-                      " close=" + std::to_string(static_cast<double>(bar.close)) +
-                      " volume=" + std::to_string(static_cast<double>(bar.volume)));
-            }
+                          .count()) + (is_warmup ? " [WARMUP]" : ""));
 
             // Use previous day's bars when available to avoid lookahead in signals
             auto data_result = portfolio->process_market_data(bars_for_signals);
@@ -1477,6 +1485,44 @@ Result<void> BacktestEngine::process_portfolio_data(
                 "BacktestEngine");
         }
 
+        // WARMUP HANDLING: keep equity flat, no executions, no positions
+        if (is_warmup) {
+            // Clear any executions that might have been generated
+            portfolio->clear_execution_history();
+
+            // Force all strategy positions to zero so warmup does not accumulate holdings
+            try {
+                auto strategies = portfolio->get_strategies();
+                for (const auto& strat : strategies) {
+                    if (!strat) continue;
+                    const auto& positions = strat->get_positions();
+                    for (const auto& [sym, _] : positions) {
+                        Position zero{};
+                        zero.symbol = sym;
+                        zero.quantity = Quantity(0.0);
+                        zero.average_price = Decimal(0.0);
+                        zero.realized_pnl = Decimal(0.0);
+                        zero.unrealized_pnl = Decimal(0.0);
+                        strat->update_position(sym, zero);
+                    }
+                }
+            } catch (const std::exception& e) {
+                WARN("Failed to clear positions during warmup: " + std::string(e.what()));
+            }
+
+            // Keep equity curve flat at initial capital during warmup
+            // Use initial_capital if provided, otherwise use config
+            double flat_capital = (initial_capital > 0.0) ? initial_capital 
+                                  : static_cast<double>(config_.portfolio_config.initial_capital);
+            equity_curve.emplace_back(timestamp, flat_capital);
+
+            // Update previous_bars for next iteration
+            previous_bars = bars;
+
+            return Result<void>();
+        }
+
+        // POST-WARMUP: Normal trading logic
         // Get executions from the portfolio manager
         std::vector<ExecutionReport> period_executions;
         // Only retrieve executions if we actually processed signals this period
@@ -1561,21 +1607,36 @@ Result<void> BacktestEngine::process_portfolio_data(
         // Note: Portfolio manager will now read positions directly from strategies
         // via the modified get_positions_internal() method
 
-        // Create price map for portfolio value calculation
-        std::unordered_map<std::string, double> current_prices;
-        for (const auto& bar : bars) {
-            current_prices[bar.symbol] = static_cast<double>(bar.close);
-        }
-
-        // Calculate portfolio value and update equity curve
+        // Calculate portfolio value by ACCUMULATING daily PnL from positions
+        // In backtest mode, positions store DAILY PnL (not cumulative), so we:
+        // 1. Start from the previous equity value
+        // 2. Add today's daily PnL from all positions
+        // 3. Subtract today's commissions
         double portfolio_value = 0.0;
         try {
-            // PortfolioManager::get_portfolio_value returns portfolio value based on
-            // positions' realized/unrealized PnL, which are assumed to be GROSS (no costs).
-            // To ensure the equity curve is NET of transaction costs, subtract today's
-            // total commissions here using the executions generated in this period.
-            portfolio_value = portfolio->get_portfolio_value(current_prices);
+            // Start from previous equity value (or initial capital if first entry)
+            portfolio_value = equity_curve.empty() 
+                ? initial_capital 
+                : equity_curve.back().second;
 
+            // Get current portfolio positions (with daily PnL in backtest mode)
+            auto portfolio_positions = portfolio->get_portfolio_positions();
+
+            // Sum daily PnL from all positions
+            double daily_pnl = 0.0;
+            for (const auto& [symbol, pos] : portfolio_positions) {
+                // Add daily realized PnL (this is daily in backtest mode, not cumulative)
+                daily_pnl += static_cast<double>(pos.realized_pnl);
+                
+                // Add daily unrealized PnL (for non-REALIZED_ONLY accounting)
+                // Note: For REALIZED_ONLY (futures), unrealized_pnl is always 0
+                daily_pnl += static_cast<double>(pos.unrealized_pnl);
+            }
+
+            // Accumulate daily PnL to portfolio value
+            portfolio_value += daily_pnl;
+
+            // Subtract commissions for this period to get NET portfolio value
             double total_commissions = 0.0;
             for (const auto& exec : period_executions) {
                 total_commissions += static_cast<double>(exec.commission);
@@ -1588,23 +1649,25 @@ Result<void> BacktestEngine::process_portfolio_data(
 
             equity_curve.emplace_back(timestamp, portfolio_value);
 
-            // Log first few equity curve entries
+            // Log first few equity curve entries with detailed breakdown
             static int ec_count = 0;
+            static int debug_counter = 0;
             if (++ec_count <= 5) {
                 auto time_t = std::chrono::system_clock::to_time_t(timestamp);
                 std::tm tm = *std::gmtime(&time_t);
                 char time_str[64];
                 std::strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", &tm);
                 INFO("EQUITY_CURVE #" + std::to_string(ec_count) + ": timestamp=" + std::string(time_str) +
-                     ", value=$" + std::to_string(portfolio_value));
+                     ", daily_pnl=$" + std::to_string(daily_pnl) +
+                     ", commissions=$" + std::to_string(total_commissions) +
+                     ", portfolio_value=$" + std::to_string(portfolio_value));
             }
 
             // Debug: Log portfolio value periodically (every 10 periods)
-            static int debug_counter = 0;
             if (++debug_counter % 10 == 0) {
-                auto portfolio_positions = portfolio->get_portfolio_positions();
                 DEBUG("Portfolio value at period " + std::to_string(debug_counter) + ": $" +
                       std::to_string(portfolio_value) +
+                      ", daily_pnl: $" + std::to_string(daily_pnl) +
                       ", positions: " + std::to_string(portfolio_positions.size()));
 
                 // Log detailed position information
@@ -1613,7 +1676,7 @@ Result<void> BacktestEngine::process_portfolio_data(
                         "Position " + symbol +
                         ": qty=" + std::to_string(static_cast<double>(pos.quantity)) +
                         ", avg_price=" + std::to_string(static_cast<double>(pos.average_price)) +
-                        ", realized_pnl=" + std::to_string(static_cast<double>(pos.realized_pnl)) +
+                        ", daily_realized_pnl=" + std::to_string(static_cast<double>(pos.realized_pnl)) +
                         ", unrealized_pnl=" +
                         std::to_string(static_cast<double>(pos.unrealized_pnl)));
                 }
@@ -1624,7 +1687,7 @@ Result<void> BacktestEngine::process_portfolio_data(
 
             // Use previous value if available, otherwise use initial capital
             double last_value = equity_curve.empty()
-                                    ? static_cast<double>(config_.portfolio_config.initial_capital)
+                                    ? initial_capital
                                     : equity_curve.back().second;
 
             equity_curve.emplace_back(timestamp, last_value);
@@ -1870,41 +1933,77 @@ double BacktestEngine::apply_slippage(double price, double quantity, Side side) 
 
 BacktestResults BacktestEngine::calculate_metrics(
     const std::vector<std::pair<Timestamp, double>>& equity_curve,
-    const std::vector<ExecutionReport>& executions) const {
+    const std::vector<ExecutionReport>& executions,
+    int warmup_days) const {
     BacktestResults results;
 
     if (equity_curve.empty())
         return results;
 
+    // Filter out warmup period data for calculations (but keep full equity curve in results)
+    size_t start_idx = 0;
+    if (warmup_days > 0 && equity_curve.size() > static_cast<size_t>(warmup_days)) {
+        start_idx = static_cast<size_t>(warmup_days);
+        INFO("Filtering out " + std::to_string(warmup_days) + 
+             " warmup days from metric calculations (keeping " + 
+             std::to_string(equity_curve.size() - start_idx) + " data points)");
+    }
+
+    // Create filtered equity curve for calculations (excluding warmup)
+    std::vector<std::pair<Timestamp, double>> filtered_equity_curve;
+    if (start_idx > 0) {
+        filtered_equity_curve.assign(equity_curve.begin() + start_idx, equity_curve.end());
+    } else {
+        filtered_equity_curve = equity_curve;
+    }
+
+    if (filtered_equity_curve.empty()) {
+        WARN("No data remaining after filtering warmup period");
+        return results;
+    }
+
     // Debug: Log equity curve info
-    DEBUG("Equity curve size: " + std::to_string(equity_curve.size()) + ", start value: $" +
-          std::to_string(equity_curve.front().second) + ", end value: $" +
-          std::to_string(equity_curve.back().second));
+    DEBUG("Equity curve size: " + std::to_string(equity_curve.size()) + 
+          " (filtered: " + std::to_string(filtered_equity_curve.size()) + 
+          "), start value: $" + std::to_string(filtered_equity_curve.front().second) + 
+          ", end value: $" + std::to_string(filtered_equity_curve.back().second));
 
-    // Calculate returns
+    // Calculate returns (from filtered data)
     std::vector<double> returns;
-    returns.reserve(equity_curve.size() - 1);
+    returns.reserve(filtered_equity_curve.size() - 1);
 
-    for (size_t i = 1; i < equity_curve.size(); ++i) {
-        double ret =
-            (equity_curve[i].second - equity_curve[i - 1].second) / equity_curve[i - 1].second;
+    for (size_t i = 1; i < filtered_equity_curve.size(); ++i) {
+        double ret = (filtered_equity_curve[i].second - filtered_equity_curve[i - 1].second) / 
+                     filtered_equity_curve[i - 1].second;
         returns.push_back(ret);
     }
 
-    // Basic performance metrics
-    results.total_return =
-        (equity_curve.back().second - equity_curve.front().second) / equity_curve.front().second;
+    // Basic performance metrics (from filtered data)
+    results.total_return = (filtered_equity_curve.back().second - filtered_equity_curve.front().second) / 
+                           filtered_equity_curve.front().second;
 
-    // Calculate volatility
+    // Calculate actual trading days from filtered data (excluding warmup)
+    // Used for annualizing returns (Sharpe ratio), not for volatility
+    int actual_trading_days = static_cast<int>(filtered_equity_curve.size() - 1);  // -1 because returns = data points - 1
+    if (actual_trading_days <= 0) {
+        actual_trading_days = 1;  // Minimum of 1 day
+    }
+    double annualization_factor = 252.0 / static_cast<double>(actual_trading_days);
+
+    DEBUG("Using " + std::to_string(actual_trading_days) + " trading days for return annualization (excluding " +
+          std::to_string(warmup_days) + " warmup days)");
+
+    // Calculate volatility (always annualized using sqrt(252) for daily volatility)
     double mean_return = std::accumulate(returns.begin(), returns.end(), 0.0) / returns.size();
 
     double sq_sum = std::inner_product(returns.begin(), returns.end(), returns.begin(), 0.0);
     results.volatility = std::sqrt(sq_sum / returns.size() - mean_return * mean_return) *
-                         std::sqrt(252.0);  // Annualize
+                         std::sqrt(252.0);  // Always annualize daily volatility using sqrt(252)
 
     // Calculate Sharpe ratio (assuming 0% risk-free)
+    // Annualize mean return using actual trading days, divide by annualized volatility
     if (results.volatility > 0) {
-        results.sharpe_ratio = (mean_return * 252.0) / results.volatility;
+        results.sharpe_ratio = (mean_return * annualization_factor) / results.volatility;
     }
 
     // Calculate Sortino ratio
@@ -1918,11 +2017,12 @@ BacktestResults BacktestEngine::calculate_metrics(
     }
 
     if (downside_count > 0) {
+        // Downside volatility is also annualized using sqrt(252) for daily volatility
         double downside_dev = std::sqrt(downside_sum / downside_count) * std::sqrt(252.0);
-        results.sortino_ratio = (mean_return * 252.0) / downside_dev;
+        results.sortino_ratio = (mean_return * annualization_factor) / downside_dev;
     } else {
         // No negative returns means infinite Sortino ratio, but cap it at a reasonable value
-        results.sortino_ratio = (mean_return * 252.0) >= 0 ? 999.0 : 0.0;
+        results.sortino_ratio = (mean_return * annualization_factor) >= 0 ? 999.0 : 0.0;
     }
 
     // Trading metrics - track positions to calculate proper P&L
@@ -2033,13 +2133,14 @@ BacktestResults BacktestEngine::calculate_metrics(
         results.profit_factor = 999.0;
     }
 
-    // Calculate drawdown metrics
-    auto drawdowns = calculate_drawdowns(equity_curve);
+    // Calculate drawdown metrics (using filtered equity curve, excluding warmup)
+    auto drawdowns = calculate_drawdowns(filtered_equity_curve);
     if (!drawdowns.empty()) {
         results.max_drawdown =
             std::max_element(drawdowns.begin(), drawdowns.end(), [](const auto& a, const auto& b) {
                 return a.second < b.second;
             })->second;
+        // Store drawdown curve from filtered data
         results.drawdown_curve = drawdowns;
     } else {
         results.max_drawdown = 0.0;
@@ -2050,8 +2151,8 @@ BacktestResults BacktestEngine::calculate_metrics(
         results.calmar_ratio = results.total_return / results.max_drawdown;
     }
 
-    // Calculate risk metrics
-    auto risk_metrics = calculate_risk_metrics(returns);
+    // Calculate risk metrics (using actual trading days for annualization)
+    auto risk_metrics = calculate_risk_metrics(returns, actual_trading_days);
     results.var_95 = risk_metrics["var_95"];
     results.cvar_95 = risk_metrics["cvar_95"];
     results.downside_volatility = risk_metrics["downside_volatility"];
@@ -2196,11 +2297,15 @@ std::vector<std::pair<Timestamp, double>> BacktestEngine::calculate_drawdowns(
 }
 
 std::unordered_map<std::string, double> BacktestEngine::calculate_risk_metrics(
-    const std::vector<double>& returns) const {
+    const std::vector<double>& returns, int trading_days) const {
     std::unordered_map<std::string, double> metrics;
 
     if (returns.empty())
         return metrics;
+
+    // trading_days parameter is not used for volatility calculations
+    // (volatility always uses sqrt(252) for daily volatility annualization)
+    // It's kept in the signature for potential future use or consistency
 
     // Sort returns for percentile calculations
     std::vector<double> sorted_returns = returns;
@@ -2217,7 +2322,7 @@ std::unordered_map<std::string, double> BacktestEngine::calculate_risk_metrics(
     }
     metrics["cvar_95"] = -cvar_sum / var_index;
 
-    // Calculate downside volatility
+    // Calculate downside volatility (always annualized using sqrt(252) for daily volatility)
     double downside_sum = 0.0;
     int downside_count = 0;
 
@@ -3010,6 +3115,38 @@ std::vector<std::vector<double>> BacktestEngine::calculate_covariance_matrix(
     }
 
     return covariance;
+}
+
+int BacktestEngine::calculate_warmup_days(
+    const std::vector<std::shared_ptr<StrategyInterface>>& strategies) {
+    int max_lookback = 0;
+
+    for (const auto& strategy : strategies) {
+        if (!strategy) {
+            continue;
+        }
+
+        // Try to cast to TrendFollowingStrategy
+        auto trend_following = std::dynamic_pointer_cast<TrendFollowingStrategy>(strategy);
+        if (trend_following) {
+            int strategy_lookback = trend_following->get_max_required_lookback();
+            max_lookback = std::max(max_lookback, strategy_lookback);
+            continue;
+        }
+
+        // Try to cast to TrendFollowingFastStrategy
+        auto trend_following_fast = std::dynamic_pointer_cast<TrendFollowingFastStrategy>(strategy);
+        if (trend_following_fast) {
+            int strategy_lookback = trend_following_fast->get_max_required_lookback();
+            max_lookback = std::max(max_lookback, strategy_lookback);
+            continue;
+        }
+
+        // For other strategy types, we could add similar logic
+        // For now, if unknown, assume 0 (no warmup required)
+    }
+
+    return max_lookback;
 }
 
 }  // namespace backtest
