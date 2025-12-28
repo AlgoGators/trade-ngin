@@ -183,6 +183,18 @@ public:
     std::unordered_map<std::string, std::unordered_map<std::string, Position>> get_strategy_positions() const;
 
     /**
+     * @brief Update a specific position for a strategy (e.g., to update PnL values)
+     * @param strategy_id Strategy identifier
+     * @param symbol Position symbol
+     * @param updated_pos Updated position object
+     * @return Result indicating success or failure
+     */
+    Result<void> update_strategy_position(
+        const std::string& strategy_id,
+        const std::string& symbol,
+        const Position& updated_pos);
+
+    /**
      * @brief Get portfolio's current total value
      * @param current_prices Map of symbol to current price
      * @return Current portfolio value including cash

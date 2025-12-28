@@ -74,6 +74,7 @@ set(TRADE_NGIN_SOURCES
     src/portfolio/portfolio_manager.cpp
     src/backtest/transaction_cost_analysis.cpp
     src/backtest/backtest_engine.cpp
+    src/backtest/backtest_pnl_manager.cpp
     src/backtest/slippage_model.cpp
     src/strategy/base_strategy.cpp
     src/strategy/trend_following.cpp
