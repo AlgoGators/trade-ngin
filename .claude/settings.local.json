@@ -2,7 +2,16 @@
   "permissions": {
     "allow": [
       "Bash(grep:*)",
-      "Bash(rg:*)"
+      "Bash(rg:*)",
+      "Bash(cat:*)",
+      "Bash(if [ -d \"externals\" ])",
+      "Bash(then echo \"exists\")",
+      "Bash(else echo \"not found\")",
+      "Bash(fi)",
+      "Bash(mkdir:*)",
+      "Bash(git clone:*)",
+      "Bash(cmake:*)",
+      "Bash(./compile_msys2.sh:*)"
     ],
     "deny": []
   }

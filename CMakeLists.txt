@@ -21,13 +21,19 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/bin/Release")
 
 # Find packages
 #set(GTest_DIR "C:/vcpkg/installed/x64-windows/share/gtest")
-find_package(GTest CONFIG REQUIRED)
+find_package(GTest CONFIG QUIET)
+if(NOT GTest_FOUND)
+    message(WARNING "GTest not found - tests will be disabled")
+endif()
 #set(nlohmann_json_DIR "C:/vcpkg/installed/x64-windows/share/nlohmann_json")
 find_package(nlohmann_json CONFIG REQUIRED)
 #set(Arrow_DIR "C:/vcpkg/installed/x64-windows/share/arrow")
 find_package(Arrow REQUIRED)
 #set(libpqxx_DIR "C:/vcpkg/installed/x64-windows/share/libpqxx")
 # find_package(libpqxx CONFIG REQUIRED)
+
+# Add Eigen (header-only library)
+set(EIGEN3_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/externals/eigen")
 
 # Try to find libpqxx via pkg-config (works with Homebrew)
 find_package(PkgConfig REQUIRED)
@@ -70,6 +76,13 @@ set(TRADE_NGIN_SOURCES
     src/backtest/slippage_model.cpp
     src/strategy/base_strategy.cpp
     src/strategy/trend_following.cpp
+    src/analysis/statistical_distributions.cpp
+    src/analysis/preprocessing.cpp
+    src/analysis/stationarity_tests.cpp
+    src/analysis/cointegration.cpp
+    src/analysis/garch.cpp
+    src/analysis/kalman_filter.cpp
+    src/analysis/hmm.cpp
 )
 
 # Add library target
@@ -95,13 +108,15 @@ target_include_directories(trade_ngin
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
         ${Arrow_INCLUDE_DIRS}
+        ${EIGEN3_INCLUDE_DIR}
 )
 
 # Enable testing
-enable_testing()
-
-# Add tests subdirectory
-add_subdirectory(tests)
+if(GTest_FOUND)
+    enable_testing()
+    # Add tests subdirectory
+    add_subdirectory(tests)
+endif()
 
 # Add apps subdirectory
 add_subdirectory(apps)
