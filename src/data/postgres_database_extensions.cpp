@@ -711,4 +711,66 @@ Result<void> PostgresDatabase::store_live_results_complete(
     }
 }
 
+Result<void> PostgresDatabase::store_live_run_metadata(
+    const Timestamp& date, const std::string& strategy_id, const std::string& portfolio_id,
+    const nlohmann::json& strategy_allocations, const nlohmann::json& portfolio_config,
+    const nlohmann::json& strategy_configs, const std::string& table_name) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    // Validate connection
+    auto validation = validate_connection();
+    if (validation.is_error()) {
+        return validation;
+    }
+
+    // Validate table name
+    auto table_validation = validate_table_name(table_name);
+    if (table_validation.is_error()) {
+        return table_validation;
+    }
+
+    // Validate strategy ID
+    auto strategy_validation = validate_strategy_id(strategy_id);
+    if (strategy_validation.is_error()) {
+        return strategy_validation;
+    }
+
+    try {
+        pqxx::work txn(*connection_);
+
+        // Format date as YYYY-MM-DD
+        std::string date_str = format_timestamp(date).substr(0, 10);
+
+        std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
+
+        // Build INSERT with ON CONFLICT UPDATE
+        // Unique constraint: (date, strategy_id, portfolio_id)
+        std::string query = "INSERT INTO " + table_name +
+                            " (date, strategy_id, portfolio_id, strategy_allocations, "
+                            "portfolio_config, strategy_configs) "
+                            "VALUES (" +
+                            "'" + date_str + "', " + txn.quote(strategy_id) + ", " +
+                            txn.quote(actual_portfolio_id) + ", " +
+                            txn.quote(strategy_allocations.dump()) + "::jsonb, " +
+                            txn.quote(portfolio_config.dump()) + "::jsonb, " +
+                            txn.quote(strategy_configs.dump()) + "::jsonb) " +
+                            "ON CONFLICT (date, strategy_id, portfolio_id) DO UPDATE SET " +
+                            "strategy_allocations = EXCLUDED.strategy_allocations, " +
+                            "portfolio_config = EXCLUDED.portfolio_config, " +
+                            "strategy_configs = EXCLUDED.strategy_configs";
+
+        txn.exec(query);
+        txn.commit();
+
+        INFO("Stored live run metadata for " + strategy_id + " on " + date_str +
+             " (portfolio: " + actual_portfolio_id + ")");
+
+        return Result<void>();
+
+    } catch (const std::exception& e) {
+        ERROR("Failed to store live run metadata: " + std::string(e.what()));
+        return make_error<void>(ErrorCode::DATABASE_ERROR, e.what(), component_id_);
+    }
+}
+
 }  // namespace trade_ngin

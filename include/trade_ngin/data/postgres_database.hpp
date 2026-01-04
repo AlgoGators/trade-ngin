@@ -85,8 +85,9 @@ public:
 
     /**
      * @brief Load positions by date and strategy
-     * @param strategy_id Combined strategy identifier (e.g., "LIVE_TREND_FOLLOWING_TREND_FOLLOWING_FAST")
-     * @param strategy_name Individual strategy name (e.g., "TREND_FOLLOWING"). If empty, loads all 
+     * @param strategy_id Combined strategy identifier (e.g.,
+     * "LIVE_TREND_FOLLOWING_TREND_FOLLOWING_FAST")
+     * @param strategy_name Individual strategy name (e.g., "TREND_FOLLOWING"). If empty, loads all
      *                      positions matching the strategy_id.
      * @param date Date to load positions for
      * @param table_name Name of the positions table
@@ -440,6 +441,23 @@ public:
         const std::unordered_map<std::string, double>& metrics,
         const std::unordered_map<std::string, int>& int_metrics, const nlohmann::json& config,
         const std::string& table_name = "trading.live_results");
+
+    /**
+     * @brief Store live trading run metadata
+     * @param date Trading date
+     * @param strategy_id Combined strategy identifier
+     * @param portfolio_id Portfolio identifier
+     * @param strategy_allocations Map of strategy name to allocation (JSON)
+     * @param portfolio_config Portfolio configuration (JSON)
+     * @param strategy_configs Per-strategy configurations (JSON)
+     * @param table_name Name of the table
+     * @return Result indicating success or failure
+     */
+    Result<void> store_live_run_metadata(
+        const Timestamp& date, const std::string& strategy_id, const std::string& portfolio_id,
+        const nlohmann::json& strategy_allocations, const nlohmann::json& portfolio_config,
+        const nlohmann::json& strategy_configs,
+        const std::string& table_name = "trading.live_run_metadata");
 
     /**
      * @brief Get contract metadata for trading instruments

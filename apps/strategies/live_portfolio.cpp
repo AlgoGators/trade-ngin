@@ -621,6 +621,38 @@ int main(int argc, char* argv[]) {
 
         INFO("All " + std::to_string(strategies.size()) + " strategies added to portfolio");
 
+        // ========================================
+        // STORE LIVE RUN METADATA
+        // Save run metadata (allocations, configs) for this trading day
+        // ========================================
+        INFO("Storing live run metadata for this trading day...");
+        {
+            // Build portfolio config JSON
+            nlohmann::json portfolio_config_json;
+            portfolio_config_json["total_capital"] =
+                static_cast<double>(portfolio_config.total_capital);
+            portfolio_config_json["reserve_capital"] =
+                static_cast<double>(portfolio_config.reserve_capital);
+            portfolio_config_json["use_optimization"] = portfolio_config.use_optimization;
+            portfolio_config_json["use_risk_management"] = portfolio_config.use_risk_management;
+
+            // Convert strategy_allocations to JSON
+            nlohmann::json strategy_alloc_json(strategy_allocations);
+
+            // strategy_configs is already nlohmann::json
+            auto metadata_result = db->store_live_run_metadata(
+                now, combined_strategy_id, portfolio_id, strategy_alloc_json, portfolio_config_json,
+                strategy_configs  // already nlohmann::json
+            );
+
+            if (metadata_result.is_error()) {
+                WARN("Failed to store live run metadata: " +
+                     std::string(metadata_result.error()->what()));
+            } else {
+                INFO("Successfully stored live run metadata for date");
+            }
+        }
+
         // Create LiveTradingCoordinator to manage all live trading components
         INFO("Creating LiveTradingCoordinator for centralized component management");
         LiveTradingConfig coordinator_config;
@@ -1535,12 +1567,20 @@ int main(int argc, char* argv[]) {
 
             // Get trading days count for annualization using PostgreSQL function
             // This avoids issues with row multiplication/duplication in the database
+            // Uses trading.strategy_trading_days_metadata table for live_start_date
             int trading_days_count = 1;
             try {
                 // Call PostgreSQL function to calculate trading days
-                auto trading_days_result =
-                    db->execute_query("SELECT trading.get_trading_days('" + combined_strategy_id +
-                                      "', DATE '" + yesterday_date_ss.str() + "')");
+                std::string trading_days_query = "SELECT trading.get_trading_days('" +
+                                                 combined_strategy_id + "', DATE '" +
+                                                 yesterday_date_ss.str() + "')";
+
+                INFO("TRADING_DAYS_CALC [Day T-1]: Querying trading days...");
+                INFO("TRADING_DAYS_CALC [Day T-1]: Query: " + trading_days_query);
+                INFO("TRADING_DAYS_CALC [Day T-1]: Strategy ID: " + combined_strategy_id);
+                INFO("TRADING_DAYS_CALC [Day T-1]: Target Date: " + yesterday_date_ss.str());
+
+                auto trading_days_result = db->execute_query(trading_days_query);
 
                 if (trading_days_result.is_ok()) {
                     auto table = trading_days_result.value();
@@ -1550,22 +1590,40 @@ int main(int argc, char* argv[]) {
                             table->column(0)->chunk(0));
                         if (arr && arr->length() > 0 && !arr->IsNull(0)) {
                             trading_days_count = std::max<int>(1, std::stoi(arr->GetString(0)));
-                            INFO("Trading days for yesterday (" + yesterday_date_ss.str() +
-                                 "): " + std::to_string(trading_days_count));
+                            INFO("TRADING_DAYS_CALC [Day T-1]: Result from DB: " +
+                                 std::to_string(trading_days_count) + " trading days");
+                            INFO(
+                                "TRADING_DAYS_CALC [Day T-1]: This value comes from "
+                                "strategy_trading_days_metadata.live_start_date");
                         }
                     }
                 } else {
-                    WARN("Could not call get_trading_days function: " +
+                    WARN("TRADING_DAYS_CALC [Day T-1]: Could not call get_trading_days function: " +
                          std::string(trading_days_result.error()->what()));
                 }
             } catch (const std::exception& e) {
-                WARN("Failed to get trading days: " + std::string(e.what()));
+                WARN("TRADING_DAYS_CALC [Day T-1]: Failed to get trading days: " +
+                     std::string(e.what()));
             }
 
             // Calculate yesterday's annualized return using LiveMetricsCalculator
+            // Formula: annualized_return = ((1 + total_return)^(252/trading_days) - 1) * 100
+            INFO("ANNUALIZED_RETURN_CALC [Day T-1]: Calculating annualized return...");
+            INFO("ANNUALIZED_RETURN_CALC [Day T-1]: Input: total_return_decimal = " +
+                 std::to_string(yesterday_total_return_decimal) + " (" +
+                 std::to_string(yesterday_total_return_decimal * 100.0) + "%)");
+            INFO("ANNUALIZED_RETURN_CALC [Day T-1]: Input: trading_days_count = " +
+                 std::to_string(trading_days_count));
+            INFO("ANNUALIZED_RETURN_CALC [Day T-1]: Formula: ((1 + " +
+                 std::to_string(yesterday_total_return_decimal) + ")^(252/" +
+                 std::to_string(trading_days_count) + ") - 1) * 100");
+
             double yesterday_total_return_annualized =
                 metrics_calculator->calculate_annualized_return(yesterday_total_return_decimal,
                                                                 trading_days_count);
+
+            INFO("ANNUALIZED_RETURN_CALC [Day T-1]: Result: " +
+                 std::to_string(yesterday_total_return_annualized) + "%");
 
             // Calculate yesterday's leverage and risk metrics
             // IMPORTANT: We MUST preserve existing values from the database
@@ -1970,6 +2028,7 @@ int main(int argc, char* argv[]) {
         double total_cumulative_return_pct = total_cumulative_return;  // Already in %
 
         // Get n = number of trading days using PostgreSQL function (robust against row duplication)
+        // Uses trading.strategy_trading_days_metadata table for live_start_date
         int trading_days_count = 1;  // Default to 1 to avoid division by zero on first day
         try {
             // Format today's date for SQL query
@@ -1978,9 +2037,16 @@ int main(int argc, char* argv[]) {
             now_date_ss << std::put_time(std::gmtime(&now_time_t_for_query), "%Y-%m-%d");
 
             // Call PostgreSQL function to calculate trading days
-            auto trading_days_result =
-                db->execute_query("SELECT trading.get_trading_days('" + combined_strategy_id +
-                                  "', DATE '" + now_date_ss.str() + "')");
+            std::string trading_days_query = "SELECT trading.get_trading_days('" +
+                                             combined_strategy_id + "', DATE '" +
+                                             now_date_ss.str() + "')";
+
+            INFO("TRADING_DAYS_CALC [Day T]: Querying trading days...");
+            INFO("TRADING_DAYS_CALC [Day T]: Query: " + trading_days_query);
+            INFO("TRADING_DAYS_CALC [Day T]: Strategy ID: " + combined_strategy_id);
+            INFO("TRADING_DAYS_CALC [Day T]: Target Date: " + now_date_ss.str());
+
+            auto trading_days_result = db->execute_query(trading_days_query);
 
             if (trading_days_result.is_ok()) {
                 auto table = trading_days_result.value();
@@ -1990,21 +2056,38 @@ int main(int argc, char* argv[]) {
                         std::static_pointer_cast<arrow::StringArray>(table->column(0)->chunk(0));
                     if (arr && arr->length() > 0 && !arr->IsNull(0)) {
                         trading_days_count = std::max<int>(1, std::stoi(arr->GetString(0)));
-                        INFO("Trading days for today (" + now_date_ss.str() +
-                             "): " + std::to_string(trading_days_count));
+                        INFO("TRADING_DAYS_CALC [Day T]: Result from DB: " +
+                             std::to_string(trading_days_count) + " trading days");
+                        INFO(
+                            "TRADING_DAYS_CALC [Day T]: This value comes from "
+                            "strategy_trading_days_metadata.live_start_date");
                     }
                 }
             } else {
-                WARN("Could not call get_trading_days function: " +
+                WARN("TRADING_DAYS_CALC [Day T]: Could not call get_trading_days function: " +
                      std::string(trading_days_result.error()->what()));
             }
         } catch (const std::exception& e) {
-            WARN(std::string("Failed to get trading days: ") + e.what());
+            WARN("TRADING_DAYS_CALC [Day T]: Failed to get trading days: " + std::string(e.what()));
         }
 
         // Calculate annualized return using LiveMetricsCalculator
+        // Formula: annualized_return = ((1 + total_return)^(252/trading_days) - 1) * 100
+        INFO("ANNUALIZED_RETURN_CALC [Day T]: Calculating annualized return...");
+        INFO("ANNUALIZED_RETURN_CALC [Day T]: Input: total_return_decimal = " +
+             std::to_string(total_return_decimal) + " (" +
+             std::to_string(total_return_decimal * 100.0) + "%)");
+        INFO("ANNUALIZED_RETURN_CALC [Day T]: Input: trading_days_count = " +
+             std::to_string(trading_days_count));
+        INFO("ANNUALIZED_RETURN_CALC [Day T]: Formula: ((1 + " +
+             std::to_string(total_return_decimal) + ")^(252/" + std::to_string(trading_days_count) +
+             ") - 1) * 100");
+
         double total_return_annualized = metrics_calculator->calculate_annualized_return(
             total_return_decimal, trading_days_count);
+
+        INFO("ANNUALIZED_RETURN_CALC [Day T]: Result: " + std::to_string(total_return_annualized) +
+             "%");
 
         INFO("Portfolio value calculation:");
         INFO("  Previous portfolio value: $" + std::to_string(previous_portfolio_value));
