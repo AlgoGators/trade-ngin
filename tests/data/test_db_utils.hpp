@@ -65,7 +65,9 @@ private:
 class MockPostgresDatabase : public PostgresDatabase {
 public:
     explicit MockPostgresDatabase(std::string connection_string)
-        : PostgresDatabase(std::move(connection_string)), connected_(false), simulate_error_(false) {}
+        : PostgresDatabase(std::move(connection_string)),
+          connected_(false),
+          simulate_error_(false) {}
 
     // Connection management
     Result<void> connect() override {
@@ -103,6 +105,7 @@ public:
 
     // Execution storage
     Result<void> store_executions(const std::vector<ExecutionReport>& executions,
+                                  const std::string& strategy_id, const std::string& strategy_name,
                                   const std::string& table_name) override {
         if (!connected_)
             return make_error<void>(ErrorCode::DATABASE_ERROR, "Not connected");
@@ -116,7 +119,7 @@ public:
 
     // Position storage
     Result<void> store_positions(const std::vector<Position>& positions,
-                                 const std::string& strategy_id,
+                                 const std::string& strategy_id, const std::string& strategy_name,
                                  const std::string& table_name) override {
         if (!connected_)
             return make_error<void>(ErrorCode::DATABASE_ERROR, "Not connected");
@@ -140,8 +143,8 @@ public:
 
     // Signal storage
     Result<void> store_signals(const std::unordered_map<std::string, double>& signals,
-                               const std::string& strategy_id, const Timestamp& timestamp,
-                               const std::string& table_name) override {
+                               const std::string& strategy_id, const std::string& strategy_name,
+                               const Timestamp& timestamp, const std::string& table_name) override {
         if (!connected_)
             return make_error<void>(ErrorCode::DATABASE_ERROR, "Not connected");
 
@@ -159,7 +162,8 @@ public:
     Result<std::shared_ptr<arrow::Table>> execute_query(const std::string& query) override {
         // Check connection state first
         if (!connected_) {
-            return make_error<std::shared_ptr<arrow::Table>>(ErrorCode::DATABASE_ERROR, "Not connected");
+            return make_error<std::shared_ptr<arrow::Table>>(ErrorCode::DATABASE_ERROR,
+                                                             "Not connected");
         }
 
         if (query.find("COUNT(*)") != std::string::npos) {
@@ -195,10 +199,9 @@ public:
     }
 
     Result<void> store_backtest_signals(const std::unordered_map<std::string, double>& signals,
-                                         const std::string& strategy_id, const std::string& run_id,
-                                         const Timestamp& timestamp,
-                                         const std::string& portfolio_id,
-                                         const std::string& table_name) override {
+                                        const std::string& strategy_id, const std::string& run_id,
+                                        const Timestamp& timestamp, const std::string& portfolio_id,
+                                        const std::string& table_name) override {
         if (!connected_) {
             return make_error<void>(ErrorCode::DATABASE_ERROR, "Not connected");
         }
@@ -206,8 +209,9 @@ public:
     }
 
     Result<void> store_backtest_metadata(const std::string& run_id, const std::string& name,
-                                         const std::string& description, const Timestamp& start_date,
-                                         const Timestamp& end_date, const nlohmann::json& hyperparameters,
+                                         const std::string& description,
+                                         const Timestamp& start_date, const Timestamp& end_date,
+                                         const nlohmann::json& hyperparameters,
                                          const std::string& portfolio_id,
                                          const std::string& table_name) override {
         if (!connected_) {
@@ -217,33 +221,32 @@ public:
     }
 
     // Live trading data storage methods
-    Result<void> store_trading_results(const std::string& strategy_id, const Timestamp& date,
-                                       double total_return, double sharpe_ratio, double sortino_ratio,
-                                       double max_drawdown, double calmar_ratio, double volatility,
-                                       int total_trades, double win_rate, double profit_factor,
-                                       double avg_win, double avg_loss, double max_win, double max_loss,
-                                       double avg_holding_period, double var_95, double cvar_95,
-                                       double beta, double correlation, double downside_volatility,
-                                       const nlohmann::json& config,
-                                       const std::string& table_name) override {
+    Result<void> store_trading_results(
+        const std::string& strategy_id, const Timestamp& date, double total_return,
+        double sharpe_ratio, double sortino_ratio, double max_drawdown, double calmar_ratio,
+        double volatility, int total_trades, double win_rate, double profit_factor, double avg_win,
+        double avg_loss, double max_win, double max_loss, double avg_holding_period, double var_95,
+        double cvar_95, double beta, double correlation, double downside_volatility,
+        const nlohmann::json& config, const std::string& table_name) override {
         if (!connected_) {
             return make_error<void>(ErrorCode::DATABASE_ERROR, "Not connected");
         }
         return Result<void>();
     }
 
-    Result<void> store_trading_equity_curve(const std::string& strategy_id, const Timestamp& timestamp,
-                                             double equity,
-                                             const std::string& table_name) override {
+    Result<void> store_trading_equity_curve(const std::string& strategy_id,
+                                            const Timestamp& timestamp, double equity,
+                                            const std::string& table_name) override {
         if (!connected_) {
             return make_error<void>(ErrorCode::DATABASE_ERROR, "Not connected");
         }
         return Result<void>();
     }
 
-    Result<void> store_trading_equity_curve_batch(const std::string& strategy_id,
-                                                  const std::vector<std::pair<Timestamp, double>>& equity_points,
-                                                  const std::string& table_name) override {
+    Result<void> store_trading_equity_curve_batch(
+        const std::string& strategy_id,
+        const std::vector<std::pair<Timestamp, double>>& equity_points,
+        const std::string& table_name) override {
         if (!connected_) {
             return make_error<void>(ErrorCode::DATABASE_ERROR, "Not connected");
         }

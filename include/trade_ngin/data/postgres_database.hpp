@@ -85,45 +85,53 @@ public:
 
     /**
      * @brief Load positions by date and strategy
-     * @param strategy_id Strategy identifier
+     * @param strategy_id Combined strategy identifier (e.g., "LIVE_TREND_FOLLOWING_TREND_FOLLOWING_FAST")
+     * @param strategy_name Individual strategy name (e.g., "TREND_FOLLOWING"). If empty, loads all 
+     *                      positions matching the strategy_id.
      * @param date Date to load positions for
      * @param table_name Name of the positions table
      * @return Result containing map of symbol to position
      */
     Result<std::unordered_map<std::string, Position>> load_positions_by_date(
-        const std::string& strategy_id, const Timestamp& date,
+        const std::string& strategy_id, const std::string& strategy_name, const Timestamp& date,
         const std::string& table_name = "trading.positions") override;
 
     /**
      * @brief Store execution reports in the database
      * @param executions List of execution reports
+     * @param strategy_id Combined strategy identifier
+     * @param strategy_name Individual strategy name
      * @param table_name Name of the table to store data
      * @return Result indicating success or failure
      */
     Result<void> store_executions(const std::vector<ExecutionReport>& executions,
+                                  const std::string& strategy_id, const std::string& strategy_name,
                                   const std::string& table_name) override;
 
     /**
      * @brief Store positions in the database
      * @param positions List of positions
+     * @param strategy_id Combined strategy identifier
+     * @param strategy_name Individual strategy name
      * @param table_name Name of the table to store data
      * @return Result indicating success or failure
      */
     Result<void> store_positions(const std::vector<Position>& positions,
-                                 const std::string& strategy_id,
+                                 const std::string& strategy_id, const std::string& strategy_name,
                                  const std::string& table_name) override;
 
     /**
      * @brief Store signals in the database
      * @param signals Map of signals by symbol
-     * @param strategy_id ID of the strategy generating the signals
+     * @param strategy_id Combined strategy identifier
+     * @param strategy_name Individual strategy name
      * @param timestamp Timestamp for the signals
      * @param table_name Name of the table to store data
      * @return Result indicating success or failure
      */
     Result<void> store_signals(const std::unordered_map<std::string, double>& signals,
-                               const std::string& strategy_id, const Timestamp& timestamp,
-                               const std::string& table_name) override;
+                               const std::string& strategy_id, const std::string& strategy_name,
+                               const Timestamp& timestamp, const std::string& table_name) override;
 
     /**
      * @brief Get a list of symbols from the database
@@ -161,17 +169,16 @@ public:
      * @param table_name Name of the table to insert into
      * @return Result indicating success or failure
      */
-    Result<void> store_backtest_executions(const std::vector<ExecutionReport>& executions,
-                                           const std::string& run_id,
-                                           const std::string& portfolio_id = "BASE_PORTFOLIO",
-                                           const std::string& table_name = "backtest.executions") override;
-    
+    Result<void> store_backtest_executions(
+        const std::vector<ExecutionReport>& executions, const std::string& run_id,
+        const std::string& portfolio_id = "BASE_PORTFOLIO",
+        const std::string& table_name = "backtest.executions") override;
+
     // Multi-strategy version: store executions with strategy_id
-    Result<void> store_backtest_executions_with_strategy(const std::vector<ExecutionReport>& executions,
-                                                          const std::string& run_id,
-                                                          const std::string& strategy_id,
-                                                          const std::string& portfolio_id = "BASE_PORTFOLIO",
-                                                          const std::string& table_name = "backtest.executions");
+    Result<void> store_backtest_executions_with_strategy(
+        const std::vector<ExecutionReport>& executions, const std::string& run_id,
+        const std::string& strategy_id, const std::string& portfolio_id = "BASE_PORTFOLIO",
+        const std::string& table_name = "backtest.executions");
 
     /**
      * @brief Store backtest signals
@@ -182,11 +189,11 @@ public:
      * @param table_name Name of the table to insert into
      * @return Result indicating success or failure
      */
-    Result<void> store_backtest_signals(const std::unordered_map<std::string, double>& signals,
-                                        const std::string& strategy_id, const std::string& run_id,
-                                        const Timestamp& timestamp,
-                                        const std::string& portfolio_id = "BASE_PORTFOLIO",
-                                        const std::string& table_name = "backtest.signals") override;
+    Result<void> store_backtest_signals(
+        const std::unordered_map<std::string, double>& signals, const std::string& strategy_id,
+        const std::string& run_id, const Timestamp& timestamp,
+        const std::string& portfolio_id = "BASE_PORTFOLIO",
+        const std::string& table_name = "backtest.signals") override;
 
     /**
      * @brief Store backtest run metadata
@@ -199,25 +206,21 @@ public:
      * @param table_name Name of the table to insert into
      * @return Result indicating success or failure
      */
-    Result<void> store_backtest_metadata(const std::string& run_id, const std::string& name,
-                                         const std::string& description, const Timestamp& start_date,
-                                         const Timestamp& end_date, const nlohmann::json& hyperparameters,
-                                         const std::string& portfolio_id = "BASE_PORTFOLIO",
-                                         const std::string& table_name = "backtest.run_metadata") override;
-    
-    // Multi-strategy version: store metadata with portfolio_run_id, strategy_allocation, portfolio_config
-    Result<void> store_backtest_metadata_with_portfolio(const std::string& run_id,
-                                                         const std::string& portfolio_run_id,
-                                                         const std::string& strategy_id,
-                                                         double strategy_allocation,
-                                                         const nlohmann::json& portfolio_config,
-                                                         const std::string& name,
-                                                         const std::string& description,
-                                                         const Timestamp& start_date,
-                                                         const Timestamp& end_date,
-                                                         const nlohmann::json& hyperparameters,
-                                                         const std::string& portfolio_id = "BASE_PORTFOLIO",
-                                                         const std::string& table_name = "backtest.run_metadata");
+    Result<void> store_backtest_metadata(
+        const std::string& run_id, const std::string& name, const std::string& description,
+        const Timestamp& start_date, const Timestamp& end_date,
+        const nlohmann::json& hyperparameters, const std::string& portfolio_id = "BASE_PORTFOLIO",
+        const std::string& table_name = "backtest.run_metadata") override;
+
+    // Multi-strategy version: store metadata with portfolio_run_id, strategy_allocation,
+    // portfolio_config
+    Result<void> store_backtest_metadata_with_portfolio(
+        const std::string& run_id, const std::string& portfolio_run_id,
+        const std::string& strategy_id, double strategy_allocation,
+        const nlohmann::json& portfolio_config, const std::string& name,
+        const std::string& description, const Timestamp& start_date, const Timestamp& end_date,
+        const nlohmann::json& hyperparameters, const std::string& portfolio_id = "BASE_PORTFOLIO",
+        const std::string& table_name = "backtest.run_metadata");
 
     // ============================================================================
     // LIVE TRADING DATA STORAGE METHODS
@@ -250,15 +253,13 @@ public:
      * @param table_name Name of the table to insert into
      * @return Result indicating success or failure
      */
-    Result<void> store_trading_results(const std::string& strategy_id, const Timestamp& date,
-                                       double total_return, double sharpe_ratio, double sortino_ratio,
-                                       double max_drawdown, double calmar_ratio, double volatility,
-                                       int total_trades, double win_rate, double profit_factor,
-                                       double avg_win, double avg_loss, double max_win, double max_loss,
-                                       double avg_holding_period, double var_95, double cvar_95,
-                                       double beta, double correlation, double downside_volatility,
-                                       const nlohmann::json& config,
-                                       const std::string& table_name = "trading.results") override;
+    Result<void> store_trading_results(
+        const std::string& strategy_id, const Timestamp& date, double total_return,
+        double sharpe_ratio, double sortino_ratio, double max_drawdown, double calmar_ratio,
+        double volatility, int total_trades, double win_rate, double profit_factor, double avg_win,
+        double avg_loss, double max_win, double max_loss, double avg_holding_period, double var_95,
+        double cvar_95, double beta, double correlation, double downside_volatility,
+        const nlohmann::json& config, const std::string& table_name = "trading.results") override;
 
     /**
      * @brief Store live trading results with new schema
@@ -283,17 +284,16 @@ public:
      * @param table_name Name of the table to insert into
      * @return Result indicating success or failure
      */
-    Result<void> store_live_results(const std::string& strategy_id, const Timestamp& date,
-                                   double total_return, double volatility, double total_pnl,
-                                   double unrealized_pnl, double realized_pnl, double current_portfolio_value,
-                                   double daily_realized_pnl, double daily_unrealized_pnl,
-                                   double portfolio_var, double gross_leverage, double net_leverage,
-                                   double portfolio_leverage, double margin_leverage, double margin_cushion, double max_correlation, double jump_risk,
-                                   double risk_scale, double gross_notional, double net_notional,
-                                   int active_positions, double total_commissions,
-                                   double margin_posted, double cash_available,
-                                   const nlohmann::json& config,
-                                   const std::string& table_name = "trading.live_results") override;
+    Result<void> store_live_results(
+        const std::string& strategy_id, const Timestamp& date, double total_return,
+        double volatility, double total_pnl, double unrealized_pnl, double realized_pnl,
+        double current_portfolio_value, double daily_realized_pnl, double daily_unrealized_pnl,
+        double portfolio_var, double gross_leverage, double net_leverage, double portfolio_leverage,
+        double margin_leverage, double margin_cushion, double max_correlation, double jump_risk,
+        double risk_scale, double gross_notional, double net_notional, int active_positions,
+        double total_commissions, double margin_posted, double cash_available,
+        const nlohmann::json& config,
+        const std::string& table_name = "trading.live_results") override;
 
     Result<std::tuple<double, double, double>> get_previous_live_aggregates(
         const std::string& strategy_id, const Timestamp& date,
@@ -307,9 +307,9 @@ public:
      * @param table_name Name of the table to insert into
      * @return Result indicating success or failure
      */
-    Result<void> store_trading_equity_curve(const std::string& strategy_id, const Timestamp& timestamp,
-                                             double equity,
-                                             const std::string& table_name = "trading.equity_curve") override;
+    Result<void> store_trading_equity_curve(
+        const std::string& strategy_id, const Timestamp& timestamp, double equity,
+        const std::string& table_name = "trading.equity_curve") override;
 
     /**
      * @brief Store multiple live trading equity curve points
@@ -318,9 +318,10 @@ public:
      * @param table_name Name of the table to insert into
      * @return Result indicating success or failure
      */
-    Result<void> store_trading_equity_curve_batch(const std::string& strategy_id,
-                                                  const std::vector<std::pair<Timestamp, double>>& equity_points,
-                                                  const std::string& table_name = "trading.equity_curve") override;
+    Result<void> store_trading_equity_curve_batch(
+        const std::string& strategy_id,
+        const std::vector<std::pair<Timestamp, double>>& equity_points,
+        const std::string& table_name = "trading.equity_curve") override;
 
     // ============================================================================
     // NEW METHODS TO REPLACE RAW SQL (Phase 0 Refactoring)
@@ -334,7 +335,7 @@ public:
      * @return Result indicating success or failure
      */
     Result<void> delete_stale_executions(const std::vector<std::string>& order_ids,
-                                         const Timestamp& date,
+                                         const Timestamp& date, const std::string& strategy_name,
                                          const std::string& table_name = "trading.executions");
 
     /**
@@ -346,8 +347,7 @@ public:
      * @param table_name Name of the results table
      * @return Result indicating success or failure
      */
-    Result<void> store_backtest_summary(const std::string& run_id,
-                                        const Timestamp& start_date,
+    Result<void> store_backtest_summary(const std::string& run_id, const Timestamp& start_date,
                                         const Timestamp& end_date,
                                         const std::unordered_map<std::string, double>& metrics,
                                         const std::string& portfolio_id = "BASE_PORTFOLIO",
@@ -360,10 +360,10 @@ public:
      * @param table_name Name of the equity curve table
      * @return Result indicating success or failure
      */
-    Result<void> store_backtest_equity_curve_batch(const std::string& run_id,
-                                                   const std::vector<std::pair<Timestamp, double>>& equity_points,
-                                                   const std::string& portfolio_id = "BASE_PORTFOLIO",
-                                                   const std::string& table_name = "backtest.equity_curve");
+    Result<void> store_backtest_equity_curve_batch(
+        const std::string& run_id, const std::vector<std::pair<Timestamp, double>>& equity_points,
+        const std::string& portfolio_id = "BASE_PORTFOLIO",
+        const std::string& table_name = "backtest.equity_curve");
 
     /**
      * @brief Store backtest final positions (replaces raw SQL INSERT)
@@ -372,17 +372,16 @@ public:
      * @param table_name Name of the positions table
      * @return Result indicating success or failure
      */
-    Result<void> store_backtest_positions(const std::vector<Position>& positions,
-                                          const std::string& run_id,
-                                          const std::string& portfolio_id = "BASE_PORTFOLIO",
-                                          const std::string& table_name = "backtest.final_positions");
-    
+    Result<void> store_backtest_positions(
+        const std::vector<Position>& positions, const std::string& run_id,
+        const std::string& portfolio_id = "BASE_PORTFOLIO",
+        const std::string& table_name = "backtest.final_positions");
+
     // Multi-strategy version: store positions with strategy_id
-    Result<void> store_backtest_positions_with_strategy(const std::vector<Position>& positions,
-                                                        const std::string& run_id,
-                                                        const std::string& strategy_id,
-                                                        const std::string& portfolio_id = "BASE_PORTFOLIO",
-                                                        const std::string& table_name = "backtest.final_positions");
+    Result<void> store_backtest_positions_with_strategy(
+        const std::vector<Position>& positions, const std::string& run_id,
+        const std::string& strategy_id, const std::string& portfolio_id = "BASE_PORTFOLIO",
+        const std::string& table_name = "backtest.final_positions");
 
     /**
      * @brief Update live results for previous day finalization (replaces raw SQL UPDATE)
@@ -392,8 +391,7 @@ public:
      * @param table_name Name of the live results table
      * @return Result indicating success or failure
      */
-    Result<void> update_live_results(const std::string& strategy_id,
-                                     const Timestamp& date,
+    Result<void> update_live_results(const std::string& strategy_id, const Timestamp& date,
                                      const std::unordered_map<std::string, double>& updates,
                                      const std::string& table_name = "trading.live_results");
 
@@ -405,8 +403,7 @@ public:
      * @param table_name Name of the equity curve table
      * @return Result indicating success or failure
      */
-    Result<void> update_live_equity_curve(const std::string& strategy_id,
-                                          const Timestamp& date,
+    Result<void> update_live_equity_curve(const std::string& strategy_id, const Timestamp& date,
                                           double equity,
                                           const std::string& table_name = "trading.equity_curve");
 
@@ -417,8 +414,7 @@ public:
      * @param table_name Name of the live results table
      * @return Result indicating success or failure
      */
-    Result<void> delete_live_results(const std::string& strategy_id,
-                                     const Timestamp& date,
+    Result<void> delete_live_results(const std::string& strategy_id, const Timestamp& date,
                                      const std::string& table_name = "trading.live_results");
 
     /**
@@ -428,8 +424,7 @@ public:
      * @param table_name Name of the equity curve table
      * @return Result indicating success or failure
      */
-    Result<void> delete_live_equity_curve(const std::string& strategy_id,
-                                          const Timestamp& date,
+    Result<void> delete_live_equity_curve(const std::string& strategy_id, const Timestamp& date,
                                           const std::string& table_name = "trading.equity_curve");
 
     /**
@@ -440,12 +435,11 @@ public:
      * @param table_name Name of the live results table
      * @return Result indicating success or failure
      */
-    Result<void> store_live_results_complete(const std::string& strategy_id,
-                                             const Timestamp& date,
-                                             const std::unordered_map<std::string, double>& metrics,
-                                             const std::unordered_map<std::string, int>& int_metrics,
-                                             const nlohmann::json& config,
-                                             const std::string& table_name = "trading.live_results");
+    Result<void> store_live_results_complete(
+        const std::string& strategy_id, const Timestamp& date,
+        const std::unordered_map<std::string, double>& metrics,
+        const std::unordered_map<std::string, int>& int_metrics, const nlohmann::json& config,
+        const std::string& table_name = "trading.live_results");
 
     /**
      * @brief Get contract metadata for trading instruments

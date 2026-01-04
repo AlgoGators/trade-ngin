@@ -31,17 +31,19 @@ public:
         return Result<std::shared_ptr<arrow::Table>>(nullptr);
     }
     Result<void> store_executions(const std::vector<ExecutionReport>& executions,
-                                  const std::string&) override {
+                                  const std::string& strategy_id, const std::string& strategy_name,
+                                  const std::string& table_name) override {
         executions_stored = executions;
         return Result<void>();
     }
-    Result<void> store_positions(const std::vector<Position>& positions,
+    Result<void> store_positions(const std::vector<Position>& positions, const std::string&,
                                  const std::string&, const std::string&) override {
         positions_stored = positions;
         return Result<void>();
     }
     Result<void> store_signals(const std::unordered_map<std::string, double>& signals,
-                               const std::string&, const Timestamp&, const std::string&) override {
+                               const std::string&, const std::string&, const Timestamp&,
+                               const std::string&) override {
         signals_stored = signals;
         return Result<void>();
     }
@@ -258,8 +260,8 @@ TEST_F(BaseStrategyTest, SaveSignals_WhenEnabledAndDisabled) {
 //     auto strategy = createRunningStrategy(config);
 //
 //     // Simulate a large loss
-//     strategy->on_execution(createExecution(Side::SELL, "AAPL", 1000, 50.0));  // Short 1000 shares
-//     strategy->on_execution(
+//     strategy->on_execution(createExecution(Side::SELL, "AAPL", 1000, 50.0));  // Short 1000
+//     shares strategy->on_execution(
 //         createExecution(Side::BUY, "AAPL", 1000, 200.0));  // Buy back at higher price
 //     // Realized PnL: (50 - 200) * 1000 = -150,000 → Drawdown = -150%
 //

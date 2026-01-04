@@ -2,11 +2,11 @@
 // Phase 0: Database Extensions to Replace Raw SQL
 // This file contains new methods to eliminate raw SQL from backtest and live trading
 
-#include "trade_ngin/data/postgres_database.hpp"
-#include "trade_ngin/core/time_utils.hpp"
-#include <sstream>
-#include <iomanip>
 #include <ctime>
+#include <iomanip>
+#include <sstream>
+#include "trade_ngin/core/time_utils.hpp"
+#include "trade_ngin/data/postgres_database.hpp"
 
 namespace trade_ngin {
 
@@ -14,11 +14,10 @@ namespace trade_ngin {
 // NEW METHODS TO REPLACE RAW SQL (Phase 0 Refactoring)
 // ============================================================================
 
-Result<void> PostgresDatabase::delete_stale_executions(
-    const std::vector<std::string>& order_ids,
-    const Timestamp& date,
-    const std::string& table_name) {
-
+Result<void> PostgresDatabase::delete_stale_executions(const std::vector<std::string>& order_ids,
+                                                       const Timestamp& date,
+                                                       const std::string& strategy_name,
+                                                       const std::string& table_name) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     // Validate connection
@@ -44,20 +43,24 @@ Result<void> PostgresDatabase::delete_stale_executions(
         std::string in_list;
         in_list.reserve(order_ids.size() * 20);
         for (size_t i = 0; i < order_ids.size(); ++i) {
-            if (i > 0) in_list += ", ";
+            if (i > 0)
+                in_list += ", ";
             in_list += txn.quote(order_ids[i]);
         }
 
         std::string query = "DELETE FROM " + table_name +
-                           " WHERE DATE(execution_time) = $1 AND order_id IN (" + in_list + ")";
+                            " WHERE DATE(execution_time) = $1 "
+                            " AND strategy_name = $2 "
+                            " AND order_id IN (" +
+                            in_list + ")";
 
         // Execute delete for the specified date (YYYY-MM-DD)
-        txn.exec_params(query, format_timestamp(date).substr(0, 10));
+        txn.exec_params(query, format_timestamp(date).substr(0, 10), strategy_name);
 
         txn.commit();
 
-        INFO("Deleted stale executions for " + std::to_string(order_ids.size()) +
-             " order IDs on " + format_timestamp(date));
+        INFO("Deleted stale executions for " + std::to_string(order_ids.size()) + " order IDs on " +
+             format_timestamp(date) + " for strategy " + strategy_name);
 
         return Result<void>();
 
@@ -68,13 +71,9 @@ Result<void> PostgresDatabase::delete_stale_executions(
 }
 
 Result<void> PostgresDatabase::store_backtest_summary(
-    const std::string& run_id,
-    const Timestamp& start_date,
-    const Timestamp& end_date,
-    const std::unordered_map<std::string, double>& metrics,
-    const std::string& portfolio_id,
+    const std::string& run_id, const Timestamp& start_date, const Timestamp& end_date,
+    const std::unordered_map<std::string, double>& metrics, const std::string& portfolio_id,
     const std::string& table_name) {
-
     std::lock_guard<std::mutex> lock(mutex_);
 
     // Validate connection
@@ -93,10 +92,13 @@ Result<void> PostgresDatabase::store_backtest_summary(
         pqxx::work txn(*connection_);
 
         std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
-        
+
         // Build INSERT query with all metrics
-        std::string query = "INSERT INTO " + table_name + " ("
-            "run_id, portfolio_id, start_date, end_date, total_return, sharpe_ratio, sortino_ratio, "
+        std::string query =
+            "INSERT INTO " + table_name +
+            " ("
+            "run_id, portfolio_id, start_date, end_date, total_return, sharpe_ratio, "
+            "sortino_ratio, "
             "max_drawdown, calmar_ratio, volatility, total_trades, win_rate, profit_factor, "
             "avg_win, avg_loss, max_win, max_loss, avg_holding_period, var_95, cvar_95, "
             "beta, correlation, downside_volatility) VALUES (";
@@ -109,15 +111,14 @@ Result<void> PostgresDatabase::store_backtest_summary(
 
         // Add metrics in expected order
         const std::vector<std::string> metric_names = {
-            "total_return", "sharpe_ratio", "sortino_ratio", "max_drawdown",
-            "calmar_ratio", "volatility", "total_trades", "win_rate",
-            "profit_factor", "avg_win", "avg_loss", "max_win", "max_loss",
-            "avg_holding_period", "var_95", "cvar_95", "beta",
-            "correlation", "downside_volatility"
-        };
+            "total_return", "sharpe_ratio", "sortino_ratio", "max_drawdown",       "calmar_ratio",
+            "volatility",   "total_trades", "win_rate",      "profit_factor",      "avg_win",
+            "avg_loss",     "max_win",      "max_loss",      "avg_holding_period", "var_95",
+            "cvar_95",      "beta",         "correlation",   "downside_volatility"};
 
         for (size_t i = 0; i < metric_names.size(); ++i) {
-            if (i > 0) query += ", ";
+            if (i > 0)
+                query += ", ";
             auto it = metrics.find(metric_names[i]);
             if (it != metrics.end()) {
                 query += std::to_string(it->second);
@@ -141,11 +142,8 @@ Result<void> PostgresDatabase::store_backtest_summary(
 }
 
 Result<void> PostgresDatabase::store_backtest_equity_curve_batch(
-    const std::string& run_id,
-    const std::vector<std::pair<Timestamp, double>>& equity_points,
-    const std::string& portfolio_id,
-    const std::string& table_name) {
-
+    const std::string& run_id, const std::vector<std::pair<Timestamp, double>>& equity_points,
+    const std::string& portfolio_id, const std::string& table_name) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     // Validate connection
@@ -168,13 +166,14 @@ Result<void> PostgresDatabase::store_backtest_equity_curve_batch(
         pqxx::work txn(*connection_);
 
         std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
-        
+
         // Build batch INSERT query
-        std::string query = "INSERT INTO " + table_name +
-                           " (run_id, portfolio_id, timestamp, equity) VALUES ";
+        std::string query =
+            "INSERT INTO " + table_name + " (run_id, portfolio_id, timestamp, equity) VALUES ";
 
         for (size_t i = 0; i < equity_points.size(); ++i) {
-            if (i > 0) query += ", ";
+            if (i > 0)
+                query += ", ";
             query += "(" + txn.quote(run_id) + ", " + txn.quote(actual_portfolio_id) + ", '" +
                      format_timestamp(equity_points[i].first) + "', " +
                      std::to_string(equity_points[i].second) + ")";
@@ -194,12 +193,10 @@ Result<void> PostgresDatabase::store_backtest_equity_curve_batch(
     }
 }
 
-Result<void> PostgresDatabase::store_backtest_positions(
-    const std::vector<Position>& positions,
-    const std::string& run_id,
-    const std::string& portfolio_id,
-    const std::string& table_name) {
-
+Result<void> PostgresDatabase::store_backtest_positions(const std::vector<Position>& positions,
+                                                        const std::string& run_id,
+                                                        const std::string& portfolio_id,
+                                                        const std::string& table_name) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     // Validate connection
@@ -234,7 +231,7 @@ Result<void> PostgresDatabase::store_backtest_positions(
         // Format: "backtest_run_id|strategy_id" OR just "run_id" for legacy
         std::string actual_run_id_for_delete = run_id;
         std::string strategy_id_for_delete = run_id;
-        
+
         size_t pipe_pos = run_id.find('|');
         if (pipe_pos != std::string::npos) {
             actual_run_id_for_delete = run_id.substr(0, pipe_pos);
@@ -244,36 +241,40 @@ Result<void> PostgresDatabase::store_backtest_positions(
         // Clear existing positions for this run_id, strategy_id, and date
         // This allows storing positions daily without duplicates
         try {
-            std::string delete_query = "DELETE FROM " + table_name + 
-                " WHERE run_id = " + txn.quote(actual_run_id_for_delete) + 
-                " AND strategy_id = " + txn.quote(strategy_id_for_delete) +
-                " AND DATE(date) = '" + position_date + "'";
+            std::string delete_query = "DELETE FROM " + table_name +
+                                       " WHERE run_id = " + txn.quote(actual_run_id_for_delete) +
+                                       " AND strategy_id = " + txn.quote(strategy_id_for_delete) +
+                                       " AND DATE(date) = '" + position_date + "'";
             txn.exec(delete_query);
         } catch (const std::exception& e) {
             // If date column doesn't exist yet (old schema), try without it
             WARN("date column may not exist, trying delete without date: " + std::string(e.what()));
             try {
-                std::string delete_query = "DELETE FROM " + table_name + 
-                    " WHERE run_id = " + txn.quote(actual_run_id_for_delete) + 
+                std::string delete_query =
+                    "DELETE FROM " + table_name +
+                    " WHERE run_id = " + txn.quote(actual_run_id_for_delete) +
                     " AND strategy_id = " + txn.quote(strategy_id_for_delete) +
                     " AND DATE(last_update) = '" + position_date + "'";
                 txn.exec(delete_query);
             } catch (const std::exception& e2) {
                 // If last_update doesn't exist either, skip delete (old schema)
-                WARN("Could not delete existing positions, continuing with insert: " + std::string(e2.what()));
+                WARN("Could not delete existing positions, continuing with insert: " +
+                     std::string(e2.what()));
             }
         }
 
         std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
-        
+
         // Build batch INSERT query with all required columns for daily storage
         // Try new schema first (with date, last_update, unrealized_pnl, realized_pnl)
-        std::string query = "INSERT INTO " + table_name +
-                           " (run_id, portfolio_id, strategy_id, date, symbol, quantity, average_price, unrealized_pnl, realized_pnl, last_update, updated_at) VALUES ";
+        std::string query =
+            "INSERT INTO " + table_name +
+            " (run_id, portfolio_id, strategy_id, date, symbol, quantity, average_price, "
+            "unrealized_pnl, realized_pnl, last_update, updated_at) VALUES ";
 
         bool first = true;
         std::vector<std::string> position_values;
-        
+
         for (const auto& pos : positions) {
             // Skip zero positions
             if (std::abs(static_cast<double>(pos.quantity)) < 1e-10) {
@@ -290,25 +291,23 @@ Result<void> PostgresDatabase::store_backtest_positions(
 
             // Format timestamps
             std::string last_update_str = format_timestamp(pos.last_update);
-            
+
             // Extract strategy_id from run_id if it contains a pipe separator
             // Format: "backtest_run_id|strategy_id" OR just "strategy_id" for legacy
             std::string actual_run_id = run_id;
             std::string strategy_id_for_db = run_id;  // Default to run_id
-            
+
             size_t pipe_pos = run_id.find('|');
             if (pipe_pos != std::string::npos) {
                 // New format: backtest_run_id|strategy_id
                 actual_run_id = run_id.substr(0, pipe_pos);
                 strategy_id_for_db = run_id.substr(pipe_pos + 1);
             }
-            
+
             std::stringstream value_ss;
-            value_ss << "(" << txn.quote(actual_run_id) << ", "
-                     << txn.quote(actual_portfolio_id) << ", "
-                     << txn.quote(strategy_id_for_db) << ", "
-                     << "'" << pos_date_str << "', "
-                     << txn.quote(pos.symbol) << ", "
+            value_ss << "(" << txn.quote(actual_run_id) << ", " << txn.quote(actual_portfolio_id)
+                     << ", " << txn.quote(strategy_id_for_db) << ", "
+                     << "'" << pos_date_str << "', " << txn.quote(pos.symbol) << ", "
                      << std::to_string(static_cast<double>(pos.quantity)) << ", "
                      << std::to_string(static_cast<double>(pos.average_price)) << ", "
                      << std::to_string(static_cast<double>(pos.unrealized_pnl)) << ", "
@@ -316,7 +315,7 @@ Result<void> PostgresDatabase::store_backtest_positions(
                      << "'" << last_update_str << "', "
                      << "'" << last_update_str << "'"
                      << ")";
-            
+
             position_values.push_back(value_ss.str());
         }
 
@@ -326,14 +325,16 @@ Result<void> PostgresDatabase::store_backtest_positions(
                 // Join position values
                 bool first_val = true;
                 for (const auto& val : position_values) {
-                    if (!first_val) query += ", ";
+                    if (!first_val)
+                        query += ", ";
                     first_val = false;
                     query += val;
                 }
-                
-                DEBUG("Executing position insert query for run_id: " + run_id + ", date: " + position_date);
+
+                DEBUG("Executing position insert query for run_id: " + run_id +
+                      ", date: " + position_date);
                 DEBUG("Query: " + query.substr(0, 200) + "...");  // Log first 200 chars
-                
+
                 txn.exec(query);
                 txn.commit();
 
@@ -349,12 +350,12 @@ Result<void> PostgresDatabase::store_backtest_positions(
                     ERROR("Full query: " + query);
                 }
                 txn.abort();
-                
+
                 // Don't fallback to old schema if date column exists (it's required)
                 // The error should be fixed, not worked around
-                return make_error<void>(ErrorCode::DATABASE_ERROR, 
-                                       "Failed to store positions: " + std::string(e.what()), 
-                                       component_id_);
+                return make_error<void>(ErrorCode::DATABASE_ERROR,
+                                        "Failed to store positions: " + std::string(e.what()),
+                                        component_id_);
             }
         } else {
             DEBUG("No position values to insert (all positions were zero or empty)");
@@ -369,12 +370,9 @@ Result<void> PostgresDatabase::store_backtest_positions(
 }
 
 Result<void> PostgresDatabase::store_backtest_positions_with_strategy(
-    const std::vector<Position>& positions,
-    const std::string& run_id,
-    const std::string& strategy_id,
-    const std::string& portfolio_id,
+    const std::vector<Position>& positions, const std::string& run_id,
+    const std::string& strategy_id, const std::string& portfolio_id,
     const std::string& table_name) {
-
     std::lock_guard<std::mutex> lock(mutex_);
 
     // Validate connection
@@ -397,12 +395,15 @@ Result<void> PostgresDatabase::store_backtest_positions_with_strategy(
         pqxx::work txn(*connection_);
 
         std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
-        
+
         // Build batch INSERT query with strategy_id and all required columns
-        // Schema requires: run_id, portfolio_id, strategy_id, date, symbol, quantity, average_price, 
+        // Schema requires: run_id, portfolio_id, strategy_id, date, symbol, quantity,
+        // average_price,
         //                  unrealized_pnl, realized_pnl, last_update, updated_at
-        std::string query = "INSERT INTO " + table_name +
-                           " (run_id, portfolio_id, strategy_id, date, symbol, quantity, average_price, unrealized_pnl, realized_pnl, last_update, updated_at) VALUES ";
+        std::string query =
+            "INSERT INTO " + table_name +
+            " (run_id, portfolio_id, strategy_id, date, symbol, quantity, average_price, "
+            "unrealized_pnl, realized_pnl, last_update, updated_at) VALUES ";
 
         bool first = true;
         for (const auto& pos : positions) {
@@ -411,7 +412,8 @@ Result<void> PostgresDatabase::store_backtest_positions_with_strategy(
                 continue;
             }
 
-            if (!first) query += ", ";
+            if (!first)
+                query += ", ";
             first = false;
 
             // Extract date from last_update timestamp (thread-safe)
@@ -424,18 +426,16 @@ Result<void> PostgresDatabase::store_backtest_positions_with_strategy(
 
             // Format timestamps using member function
             std::string last_update_str = format_timestamp(pos.last_update);
-            
-            query += "(" + txn.quote(run_id) + ", " +
-                     txn.quote(actual_portfolio_id) + ", " +
-                     txn.quote(strategy_id) + ", " +
-                     "'" + date_str + "', " +  // date column
+
+            query += "(" + txn.quote(run_id) + ", " + txn.quote(actual_portfolio_id) + ", " +
+                     txn.quote(strategy_id) + ", " + "'" + date_str + "', " +  // date column
                      txn.quote(pos.symbol) + ", " +
                      std::to_string(static_cast<double>(pos.quantity)) + ", " +
                      std::to_string(static_cast<double>(pos.average_price)) + ", " +
                      std::to_string(static_cast<double>(pos.realized_pnl)) + ", " +
-                     std::to_string(static_cast<double>(pos.unrealized_pnl)) + ", " +
-                     "'" + last_update_str + "', " +  // last_update
-                     "'" + last_update_str + "'" +    // updated_at (same as last_update)
+                     std::to_string(static_cast<double>(pos.unrealized_pnl)) + ", " + "'" +
+                     last_update_str + "', " +      // last_update
+                     "'" + last_update_str + "'" +  // updated_at (same as last_update)
                      ")";
         }
 
@@ -456,11 +456,8 @@ Result<void> PostgresDatabase::store_backtest_positions_with_strategy(
 }
 
 Result<void> PostgresDatabase::update_live_results(
-    const std::string& strategy_id,
-    const Timestamp& date,
-    const std::unordered_map<std::string, double>& updates,
-    const std::string& table_name) {
-
+    const std::string& strategy_id, const Timestamp& date,
+    const std::unordered_map<std::string, double>& updates, const std::string& table_name) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     // Validate connection
@@ -493,19 +490,20 @@ Result<void> PostgresDatabase::update_live_results(
 
         bool first = true;
         for (const auto& [column, value] : updates) {
-            if (!first) query += ", ";
+            if (!first)
+                query += ", ";
             query += column + " = " + std::to_string(value);
             first = false;
         }
 
-        query += " WHERE strategy_id = " + txn.quote(strategy_id) +
-                " AND DATE(date) = '" + format_timestamp(date).substr(0, 10) + "'";
+        query += " WHERE strategy_id = " + txn.quote(strategy_id) + " AND DATE(date) = '" +
+                 format_timestamp(date).substr(0, 10) + "'";
 
         auto result = txn.exec(query);
         txn.commit();
 
-        INFO("Updated live results for " + strategy_id + " on " + format_timestamp(date) +
-             " (" + std::to_string(result.affected_rows()) + " rows affected)");
+        INFO("Updated live results for " + strategy_id + " on " + format_timestamp(date) + " (" +
+             std::to_string(result.affected_rows()) + " rows affected)");
 
         return Result<void>();
 
@@ -515,12 +513,9 @@ Result<void> PostgresDatabase::update_live_results(
     }
 }
 
-Result<void> PostgresDatabase::update_live_equity_curve(
-    const std::string& strategy_id,
-    const Timestamp& date,
-    double equity,
-    const std::string& table_name) {
-
+Result<void> PostgresDatabase::update_live_equity_curve(const std::string& strategy_id,
+                                                        const Timestamp& date, double equity,
+                                                        const std::string& table_name) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     // Validate connection
@@ -544,16 +539,15 @@ Result<void> PostgresDatabase::update_live_equity_curve(
     try {
         pqxx::work txn(*connection_);
 
-        std::string query = "UPDATE " + table_name +
-                           " SET equity = " + std::to_string(equity) +
-                           " WHERE strategy_id = " + txn.quote(strategy_id) +
-                           " AND DATE(timestamp) = '" + format_timestamp(date).substr(0, 10) + "'";
+        std::string query = "UPDATE " + table_name + " SET equity = " + std::to_string(equity) +
+                            " WHERE strategy_id = " + txn.quote(strategy_id) +
+                            " AND DATE(timestamp) = '" + format_timestamp(date).substr(0, 10) + "'";
 
         auto result = txn.exec(query);
         txn.commit();
 
-        INFO("Updated equity curve for " + strategy_id + " on " + format_timestamp(date) +
-             " (" + std::to_string(result.affected_rows()) + " rows affected)");
+        INFO("Updated equity curve for " + strategy_id + " on " + format_timestamp(date) + " (" +
+             std::to_string(result.affected_rows()) + " rows affected)");
 
         return Result<void>();
 
@@ -563,11 +557,9 @@ Result<void> PostgresDatabase::update_live_equity_curve(
     }
 }
 
-Result<void> PostgresDatabase::delete_live_results(
-    const std::string& strategy_id,
-    const Timestamp& date,
-    const std::string& table_name) {
-
+Result<void> PostgresDatabase::delete_live_results(const std::string& strategy_id,
+                                                   const Timestamp& date,
+                                                   const std::string& table_name) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     // Validate connection
@@ -592,14 +584,14 @@ Result<void> PostgresDatabase::delete_live_results(
         pqxx::work txn(*connection_);
 
         std::string query = "DELETE FROM " + table_name +
-                           " WHERE strategy_id = " + txn.quote(strategy_id) +
-                           " AND DATE(date) = '" + format_timestamp(date).substr(0, 10) + "'";
+                            " WHERE strategy_id = " + txn.quote(strategy_id) +
+                            " AND DATE(date) = '" + format_timestamp(date).substr(0, 10) + "'";
 
         auto result = txn.exec(query);
         txn.commit();
 
-        INFO("Deleted live results for " + strategy_id + " on " + format_timestamp(date) +
-             " (" + std::to_string(result.affected_rows()) + " rows affected)");
+        INFO("Deleted live results for " + strategy_id + " on " + format_timestamp(date) + " (" +
+             std::to_string(result.affected_rows()) + " rows affected)");
 
         return Result<void>();
 
@@ -609,11 +601,9 @@ Result<void> PostgresDatabase::delete_live_results(
     }
 }
 
-Result<void> PostgresDatabase::delete_live_equity_curve(
-    const std::string& strategy_id,
-    const Timestamp& date,
-    const std::string& table_name) {
-
+Result<void> PostgresDatabase::delete_live_equity_curve(const std::string& strategy_id,
+                                                        const Timestamp& date,
+                                                        const std::string& table_name) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     // Validate connection
@@ -638,14 +628,14 @@ Result<void> PostgresDatabase::delete_live_equity_curve(
         pqxx::work txn(*connection_);
 
         std::string query = "DELETE FROM " + table_name +
-                           " WHERE strategy_id = " + txn.quote(strategy_id) +
-                           " AND DATE(timestamp) = '" + format_timestamp(date).substr(0, 10) + "'";
+                            " WHERE strategy_id = " + txn.quote(strategy_id) +
+                            " AND DATE(timestamp) = '" + format_timestamp(date).substr(0, 10) + "'";
 
         auto result = txn.exec(query);
         txn.commit();
 
-        INFO("Deleted equity curve for " + strategy_id + " on " + format_timestamp(date) +
-             " (" + std::to_string(result.affected_rows()) + " rows affected)");
+        INFO("Deleted equity curve for " + strategy_id + " on " + format_timestamp(date) + " (" +
+             std::to_string(result.affected_rows()) + " rows affected)");
 
         return Result<void>();
 
@@ -656,13 +646,10 @@ Result<void> PostgresDatabase::delete_live_equity_curve(
 }
 
 Result<void> PostgresDatabase::store_live_results_complete(
-    const std::string& strategy_id,
-    const Timestamp& date,
+    const std::string& strategy_id, const Timestamp& date,
     const std::unordered_map<std::string, double>& metrics,
-    const std::unordered_map<std::string, int>& int_metrics,
-    const nlohmann::json& config,
+    const std::unordered_map<std::string, int>& int_metrics, const nlohmann::json& config,
     const std::string& table_name) {
-
     std::lock_guard<std::mutex> lock(mutex_);
 
     // Validate connection
@@ -708,8 +695,8 @@ Result<void> PostgresDatabase::store_live_results_complete(
             values += ", " + txn.quote(config.dump());
         }
 
-        std::string query = "INSERT INTO " + table_name +
-                           " (" + columns + ") VALUES (" + values + ")";
+        std::string query =
+            "INSERT INTO " + table_name + " (" + columns + ") VALUES (" + values + ")";
 
         txn.exec(query);
         txn.commit();

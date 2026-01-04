@@ -147,7 +147,7 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
         // Get the timestamp from the first bar to determine the processing date
         auto data_time = data.empty() ? std::chrono::system_clock::now() : data[0].timestamp;
         auto previous_date = data_time - std::chrono::hours(24);
-        auto previous_positions_result = db_->load_positions_by_date(id_, previous_date, "trading.positions");
+        auto previous_positions_result = db_->load_positions_by_date(id_, "", previous_date, "trading.positions");
         
         if (previous_positions_result.is_ok()) {
             const auto& previous_positions = previous_positions_result.value();
