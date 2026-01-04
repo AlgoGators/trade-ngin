@@ -2,27 +2,25 @@
 // Implementation of live trading results storage manager
 
 #include "trade_ngin/storage/live_results_manager.hpp"
-#include "trade_ngin/core/types.hpp"
-#include "trade_ngin/core/logger.hpp"
 #include <chrono>
 #include <cmath>
 #include <iomanip>
 #include <sstream>
+#include "trade_ngin/core/logger.hpp"
+#include "trade_ngin/core/types.hpp"
 
 namespace trade_ngin {
 
-LiveResultsManager::LiveResultsManager(std::shared_ptr<PostgresDatabase> db,
-                                     bool store_enabled,
-                                     const std::string& strategy_id)
+LiveResultsManager::LiveResultsManager(std::shared_ptr<PostgresDatabase> db, bool store_enabled,
+                                       const std::string& strategy_id)
     : ResultsManagerBase(db, store_enabled, "trading", strategy_id),
       current_equity_(0.0),
       has_equity_update_(false) {
-
     INFO("Initialized LiveResultsManager for strategy: " + strategy_id);
 }
 
 std::string LiveResultsManager::generate_run_id(const std::string& strategy_id,
-                                               const Timestamp& date) {
+                                                const Timestamp& date) {
     auto time_t = std::chrono::system_clock::to_time_t(date);
 
     std::stringstream ss;
@@ -33,7 +31,7 @@ std::string LiveResultsManager::generate_run_id(const std::string& strategy_id,
 }
 
 Result<void> LiveResultsManager::save_all_results(const std::string& run_id,
-                                                 const Timestamp& date) {
+                                                  const Timestamp& date) {
     // Validate storage is enabled
     auto validation = validate_storage_enabled();
     if (validation.is_error()) {
@@ -126,7 +124,7 @@ Result<void> LiveResultsManager::delete_stale_data(const Timestamp& date) {
             order_ids.push_back(exec.order_id);
         }
 
-        result = db_->delete_stale_executions(order_ids, date, "trading.executions");
+        result = db_->delete_stale_executions(order_ids, date, strategy_id_, "trading.executions");
         if (result.is_error()) {
             WARN("Failed to delete stale executions: " + std::string(result.error()->what()));
         }
@@ -197,12 +195,11 @@ Result<void> LiveResultsManager::save_live_results(const Timestamp& date) {
         return Result<void>();
     }
 
-    INFO("Saving live results with " + std::to_string(double_metrics_.size()) +
-         " metrics");
+    INFO("Saving live results with " + std::to_string(double_metrics_.size()) + " metrics");
 
     // Use the new database extension method
-    return db_->store_live_results_complete(strategy_id_, date, double_metrics_,
-                                           int_metrics_, config_, "trading.live_results");
+    return db_->store_live_results_complete(strategy_id_, date, double_metrics_, int_metrics_,
+                                            config_, "trading.live_results");
 }
 
 Result<void> LiveResultsManager::save_equity_curve(const Timestamp& date) {
@@ -216,19 +213,21 @@ Result<void> LiveResultsManager::save_equity_curve(const Timestamp& date) {
     // 1. Zero or negative
     // 2. NaN or infinity
     // 3. Suspiciously small (< $1000 - likely garbage/uninitialized)
-    bool is_invalid = (equity_to_save <= 0.0) ||
-                      std::isnan(equity_to_save) ||
+    bool is_invalid = (equity_to_save <= 0.0) || std::isnan(equity_to_save) ||
                       std::isinf(equity_to_save) ||
                       (equity_to_save > 0.0 && equity_to_save < 1000.0);
 
     if (is_invalid) {
         WARN("Invalid equity value: " + std::to_string(equity_to_save) +
-             " (zero, negative, NaN, inf, or suspiciously small). Attempting to use previous day's value");
+             " (zero, negative, NaN, inf, or suspiciously small). Attempting to use previous day's "
+             "value");
 
         // Try to get the most recent valid equity value (>= 1000)
         std::string get_prev_equity_query =
             "SELECT equity FROM trading.equity_curve "
-            "WHERE strategy_id = '" + strategy_id_ + "' "
+            "WHERE strategy_id = '" +
+            strategy_id_ +
+            "' "
             "AND equity >= 1000.0 "
             "ORDER BY timestamp DESC LIMIT 1";
 
@@ -239,8 +238,8 @@ Result<void> LiveResultsManager::save_equity_curve(const Timestamp& date) {
             equity_to_save = array->Value(0);
             INFO("Using previous equity value: " + std::to_string(equity_to_save));
         } else {
-            ERROR("Cannot save equity curve: equity is invalid (" + std::to_string(current_equity_) +
-                  ") and no previous valid value found");
+            ERROR("Cannot save equity curve: equity is invalid (" +
+                  std::to_string(current_equity_) + ") and no previous valid value found");
             return Result<void>();  // Don't save invalid values
         }
     }
@@ -248,14 +247,14 @@ Result<void> LiveResultsManager::save_equity_curve(const Timestamp& date) {
     INFO("Saving equity curve point: " + std::to_string(equity_to_save));
 
     // Use store method which handles INSERT ... ON CONFLICT (UPSERT)
-    auto result = db_->store_trading_equity_curve(strategy_id_, date,
-                                                 equity_to_save, "trading.equity_curve");
+    auto result =
+        db_->store_trading_equity_curve(strategy_id_, date, equity_to_save, "trading.equity_curve");
 
     return result;
 }
 
-Result<void> LiveResultsManager::update_live_results(const Timestamp& date,
-                                                    const std::unordered_map<std::string, double>& updates) {
+Result<void> LiveResultsManager::update_live_results(
+    const Timestamp& date, const std::unordered_map<std::string, double>& updates) {
     if (!store_enabled_) {
         return Result<void>();
     }
@@ -280,7 +279,7 @@ Result<void> LiveResultsManager::update_equity_curve(const Timestamp& date, doub
 }
 
 bool LiveResultsManager::needs_finalization(const Timestamp& current_date,
-                                           const Timestamp& previous_date) const {
+                                            const Timestamp& previous_date) const {
     // Check if dates are different days
     auto curr_time = std::chrono::system_clock::to_time_t(current_date);
     auto prev_time = std::chrono::system_clock::to_time_t(previous_date);
@@ -288,9 +287,8 @@ bool LiveResultsManager::needs_finalization(const Timestamp& current_date,
     std::tm curr_tm = *std::gmtime(&curr_time);
     std::tm prev_tm = *std::gmtime(&prev_time);
 
-    return (curr_tm.tm_year != prev_tm.tm_year ||
-            curr_tm.tm_mon != prev_tm.tm_mon ||
+    return (curr_tm.tm_year != prev_tm.tm_year || curr_tm.tm_mon != prev_tm.tm_mon ||
             curr_tm.tm_mday != prev_tm.tm_mday);
 }
 
-} // namespace trade_ngin
+}  // namespace trade_ngin

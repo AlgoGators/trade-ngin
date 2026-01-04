@@ -4,9 +4,9 @@
 
 #include <arrow/api.h>
 #include <memory>
+#include <nlohmann/json.hpp>
 #include <string>
 #include <vector>
-#include <nlohmann/json.hpp>
 #include "trade_ngin/core/error.hpp"
 #include "trade_ngin/core/types.hpp"
 
@@ -53,20 +53,29 @@ public:
     /**
      * @brief Store trade execution data
      * @param executions Vector of execution reports
+     * @param strategy_id Combined strategy identifier (e.g.,
+     * LIVE_TREND_FOLLOWING_TREND_FOLLOWING_FAST)
+     * @param strategy_name Individual strategy name (e.g., TREND_FOLLOWING)
      * @param table_name Name of the table to insert into
      * @return Result indicating success or failure
      */
     virtual Result<void> store_executions(const std::vector<ExecutionReport>& executions,
+                                          const std::string& strategy_id,
+                                          const std::string& strategy_name,
                                           const std::string& table_name = "trading.executions") = 0;
 
     /**
      * @brief Store position data
      * @param positions Vector of positions
+     * @param strategy_id Combined strategy identifier (e.g.,
+     * LIVE_TREND_FOLLOWING_TREND_FOLLOWING_FAST)
+     * @param strategy_name Individual strategy name (e.g., TREND_FOLLOWING)
      * @param table_name Name of the table to insert into
      * @return Result indicating success or failure
      */
     virtual Result<void> store_positions(const std::vector<Position>& positions,
                                          const std::string& strategy_id,
+                                         const std::string& strategy_name,
                                          const std::string& table_name = "trading.positions") = 0;
 
     /**
@@ -83,25 +92,29 @@ public:
 
     /**
      * @brief Load positions by date and strategy
-     * @param strategy_id Strategy identifier
+     * @param strategy_id Combined strategy identifier (e.g., "LIVE_TREND_FOLLOWING_TREND_FOLLOWING_FAST")
+     * @param strategy_name Individual strategy name (e.g., "TREND_FOLLOWING"). If empty, loads all 
+     *                      positions matching the strategy_id.
      * @param date Date to load positions for
      * @param table_name Name of the positions table
      * @return Result containing map of symbol to position
      */
     virtual Result<std::unordered_map<std::string, Position>> load_positions_by_date(
-        const std::string& strategy_id, const Timestamp& date,
+        const std::string& strategy_id, const std::string& strategy_name, const Timestamp& date,
         const std::string& table_name = "trading.positions") = 0;
 
     /**
      * @brief Store strategy signals
      * @param signals Map of symbol to signal value
-     * @param strategy_id ID of the strategy generating signals
+     * @param strategy_id Combined strategy identifier
+     * @param strategy_name Individual strategy name
      * @param timestamp Timestamp of signals
      * @param table_name Name of the table to insert into
      * @return Result indicating success or failure
      */
     virtual Result<void> store_signals(const std::unordered_map<std::string, double>& signals,
-                                       const std::string& strategy_id, const Timestamp& timestamp,
+                                       const std::string& strategy_id,
+                                       const std::string& strategy_name, const Timestamp& timestamp,
                                        const std::string& table_name = "trading.signals") = 0;
 
     /**
@@ -131,10 +144,10 @@ public:
      * @param table_name Name of the table to insert into
      * @return Result indicating success or failure
      */
-    virtual Result<void> store_backtest_executions(const std::vector<ExecutionReport>& executions,
-                                                   const std::string& run_id,
-                                                   const std::string& portfolio_id = "BASE_PORTFOLIO",
-                                                   const std::string& table_name = "backtest.executions") = 0;
+    virtual Result<void> store_backtest_executions(
+        const std::vector<ExecutionReport>& executions, const std::string& run_id,
+        const std::string& portfolio_id = "BASE_PORTFOLIO",
+        const std::string& table_name = "backtest.executions") = 0;
 
     /**
      * @brief Store backtest signals
@@ -145,11 +158,11 @@ public:
      * @param table_name Name of the table to insert into
      * @return Result indicating success or failure
      */
-    virtual Result<void> store_backtest_signals(const std::unordered_map<std::string, double>& signals,
-                                                const std::string& strategy_id, const std::string& run_id,
-                                                const Timestamp& timestamp,
-                                                const std::string& portfolio_id = "BASE_PORTFOLIO",
-                                                const std::string& table_name = "backtest.signals") = 0;
+    virtual Result<void> store_backtest_signals(
+        const std::unordered_map<std::string, double>& signals, const std::string& strategy_id,
+        const std::string& run_id, const Timestamp& timestamp,
+        const std::string& portfolio_id = "BASE_PORTFOLIO",
+        const std::string& table_name = "backtest.signals") = 0;
 
     /**
      * @brief Store backtest run metadata
@@ -162,11 +175,11 @@ public:
      * @param table_name Name of the table to insert into
      * @return Result indicating success or failure
      */
-    virtual Result<void> store_backtest_metadata(const std::string& run_id, const std::string& name,
-                                                 const std::string& description, const Timestamp& start_date,
-                                                 const Timestamp& end_date, const nlohmann::json& hyperparameters,
-                                                 const std::string& portfolio_id = "BASE_PORTFOLIO",
-                                                 const std::string& table_name = "backtest.run_metadata") = 0;
+    virtual Result<void> store_backtest_metadata(
+        const std::string& run_id, const std::string& name, const std::string& description,
+        const Timestamp& start_date, const Timestamp& end_date,
+        const nlohmann::json& hyperparameters, const std::string& portfolio_id = "BASE_PORTFOLIO",
+        const std::string& table_name = "backtest.run_metadata") = 0;
 
     // ============================================================================
     // NEW METHODS FOR LIVE TRADING DATA STORAGE
@@ -199,15 +212,13 @@ public:
      * @param table_name Name of the table to insert into
      * @return Result indicating success or failure
      */
-    virtual Result<void> store_trading_results(const std::string& strategy_id, const Timestamp& date,
-                                               double total_return, double sharpe_ratio, double sortino_ratio,
-                                               double max_drawdown, double calmar_ratio, double volatility,
-                                               int total_trades, double win_rate, double profit_factor,
-                                               double avg_win, double avg_loss, double max_win, double max_loss,
-                                               double avg_holding_period, double var_95, double cvar_95,
-                                               double beta, double correlation, double downside_volatility,
-                                               const nlohmann::json& config,
-                                               const std::string& table_name = "trading.results") = 0;
+    virtual Result<void> store_trading_results(
+        const std::string& strategy_id, const Timestamp& date, double total_return,
+        double sharpe_ratio, double sortino_ratio, double max_drawdown, double calmar_ratio,
+        double volatility, int total_trades, double win_rate, double profit_factor, double avg_win,
+        double avg_loss, double max_win, double max_loss, double avg_holding_period, double var_95,
+        double cvar_95, double beta, double correlation, double downside_volatility,
+        const nlohmann::json& config, const std::string& table_name = "trading.results") = 0;
 
     /**
      * @brief Store live trading results with new schema
@@ -232,24 +243,23 @@ public:
      * @param table_name Name of the table to insert into
      * @return Result indicating success or failure
      */
-    virtual Result<void> store_live_results(const std::string& strategy_id, const Timestamp& date,
-                                           double total_return, double volatility, double total_pnl,
-                                           double unrealized_pnl, double realized_pnl, double current_portfolio_value,
-                                           double daily_realized_pnl, double daily_unrealized_pnl,
-                                           double portfolio_var, double gross_leverage, double net_leverage,
-                                           double portfolio_leverage, double margin_leverage, double margin_cushion, double max_correlation, double jump_risk,
-                                           double risk_scale, double gross_notional, double net_notional,
-                                           int active_positions, double total_commissions,
-                                           double margin_posted, double cash_available,
-                                           const nlohmann::json& config,
-                                           const std::string& table_name = "trading.live_results") = 0;
+    virtual Result<void> store_live_results(
+        const std::string& strategy_id, const Timestamp& date, double total_return,
+        double volatility, double total_pnl, double unrealized_pnl, double realized_pnl,
+        double current_portfolio_value, double daily_realized_pnl, double daily_unrealized_pnl,
+        double portfolio_var, double gross_leverage, double net_leverage, double portfolio_leverage,
+        double margin_leverage, double margin_cushion, double max_correlation, double jump_risk,
+        double risk_scale, double gross_notional, double net_notional, int active_positions,
+        double total_commissions, double margin_posted, double cash_available,
+        const nlohmann::json& config, const std::string& table_name = "trading.live_results") = 0;
 
     /**
      * @brief Fetch previous day's cumulative aggregates from live_results
      * @param strategy_id Strategy identifier
      * @param date Anchor date; the function will look up DATE(date - 1 day)
      * @param table_name Name of the live_results table
-     * @return Tuple: (previous_current_portfolio_value, previous_total_pnl, previous_total_commissions)
+     * @return Tuple: (previous_current_portfolio_value, previous_total_pnl,
+     * previous_total_commissions)
      */
     virtual Result<std::tuple<double, double, double>> get_previous_live_aggregates(
         const std::string& strategy_id, const Timestamp& date,
@@ -263,9 +273,9 @@ public:
      * @param table_name Name of the table to insert into
      * @return Result indicating success or failure
      */
-    virtual Result<void> store_trading_equity_curve(const std::string& strategy_id, const Timestamp& timestamp,
-                                                     double equity,
-                                                     const std::string& table_name = "trading.equity_curve") = 0;
+    virtual Result<void> store_trading_equity_curve(
+        const std::string& strategy_id, const Timestamp& timestamp, double equity,
+        const std::string& table_name = "trading.equity_curve") = 0;
 
     /**
      * @brief Store multiple live trading equity curve points
@@ -274,9 +284,10 @@ public:
      * @param table_name Name of the table to insert into
      * @return Result indicating success or failure
      */
-    virtual Result<void> store_trading_equity_curve_batch(const std::string& strategy_id,
-                                                          const std::vector<std::pair<Timestamp, double>>& equity_points,
-                                                          const std::string& table_name = "trading.equity_curve") = 0;
+    virtual Result<void> store_trading_equity_curve_batch(
+        const std::string& strategy_id,
+        const std::vector<std::pair<Timestamp, double>>& equity_points,
+        const std::string& table_name = "trading.equity_curve") = 0;
 
 protected:
     /**
@@ -285,7 +296,8 @@ protected:
      * @param end_date End date
      * @return Result indicating if date range is valid
      */
-    virtual Result<void> validate_date_range(const Timestamp& start_date, const Timestamp& end_date) const {
+    virtual Result<void> validate_date_range(const Timestamp& start_date,
+                                             const Timestamp& end_date) const {
         if (start_date >= end_date) {
             return make_error<void>(ErrorCode::INVALID_ARGUMENT,
                                     "Start date must be before end date", "DatabaseInterface");
