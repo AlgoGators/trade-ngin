@@ -811,8 +811,8 @@ int main(int argc, char* argv[]) {
         // Load previous day positions for PnL calculation
         INFO("Loading previous day positions for PnL calculation...");
         auto previous_date = now - std::chrono::hours(24);
-        auto previous_positions_result =
-            db->load_positions_by_date(combined_strategy_id, "", previous_date, "trading.positions");
+        auto previous_positions_result = db->load_positions_by_date(
+            combined_strategy_id, "", previous_date, "trading.positions");
         std::unordered_map<std::string, Position> previous_positions;
 
         if (previous_positions_result.is_ok()) {
@@ -897,7 +897,7 @@ int main(int argc, char* argv[]) {
                 // to ensure we only get positions from this specific run
                 auto prev_strategy_positions_result =
                     db->load_positions_by_date(combined_strategy_id,  // Combined strategy_id
-                                               strategy_name,  // Individual strategy_name
+                                               strategy_name,         // Individual strategy_name
                                                previous_date, "trading.positions");
 
                 if (prev_strategy_positions_result.is_error()) {
@@ -1032,12 +1032,12 @@ int main(int argc, char* argv[]) {
             previous_strategy_positions;
 
         for (const auto& [strategy_name, _] : strategy_positions_map) {
-            // Load previous positions filtering by BOTH combined_strategy_id AND individual 
+            // Load previous positions filtering by BOTH combined_strategy_id AND individual
             // strategy_name to ensure we only get positions from this specific run
-            auto prev_result = db->load_positions_by_date(
-                combined_strategy_id,  // Combined strategy_id
-                strategy_name,  // Individual strategy_name
-                previous_date, "trading.positions");
+            auto prev_result =
+                db->load_positions_by_date(combined_strategy_id,  // Combined strategy_id
+                                           strategy_name,         // Individual strategy_name
+                                           previous_date, "trading.positions");
 
             if (prev_result.is_ok()) {
                 previous_strategy_positions[strategy_name] = prev_result.value();
@@ -1260,15 +1260,19 @@ int main(int argc, char* argv[]) {
 
                 // CRITICAL: For PnL lag model, Day T positions must have ZERO PnL (placeholders)
                 // The PnL will be finalized tomorrow when we run for Day T+1
-                // Do NOT use pos.realized_pnl which contains calculated PnL from strategy processing
-                validated_position.realized_pnl = Decimal(0.0);  // PLACEHOLDER - will be finalized tomorrow
-                validated_position.unrealized_pnl = Decimal(0.0);    // Always 0 for futures
+                // Do NOT use pos.realized_pnl which contains calculated PnL from strategy
+                // processing
+                validated_position.realized_pnl =
+                    Decimal(0.0);  // PLACEHOLDER - will be finalized tomorrow
+                validated_position.unrealized_pnl = Decimal(0.0);  // Always 0 for futures
 
                 // For Day T positions, average_price should be Day T-1 close (entry price)
-                // This is the price at which positions were "executed" (opened at yesterday's close)
-                double avg_price_double = previous_day_close_prices.find(symbol) != previous_day_close_prices.end()
-                                             ? previous_day_close_prices[symbol]
-                                             : static_cast<double>(pos.average_price);
+                // This is the price at which positions were "executed" (opened at yesterday's
+                // close)
+                double avg_price_double =
+                    previous_day_close_prices.find(symbol) != previous_day_close_prices.end()
+                        ? previous_day_close_prices[symbol]
+                        : static_cast<double>(pos.average_price);
 
                 // Decimal limit is approximately 92,233,720,368,547.75807
                 const double DECIMAL_MAX = 9.223372036854775807e13;  // INT64_MAX / SCALE
@@ -1705,8 +1709,9 @@ int main(int argc, char* argv[]) {
                 INFO("Query returned " + std::to_string(table->num_rows()) + " rows");
 
                 if (table->num_rows() > 0) {
+                    // NOTE: execute_query returns StringArray for all columns
                     auto array =
-                        std::static_pointer_cast<arrow::DoubleArray>(table->column(0)->chunk(0));
+                        std::static_pointer_cast<arrow::StringArray>(table->column(0)->chunk(0));
 
                     // Check for NULL value before reading
                     if (array->IsNull(0)) {
@@ -1715,7 +1720,8 @@ int main(int argc, char* argv[]) {
                             "for date " +
                             yesterday_date_ss.str());
                     } else {
-                        double portfolio_value = array->Value(0);
+                        // Parse string to double
+                        double portfolio_value = std::stod(array->GetString(0));
                         INFO("Raw value read from database: " + std::to_string(portfolio_value));
 
                         // Validate the value before using it
@@ -1735,6 +1741,46 @@ int main(int argc, char* argv[]) {
                             INFO("✓ Valid portfolio value for Day T-1: $" +
                                  std::to_string(portfolio_value));
 
+                            // DEBUG: Log the exact timestamp being used for the update
+                            auto prev_time_t = std::chrono::system_clock::to_time_t(previous_date);
+                            std::stringstream prev_ts_ss;
+                            prev_ts_ss
+                                << std::put_time(std::gmtime(&prev_time_t), "%Y-%m-%d %H:%M:%S");
+                            INFO("DEBUG: previous_date timestamp for equity curve update: " +
+                                 prev_ts_ss.str());
+
+                            // DEBUG: Query existing equity_curve timestamp for this date
+                            std::string debug_eq_query =
+                                "SELECT timestamp, equity FROM trading.equity_curve "
+                                "WHERE strategy_id = '" +
+                                combined_strategy_id +
+                                "' "
+                                "AND DATE(timestamp) = '" +
+                                yesterday_date_ss.str() +
+                                "' "
+                                "ORDER BY timestamp";
+                            auto debug_result = db->execute_query(debug_eq_query);
+                            if (debug_result.is_ok() && debug_result.value()->num_rows() > 0) {
+                                INFO("DEBUG: Existing equity_curve entries for " +
+                                     yesterday_date_ss.str() + ":");
+                                auto debug_table = debug_result.value();
+                                for (int64_t i = 0; i < debug_table->num_rows(); ++i) {
+                                    auto ts_arr = std::static_pointer_cast<arrow::StringArray>(
+                                        debug_table->column(0)->chunk(0));
+                                    // execute_query returns StringArray for all columns
+                                    auto eq_arr = std::static_pointer_cast<arrow::StringArray>(
+                                        debug_table->column(1)->chunk(0));
+                                    if (!ts_arr->IsNull(i) && !eq_arr->IsNull(i)) {
+                                        INFO("DEBUG:   Existing row: timestamp=" +
+                                             ts_arr->GetString(i) +
+                                             ", equity=" + eq_arr->GetString(i));
+                                    }
+                                }
+                            } else {
+                                INFO("DEBUG: No existing equity_curve entry found for " +
+                                     yesterday_date_ss.str());
+                            }
+
                             // Create a temporary LiveResultsManager for Day T-1 equity update
                             auto yesterday_manager = std::make_unique<LiveResultsManager>(
                                 db, true, combined_strategy_id);
@@ -1748,6 +1794,27 @@ int main(int argc, char* argv[]) {
                             } else {
                                 INFO("Successfully updated Day T-1 equity_curve with value: " +
                                      std::to_string(portfolio_value));
+
+                                // DEBUG: Verify what was actually saved
+                                auto verify_result = db->execute_query(debug_eq_query);
+                                if (verify_result.is_ok() &&
+                                    verify_result.value()->num_rows() > 0) {
+                                    INFO("DEBUG: After update, equity_curve entries for " +
+                                         yesterday_date_ss.str() + ":");
+                                    auto verify_table = verify_result.value();
+                                    for (int64_t i = 0; i < verify_table->num_rows(); ++i) {
+                                        auto ts_arr = std::static_pointer_cast<arrow::StringArray>(
+                                            verify_table->column(0)->chunk(0));
+                                        // execute_query returns StringArray for all columns
+                                        auto eq_arr = std::static_pointer_cast<arrow::StringArray>(
+                                            verify_table->column(1)->chunk(0));
+                                        if (!ts_arr->IsNull(i) && !eq_arr->IsNull(i)) {
+                                            INFO("DEBUG:   Row after update: timestamp=" +
+                                                 ts_arr->GetString(i) +
+                                                 ", equity=" + eq_arr->GetString(i));
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
