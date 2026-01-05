@@ -21,6 +21,7 @@ set(TEST_SOURCES
     portfolio/test_portfolio_manager.cpp
     strategy/test_base_strategy.cpp
     strategy/test_trend_following.cpp
+    statistics/test_statistics_tools.cpp
 )
 
 # Create test executable
