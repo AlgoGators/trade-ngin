@@ -89,12 +89,14 @@ public:
      * "LIVE_TREND_FOLLOWING_TREND_FOLLOWING_FAST")
      * @param strategy_name Individual strategy name (e.g., "TREND_FOLLOWING"). If empty, loads all
      *                      positions matching the strategy_id.
+     * @param portfolio_id Portfolio identifier (e.g., BASE_PORTFOLIO, CONSERVATIVE_PORTFOLIO)
      * @param date Date to load positions for
      * @param table_name Name of the positions table
      * @return Result containing map of symbol to position
      */
     Result<std::unordered_map<std::string, Position>> load_positions_by_date(
-        const std::string& strategy_id, const std::string& strategy_name, const Timestamp& date,
+        const std::string& strategy_id, const std::string& strategy_name,
+        const std::string& portfolio_id, const Timestamp& date,
         const std::string& table_name = "trading.positions") override;
 
     /**
@@ -102,11 +104,13 @@ public:
      * @param executions List of execution reports
      * @param strategy_id Combined strategy identifier
      * @param strategy_name Individual strategy name
+     * @param portfolio_id Portfolio identifier
      * @param table_name Name of the table to store data
      * @return Result indicating success or failure
      */
     Result<void> store_executions(const std::vector<ExecutionReport>& executions,
                                   const std::string& strategy_id, const std::string& strategy_name,
+                                  const std::string& portfolio_id,
                                   const std::string& table_name) override;
 
     /**
@@ -114,11 +118,13 @@ public:
      * @param positions List of positions
      * @param strategy_id Combined strategy identifier
      * @param strategy_name Individual strategy name
+     * @param portfolio_id Portfolio identifier
      * @param table_name Name of the table to store data
      * @return Result indicating success or failure
      */
     Result<void> store_positions(const std::vector<Position>& positions,
                                  const std::string& strategy_id, const std::string& strategy_name,
+                                 const std::string& portfolio_id,
                                  const std::string& table_name) override;
 
     /**
@@ -126,13 +132,15 @@ public:
      * @param signals Map of signals by symbol
      * @param strategy_id Combined strategy identifier
      * @param strategy_name Individual strategy name
+     * @param portfolio_id Portfolio identifier
      * @param timestamp Timestamp for the signals
      * @param table_name Name of the table to store data
      * @return Result indicating success or failure
      */
     Result<void> store_signals(const std::unordered_map<std::string, double>& signals,
                                const std::string& strategy_id, const std::string& strategy_name,
-                               const Timestamp& timestamp, const std::string& table_name) override;
+                               const std::string& portfolio_id, const Timestamp& timestamp,
+                               const std::string& table_name) override;
 
     /**
      * @brief Get a list of symbols from the database
@@ -297,7 +305,7 @@ public:
         const std::string& table_name = "trading.live_results") override;
 
     Result<std::tuple<double, double, double>> get_previous_live_aggregates(
-        const std::string& strategy_id, const Timestamp& date,
+        const std::string& strategy_id, const std::string& portfolio_id, const Timestamp& date,
         const std::string& table_name = "trading.live_results") override;
 
     /**
@@ -305,23 +313,27 @@ public:
      * @param strategy_id Strategy identifier
      * @param timestamp Timestamp of the equity point
      * @param equity Equity value
+     * @param portfolio_id Portfolio identifier
      * @param table_name Name of the table to insert into
      * @return Result indicating success or failure
      */
     Result<void> store_trading_equity_curve(
         const std::string& strategy_id, const Timestamp& timestamp, double equity,
+        const std::string& portfolio_id,
         const std::string& table_name = "trading.equity_curve") override;
 
     /**
      * @brief Store multiple live trading equity curve points
      * @param strategy_id Strategy identifier
      * @param equity_points Vector of timestamp-equity pairs
+     * @param portfolio_id Portfolio identifier
      * @param table_name Name of the table to insert into
      * @return Result indicating success or failure
      */
     Result<void> store_trading_equity_curve_batch(
         const std::string& strategy_id,
         const std::vector<std::pair<Timestamp, double>>& equity_points,
+        const std::string& portfolio_id,
         const std::string& table_name = "trading.equity_curve") override;
 
     // ============================================================================
@@ -389,11 +401,13 @@ public:
      * @param strategy_id Strategy identifier
      * @param date Date to update
      * @param updates Map of column name to new value
+     * @param portfolio_id Portfolio identifier
      * @param table_name Name of the live results table
      * @return Result indicating success or failure
      */
     Result<void> update_live_results(const std::string& strategy_id, const Timestamp& date,
                                      const std::unordered_map<std::string, double>& updates,
+                                     const std::string& portfolio_id,
                                      const std::string& table_name = "trading.live_results");
 
     /**
@@ -401,31 +415,36 @@ public:
      * @param strategy_id Strategy identifier
      * @param date Date to update
      * @param equity New equity value
+     * @param portfolio_id Portfolio identifier
      * @param table_name Name of the equity curve table
      * @return Result indicating success or failure
      */
     Result<void> update_live_equity_curve(const std::string& strategy_id, const Timestamp& date,
-                                          double equity,
+                                          double equity, const std::string& portfolio_id,
                                           const std::string& table_name = "trading.equity_curve");
 
     /**
      * @brief Delete existing live results for a date (replaces raw SQL DELETE)
      * @param strategy_id Strategy identifier
      * @param date Date to delete
+     * @param portfolio_id Portfolio identifier
      * @param table_name Name of the live results table
      * @return Result indicating success or failure
      */
     Result<void> delete_live_results(const std::string& strategy_id, const Timestamp& date,
+                                     const std::string& portfolio_id,
                                      const std::string& table_name = "trading.live_results");
 
     /**
      * @brief Delete existing equity curve entry for a date (replaces raw SQL DELETE)
      * @param strategy_id Strategy identifier
      * @param date Date to delete
+     * @param portfolio_id Portfolio identifier
      * @param table_name Name of the equity curve table
      * @return Result indicating success or failure
      */
     Result<void> delete_live_equity_curve(const std::string& strategy_id, const Timestamp& date,
+                                          const std::string& portfolio_id,
                                           const std::string& table_name = "trading.equity_curve");
 
     /**
@@ -440,6 +459,7 @@ public:
         const std::string& strategy_id, const Timestamp& date,
         const std::unordered_map<std::string, double>& metrics,
         const std::unordered_map<std::string, int>& int_metrics, const nlohmann::json& config,
+        const std::string& portfolio_id = "BASE_PORTFOLIO",
         const std::string& table_name = "trading.live_results");
 
     /**

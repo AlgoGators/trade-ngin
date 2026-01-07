@@ -73,8 +73,8 @@ TEST_F(PostgresDatabaseTest, StoreExecutions) {
     ASSERT_TRUE(connect_result.is_ok());
 
     auto executions = create_test_executions();
-    auto result =
-        db->store_executions(executions, "TEST_STRATEGY", "TEST_STRATEGY", "trading.executions");
+    auto result = db->store_executions(executions, "TEST_STRATEGY", "TEST_STRATEGY",
+                                       "BASE_PORTFOLIO", "trading.executions");
 
     ASSERT_TRUE(result.is_ok());
 }
@@ -84,8 +84,8 @@ TEST_F(PostgresDatabaseTest, StorePositions) {
     ASSERT_TRUE(connect_result.is_ok());
 
     auto positions = create_test_positions();
-    auto result =
-        db->store_positions(positions, "TEST_STRATEGY", "TEST_STRATEGY", "trading.positions");
+    auto result = db->store_positions(positions, "TEST_STRATEGY", "TEST_STRATEGY", "BASE_PORTFOLIO",
+                                      "trading.positions");
 
     ASSERT_TRUE(result.is_ok());
 }
@@ -96,7 +96,7 @@ TEST_F(PostgresDatabaseTest, StoreSignals) {
 
     std::unordered_map<std::string, double> signals = {{"AAPL", 1.5}, {"MSFT", -0.8}};
 
-    auto result = db->store_signals(signals, "test_strategy", "test_strategy",
+    auto result = db->store_signals(signals, "test_strategy", "test_strategy", "BASE_PORTFOLIO",
                                     std::chrono::system_clock::now(), "trading.signals");
 
     ASSERT_TRUE(result.is_ok());
@@ -140,8 +140,8 @@ TEST_F(PostgresDatabaseTest, DisconnectedOperations) {
 
     // Store executions
     ExecutionReport exec;
-    auto result2 =
-        db->store_executions({exec}, "TEST_STRATEGY", "TEST_STRATEGY", "trading.executions");
+    auto result2 = db->store_executions({exec}, "TEST_STRATEGY", "TEST_STRATEGY", "BASE_PORTFOLIO",
+                                        "trading.executions");
     EXPECT_TRUE(result2.is_error());
     EXPECT_EQ(result2.error()->code(), ErrorCode::DATABASE_ERROR);
 
@@ -158,7 +158,7 @@ TEST_F(PostgresDatabaseTest, InvalidTableNames) {
     // Try to store executions in a non-existent table
     auto executions = create_test_executions();
     auto result = db->store_executions(executions, "TEST_STRATEGY", "TEST_STRATEGY",
-                                       "invalid_schema.invalid_table");
+                                       "BASE_PORTFOLIO", "invalid_schema.invalid_table");
 
     EXPECT_TRUE(result.is_error());
     EXPECT_EQ(result.error()->code(), ErrorCode::DATABASE_ERROR);
@@ -189,7 +189,7 @@ TEST_F(PostgresDatabaseTest, ConcurrentAccess) {
                 case 1: {
                     auto positions = create_test_positions();
                     auto result = db->store_positions(positions, "TEST_STRATEGY", "TEST_STRATEGY",
-                                                      "trading.positions");
+                                                      "BASE_PORTFOLIO", "trading.positions");
                     if (result.is_ok())
                         success_count++;
                     break;
@@ -273,8 +273,8 @@ TEST_F(PostgresDatabaseTest, TransactionRollback) {
 
     // First store some valid positions
     auto positions = create_test_positions();
-    auto result =
-        db->store_positions(positions, "TEST_STRATEGY", "TEST_STRATEGY", "trading.positions");
+    auto result = db->store_positions(positions, "TEST_STRATEGY", "TEST_STRATEGY", "BASE_PORTFOLIO",
+                                      "trading.positions");
     ASSERT_TRUE(result.is_ok());
 
     // Try to store invalid positions (create a position with invalid values)
@@ -282,7 +282,8 @@ TEST_F(PostgresDatabaseTest, TransactionRollback) {
     invalid_pos.symbol = std::string(1000, 'A');  // Too long for DB column
     positions.push_back(invalid_pos);
 
-    result = db->store_positions(positions, "TEST_STRATEGY", "TEST_STRATEGY", "trading.positions");
+    result = db->store_positions(positions, "TEST_STRATEGY", "TEST_STRATEGY", "BASE_PORTFOLIO",
+                                 "trading.positions");
     EXPECT_TRUE(result.is_error());
     EXPECT_EQ(result.error()->code(), ErrorCode::DATABASE_ERROR);
 

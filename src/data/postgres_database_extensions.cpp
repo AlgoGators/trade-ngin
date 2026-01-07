@@ -457,7 +457,8 @@ Result<void> PostgresDatabase::store_backtest_positions_with_strategy(
 
 Result<void> PostgresDatabase::update_live_results(
     const std::string& strategy_id, const Timestamp& date,
-    const std::unordered_map<std::string, double>& updates, const std::string& table_name) {
+    const std::unordered_map<std::string, double>& updates, const std::string& portfolio_id,
+    const std::string& table_name) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     // Validate connection
@@ -485,6 +486,9 @@ Result<void> PostgresDatabase::update_live_results(
     try {
         pqxx::work txn(*connection_);
 
+        // Use actual portfolio_id or default to BASE_PORTFOLIO for backward compatibility
+        std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
+
         // Build UPDATE query
         std::string query = "UPDATE " + table_name + " SET ";
 
@@ -496,7 +500,8 @@ Result<void> PostgresDatabase::update_live_results(
             first = false;
         }
 
-        query += " WHERE strategy_id = " + txn.quote(strategy_id) + " AND DATE(date) = '" +
+        query += " WHERE strategy_id = " + txn.quote(strategy_id) +
+                 " AND portfolio_id = " + txn.quote(actual_portfolio_id) + " AND DATE(date) = '" +
                  format_timestamp(date).substr(0, 10) + "'";
 
         auto result = txn.exec(query);
@@ -515,6 +520,7 @@ Result<void> PostgresDatabase::update_live_results(
 
 Result<void> PostgresDatabase::update_live_equity_curve(const std::string& strategy_id,
                                                         const Timestamp& date, double equity,
+                                                        const std::string& portfolio_id,
                                                         const std::string& table_name) {
     std::lock_guard<std::mutex> lock(mutex_);
 
@@ -539,8 +545,12 @@ Result<void> PostgresDatabase::update_live_equity_curve(const std::string& strat
     try {
         pqxx::work txn(*connection_);
 
+        // Use actual portfolio_id or default to BASE_PORTFOLIO for backward compatibility
+        std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
+
         std::string query = "UPDATE " + table_name + " SET equity = " + std::to_string(equity) +
                             " WHERE strategy_id = " + txn.quote(strategy_id) +
+                            " AND portfolio_id = " + txn.quote(actual_portfolio_id) +
                             " AND DATE(timestamp) = '" + format_timestamp(date).substr(0, 10) + "'";
 
         auto result = txn.exec(query);
@@ -559,6 +569,7 @@ Result<void> PostgresDatabase::update_live_equity_curve(const std::string& strat
 
 Result<void> PostgresDatabase::delete_live_results(const std::string& strategy_id,
                                                    const Timestamp& date,
+                                                   const std::string& portfolio_id,
                                                    const std::string& table_name) {
     std::lock_guard<std::mutex> lock(mutex_);
 
@@ -583,15 +594,20 @@ Result<void> PostgresDatabase::delete_live_results(const std::string& strategy_i
     try {
         pqxx::work txn(*connection_);
 
+        // Use actual portfolio_id or default to BASE_PORTFOLIO for backward compatibility
+        std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
+
         std::string query = "DELETE FROM " + table_name +
                             " WHERE strategy_id = " + txn.quote(strategy_id) +
+                            " AND portfolio_id = " + txn.quote(actual_portfolio_id) +
                             " AND DATE(date) = '" + format_timestamp(date).substr(0, 10) + "'";
 
         auto result = txn.exec(query);
         txn.commit();
 
-        INFO("Deleted live results for " + strategy_id + " on " + format_timestamp(date) + " (" +
-             std::to_string(result.affected_rows()) + " rows affected)");
+        INFO("Deleted live results for " + strategy_id + " (portfolio: " + actual_portfolio_id +
+             ") on " + format_timestamp(date) + " (" + std::to_string(result.affected_rows()) +
+             " rows affected)");
 
         return Result<void>();
 
@@ -603,6 +619,7 @@ Result<void> PostgresDatabase::delete_live_results(const std::string& strategy_i
 
 Result<void> PostgresDatabase::delete_live_equity_curve(const std::string& strategy_id,
                                                         const Timestamp& date,
+                                                        const std::string& portfolio_id,
                                                         const std::string& table_name) {
     std::lock_guard<std::mutex> lock(mutex_);
 
@@ -627,15 +644,20 @@ Result<void> PostgresDatabase::delete_live_equity_curve(const std::string& strat
     try {
         pqxx::work txn(*connection_);
 
+        // Use actual portfolio_id or default to BASE_PORTFOLIO for backward compatibility
+        std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
+
         std::string query = "DELETE FROM " + table_name +
                             " WHERE strategy_id = " + txn.quote(strategy_id) +
+                            " AND portfolio_id = " + txn.quote(actual_portfolio_id) +
                             " AND DATE(timestamp) = '" + format_timestamp(date).substr(0, 10) + "'";
 
         auto result = txn.exec(query);
         txn.commit();
 
-        INFO("Deleted equity curve for " + strategy_id + " on " + format_timestamp(date) + " (" +
-             std::to_string(result.affected_rows()) + " rows affected)");
+        INFO("Deleted equity curve for " + strategy_id + " (portfolio: " + actual_portfolio_id +
+             ") on " + format_timestamp(date) + " (" + std::to_string(result.affected_rows()) +
+             " rows affected)");
 
         return Result<void>();
 
@@ -649,7 +671,7 @@ Result<void> PostgresDatabase::store_live_results_complete(
     const std::string& strategy_id, const Timestamp& date,
     const std::unordered_map<std::string, double>& metrics,
     const std::unordered_map<std::string, int>& int_metrics, const nlohmann::json& config,
-    const std::string& table_name) {
+    const std::string& portfolio_id, const std::string& table_name) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     // Validate connection
@@ -673,9 +695,13 @@ Result<void> PostgresDatabase::store_live_results_complete(
     try {
         pqxx::work txn(*connection_);
 
-        // Build column list and values
-        std::string columns = "strategy_id, date";
-        std::string values = txn.quote(strategy_id) + ", '" + format_timestamp(date) + "'";
+        // Use provided portfolio_id or default to BASE_PORTFOLIO
+        std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
+
+        // Build column list and values - include portfolio_id
+        std::string columns = "strategy_id, portfolio_id, date";
+        std::string values = txn.quote(strategy_id) + ", " + txn.quote(actual_portfolio_id) +
+                             ", '" + format_timestamp(date) + "'";
 
         // Add double metrics
         for (const auto& [column, value] : metrics) {
@@ -701,7 +727,8 @@ Result<void> PostgresDatabase::store_live_results_complete(
         txn.exec(query);
         txn.commit();
 
-        INFO("Stored complete live results for " + strategy_id + " on " + format_timestamp(date));
+        INFO("Stored complete live results for " + strategy_id +
+             " (portfolio: " + actual_portfolio_id + ") on " + format_timestamp(date));
 
         return Result<void>();
 

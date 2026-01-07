@@ -27,7 +27,8 @@ TrendFollowingSlowStrategy::TrendFollowingSlowStrategy(std::string id, StrategyC
 
     // Initialize metadata
     metadata_.name = "Slow Trend Following Strategy";
-    metadata_.description = "Multi-timeframe slow trend following using longer EMA crossovers with lower risk target";
+    metadata_.description =
+        "Multi-timeframe slow trend following using longer EMA crossovers with lower risk target";
 }
 
 Result<void> TrendFollowingSlowStrategy::validate_config() const {
@@ -127,8 +128,9 @@ Result<void> TrendFollowingSlowStrategy::on_data(const std::vector<Bar>& data) {
     static int on_data_call_count = 0;
     ++on_data_call_count;
     if (on_data_call_count <= 5 || on_data_call_count % 1000 == 0) {
-        auto ts_str = data.empty() ? "N/A" :
-            std::to_string(std::chrono::system_clock::to_time_t(data[0].timestamp));
+        auto ts_str = data.empty()
+                          ? "N/A"
+                          : std::to_string(std::chrono::system_clock::to_time_t(data[0].timestamp));
         INFO("ON_DATA #" + std::to_string(on_data_call_count) + ": called with " +
              std::to_string(data.size()) + " bars, first timestamp=" + ts_str);
     }
@@ -147,14 +149,17 @@ Result<void> TrendFollowingSlowStrategy::on_data(const std::vector<Bar>& data) {
         // Get the timestamp from the first bar to determine the processing date
         auto data_time = data.empty() ? std::chrono::system_clock::now() : data[0].timestamp;
         auto previous_date = data_time - std::chrono::hours(24);
-        auto previous_positions_result = db_->load_positions_by_date(id_, "", previous_date, "trading.positions");
-        
+        auto previous_positions_result =
+            db_->load_positions_by_date(id_, "", "", previous_date, "trading.positions");
+
         if (previous_positions_result.is_ok()) {
             const auto& previous_positions = previous_positions_result.value();
-            INFO("Loaded " + std::to_string(previous_positions.size()) + " previous day positions for PnL calculation");
+            INFO("Loaded " + std::to_string(previous_positions.size()) +
+                 " previous day positions for PnL calculation");
             previous_positions_ = previous_positions;
         } else {
-            INFO("No previous day positions found (first run or no data): " + std::string(previous_positions_result.error()->what()));
+            INFO("No previous day positions found (first run or no data): " +
+                 std::string(previous_positions_result.error()->what()));
         }
         previous_positions_loaded = true;
     }
@@ -205,7 +210,7 @@ Result<void> TrendFollowingSlowStrategy::on_data(const std::vector<Bar>& data) {
             // Update price history
             for (const auto& bar : symbol_bars) {
                 instrument_data.price_history.push_back(static_cast<double>(bar.close));
-                
+
                 // MEMORY FIX: Limit price history to maximum needed lookback (2520 days)
                 if (instrument_data.price_history.size() > 2520) {
                     instrument_data.price_history.erase(instrument_data.price_history.begin());
@@ -260,14 +265,13 @@ Result<void> TrendFollowingSlowStrategy::on_data(const std::vector<Bar>& data) {
             // Save volatility history with memory management
             instrument_data.volatility_history = volatility;
             instrument_data.current_volatility = volatility.back();
-            
+
             // MEMORY FIX: Limit volatility history to prevent unbounded growth
             if (instrument_data.volatility_history.size() > 2520) {
                 instrument_data.volatility_history.erase(
                     instrument_data.volatility_history.begin(),
-                    instrument_data.volatility_history.begin() + 
-                    (instrument_data.volatility_history.size() - 2520)
-                );
+                    instrument_data.volatility_history.begin() +
+                        (instrument_data.volatility_history.size() - 2520));
             }
 
             // Get raw combined forecast
@@ -437,10 +441,10 @@ Result<void> TrendFollowingSlowStrategy::on_data(const std::vector<Bar>& data) {
             pos.symbol = symbol;
             pos.quantity = final_position;
             pos.last_update = symbol_bars.back().timestamp;
-            
+
             // Get current market price
             double current_price = static_cast<double>(symbol_bars.back().close);
-            
+
             // Get previous position for PnL calculation
             // First try previous_positions_ (DB data for live trading first day)
             // Then fall back to positions_ (in-memory data for backtest/subsequent days)
@@ -463,35 +467,44 @@ Result<void> TrendFollowingSlowStrategy::on_data(const std::vector<Bar>& data) {
                     previous_realized_pnl = static_cast<double>(pos_it->second.realized_pnl);
                 }
             }
-            
+
             // Calculate realized PnL from position changes
             double position_realized_pnl = 0.0;
             double new_avg_price = current_price;
-            
+
             if (previous_quantity != 0.0 && final_position != 0.0) {
                 // Position size changed - calculate realized PnL for the difference
                 double qty_change = final_position - previous_quantity;
                 if (std::abs(qty_change) > 1e-6) {
                     // Check if position is being reduced (same sign, smaller magnitude)
-                    if ((previous_quantity > 0 && final_position > 0 && final_position < previous_quantity) ||
-                        (previous_quantity < 0 && final_position < 0 && std::abs(final_position) < std::abs(previous_quantity))) {
+                    if ((previous_quantity > 0 && final_position > 0 &&
+                         final_position < previous_quantity) ||
+                        (previous_quantity < 0 && final_position < 0 &&
+                         std::abs(final_position) < std::abs(previous_quantity))) {
                         // Position reduced - realize PnL on the closed portion
                         double closed_qty = previous_quantity - final_position;
                         double point_value = get_point_value_multiplier(symbol);
-                        position_realized_pnl = closed_qty * (current_price - previous_avg_price) * point_value;
+                        position_realized_pnl =
+                            closed_qty * (current_price - previous_avg_price) * point_value;
                         // Keep the same average price for remaining position
                         new_avg_price = previous_avg_price;
-                    } else if ((previous_quantity > 0 && final_position > 0 && final_position > previous_quantity) ||
-                               (previous_quantity < 0 && final_position < 0 && std::abs(final_position) > std::abs(previous_quantity))) {
-                        // Position increased in same direction - calculate new weighted average price
+                    } else if ((previous_quantity > 0 && final_position > 0 &&
+                                final_position > previous_quantity) ||
+                               (previous_quantity < 0 && final_position < 0 &&
+                                std::abs(final_position) > std::abs(previous_quantity))) {
+                        // Position increased in same direction - calculate new weighted average
+                        // price
                         double additional_qty = final_position - previous_quantity;
-                        double total_cost = previous_quantity * previous_avg_price + additional_qty * current_price;
+                        double total_cost =
+                            previous_quantity * previous_avg_price + additional_qty * current_price;
                         new_avg_price = total_cost / final_position;
-                        position_realized_pnl = 0.0; // No PnL realized when increasing position
-                    } else if ((previous_quantity > 0 && final_position < 0) || (previous_quantity < 0 && final_position > 0)) {
+                        position_realized_pnl = 0.0;  // No PnL realized when increasing position
+                    } else if ((previous_quantity > 0 && final_position < 0) ||
+                               (previous_quantity < 0 && final_position > 0)) {
                         // Position reversal - close old position and open new one
                         double point_value = get_point_value_multiplier(symbol);
-                        position_realized_pnl = previous_quantity * (current_price - previous_avg_price) * point_value;
+                        position_realized_pnl =
+                            previous_quantity * (current_price - previous_avg_price) * point_value;
                         new_avg_price = current_price;
                     }
                 } else {
@@ -501,7 +514,8 @@ Result<void> TrendFollowingSlowStrategy::on_data(const std::vector<Bar>& data) {
             } else if (previous_quantity != 0.0 && final_position == 0.0) {
                 // Position completely closed - realize all PnL
                 double point_value = get_point_value_multiplier(symbol);
-                position_realized_pnl = previous_quantity * (current_price - previous_avg_price) * point_value;
+                position_realized_pnl =
+                    previous_quantity * (current_price - previous_avg_price) * point_value;
                 new_avg_price = current_price;
             } else if (previous_quantity == 0.0 && final_position != 0.0) {
                 // New position - no realized PnL, use current price as average
@@ -512,10 +526,10 @@ Result<void> TrendFollowingSlowStrategy::on_data(const std::vector<Bar>& data) {
                 new_avg_price = previous_avg_price;
                 position_realized_pnl = 0.0;
             }
-            
+
             // Set position values
             pos.average_price = new_avg_price;
-            
+
             // For futures (marked-to-market): calculate mark-to-market PnL
             // In REALIZED_ONLY accounting, this becomes realized PnL due to daily settlement
             double mark_to_market_pnl = 0.0;
@@ -524,22 +538,24 @@ Result<void> TrendFollowingSlowStrategy::on_data(const std::vector<Bar>& data) {
                 double point_value = get_point_value_multiplier(symbol);
                 mark_to_market_pnl = final_position * (current_price - new_avg_price) * point_value;
             }
-            
+
             // Calculate the daily PnL for this position
             double daily_realized_pnl = position_realized_pnl;
-            
-            // For futures with REALIZED_ONLY accounting: all PnL is realized due to daily settlement
+
+            // For futures with REALIZED_ONLY accounting: all PnL is realized due to daily
+            // settlement
             if (pnl_accounting_.method == PnLAccountingMethod::REALIZED_ONLY) {
                 daily_realized_pnl += mark_to_market_pnl;
                 pos.unrealized_pnl = Decimal(0.0);  // Always zero for futures
                 // Reset average price to current price after daily settlement
-                // This prevents double-counting: next day's mark-to-market only captures that day's change
+                // This prevents double-counting: next day's mark-to-market only captures that day's
+                // change
                 pos.average_price = current_price;
             } else {
                 // For other accounting methods, use traditional unrealized PnL
                 pos.unrealized_pnl = Decimal(mark_to_market_pnl);
             }
-            
+
             // Store PnL based on mode:
             // - Backtest mode: store DAILY PnL only (for correct equity curve accumulation)
             // - Live mode: store CUMULATIVE PnL (for compatibility with existing systems)
@@ -550,23 +566,24 @@ Result<void> TrendFollowingSlowStrategy::on_data(const std::vector<Bar>& data) {
                 // Live: accumulate PnL across days
                 pos.realized_pnl = Decimal(previous_realized_pnl + daily_realized_pnl);
             }
-            
+
             // Add position-specific realized PnL to accounting system
             if (std::abs(daily_realized_pnl) > 1e-6) {
                 pnl_accounting_.add_realized_pnl(daily_realized_pnl);
             }
-            if (std::abs(mark_to_market_pnl) > 1e-6 && pnl_accounting_.method != PnLAccountingMethod::REALIZED_ONLY) {
+            if (std::abs(mark_to_market_pnl) > 1e-6 &&
+                pnl_accounting_.method != PnLAccountingMethod::REALIZED_ONLY) {
                 pnl_accounting_.add_unrealized_pnl(mark_to_market_pnl);
             }
-            
-            INFO("Position update for " + symbol + ": prev_qty=" + std::to_string(previous_quantity) + 
-                  " new_qty=" + std::to_string(final_position) + 
-                  " prev_avg=" + std::to_string(previous_avg_price) + 
-                  " new_avg=" + std::to_string(static_cast<double>(pos.average_price)) + 
-                  " current_price=" + std::to_string(current_price) + 
-                  " daily_pnl=" + std::to_string(daily_realized_pnl) + 
-                  " stored_realized_pnl=" + std::to_string(static_cast<double>(pos.realized_pnl)) + 
-                  " backtest_mode=" + std::string(is_backtest_mode() ? "true" : "false"));
+
+            INFO("Position update for " + symbol + ": prev_qty=" +
+                 std::to_string(previous_quantity) + " new_qty=" + std::to_string(final_position) +
+                 " prev_avg=" + std::to_string(previous_avg_price) +
+                 " new_avg=" + std::to_string(static_cast<double>(pos.average_price)) +
+                 " current_price=" + std::to_string(current_price) +
+                 " daily_pnl=" + std::to_string(daily_realized_pnl) +
+                 " stored_realized_pnl=" + std::to_string(static_cast<double>(pos.realized_pnl)) +
+                 " backtest_mode=" + std::string(is_backtest_mode() ? "true" : "false"));
 
             auto pos_result = update_position(symbol, pos);
             if (pos_result.is_error()) {
@@ -621,7 +638,7 @@ std::unordered_map<std::string, Position> TrendFollowingSlowStrategy::get_target
 }
 
 std::vector<double> TrendFollowingSlowStrategy::calculate_ewma(const std::vector<double>& prices,
-                                                           int window) const {
+                                                               int window) const {
     std::vector<double> ewma(prices.size(), 0.0);
     if (prices.empty() || window <= 0) {
         return ewma;
@@ -714,7 +731,7 @@ std::vector<double> TrendFollowingSlowStrategy::ewma_standard_deviation(
 }
 
 double TrendFollowingSlowStrategy::compute_long_term_avg(const std::vector<double>& history,
-                                                     size_t max_history) const {
+                                                         size_t max_history) const {
     if (history.empty())
         return 0.001;  // Return a small non-zero value instead of 0.0
 
@@ -736,10 +753,9 @@ double TrendFollowingSlowStrategy::compute_long_term_avg(const std::vector<doubl
     return result;
 }
 
-std::vector<double> TrendFollowingSlowStrategy::blended_ewma_stddev(const std::vector<double>& prices,
-                                                                int window, double weight_short,
-                                                                double weight_long,
-                                                                size_t max_history) const {
+std::vector<double> TrendFollowingSlowStrategy::blended_ewma_stddev(
+    const std::vector<double>& prices, int window, double weight_short, double weight_long,
+    size_t max_history) const {
     if (prices.empty() || window <= 0) {
         WARN("Empty price data or invalid window for blended stddev calculation");
         return std::vector<double>(1, 0.01);  // Return default value
@@ -806,8 +822,8 @@ std::vector<double> TrendFollowingSlowStrategy::blended_ewma_stddev(const std::v
 }
 
 std::vector<double> TrendFollowingSlowStrategy::get_raw_forecast(const std::vector<double>& prices,
-                                                             int short_window,
-                                                             int long_window) const {
+                                                                 int short_window,
+                                                                 int long_window) const {
     // Validation
     if (prices.size() < std::max(short_window, long_window)) {
         ERROR("Not enough price data for raw forecast");
@@ -1060,7 +1076,7 @@ std::unordered_map<std::string, double> TrendFollowingSlowStrategy::get_weights(
 }
 
 double TrendFollowingSlowStrategy::calculate_position(const std::string& symbol, double forecast,
-                                                  double price, double volatility) const {
+                                                      double price, double volatility) const {
     // Validation
     if (std::isnan(forecast) || std::isinf(forecast) || std::abs(forecast) > 20.0) {
         WARN("Invalid forecast in position calculation for " + symbol + ", using 0.0");
@@ -1140,8 +1156,9 @@ double TrendFollowingSlowStrategy::calculate_position(const std::string& symbol,
     }
 }
 
-double TrendFollowingSlowStrategy::apply_position_buffer(const std::string& symbol, double raw_position,
-                                                     double price, double volatility) const {
+double TrendFollowingSlowStrategy::apply_position_buffer(const std::string& symbol,
+                                                         double raw_position, double price,
+                                                         double volatility) const {
     if (!trend_config_.use_position_buffering) {
         return raw_position;
     }
@@ -1241,8 +1258,8 @@ double TrendFollowingSlowStrategy::apply_position_buffer(const std::string& symb
         // Current position is within the buffer zone - no trade needed
         new_position = std::round(current_position);
         DEBUG("Position buffering for " + symbol + ": keeping current position " +
-              std::to_string(new_position) + " (within buffer, raw: " +
-              std::to_string(raw_position) + ")");
+              std::to_string(new_position) +
+              " (within buffer, raw: " + std::to_string(raw_position) + ")");
     }
 
     // Final safety check - cap positions to configured limits
@@ -1358,14 +1375,16 @@ double TrendFollowingSlowStrategy::get_point_value_multiplier(const std::string&
 
     // ONLY use registry - no fallbacks allowed
     if (!registry_) {
-        ERROR("CRITICAL: Instrument registry not initialized when requesting multiplier for " + symbol);
+        ERROR("CRITICAL: Instrument registry not initialized when requesting multiplier for " +
+              symbol);
         throw std::runtime_error("Instrument registry not initialized for symbol: " + symbol);
     }
 
     if (!registry_->has_instrument(base_symbol)) {
-        ERROR("CRITICAL: Instrument " + base_symbol + " not found in registry! Cannot continue without proper multiplier.");
+        ERROR("CRITICAL: Instrument " + base_symbol +
+              " not found in registry! Cannot continue without proper multiplier.");
         throw std::runtime_error("Missing instrument in registry: " + base_symbol +
-                               ". Please ensure this instrument is loaded in the database.");
+                                 ". Please ensure this instrument is loaded in the database.");
     }
 
     try {
@@ -1377,10 +1396,10 @@ double TrendFollowingSlowStrategy::get_point_value_multiplier(const std::string&
 
         double multiplier = instrument->get_multiplier();
         if (multiplier <= 0) {
-            ERROR("CRITICAL: Invalid multiplier " + std::to_string(multiplier) +
-                  " for " + base_symbol + ". Multiplier must be positive.");
+            ERROR("CRITICAL: Invalid multiplier " + std::to_string(multiplier) + " for " +
+                  base_symbol + ". Multiplier must be positive.");
             throw std::runtime_error("Invalid multiplier (" + std::to_string(multiplier) +
-                                   ") for: " + base_symbol);
+                                     ") for: " + base_symbol);
         }
 
         DEBUG("Retrieved point value multiplier from registry for " + symbol + ": " +
@@ -1393,7 +1412,8 @@ double TrendFollowingSlowStrategy::get_point_value_multiplier(const std::string&
     }
 }
 
-std::unordered_map<int, double> TrendFollowingSlowStrategy::get_ema_values(const std::string& symbol, const std::vector<int>& windows) const {
+std::unordered_map<int, double> TrendFollowingSlowStrategy::get_ema_values(
+    const std::string& symbol, const std::vector<int>& windows) const {
     std::unordered_map<int, double> ema_values;
 
     // Get instrument data for this symbol

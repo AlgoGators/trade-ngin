@@ -1,5 +1,6 @@
 // include/trade_ngin/live/live_trading_coordinator.hpp
-// Coordinator for all live trading components - ensures proper initialization and connection management
+// Coordinator for all live trading components - ensures proper initialization and connection
+// management
 
 #pragma once
 
@@ -26,6 +27,7 @@ class InstrumentRegistry;
  */
 struct LiveTradingConfig {
     std::string strategy_id = "LIVE_TREND_FOLLOWING";
+    std::string portfolio_id = "BASE_PORTFOLIO";
     std::string schema = "trading";
     double initial_capital = 500000.0;
     bool store_results = true;
@@ -77,7 +79,7 @@ private:
 
     // Shared database connection
     std::shared_ptr<PostgresDatabase> db_;
-    
+
     // Reference to instrument registry
     InstrumentRegistry* registry_;
 
@@ -99,10 +101,8 @@ public:
      * @param registry Reference to instrument registry
      * @param config Configuration for the coordinator
      */
-    LiveTradingCoordinator(
-        std::shared_ptr<PostgresDatabase> db,
-        InstrumentRegistry& registry,
-        const LiveTradingConfig& config = {});
+    LiveTradingCoordinator(std::shared_ptr<PostgresDatabase> db, InstrumentRegistry& registry,
+                           const LiveTradingConfig& config = {});
 
     /**
      * @brief Destructor
@@ -114,32 +114,52 @@ public:
     /**
      * @brief Get data loader for direct access if needed
      */
-    LiveDataLoader* get_data_loader() { return data_loader_.get(); }
-    const LiveDataLoader* get_data_loader() const { return data_loader_.get(); }
+    LiveDataLoader* get_data_loader() {
+        return data_loader_.get();
+    }
+    const LiveDataLoader* get_data_loader() const {
+        return data_loader_.get();
+    }
 
     /**
      * @brief Get metrics calculator for direct access if needed
      */
-    LiveMetricsCalculator* get_metrics_calculator() { return metrics_calculator_.get(); }
-    const LiveMetricsCalculator* get_metrics_calculator() const { return metrics_calculator_.get(); }
+    LiveMetricsCalculator* get_metrics_calculator() {
+        return metrics_calculator_.get();
+    }
+    const LiveMetricsCalculator* get_metrics_calculator() const {
+        return metrics_calculator_.get();
+    }
 
     /**
      * @brief Get results manager for direct access if needed
      */
-    LiveResultsManager* get_results_manager() { return results_manager_.get(); }
-    const LiveResultsManager* get_results_manager() const { return results_manager_.get(); }
+    LiveResultsManager* get_results_manager() {
+        return results_manager_.get();
+    }
+    const LiveResultsManager* get_results_manager() const {
+        return results_manager_.get();
+    }
 
     /**
      * @brief Get price manager for direct access if needed
      */
-    LivePriceManager* get_price_manager() { return price_manager_.get(); }
-    const LivePriceManager* get_price_manager() const { return price_manager_.get(); }
+    LivePriceManager* get_price_manager() {
+        return price_manager_.get();
+    }
+    const LivePriceManager* get_price_manager() const {
+        return price_manager_.get();
+    }
 
     /**
      * @brief Get PnL manager for direct access if needed
      */
-    LivePnLManager* get_pnl_manager() { return pnl_manager_.get(); }
-    const LivePnLManager* get_pnl_manager() const { return pnl_manager_.get(); }
+    LivePnLManager* get_pnl_manager() {
+        return pnl_manager_.get();
+    }
+    const LivePnLManager* get_pnl_manager() const {
+        return pnl_manager_.get();
+    }
 
     // ========== High-Level Operations ==========
 
@@ -154,8 +174,7 @@ public:
      * @param date Current date
      * @return Result with previous portfolio value and metrics
      */
-    Result<std::pair<double, TradingMetrics>> load_previous_day_data(
-        const Timestamp& date) const;
+    Result<std::pair<double, TradingMetrics>> load_previous_day_data(const Timestamp& date) const;
 
     /**
      * @brief Calculate all metrics for current day
@@ -168,14 +187,12 @@ public:
      * @param daily_commissions Daily commissions
      * @return Result with calculated metrics
      */
-    Result<TradingMetrics> calculate_daily_metrics(
-        double daily_pnl,
-        double previous_portfolio_value,
-        double current_portfolio_value,
-        double gross_notional,
-        double margin_posted,
-        int trading_days,
-        double daily_commissions = 0.0);
+    Result<TradingMetrics> calculate_daily_metrics(double daily_pnl,
+                                                   double previous_portfolio_value,
+                                                   double current_portfolio_value,
+                                                   double gross_notional, double margin_posted,
+                                                   int trading_days,
+                                                   double daily_commissions = 0.0);
 
     /**
      * @brief Calculate metrics for previous day finalization
@@ -189,13 +206,8 @@ public:
      * @return Result with finalized metrics
      */
     Result<TradingMetrics> calculate_finalization_metrics(
-        double realized_pnl,
-        double day_before_portfolio,
-        double current_portfolio,
-        double gross_notional,
-        double margin_posted,
-        int trading_days,
-        double commissions = 0.0);
+        double realized_pnl, double day_before_portfolio, double current_portfolio,
+        double gross_notional, double margin_posted, int trading_days, double commissions = 0.0);
 
     /**
      * @brief Store all results to database
@@ -204,20 +216,22 @@ public:
      * @param date Current date
      * @return Result indicating success or failure
      */
-    Result<void> store_results(
-        const TradingMetrics& metrics,
-        const std::vector<Position>& positions,
-        const Timestamp& date);
+    Result<void> store_results(const TradingMetrics& metrics,
+                               const std::vector<Position>& positions, const Timestamp& date);
 
     /**
      * @brief Get current metrics
      */
-    const TradingMetrics& get_current_metrics() const { return current_metrics_; }
+    const TradingMetrics& get_current_metrics() const {
+        return current_metrics_;
+    }
 
     /**
      * @brief Check if coordinator is initialized
      */
-    bool is_initialized() const { return is_initialized_; }
+    bool is_initialized() const {
+        return is_initialized_;
+    }
 
     // ========== Convenience Methods ==========
 
@@ -234,8 +248,7 @@ public:
      * @param date Date to load positions for
      * @return Result with positions
      */
-    Result<std::vector<Position>> load_positions_for_export(
-        const Timestamp& date) const;
+    Result<std::vector<Position>> load_positions_for_export(const Timestamp& date) const;
 
     /**
      * @brief Get trading days count
@@ -253,8 +266,7 @@ private:
     /**
      * @brief Convert CalculatedMetrics to TradingMetrics
      */
-    TradingMetrics convert_calculated_metrics(
-        const struct CalculatedMetrics& calc_metrics) const;
+    TradingMetrics convert_calculated_metrics(const struct CalculatedMetrics& calc_metrics) const;
 };
 
-} // namespace trade_ngin
+}  // namespace trade_ngin

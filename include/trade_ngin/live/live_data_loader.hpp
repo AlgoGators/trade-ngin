@@ -92,8 +92,7 @@ public:
      * @param db Shared database connection
      * @param schema Database schema to use (default: "trading")
      */
-    LiveDataLoader(std::shared_ptr<PostgresDatabase> db,
-                   const std::string& schema = "trading");
+    LiveDataLoader(std::shared_ptr<PostgresDatabase> db, const std::string& schema = "trading");
 
     ~LiveDataLoader() = default;
 
@@ -105,9 +104,9 @@ public:
      * @param date Current date (will find previous trading day)
      * @return Previous portfolio value or error
      */
-    Result<double> load_previous_portfolio_value(
-        const std::string& strategy_id,
-        const Timestamp& date);
+    Result<double> load_previous_portfolio_value(const std::string& strategy_id,
+                                                 const std::string& portfolio_id,
+                                                 const Timestamp& date);
 
     /**
      * @brief Load portfolio value for a specific date
@@ -115,9 +114,8 @@ public:
      * @param date Target date
      * @return Portfolio value or error
      */
-    Result<double> load_portfolio_value(
-        const std::string& strategy_id,
-        const Timestamp& date);
+    Result<double> load_portfolio_value(const std::string& strategy_id,
+                                        const std::string& portfolio_id, const Timestamp& date);
 
     // ========== Live Results Methods ==========
 
@@ -127,9 +125,9 @@ public:
      * @param date Target date
      * @return LiveResultsRow or error
      */
-    Result<LiveResultsRow> load_live_results(
-        const std::string& strategy_id,
-        const Timestamp& date);
+    Result<LiveResultsRow> load_live_results(const std::string& strategy_id,
+                                             const std::string& portfolio_id,
+                                             const Timestamp& date);
 
     /**
      * @brief Load previous day's complete data
@@ -137,9 +135,9 @@ public:
      * @param date Current date (will find previous trading day)
      * @return PreviousDayData or error
      */
-    Result<PreviousDayData> load_previous_day_data(
-        const std::string& strategy_id,
-        const Timestamp& date);
+    Result<PreviousDayData> load_previous_day_data(const std::string& strategy_id,
+                                                   const std::string& portfolio_id,
+                                                   const Timestamp& date);
 
     /**
      * @brief Check if live results exist for a date
@@ -147,16 +145,16 @@ public:
      * @param date Target date
      * @return true if results exist, false otherwise
      */
-    Result<bool> has_live_results(
-        const std::string& strategy_id,
-        const Timestamp& date);
+    Result<bool> has_live_results(const std::string& strategy_id, const std::string& portfolio_id,
+                                  const Timestamp& date);
 
     /**
      * @brief Get count of live results rows for strategy
      * @param strategy_id Strategy identifier
      * @return Row count or error
      */
-    Result<int> get_live_results_count(const std::string& strategy_id);
+    Result<int> get_live_results_count(const std::string& strategy_id,
+                                       const std::string& portfolio_id = "BASE_PORTFOLIO");
 
     // ========== Position Methods ==========
 
@@ -166,9 +164,9 @@ public:
      * @param date Target date
      * @return Vector of positions or error
      */
-    Result<std::vector<Position>> load_positions(
-        const std::string& strategy_id,
-        const Timestamp& date);
+    Result<std::vector<Position>> load_positions(const std::string& strategy_id,
+                                                 const std::string& portfolio_id,
+                                                 const Timestamp& date);
 
     /**
      * @brief Load positions for CSV export (with specific fields)
@@ -176,9 +174,9 @@ public:
      * @param date Target date
      * @return Positions suitable for CSV export
      */
-    Result<std::vector<Position>> load_positions_for_export(
-        const std::string& strategy_id,
-        const Timestamp& date);
+    Result<std::vector<Position>> load_positions_for_export(const std::string& strategy_id,
+                                                            const std::string& portfolio_id,
+                                                            const Timestamp& date);
 
     // ========== Commission Methods ==========
 
@@ -188,7 +186,7 @@ public:
      * @return Map of symbol to total commission or error
      */
     Result<std::unordered_map<std::string, double>> load_commissions_by_symbol(
-        const Timestamp& date);
+        const std::string& portfolio_id, const Timestamp& date);
 
     /**
      * @brief Load total daily commissions for a strategy
@@ -196,9 +194,8 @@ public:
      * @param date Target date
      * @return Total commissions or error
      */
-    Result<double> load_daily_commissions(
-        const std::string& strategy_id,
-        const Timestamp& date);
+    Result<double> load_daily_commissions(const std::string& strategy_id,
+                                          const std::string& portfolio_id, const Timestamp& date);
 
     // ========== Margin and Risk Methods ==========
 
@@ -208,9 +205,9 @@ public:
      * @param date Target date
      * @return MarginMetrics or error
      */
-    Result<MarginMetrics> load_margin_metrics(
-        const std::string& strategy_id,
-        const Timestamp& date);
+    Result<MarginMetrics> load_margin_metrics(const std::string& strategy_id,
+                                              const std::string& portfolio_id,
+                                              const Timestamp& date);
 
     // ========== Email/Reporting Methods ==========
 
@@ -221,8 +218,7 @@ public:
      * @return Map of metric name to value
      */
     Result<std::unordered_map<std::string, double>> load_daily_metrics_for_email(
-        const std::string& strategy_id,
-        const Timestamp& date);
+        const std::string& strategy_id, const std::string& portfolio_id, const Timestamp& date);
 
     // ========== Utility Methods ==========
 
@@ -230,7 +226,9 @@ public:
      * @brief Get the schema being used
      * @return Current schema name
      */
-    const std::string& get_schema() const { return schema_; }
+    const std::string& get_schema() const {
+        return schema_;
+    }
 
     /**
      * @brief Check if database connection is valid
@@ -239,4 +237,4 @@ public:
     bool is_connected() const;
 };
 
-} // namespace trade_ngin
+}  // namespace trade_ngin

@@ -2,23 +2,21 @@
 // Implementation of the live trading coordinator
 
 #include "trade_ngin/live/live_trading_coordinator.hpp"
+#include <iomanip>
+#include <sstream>
+#include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/live/live_data_loader.hpp"
 #include "trade_ngin/live/live_metrics_calculator.hpp"
-#include "trade_ngin/live/live_price_manager.hpp"
 #include "trade_ngin/live/live_pnl_manager.hpp"
+#include "trade_ngin/live/live_price_manager.hpp"
 #include "trade_ngin/storage/live_results_manager.hpp"
-#include "trade_ngin/core/logger.hpp"
-#include <sstream>
-#include <iomanip>
 
 namespace trade_ngin {
 
-LiveTradingCoordinator::LiveTradingCoordinator(
-    std::shared_ptr<PostgresDatabase> db,
-    InstrumentRegistry& registry,
-    const LiveTradingConfig& config)
+LiveTradingCoordinator::LiveTradingCoordinator(std::shared_ptr<PostgresDatabase> db,
+                                               InstrumentRegistry& registry,
+                                               const LiveTradingConfig& config)
     : config_(config), db_(db), registry_(&registry) {
-
     if (!db_) {
         throw std::invalid_argument("Database connection cannot be null");
     }
@@ -45,7 +43,7 @@ Result<void> LiveTradingCoordinator::initialize() {
 
         // Initialize LiveResultsManager
         results_manager_ = std::make_unique<LiveResultsManager>(
-            db_, config_.store_results, config_.strategy_id);
+            db_, config_.store_results, config_.strategy_id, config_.portfolio_id);
 
         // Initialize LivePriceManager
         price_manager_ = std::make_unique<LivePriceManager>(db_);
@@ -59,21 +57,17 @@ Result<void> LiveTradingCoordinator::initialize() {
         return Result<void>();
 
     } catch (const std::exception& e) {
-        return make_error<void>(
-            ErrorCode::NOT_INITIALIZED,
-            std::string("Failed to initialize coordinator: ") + e.what(),
-            "LiveTradingCoordinator");
+        return make_error<void>(ErrorCode::NOT_INITIALIZED,
+                                std::string("Failed to initialize coordinator: ") + e.what(),
+                                "LiveTradingCoordinator");
     }
 }
 
 Result<std::pair<double, TradingMetrics>> LiveTradingCoordinator::load_previous_day_data(
     const Timestamp& date) const {
-
     if (!is_initialized_) {
         return make_error<std::pair<double, TradingMetrics>>(
-            ErrorCode::NOT_INITIALIZED,
-            "Coordinator not initialized",
-            "LiveTradingCoordinator");
+            ErrorCode::NOT_INITIALIZED, "Coordinator not initialized", "LiveTradingCoordinator");
     }
 
     try {
@@ -81,7 +75,8 @@ Result<std::pair<double, TradingMetrics>> LiveTradingCoordinator::load_previous_
         auto previous_date = date - std::chrono::hours(24);
 
         // Load previous day's results
-        auto results = data_loader_->load_live_results(config_.strategy_id, previous_date);
+        auto results = data_loader_->load_live_results(config_.strategy_id, config_.portfolio_id,
+                                                       previous_date);
         if (results.is_error()) {
             // No previous data, return initial values
             TradingMetrics empty_metrics;
@@ -113,40 +108,24 @@ Result<std::pair<double, TradingMetrics>> LiveTradingCoordinator::load_previous_
 
     } catch (const std::exception& e) {
         return make_error<std::pair<double, TradingMetrics>>(
-            ErrorCode::DATABASE_ERROR,
-            std::string("Failed to load previous day data: ") + e.what(),
+            ErrorCode::DATABASE_ERROR, std::string("Failed to load previous day data: ") + e.what(),
             "LiveTradingCoordinator");
     }
 }
 
 Result<TradingMetrics> LiveTradingCoordinator::calculate_daily_metrics(
-    double daily_pnl,
-    double previous_portfolio_value,
-    double current_portfolio_value,
-    double gross_notional,
-    double margin_posted,
-    int trading_days,
-    double daily_commissions) {
-
+    double daily_pnl, double previous_portfolio_value, double current_portfolio_value,
+    double gross_notional, double margin_posted, int trading_days, double daily_commissions) {
     if (!is_initialized_) {
-        return make_error<TradingMetrics>(
-            ErrorCode::NOT_INITIALIZED,
-            "Coordinator not initialized",
-            "LiveTradingCoordinator");
+        return make_error<TradingMetrics>(ErrorCode::NOT_INITIALIZED, "Coordinator not initialized",
+                                          "LiveTradingCoordinator");
     }
 
     try {
         // Use LiveMetricsCalculator to calculate all metrics
         auto calc_metrics = metrics_calculator_->calculate_all_metrics(
-            daily_pnl,
-            previous_portfolio_value,
-            current_portfolio_value,
-            config_.initial_capital,
-            gross_notional,
-            margin_posted,
-            trading_days,
-            daily_commissions
-        );
+            daily_pnl, previous_portfolio_value, current_portfolio_value, config_.initial_capital,
+            gross_notional, margin_posted, trading_days, daily_commissions);
 
         // Convert to TradingMetrics
         current_metrics_ = convert_calculated_metrics(calc_metrics);
@@ -161,40 +140,24 @@ Result<TradingMetrics> LiveTradingCoordinator::calculate_daily_metrics(
 
     } catch (const std::exception& e) {
         return make_error<TradingMetrics>(
-            ErrorCode::INVALID_DATA,
-            std::string("Failed to calculate daily metrics: ") + e.what(),
+            ErrorCode::INVALID_DATA, std::string("Failed to calculate daily metrics: ") + e.what(),
             "LiveTradingCoordinator");
     }
 }
 
 Result<TradingMetrics> LiveTradingCoordinator::calculate_finalization_metrics(
-    double realized_pnl,
-    double day_before_portfolio,
-    double current_portfolio,
-    double gross_notional,
-    double margin_posted,
-    int trading_days,
-    double commissions) {
-
+    double realized_pnl, double day_before_portfolio, double current_portfolio,
+    double gross_notional, double margin_posted, int trading_days, double commissions) {
     if (!is_initialized_) {
-        return make_error<TradingMetrics>(
-            ErrorCode::NOT_INITIALIZED,
-            "Coordinator not initialized",
-            "LiveTradingCoordinator");
+        return make_error<TradingMetrics>(ErrorCode::NOT_INITIALIZED, "Coordinator not initialized",
+                                          "LiveTradingCoordinator");
     }
 
     try {
         // Use LiveMetricsCalculator for finalization
         auto calc_metrics = metrics_calculator_->calculate_finalization_metrics(
-            realized_pnl,
-            day_before_portfolio,
-            current_portfolio,
-            config_.initial_capital,
-            gross_notional,
-            margin_posted,
-            trading_days,
-            commissions
-        );
+            realized_pnl, day_before_portfolio, current_portfolio, config_.initial_capital,
+            gross_notional, margin_posted, trading_days, commissions);
 
         // Convert to TradingMetrics
         TradingMetrics metrics = convert_calculated_metrics(calc_metrics);
@@ -215,16 +178,12 @@ Result<TradingMetrics> LiveTradingCoordinator::calculate_finalization_metrics(
     }
 }
 
-Result<void> LiveTradingCoordinator::store_results(
-    const TradingMetrics& metrics,
-    const std::vector<Position>& positions,
-    const Timestamp& date) {
-
+Result<void> LiveTradingCoordinator::store_results(const TradingMetrics& metrics,
+                                                   const std::vector<Position>& positions,
+                                                   const Timestamp& date) {
     if (!is_initialized_) {
-        return make_error<void>(
-            ErrorCode::NOT_INITIALIZED,
-            "Coordinator not initialized",
-            "LiveTradingCoordinator");
+        return make_error<void>(ErrorCode::NOT_INITIALIZED, "Coordinator not initialized",
+                                "LiveTradingCoordinator");
     }
 
     if (!config_.store_results) {
@@ -247,13 +206,11 @@ Result<void> LiveTradingCoordinator::store_results(
             {"gross_notional", metrics.gross_notional},
             {"margin_posted", metrics.margin_posted},
             {"daily_return", metrics.daily_return},
-            {"daily_pnl", metrics.daily_pnl}
-        };
+            {"daily_pnl", metrics.daily_pnl}};
 
         std::unordered_map<std::string, int> int_metrics = {
             {"active_positions", static_cast<int>(positions.size())},
-            {"trading_days", metrics.trading_days}
-        };
+            {"trading_days", metrics.trading_days}};
 
         results_manager_->set_metrics(double_metrics, int_metrics);
         results_manager_->set_positions(positions);
@@ -270,45 +227,36 @@ Result<void> LiveTradingCoordinator::store_results(
         return Result<void>();
 
     } catch (const std::exception& e) {
-        return make_error<void>(
-            ErrorCode::DATABASE_ERROR,
-            std::string("Failed to store results: ") + e.what(),
-            "LiveTradingCoordinator");
+        return make_error<void>(ErrorCode::DATABASE_ERROR,
+                                std::string("Failed to store results: ") + e.what(),
+                                "LiveTradingCoordinator");
     }
 }
 
 Result<std::unordered_map<std::string, double>> LiveTradingCoordinator::load_commissions_by_symbol(
     const Timestamp& date) const {
-
     if (!is_initialized_) {
         return make_error<std::unordered_map<std::string, double>>(
-            ErrorCode::NOT_INITIALIZED,
-            "Coordinator not initialized",
-            "LiveTradingCoordinator");
+            ErrorCode::NOT_INITIALIZED, "Coordinator not initialized", "LiveTradingCoordinator");
     }
 
-    return data_loader_->load_commissions_by_symbol(date);
+    return data_loader_->load_commissions_by_symbol(config_.portfolio_id, date);
 }
 
 Result<std::vector<Position>> LiveTradingCoordinator::load_positions_for_export(
     const Timestamp& date) const {
-
     if (!is_initialized_) {
         return make_error<std::vector<Position>>(
-            ErrorCode::NOT_INITIALIZED,
-            "Coordinator not initialized",
-            "LiveTradingCoordinator");
+            ErrorCode::NOT_INITIALIZED, "Coordinator not initialized", "LiveTradingCoordinator");
     }
 
-    return data_loader_->load_positions_for_export(config_.strategy_id, date);
+    return data_loader_->load_positions_for_export(config_.strategy_id, config_.portfolio_id, date);
 }
 
 Result<int> LiveTradingCoordinator::get_trading_days_count() const {
     if (!is_initialized_) {
-        return make_error<int>(
-            ErrorCode::NOT_INITIALIZED,
-            "Coordinator not initialized",
-            "LiveTradingCoordinator");
+        return make_error<int>(ErrorCode::NOT_INITIALIZED, "Coordinator not initialized",
+                               "LiveTradingCoordinator");
     }
 
     return data_loader_->get_live_results_count(config_.strategy_id);
@@ -316,17 +264,13 @@ Result<int> LiveTradingCoordinator::get_trading_days_count() const {
 
 Result<void> LiveTradingCoordinator::validate_connection() const {
     if (!db_) {
-        return make_error<void>(
-            ErrorCode::CONNECTION_ERROR,
-            "Database connection is null",
-            "LiveTradingCoordinator");
+        return make_error<void>(ErrorCode::CONNECTION_ERROR, "Database connection is null",
+                                "LiveTradingCoordinator");
     }
 
     if (!db_->is_connected()) {
-        return make_error<void>(
-            ErrorCode::CONNECTION_ERROR,
-            "Database is not connected",
-            "LiveTradingCoordinator");
+        return make_error<void>(ErrorCode::CONNECTION_ERROR, "Database is not connected",
+                                "LiveTradingCoordinator");
     }
 
     return Result<void>();
@@ -334,7 +278,6 @@ Result<void> LiveTradingCoordinator::validate_connection() const {
 
 TradingMetrics LiveTradingCoordinator::convert_calculated_metrics(
     const CalculatedMetrics& calc_metrics) const {
-
     TradingMetrics metrics;
 
     // Return metrics
@@ -357,4 +300,4 @@ TradingMetrics LiveTradingCoordinator::convert_calculated_metrics(
     return metrics;
 }
 
-} // namespace trade_ngin
+}  // namespace trade_ngin
