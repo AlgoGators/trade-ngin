@@ -32,18 +32,20 @@ public:
     }
     Result<void> store_executions(const std::vector<ExecutionReport>& executions,
                                   const std::string& strategy_id, const std::string& strategy_name,
+                                  const std::string& portfolio_id,
                                   const std::string& table_name) override {
         executions_stored = executions;
         return Result<void>();
     }
     Result<void> store_positions(const std::vector<Position>& positions, const std::string&,
-                                 const std::string&, const std::string&) override {
+                                 const std::string&, const std::string&,
+                                 const std::string&) override {
         positions_stored = positions;
         return Result<void>();
     }
     Result<void> store_signals(const std::unordered_map<std::string, double>& signals,
-                               const std::string&, const std::string&, const Timestamp&,
-                               const std::string&) override {
+                               const std::string&, const std::string&, const std::string&,
+                               const Timestamp&, const std::string&) override {
         signals_stored = signals;
         return Result<void>();
     }

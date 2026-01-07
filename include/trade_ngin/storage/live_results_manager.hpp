@@ -31,15 +31,14 @@ private:
     bool has_equity_update_;
 
 public:
-    LiveResultsManager(std::shared_ptr<PostgresDatabase> db,
-                      bool store_enabled,
-                      const std::string& strategy_id);
+    LiveResultsManager(std::shared_ptr<PostgresDatabase> db, bool store_enabled,
+                       const std::string& strategy_id,
+                       const std::string& portfolio_id = "BASE_PORTFOLIO");
 
     ~LiveResultsManager() override = default;
 
     // Main storage method - saves everything for the trading day
-    Result<void> save_all_results(const std::string& run_id,
-                                 const Timestamp& date) override;
+    Result<void> save_all_results(const std::string& run_id, const Timestamp& date) override;
 
     // Set data to be stored
     void set_positions(const std::vector<Position>& positions) {
@@ -55,7 +54,7 @@ public:
     }
 
     void set_metrics(const std::unordered_map<std::string, double>& double_metrics,
-                    const std::unordered_map<std::string, int>& int_metrics = {}) {
+                     const std::unordered_map<std::string, int>& int_metrics = {}) {
         double_metrics_ = double_metrics;
         int_metrics_ = int_metrics;
     }
@@ -79,18 +78,15 @@ public:
 
     // Update operations for existing data
     Result<void> update_live_results(const Timestamp& date,
-                                    const std::unordered_map<std::string, double>& updates);
+                                     const std::unordered_map<std::string, double>& updates);
 
-    Result<void> update_equity_curve(const Timestamp& date,
-                                    double equity);
+    Result<void> update_equity_curve(const Timestamp& date, double equity);
 
     // Utility methods
-    static std::string generate_run_id(const std::string& strategy_id,
-                                       const Timestamp& date);
+    static std::string generate_run_id(const std::string& strategy_id, const Timestamp& date);
 
     // Check if we need to finalize previous day
-    bool needs_finalization(const Timestamp& current_date,
-                           const Timestamp& previous_date) const;
+    bool needs_finalization(const Timestamp& current_date, const Timestamp& previous_date) const;
 };
 
-} // namespace trade_ngin
+}  // namespace trade_ngin

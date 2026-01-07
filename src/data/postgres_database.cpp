@@ -168,10 +168,11 @@ Result<std::shared_ptr<arrow::Table>> PostgresDatabase::get_market_data(
 Result<void> PostgresDatabase::store_executions(const std::vector<ExecutionReport>& executions,
                                                 const std::string& strategy_id,
                                                 const std::string& strategy_name,
+                                                const std::string& portfolio_id,
                                                 const std::string& table_name) {
     std::cout << "DEBUG: store_executions called with " << executions.size() << " executions"
               << " for strategy_id: " << strategy_id << " strategy_name: " << strategy_name
-              << std::endl;
+              << " portfolio_id: " << portfolio_id << std::endl;
 
     auto validation = validate_connection();
     if (validation.is_error()) {
@@ -235,12 +236,11 @@ Result<void> PostgresDatabase::store_executions(const std::vector<ExecutionRepor
 
             // Updated INSERT to include strategy_id (combined), strategy_name (individual), date,
             // portfolio_id
-            std::string query =
-                "INSERT INTO " + table_name +
-                " (exec_id, order_id, symbol, side, quantity, price, "
-                "execution_time, commission, is_partial, strategy_id, "
-                "strategy_name, date, portfolio_id) VALUES "
-                "($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'BASE_PORTFOLIO')";
+            std::string query = "INSERT INTO " + table_name +
+                                " (exec_id, order_id, symbol, side, quantity, price, "
+                                "execution_time, commission, is_partial, strategy_id, "
+                                "strategy_name, date, portfolio_id) VALUES "
+                                "($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)";
 
             std::cout << "DEBUG: About to execute SQL query" << std::endl;
             std::cout << "DEBUG: Query: " << query << std::endl;
@@ -253,7 +253,8 @@ Result<void> PostgresDatabase::store_executions(const std::vector<ExecutionRepor
                 exec.is_partial,
                 strategy_id,    // $10 - combined (e.g., LIVE_TREND_FOLLOWING_TREND_FOLLOWING_FAST)
                 strategy_name,  // $11 - individual (e.g., TREND_FOLLOWING)
-                exec_date);
+                exec_date,
+                portfolio_id);  // $13 - portfolio identifier
 
             std::cout << "DEBUG: SQL executed successfully for " << exec.symbol << std::endl;
         }
@@ -291,6 +292,7 @@ Result<void> PostgresDatabase::validate_connection() const {
 Result<void> PostgresDatabase::store_positions(const std::vector<Position>& positions,
                                                const std::string& strategy_id,
                                                const std::string& strategy_name,
+                                               const std::string& portfolio_id,
                                                const std::string& table_name) {
     auto validation = validate_connection();
     if (validation.is_error())
@@ -308,7 +310,7 @@ Result<void> PostgresDatabase::store_positions(const std::vector<Position>& posi
         // Begin transaction
         txn.exec("BEGIN");
 
-        // Clear existing positions for this strategy (by strategy_id AND strategy_name) 
+        // Clear existing positions for this strategy (by strategy_id AND strategy_name)
         // and the date of the positions being inserted.
         // CRITICAL: Must filter by BOTH strategy_id and strategy_name, otherwise positions from
         // other strategies with the same combined strategy_id will be deleted!
@@ -322,16 +324,19 @@ Result<void> PostgresDatabase::store_positions(const std::vector<Position>& posi
                 std::string position_date = ss.str();
 
                 std::string delete_query = "DELETE FROM " + table_name + " WHERE strategy_id = '" +
-                                           strategy_id + "' AND strategy_name = '" + 
-                                           strategy_name + "' AND DATE(last_update) = '" +
-                                           position_date + "'";
+                                           strategy_id + "' AND strategy_name = '" + strategy_name +
+                                           "' AND portfolio_id = '" + portfolio_id +
+                                           "' AND DATE(last_update) = '" + position_date + "'";
                 DEBUG("Deleting existing positions with query: " + delete_query);
                 txn.exec(delete_query);
             }
         } catch (const std::exception& e) {
-            // If strategy_id/strategy_name columns don't exist, clear all positions for the position date only
-            WARN("strategy_id/strategy_name columns may not exist, clearing all positions for position date: " +
-                 std::string(e.what()));
+            // If strategy_id/strategy_name columns don't exist, clear all positions for the
+            // position date only
+            WARN(
+                "strategy_id/strategy_name columns may not exist, clearing all positions for "
+                "position date: " +
+                std::string(e.what()));
 
             if (!positions.empty()) {
                 auto time_t = std::chrono::system_clock::to_time_t(positions[0].last_update);
@@ -384,7 +389,7 @@ Result<void> PostgresDatabase::store_positions(const std::vector<Position>& posi
                << "'" << strategy_id << "', "                        // strategy_id (combined)
                << "'" << strategy_name << "', "                      // strategy_name (individual)
                << "'" << position_date << "', "                      // date
-               << "'BASE_PORTFOLIO')";
+               << "'" << portfolio_id << "')";                       // portfolio_id
 
             position_values.push_back(ss.str());
         }
@@ -457,6 +462,7 @@ Result<void> PostgresDatabase::store_positions(const std::vector<Position>& posi
 Result<void> PostgresDatabase::store_signals(const std::unordered_map<std::string, double>& signals,
                                              const std::string& strategy_id,
                                              const std::string& strategy_name,
+                                             const std::string& portfolio_id,
                                              const Timestamp& timestamp,
                                              const std::string& table_name) {
     auto validation = validate_connection();
@@ -488,12 +494,12 @@ Result<void> PostgresDatabase::store_signals(const std::unordered_map<std::strin
                 "INSERT INTO " + table_name +
                 " (strategy_id, symbol, signal_value, timestamp, portfolio_id, strategy_name) "
                 "VALUES "
-                "($1, $2, $3, $4, 'BASE_PORTFOLIO', $5) "
+                "($1, $2, $3, $4, $5, $6) "
                 "ON CONFLICT (portfolio_id, strategy_id, strategy_name, symbol, timestamp) "
                 "DO UPDATE SET signal_value = EXCLUDED.signal_value";
 
             txn.exec_params(query, strategy_id, symbol, signal, format_timestamp(timestamp),
-                            strategy_name);
+                            portfolio_id, strategy_name);
         }
 
         txn.commit();
@@ -617,8 +623,8 @@ Result<std::unordered_map<std::string, double>> PostgresDatabase::get_latest_pri
 }
 
 Result<std::unordered_map<std::string, Position>> PostgresDatabase::load_positions_by_date(
-    const std::string& strategy_id, const std::string& strategy_name, const Timestamp& date, 
-    const std::string& table_name) {
+    const std::string& strategy_id, const std::string& strategy_name,
+    const std::string& portfolio_id, const Timestamp& date, const std::string& table_name) {
     auto validation = validate_connection();
     if (validation.is_error()) {
         return make_error<std::unordered_map<std::string, Position>>(validation.error()->code(),
@@ -631,10 +637,12 @@ Result<std::unordered_map<std::string, Position>> PostgresDatabase::load_positio
         std::string date_str = format_timestamp(date);
         pqxx::result result;
 
-        // Query to get positions for a specific strategy and date
-        // If strategy_name is provided, filter by BOTH strategy_id AND strategy_name
-        // This ensures we only get positions from the specific run (strategy_id) 
-        // and specific strategy within that run (strategy_name)
+        // Use actual portfolio_id or default to BASE_PORTFOLIO for backward compatibility
+        std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
+
+        // Query to get positions for a specific strategy, portfolio, and date
+        // If strategy_name is provided, filter by strategy_id, strategy_name, AND portfolio_id
+        // This ensures we only get positions from the specific portfolio and strategy
         if (!strategy_name.empty()) {
             std::string query =
                 "SELECT symbol, quantity, average_price, daily_unrealized_pnl, daily_realized_pnl, "
@@ -642,25 +650,29 @@ Result<std::unordered_map<std::string, Position>> PostgresDatabase::load_positio
                 "FROM " +
                 table_name +
                 " "
-                "WHERE strategy_id = $1 AND strategy_name = $2 AND DATE(last_update) = DATE($3)";
+                "WHERE strategy_id = $1 AND strategy_name = $2 AND portfolio_id = $3 AND "
+                "DATE(last_update) = DATE($4)";
 
-            DEBUG("Querying positions for strategy_id: " + strategy_id + 
-                  ", strategy_name: " + strategy_name + ", date: " + date_str);
+            DEBUG("Querying positions for strategy_id: " + strategy_id + ", strategy_name: " +
+                  strategy_name + ", portfolio_id: " + actual_portfolio_id + ", date: " + date_str);
             DEBUG("Full query: " + query);
-            result = txn.exec_params(query, strategy_id, strategy_name, date_str);
+            result =
+                txn.exec_params(query, strategy_id, strategy_name, actual_portfolio_id, date_str);
         } else {
-            // If strategy_name is empty, filter by strategy_id only (for aggregate loading)
+            // If strategy_name is empty, filter by strategy_id and portfolio_id (for aggregate
+            // loading)
             std::string query =
                 "SELECT symbol, quantity, average_price, daily_unrealized_pnl, daily_realized_pnl, "
                 "last_update "
                 "FROM " +
                 table_name +
                 " "
-                "WHERE strategy_id = $1 AND DATE(last_update) = DATE($2)";
+                "WHERE strategy_id = $1 AND portfolio_id = $2 AND DATE(last_update) = DATE($3)";
 
-            DEBUG("Querying positions for strategy_id: " + strategy_id + ", date: " + date_str);
+            DEBUG("Querying positions for strategy_id: " + strategy_id +
+                  ", portfolio_id: " + actual_portfolio_id + ", date: " + date_str);
             DEBUG("Full query: " + query);
-            result = txn.exec_params(query, strategy_id, date_str);
+            result = txn.exec_params(query, strategy_id, actual_portfolio_id, date_str);
         }
         txn.commit();
 
@@ -2082,7 +2094,8 @@ Result<void> PostgresDatabase::store_live_results(
 }
 
 Result<std::tuple<double, double, double>> PostgresDatabase::get_previous_live_aggregates(
-    const std::string& strategy_id, const Timestamp& date, const std::string& table_name) {
+    const std::string& strategy_id, const std::string& portfolio_id, const Timestamp& date,
+    const std::string& table_name) {
     auto validation = validate_connection();
     if (validation.is_error()) {
         return make_error<std::tuple<double, double, double>>(validation.error()->code(),
@@ -2099,6 +2112,9 @@ Result<std::tuple<double, double, double>> PostgresDatabase::get_previous_live_a
                                                                   table_validation.error()->what());
         }
 
+        // Use actual portfolio_id or default to BASE_PORTFOLIO for backward compatibility
+        std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
+
         // Build query for the most recent previous record before the current date
         // Instead of strict "1 day ago", we look for the latest record with date < current_date
         // This handles weekends and holidays correctly
@@ -2106,17 +2122,19 @@ Result<std::tuple<double, double, double>> PostgresDatabase::get_previous_live_a
             "SELECT current_portfolio_value, total_pnl, total_commissions "
             "FROM " +
             table_name +
-            " WHERE strategy_id = $1 AND DATE(date) < DATE($2) "
+            " WHERE strategy_id = $1 AND portfolio_id = $2 AND DATE(date) < DATE($3) "
             "ORDER BY date DESC, created_at DESC LIMIT 1";
 
-        auto result = txn.exec_params(query, strategy_id, format_timestamp(date));
+        auto result =
+            txn.exec_params(query, strategy_id, actual_portfolio_id, format_timestamp(date));
         txn.commit();
 
         if (result.empty()) {
             // Return error if no previous data found - caller should handle this
             return make_error<std::tuple<double, double, double>>(
-                ErrorCode::DATABASE_ERROR,
-                "No previous aggregates found for strategy " + strategy_id);
+                ErrorCode::DATABASE_ERROR, "No previous aggregates found for strategy " +
+                                               strategy_id + " (portfolio: " + actual_portfolio_id +
+                                               ")");
         }
 
         double prev_value = 0.0;
@@ -2143,6 +2161,7 @@ Result<std::tuple<double, double, double>> PostgresDatabase::get_previous_live_a
 
 Result<void> PostgresDatabase::store_trading_equity_curve(const std::string& strategy_id,
                                                           const Timestamp& timestamp, double equity,
+                                                          const std::string& portfolio_id,
                                                           const std::string& table_name) {
     auto validation = validate_connection();
     if (validation.is_error())
@@ -2159,11 +2178,11 @@ Result<void> PostgresDatabase::store_trading_equity_curve(const std::string& str
 
         std::string query = "INSERT INTO " + table_name +
                             " (strategy_id, timestamp, equity, portfolio_id) "
-                            "VALUES ($1, $2, $3, 'BASE_PORTFOLIO') "
+                            "VALUES ($1, $2, $3, $4) "
                             "ON CONFLICT (portfolio_id, strategy_id, timestamp) "
                             "DO UPDATE SET equity = EXCLUDED.equity";
 
-        txn.exec_params(query, strategy_id, format_timestamp(timestamp), equity);
+        txn.exec_params(query, strategy_id, format_timestamp(timestamp), equity, portfolio_id);
 
         txn.commit();
         return Result<void>();
@@ -2176,7 +2195,7 @@ Result<void> PostgresDatabase::store_trading_equity_curve(const std::string& str
 
 Result<void> PostgresDatabase::store_trading_equity_curve_batch(
     const std::string& strategy_id, const std::vector<std::pair<Timestamp, double>>& equity_points,
-    const std::string& table_name) {
+    const std::string& portfolio_id, const std::string& table_name) {
     auto validation = validate_connection();
     if (validation.is_error())
         return validation;
@@ -2193,11 +2212,11 @@ Result<void> PostgresDatabase::store_trading_equity_curve_batch(
         for (const auto& [timestamp, equity] : equity_points) {
             std::string query = "INSERT INTO " + table_name +
                                 " (strategy_id, timestamp, equity, portfolio_id) "
-                                "VALUES ($1, $2, $3, 'BASE_PORTFOLIO') "
+                                "VALUES ($1, $2, $3, $4) "
                                 "ON CONFLICT (portfolio_id, strategy_id, timestamp) "
                                 "DO UPDATE SET equity = EXCLUDED.equity";
 
-            txn.exec_params(query, strategy_id, format_timestamp(timestamp), equity);
+            txn.exec_params(query, strategy_id, format_timestamp(timestamp), equity, portfolio_id);
         }
 
         txn.commit();

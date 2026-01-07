@@ -459,7 +459,8 @@ Result<void> BaseStrategy::save_executions(const ExecutionReport& exec) {
         if (!db_) {
             return Result<void>();
         }
-        auto result = db_->store_executions({exec}, id_, id_, "trading.executions");
+        auto result =
+            db_->store_executions({exec}, id_, id_, "BASE_PORTFOLIO", "trading.executions");
         if (result.is_error()) {
             return make_error<void>(
                 ErrorCode::DATABASE_ERROR,
@@ -507,7 +508,8 @@ Result<void> BaseStrategy::save_positions() {
                                         "BaseStrategy");
             }
 
-            auto result = db->store_positions(pos_vec, id_, id_, "trading.positions");
+            auto result =
+                db->store_positions(pos_vec, id_, id_, "BASE_PORTFOLIO", "trading.positions");
             if (result.is_ok()) {
                 return result;
             }
@@ -543,8 +545,8 @@ Result<void> BaseStrategy::save_signals(const std::unordered_map<std::string, do
         for (const auto& [symbol, signal] : signals) {
             last_signals_[symbol] = signal;
         }
-        return db_->store_signals(signals, id_, id_, std::chrono::system_clock::now(),
-                                  "trading.signals");
+        return db_->store_signals(signals, id_, id_, "BASE_PORTFOLIO",
+                                  std::chrono::system_clock::now(), "trading.signals");
     } catch (const std::exception& e) {
         return make_error<void>(ErrorCode::DATABASE_ERROR,
                                 "Failed to save signals: " + std::string(e.what()), "BaseStrategy");

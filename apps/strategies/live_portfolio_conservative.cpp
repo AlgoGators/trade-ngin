@@ -79,7 +79,7 @@ int main(int argc, char* argv[]) {
         logger_config.min_level = LogLevel::INFO;
         logger_config.destination = LogDestination::BOTH;
         logger_config.log_directory = "logs";
-        logger_config.filename_prefix = "live_trend";
+        logger_config.filename_prefix = "live_trend_conservative";
         logger.initialize(logger_config);
 
         std::atomic_thread_fence(std::memory_order_seq_cst);
@@ -96,7 +96,8 @@ int main(int argc, char* argv[]) {
 
         // Setup database connection pool
         INFO("Initializing database connection pool...");
-        auto credentials = std::make_shared<trade_ngin::CredentialStore>("./config.json");
+        auto credentials =
+            std::make_shared<trade_ngin::CredentialStore>("./config_conservative.json");
 
         auto username_result = credentials->get<std::string>("database", "username");
         if (username_result.is_error()) {
@@ -193,7 +194,7 @@ int main(int argc, char* argv[]) {
         // PHASE 1: CONFIG-DRIVEN STRATEGY LOADING
         // Load strategies from config.json using enabled_live flag
         // ========================================
-        std::string config_filename = "./config.json";
+        std::string config_filename = "./config_conservative.json";
         std::ifstream config_stream(config_filename);
         if (!config_stream.is_open()) {
             ERROR("Failed to open " + config_filename);

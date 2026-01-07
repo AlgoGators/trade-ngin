@@ -106,6 +106,7 @@ public:
     // Execution storage
     Result<void> store_executions(const std::vector<ExecutionReport>& executions,
                                   const std::string& strategy_id, const std::string& strategy_name,
+                                  const std::string& portfolio_id,
                                   const std::string& table_name) override {
         if (!connected_)
             return make_error<void>(ErrorCode::DATABASE_ERROR, "Not connected");
@@ -120,6 +121,7 @@ public:
     // Position storage
     Result<void> store_positions(const std::vector<Position>& positions,
                                  const std::string& strategy_id, const std::string& strategy_name,
+                                 const std::string& portfolio_id,
                                  const std::string& table_name) override {
         if (!connected_)
             return make_error<void>(ErrorCode::DATABASE_ERROR, "Not connected");
@@ -144,7 +146,8 @@ public:
     // Signal storage
     Result<void> store_signals(const std::unordered_map<std::string, double>& signals,
                                const std::string& strategy_id, const std::string& strategy_name,
-                               const Timestamp& timestamp, const std::string& table_name) override {
+                               const std::string& portfolio_id, const Timestamp& timestamp,
+                               const std::string& table_name) override {
         if (!connected_)
             return make_error<void>(ErrorCode::DATABASE_ERROR, "Not connected");
 
@@ -236,6 +239,7 @@ public:
 
     Result<void> store_trading_equity_curve(const std::string& strategy_id,
                                             const Timestamp& timestamp, double equity,
+                                            const std::string& portfolio_id,
                                             const std::string& table_name) override {
         if (!connected_) {
             return make_error<void>(ErrorCode::DATABASE_ERROR, "Not connected");
@@ -246,7 +250,7 @@ public:
     Result<void> store_trading_equity_curve_batch(
         const std::string& strategy_id,
         const std::vector<std::pair<Timestamp, double>>& equity_points,
-        const std::string& table_name) override {
+        const std::string& portfolio_id, const std::string& table_name) override {
         if (!connected_) {
             return make_error<void>(ErrorCode::DATABASE_ERROR, "Not connected");
         }
