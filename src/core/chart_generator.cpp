@@ -96,7 +96,7 @@ ChartData ChartGenerator::fetch_equity_curve_data(
             "SELECT timestamp, equity "
             "FROM trading.equity_curve "
             "WHERE strategy_id = '" + strategy_id + "' "
-            "ORDER BY timestamp ASC "
+            "ORDER BY timestamp DESC "
             "LIMIT " + std::to_string(lookback_days);
 
         INFO("Querying equity curve with: " + query);
