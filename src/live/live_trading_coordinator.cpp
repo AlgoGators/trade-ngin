@@ -50,8 +50,8 @@ Result<void> LiveTradingCoordinator::initialize() {
         // Initialize LivePriceManager
         price_manager_ = std::make_unique<LivePriceManager>(db_);
 
-        // Initialize LivePnLManager with InstrumentRegistry
-        pnl_manager_ = std::make_unique<LivePnLManager>(config_.initial_capital, *registry_);
+        // Initialize LivePnLManager with InstrumentRegistry and asset class
+        pnl_manager_ = std::make_unique<LivePnLManager>(config_.initial_capital, *registry_, config_.asset_class);
 
         is_initialized_ = true;
 

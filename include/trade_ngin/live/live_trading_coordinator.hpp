@@ -30,6 +30,7 @@ struct LiveTradingConfig {
     double initial_capital = 500000.0;
     bool store_results = true;
     bool calculate_risk_metrics = true;
+    AssetClass asset_class = AssetClass::FUTURES;  // Default to futures for backward compatibility
 };
 
 /**

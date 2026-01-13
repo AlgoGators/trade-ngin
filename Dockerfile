@@ -141,9 +141,24 @@ ENV TZ=America/New_York
 # Set the working directory
 WORKDIR /app
 
+# Copy futures cron job (ACTIVE)
 COPY live_trend.cron /etc/cron.d/live_trend
 RUN chmod 0644 /etc/cron.d/live_trend && \
     crontab /etc/cron.d/live_trend && \
     touch /var/log/cron.log
+
+# ============================================================
+# EQUITY TRADING - READY TO ACTIVATE (Currently DISABLED)
+# ============================================================
+# To activate equity paper trading, uncomment the lines below:
+#
+# COPY live_equity_mr.cron /etc/cron.d/live_equity_mr
+# RUN chmod 0644 /etc/cron.d/live_equity_mr && \
+#     crontab -l | cat - /etc/cron.d/live_equity_mr | crontab - && \
+#     touch /var/log/cron_equity.log
+#
+# Then rebuild: docker build -t trading-system .
+# See EQUITY_DEPLOYMENT.md for full activation guide
+# ============================================================
 
 CMD ["cron", "-f"]

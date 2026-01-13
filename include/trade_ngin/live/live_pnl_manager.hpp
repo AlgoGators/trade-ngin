@@ -25,14 +25,19 @@ private:
     // Reference to instrument registry for point values
     InstrumentRegistry& registry_;
 
+    // Asset class for PnL calculation logic
+    AssetClass asset_class_;
+
 public:
     /**
      * Constructor
      * @param initial_capital Starting capital
      * @param registry Reference to instrument registry
+     * @param asset_class Asset class for PnL calculations (default: FUTURES)
      */
-    explicit LivePnLManager(double initial_capital, InstrumentRegistry& registry)
-        : PnLManagerBase(initial_capital), registry_(registry) {}
+    explicit LivePnLManager(double initial_capital, InstrumentRegistry& registry,
+                           AssetClass asset_class = AssetClass::FUTURES)
+        : PnLManagerBase(initial_capital), registry_(registry), asset_class_(asset_class) {}
 
     /**
      * Finalization result structure for Day T-1

@@ -97,7 +97,7 @@ Result<LivePnLManager::FinalizationResult> LivePnLManager::finalize_previous_day
         // Create finalized position with realized PnL
         Position finalized_pos = position;
         finalized_pos.realized_pnl = Decimal(yesterday_position_pnl);
-        finalized_pos.unrealized_pnl = Decimal(0.0);  // Always 0 for futures
+        finalized_pos.unrealized_pnl = Decimal(0.0);  // Always 0 for daily mark-to-market (futures)
         // finalized_pos.market_price = Decimal(day_t1_close);  // TODO: Add if field exists
         result.finalized_positions.push_back(finalized_pos);
     }
@@ -205,7 +205,7 @@ Result<LivePnLManager::PnLSnapshot> LivePnLManager::get_current_snapshot() const
         total_realized += pnl;
     }
     snapshot.realized_pnl = total_realized;
-    snapshot.unrealized_pnl = 0.0;  // Always 0 for futures
+    snapshot.unrealized_pnl = 0.0;  // Always 0 for daily mark-to-market (futures/equities in current implementation)
 
     // Portfolio value needs to be calculated externally
     snapshot.portfolio_value = initial_capital_ + cumulative_total_pnl_;
@@ -225,6 +225,12 @@ double LivePnLManager::get_position_realized_pnl(const std::string& symbol) cons
 }
 
 double LivePnLManager::get_point_value(const std::string& symbol) const {
+    // For equities, point value is always 1.0 (price per share)
+    if (asset_class_ == AssetClass::EQUITIES) {
+        return 1.0;
+    }
+
+    // For futures, use contract multipliers
     // Extract base symbol (remove .v./.c. suffix)
     std::string base_symbol = symbol;
     if (symbol.find(".v.") != std::string::npos) {
@@ -241,7 +247,7 @@ double LivePnLManager::get_point_value(const std::string& symbol) const {
             if (instrument) {
                 double multiplier = instrument->get_multiplier();
                 if (multiplier > 0) {
-                    DEBUG("Retrieved point value from registry for " + symbol + ": " + 
+                    DEBUG("Retrieved point value from registry for " + symbol + ": " +
                           std::to_string(multiplier));
                     return multiplier;
                 }

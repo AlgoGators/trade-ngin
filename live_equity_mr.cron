@@ -1,0 +1,7 @@
+# Equity Mean Reversion - Paper Trading Cron Job
+# Runs daily at 4:30 PM ET (after market close at 4:00 PM)
+# Markets: US Equities (Monday-Friday only)
+#
+# Schedule: 4:30 PM ET, Monday-Friday
+# Min Hour Day Month DayOfWeek
+30 16 * * 1-5 sh /app/scripts/run_live_equity_mr.sh >> /var/log/cron_equity.log 2>&1
