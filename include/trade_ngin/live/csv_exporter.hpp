@@ -1,10 +1,10 @@
 #pragma once
 
+#include <chrono>
+#include <fstream>
+#include <memory>
 #include <string>
 #include <unordered_map>
-#include <chrono>
-#include <memory>
-#include <fstream>
 #include "trade_ngin/core/error.hpp"
 #include "trade_ngin/core/types.hpp"
 
@@ -16,7 +16,8 @@ class TrendFollowingStrategy;
 class TrendFollowingSlowStrategy;
 // Base interface for trend following strategies (both standard and slow)
 class BaseStrategy;
-typedef BaseStrategy ITrendFollowingStrategy; // Use base class for compatibility with both strategy types
+typedef BaseStrategy
+    ITrendFollowingStrategy;  // Use base class for compatibility with both strategy types
 struct Position;
 
 /**
@@ -32,7 +33,8 @@ class CSVExporter {
 public:
     /**
      * @brief Construct a new CSVExporter
-     * @param output_directory Directory where CSV files will be written (default: current directory)
+     * @param output_directory Directory where CSV files will be written (default: current
+     * directory)
      */
     explicit CSVExporter(const std::string& output_directory = ".");
 
@@ -55,13 +57,9 @@ public:
     Result<std::string> export_current_positions(
         const std::chrono::system_clock::time_point& date,
         const std::unordered_map<std::string, Position>& positions,
-        const std::unordered_map<std::string, double>& market_prices,
-        double portfolio_value,
-        double gross_notional,
-        double net_notional,
-        ITrendFollowingStrategy* strategy,
-        const std::unordered_map<std::string, double>& symbol_commissions = {}
-    );
+        const std::unordered_map<std::string, double>& market_prices, double portfolio_value,
+        double gross_notional, double net_notional, ITrendFollowingStrategy* strategy,
+        const std::unordered_map<std::string, double>& symbol_commissions = {});
 
     /**
      * @brief Export yesterday's finalized positions to CSV (with PnL)
@@ -79,8 +77,7 @@ public:
      */
     Result<std::string> export_finalized_positions(
         const std::chrono::system_clock::time_point& date,
-        const std::chrono::system_clock::time_point& yesterday_date,
-        std::shared_ptr<IDatabase> db,
+        const std::chrono::system_clock::time_point& yesterday_date, std::shared_ptr<IDatabase> db,
         const std::unordered_map<std::string, Position>& fallback_positions,
         const std::unordered_map<std::string, double>& entry_prices,  // T-2 prices
         const std::unordered_map<std::string, double>& exit_prices    // T-1 prices
@@ -126,11 +123,8 @@ private:
      * @param net_notional Net notional
      * @param date Trading date
      */
-    void write_portfolio_header(std::ofstream& file,
-                               double portfolio_value,
-                               double gross_notional,
-                               double net_notional,
-                               const std::string& date) const;
+    void write_portfolio_header(std::ofstream& file, double portfolio_value, double gross_notional,
+                                double net_notional, const std::string& date) const;
 
     /**
      * @brief Get clean symbol for instrument registry lookup
@@ -140,4 +134,4 @@ private:
     std::string get_clean_symbol(const std::string& symbol) const;
 };
 
-} // namespace trade_ngin
+}  // namespace trade_ngin

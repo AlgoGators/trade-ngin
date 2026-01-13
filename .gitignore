@@ -8,6 +8,10 @@ apps/backtest/results/
 CLAUDE.md
 .csv
 
+# macOS system files
+.DS_Store
+**/.DS_Store
+
 # Backup files
 *.backup
 *_backup.*
