@@ -9,6 +9,17 @@
 #include <ctime>
 #include <chrono>
 
+// Windows compatibility
+#ifdef _WIN32
+#define popen _popen
+#define pclose _pclose
+#endif
+
+// Define M_PI if not already defined
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
 namespace trade_ngin {
 
 // ============================================================================

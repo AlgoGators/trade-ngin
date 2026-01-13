@@ -17,6 +17,16 @@
 #include <nlohmann/json.hpp>
 #include "trade_ngin/instruments/instrument_registry.hpp"
 
+// Undefine Windows min/max macros that conflict with std::min/std::max
+#ifdef _WIN32
+#ifdef min
+#undef min
+#endif
+#ifdef max
+#undef max
+#endif
+#endif
+
 namespace trade_ngin {
 
 // Global variables for curl email payload

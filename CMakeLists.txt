@@ -77,6 +77,7 @@ set(TRADE_NGIN_SOURCES
     src/backtest/slippage_model.cpp
     src/strategy/base_strategy.cpp
     src/strategy/trend_following.cpp
+    src/strategy/mean_reversion.cpp
     src/strategy/regime_detector.cpp
     src/storage/results_manager_base.cpp
     src/storage/backtest_results_manager.cpp
@@ -110,6 +111,10 @@ if(WIN32)
     set_target_properties(trade_ngin PROPERTIES
         WINDOWS_EXPORT_ALL_SYMBOLS ON
     )
+    # Add /bigobj flag for large object files on MSVC
+    if(MSVC)
+        target_compile_options(trade_ngin PRIVATE /bigobj)
+    endif()
 endif()
 
 # Set up include directories for the library
