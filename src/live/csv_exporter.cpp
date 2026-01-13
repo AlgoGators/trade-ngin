@@ -1,14 +1,14 @@
 #include "trade_ngin/live/csv_exporter.hpp"
-#include "trade_ngin/instruments/instrument_registry.hpp"
-#include "trade_ngin/data/database_interface.hpp"
-#include "trade_ngin/strategy/trend_following.hpp"
-#include "trade_ngin/strategy/trend_following_slow.hpp"
-#include "trade_ngin/strategy/base_strategy.hpp"
-#include "trade_ngin/core/logger.hpp"
-#include <iomanip>
-#include <sstream>
 #include <arrow/api.h>
 #include <arrow/type.h>
+#include <iomanip>
+#include <sstream>
+#include "trade_ngin/core/logger.hpp"
+#include "trade_ngin/data/database_interface.hpp"
+#include "trade_ngin/instruments/instrument_registry.hpp"
+#include "trade_ngin/strategy/base_strategy.hpp"
+#include "trade_ngin/strategy/trend_following.hpp"
+#include "trade_ngin/strategy/trend_following_slow.hpp"
 
 namespace trade_ngin {
 
@@ -26,18 +26,22 @@ void CSVExporter::set_output_directory(const std::string& directory) {
     }
 }
 
-std::string CSVExporter::format_date_for_filename(const std::chrono::system_clock::time_point& date) const {
+std::string CSVExporter::format_date_for_filename(
+    const std::chrono::system_clock::time_point& date) const {
     auto time_t = std::chrono::system_clock::to_time_t(date);
     std::tm* tm = std::gmtime(&time_t);
 
-    std::string day_str = std::string(2 - std::to_string(tm->tm_mday).length(), '0') + std::to_string(tm->tm_mday);
-    std::string month_str = std::string(2 - std::to_string(tm->tm_mon + 1).length(), '0') + std::to_string(tm->tm_mon + 1);
+    std::string day_str =
+        std::string(2 - std::to_string(tm->tm_mday).length(), '0') + std::to_string(tm->tm_mday);
+    std::string month_str = std::string(2 - std::to_string(tm->tm_mon + 1).length(), '0') +
+                            std::to_string(tm->tm_mon + 1);
     std::string year_str = std::to_string(tm->tm_year + 1900);
 
     return day_str + "-" + month_str + "-" + year_str;
 }
 
-std::string CSVExporter::format_date_for_display(const std::chrono::system_clock::time_point& date) const {
+std::string CSVExporter::format_date_for_display(
+    const std::chrono::system_clock::time_point& date) const {
     auto time_t = std::chrono::system_clock::to_time_t(date);
     std::ostringstream ss;
     ss << std::put_time(std::gmtime(&time_t), "%Y-%m-%d");
@@ -57,7 +61,8 @@ std::string CSVExporter::get_clean_symbol(const std::string& symbol) const {
     return lookup_sym;
 }
 
-double CSVExporter::calculate_notional(const std::string& symbol, double quantity, double price) const {
+double CSVExporter::calculate_notional(const std::string& symbol, double quantity,
+                                       double price) const {
     std::string clean_symbol = get_clean_symbol(symbol);
 
     double contract_multiplier = 0.0;
@@ -71,7 +76,8 @@ double CSVExporter::calculate_notional(const std::string& symbol, double quantit
 
         contract_multiplier = instrument_ptr->get_multiplier();
         if (contract_multiplier <= 0) {
-            ERROR("CSVExporter: Invalid multiplier " + std::to_string(contract_multiplier) + " for " + clean_symbol);
+            ERROR("CSVExporter: Invalid multiplier " + std::to_string(contract_multiplier) +
+                  " for " + clean_symbol);
             throw std::runtime_error("Invalid multiplier for: " + clean_symbol);
         }
     } catch (const std::exception& e) {
@@ -82,27 +88,20 @@ double CSVExporter::calculate_notional(const std::string& symbol, double quantit
     return quantity * price * contract_multiplier;
 }
 
-void CSVExporter::write_portfolio_header(std::ofstream& file,
-                                        double portfolio_value,
-                                        double gross_notional,
-                                        double net_notional,
-                                        const std::string& date) const {
+void CSVExporter::write_portfolio_header(std::ofstream& file, double portfolio_value,
+                                         double gross_notional, double net_notional,
+                                         const std::string& date) const {
     file << "# Portfolio Value: " << std::fixed << std::setprecision(2) << portfolio_value
-         << ", Gross Notional: " << gross_notional
-         << ", Net Notional: " << net_notional
+         << ", Gross Notional: " << gross_notional << ", Net Notional: " << net_notional
          << ", Date: " << date << "\n";
 }
 
 Result<std::string> CSVExporter::export_current_positions(
     const std::chrono::system_clock::time_point& date,
     const std::unordered_map<std::string, Position>& positions,
-    const std::unordered_map<std::string, double>& market_prices,
-    double portfolio_value,
-    double gross_notional,
-    double net_notional,
-    ITrendFollowingStrategy* strategy,
+    const std::unordered_map<std::string, double>& market_prices, double portfolio_value,
+    double gross_notional, double net_notional, ITrendFollowingStrategy* strategy,
     const std::unordered_map<std::string, double>& symbol_commissions) {
-
     try {
         INFO("CSVExporter: Exporting current positions...");
 
@@ -112,23 +111,25 @@ Result<std::string> CSVExporter::export_current_positions(
 
         std::ofstream file(filename);
         if (!file.is_open()) {
-            return Result<std::string>(std::make_unique<TradeError>(ErrorCode::FILE_IO_ERROR, "Failed to open file for writing: " + filename));
+            return Result<std::string>(std::make_unique<TradeError>(
+                ErrorCode::FILE_IO_ERROR, "Failed to open file for writing: " + filename));
         }
 
         // Write portfolio header
         write_portfolio_header(file, portfolio_value, gross_notional, net_notional,
-                              format_date_for_display(date));
+                               format_date_for_display(date));
 
         // Write CSV header
-        file << "symbol,quantity,market_price,notional,pct_of_gross_notional,pct_of_portfolio_value,"
-             << "forecast,volatility,ema_8,ema_32,ema_64,ema_256\n";
+        file
+            << "symbol,quantity,market_price,notional,pct_of_gross_notional,pct_of_portfolio_value,"
+            << "forecast,volatility,ema_8,ema_32,ema_64,ema_256\n";
 
         // Write position data
         for (const auto& [symbol, position] : positions) {
             double quantity = position.quantity.as_double();
 
             // Get market price (Day T-1 close)
-            double market_price = position.average_price.as_double(); // Default fallback
+            double market_price = position.average_price.as_double();  // Default fallback
             auto price_it = market_prices.find(symbol);
             if (price_it != market_prices.end()) {
                 market_price = price_it->second;
@@ -138,12 +139,14 @@ Result<std::string> CSVExporter::export_current_positions(
             double notional = calculate_notional(symbol, quantity, market_price);
 
             // Calculate percentages
-            double pct_of_gross = (gross_notional != 0.0) ?
-                (std::abs(notional) / gross_notional) * 100.0 : 0.0;
-            double pct_of_portfolio = (portfolio_value != 0.0) ?
-                (std::abs(notional) / std::abs(portfolio_value)) * 100.0 : 0.0;
+            double pct_of_gross =
+                (gross_notional != 0.0) ? (std::abs(notional) / gross_notional) * 100.0 : 0.0;
+            double pct_of_portfolio = (portfolio_value != 0.0)
+                                          ? (std::abs(notional) / std::abs(portfolio_value)) * 100.0
+                                          : 0.0;
 
-            // Get forecast from strategy (support both TrendFollowingStrategy and TrendFollowingSlowStrategy)
+            // Get forecast from strategy (support both TrendFollowingStrategy and
+            // TrendFollowingSlowStrategy)
             double forecast = 0.0;
             if (strategy != nullptr) {
                 auto* tf_strategy = dynamic_cast<TrendFollowingStrategy*>(strategy);
@@ -194,18 +197,10 @@ Result<std::string> CSVExporter::export_current_positions(
             }
 
             // Write position row
-            file << symbol << ","
-                 << quantity << ","
-                 << market_price << ","
-                 << notional << ","
-                 << pct_of_gross << ","
-                 << pct_of_portfolio << ","
-                 << forecast << ","
-                 << std::fixed << std::setprecision(6) << volatility << ","
-                 << ema_8 << ","
-                 << ema_32 << ","
-                 << ema_64 << ","
-                 << ema_256 << "\n";
+            file << symbol << "," << quantity << "," << market_price << "," << notional << ","
+                 << pct_of_gross << "," << pct_of_portfolio << "," << forecast << "," << std::fixed
+                 << std::setprecision(6) << volatility << "," << ema_8 << "," << ema_32 << ","
+                 << ema_64 << "," << ema_256 << "\n";
         }
 
         file.close();
@@ -214,29 +209,31 @@ Result<std::string> CSVExporter::export_current_positions(
 
     } catch (const std::exception& e) {
         ERROR("CSVExporter: Exception in export_current_positions: " + std::string(e.what()));
-        return Result<std::string>(std::make_unique<TradeError>(ErrorCode::FILE_IO_ERROR, "Failed to export current positions: " + std::string(e.what())));
+        return Result<std::string>(std::make_unique<TradeError>(
+            ErrorCode::FILE_IO_ERROR,
+            "Failed to export current positions: " + std::string(e.what())));
     }
 }
 
 Result<std::string> CSVExporter::export_finalized_positions(
     const std::chrono::system_clock::time_point& date,
-    const std::chrono::system_clock::time_point& yesterday_date,
-    std::shared_ptr<IDatabase> db,
+    const std::chrono::system_clock::time_point& yesterday_date, std::shared_ptr<IDatabase> db,
     const std::unordered_map<std::string, Position>& fallback_positions,
     const std::unordered_map<std::string, double>& entry_prices,
     const std::unordered_map<std::string, double>& exit_prices) {
-
     try {
         INFO("CSVExporter: Exporting finalized positions...");
 
         // Generate filename: DD-MM-YYYY_positions_asof_DD-MM-YYYY.csv
         std::string yesterday_str = format_date_for_filename(yesterday_date);
         std::string today_str = format_date_for_filename(date);
-        std::string filename = output_directory_ + yesterday_str + "_positions_asof_" + today_str + ".csv";
+        std::string filename =
+            output_directory_ + yesterday_str + "_positions_asof_" + today_str + ".csv";
 
         std::ofstream file(filename);
         if (!file.is_open()) {
-            return Result<std::string>(std::make_unique<TradeError>(ErrorCode::FILE_IO_ERROR, "Failed to open file for writing: " + filename));
+            return Result<std::string>(std::make_unique<TradeError>(
+                ErrorCode::FILE_IO_ERROR, "Failed to open file for writing: " + filename));
         }
 
         // Write CSV header
@@ -263,7 +260,8 @@ Result<std::string> CSVExporter::export_finalized_positions(
                     double realized_pnl = std::stod(realized_pnl_arr->GetString(i));
 
                     // Skip zero positions
-                    if (std::abs(quantity) < 0.0001) continue;
+                    if (std::abs(quantity) < 0.0001)
+                        continue;
 
                     // Get entry price (Day T-2 close)
                     double entry_price = 0.0;
@@ -280,11 +278,8 @@ Result<std::string> CSVExporter::export_finalized_positions(
                     }
 
                     // Write row
-                    file << symbol << ","
-                         << quantity << ","
-                         << entry_price << ","
-                         << exit_price << ","
-                         << realized_pnl << "\n";
+                    file << symbol << "," << quantity << "," << entry_price << "," << exit_price
+                         << "," << realized_pnl << "\n";
                 }
             }
         } else {
@@ -293,7 +288,8 @@ Result<std::string> CSVExporter::export_finalized_positions(
                 double quantity = position.quantity.as_double();
 
                 // Skip zero positions
-                if (std::abs(quantity) < 0.0001) continue;
+                if (std::abs(quantity) < 0.0001)
+                    continue;
 
                 // Get entry price (Day T-2 close)
                 double entry_price = 0.0;
@@ -313,10 +309,7 @@ Result<std::string> CSVExporter::export_finalized_positions(
                 double realized_pnl = position.realized_pnl.as_double();
 
                 // Write row
-                file << symbol << ","
-                     << quantity << ","
-                     << entry_price << ","
-                     << exit_price << ","
+                file << symbol << "," << quantity << "," << entry_price << "," << exit_price << ","
                      << realized_pnl << "\n";
             }
         }
@@ -327,8 +320,10 @@ Result<std::string> CSVExporter::export_finalized_positions(
 
     } catch (const std::exception& e) {
         ERROR("CSVExporter: Exception in export_finalized_positions: " + std::string(e.what()));
-        return Result<std::string>(std::make_unique<TradeError>(ErrorCode::FILE_IO_ERROR, "Failed to export finalized positions: " + std::string(e.what())));
+        return Result<std::string>(std::make_unique<TradeError>(
+            ErrorCode::FILE_IO_ERROR,
+            "Failed to export finalized positions: " + std::string(e.what())));
     }
 }
 
-} // namespace trade_ngin
+}  // namespace trade_ngin
