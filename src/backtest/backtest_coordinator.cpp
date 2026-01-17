@@ -475,16 +475,12 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                 "BacktestCoordinator");
         }
 
-        // If this is the first bar set, initialize previous_bars but do NOT trade yet
+        // If this is the first bar set, initialize previous_bars
+        // We still continue processing - matching BacktestEngine behavior
         bool had_previous_bars = portfolio_has_previous_bars_;
         if (!portfolio_has_previous_bars_) {
             portfolio_previous_bars_ = bars;
             portfolio_has_previous_bars_ = true;
-            price_manager_->update_from_bars(bars);
-
-            // Keep equity flat on first day
-            equity_curve.emplace_back(timestamp, initial_capital);
-            return Result<void>();
         }
 
         // Update slippage model if available
