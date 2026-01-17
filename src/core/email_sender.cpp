@@ -161,7 +161,7 @@ Result<void> EmailSender::send_email(const std::string& subject, const std::stri
         curl_easy_setopt(curl, CURLOPT_MAIL_RCPT, recipients);
 
         // Read logo file and encode to base64
-        std::string logo_path = "Algo.png";
+        std::string logo_path = "assets/Algo.png";
         std::ifstream logo_file(logo_path, std::ios::binary);
         std::string logo_base64;
 
