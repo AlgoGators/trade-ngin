@@ -1,7 +1,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
-#include "trade_ngin/backtest/backtest_engine.hpp"
+#include "trade_ngin/backtest/backtest_coordinator.hpp"
 #include "trade_ngin/backtest/transaction_cost_analysis.hpp"
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/core/run_id_generator.hpp"
@@ -263,14 +263,27 @@ int main() {
         config.portfolio_config.opt_config.use_buffering = true;
         config.portfolio_config.opt_config.buffer_size_factor = 0.05;
 
-        // Initialize backtest engine
-        // Right before creating BacktestEngine
-        std::cerr << "Before BacktestEngine: initialized=" << Logger::instance().is_initialized()
+        // Initialize backtest coordinator
+        // Right before creating BacktestCoordinator
+        std::cerr << "Before BacktestCoordinator: initialized=" << Logger::instance().is_initialized()
                   << std::endl;
-        INFO("Initializing backtest engine...");
-        auto engine = std::make_unique<trade_ngin::backtest::BacktestEngine>(config, db);
-        // After creating BacktestEngine
-        std::cerr << "After BacktestEngine: initialized=" << Logger::instance().is_initialized()
+        INFO("Initializing backtest coordinator...");
+
+        // Create BacktestCoordinatorConfig from BacktestConfig
+        trade_ngin::backtest::BacktestCoordinatorConfig coord_config;
+        coord_config.initial_capital = static_cast<double>(config.portfolio_config.initial_capital);
+        coord_config.commission_rate = static_cast<double>(config.strategy_config.commission_rate);
+        coord_config.slippage_bps = static_cast<double>(config.strategy_config.slippage_model);
+        coord_config.use_risk_management = config.portfolio_config.use_risk_management;
+        coord_config.use_optimization = config.portfolio_config.use_optimization;
+        coord_config.store_trade_details = config.store_trade_details;
+        coord_config.portfolio_id = config.portfolio_id;
+
+        auto coordinator = std::make_unique<trade_ngin::backtest::BacktestCoordinator>(
+            db, &registry, coord_config);
+
+        // After creating BacktestCoordinator
+        std::cerr << "After BacktestCoordinator: initialized=" << Logger::instance().is_initialized()
                   << std::endl;
 
         // Setup portfolio configuration
@@ -482,7 +495,13 @@ int main() {
              " to " +
              std::to_string(std::chrono::system_clock::to_time_t(config.strategy_config.end_date)));
 
-        auto result = engine->run_portfolio(portfolio);
+        auto result = coordinator->run_portfolio(
+            portfolio,
+            config.strategy_config.symbols,
+            config.strategy_config.start_date,
+            config.strategy_config.end_date,
+            config.strategy_config.asset_class,
+            config.strategy_config.data_freq);
 
         if (result.is_error()) {
             std::cerr << "Backtest failed: " << result.error()->what() << std::endl;
@@ -518,7 +537,7 @@ int main() {
             portfolio_config_json["strategy_names"] = strategy_names;
 
             // Save portfolio-level results with per-strategy attribution
-            auto save_result = engine->save_portfolio_results_to_db(
+            auto save_result = coordinator->save_portfolio_results_to_db(
                 backtest_results,
                 strategy_names,
                 strategy_allocations,
@@ -537,9 +556,9 @@ int main() {
             ERROR("Exception during database save: " + std::string(e.what()));
         }
 
-        // Explicitly reset the engine to trigger cleanup before program exit
-        INFO("Cleaning up backtest engine...");
-        engine.reset();
+        // Explicitly reset the coordinator to trigger cleanup before program exit
+        INFO("Cleaning up backtest coordinator...");
+        coordinator.reset();
         
         INFO("Backtest application completed successfully");
 
