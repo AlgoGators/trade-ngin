@@ -1,4 +1,5 @@
 #include "trade_ngin/backtest/backtest_coordinator.hpp"
+#include "trade_ngin/backtest/slippage_models.hpp"
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/core/run_id_generator.hpp"
 #include "trade_ngin/core/time_utils.hpp"
@@ -71,6 +72,16 @@ Result<void> BacktestCoordinator::create_components() {
     constraints_config.use_optimization = config_.use_optimization;
     constraints_config.commission_rate = config_.commission_rate;
     constraints_manager_ = std::make_unique<BacktestPortfolioConstraints>(constraints_config);
+
+    // Initialize slippage model (matching BacktestEngine behavior)
+    if (config_.slippage_bps > 0.0) {
+        SpreadSlippageConfig slippage_config;
+        slippage_config.min_spread_bps = config_.slippage_bps;
+        slippage_config.spread_multiplier = 1.2;
+        slippage_config.market_impact_multiplier = 1.5;
+        slippage_model_ = SlippageModelFactory::create_spread_model(slippage_config);
+        INFO("Created SpreadSlippageModel with min_spread_bps=" + std::to_string(config_.slippage_bps));
+    }
 
     return Result<void>();
 }
