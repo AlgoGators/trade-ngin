@@ -1,5 +1,5 @@
 #include "trade_ngin/backtest/backtest_metrics_calculator.hpp"
-#include "trade_ngin/backtest/backtest_engine.hpp"
+#include "trade_ngin/backtest/backtest_types.hpp"
 #include "trade_ngin/core/time_utils.hpp"
 #include <algorithm>
 #include <cmath>
