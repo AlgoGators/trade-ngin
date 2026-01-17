@@ -64,7 +64,8 @@ trade_ngin/
 ├── include/                    # Public header files
 │   └── trade_ngin/             # Main include directory
 │       ├── backtest/           # Backtesting components
-│       │   ├── backtest_engine.hpp
+│       │   ├── backtest_coordinator.hpp
+│       │   ├── backtest_types.hpp
 │       │   ├── slippage_models.hpp
 │       │   └── transaction_cost_analysis.hpp
 │       ├── core/               # Core system components
@@ -107,7 +108,12 @@ trade_ngin/
 │           └── types.hpp
 ├── src/                        # Implementation files
 │   ├── backtest/               # Backtesting implementations
-│   │   ├── backtest_engine.cpp
+│   │   ├── backtest_coordinator.cpp
+│   │   ├── backtest_data_loader.cpp
+│   │   ├── backtest_metrics_calculator.cpp
+│   │   ├── backtest_execution_manager.cpp
+│   │   ├── backtest_portfolio_constraints.cpp
+│   │   ├── backtest_price_manager.cpp
 │   │   ├── slippage_model.cpp
 │   │   └── transaction_cost_analysis.cpp
 │   ├── core/                   # Core system implementations
