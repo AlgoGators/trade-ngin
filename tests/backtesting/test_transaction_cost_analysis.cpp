@@ -64,7 +64,7 @@ TEST_F(TransactionCostAnalyzerTest, SingleTradeAnalysis) {
     exec.filled_quantity = 1000;
     exec.fill_price = 150.0;
     exec.fill_time = std::chrono::system_clock::now();
-    exec.transaction_cost = 1.0;
+    exec.total_transaction_costs = 1.0;
 
     // Create market data around the execution
     auto market_data = create_market_data("AAPL", 150.0);
@@ -95,7 +95,7 @@ TEST_F(TransactionCostAnalyzerTest, TradeSequenceAnalysis) {
         exec.filled_quantity = 200;           // Split 1000 shares into 5 trades
         exec.fill_price = 150.0 + (i * 0.1);  // Slight price drift
         exec.fill_time = base_time + std::chrono::minutes(i);
-        exec.transaction_cost = 0.2;
+        exec.total_transaction_costs = 0.2;
         executions.push_back(exec);
     }
 
@@ -183,7 +183,7 @@ TEST_F(TransactionCostAnalyzerTest, HighVolatilityScenario) {
     exec.filled_quantity = 1000;
     exec.fill_price = 150.0;
     exec.fill_time = std::chrono::system_clock::now();
-    exec.transaction_cost = 1.0;
+    exec.total_transaction_costs = 1.0;
 
     // Create volatile market data (0.05 = 5% volatility)
     auto market_data = create_market_data("AAPL", 150.0, 0.05);
@@ -204,7 +204,7 @@ TEST_F(TransactionCostAnalyzerTest, ReportGeneration) {
     exec.filled_quantity = 1000;
     exec.fill_price = 150.0;
     exec.fill_time = std::chrono::system_clock::now();
-    exec.transaction_cost = 1.0;
+    exec.total_transaction_costs = 1.0;
 
     auto market_data = create_market_data("AAPL", 150.0);
 

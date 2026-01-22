@@ -7,6 +7,7 @@
 #include "trade_ngin/core/types.hpp"
 #include "trade_ngin/core/error.hpp"
 #include "trade_ngin/backtest/slippage_models.hpp"
+#include "trade_ngin/transaction_cost/transaction_cost_manager.hpp"
 
 namespace trade_ngin {
 namespace backtest {
@@ -15,10 +16,17 @@ namespace backtest {
  * @brief Configuration for execution generation
  */
 struct BacktestExecutionConfig {
+    // Legacy config (kept for compatibility, but not used when use_new_cost_model=true)
     double commission_rate = 0.0005;   // Per-share commission rate
     double slippage_bps = 1.0;         // Slippage in basis points (for basic model)
     double market_impact_bps = 5.0;    // Market impact in basis points
     double fixed_cost_per_trade = 1.0; // Fixed cost per trade
+
+    // New cost model settings
+    bool use_new_cost_model = true;    // Use TransactionCostManager
+
+    // Explicit fee per contract (broker + exchange + clearing + regulatory)
+    double explicit_fee_per_contract = 1.75;
 };
 
 /**
@@ -135,9 +143,43 @@ public:
      */
     int get_execution_count() const { return execution_counter_; }
 
+    /**
+     * @brief Update market data for transaction cost calculation
+     *
+     * Call this daily to update rolling ADV and volatility for each symbol.
+     *
+     * @param symbol Instrument symbol
+     * @param volume Today's trading volume
+     * @param close_price Today's close price
+     * @param prev_close_price Previous day's close price
+     */
+    void update_market_data(
+        const std::string& symbol,
+        double volume,
+        double close_price,
+        double prev_close_price);
+
+    /**
+     * @brief Get current ADV for a symbol
+     */
+    double get_adv(const std::string& symbol) const;
+
+    /**
+     * @brief Get the transaction cost manager (for external access if needed)
+     */
+    transaction_cost::TransactionCostManager& get_transaction_cost_manager() {
+        return transaction_cost_manager_;
+    }
+
+    /**
+     * @brief Check if using new transaction cost model
+     */
+    bool is_using_new_cost_model() const { return config_.use_new_cost_model; }
+
 private:
     BacktestExecutionConfig config_;
     std::unique_ptr<SlippageModel> slippage_model_;
+    transaction_cost::TransactionCostManager transaction_cost_manager_;
     int execution_counter_ = 0;
 
     /**

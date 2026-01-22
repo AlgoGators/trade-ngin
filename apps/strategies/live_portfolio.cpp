@@ -1121,9 +1121,9 @@ int main(int argc, char* argv[]) {
                          (exec.side == Side::BUY ? "BUY" : "SELL") + " " +
                          std::to_string(exec.filled_quantity.as_double()) + " @ " +
                          std::to_string(exec.fill_price) + " commission=$" +
-                         std::to_string(exec.commission.as_double()));
+                         std::to_string(exec.total_transaction_costs.as_double()));
 
-                    total_daily_commissions += exec.commission.as_double();
+                    total_daily_commissions += exec.total_transaction_costs.as_double();
                 }
 
                 all_strategy_executions[strategy_name] = strategy_executions;

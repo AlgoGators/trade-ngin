@@ -114,8 +114,12 @@ ExecutionReport ExecutionManager::generate_execution(
     exec.fill_price = apply_slippage(market_price, side);
     exec.fill_time = timestamp;
 
-    // Calculate transaction cost
-    exec.transaction_cost = calculate_transaction_cost(exec.filled_quantity.as_double(), market_price);
+    // Calculate transaction cost (live: all costs in total_transaction_costs for now)
+    double total_cost = calculate_transaction_cost(exec.filled_quantity.as_double(), market_price);
+    exec.commissions_fees = Decimal(total_cost);
+    exec.implicit_price_impact = Decimal(0.0);
+    exec.slippage_market_impact = Decimal(0.0);
+    exec.total_transaction_costs = Decimal(total_cost);
     exec.is_partial = false;
 
     return exec;

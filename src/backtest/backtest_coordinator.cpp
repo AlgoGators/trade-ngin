@@ -420,6 +420,25 @@ Result<void> BacktestCoordinator::process_day(
         // Update prices with today's bars
         price_manager_->update_from_bars(bars);
 
+        // Update transaction cost manager with market data for ADV and volatility tracking
+        if (execution_manager_->is_using_new_cost_model()) {
+            for (const auto& bar : bars) {
+                double close = static_cast<double>(bar.close);
+                double volume = static_cast<double>(bar.volume);
+
+                // Get previous close for log return calculation
+                double prev_close = close;  // Default to current if no previous
+                for (const auto& prev_bar : previous_bars_) {
+                    if (prev_bar.symbol == bar.symbol) {
+                        prev_close = static_cast<double>(prev_bar.close);
+                        break;
+                    }
+                }
+
+                execution_manager_->update_market_data(bar.symbol, volume, close, prev_close);
+            }
+        }
+
         // Calculate portfolio value using today's close-to-previous-close PnL
         double portfolio_value = calculate_portfolio_value(current_positions_, bars);
         current_portfolio_value_ = portfolio_value;
@@ -494,6 +513,25 @@ Result<void> BacktestCoordinator::process_portfolio_day(
             }
         }
 
+        // Update transaction cost manager with market data for ADV and volatility tracking
+        if (execution_manager_->is_using_new_cost_model()) {
+            for (const auto& bar : bars) {
+                double close = static_cast<double>(bar.close);
+                double volume = static_cast<double>(bar.volume);
+
+                // Get previous close for log return calculation
+                double prev_close = close;  // Default to current if no previous
+                for (const auto& prev_bar : portfolio_previous_bars_) {
+                    if (prev_bar.symbol == bar.symbol) {
+                        prev_close = static_cast<double>(prev_bar.close);
+                        break;
+                    }
+                }
+
+                execution_manager_->update_market_data(bar.symbol, volume, close, prev_close);
+            }
+        }
+
         // Track strategy execution counts BEFORE processing (for commission calculation)
         std::unordered_map<std::string, size_t> strategy_exec_counts_before;
         if (had_previous_bars && !is_warmup) {
@@ -547,30 +585,49 @@ Result<void> BacktestCoordinator::process_portfolio_day(
             }
         }
 
-        // Apply slippage and transaction costs to executions
+        // Apply transaction costs to executions
         for (auto& exec : period_executions) {
             try {
                 exec.fill_time = timestamp;
 
-                // Apply slippage
-                if (slippage_model_) {
-                    auto symbol_bar = find_bar_for_symbol(bars, exec.symbol);
-                    double adjusted_price = slippage_model_->calculate_slippage(
-                        static_cast<double>(exec.fill_price),
-                        static_cast<double>(exec.filled_quantity),
-                        exec.side,
-                        symbol_bar);
-                    exec.fill_price = Price(adjusted_price);
-                } else {
-                    // Apply basic slippage model
-                    double slip_factor = config_.slippage_bps / 10000.0;
-                    exec.fill_price = exec.side == Side::BUY
-                        ? Price(static_cast<double>(exec.fill_price) * (1.0 + slip_factor))
-                        : Price(static_cast<double>(exec.fill_price) * (1.0 - slip_factor));
-                }
+                if (execution_manager_->is_using_new_cost_model()) {
+                    // New model: fill_price stays as pure reference price (no slippage embedded)
+                    // All costs are calculated via TransactionCostManager
+                    double ref_price = static_cast<double>(exec.fill_price);
+                    double qty = static_cast<double>(exec.filled_quantity);
 
-                // Calculate and add commission
-                exec.commission = Decimal(execution_manager_->calculate_transaction_costs(exec));
+                    auto cost_result = execution_manager_->get_transaction_cost_manager().calculate_costs(
+                        exec.symbol, qty, ref_price);
+
+                    exec.commissions_fees = Decimal(cost_result.commissions_fees);
+                    exec.implicit_price_impact = Decimal(cost_result.implicit_price_impact);
+                    exec.slippage_market_impact = Decimal(cost_result.slippage_market_impact);
+                    exec.total_transaction_costs = Decimal(cost_result.total_transaction_costs);
+                } else {
+                    // Legacy model: apply slippage to price
+                    if (slippage_model_) {
+                        auto symbol_bar = find_bar_for_symbol(bars, exec.symbol);
+                        double adjusted_price = slippage_model_->calculate_slippage(
+                            static_cast<double>(exec.fill_price),
+                            static_cast<double>(exec.filled_quantity),
+                            exec.side,
+                            symbol_bar);
+                        exec.fill_price = Price(adjusted_price);
+                    } else {
+                        // Apply basic slippage model
+                        double slip_factor = config_.slippage_bps / 10000.0;
+                        exec.fill_price = exec.side == Side::BUY
+                            ? Price(static_cast<double>(exec.fill_price) * (1.0 + slip_factor))
+                            : Price(static_cast<double>(exec.fill_price) * (1.0 - slip_factor));
+                    }
+
+                    // Calculate and add commission (legacy: all costs in one field)
+                    double total_cost = execution_manager_->calculate_transaction_costs(exec);
+                    exec.commissions_fees = Decimal(total_cost);
+                    exec.implicit_price_impact = Decimal(0.0);
+                    exec.slippage_market_impact = Decimal(0.0);
+                    exec.total_transaction_costs = Decimal(total_cost);
+                }
 
                 executions.push_back(exec);
             } catch (const std::exception& e) {
@@ -860,7 +917,7 @@ double BacktestCoordinator::calculate_period_commissions(
 
         // Get only the new executions (those added after count_before)
         for (size_t i = count_before; i < execs.size(); ++i) {
-            total_commissions += static_cast<double>(execs[i].commission);
+            total_commissions += static_cast<double>(execs[i].total_transaction_costs);
         }
     }
 

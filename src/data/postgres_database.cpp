@@ -238,7 +238,7 @@ Result<void> PostgresDatabase::store_executions(const std::vector<ExecutionRepor
             // portfolio_id
             std::string query = "INSERT INTO " + table_name +
                                 " (exec_id, order_id, symbol, side, quantity, price, "
-                                "execution_time, commission, is_partial, strategy_id, "
+                                "execution_time, total_transaction_costs, is_partial, strategy_id, "
                                 "strategy_name, date, portfolio_id) VALUES "
                                 "($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)";
 
@@ -249,7 +249,7 @@ Result<void> PostgresDatabase::store_executions(const std::vector<ExecutionRepor
             txn.exec_params(
                 query, exec.exec_id, exec.order_id, exec.symbol, side_to_string(exec.side),
                 static_cast<double>(exec.filled_quantity), static_cast<double>(exec.fill_price),
-                format_timestamp(exec.fill_time), static_cast<double>(exec.transaction_cost),
+                format_timestamp(exec.fill_time), static_cast<double>(exec.total_transaction_costs),
                 exec.is_partial,
                 strategy_id,    // $10 - combined (e.g., LIVE_TREND_FOLLOWING_TREND_FOLLOWING_FAST)
                 strategy_name,  // $11 - individual (e.g., TREND_FOLLOWING)
@@ -1622,9 +1622,9 @@ Result<void> PostgresDatabase::validate_execution_report(const ExecutionReport& 
                                 "PostgresDatabase");
     }
 
-    if (exec.transaction_cost.is_negative() || static_cast<double>(exec.transaction_cost) > 1e12) {
+    if (exec.total_transaction_costs.is_negative() || static_cast<double>(exec.total_transaction_costs) > 1e12) {
         return make_error<void>(ErrorCode::INVALID_ARGUMENT,
-                                "Invalid transaction_cost: must be between 0 and 1e12",
+                                "Invalid total_transaction_costs: must be between 0 and 1e12",
                                 "PostgresDatabase");
     }
 
@@ -1711,7 +1711,9 @@ Result<void> PostgresDatabase::store_backtest_executions(
             // Build a single multi-value INSERT for large batches
             std::string query = "INSERT INTO " + table_name +
                                 " (run_id, portfolio_id, execution_id, order_id, timestamp, "
-                                "symbol, side, quantity, price, commission, is_partial) VALUES ";
+                                "symbol, side, quantity, price, commissions_fees, "
+                                "implicit_price_impact, slippage_market_impact, "
+                                "total_transaction_costs, is_partial) VALUES ";
 
             std::vector<std::string> value_strings;
             value_strings.reserve(executions.size());
@@ -1723,7 +1725,10 @@ Result<void> PostgresDatabase::store_backtest_executions(
                                      "', '" + side_to_string(exec.side) + "', " +
                                      std::to_string(static_cast<double>(exec.filled_quantity)) +
                                      ", " + std::to_string(static_cast<double>(exec.fill_price)) +
-                                     ", " + std::to_string(static_cast<double>(exec.transaction_cost)) +
+                                     ", " + std::to_string(static_cast<double>(exec.commissions_fees)) +
+                                     ", " + std::to_string(static_cast<double>(exec.implicit_price_impact)) +
+                                     ", " + std::to_string(static_cast<double>(exec.slippage_market_impact)) +
+                                     ", " + std::to_string(static_cast<double>(exec.total_transaction_costs)) +
                                      ", " + (exec.is_partial ? "true" : "false") + ")";
                 value_strings.push_back(values);
             }
@@ -1735,14 +1740,19 @@ Result<void> PostgresDatabase::store_backtest_executions(
             for (const auto& exec : executions) {
                 std::string query = "INSERT INTO " + table_name +
                                     " (run_id, portfolio_id, execution_id, order_id, timestamp, "
-                                    "symbol, side, quantity, price, commission, is_partial) "
-                                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)";
+                                    "symbol, side, quantity, price, commissions_fees, "
+                                    "implicit_price_impact, slippage_market_impact, "
+                                    "total_transaction_costs, is_partial) "
+                                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)";
 
                 txn.exec_params(
                     query, run_id, actual_portfolio_id, exec.exec_id, exec.order_id,
                     format_timestamp(exec.fill_time), exec.symbol, side_to_string(exec.side),
                     static_cast<double>(exec.filled_quantity), static_cast<double>(exec.fill_price),
-                    static_cast<double>(exec.transaction_cost), exec.is_partial);
+                    static_cast<double>(exec.commissions_fees),
+                    static_cast<double>(exec.implicit_price_impact),
+                    static_cast<double>(exec.slippage_market_impact),
+                    static_cast<double>(exec.total_transaction_costs), exec.is_partial);
             }
         }
 
@@ -1782,7 +1792,8 @@ Result<void> PostgresDatabase::store_backtest_executions_with_strategy(
             std::string query =
                 "INSERT INTO " + table_name +
                 " (run_id, portfolio_id, strategy_id, execution_id, order_id, timestamp, symbol, "
-                "side, quantity, price, commission, is_partial) VALUES ";
+                "side, quantity, price, commissions_fees, implicit_price_impact, "
+                "slippage_market_impact, total_transaction_costs, is_partial) VALUES ";
 
             std::vector<std::string> value_strings;
             value_strings.reserve(executions.size());
@@ -1794,7 +1805,10 @@ Result<void> PostgresDatabase::store_backtest_executions_with_strategy(
                                      exec.symbol + "', '" + side_to_string(exec.side) + "', " +
                                      std::to_string(static_cast<double>(exec.filled_quantity)) +
                                      ", " + std::to_string(static_cast<double>(exec.fill_price)) +
-                                     ", " + std::to_string(static_cast<double>(exec.commission)) +
+                                     ", " + std::to_string(static_cast<double>(exec.commissions_fees)) +
+                                     ", " + std::to_string(static_cast<double>(exec.implicit_price_impact)) +
+                                     ", " + std::to_string(static_cast<double>(exec.slippage_market_impact)) +
+                                     ", " + std::to_string(static_cast<double>(exec.total_transaction_costs)) +
                                      ", " + (exec.is_partial ? "true" : "false") + ")";
                 value_strings.push_back(values);
             }
@@ -1807,14 +1821,18 @@ Result<void> PostgresDatabase::store_backtest_executions_with_strategy(
                 std::string query =
                     "INSERT INTO " + table_name +
                     " (run_id, portfolio_id, strategy_id, execution_id, order_id, timestamp, "
-                    "symbol, side, quantity, price, commission, is_partial) "
-                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)";
+                    "symbol, side, quantity, price, commissions_fees, implicit_price_impact, "
+                    "slippage_market_impact, total_transaction_costs, is_partial) "
+                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)";
 
                 txn.exec_params(
                     query, run_id, actual_portfolio_id, strategy_id, exec.exec_id, exec.order_id,
                     format_timestamp(exec.fill_time), exec.symbol, side_to_string(exec.side),
                     static_cast<double>(exec.filled_quantity), static_cast<double>(exec.fill_price),
-                    static_cast<double>(exec.commission), exec.is_partial);
+                    static_cast<double>(exec.commissions_fees),
+                    static_cast<double>(exec.implicit_price_impact),
+                    static_cast<double>(exec.slippage_market_impact),
+                    static_cast<double>(exec.total_transaction_costs), exec.is_partial);
             }
         }
 
