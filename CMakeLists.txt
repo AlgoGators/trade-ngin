@@ -82,6 +82,10 @@ set(TRADE_NGIN_SOURCES
     src/backtest/backtest_portfolio_constraints.cpp
     src/backtest/backtest_coordinator.cpp
     src/backtest/slippage_model.cpp
+    src/transaction_cost/asset_cost_config.cpp
+    src/transaction_cost/spread_model.cpp
+    src/transaction_cost/impact_model.cpp
+    src/transaction_cost/transaction_cost_manager.cpp
     src/strategy/base_strategy.cpp
     src/strategy/trend_following.cpp
     src/strategy/trend_following_slow.cpp

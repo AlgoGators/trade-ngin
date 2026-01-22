@@ -239,7 +239,7 @@ BacktestMetricsCalculator::TradeStatistics BacktestMetricsCalculator::calculate_
         const std::string& symbol = exec.symbol;
         double fill_price = static_cast<double>(exec.fill_price);
         double quantity = static_cast<double>(exec.filled_quantity);
-        double commission = static_cast<double>(exec.commission);
+        double commission = static_cast<double>(exec.total_transaction_costs);
 
         // Adjust quantity based on side
         double signed_qty = (exec.side == Side::BUY) ? quantity : -quantity;
@@ -335,7 +335,7 @@ std::map<std::string, double> BacktestMetricsCalculator::calculate_symbol_pnl(
         const std::string& symbol = exec.symbol;
         double fill_price = static_cast<double>(exec.fill_price);
         double quantity = static_cast<double>(exec.filled_quantity);
-        double commission = static_cast<double>(exec.commission);
+        double commission = static_cast<double>(exec.total_transaction_costs);
 
         double signed_qty = (exec.side == Side::BUY) ? quantity : -quantity;
 

@@ -395,6 +395,12 @@ struct Position {
 /**
  * @brief Execution report structure
  * Represents a fill or partial fill of an order
+ *
+ * Transaction cost breakdown (backtest only):
+ * - commissions_fees: Explicit fees (|qty| × fee_per_contract)
+ * - implicit_price_impact: Spread + market impact in price units per contract
+ * - slippage_market_impact: Implicit costs in dollars
+ * - total_transaction_costs: commissions_fees + slippage_market_impact
  */
 struct ExecutionReport {
     std::string order_id;
@@ -402,9 +408,15 @@ struct ExecutionReport {
     std::string symbol;
     Side side;
     Quantity filled_quantity;
-    Price fill_price;
+    Price fill_price;  // Reference fill price (no costs embedded)
     Timestamp fill_time;
-    Decimal transaction_cost;
+
+    // Transaction cost breakdown
+    Decimal commissions_fees;         // Explicit: |qty| × fee_per_contract
+    Decimal implicit_price_impact;    // Spread + impact in price units
+    Decimal slippage_market_impact;   // Implicit costs in dollars
+    Decimal total_transaction_costs;  // commissions_fees + slippage_market_impact
+
     bool is_partial;
 };
 

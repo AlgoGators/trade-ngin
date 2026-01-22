@@ -4,13 +4,29 @@
 namespace trade_ngin {
 namespace backtest {
 
+namespace {
+// Initialize transaction cost manager config from execution config
+transaction_cost::TransactionCostManager::Config make_tc_config(
+    const BacktestExecutionConfig& config) {
+    transaction_cost::TransactionCostManager::Config tc_config;
+    tc_config.explicit_fee_per_contract = config.explicit_fee_per_contract;
+    return tc_config;
+}
+}  // namespace
+
 BacktestExecutionManager::BacktestExecutionManager(const BacktestExecutionConfig& config)
-    : config_(config), slippage_model_(nullptr), execution_counter_(0) {}
+    : config_(config),
+      slippage_model_(nullptr),
+      transaction_cost_manager_(make_tc_config(config)),
+      execution_counter_(0) {}
 
 BacktestExecutionManager::BacktestExecutionManager(
     const BacktestExecutionConfig& config,
     std::unique_ptr<SlippageModel> slippage_model)
-    : config_(config), slippage_model_(std::move(slippage_model)), execution_counter_(0) {}
+    : config_(config),
+      slippage_model_(std::move(slippage_model)),
+      transaction_cost_manager_(make_tc_config(config)),
+      execution_counter_(0) {}
 
 std::vector<ExecutionReport> BacktestExecutionManager::generate_executions(
     const std::map<std::string, Position>& current_positions,
@@ -77,9 +93,6 @@ ExecutionReport BacktestExecutionManager::generate_execution(
     Side side = quantity_change > 0 ? Side::BUY : Side::SELL;
     double abs_quantity = std::abs(quantity_change);
 
-    // Apply slippage
-    double fill_price = apply_slippage(execution_price, abs_quantity, side, symbol_bar);
-
     // Create execution report
     ExecutionReport exec;
     exec.order_id = generate_order_id();
@@ -87,10 +100,35 @@ ExecutionReport BacktestExecutionManager::generate_execution(
     exec.symbol = symbol;
     exec.side = side;
     exec.filled_quantity = Quantity(abs_quantity);
-    exec.fill_price = fill_price;
     exec.fill_time = timestamp;
-    exec.commission = Decimal(calculate_transaction_costs(exec));
     exec.is_partial = false;
+
+    if (config_.use_new_cost_model) {
+        // New model: fill price is pure reference price (no slippage embedded)
+        // All costs are calculated separately via TransactionCostManager
+        exec.fill_price = Price(execution_price);
+
+        // Calculate costs using the new transaction cost manager
+        auto cost_result = transaction_cost_manager_.calculate_costs(
+            symbol, abs_quantity, execution_price);
+
+        // Populate all cost fields
+        exec.commissions_fees = Decimal(cost_result.commissions_fees);
+        exec.implicit_price_impact = Decimal(cost_result.implicit_price_impact);
+        exec.slippage_market_impact = Decimal(cost_result.slippage_market_impact);
+        exec.total_transaction_costs = Decimal(cost_result.total_transaction_costs);
+    } else {
+        // Legacy model: apply slippage to price and use old cost calculation
+        double fill_price = apply_slippage(execution_price, abs_quantity, side, symbol_bar);
+        exec.fill_price = Price(fill_price);
+
+        // Calculate costs using legacy method
+        double total_cost = calculate_transaction_costs(exec);
+        exec.commissions_fees = Decimal(total_cost);  // Legacy: all costs in one field
+        exec.implicit_price_impact = Decimal(0.0);
+        exec.slippage_market_impact = Decimal(0.0);
+        exec.total_transaction_costs = Decimal(total_cost);
+    }
 
     return exec;
 }
@@ -142,6 +180,19 @@ void BacktestExecutionManager::set_slippage_model(std::unique_ptr<SlippageModel>
 
 void BacktestExecutionManager::reset() {
     execution_counter_ = 0;
+    transaction_cost_manager_.clear_all_data();
+}
+
+void BacktestExecutionManager::update_market_data(
+    const std::string& symbol,
+    double volume,
+    double close_price,
+    double prev_close_price) {
+    transaction_cost_manager_.update_market_data(symbol, volume, close_price, prev_close_price);
+}
+
+double BacktestExecutionManager::get_adv(const std::string& symbol) const {
+    return transaction_cost_manager_.get_adv(symbol);
 }
 
 std::string BacktestExecutionManager::generate_order_id() {

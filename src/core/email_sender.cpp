@@ -850,7 +850,7 @@ std::string EmailSender::format_executions_table(const std::vector<ExecutionRepo
 
         double notional = exec.filled_quantity.as_double() * exec.fill_price.as_double() * contract_multiplier;
         total_notional_traded += notional;
-        total_transaction_cost += exec.transaction_cost.as_double();
+        total_transaction_cost += exec.total_transaction_costs.as_double();
 
         std::string side_str = exec.side == Side::BUY ? "BUY" : "SELL";
         std::string side_class = exec.side == Side::BUY ? "positive" : "negative";
@@ -861,7 +861,7 @@ std::string EmailSender::format_executions_table(const std::vector<ExecutionRepo
         html << "<td>" << std::fixed << std::setprecision(0) << exec.filled_quantity.as_double() << "</td>\n";
         html << "<td>$" << std::fixed << std::setprecision(2) << exec.fill_price.as_double() << "</td>\n";
         html << "<td>$" << std::fixed << std::setprecision(2) << notional << "</td>\n";
-        html << "<td>$" << std::fixed << std::setprecision(2) << exec.transaction_cost.as_double() << "</td>\n";
+        html << "<td>$" << std::fixed << std::setprecision(2) << exec.total_transaction_costs.as_double() << "</td>\n";
         html << "</tr>\n";
     }
 
