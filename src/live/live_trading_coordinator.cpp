@@ -115,7 +115,7 @@ Result<std::pair<double, TradingMetrics>> LiveTradingCoordinator::load_previous_
 
 Result<TradingMetrics> LiveTradingCoordinator::calculate_daily_metrics(
     double daily_pnl, double previous_portfolio_value, double current_portfolio_value,
-    double gross_notional, double margin_posted, int trading_days, double daily_commissions) {
+    double gross_notional, double margin_posted, int trading_days, double daily_transaction_costs) {
     if (!is_initialized_) {
         return make_error<TradingMetrics>(ErrorCode::NOT_INITIALIZED, "Coordinator not initialized",
                                           "LiveTradingCoordinator");
@@ -125,7 +125,7 @@ Result<TradingMetrics> LiveTradingCoordinator::calculate_daily_metrics(
         // Use LiveMetricsCalculator to calculate all metrics
         auto calc_metrics = metrics_calculator_->calculate_all_metrics(
             daily_pnl, previous_portfolio_value, current_portfolio_value, config_.initial_capital,
-            gross_notional, margin_posted, trading_days, daily_commissions);
+            gross_notional, margin_posted, trading_days, daily_transaction_costs);
 
         // Convert to TradingMetrics
         current_metrics_ = convert_calculated_metrics(calc_metrics);

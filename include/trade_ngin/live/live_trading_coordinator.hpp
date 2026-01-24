@@ -184,7 +184,7 @@ public:
      * @param gross_notional Gross notional value
      * @param margin_posted Margin posted
      * @param trading_days Number of trading days
-     * @param daily_commissions Daily commissions
+     * @param daily_transaction_costs Daily transaction costs
      * @return Result with calculated metrics
      */
     Result<TradingMetrics> calculate_daily_metrics(double daily_pnl,
@@ -192,7 +192,7 @@ public:
                                                    double current_portfolio_value,
                                                    double gross_notional, double margin_posted,
                                                    int trading_days,
-                                                   double daily_commissions = 0.0);
+                                                   double daily_transaction_costs = 0.0);
 
     /**
      * @brief Calculate metrics for previous day finalization

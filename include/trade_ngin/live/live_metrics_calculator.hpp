@@ -241,7 +241,7 @@ public:
      * @param gross_notional Gross notional value
      * @param margin_posted Margin posted
      * @param trading_days Number of trading days
-     * @param daily_commissions Daily commissions
+     * @param daily_transaction_costs Daily transaction costs
      * @return Structure containing all calculated metrics
      */
     CalculatedMetrics calculate_all_metrics(
@@ -252,7 +252,7 @@ public:
         double gross_notional,
         double margin_posted,
         int trading_days,
-        double daily_commissions = 0.0) const;
+        double daily_transaction_costs = 0.0) const;
 
     /**
      * @brief Calculate metrics for finalization (Day T-1)

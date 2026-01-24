@@ -659,8 +659,8 @@ Result<void> BacktestCoordinator::process_portfolio_day(
             current_close_prices[bar.symbol] = static_cast<double>(bar.close);
         }
 
-        // Calculate commissions from per-strategy executions
-        double total_commissions = calculate_period_commissions(portfolio, strategy_exec_counts_before);
+        // Calculate transaction costs from per-strategy executions
+        double total_transaction_costs = calculate_period_commissions(portfolio, strategy_exec_counts_before);
 
         // Calculate PnL for each strategy using its individual quantities
         auto strategy_positions = portfolio->get_strategy_positions();
@@ -710,9 +710,9 @@ Result<void> BacktestCoordinator::process_portfolio_day(
         // Update previous closes for next iteration
         pnl_manager_->update_previous_closes(current_close_prices);
 
-        // Calculate portfolio value: previous value + daily PnL - commissions
+        // Calculate portfolio value: previous value + daily PnL - transaction costs
         double portfolio_value = equity_curve.empty() ? initial_capital : equity_curve.back().second;
-        portfolio_value += (total_portfolio_pnl - total_commissions);
+        portfolio_value += (total_portfolio_pnl - total_transaction_costs);
 
         // Add to equity curve
         equity_curve.emplace_back(timestamp, portfolio_value);

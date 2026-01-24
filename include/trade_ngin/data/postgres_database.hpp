@@ -300,7 +300,7 @@ public:
         double portfolio_var, double gross_leverage, double net_leverage, double portfolio_leverage,
         double margin_leverage, double margin_cushion, double max_correlation, double jump_risk,
         double risk_scale, double gross_notional, double net_notional, int active_positions,
-        double total_commissions, double margin_posted, double cash_available,
+        double total_transaction_costs, double margin_posted, double cash_available,
         const nlohmann::json& config,
         const std::string& table_name = "trading.live_results") override;
 

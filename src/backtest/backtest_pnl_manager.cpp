@@ -32,11 +32,11 @@ BacktestPnLManager::DailyPnLResult BacktestPnLManager::calculate_daily_pnl(
     DailyPnLResult result;
     result.date_str = format_date(timestamp);
     current_date_str_ = result.date_str;
-    result.total_commissions = commissions;
-    
+    result.total_transaction_costs = commissions;
+
     log_info("[BACKTEST_PNL] DAILY_TOTAL: Starting PnL calculation for date=" + result.date_str +
              ", positions=" + std::to_string(positions.size()) +
-             ", commissions=" + std::to_string(commissions));
+             ", transaction_costs=" + std::to_string(commissions));
     
     // Reset daily tracking
     reset_daily();

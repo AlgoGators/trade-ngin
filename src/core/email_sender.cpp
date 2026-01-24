@@ -350,14 +350,14 @@ Result<void> EmailSender::send_email(const std::string& subject, const std::stri
             g_email_payload += daily_pnl_base64_ + "\r\n";
         }
 
-        if(!total_commissions_base64_.empty()){
+        if(!total_transaction_costs_base64_.empty()){
             g_email_payload += "\r\n--" + inner_boundary + "\r\n";
             g_email_payload += "Content-Type: image/png\r\n";
             g_email_payload += "Content-Transfer-Encoding: base64\r\n";
-            g_email_payload += "Content-ID: <total_commissions>\r\n";
-            g_email_payload += "Content-Disposition: inline; filename=\"total_commissions.png\"\r\n";
+            g_email_payload += "Content-ID: <total_transaction_costs>\r\n";
+            g_email_payload += "Content-Disposition: inline; filename=\"total_transaction_costs.png\"\r\n";
             g_email_payload += "\r\n";
-            g_email_payload += total_commissions_base64_ + "\r\n";
+            g_email_payload += total_transaction_costs_base64_ + "\r\n";
         }
 
         if(!margin_posted_base64_.empty()){
@@ -700,11 +700,11 @@ std::string EmailSender::generate_trading_report_body(
            html << "</div>\n";
        }
 
-        total_commissions_base64_ = ChartGenerator::generate_total_commissions_chart(db, "LIVE_TREND_FOLLOWING", date);
-        if (!total_commissions_base64_.empty()) {
+        total_transaction_costs_base64_ = ChartGenerator::generate_total_commissions_chart(db, "LIVE_TREND_FOLLOWING", date);
+        if (!total_transaction_costs_base64_.empty()) {
             html << "<h3 style=\"margin-top: 20px; color: #333;\">Cost per $1M Traded (Efficiency Metric)</h3>\n";
             html << "<div style=\"width: 100%; max-width: 1000px; margin: 20px auto; text-align: center;\">\n";
-            html << "<img src=\"cid:total_commissions\" alt=\"Cost per $1M Traded\" style=\"max-width: 100%; height: auto; ""border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);\" />\n";
+            html << "<img src=\"cid:total_transaction_costs\" alt=\"Cost per $1M Traded\" style=\"max-width: 100%; height: auto; ""border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);\" />\n";
             html << "</div>\n";
         }
 
@@ -1249,12 +1249,12 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
             html << format_metric_display("Daily Realized PnL (Gross)", daily_realized_it->second, false);
         }
 
-        auto daily_commissions_it = strategy_metrics.find("Daily Commissions");
-        if (daily_commissions_it != strategy_metrics.end()) {
-            // Display commissions as positive value in black font (no color coding)
-            double commission_value = std::abs(daily_commissions_it->second);
-            std::string formatted_commission = "$" + format_with_commas(commission_value, 2);
-            html << "<div class=\"metric\"><strong>Daily Commissions:</strong> <span>" << formatted_commission << "</span></div>\n";
+        auto daily_transaction_costs_it = strategy_metrics.find("Daily Transaction Costs");
+        if (daily_transaction_costs_it != strategy_metrics.end()) {
+            // Display transaction costs as positive value in black font (no color coding)
+            double transaction_cost_value = std::abs(daily_transaction_costs_it->second);
+            std::string formatted_transaction_cost = "$" + format_with_commas(transaction_cost_value, 2);
+            html << "<div class=\"metric\"><strong>Daily Transaction Costs:</strong> <span>" << formatted_transaction_cost << "</span></div>\n";
         }
 
         auto daily_total_it = strategy_metrics.find("Daily Total PnL");
@@ -1326,7 +1326,7 @@ std::string EmailSender::format_strategy_metrics(const std::map<std::string, dou
         if (key.find("P&L") != std::string::npos || key.find("PnL") != std::string::npos ||
             key.find("Portfolio Value") != std::string::npos || key.find("Notional") != std::string::npos ||
             key.find("Cash Available") != std::string::npos || key.find("Margin Posted") != std::string::npos ||
-            key.find("Commissions") != std::string::npos) {
+            key.find("Transaction Costs") != std::string::npos) {
             formatted_value = "$" + format_with_commas(value);
         } else if (key.find("Return") != std::string::npos || key.find("Volatility") != std::string::npos ||
                    key.find("Cushion") != std::string::npos) {
@@ -1388,10 +1388,10 @@ std::string EmailSender::format_strategy_metrics(const std::map<std::string, dou
         html << format_metric("Total Realized PnL (Gross)", total_realized->second);
     }
 
-    // Total Commissions
-    auto total_comm = strategy_metrics.find("Total Commissions");
+    // Total Transaction Costs
+    auto total_comm = strategy_metrics.find("Total Transaction Costs");
     if (total_comm != strategy_metrics.end()) {
-        html << format_metric("Total Commissions", total_comm->second);
+        html << format_metric("Total Transaction Costs", total_comm->second);
     }
 
     // Total PnL (Net)
