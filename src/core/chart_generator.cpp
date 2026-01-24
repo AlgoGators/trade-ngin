@@ -609,11 +609,11 @@ ChartData ChartGenerator::fetch_cumulative_commissions_data(
     if (!db) { WARN("DB null"); return chart_data; }
 
     try {
-        // Query to get daily commissions, gross notional, and count of trades per day
+        // Query to get daily transaction costs, gross notional, and count of trades per day
         std::string query =
             "SELECT "
             "    lr.date, "
-            "    COALESCE(lr.daily_commissions, 0) as daily_cost, "
+            "    COALESCE(lr.daily_transaction_costs, 0) as daily_cost, "
             "    COALESCE(lr.gross_notional, 0) as total_notional, "
             "    COALESCE(trade_counts.num_trades, 0) as num_trades "
             "FROM trading.live_results lr "

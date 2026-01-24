@@ -168,7 +168,7 @@ Result<LiveResultsRow> LiveDataLoader::load_live_results(const std::string& stra
         "daily_pnl, total_pnl, daily_realized_pnl, daily_unrealized_pnl, "
         "daily_return, total_cumulative_return, total_annualized_return, current_portfolio_value, "
         "portfolio_leverage, equity_to_margin_ratio, gross_notional, "
-        "margin_posted, cash_available, daily_commissions, "
+        "margin_posted, cash_available, daily_transaction_costs, "
         "sharpe_ratio, sortino_ratio, max_drawdown, volatility, "
         "active_positions, winning_trades, losing_trades "
         "FROM " +
@@ -229,7 +229,7 @@ Result<LiveResultsRow> LiveDataLoader::load_live_results(const std::string& stra
     row.gross_notional = get_double();
     row.margin_posted = get_double();
     row.cash_available = get_double();
-    row.daily_commissions = get_double();
+    row.daily_transaction_costs = get_double();
     row.sharpe_ratio = get_double();
     row.sortino_ratio = get_double();
     row.max_drawdown = get_double();
@@ -261,7 +261,7 @@ Result<PreviousDayData> LiveDataLoader::load_previous_day_data(const std::string
 
     std::string query =
         "SELECT "
-        "current_portfolio_value, total_pnl, daily_pnl, daily_commissions, date "
+        "current_portfolio_value, total_pnl, daily_pnl, daily_transaction_costs, date "
         "FROM " +
         schema_ +
         ".live_results "
@@ -306,7 +306,7 @@ Result<PreviousDayData> LiveDataLoader::load_previous_day_data(const std::string
     data.portfolio_value = portfolio_array->IsNull(0) ? 0.0 : portfolio_array->Value(0);
     data.total_pnl = total_pnl_array->IsNull(0) ? 0.0 : total_pnl_array->Value(0);
     data.daily_pnl = daily_pnl_array->IsNull(0) ? 0.0 : daily_pnl_array->Value(0);
-    data.daily_commissions = commissions_array->IsNull(0) ? 0.0 : commissions_array->Value(0);
+    data.daily_transaction_costs = commissions_array->IsNull(0) ? 0.0 : commissions_array->Value(0);
 
     // Convert timestamp
     int64_t timestamp_us = date_array->Value(0);
@@ -546,9 +546,9 @@ Result<std::unordered_map<std::string, double>> LiveDataLoader::load_commissions
     return Result<std::unordered_map<std::string, double>>(commissions);
 }
 
-Result<double> LiveDataLoader::load_daily_commissions(const std::string& strategy_id,
-                                                      const std::string& portfolio_id,
-                                                      const Timestamp& date) {
+Result<double> LiveDataLoader::load_daily_transaction_costs(const std::string& strategy_id,
+                                                            const std::string& portfolio_id,
+                                                            const Timestamp& date) {
     auto validation = validate_connection();
     if (validation.is_error()) {
         return make_error<double>(ErrorCode::DATABASE_ERROR, validation.error()->what(),
@@ -562,7 +562,7 @@ Result<double> LiveDataLoader::load_daily_commissions(const std::string& strateg
     std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
 
     std::string query =
-        "SELECT COALESCE(daily_commissions, 0.0) "
+        "SELECT COALESCE(daily_transaction_costs, 0.0) "
         "FROM " +
         schema_ +
         ".live_results "
@@ -575,26 +575,26 @@ Result<double> LiveDataLoader::load_daily_commissions(const std::string& strateg
         "AND DATE(date) = '" +
         date_ss.str() + "'";
 
-    DEBUG("Loading daily commissions: " + query);
+    DEBUG("Loading daily transaction costs: " + query);
 
     auto result = db_->execute_query(query);
     if (result.is_error()) {
         return make_error<double>(
             ErrorCode::DATABASE_ERROR,
-            "Failed to load daily commissions: " + std::string(result.error()->what()),
+            "Failed to load daily transaction costs: " + std::string(result.error()->what()),
             "LiveDataLoader");
     }
 
     auto table = result.value();
     if (!table || table->num_rows() == 0) {
-        INFO("No commission data found for " + date_ss.str());
+        INFO("No transaction cost data found for " + date_ss.str());
         return Result<double>(0.0);
     }
 
     auto array = std::static_pointer_cast<arrow::DoubleArray>(table->column(0)->chunk(0));
-    double commissions = array->IsNull(0) ? 0.0 : array->Value(0);
+    double transaction_costs = array->IsNull(0) ? 0.0 : array->Value(0);
 
-    return Result<double>(commissions);
+    return Result<double>(transaction_costs);
 }
 
 // ========== Margin and Risk Methods ==========
@@ -691,7 +691,7 @@ Result<std::unordered_map<std::string, double>> LiveDataLoader::load_daily_metri
 
     std::string query =
         "SELECT daily_return, daily_unrealized_pnl, daily_realized_pnl, daily_pnl, "
-        "daily_commissions "
+        "daily_transaction_costs "
         "FROM " +
         schema_ +
         ".live_results "
@@ -727,7 +727,7 @@ Result<std::unordered_map<std::string, double>> LiveDataLoader::load_daily_metri
         std::static_pointer_cast<arrow::DoubleArray>(table->column(1)->chunk(0));
     auto daily_realized = std::static_pointer_cast<arrow::DoubleArray>(table->column(2)->chunk(0));
     auto daily_total = std::static_pointer_cast<arrow::DoubleArray>(table->column(3)->chunk(0));
-    auto daily_commissions =
+    auto daily_transaction_costs =
         std::static_pointer_cast<arrow::DoubleArray>(table->column(4)->chunk(0));
 
     metrics["Daily Return"] = daily_return->IsNull(0) ? 0.0 : daily_return->Value(0);
@@ -735,7 +735,7 @@ Result<std::unordered_map<std::string, double>> LiveDataLoader::load_daily_metri
         daily_unrealized->IsNull(0) ? 0.0 : daily_unrealized->Value(0);
     metrics["Daily Realized PnL"] = daily_realized->IsNull(0) ? 0.0 : daily_realized->Value(0);
     metrics["Daily Total PnL"] = daily_total->IsNull(0) ? 0.0 : daily_total->Value(0);
-    metrics["Daily Commissions"] = daily_commissions->IsNull(0) ? 0.0 : daily_commissions->Value(0);
+    metrics["Daily Transaction Costs"] = daily_transaction_costs->IsNull(0) ? 0.0 : daily_transaction_costs->Value(0);
 
     INFO("Loaded email metrics: Return=" + std::to_string(metrics["Daily Return"]) + "%");
 

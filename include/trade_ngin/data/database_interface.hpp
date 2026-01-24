@@ -259,7 +259,7 @@ public:
         double portfolio_var, double gross_leverage, double net_leverage, double portfolio_leverage,
         double margin_leverage, double margin_cushion, double max_correlation, double jump_risk,
         double risk_scale, double gross_notional, double net_notional, int active_positions,
-        double total_commissions, double margin_posted, double cash_available,
+        double total_transaction_costs, double margin_posted, double cash_available,
         const nlohmann::json& config, const std::string& table_name = "trading.live_results") = 0;
 
     /**
@@ -269,7 +269,7 @@ public:
      * @param date Anchor date; the function will look up DATE(date - 1 day)
      * @param table_name Name of the live_results table
      * @return Tuple: (previous_current_portfolio_value, previous_total_pnl,
-     * previous_total_commissions)
+     * previous_total_transaction_costs)
      */
     virtual Result<std::tuple<double, double, double>> get_previous_live_aggregates(
         const std::string& strategy_id, const std::string& portfolio_id, const Timestamp& date,

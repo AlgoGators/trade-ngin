@@ -95,7 +95,7 @@ public:
      */
     struct DailyPnLResult {
         double total_daily_pnl = 0.0;
-        double total_commissions = 0.0;
+        double total_transaction_costs = 0.0;
         double net_daily_pnl = 0.0;
         double new_portfolio_value = 0.0;
         std::unordered_map<std::string, PositionPnLResult> position_results;

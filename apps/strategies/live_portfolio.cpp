@@ -1028,7 +1028,7 @@ int main(int argc, char* argv[]) {
         // ========================================
         INFO("STEP 2: Creating Day T positions with zero PnL (placeholders)...");
 
-        double total_daily_commissions = 0.0;  // Will be calculated from executions
+        double total_daily_transaction_costs = 0.0;  // Will be calculated from executions
 
         // Update all current positions to have:
         // - average_price = Day T-1 close (execution price)
@@ -1097,7 +1097,7 @@ int main(int argc, char* argv[]) {
         // Generate executions for each strategy
         std::unordered_map<std::string, std::vector<ExecutionReport>> all_strategy_executions;
         int total_executions = 0;
-        // total_daily_commissions already declared earlier at line 881
+        // total_daily_transaction_costs already declared earlier at line 881
 
         for (const auto& [strategy_name, current_positions_map] : strategy_positions_map) {
             auto prev_positions_map = previous_strategy_positions[strategy_name];
@@ -1123,7 +1123,7 @@ int main(int argc, char* argv[]) {
                          std::to_string(exec.fill_price) + " commission=$" +
                          std::to_string(exec.total_transaction_costs.as_double()));
 
-                    total_daily_commissions += exec.total_transaction_costs.as_double();
+                    total_daily_transaction_costs += exec.total_transaction_costs.as_double();
                 }
 
                 all_strategy_executions[strategy_name] = strategy_executions;
@@ -1137,7 +1137,7 @@ int main(int argc, char* argv[]) {
 
         INFO("PHASE 4: Total executions across all strategies: " +
              std::to_string(total_executions));
-        INFO("PHASE 4: Total daily commissions: $" + std::to_string(total_daily_commissions));
+        INFO("PHASE 4: Total daily commissions: $" + std::to_string(total_daily_transaction_costs));
 
         // Store executions for each strategy
         for (const auto& [strategy_name, executions] : all_strategy_executions) {
@@ -1416,9 +1416,9 @@ int main(int argc, char* argv[]) {
         // ========================================
         INFO("STEP 3: Calculating commissions and Day T PnL...");
 
-        // total_daily_commissions already calculated in per-strategy executions loop above
+        // total_daily_transaction_costs already calculated in per-strategy executions loop above
         INFO("Total daily commissions (from per-strategy executions): $" +
-             std::to_string(total_daily_commissions));
+             std::to_string(total_daily_transaction_costs));
 
         // Day T PnL is ZERO (placeholder) - positions were just opened at Day T-1 close
         // Update PnLManager with today's positions (all with 0 PnL as placeholders)
@@ -1428,10 +1428,10 @@ int main(int argc, char* argv[]) {
 
         double daily_realized_pnl = 0.0;
         double daily_unrealized_pnl = 0.0;
-        double daily_pnl_for_today = -total_daily_commissions;  // Only commissions on Day T
+        double daily_pnl_for_today = -total_daily_transaction_costs;  // Only commissions on Day T
 
         INFO("Day T PnL (placeholder): $0.00");
-        INFO("Day T commissions: $" + std::to_string(total_daily_commissions));
+        INFO("Day T commissions: $" + std::to_string(total_daily_transaction_costs));
         INFO("Day T total impact: $" + std::to_string(daily_pnl_for_today));
 
         // ========================================
@@ -1456,8 +1456,8 @@ int main(int argc, char* argv[]) {
                  std::to_string(aggregate_yesterday_total_pnl));
 
             // Get yesterday's commissions and other existing metrics from database
-            double yesterday_commissions = 0.0;
-            double yesterday_total_commissions = 0.0;
+            double yesterday_transaction_costs = 0.0;
+            double yesterday_total_transaction_costs = 0.0;
             double yesterday_gross_notional = 0.0;
             double yesterday_net_notional = 0.0;
             int yesterday_active_positions = 0;
@@ -1476,9 +1476,9 @@ int main(int argc, char* argv[]) {
 
                 if (live_results.is_ok()) {
                     auto& row = live_results.value();
-                    yesterday_commissions = row.daily_commissions;
-                    yesterday_total_commissions =
-                        row.daily_commissions;  // Note: total_commissions field may not exist
+                    yesterday_transaction_costs = row.daily_transaction_costs;
+                    yesterday_total_transaction_costs =
+                        row.daily_transaction_costs;  // Note: total_commissions field may not exist
                     yesterday_gross_notional = row.gross_notional;
                     yesterday_net_notional =
                         row.gross_notional;  // Note: using gross_notional as net_notional not in
@@ -1487,7 +1487,7 @@ int main(int argc, char* argv[]) {
                     yesterday_margin_posted = row.margin_posted;
 
                     INFO("Successfully loaded yesterday's metrics via LiveDataLoader:");
-                    INFO("  yesterday_commissions: $" + std::to_string(yesterday_commissions));
+                    INFO("  yesterday_transaction_costs: $" + std::to_string(yesterday_transaction_costs));
                     INFO("  yesterday_gross_notional: $" +
                          std::to_string(yesterday_gross_notional));
                     INFO("  yesterday_margin_posted: $" + std::to_string(yesterday_margin_posted));
@@ -1501,26 +1501,26 @@ int main(int argc, char* argv[]) {
             }
 
             // Use the commission value already loaded from LiveDataLoader
-            double yesterday_commissions_for_calc = yesterday_commissions;
-            INFO("Using yesterday_commissions_for_calc from LiveDataLoader: $" +
-                 std::to_string(yesterday_commissions_for_calc));
+            double yesterday_transaction_costs_for_calc = yesterday_transaction_costs;
+            INFO("Using yesterday_transaction_costs_for_calc from LiveDataLoader: $" +
+                 std::to_string(yesterday_transaction_costs_for_calc));
 
             // Use the queried value from earlier (which may be 0 if query failed)
             double yesterday_daily_pnl_finalized =
-                aggregate_yesterday_total_pnl - yesterday_commissions;
+                aggregate_yesterday_total_pnl - yesterday_transaction_costs;
 
             INFO("Day T-1 PnL breakdown:");
             INFO("  Position PnL (aggregate_yesterday_total_pnl): $" +
                  std::to_string(aggregate_yesterday_total_pnl));
-            INFO("  Commissions (yesterday_commissions): $" +
-                 std::to_string(yesterday_commissions));
+            INFO("  Commissions (yesterday_transaction_costs): $" +
+                 std::to_string(yesterday_transaction_costs));
             INFO("  Net PnL (yesterday_daily_pnl_finalized): $" +
                  std::to_string(yesterday_daily_pnl_finalized));
 
             // Get the day BEFORE yesterday's portfolio value, total_pnl, and total_commissions
             double day_before_yesterday_portfolio_value = initial_capital;
             double day_before_aggregate_yesterday_total_pnl = 0.0;
-            double day_before_yesterday_total_commissions = 0.0;
+            double day_before_yesterday_total_transaction_costs = 0.0;
             try {
                 auto db_ptr = std::dynamic_pointer_cast<PostgresDatabase>(db);
                 if (db_ptr) {
@@ -1530,13 +1530,13 @@ int main(int argc, char* argv[]) {
                     if (prev_agg.is_ok()) {
                         std::tie(day_before_yesterday_portfolio_value,
                                  day_before_aggregate_yesterday_total_pnl,
-                                 day_before_yesterday_total_commissions) = prev_agg.value();
+                                 day_before_yesterday_total_transaction_costs) = prev_agg.value();
                         INFO("Loaded day-before-yesterday aggregates: portfolio=$" +
                              std::to_string(day_before_yesterday_portfolio_value) +
                              ", total_pnl=$" +
                              std::to_string(day_before_aggregate_yesterday_total_pnl) +
                              ", total_commissions=$" +
-                             std::to_string(day_before_yesterday_total_commissions));
+                             std::to_string(day_before_yesterday_total_transaction_costs));
                     }
                 }
             } catch (const std::exception& e) {
@@ -1549,10 +1549,10 @@ int main(int argc, char* argv[]) {
             // daily_commissions)
             double aggregate_yesterday_total_pnl_cumulative =
                 day_before_aggregate_yesterday_total_pnl + yesterday_daily_pnl_finalized;
-            double yesterday_total_commissions_cumulative =
-                day_before_yesterday_total_commissions + yesterday_commissions;
+            double yesterday_total_transaction_costs_cumulative =
+                day_before_yesterday_total_transaction_costs + yesterday_transaction_costs;
             double yesterday_total_realized_pnl_cumulative =
-                aggregate_yesterday_total_pnl_cumulative + yesterday_total_commissions_cumulative;
+                aggregate_yesterday_total_pnl_cumulative + yesterday_total_transaction_costs_cumulative;
             double yesterday_portfolio_value_finalized =
                 day_before_yesterday_portfolio_value + yesterday_daily_pnl_finalized;
 
@@ -1695,23 +1695,23 @@ int main(int argc, char* argv[]) {
                 ", "
                 "daily_pnl = " +
                 std::to_string(aggregate_yesterday_total_pnl) +
-                " - COALESCE(daily_commissions, 0.0), "
+                " - COALESCE(daily_transaction_costs, 0.0), "
                 "total_pnl = COALESCE((SELECT total_pnl FROM day_before), 0.0) + (" +
                 std::to_string(aggregate_yesterday_total_pnl) +
-                " - COALESCE(daily_commissions, 0.0)), "
+                " - COALESCE(daily_transaction_costs, 0.0)), "
                 "total_realized_pnl = " +
                 std::to_string(yesterday_total_realized_pnl_cumulative) +
                 ", "
                 "current_portfolio_value = COALESCE((SELECT portfolio FROM day_before), " +
                 std::to_string(initial_capital) + ") + (" +
                 std::to_string(aggregate_yesterday_total_pnl) +
-                " - COALESCE(daily_commissions, 0.0)), "
+                " - COALESCE(daily_transaction_costs, 0.0)), "
                 "daily_return = CASE WHEN COALESCE((SELECT portfolio FROM day_before), " +
                 std::to_string(initial_capital) +
                 ") > 0 "
                 "               THEN ((" +
                 std::to_string(aggregate_yesterday_total_pnl) +
-                " - COALESCE(daily_commissions, 0.0)) / COALESCE((SELECT portfolio FROM "
+                " - COALESCE(daily_transaction_costs, 0.0)) / COALESCE((SELECT portfolio FROM "
                 "day_before), " +
                 std::to_string(initial_capital) +
                 ")) * 100.0 "
@@ -1733,7 +1733,7 @@ int main(int argc, char* argv[]) {
                 "cash_available = COALESCE((SELECT portfolio FROM day_before), " +
                 std::to_string(initial_capital) + ") + (" +
                 std::to_string(aggregate_yesterday_total_pnl) +
-                " - COALESCE(daily_commissions, 0.0)) - COALESCE(margin_posted, 0.0) "
+                " - COALESCE(daily_transaction_costs, 0.0)) - COALESCE(margin_posted, 0.0) "
                 "WHERE strategy_id = '" +
                 combined_strategy_id + "' AND portfolio_id = '" + coordinator_config.portfolio_id +
                 "' AND DATE(date) = '" + yesterday_date_ss.str() + "'";
@@ -1755,7 +1755,7 @@ int main(int argc, char* argv[]) {
                     "(yesterday_pnl - commissions)");
                 INFO("  aggregate_yesterday_total_pnl: $" +
                      std::to_string(aggregate_yesterday_total_pnl));
-                INFO("  yesterday_commissions: $" + std::to_string(yesterday_commissions_for_calc));
+                INFO("  yesterday_transaction_costs: $" + std::to_string(yesterday_transaction_costs_for_calc));
             }
 
             // UPDATE yesterday's equity_curve using LiveResultsManager
@@ -1995,7 +1995,7 @@ int main(int argc, char* argv[]) {
         // This is done AFTER updating Day T-1 live_results to ensure we get the finalized values
         double previous_portfolio_value = initial_capital;  // Default to initial capital
         double previous_total_pnl = 0.0;
-        double previous_total_commissions = 0.0;
+        double previous_total_transaction_costs = 0.0;
 
         try {
             auto db_ptr = std::dynamic_pointer_cast<PostgresDatabase>(db);
@@ -2005,11 +2005,11 @@ int main(int argc, char* argv[]) {
                     "trading.live_results");
                 if (prev_agg.is_ok()) {
                     std::tie(previous_portfolio_value, previous_total_pnl,
-                             previous_total_commissions) = prev_agg.value();
+                             previous_total_transaction_costs) = prev_agg.value();
                     INFO("Loaded updated previous aggregates - portfolio_value: $" +
                          std::to_string(previous_portfolio_value) + ", total_pnl: $" +
                          std::to_string(previous_total_pnl) + ", total_commissions: $" +
-                         std::to_string(previous_total_commissions));
+                         std::to_string(previous_total_transaction_costs));
                 } else {
                     INFO("No previous aggregates found: " + std::string(prev_agg.error()->what()));
                 }
@@ -2022,11 +2022,11 @@ int main(int argc, char* argv[]) {
         double total_pnl = previous_total_pnl + daily_pnl_for_today;
         double current_portfolio_value = previous_portfolio_value + daily_pnl_for_today;
         double daily_pnl = daily_pnl_for_today;  // Only commissions on Day T
-        double total_commissions_cumulative = previous_total_commissions + total_daily_commissions;
+        double total_transaction_costs_cumulative = previous_total_transaction_costs + total_daily_transaction_costs;
 
         // Since it's futures, all PnL is realized
         // total_realized_pnl = total_pnl + total_commissions (GROSS)
-        double total_realized_pnl = total_pnl + total_commissions_cumulative;
+        double total_realized_pnl = total_pnl + total_transaction_costs_cumulative;
         double total_unrealized_pnl = 0.0;
 
         // Calculate returns using LiveMetricsCalculator
@@ -2284,10 +2284,10 @@ int main(int argc, char* argv[]) {
                 {"net_notional", net_notional},
                 {"daily_return", daily_return},
                 {"daily_pnl", daily_pnl},
-                {"total_commissions", total_commissions_cumulative},
+                {"total_transaction_costs", total_transaction_costs_cumulative},
                 {"daily_realized_pnl", daily_realized_pnl},
                 {"daily_unrealized_pnl", daily_unrealized_pnl},
-                {"daily_commissions", total_daily_commissions},
+                {"daily_transaction_costs", total_daily_transaction_costs},
                 {"margin_posted", total_posted_margin},
                 {"cash_available", current_portfolio_value - total_posted_margin}};
 
@@ -2505,7 +2505,7 @@ int main(int argc, char* argv[]) {
                         // Load yesterday's daily metrics from database for accurate display
                         std::string yesterday_metrics_query =
                             "SELECT daily_return, daily_unrealized_pnl, daily_realized_pnl, "
-                            "daily_pnl, daily_commissions "
+                            "daily_pnl, daily_transaction_costs"
                             "FROM trading.live_results "
                             "WHERE strategy_id = '" +
                             combined_strategy_id + "' AND portfolio_id = '" +
@@ -2559,7 +2559,7 @@ int main(int argc, char* argv[]) {
                             }
 
                             if (!daily_commissions_arr->IsNull(0)) {
-                                yesterday_daily_metrics_final["Daily Commissions"] =
+                                yesterday_daily_metrics_final["Daily Transaction Costs"] =
                                     std::stod(daily_commissions_arr->GetString(0));
                                 INFO("Daily Commissions: " + daily_commissions_arr->GetString(0));
                             }
@@ -2606,7 +2606,7 @@ int main(int argc, char* argv[]) {
                     if (risk_eval.is_ok()) {
                         strategy_metrics["Volatility"] = risk_eval.value().portfolio_var * 100.0;
                     }
-                    strategy_metrics["Total Commissions"] = total_commissions_cumulative;
+                    strategy_metrics["Total Transaction Costs"] = total_transaction_costs_cumulative;
                     strategy_metrics["Current Portfolio Value"] = current_portfolio_value;
 
                     // Leverage Metrics - Calculate values from position analysis

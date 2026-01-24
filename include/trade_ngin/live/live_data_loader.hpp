@@ -33,7 +33,7 @@ struct LiveResultsRow {
     double gross_notional = 0.0;
     double margin_posted = 0.0;
     double cash_available = 0.0;
-    double daily_commissions = 0.0;
+    double daily_transaction_costs = 0.0;
     Timestamp date;
     std::string strategy_id;
 
@@ -66,7 +66,7 @@ struct PreviousDayData {
     double portfolio_value = 0.0;
     double total_pnl = 0.0;
     double daily_pnl = 0.0;
-    double daily_commissions = 0.0;
+    double daily_transaction_costs = 0.0;
     Timestamp date;
     bool exists = false;  // false if no previous day found
 };
@@ -189,13 +189,13 @@ public:
         const std::string& portfolio_id, const Timestamp& date);
 
     /**
-     * @brief Load total daily commissions for a strategy
+     * @brief Load total daily transaction costs for a strategy
      * @param strategy_id Strategy identifier
      * @param date Target date
-     * @return Total commissions or error
+     * @return Total transaction costs or error
      */
-    Result<double> load_daily_commissions(const std::string& strategy_id,
-                                          const std::string& portfolio_id, const Timestamp& date);
+    Result<double> load_daily_transaction_costs(const std::string& strategy_id,
+                                                const std::string& portfolio_id, const Timestamp& date);
 
     // ========== Margin and Risk Methods ==========
 

@@ -2047,7 +2047,7 @@ Result<void> PostgresDatabase::store_live_results(
     double daily_realized_pnl, double daily_unrealized_pnl, double portfolio_var,
     double gross_leverage, double net_leverage, double portfolio_leverage, double margin_leverage,
     double margin_cushion, double max_correlation, double jump_risk, double risk_scale,
-    double gross_notional, double net_notional, int active_positions, double total_commissions,
+    double gross_notional, double net_notional, int active_positions, double total_transaction_costs,
     double margin_posted, double cash_available, const nlohmann::json& config,
     const std::string& table_name) {
     auto validation = validate_connection();
@@ -2070,7 +2070,7 @@ Result<void> PostgresDatabase::store_live_results(
             "current_portfolio_value, daily_realized_pnl, daily_unrealized_pnl, portfolio_var, "
             "gross_leverage, net_leverage, portfolio_leverage, margin_leverage, margin_cushion, "
             "max_correlation, jump_risk, "
-            "risk_scale, gross_notional, net_notional, active_positions, total_commissions, "
+            "risk_scale, gross_notional, net_notional, active_positions, total_transaction_costs, "
             "margin_posted, cash_available, config, portfolio_id) "
             "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, "
             "$18, $19, $20, $21, $22, $23, $24, $25, $26, 'BASE_PORTFOLIO') "
@@ -2088,7 +2088,7 @@ Result<void> PostgresDatabase::store_live_results(
             "max_correlation = EXCLUDED.max_correlation, jump_risk = EXCLUDED.jump_risk, "
             "risk_scale = EXCLUDED.risk_scale, gross_notional = EXCLUDED.gross_notional, "
             "net_notional = EXCLUDED.net_notional, active_positions = EXCLUDED.active_positions, "
-            "total_commissions = EXCLUDED.total_commissions, margin_posted = "
+            "total_transaction_costs = EXCLUDED.total_transaction_costs, margin_posted = "
             "EXCLUDED.margin_posted, cash_available = EXCLUDED.cash_available, config = "
             "EXCLUDED.config";
 
@@ -2097,7 +2097,7 @@ Result<void> PostgresDatabase::store_live_results(
                         daily_realized_pnl, daily_unrealized_pnl, portfolio_var, gross_leverage,
                         net_leverage, portfolio_leverage, margin_leverage, margin_cushion,
                         max_correlation, jump_risk, risk_scale, gross_notional, net_notional,
-                        active_positions, total_commissions, margin_posted, cash_available,
+                        active_positions, total_transaction_costs, margin_posted, cash_available,
                         config.dump());
 
         txn.commit();
@@ -2137,7 +2137,7 @@ Result<std::tuple<double, double, double>> PostgresDatabase::get_previous_live_a
         // Instead of strict "1 day ago", we look for the latest record with date < current_date
         // This handles weekends and holidays correctly
         std::string query =
-            "SELECT current_portfolio_value, total_pnl, total_commissions "
+            "SELECT current_portfolio_value, total_pnl, total_transaction_costs "
             "FROM " +
             table_name +
             " WHERE strategy_id = $1 AND portfolio_id = $2 AND DATE(date) < DATE($3) "
@@ -2157,7 +2157,7 @@ Result<std::tuple<double, double, double>> PostgresDatabase::get_previous_live_a
 
         double prev_value = 0.0;
         double prev_total_pnl = 0.0;
-        double prev_total_commissions = 0.0;
+        double prev_total_transaction_costs = 0.0;
 
         const auto& row = result[0];
         if (!row[0].is_null())
@@ -2165,10 +2165,10 @@ Result<std::tuple<double, double, double>> PostgresDatabase::get_previous_live_a
         if (!row[1].is_null())
             prev_total_pnl = row[1].as<double>();
         if (!row[2].is_null())
-            prev_total_commissions = row[2].as<double>();
+            prev_total_transaction_costs = row[2].as<double>();
 
         return Result<std::tuple<double, double, double>>(
-            std::make_tuple(prev_value, prev_total_pnl, prev_total_commissions));
+            std::make_tuple(prev_value, prev_total_pnl, prev_total_transaction_costs));
     } catch (const std::exception& e) {
         return make_error<std::tuple<double, double, double>>(
             ErrorCode::DATABASE_ERROR,

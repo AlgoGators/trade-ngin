@@ -286,7 +286,7 @@ CalculatedMetrics LiveMetricsCalculator::calculate_all_metrics(
     double gross_notional,
     double margin_posted,
     int trading_days,
-    double daily_commissions) const {
+    double daily_transaction_costs) const {
 
     CalculatedMetrics metrics;
 
