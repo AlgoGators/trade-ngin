@@ -15,6 +15,12 @@
 
 namespace trade_ngin {
 
+// Type alias for per-strategy positions map
+using StrategyPositionsMap = std::unordered_map<std::string, std::unordered_map<std::string, Position>>;
+
+// Type alias for per-strategy executions map
+using StrategyExecutionsMap = std::unordered_map<std::string, std::vector<ExecutionReport>>;
+
 /**
  * @brief Email configuration structure
  */
@@ -74,6 +80,35 @@ public:
         const std::unordered_map<std::string, double>& current_prices = {},
         std::shared_ptr<DatabaseInterface> db = nullptr,
         const std::unordered_map<std::string, Position>& yesterday_positions = {},
+        const std::unordered_map<std::string, double>& yesterday_close_prices = {},
+        const std::unordered_map<std::string, double>& two_days_ago_close_prices = {},
+        const std::map<std::string, double>& yesterday_daily_metrics = {}
+    );
+
+    /**
+     * @brief Generate trading results email body with per-strategy positions and executions tables
+     * @param strategy_positions Per-strategy positions map for grouped tables
+     * @param positions Current portfolio positions (for portfolio-level calculations)
+     * @param risk_metrics Risk metrics from the pipeline
+     * @param strategy_metrics Strategy performance metrics
+     * @param strategy_executions Per-strategy executions map for grouped tables
+     * @param date Trading date
+     * @param portfolio_name Display name for the portfolio (shown in header)
+     * @param is_daily_strategy Flag indicating if this is a daily strategy
+     * @return HTML email body
+     */
+    std::string generate_trading_report_body(
+        const StrategyPositionsMap& strategy_positions,
+        const std::unordered_map<std::string, Position>& positions,
+        const std::optional<RiskResult>& risk_metrics,
+        const std::map<std::string, double>& strategy_metrics,
+        const StrategyExecutionsMap& strategy_executions,
+        const std::string& date,
+        const std::string& portfolio_name,
+        bool is_daily_strategy = true,
+        const std::unordered_map<std::string, double>& current_prices = {},
+        std::shared_ptr<DatabaseInterface> db = nullptr,
+        const StrategyPositionsMap& yesterday_strategy_positions = {},
         const std::unordered_map<std::string, double>& yesterday_close_prices = {},
         const std::unordered_map<std::string, double>& two_days_ago_close_prices = {},
         const std::map<std::string, double>& yesterday_daily_metrics = {}
@@ -174,6 +209,25 @@ private:
     );
 
     /**
+     * @brief Format yesterday's finalized positions table with per-strategy breakdown
+     * @param strategy_positions Per-strategy positions map
+     * @param entry_prices Entry prices (Day T-2 close)
+     * @param exit_prices Exit prices (Day T-1 close)
+     * @param db Database interface to query contract multipliers
+     * @param strategy_metrics Strategy metrics (to extract daily metrics)
+     * @param yesterday_date Yesterday's date string
+     * @return Formatted yesterday's finalized positions table HTML with per-strategy sections
+     */
+    std::string format_yesterday_finalized_positions_table(
+        const StrategyPositionsMap& strategy_positions,
+        const std::unordered_map<std::string, double>& entry_prices,
+        const std::unordered_map<std::string, double>& exit_prices,
+        std::shared_ptr<DatabaseInterface> db,
+        const std::map<std::string, double>& strategy_metrics = {},
+        const std::string& yesterday_date = ""
+    );
+
+    /**
      * @brief Format rollover warning for contracts approaching expiry
      * @param positions Current portfolio positions
      * @param date Current trading date (YYYY-MM-DD format)
@@ -188,6 +242,59 @@ private:
         const std::string& date,
         std::shared_ptr<DatabaseInterface> db,
         const std::string& date_override_for_testing = ""
+    );
+
+    /**
+     * @brief Format all per-strategy position tables for email
+     * @param strategy_positions Per-strategy positions map
+     * @param current_prices Current market prices
+     * @param strategy_metrics Strategy metrics (to extract volatility)
+     * @return Formatted HTML with all strategy tables and portfolio summary
+     */
+    std::string format_strategy_positions_tables(
+        const StrategyPositionsMap& strategy_positions,
+        const std::unordered_map<std::string, double>& current_prices,
+        const std::map<std::string, double>& strategy_metrics
+    );
+
+    /**
+     * @brief Format a single strategy's position table
+     * @param strategy_name Strategy identifier
+     * @param positions Positions for this strategy
+     * @param current_prices Current market prices
+     * @return Formatted HTML table for this strategy
+     */
+    std::string format_single_strategy_table(
+        const std::string& strategy_name,
+        const std::unordered_map<std::string, Position>& positions,
+        const std::unordered_map<std::string, double>& current_prices
+    );
+
+    /**
+     * @brief Convert strategy ID to display name
+     * @param strategy_id Strategy identifier (e.g., "TREND_FOLLOWING_FAST")
+     * @return Display name (e.g., "Trend Following Fast")
+     */
+    std::string format_strategy_display_name(const std::string& strategy_id);
+
+    /**
+     * @brief Format all per-strategy execution tables for email
+     * @param strategy_executions Per-strategy executions map
+     * @return Formatted HTML with all strategy execution tables and portfolio summary
+     */
+    std::string format_strategy_executions_tables(
+        const StrategyExecutionsMap& strategy_executions
+    );
+
+    /**
+     * @brief Format a single strategy's execution table
+     * @param strategy_name Strategy identifier
+     * @param executions Executions for this strategy
+     * @return Formatted HTML table for this strategy's executions
+     */
+    std::string format_single_strategy_executions_table(
+        const std::string& strategy_name,
+        const std::vector<ExecutionReport>& executions
     );
 
 };

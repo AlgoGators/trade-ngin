@@ -3,6 +3,7 @@
 build/
 logs/
 config.json
+config_conservative.json
 apps/backtest/results/
 .claude/
 CLAUDE.md

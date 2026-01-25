@@ -577,6 +577,16 @@ int main(int argc, char* argv[]) {
 
         INFO("Successfully created " + std::to_string(strategies.size()) + " strategies");
 
+        // Create map from strategy name to strategy instance for CSV export
+        trade_ngin::StrategyInstancesMap strategy_instances_map;
+        for (size_t i = 0; i < strategies.size(); ++i) {
+            auto* base_strategy = dynamic_cast<trade_ngin::BaseStrategy*>(strategies[i].get());
+            if (base_strategy != nullptr) {
+                strategy_instances_map[strategy_names[i]] = base_strategy;
+            }
+        }
+        INFO("Created strategy instances map with " + std::to_string(strategy_instances_map.size()) + " entries");
+
         // Get reference to first strategy for single-strategy compatibility (Phase 3 will fix this)
         auto tf_strategy = strategies[0];
 
@@ -684,7 +694,7 @@ int main(int argc, char* argv[]) {
 
         // Create Phase 4 CSV exporter
         INFO("Creating CSVExporter for Phase 4");
-        auto csv_exporter = std::make_unique<CSVExporter>(".");  // Current directory for output
+        auto csv_exporter = std::make_unique<CSVExporter>("apps/strategies");  // Output to apps/strategies
 
         // Load market data for daily processing
         INFO("Loading market data for daily processing...");
@@ -2374,13 +2384,13 @@ int main(int argc, char* argv[]) {
             WARN("Exception querying commissions: " + std::string(e.what()));
         }
 
-        // Export current positions
+        // Export current positions with per-strategy breakdown
         std::string today_filename;
         auto current_export_result = csv_exporter->export_current_positions(
-            now, positions,
+            now, strategy_positions_map,
             previous_day_close_prices,  // Market prices (Day T-1 close)
-            current_portfolio_value, gross_notional, net_notional, tf_strategy_typed.get(),
-            symbol_commissions);
+            current_portfolio_value, gross_notional, net_notional,
+            strategy_instances_map);
 
         if (current_export_result.is_ok()) {
             today_filename = current_export_result.value();
@@ -2390,17 +2400,16 @@ int main(int argc, char* argv[]) {
                   std::string(current_export_result.error()->what()));
         }
 
-        // Export yesterday's finalized positions (if not first trading day)
+        // Export yesterday's finalized positions with per-strategy breakdown (if not first trading day)
         std::string yesterday_filename;
-        if (!is_first_trading_day && !previous_positions.empty()) {
-            INFO("Exporting yesterday's finalized positions...");
+        if (!is_first_trading_day && !previous_strategy_positions.empty()) {
+            INFO("Exporting yesterday's finalized positions with per-strategy breakdown...");
 
             auto yesterday_time = now - std::chrono::hours(24);
 
             auto finalized_export_result = csv_exporter->export_finalized_positions(
                 now, yesterday_time,
-                nullptr,  // TODO: Fix IDatabase inheritance
-                previous_positions,
+                previous_strategy_positions,
                 two_days_ago_close_prices,  // Entry prices (T-2)
                 previous_day_close_prices   // Exit prices (T-1)
             );
@@ -2686,25 +2695,20 @@ int main(int argc, char* argv[]) {
                     // Note: yesterday_daily_metrics_final is now loaded AFTER database updates
                     // above So we don't need to create it here anymore
 
-                    // Build flattened executions list for email generation
-                    std::vector<ExecutionReport> flattened_executions;
-                    for (const auto& [_, strategy_execs] : all_strategy_executions) {
-                        flattened_executions.insert(flattened_executions.end(),
-                                                    strategy_execs.begin(), strategy_execs.end());
-                    }
-
                     // Generate email body with is_daily_strategy flag set to true and current
-                    // prices
+                    // prices. Pass strategy_positions_map and all_strategy_executions for per-strategy tables.
                     std::string email_body = email_sender->generate_trading_report_body(
+                        strategy_positions_map,         // Per-strategy positions for grouped tables
                         positions,
                         risk_eval.is_ok() ? std::make_optional(risk_eval.value()) : std::nullopt,
-                        strategy_metrics, flattened_executions, date_str,
+                        strategy_metrics, all_strategy_executions, date_str,
+                        portfolio_id,                   // Portfolio name for email header
                         true,                           // is_daily_strategy
                         previous_day_close_prices,      // Pass Day T-1 close prices for today's
                                                         // positions
                         db,                             // Pass database for symbols reference table
-                        yesterday_positions_finalized,  // Now populated with yesterday's finalized
-                                                        // positions
+                        previous_strategy_positions,    // Per-strategy yesterday's positions for
+                                                        // grouped tables
                         yesterday_exit_prices,   // Day T-1 close prices for yesterday's positions
                         yesterday_entry_prices,  // Day T-2 close prices for yesterday's positions
                         yesterday_daily_metrics_final  // Yesterday's metrics

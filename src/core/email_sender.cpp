@@ -557,9 +557,10 @@ std::string EmailSender::generate_trading_report_body(
    html << "<style>\n";
    html << "body { font-family: Arial, sans-serif; margin: 20px; background-color: #f9f9f9; }\n";
    html << ".container { max-width: 1200px; margin: 0 auto; background-color: white; padding: 30px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }\n";
-   html << "h1, h2 { color: #333; font-family: Arial, sans-serif; }\n";
+   html << "h1, h2, h3 { color: #333; font-family: Arial, sans-serif; }\n";
    html << "h1 { font-size: 24px; margin-bottom: 5px; }\n";
-   html << "h2 { font-size: 18px; margin-top: 25px; margin-bottom: 10px; border-bottom: 2px solid #2c5aa0; padding-bottom: 5px; }\n";
+   html << "h2 { font-size: 20px; margin-top: 25px; margin-bottom: 10px; border-bottom: 2px solid #2c5aa0; padding-bottom: 5px; }\n";
+   html << "h3 { font-size: 16px; margin-top: 20px; margin-bottom: 10px; }\n";
    html << "table { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 14px; font-family: Arial, sans-serif; }\n";
    html << "th, td { border: 1px solid #ddd; padding: 10px; text-align: left; }\n";
    html << "th { background-color: #f2f2f2; font-weight: bold; }\n";
@@ -1257,6 +1258,236 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
             double transaction_cost_value = std::abs(daily_transaction_costs_it->second);
             std::string formatted_transaction_cost = "$" + format_with_commas(transaction_cost_value, 2);
             html << "<div class=\"metric\"><strong>Daily Transaction Costs:</strong> <span>" << formatted_transaction_cost << "</span></div>\n";
+        }
+
+        auto daily_total_it = strategy_metrics.find("Daily Total PnL");
+        if (daily_total_it != strategy_metrics.end()) {
+            html << format_metric_display("Daily Total PnL (Net)", daily_total_it->second, false);
+        }
+
+        html << "</div>\n";
+    }
+
+    return html.str();
+}
+
+std::string EmailSender::format_yesterday_finalized_positions_table(
+    const StrategyPositionsMap& strategy_positions,
+    const std::unordered_map<std::string, double>& entry_prices,
+    const std::unordered_map<std::string, double>& exit_prices,
+    std::shared_ptr<DatabaseInterface> db,
+    const std::map<std::string, double>& strategy_metrics,
+    const std::string& yesterday_date
+) {
+    std::ostringstream html;
+
+    // Check if there are any positions across all strategies
+    bool has_positions = false;
+    for (const auto& [_, positions] : strategy_positions) {
+        for (const auto& [__, pos] : positions) {
+            if (std::abs(pos.quantity.as_double()) >= 0.0001) {
+                has_positions = true;
+                break;
+            }
+        }
+        if (has_positions) break;
+    }
+
+    if (!has_positions) {
+        return std::string();
+    }
+
+    html << "<h2>Yesterday's Finalized Position Results</h2>\n";
+
+    // Helper function to format numbers with commas
+    auto format_with_commas = [](double value, int precision = 2) -> std::string {
+        std::ostringstream oss;
+        oss << std::fixed << std::setprecision(precision) << value;
+        std::string str = oss.str();
+
+        size_t start_pos = 0;
+        if (!str.empty() && str[0] == '-') {
+            start_pos = 1;
+        }
+
+        size_t decimal_pos = str.find('.');
+        if (decimal_pos == std::string::npos) {
+            decimal_pos = str.length();
+        }
+
+        int insert_pos = static_cast<int>(decimal_pos) - 3;
+        while (insert_pos > static_cast<int>(start_pos)) {
+            str.insert(static_cast<size_t>(insert_pos), ",");
+            insert_pos -= 3;
+        }
+
+        return str;
+    };
+
+    // Helper to check if a symbol is an agricultural future
+    auto is_ag_future = [](const std::string& sym) -> bool {
+        std::string base = sym;
+        auto dotpos = base.find(".v.");
+        if (dotpos != std::string::npos) base = base.substr(0, dotpos);
+        dotpos = base.find(".c.");
+        if (dotpos != std::string::npos) base = base.substr(0, dotpos);
+
+        static const std::set<std::string> ag_futures = {
+            "ZC", "ZS", "ZW", "ZL", "ZM", "ZR", "KE", "HE", "LE", "GF"
+        };
+        return ag_futures.find(base) != ag_futures.end();
+    };
+
+    // Check if yesterday was Sunday (meaning today is Monday)
+    bool is_monday = false;
+    if (!yesterday_date.empty()) {
+        std::tm tm = {};
+        std::istringstream ss(yesterday_date);
+        ss >> std::get_time(&tm, "%Y-%m-%d");
+        if (!ss.fail()) {
+            std::mktime(&tm);
+            is_monday = (tm.tm_wday == 0);  // 0 = Sunday
+        }
+    }
+
+    // Sort strategies alphabetically for consistent ordering
+    std::vector<std::string> strategy_names;
+    for (const auto& [name, _] : strategy_positions) {
+        strategy_names.push_back(name);
+    }
+    std::sort(strategy_names.begin(), strategy_names.end());
+
+    // Generate table for each strategy
+    for (const auto& strategy_name : strategy_names) {
+        const auto& positions = strategy_positions.at(strategy_name);
+
+        // Check if strategy has any active positions
+        std::vector<std::tuple<std::string, double, double, double, double>> position_data;
+        double strategy_total_pnl = 0.0;
+
+        for (const auto& [symbol, position] : positions) {
+            double qty = position.quantity.as_double();
+            if (std::abs(qty) < 0.0001) continue;
+
+            double entry_price = 0.0;
+            double exit_price = 0.0;
+
+            if (entry_prices.find(symbol) != entry_prices.end()) {
+                entry_price = entry_prices.at(symbol);
+            }
+            if (exit_prices.find(symbol) != exit_prices.end()) {
+                exit_price = exit_prices.at(symbol);
+            }
+
+            double realized_pnl = position.realized_pnl.as_double();
+            position_data.emplace_back(symbol, qty, entry_price, exit_price, realized_pnl);
+            strategy_total_pnl += realized_pnl;
+        }
+
+        if (position_data.empty()) {
+            continue;
+        }
+
+        // Sort by symbol
+        std::sort(position_data.begin(), position_data.end(),
+                  [](const auto& a, const auto& b) { return std::get<0>(a) < std::get<0>(b); });
+
+        // Strategy sub-header with styled left border accent
+        std::string display_name = format_strategy_display_name(strategy_name);
+        html << "<h3 style=\"margin-top: 20px; margin-bottom: 10px; color: #333; "
+             << "border-left: 4px solid #2c5aa0; padding-left: 12px;\">"
+             << display_name << "</h3>\n";
+
+        // Table for this strategy
+        html << "<table>\n";
+        html << "<tr>";
+        html << "<th>Symbol</th>";
+        html << "<th>Quantity</th>";
+        html << "<th>Entry Price</th>";
+        html << "<th>Exit Price</th>";
+        html << "<th>Realized PnL</th>";
+        html << "</tr>\n";
+
+        for (const auto& [symbol, qty, entry_price, exit_price, realized_pnl] : position_data) {
+            html << "<tr>";
+            html << "<td>" << symbol << "</td>";
+            html << "<td>" << std::fixed << std::setprecision(2) << qty << "</td>";
+            html << "<td>" << format_with_commas(entry_price, 2) << "</td>";
+
+            if (is_monday && is_ag_future(symbol) && exit_price == 0.0) {
+                html << "<td>N/A</td>";
+            } else {
+                html << "<td>" << format_with_commas(exit_price, 2) << "</td>";
+            }
+
+            if (is_monday && is_ag_future(symbol) && std::abs(realized_pnl) < 0.01) {
+                html << "<td>N/A</td>";
+            } else {
+                std::string realized_pnl_class = (realized_pnl >= 0) ? "positive" : "negative";
+                html << "<td class=\"" << realized_pnl_class << "\">";
+                html << "$" << format_with_commas(realized_pnl, 2);
+                html << "</td>";
+            }
+
+            html << "</tr>\n";
+        }
+
+        html << "</table>\n";
+
+        // Compact strategy-level summary
+        std::string pnl_class = (strategy_total_pnl >= 0) ? "positive" : "negative";
+        html << "<div style=\"font-size: 13px; color: #666; margin: 8px 0 20px 0; padding-left: 16px;\">\n";
+        html << "<strong>Positions:</strong> " << position_data.size()
+             << " | <strong>Total PnL:</strong> <span class=\"" << pnl_class << "\">$"
+             << format_with_commas(strategy_total_pnl, 2) << "</span>\n";
+        html << "</div>\n";
+    }
+
+    // Add daily metrics section
+    if (!strategy_metrics.empty() && !yesterday_date.empty()) {
+        html << "<h2>" << yesterday_date << " Metrics</h2>\n";
+        html << "<div class=\"metrics-category\">\n";
+
+        auto format_metric_display = [&format_with_commas](const std::string& label, double value, bool is_percentage) -> std::string {
+            std::string value_class = "";
+            if (std::fabs(value) < 1e-9) {
+                value_class = " class=\"neutral\"";
+            } else if (value > 0) {
+                value_class = " class=\"positive\"";
+            } else {
+                value_class = " class=\"negative\"";
+            }
+
+            std::string formatted_value;
+            if (is_percentage) {
+                formatted_value = format_with_commas(value, 2) + "%";
+            } else {
+                formatted_value = "$" + format_with_commas(value, 2);
+            }
+
+            return "<div class=\"metric\"><strong>" + label + ":</strong> <span" + value_class + ">" + formatted_value + "</span></div>\n";
+        };
+
+        auto daily_return_it = strategy_metrics.find("Daily Return");
+        if (daily_return_it != strategy_metrics.end()) {
+            html << format_metric_display("Daily Return", daily_return_it->second, true);
+        }
+
+        auto daily_unrealized_it = strategy_metrics.find("Daily Unrealized PnL");
+        if (daily_unrealized_it != strategy_metrics.end()) {
+            html << format_metric_display("Daily Unrealized PnL (Gross)", daily_unrealized_it->second, false);
+        }
+
+        auto daily_realized_it = strategy_metrics.find("Daily Realized PnL");
+        if (daily_realized_it != strategy_metrics.end()) {
+            html << format_metric_display("Daily Realized PnL (Gross)", daily_realized_it->second, false);
+        }
+
+        auto daily_commissions_it = strategy_metrics.find("Daily Commissions");
+        if (daily_commissions_it != strategy_metrics.end()) {
+            double commission_value = std::abs(daily_commissions_it->second);
+            std::string formatted_commission = "$" + format_with_commas(commission_value, 2);
+            html << "<div class=\"metric\"><strong>Daily Commissions:</strong> <span>" << formatted_commission << "</span></div>\n";
         }
 
         auto daily_total_it = strategy_metrics.find("Daily Total PnL");
@@ -2247,4 +2478,789 @@ std::string EmailSender::format_rollover_warning(
 
     return html.str();
 }
+
+std::string EmailSender::format_strategy_display_name(const std::string& strategy_id) {
+    std::string result;
+    bool capitalize_next = true;
+
+    for (size_t i = 0; i < strategy_id.size(); ++i) {
+        char c = strategy_id[i];
+        if (c == '_') {
+            result += ' ';
+            capitalize_next = true;
+        } else if (capitalize_next) {
+            result += static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+            capitalize_next = false;
+        } else {
+            result += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        }
+    }
+
+    return result;
+}
+
+std::string EmailSender::format_single_strategy_table(
+    const std::string& strategy_name,
+    const std::unordered_map<std::string, Position>& positions,
+    const std::unordered_map<std::string, double>& current_prices) {
+
+    std::ostringstream html;
+
+    if (positions.empty()) {
+        return std::string();
+    }
+
+    // Helper function to format numbers with commas
+    auto format_with_commas = [](double value) -> std::string {
+        std::ostringstream oss;
+        oss << std::fixed << std::setprecision(2) << value;
+        std::string str = oss.str();
+
+        size_t start_pos = 0;
+        if (!str.empty() && str[0] == '-') {
+            start_pos = 1;
+        }
+
+        size_t decimal_pos = str.find('.');
+        if (decimal_pos == std::string::npos) {
+            decimal_pos = str.length();
+        }
+
+        int insert_pos = static_cast<int>(decimal_pos) - 3;
+        while (insert_pos > static_cast<int>(start_pos)) {
+            str.insert(static_cast<size_t>(insert_pos), ",");
+            insert_pos -= 3;
+        }
+
+        return str;
+    };
+
+    // Strategy sub-header with styled left border accent
+    std::string display_name = format_strategy_display_name(strategy_name);
+    html << "<h3 style=\"margin-top: 20px; margin-bottom: 10px; color: #333; "
+         << "border-left: 4px solid #2c5aa0; padding-left: 12px;\">"
+         << display_name << "</h3>\n";
+
+    // Position table
+    html << "<table>\n";
+    html << "<tr><th>Symbol</th><th>Quantity</th><th>Market Price</th><th>Notional</th><th>% of Total</th></tr>\n";
+
+    double total_notional = 0.0;
+    double total_margin_posted = 0.0;
+    int active_positions = 0;
+
+    // First pass: calculate total notional for this strategy
+    std::vector<std::tuple<std::string, double, double, double, double>> position_data;
+
+    for (const auto& [symbol, position] : positions) {
+        if (position.quantity.as_double() != 0.0) {
+            active_positions++;
+
+            double contract_multiplier = 1.0;
+            double notional = 0.0;
+            double margin_for_position = 0.0;
+
+            try {
+                auto& registry = InstrumentRegistry::instance();
+                std::string lookup_sym = position.symbol;
+                auto dotpos = lookup_sym.find(".v.");
+                if (dotpos != std::string::npos) {
+                    lookup_sym = lookup_sym.substr(0, dotpos);
+                }
+                dotpos = lookup_sym.find(".c.");
+                if (dotpos != std::string::npos) {
+                    lookup_sym = lookup_sym.substr(0, dotpos);
+                }
+
+                auto instrument = registry.get_instrument(lookup_sym);
+                if (!instrument) {
+                    ERROR("CRITICAL: Instrument " + lookup_sym + " not found in registry for email generation!");
+                    throw std::runtime_error("Missing instrument in registry: " + lookup_sym);
+                }
+
+                contract_multiplier = instrument->get_multiplier();
+                if (contract_multiplier <= 0) {
+                    ERROR("CRITICAL: Invalid multiplier " + std::to_string(contract_multiplier) + " for " + lookup_sym);
+                    throw std::runtime_error("Invalid multiplier for: " + lookup_sym);
+                }
+
+                double contracts_abs = std::abs(position.quantity.as_double());
+                double initial_margin_per_contract = instrument->get_margin_requirement();
+                if (initial_margin_per_contract <= 0) {
+                    ERROR("CRITICAL: Invalid margin requirement " + std::to_string(initial_margin_per_contract) + " for " + lookup_sym);
+                    throw std::runtime_error("Invalid margin requirement for: " + lookup_sym);
+                }
+                margin_for_position = contracts_abs * initial_margin_per_contract;
+                total_margin_posted += margin_for_position;
+
+            } catch (const std::exception& e) {
+                ERROR("CRITICAL: Failed to get instrument data for " + position.symbol + ": " + e.what());
+                throw;
+            }
+
+            notional = position.quantity.as_double() * position.average_price.as_double() * contract_multiplier;
+            total_notional += std::abs(notional);
+
+            double market_price = position.average_price.as_double();
+            auto price_it = current_prices.find(symbol);
+            if (price_it != current_prices.end()) {
+                market_price = price_it->second;
+            }
+
+            position_data.push_back(std::make_tuple(symbol, position.quantity.as_double(), market_price, notional, margin_for_position));
+        }
+    }
+
+    // Second pass: render rows with % of total (relative to this strategy's total)
+    for (const auto& [symbol, qty, market_price, notional, margin] : position_data) {
+        double pct_of_total = (total_notional > 0) ? (std::abs(notional) / total_notional * 100.0) : 0.0;
+
+        html << "<tr>\n";
+        html << "<td>" << symbol << "</td>\n";
+        html << "<td>" << std::fixed << std::setprecision(0) << qty << "</td>\n";
+        html << "<td>$" << std::fixed << std::setprecision(2) << market_price << "</td>\n";
+        html << "<td>$" << format_with_commas(std::abs(notional)) << "</td>\n";
+        html << "<td>" << std::fixed << std::setprecision(2) << pct_of_total << "%</td>\n";
+        html << "</tr>\n";
+    }
+
+    html << "</table>\n";
+
+    // Compact strategy-level summary
+    html << "<div style=\"font-size: 13px; color: #666; margin: 8px 0 20px 0; padding-left: 16px;\">\n";
+    html << "<strong>Positions:</strong> " << active_positions
+         << " | <strong>Notional:</strong> $" << format_with_commas(total_notional)
+         << " | <strong>Margin:</strong> $" << format_with_commas(total_margin_posted) << "\n";
+    html << "</div>\n";
+
+    return html.str();
+}
+
+std::string EmailSender::format_strategy_positions_tables(
+    const StrategyPositionsMap& strategy_positions,
+    const std::unordered_map<std::string, double>& current_prices,
+    const std::map<std::string, double>& strategy_metrics) {
+
+    std::ostringstream html;
+
+    if (strategy_positions.empty()) {
+        html << "<p>No positions.</p>\n";
+        return html.str();
+    }
+
+    // Helper function to format numbers with commas
+    auto format_with_commas = [](double value) -> std::string {
+        std::ostringstream oss;
+        oss << std::fixed << std::setprecision(2) << value;
+        std::string str = oss.str();
+
+        size_t start_pos = 0;
+        if (!str.empty() && str[0] == '-') {
+            start_pos = 1;
+        }
+
+        size_t decimal_pos = str.find('.');
+        if (decimal_pos == std::string::npos) {
+            decimal_pos = str.length();
+        }
+
+        int insert_pos = static_cast<int>(decimal_pos) - 3;
+        while (insert_pos > static_cast<int>(start_pos)) {
+            str.insert(static_cast<size_t>(insert_pos), ",");
+            insert_pos -= 3;
+        }
+
+        return str;
+    };
+
+    // Sort strategies alphabetically for consistent ordering
+    std::vector<std::string> strategy_names;
+    for (const auto& [name, _] : strategy_positions) {
+        strategy_names.push_back(name);
+    }
+    std::sort(strategy_names.begin(), strategy_names.end());
+
+    // Track portfolio totals
+    double portfolio_total_notional = 0.0;
+    double portfolio_total_margin = 0.0;
+    int portfolio_total_positions = 0;
+
+    // Generate table for each strategy
+    for (const auto& strategy_name : strategy_names) {
+        const auto& positions = strategy_positions.at(strategy_name);
+
+        // Skip empty strategies
+        bool has_active_positions = false;
+        for (const auto& [_, pos] : positions) {
+            if (pos.quantity.as_double() != 0.0) {
+                has_active_positions = true;
+                break;
+            }
+        }
+        if (!has_active_positions) {
+            continue;
+        }
+
+        html << format_single_strategy_table(strategy_name, positions, current_prices);
+
+        // Accumulate portfolio totals
+        for (const auto& [symbol, position] : positions) {
+            if (position.quantity.as_double() != 0.0) {
+                portfolio_total_positions++;
+
+                try {
+                    auto& registry = InstrumentRegistry::instance();
+                    std::string lookup_sym = position.symbol;
+                    auto dotpos = lookup_sym.find(".v.");
+                    if (dotpos != std::string::npos) {
+                        lookup_sym = lookup_sym.substr(0, dotpos);
+                    }
+                    dotpos = lookup_sym.find(".c.");
+                    if (dotpos != std::string::npos) {
+                        lookup_sym = lookup_sym.substr(0, dotpos);
+                    }
+
+                    auto instrument = registry.get_instrument(lookup_sym);
+                    if (instrument) {
+                        double contract_multiplier = instrument->get_multiplier();
+                        double notional = position.quantity.as_double() * position.average_price.as_double() * contract_multiplier;
+                        portfolio_total_notional += std::abs(notional);
+
+                        double contracts_abs = std::abs(position.quantity.as_double());
+                        double initial_margin = instrument->get_margin_requirement();
+                        portfolio_total_margin += contracts_abs * initial_margin;
+                    }
+                } catch (...) {
+                    // Already logged in format_single_strategy_table
+                }
+            }
+        }
+    }
+
+    // Portfolio-wide summary
+    html << "<div class=\"summary-stats\" style=\"margin-top: 20px; border-top: 2px solid #2c5aa0; padding-top: 15px;\">\n";
+    html << "<h3 style=\"margin: 0 0 10px 0; color: #333;\">Portfolio Summary</h3>\n";
+    html << "<strong>Active Positions:</strong> " << portfolio_total_positions << "<br>\n";
+
+    // Add volatility if available in strategy metrics
+    auto volatility_it = strategy_metrics.find("Volatility");
+    if (volatility_it != strategy_metrics.end()) {
+        html << "<strong>Volatility:</strong> " << std::fixed << std::setprecision(2)
+             << volatility_it->second << "%<br>\n";
+    }
+
+    html << "<strong>Total Notional:</strong> $" << format_with_commas(portfolio_total_notional) << "<br>\n";
+    html << "<strong>Total Margin Posted:</strong> $" << format_with_commas(portfolio_total_margin) << "\n";
+    html << "</div>\n";
+
+    return html.str();
+}
+
+std::string EmailSender::format_single_strategy_executions_table(
+    const std::string& strategy_name,
+    const std::vector<ExecutionReport>& executions) {
+
+    std::ostringstream html;
+
+    if (executions.empty()) {
+        return std::string();
+    }
+
+    // Helper function to format numbers with commas
+    auto format_with_commas = [](double value) -> std::string {
+        std::ostringstream oss;
+        oss << std::fixed << std::setprecision(2) << value;
+        std::string str = oss.str();
+
+        size_t start_pos = 0;
+        if (!str.empty() && str[0] == '-') {
+            start_pos = 1;
+        }
+
+        size_t decimal_pos = str.find('.');
+        if (decimal_pos == std::string::npos) {
+            decimal_pos = str.length();
+        }
+
+        int insert_pos = static_cast<int>(decimal_pos) - 3;
+        while (insert_pos > static_cast<int>(start_pos)) {
+            str.insert(static_cast<size_t>(insert_pos), ",");
+            insert_pos -= 3;
+        }
+
+        return str;
+    };
+
+    // Strategy sub-header with styled left border accent
+    std::string display_name = format_strategy_display_name(strategy_name);
+    html << "<h3 style=\"margin-top: 20px; margin-bottom: 10px; color: #333; "
+         << "border-left: 4px solid #2c5aa0; padding-left: 12px;\">"
+         << display_name << "</h3>\n";
+
+    // Executions table
+    html << "<table>\n";
+    html << "<tr><th>Symbol</th><th>Side</th><th>Quantity</th><th>Price</th><th>Notional</th><th>Commission</th></tr>\n";
+
+    double total_commission = 0.0;
+    double total_notional_traded = 0.0;
+
+    for (const auto& exec : executions) {
+        double contract_multiplier = 1.0;
+
+        try {
+            auto& registry = InstrumentRegistry::instance();
+            std::string lookup_sym = exec.symbol;
+            auto dotpos = lookup_sym.find(".v.");
+            if (dotpos != std::string::npos) {
+                lookup_sym = lookup_sym.substr(0, dotpos);
+            }
+            dotpos = lookup_sym.find(".c.");
+            if (dotpos != std::string::npos) {
+                lookup_sym = lookup_sym.substr(0, dotpos);
+            }
+            auto instrument = registry.get_instrument(lookup_sym);
+            if (instrument) {
+                contract_multiplier = instrument->get_multiplier();
+            } else {
+                static const std::unordered_map<std::string, double> fallback_multipliers = {
+                    {"NQ", 20.0}, {"MNQ", 2.0}, {"ES", 50.0}, {"MES", 5.0},
+                    {"YM", 5.0}, {"MYM", 0.5}, {"RTY", 50.0},
+                    {"6A", 100000.0}, {"6B", 62500.0}, {"6C", 100000.0}, {"6E", 125000.0},
+                    {"6J", 12500000.0}, {"6S", 125000.0}, {"6N", 100000.0}, {"6M", 500000.0},
+                    {"CL", 1000.0}, {"GC", 100.0}, {"HG", 25000.0}, {"PL", 50.0}, {"SI", 5000.0},
+                    {"ZC", 5000.0}, {"ZS", 5000.0}, {"ZW", 5000.0}, {"ZL", 60000.0},
+                    {"ZM", 100.0}, {"ZN", 100000.0}, {"ZB", 100000.0}, {"UB", 100000.0},
+                    {"ZR", 2000.0}, {"RB", 42000.0}, {"HO", 42000.0}, {"NG", 10000.0},
+                    {"HE", 40000.0}, {"LE", 40000.0}, {"GF", 50000.0}, {"KE", 5000.0}
+                };
+
+                auto it = fallback_multipliers.find(lookup_sym);
+                if (it != fallback_multipliers.end()) {
+                    contract_multiplier = it->second;
+                }
+            }
+        } catch (...) {
+            // Use default multiplier if exception occurs
+        }
+
+        double notional = exec.filled_quantity.as_double() * exec.fill_price.as_double() * contract_multiplier;
+        total_notional_traded += notional;
+        total_commission += exec.commission.as_double();
+
+        std::string side_str = exec.side == Side::BUY ? "BUY" : "SELL";
+        std::string side_class = exec.side == Side::BUY ? "positive" : "negative";
+
+        html << "<tr>\n";
+        html << "<td>" << exec.symbol << "</td>\n";
+        html << "<td class=\"" << side_class << "\">" << side_str << "</td>\n";
+        html << "<td>" << std::fixed << std::setprecision(0) << exec.filled_quantity.as_double() << "</td>\n";
+        html << "<td>$" << std::fixed << std::setprecision(2) << exec.fill_price.as_double() << "</td>\n";
+        html << "<td>$" << format_with_commas(notional) << "</td>\n";
+        html << "<td>$" << std::fixed << std::setprecision(2) << exec.commission.as_double() << "</td>\n";
+        html << "</tr>\n";
+    }
+
+    html << "</table>\n";
+
+    // Compact strategy-level summary
+    html << "<div style=\"font-size: 13px; color: #666; margin: 8px 0 20px 0; padding-left: 16px;\">\n";
+    html << "<strong>Trades:</strong> " << executions.size()
+         << " | <strong>Notional:</strong> $" << format_with_commas(total_notional_traded)
+         << " | <strong>Commissions:</strong> $" << format_with_commas(total_commission) << "\n";
+    html << "</div>\n";
+
+    return html.str();
+}
+
+std::string EmailSender::format_strategy_executions_tables(
+    const StrategyExecutionsMap& strategy_executions) {
+
+    std::ostringstream html;
+
+    if (strategy_executions.empty()) {
+        html << "<p>No executions for today.</p>\n";
+        return html.str();
+    }
+
+    // Helper function to format numbers with commas
+    auto format_with_commas = [](double value) -> std::string {
+        std::ostringstream oss;
+        oss << std::fixed << std::setprecision(2) << value;
+        std::string str = oss.str();
+
+        size_t start_pos = 0;
+        if (!str.empty() && str[0] == '-') {
+            start_pos = 1;
+        }
+
+        size_t decimal_pos = str.find('.');
+        if (decimal_pos == std::string::npos) {
+            decimal_pos = str.length();
+        }
+
+        int insert_pos = static_cast<int>(decimal_pos) - 3;
+        while (insert_pos > static_cast<int>(start_pos)) {
+            str.insert(static_cast<size_t>(insert_pos), ",");
+            insert_pos -= 3;
+        }
+
+        return str;
+    };
+
+    // Sort strategies alphabetically for consistent ordering
+    std::vector<std::string> strategy_names;
+    for (const auto& [name, _] : strategy_executions) {
+        strategy_names.push_back(name);
+    }
+    std::sort(strategy_names.begin(), strategy_names.end());
+
+    // Track portfolio totals
+    int portfolio_total_trades = 0;
+    double portfolio_total_notional = 0.0;
+    double portfolio_total_commission = 0.0;
+
+    // Generate table for each strategy
+    for (const auto& strategy_name : strategy_names) {
+        const auto& executions = strategy_executions.at(strategy_name);
+
+        if (executions.empty()) {
+            continue;
+        }
+
+        html << format_single_strategy_executions_table(strategy_name, executions);
+
+        // Accumulate portfolio totals
+        portfolio_total_trades += executions.size();
+        for (const auto& exec : executions) {
+            double contract_multiplier = 1.0;
+            try {
+                auto& registry = InstrumentRegistry::instance();
+                std::string lookup_sym = exec.symbol;
+                auto dotpos = lookup_sym.find(".v.");
+                if (dotpos != std::string::npos) {
+                    lookup_sym = lookup_sym.substr(0, dotpos);
+                }
+                dotpos = lookup_sym.find(".c.");
+                if (dotpos != std::string::npos) {
+                    lookup_sym = lookup_sym.substr(0, dotpos);
+                }
+                auto instrument = registry.get_instrument(lookup_sym);
+                if (instrument) {
+                    contract_multiplier = instrument->get_multiplier();
+                }
+            } catch (...) {}
+
+            double notional = exec.filled_quantity.as_double() * exec.fill_price.as_double() * contract_multiplier;
+            portfolio_total_notional += notional;
+            portfolio_total_commission += exec.commission.as_double();
+        }
+    }
+
+    // Portfolio-wide summary
+    html << "<div class=\"summary-stats\" style=\"margin-top: 20px; border-top: 2px solid #2c5aa0; padding-top: 15px;\">\n";
+    html << "<h3 style=\"margin: 0 0 10px 0; color: #333;\">Executions Summary</h3>\n";
+    html << "<strong>Total Trades:</strong> " << portfolio_total_trades << "<br>\n";
+    html << "<strong>Total Notional Traded:</strong> $" << format_with_commas(portfolio_total_notional) << "<br>\n";
+    html << "<strong>Total Commissions:</strong> $" << format_with_commas(portfolio_total_commission) << "\n";
+    html << "</div>\n";
+
+    return html.str();
+}
+
+std::string EmailSender::generate_trading_report_body(
+   const StrategyPositionsMap& strategy_positions,
+   const std::unordered_map<std::string, Position>& positions,
+   const std::optional<RiskResult>& risk_metrics,
+   const std::map<std::string, double>& strategy_metrics,
+   const StrategyExecutionsMap& strategy_executions,
+   const std::string& date,
+   const std::string& portfolio_name,
+   bool is_daily_strategy,
+   const std::unordered_map<std::string, double>& current_prices,
+   std::shared_ptr<DatabaseInterface> db,
+   const StrategyPositionsMap& yesterday_strategy_positions,
+   const std::unordered_map<std::string, double>& yesterday_close_prices,
+   const std::unordered_map<std::string, double>& two_days_ago_close_prices,
+   const std::map<std::string, double>& yesterday_daily_metrics)
+{
+   std::ostringstream html;
+
+   // Parse the date to check day of week
+   std::tm tm = {};
+   std::istringstream ss(date);
+   ss >> std::get_time(&tm, "%Y-%m-%d");
+   std::mktime(&tm);
+   int day_of_week = tm.tm_wday;  // 0=Sunday, 1=Monday, ..., 6=Saturday
+
+   // Calculate yesterday's date
+   std::string yesterday_date_str;
+   std::string yesterday_holiday_name;
+   bool is_yesterday_holiday = false;
+   try {
+       auto time_point = std::chrono::system_clock::from_time_t(std::mktime(&tm));
+       auto yesterday = time_point - std::chrono::hours(24);
+       auto yesterday_time_t = std::chrono::system_clock::to_time_t(yesterday);
+       std::tm yesterday_tm = *std::gmtime(&yesterday_time_t);
+       std::ostringstream oss;
+       oss << std::put_time(&yesterday_tm, "%Y-%m-%d");
+       yesterday_date_str = oss.str();
+
+       INFO("Checking holiday for yesterday's date: " + yesterday_date_str);
+
+       is_yesterday_holiday = holiday_checker_.is_holiday(yesterday_date_str);
+
+       INFO("Is yesterday (" + yesterday_date_str + ") a holiday? " + std::string(is_yesterday_holiday ? "YES" : "NO"));
+
+       if (is_yesterday_holiday) {
+           yesterday_holiday_name = holiday_checker_.get_holiday_name(yesterday_date_str);
+           INFO("Holiday name: " + yesterday_holiday_name);
+       }
+   } catch (...) {
+       ERROR("Exception while calculating yesterday's date");
+       yesterday_date_str = "Previous Day";
+   }
+
+   bool is_monday = (day_of_week == 1);
+   bool is_sunday = (day_of_week == 0);
+
+   bool show_yesterday_pnl = true;
+   if (is_sunday || is_yesterday_holiday) {
+       show_yesterday_pnl = false;
+   }
+
+   // Generate HTML header and styles
+   html << "<!DOCTYPE html>\n";
+   html << "<html>\n<head>\n";
+   html << "<meta charset=\"UTF-8\" />\n";
+   html << "<style>\n";
+   html << "body { font-family: Arial, sans-serif; margin: 20px; background-color: #f9f9f9; }\n";
+   html << ".container { max-width: 1200px; margin: 0 auto; background-color: white; padding: 30px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }\n";
+   html << "h1, h2, h3 { color: #333; font-family: Arial, sans-serif; }\n";
+   html << "h1 { font-size: 24px; margin-bottom: 5px; }\n";
+   html << "h2 { font-size: 20px; margin-top: 25px; margin-bottom: 10px; border-bottom: 2px solid #2c5aa0; padding-bottom: 5px; }\n";
+   html << "h3 { font-size: 16px; margin-top: 20px; margin-bottom: 10px; }\n";
+   html << "table { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 14px; font-family: Arial, sans-serif; }\n";
+   html << "th, td { border: 1px solid #ddd; padding: 10px; text-align: left; }\n";
+   html << "th { background-color: #f2f2f2; font-weight: bold; }\n";
+   html << ".metric { margin: 8px 0; font-size: 14px; line-height: 1.6; font-family: Arial, sans-serif; }\n";
+   html << ".positive { color: #1a7f37; font-weight: 500; }\n";
+   html << ".negative { color: #b42318; font-weight: 500; }\n";
+   html << ".neutral { color: #0b6efd; font-weight: 500; }\n";
+   html << ".header-section { margin-bottom: 30px; display: flex; align-items: center; }\n";
+   html << ".header-section img { width: 80px; height: 80px; margin-right: 20px; }\n";
+   html << ".header-text { flex: 1; }\n";
+   html << ".header-info { color: #666; font-size: 14px; margin-top: 10px; font-family: Arial, sans-serif; }\n";
+   html << ".fund-branding { color: #2c5aa0; font-weight: bold; font-size: 16px; font-family: Arial, sans-serif; }\n";
+   html << ".metrics-section { margin: 20px 0; }\n";
+   html << ".metrics-category { background-color: #fff5e6; padding: 15px; border-radius: 5px; margin-bottom: 20px; }\n";
+   html << ".footer-note { background-color: #fff9e6; border-left: 4px solid #ffc107; padding: 15px; margin: 20px 0; font-size: 13px; color: #666; font-family: Arial, sans-serif; }\n";
+   html << ".summary-stats { background-color: #fff5e6; padding: 15px; margin: 15px 0; border-radius: 5px; font-family: Arial, sans-serif; font-size: 14px; }\n";
+   html << ".chart-container { margin: 20px 0; padding: 20px; background-color: #f8f9fa; border-radius: 8px; text-align: center; }\n";
+   html << ".weekend-message { background-color: #e6f3ff; border-left: 4px solid #2c5aa0; padding: 20px; margin: 20px 0; font-size: 16px; }\n";
+   html << "</style>\n";
+   html << "</head>\n<body>\n";
+   html << "<div class=\"container\">\n";
+
+   // Header with logo and branding
+   html << "<div class=\"header-section\">\n";
+   html << "<img src=\"cid:algogators_logo\" alt=\"AlgoGators Logo\">\n";
+   html << "<div class=\"header-text\">\n";
+   html << "<span class=\"fund-branding\">AlgoGators</span><br>\n";
+   html << "<h1>Daily Trading Report</h1>\n";
+   html << "<div class=\"header-info\">" << date << " | " << format_strategy_display_name(portfolio_name) << "</div>\n";
+   html << "</div>\n";
+   html << "</div>\n";
+
+   // Weekend/Holiday banners
+   if (is_sunday) {
+       html << "<div style=\"background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%); border: 2px solid #f59e0b; border-radius: 8px; padding: 20px 30px; margin: 20px 0 30px 0; box-shadow: 0 4px 6px rgba(0,0,0,0.1);\">\n";
+       html << "<h2 style=\"margin: 0 0 10px 0; color: #92400e; font-size: 20px; border-bottom: 2px solid #92400e; padding-bottom: 8px; display: inline-block;\">Yesterday was Saturday</h2>\n";
+       html << "<p style=\"margin: 15px 0 5px 0; color: #78350f; font-size: 15px; line-height: 1.6;\">The latest futures settlement prices are not available, as futures markets were closed yesterday (" << yesterday_date_str << ") due to it being a Saturday. The PnL for these contracts will be updated in the next report once settlement data is released.</p>\n";
+       html << "<p style=\"margin: 5px 0 0 0; color: #92400e; font-weight: 600; font-size: 14px;\">Please continue to monitor your positions closely.</p>\n";
+       html << "</div>\n";
+   }
+   else if (is_monday) {
+       html << "<div style=\"background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%); border: 2px solid #f59e0b; border-radius: 8px; padding: 20px 30px; margin: 20px 0 30px 0; box-shadow: 0 4px 6px rgba(0,0,0,0.1);\">\n";
+       html << "<h2 style=\"margin: 0 0 10px 0; color: #92400e; font-size: 20px; border-bottom: 2px solid #92400e; padding-bottom: 8px; display: inline-block;\">Yesterday was Sunday</h2>\n";
+       html << "<p style=\"margin: 15px 0 5px 0; color: #78350f; font-size: 15px; line-height: 1.6;\">Agricultural futures settlement prices for Sunday (" << yesterday_date_str << ") are not yet available, as these contracts begin trading Sunday evening. The PnL for these contracts will be updated in the next report once settlement data is released.</p>\n";
+       html << "<p style=\"margin: 5px 0 0 0; color: #92400e; font-weight: 600; font-size: 14px;\">Please monitor these positions closely.</p>\n";
+       html << "</div>\n";
+   }
+   else if (is_yesterday_holiday) {
+       html << "<div style=\"background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%); border: 2px solid #f59e0b; border-radius: 8px; padding: 20px 30px; margin: 20px 0 30px 0; box-shadow: 0 4px 6px rgba(0,0,0,0.1);\">\n";
+       html << "<h2 style=\"margin: 0 0 10px 0; color: #92400e; font-size: 20px; border-bottom: 2px solid #92400e; padding-bottom: 8px; display: inline-block;\">Yesterday was " << yesterday_holiday_name << "</h2>\n";
+       html << "<p style=\"margin: 15px 0 5px 0; color: #78350f; font-size: 15px; line-height: 1.6;\">The latest futures settlement prices are not available, as futures markets were closed yesterday (" << yesterday_date_str << ") due to a federal holiday. The PnL for these contracts will be updated in the next report once settlement data is released.</p>\n";
+       html << "<p style=\"margin: 5px 0 0 0; color: #92400e; font-weight: 600; font-size: 14px;\">Please continue to monitor your positions closely.</p>\n";
+       html << "</div>\n";
+   }
+
+   // Today's Positions - use per-strategy tables if strategy_positions is provided, otherwise fallback to single table
+   html << "<h2>Today's Positions</h2>\n";
+
+   if (!strategy_positions.empty()) {
+       html << format_strategy_positions_tables(strategy_positions, current_prices, strategy_metrics);
+   } else {
+       html << format_positions_table(positions, is_daily_strategy, current_prices, strategy_metrics);
+   }
+
+   // Executions (if any) - use per-strategy tables
+   bool has_executions = false;
+   for (const auto& [_, execs] : strategy_executions) {
+       if (!execs.empty()) {
+           has_executions = true;
+           break;
+       }
+   }
+   if (has_executions) {
+       html << "<h2>Daily Executions</h2>\n";
+       html << format_strategy_executions_tables(strategy_executions);
+   }
+
+   // Yesterday's Finalized Positions (with actual PnL) - use per-strategy breakdown
+   bool has_yesterday_positions = false;
+   for (const auto& [_, positions_map] : yesterday_strategy_positions) {
+       if (!positions_map.empty()) {
+           has_yesterday_positions = true;
+           break;
+       }
+   }
+   if (show_yesterday_pnl && has_yesterday_positions && !yesterday_close_prices.empty() && !two_days_ago_close_prices.empty()) {
+       html << format_yesterday_finalized_positions_table(
+           yesterday_strategy_positions,
+           two_days_ago_close_prices,
+           yesterday_close_prices,
+           db,
+           yesterday_daily_metrics,
+           yesterday_date_str
+       );
+   }
+   else if (!show_yesterday_pnl) {
+       html << "<div class=\"footer-note\">\n";
+       if (is_sunday) {
+           html << "<strong>Note:</strong> Yesterday's PnL data is not available.\n";
+       }
+       else if (is_monday) {
+           html << "<strong>Note:</strong> Yesterday's PnL data is not available for agricultural contracts.\n";
+       }
+       else if (is_yesterday_holiday) {
+           html << "<strong>Note:</strong> Yesterday's PnL data is not available.\n";
+       }
+       html << "</div>\n";
+   }
+
+   // Strategy metrics
+   if (!strategy_metrics.empty()) {
+       html << "<div class=\"metrics-section\">\n";
+       html << format_strategy_metrics(strategy_metrics);
+       html << "</div>\n";
+   }
+
+   html << "<h2>Charts</h2>\n";
+   if (db) {
+       // Generate equity curve chart
+       chart_base64_ = ChartGenerator::generate_equity_curve_chart(db, "LIVE_TREND_FOLLOWING", 30);
+       if (!chart_base64_.empty()) {
+           html << "<h3 style=\"margin-top: 20px; color: #333;\">Equity Curve</h3>\n";
+           html << "<div style=\"width: 100%; max-width: 1000px; margin: 20px auto; text-align: center;\">\n";
+           html << "<img src=\"cid:equity_chart\" alt=\"Portfolio Equity Curve\" style=\"max-width: 100%; height: auto; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);\" />\n";
+           html << "</div>\n";
+       }
+
+       // Generate PnL by symbol chart - ONLY if show_yesterday_pnl is true
+       if (show_yesterday_pnl) {
+           pnl_by_symbol_base64_ = ChartGenerator::generate_pnl_by_symbol_chart(db, "LIVE_TREND_FOLLOWING", date);
+           if (!pnl_by_symbol_base64_.empty()) {
+               html << "<h3 style=\"margin-top: 20px; color: #333;\">Yesterday's PnL by Symbol</h3>\n";
+               html << "<div style=\"width: 100%; max-width: 800px; margin: 20px auto; text-align: center;\">\n";
+               html << "<img src=\"cid:pnl_by_symbol\" alt=\"PnL by Symbol\" style=\"max-width: 100%; height: auto; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);\" />\n";
+               html << "</div>\n";
+           }
+       }
+
+       // Generate daily PnL chart
+       daily_pnl_base64_ = ChartGenerator::generate_daily_pnl_chart(db, "LIVE_TREND_FOLLOWING", date, 30);
+       if (!daily_pnl_base64_.empty()) {
+           html << "<h3 style=\"margin-top: 20px; color: #333;\">Daily PnL (Last 30 Days)</h3>\n";
+           html << "<div style=\"width: 100%; max-width: 1000px; margin: 20px auto; text-align: center;\">\n";
+           html << "<img src=\"cid:daily_pnl\" alt=\"Daily PnL\" style=\"max-width: 100%; height: auto; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);\" />\n";
+           html << "</div>\n";
+       }
+
+       total_commissions_base64_ = ChartGenerator::generate_total_commissions_chart(db, "LIVE_TREND_FOLLOWING", date);
+       if (!total_commissions_base64_.empty()) {
+           html << "<h3 style=\"margin-top: 20px; color: #333;\">Cost per $1M Traded (Efficiency Metric)</h3>\n";
+           html << "<div style=\"width: 100%; max-width: 1000px; margin: 20px auto; text-align: center;\">\n";
+           html << "<img src=\"cid:total_commissions\" alt=\"Cost per $1M Traded\" style=\"max-width: 100%; height: auto; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);\" />\n";
+           html << "</div>\n";
+       }
+
+       margin_posted_base64_ = ChartGenerator::generate_margin_posted_chart(db, "LIVE_TREND_FOLLOWING", date);
+       if (!margin_posted_base64_.empty()) {
+           html << "<h3 style=\"margin-top: 20px; color: #333;\">Margin Posted</h3>\n";
+           html << "<div style=\"width: 100%; max-width: 1000px; margin: 20px auto; text-align: center;\">\n";
+           html << "<img src=\"cid:margin_posted\" alt=\"Margin Posted\" style=\"max-width: 100%; height: auto; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);\" />\n";
+           html << "</div>\n";
+       }
+
+       portfolio_composition_base64_ = ChartGenerator::generate_portfolio_composition_chart(
+           positions,
+           current_prices,
+           date
+       );
+       if (!portfolio_composition_base64_.empty()) {
+           html << "<h3 style=\"margin-top: 20px; color: #333;\">Portfolio Composition</h3>\n";
+           html << "<div style=\"width: 100%; max-width: 800px; margin: 20px auto; text-align: center;\">\n";
+           html << "<img src=\"cid:portfolio_composition\" alt=\"Portfolio Composition\" style=\"max-width: 100%; height: auto; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);\" />\n";
+           html << "</div>\n";
+       }
+
+       cumulative_pnl_by_symbol_base64_ = ChartGenerator::generate_cumulative_pnl_by_symbol_chart(
+           db,
+           "LIVE_TREND_FOLLOWING",
+           date
+       );
+       if (!cumulative_pnl_by_symbol_base64_.empty()) {
+           html << "<h3 style=\"margin-top: 20px; color: #333;\">Cumulative PnL by Symbol (All-Time)</h3>\n";
+           html << "<div style=\"width: 100%; max-width: 800px; margin: 20px auto; text-align: center;\">\n";
+           html << "<img src=\"cid:cumulative_pnl_by_symbol\" alt=\"Cumulative PnL by Symbol\" style=\"max-width: 100%; height: auto; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);\" />\n";
+           html << "</div>\n";
+       }
+   }
+
+   // Symbols Reference
+   html << "<h2>Symbols Reference</h2>\n";
+   if (db) {
+       try {
+           html << format_symbols_table_for_positions(positions, db, yesterday_date_str);
+       } catch (const std::exception& e) {
+           html << "<p>Error loading symbols data: " << e.what() << "</p>\n";
+       }
+   } else {
+       html << "<p>Database unavailable; symbols reference not included.</p>\n";
+   }
+
+   // Rollover Warning (if applicable)
+   if (db) {
+       const char* test_date_env = std::getenv("ROLLOVER_TEST_DATE");
+       std::string test_date = test_date_env ? std::string(test_date_env) : "";
+       html << format_rollover_warning(positions, date, db, test_date);
+   }
+
+   // Footer note
+   if (is_daily_strategy) {
+       html << "<div class=\"footer-note\">\n";
+       html << "<strong>Note:</strong> This strategy is based on daily OHLCV data. We currently only provide data for the front-month contract.<br><br>\n";
+       html << "All values reflect a trading start date of October 5th, 2025.<br><br>\n";
+       html << "The ES, NQ, and YM positions are micro contracts (MES, MNQ, and MYM), not the standard mini or full-size contracts. All values reflect this accurately, and this is only a mismatch in representation, which we are currently working on fixing.\n";
+       html << "</div>\n";
+   }
+
+   html << "<hr style=\"margin-top: 30px; border: none; border-top: 1px solid #ddd;\">\n";
+   html << "<p style=\"text-align: center; color: #999; font-size: 12px; margin-top: 20px; font-family: Arial, sans-serif;\">Generated by AlgoGator's Trade-ngin</p>\n";
+   html << "</div>\n";
+   html << "</body>\n</html>\n";
+
+   return html.str();
+}
+
 } //namespace trade ngin

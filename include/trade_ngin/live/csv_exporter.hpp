@@ -5,6 +5,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <vector>
 #include "trade_ngin/core/error.hpp"
 #include "trade_ngin/core/types.hpp"
 
@@ -19,6 +20,12 @@ class BaseStrategy;
 typedef BaseStrategy
     ITrendFollowingStrategy;  // Use base class for compatibility with both strategy types
 struct Position;
+
+// Type alias for per-strategy positions map
+using StrategyPositionsMap = std::unordered_map<std::string, std::unordered_map<std::string, Position>>;
+
+// Type alias for per-strategy strategies map
+using StrategyInstancesMap = std::unordered_map<std::string, ITrendFollowingStrategy*>;
 
 /**
  * @brief CSVExporter handles exporting trading positions to CSV files
@@ -41,7 +48,7 @@ public:
     /**
      * @brief Export current day positions to CSV (forward-looking, no PnL)
      *
-     * Creates a file named: DD-MM-YYYY_positions.csv
+     * Creates a file named: YYYY-MM-DD_positions.csv
      * Contains: symbol, quantity, market_price, notional, percentages, forecast, volatility, EMAs
      *
      * @param date Current trading date
@@ -62,9 +69,33 @@ public:
         const std::unordered_map<std::string, double>& symbol_commissions = {});
 
     /**
+     * @brief Export current day positions to CSV with per-strategy breakdown
+     *
+     * Creates a file named: YYYY-MM-DD_positions.csv
+     * Contains: strategy, symbol, quantity, market_price, notional, percentages, forecast, volatility, EMAs
+     *
+     * @param date Current trading date
+     * @param strategy_positions Per-strategy positions map
+     * @param market_prices Market prices for positions (Day T-1 close)
+     * @param portfolio_value Current portfolio value
+     * @param gross_notional Gross notional value
+     * @param net_notional Net notional value
+     * @param strategy_instances Map of strategy name to strategy instance for forecasts and EMAs
+     * @return Result containing filename on success, or error
+     */
+    Result<std::string> export_current_positions(
+        const std::chrono::system_clock::time_point& date,
+        const StrategyPositionsMap& strategy_positions,
+        const std::unordered_map<std::string, double>& market_prices,
+        double portfolio_value,
+        double gross_notional,
+        double net_notional,
+        const StrategyInstancesMap& strategy_instances);
+
+    /**
      * @brief Export yesterday's finalized positions to CSV (with PnL)
      *
-     * Creates a file named: DD-MM-YYYY_positions_asof_DD-MM-YYYY.csv
+     * Creates a file named: YYYY-MM-DD_positions_asof_YYYY-MM-DD.csv
      * Contains: symbol, quantity, entry_price, exit_price, realized_pnl
      *
      * @param date Current trading date (for filename)
@@ -84,6 +115,27 @@ public:
     );
 
     /**
+     * @brief Export yesterday's finalized positions to CSV with per-strategy breakdown
+     *
+     * Creates a file named: YYYY-MM-DD_positions_asof_YYYY-MM-DD.csv
+     * Contains: strategy, symbol, quantity, entry_price, exit_price, realized_pnl
+     *
+     * @param date Current trading date (for filename)
+     * @param yesterday_date Yesterday's date
+     * @param strategy_positions Per-strategy positions map
+     * @param entry_prices Day T-2 close prices (entry)
+     * @param exit_prices Day T-1 close prices (exit)
+     * @return Result containing filename on success, or error
+     */
+    Result<std::string> export_finalized_positions(
+        const std::chrono::system_clock::time_point& date,
+        const std::chrono::system_clock::time_point& yesterday_date,
+        const StrategyPositionsMap& strategy_positions,
+        const std::unordered_map<std::string, double>& entry_prices,
+        const std::unordered_map<std::string, double>& exit_prices
+    );
+
+    /**
      * @brief Set the output directory for CSV files
      * @param directory Path to output directory
      */
@@ -93,7 +145,7 @@ private:
     std::string output_directory_;
 
     /**
-     * @brief Format date for CSV filename (DD-MM-YYYY format)
+     * @brief Format date for CSV filename (YYYY-MM-DD format)
      * @param date Date to format
      * @return Formatted date string
      */
@@ -132,6 +184,13 @@ private:
      * @return Clean symbol without version
      */
     std::string get_clean_symbol(const std::string& symbol) const;
+
+    /**
+     * @brief Format strategy ID to display name
+     * @param strategy_id Strategy identifier (e.g., "TREND_FOLLOWING_FAST")
+     * @return Display name (e.g., "Trend Following Fast")
+     */
+    std::string format_strategy_display_name(const std::string& strategy_id) const;
 };
 
 }  // namespace trade_ngin
