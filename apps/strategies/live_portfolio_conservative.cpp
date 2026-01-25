@@ -685,7 +685,7 @@ int main(int argc, char* argv[]) {
 
         // Create Phase 4 CSV exporter
         INFO("Creating CSVExporter for Phase 4");
-        auto csv_exporter = std::make_unique<CSVExporter>(".");  // Current directory for output
+        auto csv_exporter = std::make_unique<CSVExporter>("apps/strategies");  // Output to apps/strategies
 
         // Load market data for daily processing
         INFO("Loading market data for daily processing...");
