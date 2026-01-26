@@ -1230,6 +1230,9 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
             return "<div class=\"metric\"><strong>" + label + ":</strong> <span" + value_class + ">" + formatted_value + "</span></div>\n";
         };
 
+        // Add Total Positions line
+        html << "<div class=\"metric\"><strong>Total Positions:</strong> " << position_data.size() << "</div>\n";
+
         // Extract and display metrics in the specified order:
         // 1. Daily Return (as percentage)
         // 2. Daily Unrealized PnL (Gross) (as dollar amount)
@@ -1357,6 +1360,9 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
     }
     std::sort(strategy_names.begin(), strategy_names.end());
 
+    // Track total positions across all strategies
+    int total_positions_count = 0;
+
     // Generate table for each strategy
     for (const auto& strategy_name : strategy_names) {
         const auto& positions = strategy_positions.at(strategy_name);
@@ -1387,6 +1393,9 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
         if (position_data.empty()) {
             continue;
         }
+
+        // Accumulate total positions count
+        total_positions_count += position_data.size();
 
         // Sort by symbol
         std::sort(position_data.begin(), position_data.end(),
@@ -1438,7 +1447,7 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
         std::string pnl_class = (strategy_total_pnl >= 0) ? "positive" : "negative";
         html << "<div style=\"font-size: 13px; color: #666; margin: 8px 0 20px 0; padding-left: 16px;\">\n";
         html << "<strong>Positions:</strong> " << position_data.size()
-             << " | <strong>Total PnL:</strong> <span class=\"" << pnl_class << "\">$"
+             << " | <strong>Total Realized PnL (Gross):</strong> <span class=\"" << pnl_class << "\">$"
              << format_with_commas(strategy_total_pnl, 2) << "</span>\n";
         html << "</div>\n";
     }
@@ -1467,6 +1476,9 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
 
             return "<div class=\"metric\"><strong>" + label + ":</strong> <span" + value_class + ">" + formatted_value + "</span></div>\n";
         };
+
+        // Add Total Positions line
+        html << "<div class=\"metric\"><strong>Total Positions:</strong> " << total_positions_count << "</div>\n";
 
         auto daily_return_it = strategy_metrics.find("Daily Return");
         if (daily_return_it != strategy_metrics.end()) {
@@ -2740,17 +2752,17 @@ std::string EmailSender::format_strategy_positions_tables(
     // Portfolio-wide summary
     html << "<div class=\"summary-stats\" style=\"margin-top: 20px; border-top: 2px solid #2c5aa0; padding-top: 15px;\">\n";
     html << "<h3 style=\"margin: 0 0 10px 0; color: #333;\">Portfolio Summary</h3>\n";
-    html << "<strong>Active Positions:</strong> " << portfolio_total_positions << "<br>\n";
+    html << "<div class=\"metric\"><strong>Active Positions:</strong> " << portfolio_total_positions << "</div>\n";
 
     // Add volatility if available in strategy metrics
     auto volatility_it = strategy_metrics.find("Volatility");
     if (volatility_it != strategy_metrics.end()) {
-        html << "<strong>Volatility:</strong> " << std::fixed << std::setprecision(2)
-             << volatility_it->second << "%<br>\n";
+        html << "<div class=\"metric\"><strong>Volatility:</strong> " << std::fixed << std::setprecision(2)
+             << volatility_it->second << "%</div>\n";
     }
 
-    html << "<strong>Total Notional:</strong> $" << format_with_commas(portfolio_total_notional) << "<br>\n";
-    html << "<strong>Total Margin Posted:</strong> $" << format_with_commas(portfolio_total_margin) << "\n";
+    html << "<div class=\"metric\"><strong>Total Notional:</strong> $" << format_with_commas(portfolio_total_notional) << "</div>\n";
+    html << "<div class=\"metric\"><strong>Total Margin Posted:</strong> $" << format_with_commas(portfolio_total_margin) << "</div>\n";
     html << "</div>\n";
 
     return html.str();
@@ -2958,10 +2970,10 @@ std::string EmailSender::format_strategy_executions_tables(
 
     // Portfolio-wide summary
     html << "<div class=\"summary-stats\" style=\"margin-top: 20px; border-top: 2px solid #2c5aa0; padding-top: 15px;\">\n";
-    html << "<h3 style=\"margin: 0 0 10px 0; color: #333;\">Executions Summary</h3>\n";
-    html << "<strong>Total Trades:</strong> " << portfolio_total_trades << "<br>\n";
-    html << "<strong>Total Notional Traded:</strong> $" << format_with_commas(portfolio_total_notional) << "<br>\n";
-    html << "<strong>Total Commissions:</strong> $" << format_with_commas(portfolio_total_commission) << "\n";
+    html << "<h3 style=\"margin: 0 0 10px 0; color: #333;\">Portfolio Summary</h3>\n";
+    html << "<div class=\"metric\"><strong>Total Trades:</strong> " << portfolio_total_trades << "</div>\n";
+    html << "<div class=\"metric\"><strong>Total Notional Traded:</strong> $" << format_with_commas(portfolio_total_notional) << "</div>\n";
+    html << "<div class=\"metric\"><strong>Total Commissions:</strong> $" << format_with_commas(portfolio_total_commission) << "</div>\n";
     html << "</div>\n";
 
     return html.str();
