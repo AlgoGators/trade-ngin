@@ -578,6 +578,16 @@ int main(int argc, char* argv[]) {
 
         INFO("Successfully created " + std::to_string(strategies.size()) + " strategies");
 
+        // Create map from strategy name to strategy instance for CSV export
+        trade_ngin::StrategyInstancesMap strategy_instances_map;
+        for (size_t i = 0; i < strategies.size(); ++i) {
+            auto* base_strategy = dynamic_cast<trade_ngin::BaseStrategy*>(strategies[i].get());
+            if (base_strategy != nullptr) {
+                strategy_instances_map[strategy_names[i]] = base_strategy;
+            }
+        }
+        INFO("Created strategy instances map with " + std::to_string(strategy_instances_map.size()) + " entries");
+
         // Get reference to first strategy for single-strategy compatibility (Phase 3 will fix this)
         auto tf_strategy = strategies[0];
 
@@ -2375,13 +2385,13 @@ int main(int argc, char* argv[]) {
             WARN("Exception querying commissions: " + std::string(e.what()));
         }
 
-        // Export current positions
+        // Export current positions with per-strategy breakdown
         std::string today_filename;
         auto current_export_result = csv_exporter->export_current_positions(
-            now, positions,
+            now, strategy_positions_map,
             previous_day_close_prices,  // Market prices (Day T-1 close)
-            current_portfolio_value, gross_notional, net_notional, tf_strategy_typed.get(),
-            symbol_commissions);
+            current_portfolio_value, gross_notional, net_notional,
+            strategy_instances_map);
 
         if (current_export_result.is_ok()) {
             today_filename = current_export_result.value();
@@ -2391,17 +2401,16 @@ int main(int argc, char* argv[]) {
                   std::string(current_export_result.error()->what()));
         }
 
-        // Export yesterday's finalized positions (if not first trading day)
+        // Export yesterday's finalized positions with per-strategy breakdown (if not first trading day)
         std::string yesterday_filename;
-        if (!is_first_trading_day && !previous_positions.empty()) {
-            INFO("Exporting yesterday's finalized positions...");
+        if (!is_first_trading_day && !previous_strategy_positions.empty()) {
+            INFO("Exporting yesterday's finalized positions with per-strategy breakdown...");
 
             auto yesterday_time = now - std::chrono::hours(24);
 
             auto finalized_export_result = csv_exporter->export_finalized_positions(
                 now, yesterday_time,
-                nullptr,  // TODO: Fix IDatabase inheritance
-                previous_positions,
+                previous_strategy_positions,
                 two_days_ago_close_prices,  // Entry prices (T-2)
                 previous_day_close_prices   // Exit prices (T-1)
             );
