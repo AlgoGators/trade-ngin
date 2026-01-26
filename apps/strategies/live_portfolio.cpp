@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <chrono>
 #include <ctime>
+#include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -692,9 +693,12 @@ int main(int argc, char* argv[]) {
         auto execution_manager = std::make_unique<ExecutionManager>();
         auto margin_manager = std::make_unique<MarginManager>(registry);
 
-        // Create Phase 4 CSV exporter
+        // Create Phase 4 CSV exporter with portfolio-specific directory
         INFO("Creating CSVExporter for Phase 4");
-        auto csv_exporter = std::make_unique<CSVExporter>("apps/strategies");  // Output to apps/strategies
+        std::string csv_output_dir = "apps/strategies/results/" + portfolio_id;
+        std::filesystem::create_directories(csv_output_dir);
+        INFO("CSV output directory: " + csv_output_dir);
+        auto csv_exporter = std::make_unique<CSVExporter>(csv_output_dir);
 
         // Load market data for daily processing
         INFO("Loading market data for daily processing...");
