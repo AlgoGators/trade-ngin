@@ -555,11 +555,6 @@ nlohmann::json ConfigManager::create_default_strategy_config() const {
     config["max_drawdown"] = 0.3;              // 30% max drawdown
     config["var_limit"] = 0.1;                 // 10% VaR limit
     config["correlation_limit"] = 0.7;         // 70% correlation limit
-    config["save_executions"] = true;
-    config["save_signals"] = true;
-    config["save_positions"] = true;
-    config["signals_table"] = "trading.signals";
-    config["positions_table"] = "trading.positions";
     config["version"] = "1.0.0";
 
     return config;

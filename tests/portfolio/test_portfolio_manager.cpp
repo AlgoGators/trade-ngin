@@ -81,8 +81,6 @@ protected:
         strategy_config.max_leverage = 2.0;
         strategy_config.asset_classes = {AssetClass::EQUITIES};
         strategy_config.frequencies = {DataFrequency::DAILY};
-        strategy_config.save_positions = true;
-        strategy_config.save_signals = true;
 
         // Add trading parameters for the symbols
         for (const auto& symbol : symbols) {

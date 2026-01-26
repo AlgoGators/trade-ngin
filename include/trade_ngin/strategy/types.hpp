@@ -20,21 +20,21 @@ enum class StrategyState { INITIALIZED, RUNNING, PAUSED, STOPPED, ERROR };
  * @brief PnL accounting method for different instrument types
  */
 enum class PnLAccountingMethod {
-    REALIZED_ONLY,        // Everything is realized (futures marked-to-market)
-    UNREALIZED_ONLY,      // Everything is unrealized until closed (stocks)
-    MIXED                 // Both realized and unrealized (options, complex instruments)
+    REALIZED_ONLY,    // Everything is realized (futures marked-to-market)
+    UNREALIZED_ONLY,  // Everything is unrealized until closed (stocks)
+    MIXED             // Both realized and unrealized (options, complex instruments)
 };
 
 /**
  * @brief Modular PnL accounting structure
  */
 struct PnLAccounting {
-    double total_realized_pnl{0.0};     // Total realized PnL across all positions
-    double total_unrealized_pnl{0.0};   // Total unrealized PnL across all positions
-    double daily_realized_pnl{0.0};     // Daily realized PnL change
-    double daily_unrealized_pnl{0.0};   // Daily unrealized PnL change
+    double total_realized_pnl{0.0};    // Total realized PnL across all positions
+    double total_unrealized_pnl{0.0};  // Total unrealized PnL across all positions
+    double daily_realized_pnl{0.0};    // Daily realized PnL change
+    double daily_unrealized_pnl{0.0};  // Daily unrealized PnL change
     PnLAccountingMethod method{PnLAccountingMethod::MIXED};  // Accounting method
-    
+
     /**
      * @brief Get total PnL based on accounting method
      */
@@ -49,7 +49,7 @@ struct PnLAccounting {
         }
         return 0.0;
     }
-    
+
     /**
      * @brief Get daily PnL based on accounting method
      */
@@ -64,7 +64,7 @@ struct PnLAccounting {
         }
         return 0.0;
     }
-    
+
     /**
      * @brief Reset daily PnL counters (call at start of new day)
      */
@@ -72,7 +72,7 @@ struct PnLAccounting {
         daily_realized_pnl = 0.0;
         daily_unrealized_pnl = 0.0;
     }
-    
+
     /**
      * @brief Add realized PnL
      */
@@ -80,7 +80,7 @@ struct PnLAccounting {
         total_realized_pnl += pnl;
         daily_realized_pnl += pnl;
     }
-    
+
     /**
      * @brief Add unrealized PnL
      */
@@ -88,7 +88,7 @@ struct PnLAccounting {
         total_unrealized_pnl += pnl;
         daily_unrealized_pnl += pnl;
     }
-    
+
     /**
      * @brief Set unrealized PnL (for mark-to-market)
      */
@@ -135,13 +135,6 @@ struct StrategyConfig : public ConfigBase {
     std::vector<AssetClass> asset_classes;   // Asset classes to trade
     std::vector<DataFrequency> frequencies;  // Data frequencies to use
 
-    // Persistence
-    bool save_executions{false};  // Whether to save signals to database
-    bool save_signals{false};     // Whether to save signals to database
-    bool save_positions{false};   // Whether to save positions to database
-    std::string signals_table;    // Table name for signals
-    std::string positions_table;  // Table name for positions
-
     // Configuration metadata
     std::string version{"1.0.0"};  // Config version for migration
 
@@ -168,11 +161,6 @@ struct StrategyConfig : public ConfigBase {
             j["frequencies"].push_back(static_cast<int>(freq));
         }
 
-        j["save_executions"] = save_executions;
-        j["save_signals"] = save_signals;
-        j["save_positions"] = save_positions;
-        j["signals_table"] = signals_table;
-        j["positions_table"] = positions_table;
         j["version"] = version;
 
         return j;
@@ -212,16 +200,6 @@ struct StrategyConfig : public ConfigBase {
             }
         }
 
-        if (j.contains("save_executions"))
-            save_executions = j.at("save_executions").get<bool>();
-        if (j.contains("save_signals"))
-            save_signals = j.at("save_signals").get<bool>();
-        if (j.contains("save_positions"))
-            save_positions = j.at("save_positions").get<bool>();
-        if (j.contains("signals_table"))
-            signals_table = j.at("signals_table").get<std::string>();
-        if (j.contains("positions_table"))
-            positions_table = j.at("positions_table").get<std::string>();
         if (j.contains("version"))
             version = j.at("version").get<std::string>();
     }

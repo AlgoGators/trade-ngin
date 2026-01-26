@@ -423,9 +423,6 @@ int main(int argc, char* argv[]) {
         base_strategy_config.frequencies = {trade_ngin::DataFrequency::DAILY};
         base_strategy_config.max_drawdown = 0.4;
         base_strategy_config.max_leverage = 4.0;
-        base_strategy_config.save_positions = false;  // Manual position saving
-        base_strategy_config.save_signals = false;
-        base_strategy_config.save_executions = false;
 
         // Add position limits and costs for all symbols
         for (const auto& symbol : symbols) {
@@ -586,7 +583,8 @@ int main(int argc, char* argv[]) {
                 strategy_instances_map[strategy_names[i]] = base_strategy;
             }
         }
-        INFO("Created strategy instances map with " + std::to_string(strategy_instances_map.size()) + " entries");
+        INFO("Created strategy instances map with " +
+             std::to_string(strategy_instances_map.size()) + " entries");
 
         // Get reference to first strategy for single-strategy compatibility (Phase 3 will fix this)
         auto tf_strategy = strategies[0];
@@ -2393,8 +2391,7 @@ int main(int argc, char* argv[]) {
         auto current_export_result = csv_exporter->export_current_positions(
             now, strategy_positions_map,
             previous_day_close_prices,  // Market prices (Day T-1 close)
-            current_portfolio_value, gross_notional, net_notional,
-            strategy_instances_map);
+            current_portfolio_value, gross_notional, net_notional, strategy_instances_map);
 
         if (current_export_result.is_ok()) {
             today_filename = current_export_result.value();
@@ -2404,7 +2401,8 @@ int main(int argc, char* argv[]) {
                   std::string(current_export_result.error()->what()));
         }
 
-        // Export yesterday's finalized positions with per-strategy breakdown (if not first trading day)
+        // Export yesterday's finalized positions with per-strategy breakdown (if not first trading
+        // day)
         std::string yesterday_filename;
         if (!is_first_trading_day && !previous_strategy_positions.empty()) {
             INFO("Exporting yesterday's finalized positions with per-strategy breakdown...");
@@ -2412,8 +2410,7 @@ int main(int argc, char* argv[]) {
             auto yesterday_time = now - std::chrono::hours(24);
 
             auto finalized_export_result = csv_exporter->export_finalized_positions(
-                now, yesterday_time,
-                previous_strategy_positions,
+                now, yesterday_time, previous_strategy_positions,
                 two_days_ago_close_prices,  // Entry prices (T-2)
                 previous_day_close_prices   // Exit prices (T-1)
             );
@@ -2700,19 +2697,20 @@ int main(int argc, char* argv[]) {
                     // above So we don't need to create it here anymore
 
                     // Generate email body with is_daily_strategy flag set to true and current
-                    // prices. Pass strategy_positions_map and all_strategy_executions for per-strategy tables.
+                    // prices. Pass strategy_positions_map and all_strategy_executions for
+                    // per-strategy tables.
                     std::string email_body = email_sender->generate_trading_report_body(
-                        strategy_positions_map,         // Per-strategy positions for grouped tables
+                        strategy_positions_map,  // Per-strategy positions for grouped tables
                         positions,
                         risk_eval.is_ok() ? std::make_optional(risk_eval.value()) : std::nullopt,
                         strategy_metrics, all_strategy_executions, date_str,
-                        portfolio_id,                   // Portfolio name for email header
-                        true,                           // is_daily_strategy
-                        previous_day_close_prices,      // Pass Day T-1 close prices for today's
-                                                        // positions
-                        db,                             // Pass database for symbols reference table
-                        previous_strategy_positions,    // Per-strategy yesterday's positions for
-                                                        // grouped tables
+                        portfolio_id,                 // Portfolio name for email header
+                        true,                         // is_daily_strategy
+                        previous_day_close_prices,    // Pass Day T-1 close prices for today's
+                                                      // positions
+                        db,                           // Pass database for symbols reference table
+                        previous_strategy_positions,  // Per-strategy yesterday's positions for
+                                                      // grouped tables
                         yesterday_exit_prices,   // Day T-1 close prices for yesterday's positions
                         yesterday_entry_prices,  // Day T-2 close prices for yesterday's positions
                         yesterday_daily_metrics_final  // Yesterday's metrics
