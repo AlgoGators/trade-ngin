@@ -1,6 +1,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <nlohmann/json.hpp>
 #include "trade_ngin/backtest/backtest_coordinator.hpp"
 #include "trade_ngin/backtest/transaction_cost_analysis.hpp"
 #include "trade_ngin/core/logger.hpp"
@@ -13,7 +14,6 @@
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
 #include "trade_ngin/strategy/trend_following_fast.hpp"
-#include <nlohmann/json.hpp>
 
 using namespace trade_ngin;
 using namespace trade_ngin::backtest;
@@ -23,7 +23,7 @@ int main() {
         // Reset all singletons to ensure clean state between runs
         StateManager::reset_instance();
         Logger::reset_for_tests();
-        
+
         // Initialize logger
         auto& logger = Logger::instance();
         LoggerConfig logger_config;
@@ -31,7 +31,7 @@ int main() {
         logger_config.destination = LogDestination::BOTH;
         logger_config.log_directory = "logs";
         logger_config.filename_prefix = "bt_portfolio";
-        
+
         // Determine config file name (default to config.json)
         std::string config_filename = "./config.json";
         logger.initialize(logger_config);
@@ -161,13 +161,14 @@ int main() {
         std::string portfolio_id = "BASE_PORTFOLIO";
         if (config_json.contains("portfolio_id")) {
             portfolio_id = config_json["portfolio_id"].get<std::string>();
-        } else if (config_json.contains("portfolio") && config_json["portfolio"].contains("portfolio_id")) {
+        } else if (config_json.contains("portfolio") &&
+                   config_json["portfolio"].contains("portfolio_id")) {
             portfolio_id = config_json["portfolio"]["portfolio_id"].get<std::string>();
         }
         INFO("Using portfolio_id: " + portfolio_id);
 
         trade_ngin::backtest::BacktestConfig config;
-        
+
         // Set portfolio_id in backtest config BEFORE creating engine
         config.portfolio_id = portfolio_id;
 
@@ -220,9 +221,10 @@ int main() {
         config.portfolio_config.initial_capital = 500000.0;  // $500k
         config.portfolio_config.use_risk_management = true;
         config.portfolio_config.use_optimization = true;
-        
-        // Set strategy_config.initial_capital to match portfolio_config.initial_capital to avoid confusion
-        // (This is stored in run_metadata for reference, but portfolio_config.initial_capital is what's actually used)
+
+        // Set strategy_config.initial_capital to match portfolio_config.initial_capital to avoid
+        // confusion (This is stored in run_metadata for reference, but
+        // portfolio_config.initial_capital is what's actually used)
         config.strategy_config.initial_capital = config.portfolio_config.initial_capital;
 
         std::cout << "Retrieved " << config.strategy_config.symbols.size() << " symbols"
@@ -259,8 +261,8 @@ int main() {
 
         // Initialize backtest coordinator
         // Right before creating BacktestCoordinator
-        std::cerr << "Before BacktestCoordinator: initialized=" << Logger::instance().is_initialized()
-                  << std::endl;
+        std::cerr << "Before BacktestCoordinator: initialized="
+                  << Logger::instance().is_initialized() << std::endl;
         INFO("Initializing backtest coordinator...");
 
         // Create BacktestCoordinatorConfig from BacktestConfig
@@ -275,8 +277,8 @@ int main() {
             db, &registry, coord_config);
 
         // After creating BacktestCoordinator
-        std::cerr << "After BacktestCoordinator: initialized=" << Logger::instance().is_initialized()
-                  << std::endl;
+        std::cerr << "After BacktestCoordinator: initialized="
+                  << Logger::instance().is_initialized() << std::endl;
 
         // Setup portfolio configuration
         trade_ngin::PortfolioConfig portfolio_config;
@@ -296,16 +298,18 @@ int main() {
         std::unordered_map<std::string, double> strategy_allocations;
         std::unordered_map<std::string, nlohmann::json> strategy_configs;
 
-        if (!config_json.contains("portfolio") || !config_json["portfolio"].contains("strategies")) {
+        if (!config_json.contains("portfolio") ||
+            !config_json["portfolio"].contains("strategies")) {
             ERROR("No portfolio.strategies section found in config.json");
             return 1;
         }
 
         auto strategies_config = config_json["portfolio"]["strategies"];
-        
+
         // Step 1: Load default allocations from config.json
         for (const auto& [strategy_id, strategy_def] : strategies_config.items()) {
-            if (strategy_def.contains("enabled_backtest") && strategy_def["enabled_backtest"].get<bool>()) {
+            if (strategy_def.contains("enabled_backtest") &&
+                strategy_def["enabled_backtest"].get<bool>()) {
                 double default_allocation = strategy_def.value("default_allocation", 0.5);
                 strategy_allocations[strategy_id] = default_allocation;
                 strategy_configs[strategy_id] = strategy_def;
@@ -334,7 +338,7 @@ int main() {
         // Uncomment the lines below to set 90-10 allocation:
         // strategy_allocations["TREND_FOLLOWING"] = 0.9;      // 90% normal trend following
         // strategy_allocations["TREND_FOLLOWING_FAST"] = 0.1;  // 10% fast trend following
-        
+
         // Re-normalize after override to ensure they sum to 1.0 (uncomment if using override above)
         // total_allocation = 0.0;
         // for (const auto& [_, alloc] : strategy_allocations) {
@@ -358,9 +362,6 @@ int main() {
         base_strategy_config.frequencies = {config.strategy_config.data_freq};
         base_strategy_config.max_drawdown = 0.4;
         base_strategy_config.max_leverage = 4.0;
-        base_strategy_config.save_positions = false;
-        base_strategy_config.save_signals = false;
-        base_strategy_config.save_executions = false;
 
         // Add position limits and contract sizes
         for (const auto& symbol : config.strategy_config.symbols) {
@@ -371,13 +372,13 @@ int main() {
         for (const auto& strategy_id : strategy_names) {
             const auto& strategy_def = strategy_configs[strategy_id];
             std::string strategy_type = strategy_def.value("type", "");
-            
+
             // Calculate capital allocation for this strategy
             double allocation = strategy_allocations[strategy_id];
-            base_strategy_config.capital_allocation = 
+            base_strategy_config.capital_allocation =
                 config.portfolio_config.initial_capital.as_double() * allocation;
 
-            INFO("Creating strategy: " + strategy_id + " (type: " + strategy_type + 
+            INFO("Creating strategy: " + strategy_id + " (type: " + strategy_type +
                  ", allocation: " + std::to_string(allocation * 100.0) + "%)");
 
             std::shared_ptr<trade_ngin::StrategyInterface> strategy;
@@ -394,7 +395,8 @@ int main() {
                     if (cfg.contains("ema_windows")) {
                         trend_config.ema_windows.clear();
                         for (const auto& window : cfg["ema_windows"]) {
-                            trend_config.ema_windows.push_back({window[0].get<int>(), window[1].get<int>()});
+                            trend_config.ema_windows.push_back(
+                                {window[0].get<int>(), window[1].get<int>()});
                         }
                     }
                     trend_config.vol_lookback_short = cfg.value("vol_lookback_short", 32);
@@ -402,7 +404,8 @@ int main() {
                 }
                 // Set default FDM if not in config
                 if (trend_config.fdm.empty()) {
-                    trend_config.fdm = {{1, 1.0}, {2, 1.03}, {3, 1.08}, {4, 1.13}, {5, 1.19}, {6, 1.26}};
+                    trend_config.fdm = {{1, 1.0},  {2, 1.03}, {3, 1.08},
+                                        {4, 1.13}, {5, 1.19}, {6, 1.26}};
                 }
 
                 strategy = std::make_shared<trade_ngin::TrendFollowingStrategy>(
@@ -416,11 +419,13 @@ int main() {
                     trend_config.weight = cfg.value("weight", 0.03);
                     trend_config.risk_target = cfg.value("risk_target", 0.25);
                     trend_config.idm = cfg.value("idm", 2.5);
-                    trend_config.use_position_buffering = cfg.value("use_position_buffering", false);
+                    trend_config.use_position_buffering =
+                        cfg.value("use_position_buffering", false);
                     if (cfg.contains("ema_windows")) {
                         trend_config.ema_windows.clear();
                         for (const auto& window : cfg["ema_windows"]) {
-                            trend_config.ema_windows.push_back({window[0].get<int>(), window[1].get<int>()});
+                            trend_config.ema_windows.push_back(
+                                {window[0].get<int>(), window[1].get<int>()});
                         }
                     }
                     trend_config.vol_lookback_short = cfg.value("vol_lookback_short", 16);
@@ -428,7 +433,8 @@ int main() {
                 }
                 // Set default FDM if not in config
                 if (trend_config.fdm.empty()) {
-                    trend_config.fdm = {{1, 1.0}, {2, 1.03}, {3, 1.08}, {4, 1.13}, {5, 1.19}, {6, 1.26}};
+                    trend_config.fdm = {{1, 1.0},  {2, 1.03}, {3, 1.08},
+                                        {4, 1.13}, {5, 1.19}, {6, 1.26}};
                 }
 
                 strategy = std::make_shared<trade_ngin::TrendFollowingFastStrategy>(
@@ -442,14 +448,16 @@ int main() {
             // Initialize strategy
             auto init_result = strategy->initialize();
             if (init_result.is_error()) {
-                ERROR("Failed to initialize strategy " + strategy_id + ": " + init_result.error()->what());
+                ERROR("Failed to initialize strategy " + strategy_id + ": " +
+                      init_result.error()->what());
                 return 1;
             }
 
             // Start strategy
             auto start_result = strategy->start();
             if (start_result.is_error()) {
-                ERROR("Failed to start strategy " + strategy_id + ": " + start_result.error()->what());
+                ERROR("Failed to start strategy " + strategy_id + ": " +
+                      start_result.error()->what());
                 return 1;
             }
 
@@ -458,25 +466,27 @@ int main() {
         }
 
         // Create portfolio manager and add all strategies
-        INFO("Creating portfolio manager with " + std::to_string(strategies.size()) + " strategies...");
+        INFO("Creating portfolio manager with " + std::to_string(strategies.size()) +
+             " strategies...");
         auto portfolio = std::make_shared<trade_ngin::PortfolioManager>(portfolio_config);
-        
+
         for (size_t i = 0; i < strategies.size(); ++i) {
             const auto& strategy = strategies[i];
             const std::string& strategy_id = strategy_names[i];
             double allocation = strategy_allocations[strategy_id];
 
-            auto add_result = portfolio->add_strategy(
-                strategy, allocation, 
-                config.portfolio_config.use_optimization,
-                config.portfolio_config.use_risk_management);
-            
+            auto add_result = portfolio->add_strategy(strategy, allocation,
+                                                      config.portfolio_config.use_optimization,
+                                                      config.portfolio_config.use_risk_management);
+
             if (add_result.is_error()) {
-                ERROR("Failed to add strategy " + strategy_id + " to portfolio: " + add_result.error()->what());
+                ERROR("Failed to add strategy " + strategy_id +
+                      " to portfolio: " + add_result.error()->what());
                 return 1;
             }
-            
-            INFO("Added strategy " + strategy_id + " with allocation " + std::to_string(allocation * 100.0) + "%");
+
+            INFO("Added strategy " + strategy_id + " with allocation " +
+                 std::to_string(allocation * 100.0) + "%");
         }
 
         // Run the backtest
@@ -487,11 +497,8 @@ int main() {
              std::to_string(std::chrono::system_clock::to_time_t(config.strategy_config.end_date)));
 
         auto result = coordinator->run_portfolio(
-            portfolio,
-            config.strategy_config.symbols,
-            config.strategy_config.start_date,
-            config.strategy_config.end_date,
-            config.strategy_config.asset_class,
+            portfolio, config.strategy_config.symbols, config.strategy_config.start_date,
+            config.strategy_config.end_date, config.strategy_config.asset_class,
             config.strategy_config.data_freq);
 
         if (result.is_error()) {
@@ -529,16 +536,14 @@ int main() {
 
             // Save portfolio-level results with per-strategy attribution
             auto save_result = coordinator->save_portfolio_results_to_db(
-                backtest_results,
-                strategy_names,
-                strategy_allocations,
-                portfolio,
-                portfolio_config_json
-            );
-            
+                backtest_results, strategy_names, strategy_allocations, portfolio,
+                portfolio_config_json);
+
             if (save_result.is_error()) {
-                std::cerr << "Failed to save portfolio backtest results to database: " << save_result.error()->what() << std::endl;
-                ERROR("Failed to save portfolio backtest results to database: " + std::string(save_result.error()->what()));
+                std::cerr << "Failed to save portfolio backtest results to database: "
+                          << save_result.error()->what() << std::endl;
+                ERROR("Failed to save portfolio backtest results to database: " +
+                      std::string(save_result.error()->what()));
             } else {
                 INFO("Successfully saved portfolio backtest results to database");
             }
@@ -550,7 +555,7 @@ int main() {
         // Explicitly reset the coordinator to trigger cleanup before program exit
         INFO("Cleaning up backtest coordinator...");
         coordinator.reset();
-        
+
         INFO("Backtest application completed successfully");
 
         std::cerr << "At end of main: initialized=" << Logger::instance().is_initialized()

@@ -31,11 +31,6 @@ public:
                   config.costs = {{"AAPL", 0.005}};
                   config.asset_classes = {AssetClass::EQUITIES};
                   config.frequencies = {DataFrequency::DAILY};
-                  config.save_executions = false;
-                  config.save_signals = false;
-                  config.save_positions = false;
-                  config.signals_table = "";
-                  config.positions_table = "";
                   return config;
               }(),
               std::make_shared<MockPostgresDatabase>("postgresql://localhost:5432/test_db")),

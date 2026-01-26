@@ -172,7 +172,8 @@ public:
 
     /**
      * @brief Set backtest mode for this strategy
-     * @param is_backtest True if running in backtest mode (stores daily PnL), false for live (cumulative PnL)
+     * @param is_backtest True if running in backtest mode (stores daily PnL), false for live
+     * (cumulative PnL)
      */
     void set_backtest_mode(bool is_backtest) override;
 
@@ -192,9 +193,6 @@ public:
 protected:
     // Protected methods for derived classes
     virtual Result<void> validate_config() const;
-    virtual Result<void> save_signals(const std::unordered_map<std::string, double>& signals);
-    virtual Result<void> save_positions();
-    virtual Result<void> save_executions(const ExecutionReport& exec);
 
     // Data members
     std::string id_;
@@ -212,7 +210,7 @@ protected:
 
     std::shared_ptr<PostgresDatabase> db_;
     mutable std::mutex mutex_;
-    
+
     // Backtest mode flag
     bool is_backtest_mode_{false};
 

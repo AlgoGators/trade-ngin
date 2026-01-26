@@ -128,15 +128,7 @@ Result<void> BaseStrategy::start() {
 }
 
 Result<void> BaseStrategy::stop() {
-    if (config_.save_positions) {
-        auto save_result = save_positions();
-        if (save_result.is_error()) {
-            WARN("Error saving positions on stop: " + save_result.error()->to_string());
-        }
-    }
-
     running_ = false;
-
     return transition_state(StrategyState::STOPPED);
 }
 
@@ -203,15 +195,6 @@ Result<void> BaseStrategy::on_execution(const ExecutionReport& report) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     try {
-        // First save execution to database if configured
-        if (config_.save_executions) {
-            auto save_result = save_executions(report);
-            if (save_result.is_error()) {
-                return save_result;  // Return early if save fails
-            }
-        }
-
-        // Update position
         auto& pos = positions_[report.symbol];
 
         // Calculate realized PnL if closing position
@@ -286,14 +269,6 @@ Result<void> BaseStrategy::on_execution(const ExecutionReport& report) {
                 (metrics_.win_rate * (metrics_.total_trades - 1) + 1.0) / metrics_.total_trades;
         }
 
-        // Save updated position if configured
-        if (config_.save_positions) {
-            auto pos_save_result = save_positions();
-            if (pos_save_result.is_error()) {
-                ERROR("Failed to save positions: " + pos_save_result.error()->to_string());
-            }
-        }
-
         return Result<void>();
 
     } catch (const std::exception& e) {
@@ -313,13 +288,6 @@ Result<void> BaseStrategy::on_signal(const std::string& symbol, double signal) {
 
     // Store signal
     last_signals_[symbol] = signal;
-
-    // Only save to database if configured
-    if (config_.save_signals) {
-        std::unordered_map<std::string, double> signals;
-        signals[symbol] = signal;
-        return save_signals(signals);
-    }
 
     return Result<void>();
 }
@@ -369,11 +337,6 @@ Result<void> BaseStrategy::update_position(const std::string& symbol, const Posi
     }
 
     positions_[symbol] = position;
-
-    // Save to database if configured
-    if (config_.save_positions) {
-        return save_positions();
-    }
 
     return Result<void>();
 }
@@ -459,105 +422,6 @@ Result<void> BaseStrategy::validate_config() const {
     }
 
     return Result<void>();
-}
-
-Result<void> BaseStrategy::save_executions(const ExecutionReport& exec) {
-    try {
-        if (!db_) {
-            return Result<void>();
-        }
-        auto result =
-            db_->store_executions({exec}, id_, id_, "BASE_PORTFOLIO", "trading.executions");
-        if (result.is_error()) {
-            return make_error<void>(
-                ErrorCode::DATABASE_ERROR,
-                "Failed to save execution: " + std::string(result.error()->what()), "BaseStrategy");
-        }
-        return Result<void>();
-    } catch (const std::exception& e) {
-        return make_error<void>(ErrorCode::DATABASE_ERROR,
-                                "Failed to save execution: " + std::string(e.what()),
-                                "BaseStrategy");
-    }
-}
-
-Result<void> BaseStrategy::save_positions() {
-    try {
-        if (!db_) {
-            return Result<void>();
-        }
-
-        std::vector<Position> pos_vec;
-        pos_vec.reserve(positions_.size());
-        for (const auto& [symbol, pos] : positions_) {
-            pos_vec.push_back(pos);
-        }
-
-        if (pos_vec.empty()) {
-            return Result<void>();
-        }
-
-        // Use a retry-with-backoff pattern
-        for (int attempt = 0; attempt < 3; attempt++) {
-            // Get a fresh connection each time
-            auto conn_guard =
-                DatabasePool::instance().acquire_connection(1, std::chrono::milliseconds(500));
-            auto db = conn_guard.get();
-
-            if (!db) {
-                if (attempt < 2) {
-                    // Wait before retry
-                    std::this_thread::sleep_for(std::chrono::milliseconds(50));
-                    continue;
-                }
-                return make_error<void>(ErrorCode::DATABASE_ERROR,
-                                        "Failed to acquire database connection after retries",
-                                        "BaseStrategy");
-            }
-
-            auto result =
-                db->store_positions(pos_vec, id_, id_, "BASE_PORTFOLIO", "trading.positions");
-            if (result.is_ok()) {
-                return result;
-            }
-
-            // Only retry on connection/busy errors
-            if (result.error()->code() != ErrorCode::DATABASE_ERROR) {
-                return result;
-            }
-
-            std::this_thread::sleep_for(std::chrono::milliseconds(100 * (1 << attempt)));
-        }
-
-        return make_error<void>(ErrorCode::DATABASE_ERROR,
-                                "Failed to save positions after multiple attempts", "BaseStrategy");
-
-    } catch (const std::exception& e) {
-        // Detailed error message for logging
-        ERROR("Failed to save positions: " + std::string(e.what()) + ". Strategy ID: " + id_);
-        return make_error<void>(ErrorCode::DATABASE_ERROR,
-                                "Failed to save positions: " + std::string(e.what()),
-                                "BaseStrategy");
-    }
-}
-
-Result<void> BaseStrategy::save_signals(const std::unordered_map<std::string, double>& signals) {
-    try {
-        if (!db_) {
-            return make_error<void>(ErrorCode::CONNECTION_ERROR, "Database interface is null",
-                                    "BaseStrategy");
-        }
-        // Clear any existing signals before saving new ones
-        last_signals_.clear();
-        for (const auto& [symbol, signal] : signals) {
-            last_signals_[symbol] = signal;
-        }
-        return db_->store_signals(signals, id_, id_, "BASE_PORTFOLIO",
-                                  std::chrono::system_clock::now(), "trading.signals");
-    } catch (const std::exception& e) {
-        return make_error<void>(ErrorCode::DATABASE_ERROR,
-                                "Failed to save signals: " + std::string(e.what()), "BaseStrategy");
-    }
 }
 
 Result<void> BaseStrategy::update_metrics() {

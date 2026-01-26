@@ -29,8 +29,6 @@ protected:
         strategy_config_.max_leverage = 4.0;
         strategy_config_.asset_classes = {AssetClass::FUTURES};
         strategy_config_.frequencies = {DataFrequency::DAILY};
-        strategy_config_.save_signals = true;
-        strategy_config_.save_positions = true;
 
         // Configure risk limits
         risk_limits_.max_position_size = 1000.0;
@@ -243,8 +241,8 @@ protected:
 //     // Start strategy
 //     ASSERT_TRUE(strategy_->start().is_ok());
 //
-//     // Process valid data first to build history - in smaller chunks to identify any specific issues
-//     for (size_t i = 0; i < test_data.size(); i += 25) {  // Process in smaller chunks
+//     // Process valid data first to build history - in smaller chunks to identify any specific
+//     issues for (size_t i = 0; i < test_data.size(); i += 25) {  // Process in smaller chunks
 //         size_t end_idx = std::min(i + 25, test_data.size());
 //         std::vector<Bar> chunk(test_data.begin() + i, test_data.begin() + end_idx);
 //         auto result = strategy_->on_data(chunk);
@@ -262,7 +260,8 @@ protected:
 //     std::vector<Bar> empty_data;
 //     result = strategy_->on_data(empty_data);
 //     EXPECT_TRUE(result.is_ok()) << "Failed to process empty data: "
-//                                 << (result.is_error() ? result.error()->what() : "Unknown error");
+//                                 << (result.is_error() ? result.error()->what() : "Unknown
+//                                 error");
 //
 //     // Test with missing fields (only symbol set)
 //     Bar missing_fields;
@@ -461,13 +460,11 @@ protected:
 //     for (int i = 0; i < 30; i++) {
 //         Bar bar = volatile_latest;
 //         bar.timestamp = volatile_latest.timestamp + std::chrono::hours(i + 1);
-//         double random = (static_cast<double>(rand()) / RAND_MAX - 0.5) * 0.05;  // High volatility
-//         bar.close *= (1.0 + random);
-//         bar.open = bar.close * (1.0 + (static_cast<double>(rand()) / RAND_MAX - 0.5) * 0.02);
-//         bar.high = std::max(bar.open, bar.close) * 1.02;
-//         bar.low = std::min(bar.open, bar.close) * 0.98;
-//         bar.volume = 120000 + (rand() % 50000);
-//         volatile_data.push_back(bar);
+//         double random = (static_cast<double>(rand()) / RAND_MAX - 0.5) * 0.05;  // High
+//         volatility bar.close *= (1.0 + random); bar.open = bar.close * (1.0 +
+//         (static_cast<double>(rand()) / RAND_MAX - 0.5) * 0.02); bar.high = std::max(bar.open,
+//         bar.close) * 1.02; bar.low = std::min(bar.open, bar.close) * 0.98; bar.volume = 120000 +
+//         (rand() % 50000); volatile_data.push_back(bar);
 //     }
 //
 //     // Create more stable data for NQ
@@ -661,7 +658,8 @@ protected:
 //     for (int i = 0; i < 500; i++) {
 //         Bar bar;
 //         bar.symbol = "ES";
-//         bar.timestamp = now - std::chrono::hours(24 * (700 - i));  // Start with earliest timestamps
+//         bar.timestamp = now - std::chrono::hours(24 * (700 - i));  // Start with earliest
+//         timestamps
 //
 //         // Simple uptrend with small random noise
 //         double random = (static_cast<double>(rand()) / RAND_MAX - 0.5) * 0.005;
