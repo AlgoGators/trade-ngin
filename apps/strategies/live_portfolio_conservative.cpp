@@ -2687,25 +2687,20 @@ int main(int argc, char* argv[]) {
                     // Note: yesterday_daily_metrics_final is now loaded AFTER database updates
                     // above So we don't need to create it here anymore
 
-                    // Build flattened executions list for email generation
-                    std::vector<ExecutionReport> flattened_executions;
-                    for (const auto& [_, strategy_execs] : all_strategy_executions) {
-                        flattened_executions.insert(flattened_executions.end(),
-                                                    strategy_execs.begin(), strategy_execs.end());
-                    }
-
                     // Generate email body with is_daily_strategy flag set to true and current
-                    // prices
+                    // prices. Pass strategy_positions_map and all_strategy_executions for per-strategy tables.
                     std::string email_body = email_sender->generate_trading_report_body(
+                        strategy_positions_map,         // Per-strategy positions for grouped tables
                         positions,
                         risk_eval.is_ok() ? std::make_optional(risk_eval.value()) : std::nullopt,
-                        strategy_metrics, flattened_executions, date_str,
+                        strategy_metrics, all_strategy_executions, date_str,
+                        portfolio_id,                   // Portfolio name for email header
                         true,                           // is_daily_strategy
                         previous_day_close_prices,      // Pass Day T-1 close prices for today's
                                                         // positions
                         db,                             // Pass database for symbols reference table
-                        yesterday_positions_finalized,  // Now populated with yesterday's finalized
-                                                        // positions
+                        previous_strategy_positions,    // Per-strategy yesterday's positions for
+                                                        // grouped tables
                         yesterday_exit_prices,   // Day T-1 close prices for yesterday's positions
                         yesterday_entry_prices,  // Day T-2 close prices for yesterday's positions
                         yesterday_daily_metrics_final  // Yesterday's metrics
