@@ -743,6 +743,59 @@ int main(int argc, char* argv[]) {
             return 1;
         }
 
+        // ========================================
+        // UPDATE TRANSACTION COST MANAGER WITH MARKET DATA
+        // Feed rolling ADV and volatility for accurate cost calculations
+        // ========================================
+        INFO("Updating execution manager with market data for transaction cost tracking...");
+
+        // Build map of latest bars per symbol (T-1 data)
+        std::unordered_map<std::string, Bar> latest_bars_per_symbol;
+        std::unordered_map<std::string, Bar> previous_bars_per_symbol;
+
+        for (const auto& bar : all_bars) {
+            auto it = latest_bars_per_symbol.find(bar.symbol);
+            if (it == latest_bars_per_symbol.end() || bar.timestamp > it->second.timestamp) {
+                // Save previous latest as "previous" before updating
+                if (it != latest_bars_per_symbol.end()) {
+                    previous_bars_per_symbol[bar.symbol] = it->second;
+                }
+                latest_bars_per_symbol[bar.symbol] = bar;
+            } else if (!previous_bars_per_symbol.count(bar.symbol) &&
+                       bar.timestamp < latest_bars_per_symbol[bar.symbol].timestamp) {
+                // Track the second-most-recent bar as previous
+                auto prev_it = previous_bars_per_symbol.find(bar.symbol);
+                if (prev_it == previous_bars_per_symbol.end() ||
+                    bar.timestamp > prev_it->second.timestamp) {
+                    previous_bars_per_symbol[bar.symbol] = bar;
+                }
+            }
+        }
+
+        // Update execution manager with daily market data for each symbol
+        int symbols_updated = 0;
+        for (const auto& [symbol, latest_bar] : latest_bars_per_symbol) {
+            double close = static_cast<double>(latest_bar.close);
+            double volume = latest_bar.volume;
+            double prev_close = close;  // Default to same if no previous
+
+            auto prev_it = previous_bars_per_symbol.find(symbol);
+            if (prev_it != previous_bars_per_symbol.end()) {
+                prev_close = static_cast<double>(prev_it->second.close);
+            }
+
+            // Update the transaction cost manager with market data
+            execution_manager->update_market_data(symbol, volume, close);
+            symbols_updated++;
+
+            DEBUG("Updated market data for " + symbol + ": volume=" + std::to_string(volume) +
+                  ", close=" + std::to_string(close) +
+                  ", prev_close=" + std::to_string(prev_close));
+        }
+
+        INFO("Updated transaction cost manager with market data for " +
+             std::to_string(symbols_updated) + " symbols");
+
         // Pre-warm strategy state so portfolio can pull price history for optimization/risk
         INFO("Preprocessing data in strategy to populate price history...");
         auto strat_prewarm = tf_strategy->on_data(all_bars);
@@ -1488,7 +1541,8 @@ int main(int argc, char* argv[]) {
                     yesterday_margin_posted = row.margin_posted;
 
                     INFO("Successfully loaded yesterday's metrics via LiveDataLoader:");
-                    INFO("  yesterday_transaction_costs: $" + std::to_string(yesterday_transaction_costs));
+                    INFO("  yesterday_transaction_costs: $" +
+                         std::to_string(yesterday_transaction_costs));
                     INFO("  yesterday_gross_notional: $" +
                          std::to_string(yesterday_gross_notional));
                     INFO("  yesterday_margin_posted: $" + std::to_string(yesterday_margin_posted));
@@ -1553,7 +1607,8 @@ int main(int argc, char* argv[]) {
             double yesterday_total_transaction_costs_cumulative =
                 day_before_yesterday_total_transaction_costs + yesterday_transaction_costs;
             double yesterday_total_realized_pnl_cumulative =
-                aggregate_yesterday_total_pnl_cumulative + yesterday_total_transaction_costs_cumulative;
+                aggregate_yesterday_total_pnl_cumulative +
+                yesterday_total_transaction_costs_cumulative;
             double yesterday_portfolio_value_finalized =
                 day_before_yesterday_portfolio_value + yesterday_daily_pnl_finalized;
 
@@ -1756,7 +1811,8 @@ int main(int argc, char* argv[]) {
                     "(yesterday_pnl - commissions)");
                 INFO("  aggregate_yesterday_total_pnl: $" +
                      std::to_string(aggregate_yesterday_total_pnl));
-                INFO("  yesterday_transaction_costs: $" + std::to_string(yesterday_transaction_costs_for_calc));
+                INFO("  yesterday_transaction_costs: $" +
+                     std::to_string(yesterday_transaction_costs_for_calc));
             }
 
             // UPDATE yesterday's equity_curve using LiveResultsManager
@@ -2023,7 +2079,8 @@ int main(int argc, char* argv[]) {
         double total_pnl = previous_total_pnl + daily_pnl_for_today;
         double current_portfolio_value = previous_portfolio_value + daily_pnl_for_today;
         double daily_pnl = daily_pnl_for_today;  // Only commissions on Day T
-        double total_transaction_costs_cumulative = previous_total_transaction_costs + total_daily_transaction_costs;
+        double total_transaction_costs_cumulative =
+            previous_total_transaction_costs + total_daily_transaction_costs;
 
         // Since it's futures, all PnL is realized
         // total_realized_pnl = total_pnl + total_commissions (GROSS)
@@ -2607,7 +2664,8 @@ int main(int argc, char* argv[]) {
                     if (risk_eval.is_ok()) {
                         strategy_metrics["Volatility"] = risk_eval.value().portfolio_var * 100.0;
                     }
-                    strategy_metrics["Total Transaction Costs"] = total_transaction_costs_cumulative;
+                    strategy_metrics["Total Transaction Costs"] =
+                        total_transaction_costs_cumulative;
                     strategy_metrics["Current Portfolio Value"] = current_portfolio_value;
 
                     // Leverage Metrics - Calculate values from position analysis
