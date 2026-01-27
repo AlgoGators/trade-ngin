@@ -576,6 +576,7 @@ std::string EmailSender::generate_trading_report_body(
    html << ".metrics-section { margin: 20px 0; }\n";
    html << ".metrics-category { background-color: #fff5e6; padding: 15px; border-radius: 5px; margin-bottom: 20px; }\n";
    html << ".footer-note { background-color: #fff9e6; border-left: 4px solid #ffc107; padding: 15px; margin: 20px 0; font-size: 13px; color: #666; font-family: Arial, sans-serif; }\n";
+   html << ".alert-note { background-color: #fee2e2; border-left: 4px solid #dc2626; padding: 15px; margin: 20px 0; font-size: 13px; color: #991b1b; font-family: Arial, sans-serif; }\n";
    html << ".summary-stats { background-color: #fff5e6; padding: 15px; margin: 15px 0; border-radius: 5px; font-family: Arial, sans-serif; font-size: 14px; }\n";
    html << ".chart-container { margin: 20px 0; padding: 20px; background-color: #f8f9fa; border-radius: 8px; text-align: center; }\n";
    html << ".weekend-message { background-color: #e6f3ff; border-left: 4px solid #2c5aa0; padding: 20px; margin: 20px 0; font-size: 16px; }\n";
@@ -642,7 +643,17 @@ std::string EmailSender::generate_trading_report_body(
        );
    }
    else if (!show_yesterday_pnl) {
-       // Add a note explaining why yesterday's PnL is not shown
+       // Add a red alert explaining no executions due to non-trading day
+       html << "<div class=\"alert-note\">\n";
+       if (is_sunday) {
+           html << "<strong>No Executions:</strong> Futures markets were closed yesterday, so no executions were generated and portfolio holdings are unchanged. Updates will resume with the next trading session’s data.\n";
+       }
+       else if (is_yesterday_holiday) {
+           html << "<strong>No Executions:</strong> Since yesterday (" << yesterday_date_str << ") was a market holiday, no new market data is available. Positions remain unchanged from the previous trading day, and no executions were generated.\n";
+       }
+       html << "</div>\n";
+       
+       // Add a yellow note explaining why yesterday's PnL is not shown
        html << "<div class=\"footer-note\">\n";
        if (is_sunday) {
            html << "<strong>Note:</strong> Yesterday's PnL data is not available.\n";
@@ -3066,6 +3077,7 @@ std::string EmailSender::generate_trading_report_body(
    html << ".metrics-section { margin: 20px 0; }\n";
    html << ".metrics-category { background-color: #fff5e6; padding: 15px; border-radius: 5px; margin-bottom: 20px; }\n";
    html << ".footer-note { background-color: #fff9e6; border-left: 4px solid #ffc107; padding: 15px; margin: 20px 0; font-size: 13px; color: #666; font-family: Arial, sans-serif; }\n";
+   html << ".alert-note { background-color: #fee2e2; border-left: 4px solid #dc2626; padding: 15px; margin: 20px 0; font-size: 13px; color: #991b1b; font-family: Arial, sans-serif; }\n";
    html << ".summary-stats { background-color: #fff5e6; padding: 15px; margin: 15px 0; border-radius: 5px; font-family: Arial, sans-serif; font-size: 14px; }\n";
    html << ".chart-container { margin: 20px 0; padding: 20px; background-color: #f8f9fa; border-radius: 8px; text-align: center; }\n";
    html << ".weekend-message { background-color: #e6f3ff; border-left: 4px solid #2c5aa0; padding: 20px; margin: 20px 0; font-size: 16px; }\n";
@@ -3147,6 +3159,17 @@ std::string EmailSender::generate_trading_report_body(
        );
    }
    else if (!show_yesterday_pnl) {
+       // Add a red alert explaining no executions due to non-trading day
+       html << "<div class=\"alert-note\">\n";
+       if (is_sunday) {
+           html << "<strong>No Executions:</strong> Since yesterday (Saturday) was not a trading day, no new market data is available. Positions remain unchanged from the previous trading day, and no executions were generated.\n";
+       }
+       else if (is_yesterday_holiday) {
+           html << "<strong>No Executions:</strong> Since yesterday (" << yesterday_date_str << ") was a market holiday, no new market data is available. Positions remain unchanged from the previous trading day, and no executions were generated.\n";
+       }
+       html << "</div>\n";
+       
+       // Add a yellow note explaining why yesterday's PnL is not shown
        html << "<div class=\"footer-note\">\n";
        if (is_sunday) {
            html << "<strong>Note:</strong> Yesterday's PnL data is not available.\n";
