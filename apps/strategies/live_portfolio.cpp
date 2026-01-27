@@ -9,6 +9,7 @@
 #include <set>
 #include <sstream>
 #include "trade_ngin/core/email_sender.hpp"
+#include "trade_ngin/core/holiday_checker.hpp"
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/core/time_utils.hpp"
 #include "trade_ngin/data/conversion_utils.hpp"
@@ -745,6 +746,115 @@ int main(int argc, char* argv[]) {
         }
 
         // ========================================
+        // NON-TRADING DAY DETECTION
+        // Check if yesterday was a non-trading day (weekend or holiday)
+        // If so, reuse previous positions unchanged to avoid phantom executions
+        // Uses same logic as email system for robustness
+        // ========================================
+        auto early_previous_day_close_prices = price_manager->get_all_previous_day_prices();
+        
+        // Determine if yesterday was a non-trading day
+        int day_of_week = now_tm->tm_wday;  // 0=Sunday, 6=Saturday
+        bool is_sunday = (day_of_week == 0);
+        bool is_saturday = (day_of_week == 6);
+        
+        // Check if yesterday was a holiday using HolidayChecker
+        HolidayChecker holiday_checker("include/trade_ngin/core/holidays.json");
+        auto yesterday_for_check = now - std::chrono::hours(24);
+        auto yesterday_time_t_check = std::chrono::system_clock::to_time_t(yesterday_for_check);
+        std::tm yesterday_tm_check = *std::gmtime(&yesterday_time_t_check);
+        std::ostringstream yesterday_oss_check;
+        yesterday_oss_check << std::put_time(&yesterday_tm_check, "%Y-%m-%d");
+        std::string yesterday_date_str_check = yesterday_oss_check.str();
+        bool is_yesterday_holiday = holiday_checker.is_holiday(yesterday_date_str_check);
+        
+        // Yesterday was non-trading if: today is Sunday (Sat was non-trading) OR yesterday was holiday
+        bool is_non_trading_day = is_sunday || is_yesterday_holiday;
+        
+        // Flag to track if we should skip strategy processing
+        bool skip_strategy_processing = false;
+        
+        // Data structures for non-trading day case
+        std::unordered_map<std::string, std::unordered_map<std::string, Position>> strategy_positions_map;
+        std::unordered_map<std::string, Position> positions;
+        
+        if (early_previous_day_close_prices.empty()) {
+            if (is_non_trading_day) {
+                // ========================================
+                // EXPECTED: Non-trading day detected
+                // Reuse previous positions, skip strategy processing
+                // ========================================
+                INFO("═══════════════════════════════════════════════════════════════");
+                INFO("NON-TRADING DAY DETECTED - POSITIONS UNCHANGED");
+                INFO("═══════════════════════════════════════════════════════════════");
+                
+                if (is_sunday) {
+                    INFO("Today is Sunday - Saturday was not a trading day");
+                } else if (is_yesterday_holiday) {
+                    INFO("Yesterday (" + yesterday_date_str_check + ") was a holiday: " + 
+                         holiday_checker.get_holiday_name(yesterday_date_str_check));
+                }
+                
+                INFO("No new market data available - positions will remain unchanged");
+                INFO("Loading previous trading day positions to carry forward...");
+                
+                // Calculate previous date for position loading
+                auto previous_date_nontrade = now - std::chrono::hours(24);
+                
+                // Load previous positions for each strategy and use as current
+                for (const auto& [strategy_name, allocation] : strategy_allocations) {
+                    auto prev_result = db->load_positions_by_date(
+                        combined_strategy_id,
+                        strategy_name,
+                        coordinator_config.portfolio_id,
+                        previous_date_nontrade,
+                        "trading.positions"
+                    );
+                    
+                    if (prev_result.is_ok() && !prev_result.value().empty()) {
+                        strategy_positions_map[strategy_name] = prev_result.value();
+                        INFO("Loaded " + std::to_string(prev_result.value().size()) + 
+                             " positions for strategy: " + strategy_name);
+                        
+                        // Also add to combined positions map
+                        for (const auto& [symbol, pos] : prev_result.value()) {
+                            positions[symbol] = pos;
+                        }
+                    } else {
+                        INFO("No previous positions found for strategy: " + strategy_name);
+                        strategy_positions_map[strategy_name] = {};
+                    }
+                }
+                
+                INFO("Total positions carried forward: " + std::to_string(positions.size()));
+                INFO("═══════════════════════════════════════════════════════════════");
+                INFO("Skipping strategy calculations - proceeding to storage phase");
+                INFO("═══════════════════════════════════════════════════════════════");
+                
+                skip_strategy_processing = true;
+                
+            } else {
+                // ========================================
+                // UNEXPECTED: No prices on a trading day
+                // This indicates a data pipeline issue
+                // ========================================
+                ERROR("═══════════════════════════════════════════════════════════════");
+                ERROR("DATA ISSUE DETECTED - ABORTING");
+                ERROR("═══════════════════════════════════════════════════════════════");
+                ERROR("No T-1 close prices available, but today appears to be a trading day!");
+                ERROR("Today: " + std::string(use_override_date ? "HISTORICAL RUN" : "LIVE RUN"));
+                ERROR("Day of week: " + std::to_string(day_of_week) + " (0=Sun, 6=Sat)");
+                ERROR("Yesterday: " + yesterday_date_str_check);
+                ERROR("Is yesterday a holiday? " + std::string(is_yesterday_holiday ? "YES" : "NO"));
+                ERROR("");
+                ERROR("This indicates missing market data in the database.");
+                ERROR("Please investigate the data pipeline before re-running.");
+                ERROR("═══════════════════════════════════════════════════════════════");
+                return 1;  // Fail fast on data issues
+            }
+        }
+
+        // ========================================
         // UPDATE TRANSACTION COST MANAGER WITH MARKET DATA
         // Feed rolling ADV and volatility for accurate cost calculations
         // ========================================
@@ -797,6 +907,11 @@ int main(int argc, char* argv[]) {
         INFO("Updated transaction cost manager with market data for " +
              std::to_string(symbols_updated) + " symbols");
 
+        // ========================================
+        // NORMAL TRADING DAY PROCESSING
+        // Only run strategy calculations if NOT a non-trading day
+        // ========================================
+        if (!skip_strategy_processing) {
         // Pre-warm strategy state so portfolio can pull price history for optimization/risk
         INFO("Preprocessing data in strategy to populate price history...");
         auto strat_prewarm = tf_strategy->on_data(all_bars);
@@ -889,13 +1004,14 @@ int main(int argc, char* argv[]) {
 
         // Get optimized portfolio positions (integer-rounded after optimization/risk)
         INFO("Retrieving optimized portfolio positions...");
-        auto positions = portfolio->get_portfolio_positions();
+        positions = portfolio->get_portfolio_positions();
 
         // Extract per-strategy positions map (needed for Phase 4 & 5)
         INFO("Extracting per-strategy positions from PortfolioManager...");
-        auto strategy_positions_map = portfolio->get_strategy_positions();
+        strategy_positions_map = portfolio->get_strategy_positions();
         INFO("DEBUG: Retrieved " + std::to_string(strategy_positions_map.size()) +
              " strategies from PortfolioManager");
+        } // End of if (!skip_strategy_processing) - strategy processing block
 
         // Load previous day positions for PnL calculation
         INFO("Loading previous day positions for PnL calculation...");
@@ -936,6 +1052,107 @@ int main(int argc, char* argv[]) {
              std::to_string(previous_day_close_prices.size()) + " Day T-1, " +
              std::to_string(two_days_ago_close_prices.size()) + " Day T-2");
 
+        // ========================================
+        // MONDAY AGRICULTURAL FUTURES FIX
+        // Agricultural futures don't trade Sunday evening, so on Monday they have
+        // the same rolling window problem as other futures have on Sunday.
+        // For agricultural symbols missing T-1 prices on Monday, reuse previous positions.
+        // ========================================
+        bool is_monday = (day_of_week == 1);
+        
+        // Agricultural futures that don't trade Sunday evening
+        const std::set<std::string> AGRICULTURAL_FUTURES_BASE = {
+            "ZC", "ZS", "ZW", "ZL", "ZM", "KE", "ZR",  // Grains
+            "LE", "HE", "GF"                           // Livestock
+        };
+        
+        // Helper lambda to check if a symbol is an agricultural future
+        auto is_agricultural_future = [&AGRICULTURAL_FUTURES_BASE](const std::string& symbol) -> bool {
+            // Extract base symbol (e.g., "ZC.v.0" -> "ZC")
+            std::string base = symbol;
+            auto dot_pos = symbol.find('.');
+            if (dot_pos != std::string::npos) {
+                base = symbol.substr(0, dot_pos);
+            }
+            return AGRICULTURAL_FUTURES_BASE.count(base) > 0;
+        };
+        
+        if (is_monday && !skip_strategy_processing) {
+            INFO("═══════════════════════════════════════════════════════════════");
+            INFO("MONDAY AGRICULTURAL FUTURES CHECK");
+            INFO("Agricultural futures don't trade Sunday - checking for missing T-1 prices");
+            INFO("═══════════════════════════════════════════════════════════════");
+            
+            int ag_symbols_fixed = 0;
+            
+            // For each strategy, check agricultural symbols
+            for (auto& [strategy_name, current_positions_map] : strategy_positions_map) {
+                // Load previous positions for this strategy
+                auto prev_strategy_result = db->load_positions_by_date(
+                    combined_strategy_id,
+                    strategy_name,
+                    coordinator_config.portfolio_id,
+                    previous_date,
+                    "trading.positions"
+                );
+                
+                std::unordered_map<std::string, Position> prev_strategy_positions;
+                if (prev_strategy_result.is_ok()) {
+                    prev_strategy_positions = prev_strategy_result.value();
+                }
+                
+                // Check each position in the current strategy
+                for (auto& [symbol, current_pos] : current_positions_map) {
+                    if (is_agricultural_future(symbol)) {
+                        // Check if T-1 price is missing for this symbol
+                        bool has_t1_price = previous_day_close_prices.find(symbol) != previous_day_close_prices.end();
+                        
+                        if (!has_t1_price) {
+                            // This agricultural future has no Sunday data
+                            // Reuse Friday's position to avoid phantom execution
+                            auto prev_it = prev_strategy_positions.find(symbol);
+                            if (prev_it != prev_strategy_positions.end()) {
+                                double prev_qty = prev_it->second.quantity.as_double();
+                                double curr_qty = current_pos.quantity.as_double();
+                                
+                                if (std::abs(curr_qty - prev_qty) > 1e-10) {
+                                    INFO("Monday fix for " + symbol + " (" + strategy_name + "): " +
+                                         "No Sunday data - reverting position from " +
+                                         std::to_string(curr_qty) + " to " + std::to_string(prev_qty) +
+                                         " (Friday's position)");
+                                    
+                                    // Override with previous position
+                                    current_pos = prev_it->second;
+                                    current_pos.last_update = now;  // Update timestamp
+                                    ag_symbols_fixed++;
+                                }
+                            } else {
+                                // No previous position exists - keep current (likely first time)
+                                INFO("Monday check for " + symbol + " (" + strategy_name + "): " +
+                                     "No Sunday data and no previous position - keeping current");
+                            }
+                        }
+                    }
+                }
+                
+                // Also update the combined positions map
+                for (const auto& [symbol, pos] : current_positions_map) {
+                    if (is_agricultural_future(symbol) && 
+                        previous_day_close_prices.find(symbol) == previous_day_close_prices.end()) {
+                        positions[symbol] = pos;
+                    }
+                }
+            }
+            
+            if (ag_symbols_fixed > 0) {
+                INFO("Monday agricultural fix: Reverted " + std::to_string(ag_symbols_fixed) +
+                     " positions to Friday's values (no Sunday trading data)");
+            } else {
+                INFO("Monday agricultural check complete: No position reversions needed");
+            }
+            INFO("═══════════════════════════════════════════════════════════════");
+        }
+
         // Verify we have prices for all required symbols
         std::set<std::string> all_symbols;
         for (const auto& [symbol, position] : positions) {
@@ -949,7 +1166,12 @@ int main(int argc, char* argv[]) {
 
         for (const auto& symbol : all_symbols) {
             if (previous_day_close_prices.find(symbol) == previous_day_close_prices.end()) {
-                WARN("Missing T-1 price for symbol: " + symbol);
+                // On Monday, agricultural futures missing T-1 is expected (handled above)
+                if (is_monday && is_agricultural_future(symbol)) {
+                    INFO("Expected: Missing T-1 price for agricultural future " + symbol + " on Monday");
+                } else {
+                    WARN("Missing T-1 price for symbol: " + symbol);
+                }
             }
             if (two_days_ago_close_prices.find(symbol) == two_days_ago_close_prices.end() &&
                 previous_positions.find(symbol) != previous_positions.end()) {
