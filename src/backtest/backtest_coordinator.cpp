@@ -1,5 +1,4 @@
 #include "trade_ngin/backtest/backtest_coordinator.hpp"
-#include "trade_ngin/backtest/slippage_models.hpp"
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/core/run_id_generator.hpp"
 #include "trade_ngin/core/time_utils.hpp"
@@ -62,26 +61,13 @@ Result<void> BacktestCoordinator::create_components() {
 
     // Create execution manager
     BacktestExecutionConfig exec_config;
-    exec_config.commission_rate = config_.commission_rate;
-    exec_config.slippage_bps = config_.slippage_bps;
     execution_manager_ = std::make_unique<BacktestExecutionManager>(exec_config);
 
     // Create portfolio constraints manager
     PortfolioConstraintsConfig constraints_config;
     constraints_config.use_risk_management = config_.use_risk_management;
     constraints_config.use_optimization = config_.use_optimization;
-    constraints_config.commission_rate = config_.commission_rate;
     constraints_manager_ = std::make_unique<BacktestPortfolioConstraints>(constraints_config);
-
-    // Initialize slippage model (matching BacktestEngine behavior)
-    if (config_.slippage_bps > 0.0) {
-        SpreadSlippageConfig slippage_config;
-        slippage_config.min_spread_bps = config_.slippage_bps;
-        slippage_config.spread_multiplier = 1.2;
-        slippage_config.market_impact_multiplier = 1.5;
-        slippage_model_ = SlippageModelFactory::create_spread_model(slippage_config);
-        INFO("Created SpreadSlippageModel with min_spread_bps=" + std::to_string(config_.slippage_bps));
-    }
 
     return Result<void>();
 }
@@ -402,7 +388,6 @@ Result<void> BacktestCoordinator::process_day(
                 current_positions_,
                 new_positions,
                 price_manager_->get_all_previous_day_prices(),
-                bars,
                 timestamp);
 
             // Update current positions
@@ -421,22 +406,20 @@ Result<void> BacktestCoordinator::process_day(
         price_manager_->update_from_bars(bars);
 
         // Update transaction cost manager with market data for ADV and volatility tracking
-        if (execution_manager_->is_using_new_cost_model()) {
-            for (const auto& bar : bars) {
-                double close = static_cast<double>(bar.close);
-                double volume = static_cast<double>(bar.volume);
+        for (const auto& bar : bars) {
+            double close = static_cast<double>(bar.close);
+            double volume = static_cast<double>(bar.volume);
 
-                // Get previous close for log return calculation
-                double prev_close = close;  // Default to current if no previous
-                for (const auto& prev_bar : previous_bars_) {
-                    if (prev_bar.symbol == bar.symbol) {
-                        prev_close = static_cast<double>(prev_bar.close);
-                        break;
-                    }
+            // Get previous close for log return calculation
+            double prev_close = close;  // Default to current if no previous
+            for (const auto& prev_bar : previous_bars_) {
+                if (prev_bar.symbol == bar.symbol) {
+                    prev_close = static_cast<double>(prev_bar.close);
+                    break;
                 }
-
-                execution_manager_->update_market_data(bar.symbol, volume, close, prev_close);
             }
+
+            execution_manager_->update_market_data(bar.symbol, volume, close, prev_close);
         }
 
         // Calculate portfolio value using today's close-to-previous-close PnL
@@ -502,34 +485,24 @@ Result<void> BacktestCoordinator::process_portfolio_day(
             portfolio_has_previous_bars_ = true;
         }
 
-        // Update slippage model if available
-        if (slippage_model_) {
-            for (const auto& bar : bars) {
-                try {
-                    slippage_model_->update(bar);
-                } catch (const std::exception& e) {
-                    WARN("Exception updating slippage model: " + std::string(e.what()));
-                }
-            }
-        }
-
         // Update transaction cost manager with market data for ADV and volatility tracking
-        if (execution_manager_->is_using_new_cost_model()) {
-            for (const auto& bar : bars) {
-                double close = static_cast<double>(bar.close);
-                double volume = static_cast<double>(bar.volume);
+        for (const auto& bar : bars) {
+            double close = static_cast<double>(bar.close);
+            double volume = static_cast<double>(bar.volume);
 
-                // Get previous close for log return calculation
-                double prev_close = close;  // Default to current if no previous
-                for (const auto& prev_bar : portfolio_previous_bars_) {
-                    if (prev_bar.symbol == bar.symbol) {
-                        prev_close = static_cast<double>(prev_bar.close);
-                        break;
-                    }
+            // Get previous close for log return calculation
+            double prev_close = close;  // Default to current if no previous
+            for (const auto& prev_bar : portfolio_previous_bars_) {
+                if (prev_bar.symbol == bar.symbol) {
+                    prev_close = static_cast<double>(prev_bar.close);
+                    break;
                 }
-
-                execution_manager_->update_market_data(bar.symbol, volume, close, prev_close);
             }
+
+            execution_manager_->update_market_data(bar.symbol, volume, close, prev_close);
+
+            // Also update portfolio's cost manager for execution cost calculation
+            portfolio->update_cost_manager_market_data(bar.symbol, volume, close, prev_close);
         }
 
         // Track strategy execution counts BEFORE processing (for commission calculation)
@@ -590,44 +563,17 @@ Result<void> BacktestCoordinator::process_portfolio_day(
             try {
                 exec.fill_time = timestamp;
 
-                if (execution_manager_->is_using_new_cost_model()) {
-                    // New model: fill_price stays as pure reference price (no slippage embedded)
-                    // All costs are calculated via TransactionCostManager
-                    double ref_price = static_cast<double>(exec.fill_price);
-                    double qty = static_cast<double>(exec.filled_quantity);
+                // TransactionCostManager is the single source of truth.
+                double ref_price = static_cast<double>(exec.fill_price);
+                double qty = static_cast<double>(exec.filled_quantity);
 
-                    auto cost_result = execution_manager_->get_transaction_cost_manager().calculate_costs(
-                        exec.symbol, qty, ref_price);
+                auto cost_result = execution_manager_->get_transaction_cost_manager().calculate_costs(
+                    exec.symbol, qty, ref_price);
 
-                    exec.commissions_fees = Decimal(cost_result.commissions_fees);
-                    exec.implicit_price_impact = Decimal(cost_result.implicit_price_impact);
-                    exec.slippage_market_impact = Decimal(cost_result.slippage_market_impact);
-                    exec.total_transaction_costs = Decimal(cost_result.total_transaction_costs);
-                } else {
-                    // Legacy model: apply slippage to price
-                    if (slippage_model_) {
-                        auto symbol_bar = find_bar_for_symbol(bars, exec.symbol);
-                        double adjusted_price = slippage_model_->calculate_slippage(
-                            static_cast<double>(exec.fill_price),
-                            static_cast<double>(exec.filled_quantity),
-                            exec.side,
-                            symbol_bar);
-                        exec.fill_price = Price(adjusted_price);
-                    } else {
-                        // Apply basic slippage model
-                        double slip_factor = config_.slippage_bps / 10000.0;
-                        exec.fill_price = exec.side == Side::BUY
-                            ? Price(static_cast<double>(exec.fill_price) * (1.0 + slip_factor))
-                            : Price(static_cast<double>(exec.fill_price) * (1.0 - slip_factor));
-                    }
-
-                    // Calculate and add commission (legacy: all costs in one field)
-                    double total_cost = execution_manager_->calculate_transaction_costs(exec);
-                    exec.commissions_fees = Decimal(total_cost);
-                    exec.implicit_price_impact = Decimal(0.0);
-                    exec.slippage_market_impact = Decimal(0.0);
-                    exec.total_transaction_costs = Decimal(total_cost);
-                }
+                exec.commissions_fees = Decimal(cost_result.commissions_fees);
+                exec.implicit_price_impact = Decimal(cost_result.implicit_price_impact);
+                exec.slippage_market_impact = Decimal(cost_result.slippage_market_impact);
+                exec.total_transaction_costs = Decimal(cost_result.total_transaction_costs);
 
                 executions.push_back(exec);
             } catch (const std::exception& e) {
@@ -660,7 +606,8 @@ Result<void> BacktestCoordinator::process_portfolio_day(
         }
 
         // Calculate transaction costs from per-strategy executions
-        double total_transaction_costs = calculate_period_commissions(portfolio, strategy_exec_counts_before);
+        double total_transaction_costs =
+            calculate_period_transaction_costs(portfolio, strategy_exec_counts_before);
 
         // Calculate PnL for each strategy using its individual quantities
         auto strategy_positions = portfolio->get_strategy_positions();
@@ -902,11 +849,11 @@ Result<void> BacktestCoordinator::save_daily_positions(
     return Result<void>();
 }
 
-double BacktestCoordinator::calculate_period_commissions(
+double BacktestCoordinator::calculate_period_transaction_costs(
     std::shared_ptr<PortfolioManager> portfolio,
     const std::unordered_map<std::string, size_t>& exec_counts_before) {
 
-    double total_commissions = 0.0;
+    double total_transaction_costs = 0.0;
 
     auto all_strategy_executions = portfolio->get_strategy_executions();
 
@@ -917,11 +864,11 @@ double BacktestCoordinator::calculate_period_commissions(
 
         // Get only the new executions (those added after count_before)
         for (size_t i = count_before; i < execs.size(); ++i) {
-            total_commissions += static_cast<double>(execs[i].total_transaction_costs);
+            total_transaction_costs += static_cast<double>(execs[i].total_transaction_costs);
         }
     }
 
-    return total_commissions;
+    return total_transaction_costs;
 }
 
 std::optional<Bar> BacktestCoordinator::find_bar_for_symbol(
@@ -979,8 +926,6 @@ Result<void> BacktestCoordinator::save_portfolio_results_to_db(
     // Set metadata with portfolio configuration
     nlohmann::json hyperparameters;
     hyperparameters["initial_capital"] = config_.initial_capital;
-    hyperparameters["commission_rate"] = config_.commission_rate;
-    hyperparameters["slippage_bps"] = config_.slippage_bps;
     hyperparameters["use_risk_management"] = config_.use_risk_management;
     hyperparameters["use_optimization"] = config_.use_optimization;
     hyperparameters["portfolio_config"] = portfolio_config;

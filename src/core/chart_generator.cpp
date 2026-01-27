@@ -600,7 +600,7 @@ ChartData ChartGenerator::fetch_daily_pnl_data(
     }
 }
 
-ChartData ChartGenerator::fetch_cumulative_commissions_data(
+ChartData ChartGenerator::fetch_cumulative_transaction_costs_data(
     std::shared_ptr<DatabaseInterface> db,
     const std::string& strategy_id,
     const std::string& date /* today, YYYY-MM-DD */)
@@ -1759,12 +1759,12 @@ std::string ChartGenerator::generate_daily_pnl_chart(
     return render_bar_chart(data, config);
 }
 
-std::string ChartGenerator::generate_total_commissions_chart(
+std::string ChartGenerator::generate_total_transaction_costs_chart(
     std::shared_ptr<DatabaseInterface> db,
     const std::string& strategy_id,
     const std::string& end_date)   // "YYYY-MM-DD" (today)
 {
-    ChartData data = fetch_cumulative_commissions_data(db, strategy_id, end_date);
+    ChartData data = fetch_cumulative_transaction_costs_data(db, strategy_id, end_date);
     if (data.labels.empty() || data.values.empty()) return "";
 
     ChartConfig config;

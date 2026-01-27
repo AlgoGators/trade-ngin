@@ -18,7 +18,6 @@ namespace backtest {
 struct PortfolioConstraintsConfig {
     bool use_risk_management = false;
     bool use_optimization = false;
-    double commission_rate = 0.0005;
     size_t max_history_length = 252;  // Max periods for covariance calculation
     size_t min_periods_for_covariance = 20;  // Minimum periods needed for covariance
     double default_variance = 0.01;  // Default variance for diagonal fallback

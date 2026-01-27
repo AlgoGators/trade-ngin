@@ -124,7 +124,7 @@ public:
         int lookback_days = 30
     );
 
-    static ChartData fetch_cumulative_commissions_data(
+    static ChartData fetch_cumulative_transaction_costs_data(
         std::shared_ptr<DatabaseInterface> db,
         const std::string& strategy_id,
         const std::string& date /* today, YYYY-MM-DD */);
@@ -270,7 +270,7 @@ public:
         int lookback_days = 30
     );
 
-    static std::string generate_total_commissions_chart(
+    static std::string generate_total_transaction_costs_chart(
         std::shared_ptr<DatabaseInterface> db,
         const std::string& strategy_id,
         const std::string& end_date /* today, YYYY-MM-DD */);

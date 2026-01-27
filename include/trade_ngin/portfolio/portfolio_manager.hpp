@@ -7,7 +7,6 @@
 #include <nlohmann/json.hpp>
 #include <numeric>
 #include <unordered_map>
-#include "trade_ngin/backtest/slippage_models.hpp"
 #include "trade_ngin/core/config_base.hpp"
 #include "trade_ngin/core/error.hpp"
 #include "trade_ngin/core/logger.hpp"
@@ -21,6 +20,7 @@
 #include "trade_ngin/risk/risk_manager.hpp"
 #include "trade_ngin/strategy/strategy_interface.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
+#include "trade_ngin/transaction_cost/transaction_cost_manager.hpp"
 
 namespace trade_ngin {
 
@@ -171,6 +171,16 @@ public:
     void clear_all_executions();
 
     /**
+     * @brief Update market data for transaction cost calculations
+     * @param symbol Symbol to update
+     * @param volume Trading volume
+     * @param close_price Current close price
+     * @param prev_close_price Previous close price
+     */
+    void update_cost_manager_market_data(const std::string& symbol, double volume,
+                                         double close_price, double prev_close_price);
+
+    /**
      * @brief Get all strategies managed by this portfolio
      * @return Vector of strategy interfaces
      */
@@ -256,6 +266,9 @@ private:
     MarketData current_market_data_;
 
     size_t max_history_length_ = 2520;  // Keep up to 1 year of return data
+
+    // Transaction cost manager for calculating execution costs
+    transaction_cost::TransactionCostManager cost_manager_;
 
     /**
      * @brief Calculate weights per contract for each symbol
