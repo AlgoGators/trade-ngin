@@ -13,7 +13,8 @@ PortfolioManager::PortfolioManager(PortfolioConfig config, std::string id,
     : config_(std::move(config)),
       id_(std::move(id)),
       registry_(std::move(registry)),
-      instance_id_(id_) {
+      instance_id_(id_),
+      cost_manager_() {
     Logger::register_component("PortfolioManager");
 
     // Initialize optimizer if enabled
@@ -463,18 +464,13 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                         // the current day. Use current_timestamp if provided, otherwise fall back to data timestamp.
                         exec.fill_time = current_timestamp.has_value() ? current_timestamp.value() : 
                                         (data.empty() ? std::chrono::system_clock::now() : data[0].timestamp);
-                        // Calculate transaction costs using the same model as backtesting
-                        // Base commission: 5 basis points * quantity
-                        double commission = std::abs(trade_size) * 0.0005;
-                        // Market impact: 5 basis points * quantity * price
-                        double market_impact = std::abs(trade_size) * latest_price * 0.0005;
-                        // Fixed cost per trade
-                        double fixed_cost = 1.0;
-                        double total_cost = commission + market_impact + fixed_cost;
-                        exec.commissions_fees = Decimal(total_cost);
-                        exec.implicit_price_impact = Decimal(0.0);
-                        exec.slippage_market_impact = Decimal(0.0);
-                        exec.total_transaction_costs = Decimal(total_cost);
+                        // Calculate transaction costs using TransactionCostManager
+                        auto cost_result = cost_manager_.calculate_costs(
+                            symbol, std::abs(trade_size), latest_price);
+                        exec.commissions_fees = Decimal(cost_result.commissions_fees);
+                        exec.implicit_price_impact = Decimal(cost_result.implicit_price_impact);
+                        exec.slippage_market_impact = Decimal(cost_result.slippage_market_impact);
+                        exec.total_transaction_costs = Decimal(cost_result.total_transaction_costs);
                         exec.is_partial = false;
 
                         // Add to strategy-specific executions
@@ -545,18 +541,13 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                     // the current day. Use current_timestamp if provided, otherwise fall back to data timestamp.
                     exec.fill_time = current_timestamp.has_value() ? current_timestamp.value() : 
                                     (data.empty() ? std::chrono::system_clock::now() : data[0].timestamp);
-                    // Calculate transaction costs using the same model as backtesting
-                    // Base commission: 5 basis points * quantity
-                    double commission = std::abs(trade_size) * 0.0005;
-                    // Market impact: 5 basis points * quantity * price
-                    double market_impact = std::abs(trade_size) * latest_price * 0.0005;
-                    // Fixed cost per trade
-                    double fixed_cost = 1.0;
-                    double total_cost = commission + market_impact + fixed_cost;
-                    exec.commissions_fees = Decimal(total_cost);
-                    exec.implicit_price_impact = Decimal(0.0);
-                    exec.slippage_market_impact = Decimal(0.0);
-                    exec.total_transaction_costs = Decimal(total_cost);
+                    // Calculate transaction costs using TransactionCostManager
+                    auto cost_result = cost_manager_.calculate_costs(
+                        symbol, std::abs(trade_size), latest_price);
+                    exec.commissions_fees = Decimal(cost_result.commissions_fees);
+                    exec.implicit_price_impact = Decimal(cost_result.implicit_price_impact);
+                    exec.slippage_market_impact = Decimal(cost_result.slippage_market_impact);
+                    exec.total_transaction_costs = Decimal(cost_result.total_transaction_costs);
                     exec.is_partial = false;
 
                     // Add to recent executions (portfolio-level)
@@ -631,18 +622,6 @@ std::vector<double> PortfolioManager::calculate_trading_costs(
     for (size_t i = 0; i < symbols.size(); ++i) {
         const std::string& symbol = symbols[i];
 
-        // Default cost as a proportion of capital (e.g., 5 basis points)
-        double cost_proportion = 0.0005;
-
-        // Check if any strategy has specific costs for this symbol
-        for (const auto& [strategy_id, info] : strategies_) {
-            const auto& strategy_config = info.strategy->get_config();
-            if (strategy_config.costs.count(symbol) > 0) {
-                cost_proportion = strategy_config.costs.at(symbol);
-                break;  // Use first match
-            }
-        }
-
         // Get contract size and price for this symbol
         auto it = all_trading_data.find(symbol);
         if (it != all_trading_data.end()) {
@@ -653,11 +632,12 @@ std::vector<double> PortfolioManager::calculate_trading_costs(
 
             // Calculate notional per contract
             double notional_per_contract = contract_size * price * fx_rate;
-            double cost_per_contract = cost_proportion * notional_per_contract;
-            costs[i] = cost_per_contract / capital;
+            auto cost_result = cost_manager_.calculate_costs(symbol, 1.0, price);
+            double cost_per_contract = cost_result.total_transaction_costs;
+            costs[i] = (capital > 0.0) ? (cost_per_contract / capital) : 0.0;
         } else {
-            WARN("Symbol " + symbol + " not found in trading data, using default cost");
-            costs[i] = 0.0005;  // Reasonable default
+            WARN("Symbol " + symbol + " not found in trading data, using zero cost");
+            costs[i] = 0.0;
         }
     }
 
@@ -1309,6 +1289,11 @@ void PortfolioManager::clear_all_executions() {
     // Used during warmup to ensure no executions from warmup period persist
     recent_executions_.clear();
     strategy_executions_.clear();
+}
+
+void PortfolioManager::update_cost_manager_market_data(
+    const std::string& symbol, double volume, double close_price, double prev_close_price) {
+    cost_manager_.update_market_data(symbol, volume, close_price, prev_close_price);
 }
 
 std::vector<std::shared_ptr<StrategyInterface>> PortfolioManager::get_strategies() const {

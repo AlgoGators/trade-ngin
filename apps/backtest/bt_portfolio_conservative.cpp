@@ -189,8 +189,6 @@ int main() {
 
         config.strategy_config.asset_class = trade_ngin::AssetClass::FUTURES;
         config.strategy_config.data_freq = trade_ngin::DataFrequency::DAILY;
-        config.strategy_config.commission_rate = 0.0005;  // 5 basis points
-        config.strategy_config.slippage_model = 1.0;      // 1 basis point
         // warmup_days will be calculated dynamically from strategy lookbacks
 
         // MEMORY FIXED: Restored original symbol loading with memory management
@@ -232,10 +230,6 @@ int main() {
         std::cout << "Retrieved " << config.strategy_config.symbols.size() << " symbols"
                   << std::endl;
         std::cout << "Initial capital: $" << config.portfolio_config.initial_capital << " (CONSERVATIVE)" << std::endl;
-        std::cout << "Commission rate: " << (config.strategy_config.commission_rate * 100) << " bps"
-                  << std::endl;
-        std::cout << "Slippage model: " << config.strategy_config.slippage_model << " bps"
-                  << std::endl;
 
         INFO("Configuration loaded successfully. Testing " +
              std::to_string(config.strategy_config.symbols.size()) + " symbols from " +
@@ -274,8 +268,6 @@ int main() {
         // Create BacktestCoordinatorConfig from BacktestConfig
         trade_ngin::backtest::BacktestCoordinatorConfig coord_config;
         coord_config.initial_capital = static_cast<double>(config.portfolio_config.initial_capital);
-        coord_config.commission_rate = static_cast<double>(config.strategy_config.commission_rate);
-        coord_config.slippage_bps = static_cast<double>(config.strategy_config.slippage_model);
         coord_config.use_risk_management = config.portfolio_config.use_risk_management;
         coord_config.use_optimization = config.portfolio_config.use_optimization;
         coord_config.store_trade_details = config.store_trade_details;
@@ -358,7 +350,6 @@ int main() {
         // Add position limits and contract sizes
         for (const auto& symbol : config.strategy_config.symbols) {
             base_strategy_config.position_limits[symbol] = 1000.0;
-            base_strategy_config.costs[symbol] = config.strategy_config.commission_rate.as_double();
         }
 
         // Create and initialize each strategy
@@ -562,4 +553,3 @@ int main() {
         return 1;
     }
 }
-

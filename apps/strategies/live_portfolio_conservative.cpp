@@ -295,8 +295,6 @@ int main(int argc, char* argv[]) {
              std::to_string(std::chrono::system_clock::to_time_t(now)));
 
         double initial_capital = 500000.0;  // $500k
-        double commission_rate = 0.0005;    // 5 basis points
-        double slippage_model = 1.0;        // 1 basis point
 
         auto symbols_result = db->get_symbols(trade_ngin::AssetClass::FUTURES);
         auto symbols = symbols_result.value();
@@ -325,8 +323,6 @@ int main(int argc, char* argv[]) {
 
         std::cout << "Retrieved " << symbols.size() << " symbols" << std::endl;
         std::cout << "Initial capital: $" << initial_capital << std::endl;
-        std::cout << "Commission rate: " << (commission_rate * 100) << " bps" << std::endl;
-        std::cout << "Slippage model: " << slippage_model << " bps" << std::endl;
 
         INFO("Configuration loaded successfully. Processing " + std::to_string(symbols.size()) +
              " symbols from " + std::to_string(std::chrono::system_clock::to_time_t(start_date)) +
@@ -434,7 +430,6 @@ int main(int argc, char* argv[]) {
         // Add position limits and costs for all symbols
         for (const auto& symbol : symbols) {
             base_strategy_config.position_limits[symbol] = 500.0;
-            base_strategy_config.costs[symbol] = commission_rate;
         }
 
         // Create a shared_ptr that doesn't own the singleton registry
@@ -685,12 +680,7 @@ int main(int argc, char* argv[]) {
 
         // Create Phase 3 managers
         INFO("Creating ExecutionManager and MarginManager for Phase 3");
-        auto execution_manager =
-            std::make_unique<ExecutionManager>(commission_rate,  // 2.25
-                                               slippage_model,   // 1.0 bps
-                                               5.0,              // market_impact_bps (5 bps)
-                                               1.0               // fixed_cost
-            );
+        auto execution_manager = std::make_unique<ExecutionManager>();
         auto margin_manager = std::make_unique<MarginManager>(registry);
 
         // Create Phase 4 CSV exporter
@@ -1191,7 +1181,8 @@ int main(int argc, char* argv[]) {
 
         INFO("PHASE 4: Total executions across all strategies: " +
              std::to_string(total_executions));
-        INFO("PHASE 4: Total daily commissions: $" + std::to_string(total_daily_transaction_costs));
+        INFO("PHASE 4: Total daily transaction costs: $" +
+             std::to_string(total_daily_transaction_costs));
 
         // Store executions for each strategy
         for (const auto& [strategy_name, executions] : all_strategy_executions) {
@@ -1466,12 +1457,12 @@ int main(int argc, char* argv[]) {
             std::cout << "Risk Scale: N/A" << std::endl;
         }
         // ========================================
-        // STEP 3: CALCULATE COMMISSIONS AND Day T PnL (ZERO)
+        // STEP 3: CALCULATE TRANSACTION COSTS AND Day T PnL (ZERO)
         // ========================================
-        INFO("STEP 3: Calculating commissions and Day T PnL...");
+        INFO("STEP 3: Calculating transaction costs and Day T PnL...");
 
         // total_daily_transaction_costs already calculated in per-strategy executions loop above
-        INFO("Total daily commissions (from per-strategy executions): $" +
+        INFO("Total daily transaction costs (from per-strategy executions): $" +
              std::to_string(total_daily_transaction_costs));
 
         // Day T PnL is ZERO (placeholder) - positions were just opened at Day T-1 close
@@ -1482,10 +1473,10 @@ int main(int argc, char* argv[]) {
 
         double daily_realized_pnl = 0.0;
         double daily_unrealized_pnl = 0.0;
-        double daily_pnl_for_today = -total_daily_transaction_costs;  // Only commissions on Day T
+        double daily_pnl_for_today = -total_daily_transaction_costs;  // Only transaction costs on Day T
 
         INFO("Day T PnL (placeholder): $0.00");
-        INFO("Day T commissions: $" + std::to_string(total_daily_transaction_costs));
+        INFO("Day T transaction costs: $" + std::to_string(total_daily_transaction_costs));
         INFO("Day T total impact: $" + std::to_string(daily_pnl_for_today));
 
         // ========================================
@@ -1509,7 +1500,7 @@ int main(int argc, char* argv[]) {
             INFO("STEP 4: Updating Day T-1 live_results with finalized PnL: $" +
                  std::to_string(aggregate_yesterday_total_pnl));
 
-            // Get yesterday's commissions and other existing metrics from database
+            // Get yesterday's transaction costs and other existing metrics from database
             double yesterday_transaction_costs = 0.0;
             double yesterday_total_transaction_costs = 0.0;
             double yesterday_gross_notional = 0.0;
@@ -1532,7 +1523,7 @@ int main(int argc, char* argv[]) {
                     auto& row = live_results.value();
                     yesterday_transaction_costs = row.daily_transaction_costs;
                     yesterday_total_transaction_costs =
-                        row.daily_transaction_costs;  // Note: total_commissions field may not exist
+                        row.daily_transaction_costs;  // Note: total_transaction_costs field may not exist
                     yesterday_gross_notional = row.gross_notional;
                     yesterday_net_notional =
                         row.gross_notional;  // Note: using gross_notional as net_notional not in
@@ -1567,12 +1558,12 @@ int main(int argc, char* argv[]) {
             INFO("Day T-1 PnL breakdown:");
             INFO("  Position PnL (aggregate_yesterday_total_pnl): $" +
                  std::to_string(aggregate_yesterday_total_pnl));
-            INFO("  Commissions (yesterday_transaction_costs): $" +
+            INFO("  Transaction costs (yesterday_transaction_costs): $" +
                  std::to_string(yesterday_transaction_costs));
             INFO("  Net PnL (yesterday_daily_pnl_finalized): $" +
                  std::to_string(yesterday_daily_pnl_finalized));
 
-            // Get the day BEFORE yesterday's portfolio value, total_pnl, and total_commissions
+            // Get the day BEFORE yesterday's portfolio value, total_pnl, and total_transaction_costs
             double day_before_yesterday_portfolio_value = initial_capital;
             double day_before_aggregate_yesterday_total_pnl = 0.0;
             double day_before_yesterday_total_transaction_costs = 0.0;
@@ -1590,7 +1581,7 @@ int main(int argc, char* argv[]) {
                              std::to_string(day_before_yesterday_portfolio_value) +
                              ", total_pnl=$" +
                              std::to_string(day_before_aggregate_yesterday_total_pnl) +
-                             ", total_commissions=$" +
+                             ", total_transaction_costs=$" +
                              std::to_string(day_before_yesterday_total_transaction_costs));
                     }
                 }
@@ -1599,9 +1590,9 @@ int main(int argc, char* argv[]) {
             }
 
             // Calculate yesterday's cumulative values
-            // NOTE: Since we may not have correct commissions, the cumulative values will be
+            // NOTE: Since we may not have correct transaction costs, the cumulative values will be
             // recalculated by SQL using the daily_pnl formula (daily_realized_pnl -
-            // daily_commissions)
+            // daily_transaction_costs)
             double aggregate_yesterday_total_pnl_cumulative =
                 day_before_aggregate_yesterday_total_pnl + yesterday_daily_pnl_finalized;
             double yesterday_total_transaction_costs_cumulative =
@@ -1728,7 +1719,7 @@ int main(int argc, char* argv[]) {
 
             // UPDATE yesterday's live_results with ALL recalculated metrics
             // Note: We calculate daily_pnl, total_pnl, and current_portfolio_value in SQL
-            // to properly incorporate the EXISTING daily_commissions value
+            // to properly incorporate the EXISTING daily_transaction_costs value
             // IMPORTANT: Only update portfolio_leverage and equity_to_margin_ratio if they are NULL
             // or 0
             std::string update_query =
@@ -2048,7 +2039,7 @@ int main(int argc, char* argv[]) {
             "STEP 5: Loading updated previous day aggregates and calculating Day T cumulative "
             "values...");
 
-        // Load previous day's aggregates (portfolio value, total pnl, total commissions)
+        // Load previous day's aggregates (portfolio value, total pnl, total transaction costs)
         // This is done AFTER updating Day T-1 live_results to ensure we get the finalized values
         double previous_portfolio_value = initial_capital;  // Default to initial capital
         double previous_total_pnl = 0.0;
@@ -2065,7 +2056,7 @@ int main(int argc, char* argv[]) {
                              previous_total_transaction_costs) = prev_agg.value();
                     INFO("Loaded updated previous aggregates - portfolio_value: $" +
                          std::to_string(previous_portfolio_value) + ", total_pnl: $" +
-                         std::to_string(previous_total_pnl) + ", total_commissions: $" +
+                         std::to_string(previous_total_pnl) + ", total_transaction_costs: $" +
                          std::to_string(previous_total_transaction_costs));
                 } else {
                     INFO("No previous aggregates found: " + std::string(prev_agg.error()->what()));
@@ -2078,12 +2069,12 @@ int main(int argc, char* argv[]) {
         // Calculate cumulative values for Day T
         double total_pnl = previous_total_pnl + daily_pnl_for_today;
         double current_portfolio_value = previous_portfolio_value + daily_pnl_for_today;
-        double daily_pnl = daily_pnl_for_today;  // Only commissions on Day T
+        double daily_pnl = daily_pnl_for_today;  // Only transaction costs on Day T
         double total_transaction_costs_cumulative =
             previous_total_transaction_costs + total_daily_transaction_costs;
 
         // Since it's futures, all PnL is realized
-        // total_realized_pnl = total_pnl + total_commissions (GROSS)
+        // total_realized_pnl = total_pnl + total_transaction_costs (GROSS)
         double total_realized_pnl = total_pnl + total_transaction_costs_cumulative;
         double total_unrealized_pnl = 0.0;
 
@@ -2619,7 +2610,8 @@ int main(int argc, char* argv[]) {
                             if (!daily_commissions_arr->IsNull(0)) {
                                 yesterday_daily_metrics_final["Daily Transaction Costs"] =
                                     std::stod(daily_commissions_arr->GetString(0));
-                                INFO("Daily Commissions: " + daily_commissions_arr->GetString(0));
+                                INFO("Daily Transaction Costs: " +
+                                     daily_commissions_arr->GetString(0));
                             }
 
                             INFO("Successfully loaded yesterday's daily metrics from live_results");

@@ -19,7 +19,6 @@
 #include "trade_ngin/backtest/backtest_execution_manager.hpp"
 #include "trade_ngin/backtest/backtest_portfolio_constraints.hpp"
 #include "trade_ngin/backtest/backtest_types.hpp"
-#include "trade_ngin/backtest/slippage_models.hpp"
 #include "trade_ngin/risk/risk_manager.hpp"
 
 namespace trade_ngin {
@@ -34,8 +33,6 @@ namespace backtest {
  */
 struct BacktestCoordinatorConfig {
     double initial_capital = 1000000.0;
-    double commission_rate = 0.0005;
-    double slippage_bps = 1.0;
     bool use_risk_management = false;
     bool use_optimization = false;
     bool store_results = true;
@@ -94,7 +91,6 @@ private:
     Timestamp backtest_end_date_;
 
     // Optional components for portfolio backtest
-    std::unique_ptr<SlippageModel> slippage_model_;
     std::shared_ptr<RiskManager> risk_manager_;
 
     // Initialization state
@@ -296,9 +292,9 @@ private:
         const Timestamp& timestamp);
 
     /**
-     * @brief Calculate commissions from new executions in period
+     * @brief Calculate transaction costs from new executions in period
      */
-    double calculate_period_commissions(
+    double calculate_period_transaction_costs(
         std::shared_ptr<PortfolioManager> portfolio,
         const std::unordered_map<std::string, size_t>& exec_counts_before);
 

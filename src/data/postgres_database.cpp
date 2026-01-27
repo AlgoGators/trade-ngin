@@ -234,27 +234,31 @@ Result<void> PostgresDatabase::store_executions(const std::vector<ExecutionRepor
             date_ss << std::put_time(std::gmtime(&fill_time_t), "%Y-%m-%d");
             std::string exec_date = date_ss.str();
 
-            // Updated INSERT to include strategy_id (combined), strategy_name (individual), date,
-            // portfolio_id
+            // Updated INSERT to include all 4 cost breakdown fields
             std::string query = "INSERT INTO " + table_name +
                                 " (exec_id, order_id, symbol, side, quantity, price, "
-                                "execution_time, total_transaction_costs, is_partial, strategy_id, "
-                                "strategy_name, date, portfolio_id) VALUES "
-                                "($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)";
+                                "execution_time, commissions_fees, implicit_price_impact, "
+                                "slippage_market_impact, total_transaction_costs, is_partial, "
+                                "strategy_id, strategy_name, date, portfolio_id) VALUES "
+                                "($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)";
 
             std::cout << "DEBUG: About to execute SQL query" << std::endl;
             std::cout << "DEBUG: Query: " << query << std::endl;
 
-            // Updated exec_params to include strategy_id (combined) and strategy_name (individual)
+            // Updated exec_params to include all 4 cost fields
             txn.exec_params(
                 query, exec.exec_id, exec.order_id, exec.symbol, side_to_string(exec.side),
                 static_cast<double>(exec.filled_quantity), static_cast<double>(exec.fill_price),
-                format_timestamp(exec.fill_time), static_cast<double>(exec.total_transaction_costs),
-                exec.is_partial,
-                strategy_id,    // $10 - combined (e.g., LIVE_TREND_FOLLOWING_TREND_FOLLOWING_FAST)
-                strategy_name,  // $11 - individual (e.g., TREND_FOLLOWING)
-                exec_date,
-                portfolio_id);  // $13 - portfolio identifier
+                format_timestamp(exec.fill_time),
+                static_cast<double>(exec.commissions_fees),         // $8
+                static_cast<double>(exec.implicit_price_impact),    // $9
+                static_cast<double>(exec.slippage_market_impact),   // $10
+                static_cast<double>(exec.total_transaction_costs),  // $11
+                exec.is_partial,                                    // $12
+                strategy_id,    // $13 - combined (e.g., LIVE_TREND_FOLLOWING_TREND_FOLLOWING_FAST)
+                strategy_name,  // $14 - individual (e.g., TREND_FOLLOWING)
+                exec_date,      // $15
+                portfolio_id);  // $16 - portfolio identifier
 
             std::cout << "DEBUG: SQL executed successfully for " << exec.symbol << std::endl;
         }

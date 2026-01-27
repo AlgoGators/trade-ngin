@@ -41,8 +41,6 @@ struct StrategyBacktestConfig : public ConfigBase {
     Timestamp start_date;
     Timestamp end_date;
     Decimal initial_capital = Decimal(1000000.0);  // $1M for strategy allocation
-    Decimal commission_rate = Decimal(0.0005);     // 5 basis points
-    Decimal slippage_model = Decimal(1.0);         // 1 bp
     bool store_trade_details = true;
     int warmup_days = 0;  // Number of trading days to exclude from results (for strategy warmup)
 
@@ -65,8 +63,6 @@ struct StrategyBacktestConfig : public ConfigBase {
         j["start_date"] = format_timestamp(start_date);
         j["end_date"] = format_timestamp(end_date);
         j["initial_capital"] = static_cast<double>(initial_capital);
-        j["commission_rate"] = static_cast<double>(commission_rate);
-        j["slippage_model"] = static_cast<double>(slippage_model);
         j["store_trade_details"] = store_trade_details;
         j["version"] = version;
         return j;
@@ -87,10 +83,6 @@ struct StrategyBacktestConfig : public ConfigBase {
             end_date = Timestamp(std::chrono::seconds(j.at("end_date").get<int64_t>()));
         if (j.contains("initial_capital"))
             initial_capital = Decimal(j.at("initial_capital").get<double>());
-        if (j.contains("commission_rate"))
-            commission_rate = Decimal(j.at("commission_rate").get<double>());
-        if (j.contains("slippage_model"))
-            slippage_model = Decimal(j.at("slippage_model").get<double>());
         if (j.contains("store_trade_details"))
             store_trade_details = j.at("store_trade_details").get<bool>();
         if (j.contains("version"))

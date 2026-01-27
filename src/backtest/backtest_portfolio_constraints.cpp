@@ -100,7 +100,8 @@ Result<void> BacktestPortfolioConstraints::apply_optimization(
         symbols.push_back(symbol);
         current_pos.push_back(static_cast<double>(pos.quantity));
         target_pos.push_back(static_cast<double>(pos.quantity));
-        costs.push_back(config_.commission_rate);
+        // Costs are handled by TransactionCostManager; keep optimizer penalty neutral.
+        costs.push_back(0.0);
         weights.push_back(1.0);  // Equal weights
     }
 

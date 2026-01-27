@@ -113,51 +113,23 @@ ExecutionReport ExecutionManager::generate_execution(
 
     double abs_quantity = exec.filled_quantity.as_double();
 
-    if (use_new_cost_model_ && cost_manager_) {
-        // New model: use TransactionCostManager (same as backtest)
-        // Keep fill_price as pure reference price (no embedded slippage)
-        exec.fill_price = market_price;
+    // TransactionCostManager is the single source of truth.
+    // Keep fill_price as pure reference price (no embedded slippage).
+    exec.fill_price = market_price;
 
-        // Calculate costs via TransactionCostManager
-        auto cost_result = cost_manager_->calculate_costs(
-            symbol, abs_quantity, market_price);
+    auto cost_result = cost_manager_->calculate_costs(
+        symbol, abs_quantity, market_price);
 
-        // Populate all cost fields from result
-        exec.commissions_fees = Decimal(cost_result.commissions_fees);
-        exec.implicit_price_impact = Decimal(cost_result.implicit_price_impact);
-        exec.slippage_market_impact = Decimal(cost_result.slippage_market_impact);
-        exec.total_transaction_costs = Decimal(cost_result.total_transaction_costs);
+    exec.commissions_fees = Decimal(cost_result.commissions_fees);
+    exec.implicit_price_impact = Decimal(cost_result.implicit_price_impact);
+    exec.slippage_market_impact = Decimal(cost_result.slippage_market_impact);
+    exec.total_transaction_costs = Decimal(cost_result.total_transaction_costs);
 
-        DEBUG("New cost model for " + symbol + ": commissions=$" +
-              std::to_string(cost_result.commissions_fees) +
-              ", implicit_impact=" + std::to_string(cost_result.implicit_price_impact) +
-              ", slippage=$" + std::to_string(cost_result.slippage_market_impact) +
-              ", total=$" + std::to_string(cost_result.total_transaction_costs));
-    } else {
-        // Legacy model: apply slippage to price and use simple bps calculation
-        exec.fill_price = apply_slippage(market_price, side);
-
-        // Commissions/fees: commission_rate * quantity (explicit fees)
-        double commissions = std::abs(abs_quantity) * commission_rate_;
-
-        // Market impact: basis points * quantity * price (implicit cost in dollars)
-        double market_impact = std::abs(abs_quantity) * market_price * (market_impact_bps_ / 10000.0);
-
-        // Fixed cost per trade
-        double fixed_cost = fixed_cost_per_trade_;
-
-        // Total explicit fees = commissions + fixed cost
-        double explicit_fees = commissions + fixed_cost;
-
-        // Implicit costs = market impact (slippage is already applied to fill_price)
-        double implicit_costs = market_impact;
-
-        // Populate cost breakdown fields
-        exec.commissions_fees = Decimal(explicit_fees);
-        exec.implicit_price_impact = Decimal(0.0);  // Not used in legacy mode
-        exec.slippage_market_impact = Decimal(implicit_costs);
-        exec.total_transaction_costs = Decimal(explicit_fees + implicit_costs);
-    }
+    DEBUG("Transaction cost model for " + symbol + ": commissions=$" +
+          std::to_string(cost_result.commissions_fees) +
+          ", implicit_impact=" + std::to_string(cost_result.implicit_price_impact) +
+          ", slippage=$" + std::to_string(cost_result.slippage_market_impact) +
+          ", total=$" + std::to_string(cost_result.total_transaction_costs));
 
     exec.is_partial = false;
 
@@ -181,32 +153,6 @@ void ExecutionManager::update_market_data(const std::string& symbol, double volu
 
         DEBUG("Updated market data for " + symbol + ": volume=" + std::to_string(volume) +
               ", close=" + std::to_string(close_price) + ", prev_close=" + std::to_string(prev_close));
-    }
-}
-
-double ExecutionManager::calculate_transaction_cost(double quantity, double price) const {
-    // Legacy method - kept for backward compatibility
-    // Base commission: commission_rate * quantity
-    double commission_cost = std::abs(quantity) * commission_rate_;
-
-    // Market impact: basis points * quantity * price
-    double market_impact = std::abs(quantity) * price * (market_impact_bps_ / 10000.0);
-
-    // Fixed cost per trade
-    double fixed_cost = fixed_cost_per_trade_;
-
-    return commission_cost + market_impact + fixed_cost;
-}
-
-double ExecutionManager::apply_slippage(double market_price, Side side) const {
-    // Convert basis points to decimal (1 bp = 0.0001)
-    double slip_factor = slippage_bps_ / 10000.0;
-
-    // Apply slippage: buy at higher price, sell at lower price
-    if (side == Side::BUY) {
-        return market_price * (1.0 + slip_factor);
-    } else {
-        return market_price * (1.0 - slip_factor);
     }
 }
 

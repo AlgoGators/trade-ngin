@@ -700,7 +700,9 @@ std::string EmailSender::generate_trading_report_body(
            html << "</div>\n";
        }
 
-        total_transaction_costs_base64_ = ChartGenerator::generate_total_commissions_chart(db, "LIVE_TREND_FOLLOWING", date);
+        total_transaction_costs_base64_ =
+            ChartGenerator::generate_total_transaction_costs_chart(
+                db, "LIVE_TREND_FOLLOWING", date);
         if (!total_transaction_costs_base64_.empty()) {
             html << "<h3 style=\"margin-top: 20px; color: #333;\">Cost per $1M Traded (Efficiency Metric)</h3>\n";
             html << "<div style=\"width: 100%; max-width: 1000px; margin: 20px auto; text-align: center;\">\n";

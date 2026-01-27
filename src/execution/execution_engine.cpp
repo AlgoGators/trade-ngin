@@ -7,6 +7,7 @@
 #include <iostream>
 #include <numeric>
 #include <sstream>
+#include "trade_ngin/transaction_cost/transaction_cost_manager.hpp"
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/core/state_manager.hpp"
 #include "trade_ngin/data/market_data_bus.hpp"
@@ -974,17 +975,15 @@ std::string ExecutionEngine::generate_job_id() const {
 }
 
 double ExecutionEngine::calculate_transaction_costs(const ExecutionReport& execution, const ExecutionConfig& config) {
-    // Base commission: commission_rate * quantity
-    double commission = static_cast<double>(execution.filled_quantity) * config.commission_rate;
+    transaction_cost::TransactionCostManager::Config tc_config;
+    tc_config.explicit_fee_per_contract = config.explicit_fee_per_contract;
+    transaction_cost::TransactionCostManager cost_manager(tc_config);
 
-    // Market impact: market_impact_rate * quantity * price
-    double market_impact = static_cast<double>(execution.filled_quantity) *
-                           static_cast<double>(execution.fill_price) * config.market_impact_rate;
+    double qty = static_cast<double>(execution.filled_quantity);
+    double price = static_cast<double>(execution.fill_price);
 
-    // Fixed cost per trade
-    double fixed_cost = config.fixed_cost;
-
-    return commission + market_impact + fixed_cost;
+    auto cost_result = cost_manager.calculate_costs(execution.symbol, qty, price);
+    return cost_result.total_transaction_costs;
 }
 
 }  // namespace trade_ngin
