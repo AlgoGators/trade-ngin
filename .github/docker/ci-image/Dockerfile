@@ -23,6 +23,7 @@ RUN apt-get update && apt-get install -y \
     python3-pip \
     cppcheck \
     unzip \
+    libeigen3-dev \
     && pip3 install --break-system-packages cpplint \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
