@@ -233,10 +233,6 @@ int main() {
                   << std::endl;
         std::cout << "Initial capital: $" << config.portfolio_config.initial_capital
                   << " (CONSERVATIVE)" << std::endl;
-        std::cout << "Commission rate: " << (config.strategy_config.commission_rate * 100) << " bps"
-                  << std::endl;
-        std::cout << "Slippage model: " << config.strategy_config.slippage_model << " bps"
-                  << std::endl;
 
         INFO("Configuration loaded successfully. Testing " +
              std::to_string(config.strategy_config.symbols.size()) + " symbols from " +
