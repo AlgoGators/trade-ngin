@@ -15,7 +15,7 @@ namespace backtest {
  */
 struct BacktestExecutionConfig {
     // Explicit fee per contract (broker + exchange + clearing + regulatory)
-    double explicit_fee_per_contract = 1.75;
+    double explicit_fee_per_contract = 1.50;
 };
 
 /**

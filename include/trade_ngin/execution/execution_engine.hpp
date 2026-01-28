@@ -59,7 +59,7 @@ struct ExecutionConfig : public ConfigBase {
     std::unordered_map<std::string, double> venue_weights;  // Venue routing weights
     
     // Transaction cost configuration (TransactionCostManager)
-    double explicit_fee_per_contract{1.75};                 // Explicit fee per contract
+    double explicit_fee_per_contract{1.50};                 // Explicit fee per contract
 
     // Configuration metadata
     std::string version{"1.0.0"};  // Configuration version
