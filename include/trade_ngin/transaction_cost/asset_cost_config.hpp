@@ -22,6 +22,10 @@ struct AssetCostConfig {
     double baseline_spread_ticks = 1.0;  // Typical quoted spread
     double min_spread_ticks = 1.0;       // Floor for spread
     double max_spread_ticks = 10.0;      // Cap for spread
+    // Multiplier applied to spread cost conversion (price impact).
+    // - 0.5 models crossing half the quoted spread (aggressive/marketable orders)
+    // - < 0.5 models providing liquidity with adverse selection (limit orders)
+    double spread_cost_multiplier = 0.5;
 
     // Impact parameters
     double max_impact_bps = 100.0;  // Cap for market impact in basis points

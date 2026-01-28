@@ -22,7 +22,7 @@ namespace transaction_cost {
  * Key design decisions:
  * - Spread is anchored to microstructure (ticks), NOT daily range
  * - Volatility widening is mild (0.8x to 1.5x) to represent timing/slippage
- * - We pay half the spread per contract (one-way cost)
+ * - We apply a per-asset spread cost multiplier (default 0.5)
  */
 class SpreadModel {
 public:
@@ -48,7 +48,7 @@ public:
      * @param volatility_multiplier Volatility regime multiplier (0.8 to 1.5)
      * @return Spread cost in price units per contract
      *
-     * Formula: spread_price_impact = 0.5 * spread_ticks * tick_size
+     * Formula: spread_price_impact = spread_cost_multiplier * spread_ticks * tick_size
      * where: spread_ticks = clamp(baseline_spread_ticks * vol_mult, min, max)
      */
     double calculate_spread_price_impact(

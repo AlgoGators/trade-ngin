@@ -19,9 +19,11 @@ double SpreadModel::calculate_spread_price_impact(
     // Clamp to min/max bounds
     spread_ticks = std::clamp(spread_ticks, config.min_spread_ticks, config.max_spread_ticks);
 
-    // Half-spread cost (one-way, we pay half the spread to cross)
-    // spread_price_impact = 0.5 * spread_ticks * tick_size
-    double spread_price_impact = 0.5 * spread_ticks * config.tick_size;
+    // Spread cost (one-way) in price units per contract.
+    // Default multiplier=0.5 models crossing half the quoted spread.
+    // For limit-order style execution, use a smaller multiplier (e.g. 0.25)
+    // to reflect improved pricing but still account for adverse selection.
+    double spread_price_impact = config.spread_cost_multiplier * spread_ticks * config.tick_size;
 
     return spread_price_impact;
 }

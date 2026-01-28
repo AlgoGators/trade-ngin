@@ -61,7 +61,7 @@ public:
         // Impact model configuration
         ImpactModel::Config impact_config;
 
-        Config() : explicit_fee_per_contract(1.75), spread_config(), impact_config() {}
+        Config() : explicit_fee_per_contract(1.50), spread_config(), impact_config() {}
     };
 
     explicit TransactionCostManager(const Config& config = Config());
