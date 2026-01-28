@@ -1506,11 +1506,12 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
             html << format_metric_display("Daily Realized PnL (Gross)", daily_realized_it->second, false);
         }
 
-        auto daily_commissions_it = strategy_metrics.find("Daily Commissions");
-        if (daily_commissions_it != strategy_metrics.end()) {
-            double commission_value = std::abs(daily_commissions_it->second);
-            std::string formatted_commission = "$" + format_with_commas(commission_value, 2);
-            html << "<div class=\"metric\"><strong>Daily Commissions:</strong> <span>" << formatted_commission << "</span></div>\n";
+        auto daily_costs_it = strategy_metrics.find("Daily Transaction Costs");
+        if (daily_costs_it != strategy_metrics.end()) {
+            double cost_value = std::abs(daily_costs_it->second);
+            std::string formatted_costs = "$" + format_with_commas(cost_value, 2);
+            html << "<div class=\"metric\"><strong>Daily Transaction Costs:</strong> <span>"
+                 << formatted_costs << "</span></div>\n";
         }
 
         auto daily_total_it = strategy_metrics.find("Daily Total PnL");
@@ -2824,7 +2825,7 @@ std::string EmailSender::format_single_strategy_executions_table(
     html << "<table>\n";
     html << "<tr><th>Symbol</th><th>Side</th><th>Quantity</th><th>Price</th><th>Notional</th><th>Commission</th></tr>\n";
 
-    double total_commission = 0.0;
+    double total_transaction_costs = 0.0;
     double total_notional_traded = 0.0;
 
     for (const auto& exec : executions) {
@@ -2868,7 +2869,7 @@ std::string EmailSender::format_single_strategy_executions_table(
 
         double notional = exec.filled_quantity.as_double() * exec.fill_price.as_double() * contract_multiplier;
         total_notional_traded += notional;
-        total_commission += exec.commission.as_double();
+        total_transaction_costs += exec.total_transaction_costs.as_double();
 
         std::string side_str = exec.side == Side::BUY ? "BUY" : "SELL";
         std::string side_class = exec.side == Side::BUY ? "positive" : "negative";
@@ -2879,7 +2880,8 @@ std::string EmailSender::format_single_strategy_executions_table(
         html << "<td>" << std::fixed << std::setprecision(0) << exec.filled_quantity.as_double() << "</td>\n";
         html << "<td>$" << std::fixed << std::setprecision(2) << exec.fill_price.as_double() << "</td>\n";
         html << "<td>$" << format_with_commas(notional) << "</td>\n";
-        html << "<td>$" << std::fixed << std::setprecision(2) << exec.commission.as_double() << "</td>\n";
+        html << "<td>$" << std::fixed << std::setprecision(2)
+             << exec.total_transaction_costs.as_double() << "</td>\n";
         html << "</tr>\n";
     }
 
@@ -2889,7 +2891,8 @@ std::string EmailSender::format_single_strategy_executions_table(
     html << "<div style=\"font-size: 13px; color: #666; margin: 8px 0 20px 0; padding-left: 16px;\">\n";
     html << "<strong>Trades:</strong> " << executions.size()
          << " | <strong>Notional:</strong> $" << format_with_commas(total_notional_traded)
-         << " | <strong>Commissions:</strong> $" << format_with_commas(total_commission) << "\n";
+         << " | <strong>Transaction Costs:</strong> $"
+         << format_with_commas(total_transaction_costs) << "\n";
     html << "</div>\n";
 
     return html.str();
@@ -2940,7 +2943,7 @@ std::string EmailSender::format_strategy_executions_tables(
     // Track portfolio totals
     int portfolio_total_trades = 0;
     double portfolio_total_notional = 0.0;
-    double portfolio_total_commission = 0.0;
+    double portfolio_total_transaction_costs = 0.0;
 
     // Generate table for each strategy
     for (const auto& strategy_name : strategy_names) {
@@ -2975,7 +2978,7 @@ std::string EmailSender::format_strategy_executions_tables(
 
             double notional = exec.filled_quantity.as_double() * exec.fill_price.as_double() * contract_multiplier;
             portfolio_total_notional += notional;
-            portfolio_total_commission += exec.commission.as_double();
+            portfolio_total_transaction_costs += exec.total_transaction_costs.as_double();
         }
     }
 
@@ -2984,7 +2987,7 @@ std::string EmailSender::format_strategy_executions_tables(
     html << "<h3 style=\"margin: 0 0 10px 0; color: #333;\">Portfolio Summary</h3>\n";
     html << "<div class=\"metric\"><strong>Total Trades:</strong> " << portfolio_total_trades << "</div>\n";
     html << "<div class=\"metric\"><strong>Total Notional Traded:</strong> $" << format_with_commas(portfolio_total_notional) << "</div>\n";
-    html << "<div class=\"metric\"><strong>Total Commissions:</strong> $" << format_with_commas(portfolio_total_commission) << "</div>\n";
+    html << "<div class=\"metric\"><strong>Total Transaction Costs:</strong> $" << format_with_commas(portfolio_total_transaction_costs) << "</div>\n";
     html << "</div>\n";
 
     return html.str();
@@ -3221,11 +3224,12 @@ std::string EmailSender::generate_trading_report_body(
            html << "</div>\n";
        }
 
-       total_commissions_base64_ = ChartGenerator::generate_total_commissions_chart(db, "LIVE_TREND_FOLLOWING", date);
-       if (!total_commissions_base64_.empty()) {
+       total_transaction_costs_base64_ =
+           ChartGenerator::generate_total_transaction_costs_chart(db, "LIVE_TREND_FOLLOWING", date);
+       if (!total_transaction_costs_base64_.empty()) {
            html << "<h3 style=\"margin-top: 20px; color: #333;\">Cost per $1M Traded (Efficiency Metric)</h3>\n";
            html << "<div style=\"width: 100%; max-width: 1000px; margin: 20px auto; text-align: center;\">\n";
-           html << "<img src=\"cid:total_commissions\" alt=\"Cost per $1M Traded\" style=\"max-width: 100%; height: auto; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);\" />\n";
+           html << "<img src=\"cid:total_transaction_costs\" alt=\"Cost per $1M Traded\" style=\"max-width: 100%; height: auto; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);\" />\n";
            html << "</div>\n";
        }
 
