@@ -2823,7 +2823,7 @@ std::string EmailSender::format_single_strategy_executions_table(
 
     // Executions table
     html << "<table>\n";
-    html << "<tr><th>Symbol</th><th>Side</th><th>Quantity</th><th>Price</th><th>Notional</th><th>Commission</th></tr>\n";
+    html << "<tr><th>Symbol</th><th>Side</th><th>Quantity</th><th>Price</th><th>Notional</th><th>Transaction Cost</th></tr>\n";
 
     double total_transaction_costs = 0.0;
     double total_notional_traded = 0.0;

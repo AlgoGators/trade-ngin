@@ -2786,7 +2786,7 @@ int main(int argc, char* argv[]) {
                         // Load yesterday's daily metrics from database for accurate display
                         std::string yesterday_metrics_query =
                             "SELECT daily_return, daily_unrealized_pnl, daily_realized_pnl, "
-                            "daily_pnl, daily_transaction_costs"
+                            "daily_pnl, daily_transaction_costs "
                             "FROM trading.live_results "
                             "WHERE strategy_id = '" +
                             combined_strategy_id + "' AND portfolio_id = '" +
