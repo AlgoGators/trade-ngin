@@ -1042,17 +1042,17 @@ ctest --output-on-failure --verbose
 
 ### Running Live Trading
 
-Live trading requires a date argument in `MM-DD` format:
+Live trading requires a date argument in `YYYY-MM-DD` format:
 
 ```bash
 # Run for a specific date (no email)
-./build/bin/Release/live_portfolio 01-15
+./build/bin/Release/live_portfolio 2025-01-15
 
 # Run for a specific date WITH email report
-./build/bin/Release/live_portfolio 01-15 --send-email
+./build/bin/Release/live_portfolio 2025-01-15 --send-email
 
 # Conservative portfolio variant
-./build/bin/Release/live_portfolio_conservative 01-15 --send-email
+./build/bin/Release/live_portfolio_conservative 2025-01-15 --send-email
 ```
 
 > **Note**: The date-less execution mode is deprecated. Always specify the date.
