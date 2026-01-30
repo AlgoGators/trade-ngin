@@ -71,21 +71,21 @@ flowchart TB
 # Basic run (today's date)
 ./build/bin/Release/live_portfolio
 
-# Specific date (MM-DD format)
-./build/bin/Release/live_portfolio 01-15
+# Specific date (YYYY-MM-DD format)
+./build/bin/Release/live_portfolio 2025-01-15
 
 # With email report
-./build/bin/Release/live_portfolio 01-15 --send-email
+./build/bin/Release/live_portfolio 2025-01-15 --send-email
 
 # Conservative portfolio
-./build/bin/Release/live_portfolio_conservative 01-15 --send-email
+./build/bin/Release/live_portfolio_conservative 2025-01-15 --send-email
 ```
 
 ### Arguments
 
 | Argument | Format | Description |
 |----------|--------|-------------|
-| Date | MM-DD | Trading date to simulate/run |
+| Date | YYYY-MM-DD | Trading date to simulate/run |
 | --send-email | Flag | Enable email report sending |
 
 ---
