@@ -2,6 +2,7 @@
 [![Build Status](https://img.shields.io/badge/build-passing-brightgreen)]()
 [![C++](https://img.shields.io/badge/C++-20-blue.svg)]()
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
+[![Code Coverage](https://img.shields.io/badge/coverage-75%25-yellow)]()
 
 ## 📖 Project Overview
 
@@ -9,1121 +10,1255 @@ trade-ngin is a high-performance, modular quantitative trading system built in C
 
 ### Core Capabilities
 
-- **Multi-strategy portfolio management** with dynamic capital allocation and optimization
-- **Comprehensive risk management** with VaR constraints, position limits, and drawdown control
-- **High-performance backtesting engine** with realistic execution simulation and slippage modeling
-- **Fixed-point arithmetic** using custom Decimal class for financial precision
-- **PostgreSQL integration** with Apache Arrow for efficient data processing
-- **Modular, component-based architecture** designed for extensibility and performance
-- **Professional-grade C++20 implementation** with comprehensive error handling
-
-The system is currently optimized for backtesting with a focus on futures trading strategies, featuring realistic execution simulation and comprehensive performance analytics. The architecture supports future live trading extensions with a unified codebase design.
-
-## 🚦 Quick Ops Docs
-- Performance & upkeep (CI/CD, testing, cron): `docs/performance_upkeep.md`
-- Live pipeline specification: `docs/live_pipeline_spec.md`
-
-## 🎯 Current System State
-
-### Implemented Features
-- ✅ **Multi-timeframe trend following strategy** with EMA crossovers across 6 timeframes
-- ✅ **28 futures contracts** support (ES, NQ, GC, CL, ZN, etc.)
-- ✅ **Fixed-point arithmetic** with custom Decimal class for financial precision
-- ✅ **PostgreSQL integration** with Apache Arrow for efficient data processing
-- ✅ **Comprehensive risk management** with VaR constraints and position limits
-- ✅ **Dynamic portfolio optimization** with transaction cost considerations
-- ✅ **Realistic backtesting** with slippage models and execution simulation
-- ✅ **Extensive logging and debugging** capabilities
-
-### Current Configuration
-- **Initial Capital**: $500,000
-- **Strategy**: Multi-timeframe trend following with volatility targeting (20% annualized)
-- **EMA Windows**: {2,8}, {4,16}, {8,32}, {16,64}, {32,128}, {64,256}
-- **Risk Parameters**: IDM=2.5, FDM=1.0-1.26, 3% weight per symbol
-- **Leverage Limits**: 4.0x gross, 2.0x net exposure
-
-### Development Status
-- **Branch**: `refactor` (active development)
-- **Language**: C++20 with modern features
-- **Recent Focus**: Type safety improvements, fixed-point arithmetic, memory management
-- **Testing**: Comprehensive unit tests with GoogleTest framework
-
-## 📂 Repository Structure & Organization
-
-```
-trade_ngin/
-├── apps/                       # Application executables
-│   ├── backtest/               # Backtesting applications
-│   │   ├── bt_trend.cpp        # Trend following strategy backtest
-│   │   ├── results/            # Backtest result outputs
-│   │   └── CMakeLists.txt      # Build configuration for backtests
-│   ├── strategies/             # Live trading applications
-│   │   ├── live_trend.cpp      # Live trend following strategy
-│   │   └── CMakeLists.txt      # Build configuration for live strategies
-│   └── CMakeLists.txt          # Build configuration for applications
-├── include/                    # Public header files
-│   └── trade_ngin/             # Main include directory
-│       ├── backtest/           # Backtesting components
-│       │   ├── backtest_coordinator.hpp
-│       │   ├── backtest_types.hpp
-│       │   ├── slippage_models.hpp
-│       │   └── transaction_cost_analysis.hpp
-│       ├── core/               # Core system components
-│       │   ├── config_base.hpp
-│       │   ├── config_manager.hpp
-│       │   ├── config_version.hpp
-│       │   ├── error.hpp
-│       │   ├── logger.hpp
-│       │   ├── state_manager.hpp
-│       │   ├── time_utils.hpp
-│       │   └── types.hpp
-│       ├── data/               # Data management
-│       │   ├── conversion_utils.hpp
-│       │   ├── credential_store.hpp
-│       │   ├── database_interface.hpp
-│       │   ├── database_pooling.hpp
-│       │   ├── market_data_bus.hpp
-│       │   └── postgres_database.hpp
-│       ├── execution/          # Order execution
-│       │   └── execution_engine.hpp
-│       ├── instruments/        # Financial instruments
-│       │   ├── equity.hpp
-│       │   ├── futures.hpp
-│       │   ├── instrument.hpp
-│       │   ├── instrument_registry.hpp
-│       │   └── option.hpp
-│       ├── optimization/       # Portfolio optimization
-│       │   └── dynamic_optimizer.hpp
-│       ├── order/              # Order management
-│       │   └── order_manager.hpp
-│       ├── portfolio/          # Portfolio management
-│       │   └── portfolio_manager.hpp
-│       ├── risk/               # Risk management
-│       │   └── risk_manager.hpp
-│       └── strategy/           # Strategy components
-│           ├── base_strategy.hpp
-│           ├── regime_detector.hpp
-│           ├── strategy_interface.hpp
-│           ├── trend_following.hpp
-│           └── types.hpp
-├── src/                        # Implementation files
-│   ├── backtest/               # Backtesting implementations
-│   │   ├── backtest_coordinator.cpp
-│   │   ├── backtest_data_loader.cpp
-│   │   ├── backtest_metrics_calculator.cpp
-│   │   ├── backtest_execution_manager.cpp
-│   │   ├── backtest_portfolio_constraints.cpp
-│   │   ├── backtest_price_manager.cpp
-│   │   ├── slippage_model.cpp
-│   │   └── transaction_cost_analysis.cpp
-│   ├── core/                   # Core system implementations
-│   │   ├── config_base.cpp
-│   │   ├── config_manager.cpp
-│   │   ├── config_version.cpp
-│   │   ├── logger.cpp
-│   │   └── state_manager.cpp
-│   ├── data/                   # Data management implementations
-│   │   ├── conversion_utils.cpp
-│   │   ├── credential_store.cpp
-│   │   ├── database_pooling.cpp
-│   │   ├── market_data_bus.cpp
-│   │   └── postgres_database.cpp
-│   ├── execution/              # Order execution implementations
-│   │   └── execution_engine.cpp
-│   ├── instruments/            # Financial instruments implementations
-│   │   ├── equity.cpp
-│   │   ├── futures.cpp
-│   │   ├── instrument_registry.cpp
-│   │   └── option.cpp
-│   ├── optimization/           # Portfolio optimization implementations
-│   │   └── dynamic_optimizer.cpp
-│   ├── order/                  # Order management implementations
-│   │   └── order_manager.cpp
-│   ├── portfolio/              # Portfolio management implementations
-│   │   └── portfolio_manager.cpp
-│   ├── risk/                   # Risk management implementations
-│   │   └── risk_manager.cpp
-│   └── strategy/               # Strategy implementations
-│       ├── base_strategy.cpp
-│       ├── regime_detector.cpp
-│       └── trend_following.cpp
-├── tests/                      # Unit and integration tests
-│   ├── backtesting/            # Backtest component tests
-│   │   ├── test_engine.cpp
-│   │   └── test_transaction_cost_analysis.cpp
-│   ├── core/                   # Core component tests
-│   │   ├── test_base.hpp
-│   │   ├── test_config_base.cpp
-│   │   ├── test_config_manager.cpp
-│   │   ├── test_config_version.cpp
-│   │   ├── test_logger.cpp
-│   │   ├── test_result.cpp
-│   │   └── test_state_manager.cpp
-│   ├── data/                   # Data component tests
-│   │   ├── test_credential_store.cpp
-│   │   ├── test_database_pooling.cpp
-│   │   ├── test_db_utils.cpp
-│   │   ├── test_db_utils.hpp
-│   │   ├── test_market_data_bus.cpp
-│   │   └── test_postgres_database.cpp
-│   ├── execution/              # Execution component tests
-│   │   └── test_execution_engine.cpp
-│   ├── optimization/           # Optimization component tests
-│   │   └── test_dynamic_optimizer.cpp
-│   ├── order/                  # Order component tests
-│   │   ├── test_order_manager.cpp
-│   │   ├── test_utils.cpp
-│   │   └── test_utils.hpp
-│   ├── portfolio/              # Portfolio component tests
-│   │   ├── mock_strategy.hpp
-│   │   └── test_portfolio_manager.cpp
-│   ├── risk/                   # Risk component tests
-│   │   └── test_risk_manager.cpp
-│   ├── strategy/               # Strategy component tests
-│   │   ├── test_base_strategy.cpp
-│   │   └── test_trend_following.cpp
-│   └── CMakeLists.txt          # Build configuration for tests
-├── build/                      # Build directory (generated)
-├── linting/                    # Code quality and linting tools
-│   ├── auto_fix_lint.sh
-│   ├── lint_runner.sh
-│   └── lint_report_*.txt       # Generated lint reports
-├── logs/                       # Application logs (generated)
-├── cmake/                      # CMake modules and configurations
-│   └── modules/
-│       └── Findlibpqxx.cmake
-├── config/                     # Environment-specific configurations
-│   ├── development/
-│   └── production/
-├── externals/                  # Third-party dependencies (GoogleTest)
-├── build_and_test.sh           # Automated build and test script
-├── build_docker.sh             # Docker build script
-├── CMakeLists.txt              # Main build configuration
-├── config.json                 # Active configuration file
-├── config_template.json        # Template for configuration files
-├── TYPE_CONVERSION_GUIDE.md    # Guide for Decimal/Price/Quantity types
-├── README.Docker.md            # Docker setup documentation
-├── Dockerfile                  # Docker container configuration
-└── CLAUDE.md                   # Project knowledge base and current state
-```
-
-## ⚙️ System Architecture & Component Breakdown
-
-trade-ngin follows a modular, component-based architecture with interfaces between system components. Here's a detailed breakdown of the major components:
-
-### Core System Components
-
-#### Error Handling System (`error.hpp`)
-- Defines custom error codes via `ErrorCode` enum
-- Implements `TradeError` class extending `std::runtime_error`
-- Provides `Result<T>` template for error propagation throughout the system
-- Supports `make_error<T>()` for creating standardized error responses
-
-#### Logging Framework (`logger.hpp`, `logger.cpp`)
-- Singleton implementation for system-wide logging
-- Configurable log levels (TRACE, DEBUG, INFO, WARNING, ERROR, FATAL)
-- Multiple output destinations (console, file, or both)
-- Automatic log rotation based on file size
-- Thread-safe implementation with mutex protection
-
-#### State Management (`state_manager.hpp`, `state_manager.cpp`)
-- Tracks component states throughout the system
-- Supports state transitions with validation
-- Maintains component metrics and diagnostics
-- Enables system-wide health monitoring
-
-#### Configuration Management
-- `ConfigBase` - Base class for serializable configurations
-- `ConfigManager` - Centralized configuration management
-- `ConfigVersion` - Version tracking and migration support
-- Environment-specific configuration overrides (dev, staging, prod, backtest)
-
-### Data Management Components
-
-#### Database Interface
-- Abstract `DatabaseInterface` defining common database operations
-- PostgreSQL implementation via `PostgresDatabase`
-- Arrow-based data type support for efficient memory management
-- Query building and parameter sanitization
-
-#### Market Data Bus
-- Publish-subscribe pattern for market data distribution
-- Event-based architecture with callback registration
-- Symbol and event type filtering
-- Thread-safe implementation
-
-#### Data Conversion Utilities
-- Arrow table to/from domain objects conversion
-- Type-safe timestamp handling
-- Error handling with Result pattern
-
-### Financial Instruments
-
-#### Instrument Interface
-- Abstract base class defining common instrument properties
-- Asset-specific implementations:
-  - `EquityInstrument` - Stocks, ETFs
-  - `FuturesInstrument` - Futures contracts
-  - `OptionInstrument` - Options with Greeks calculation
-
-### Order Management
-
-#### Order Manager
-- Order lifecycle management (creation, submission, cancellation)
-- Order book maintenance for status tracking
-- Validation and error handling
-- Commission calculation
-
-### Execution Engine
-
-- Algorithm-based order execution (TWAP, VWAP, PoV, etc.)
-- Execution metrics tracking and analysis
-- Position buffering to reduce unnecessary trading
-- Custom algorithm extensibility
-
-### Strategy Framework
-
-#### Strategy Interface
-- Abstract interface for all trading strategies
-- Lifecycle management (init, start, stop, pause, resume)
-- Event handling (market data, executions, signals)
-- Position and risk management
-
-#### Base Strategy
-- Common implementation of strategy interface
-- Position tracking and management
-- Signal generation and execution
-- Risk limit enforcement
-
-#### Strategy Implementations
-- `TrendFollowingStrategy` - Multi-timeframe trend following using EMA crossovers
-- Extensible framework for adding new strategies
-
-```mermaid
-flowchart TD
-    A[Receive market data] --> B{Enough history?}
-    B -->|No| C[Store price in history]
-    B -->|Yes| D[Calculate volatility]
-    
-    D --> E[Calculate EMA crossovers for multiple timeframes]
-    E --> F[Generate raw forecasts]
-    F --> G[Scale forecasts by volatility]
-    G --> H[Combine forecasts with FDM]
-    
-    H --> I[Calculate position size based on volatility-targeting formula]
-    I --> J{Use position buffering?}
-    
-    J -->|Yes| K[Apply position buffer to reduce trading]
-    J -->|No| L[Use raw position]
-    
-    K --> M[Update position]
-    L --> M
-    
-    M --> N[Emit position signal]
-    
-    subgraph Volatility Calculation
-        D1[Calculate returns] --> D2[Calculate EWMA std deviation]
-        D2 --> D3[Blend short and long-term volatility]
-        D3 --> D4[Apply volatility regime multiplier]
-    end
-    
-    D -.-> D1
-    D4 -.-> D
-    
-    subgraph Position Sizing
-        I1[Calculate target risk] --> I2[Apply IDM factor]
-        I2 --> I3[Scale by forecast strength]
-        I3 --> I4[Divide by price * volatility * point value]
-    end
-    
-    I -.-> I1
-    I4 -.-> I
-```
-
-### Risk Management
-
-- Position-level and portfolio-level risk constraints
-- Value at Risk (VaR) calculation
-- Jump risk monitoring
-- Maximum drawdown limits
-- Leverage constraints
-- Correlation risk monitoring
-
-### Portfolio Management
-
-- Multi-strategy portfolio construction
-- Dynamic capital allocation
-- Position aggregation and netting
-- Portfolio-level optimizations and constraints
-
-### Backtesting Framework
-
-#### Backtest Engine
-- Historical market data simulation
-- Event-driven architecture
-- Realistic execution modeling
-- Comprehensive performance metrics
-- Transaction cost analysis
-
-#### Slippage Models
-- Volume-based slippage
-- Spread-based slippage
-- Custom slippage model extensibility
-
-#### Transaction Cost Analysis
-- Execution quality evaluation
-- Implementation shortfall calculation
-- Benchmark comparison (VWAP, TWAP, arrival price)
-- Cost breakdown (spread, market impact, timing, delay)
-
-### Portfolio Optimization
-
-#### Dynamic Optimizer
-- Position optimization considering transaction costs
-- Risk constraints enforcement
-- Tracking error minimization
-- Convex optimization techniques
-
-```mermaid
-classDiagram
-    class ConfigBase {
-        <<abstract>>
-        +save_to_file(filepath) Result~void~
-        +load_from_file(filepath) Result~void~
-        +to_json() json
-        +from_json(json) void
-    }
-    
-    class StrategyConfig {
-        +capital_allocation double
-        +max_leverage double
-        +position_limits map
-        +max_drawdown double
-        +trading_params map
-        +to_json() json
-        +from_json(json) void
-    }
-    
-    class PortfolioConfig {
-        +total_capital double
-        +reserve_capital double
-        +use_optimization bool
-        +use_risk_management bool
-        +to_json() json
-        +from_json(json) void
-    }
-
-    class RiskConfig {
-        +var_limit double
-        +jump_risk_limit double
-        +max_correlation double
-        +to_json() json
-        +from_json(json) void
-    }
-    
-    class DynamicOptConfig {
-        +tau double
-        +capital double
-        +max_iterations int
-        +to_json() json
-        +from_json(json) void
-    }
-    
-    class BacktestConfig {
-        +strategy_config StrategyConfig
-        +portfolio_config PortfolioConfig
-        +results_db_schema string
-        +to_json() json
-        +from_json(json) void
-    }
-    
-    class DatabaseInterface {
-        <<interface>>
-        +connect() Result~void~
-        +disconnect() void
-        +is_connected() bool
-        +get_market_data(...) Result~Table~
-        +store_executions(...) Result~void~
-        +store_positions(...) Result~void~
-        +store_signals(...) Result~void~
-        +get_symbols(...) Result~string[]~
-    }
-    
-    class PostgresDatabase {
-        -connection_string string
-        -connection pqxx::connection
-        +connect() Result~void~
-        +disconnect() void
-        +is_connected() bool
-        +get_market_data(...) Result~Table~
-    }
-    
-    class StrategyInterface {
-        <<interface>>
-        +initialize() Result~void~
-        +start() Result~void~
-        +stop() Result~void~
-        +pause() Result~void~
-        +resume() Result~void~
-        +on_data(data) Result~void~
-        +on_execution(report) Result~void~
-        +on_signal(symbol, signal) Result~void~
-        +get_positions() Position[]
-    }
-    
-    class BaseStrategy {
-        #id_ string
-        #config_ StrategyConfig
-        #positions_ map
-        #state_ StrategyState
-        +initialize() Result~void~
-        +on_data(data) Result~void~
-        +check_risk_limits() Result~void~
-    }
-    
-    class TrendFollowingStrategy {
-        -trend_config_ TrendFollowingConfig
-        -price_history_ map
-        -volatility_history_ map
-        +on_data(data) Result~void~
-        -calculate_ewma(...) vector~double~
-        -get_raw_forecast(...) vector~double~
-        -calculate_position(...) double
-    }
-    
-    class Instrument {
-        <<interface>>
-        +get_symbol() string
-        +get_type() AssetType
-        +is_tradeable() bool
-        +get_margin_requirement() double
-        +round_price(price) double
-    }
-    
-    class SlippageModel {
-        <<interface>>
-        +calculate_slippage(...) double
-        +update(market_data) void
-    }
-    
-    ConfigBase <|-- StrategyConfig
-    ConfigBase <|-- PortfolioConfig
-    ConfigBase <|-- RiskConfig
-    ConfigBase <|-- DynamicOptConfig
-    ConfigBase <|-- BacktestConfig
-    
-    DatabaseInterface <|-- PostgresDatabase
-    
-    StrategyInterface <|-- BaseStrategy
-    BaseStrategy <|-- TrendFollowingStrategy
-    
-    SlippageModel <|-- VolumeSlippageModel
-    SlippageModel <|-- SpreadSlippageModel
-```
-
-## 🔄 Workflow & System Flow
-
-### Backtesting Workflow
-
-1. **Initialization**
-   - Load configuration from files
-   - Initialize database connection
-   - Create strategy instances
-   - Initialize portfolio manager
-   - Configure risk management and optimization components
-
-2. **Market Data Loading**
-   - Query historical data from database
-   - Convert to internal Bar representation
-   - Group data by timestamp for realistic simulation
-
-3. **Strategy Processing**
-   - Feed market data to strategies chronologically
-   - Generate trading signals based on strategy logic
-   - Convert signals to position targets
-
-4. **Portfolio-Level Processing**
-   - Aggregate positions across strategies
-   - Apply risk management constraints
-   - Apply position optimization if enabled
-   - Calculate trade sizes based on current vs. target positions
-
-5. **Order Execution Simulation**
-   - Apply slippage models to execution prices
-   - Calculate transaction costs
-   - Generate execution reports
-   - Update positions based on fills
-
-6. **Performance Tracking**
-   - Update equity curve
-   - Calculate drawdowns
-   - Track risk metrics over time
-   - Record trade statistics
-
-7. **Results Analysis**
-   - Calculate performance metrics (Sharpe, Sortino, etc.)
-   - Analyze transaction costs
-   - Generate visualizations and reports
-   - Save results to database
-``` mermaid
-sequenceDiagram
-    participant User as User
-    participant BE as BacktestEngine
-    participant DB as Database
-    participant PM as PortfolioManager
-    participant SI as Strategy
-    participant RM as RiskManager
-    participant DO as DynamicOptimizer
-    participant TCA as TCA
-
-    User->>BE: run_portfolio()
-    BE->>DB: load_market_data()
-    DB-->>BE: historical market data
-    
-    loop For each timestamp
-        BE->>PM: process_market_data(bars)
-        PM->>SI: on_data(bars)
-        SI-->>PM: target_positions
-        
-        opt If risk management enabled
-            PM->>RM: process_positions(positions)
-            RM-->>PM: risk_result
-        end
-        
-        opt If optimization enabled
-            PM->>DO: optimize_single_period(positions)
-            DO-->>PM: optimized_positions
-        end
-        
-        PM-->>BE: updated positions & executions
-        
-        BE->>BE: apply_slippage(executions)
-        BE->>BE: calculate_transaction_costs(executions)
-        BE->>BE: update_equity_curve()
-    end
-    
-    BE->>BE: calculate_metrics()
-    BE->>TCA: analyze_trade_sequence()
-    TCA-->>BE: transaction_cost_metrics
-    
-    BE-->>User: backtest_results
-```
-### Live Trading Workflow
-
-1. **Initialization**
-   - Load configuration from files
-   - Initialize broker connections
-   - Create strategy instances
-   - Initialize portfolio manager
-   - Configure risk management and optimization components
-
-2. **Market Data Subscription**
-   - Subscribe to real-time market data feeds
-   - Process incoming ticks/bars
-   - Update internal market data state
-
-3. **Strategy Processing**
-   - Feed real-time data to strategies
-   - Generate trading signals based on strategy logic
-   - Convert signals to position targets
-
-4. **Portfolio-Level Processing**
-   - Aggregate positions across strategies
-   - Apply risk management constraints
-   - Apply position optimization if enabled
-   - Calculate trade sizes based on current vs. target positions
-
-5. **Order Execution**
-   - Submit orders to execution engine
-   - Select appropriate execution algorithm
-   - Route orders to broker/exchange
-   - Monitor order status and fills
-
-6. **Position Management**
-   - Track current positions and exposures
-   - Calculate realized and unrealized P&L
-   - Enforce risk limits in real-time
-
-7. **Monitoring and Reporting**
-   - Track system health and component states
-   - Generate performance reports
-   - Log diagnostics and metrics
-
-## 🛠️ Setup, Installation & Building Instructions
-
-### Prerequisites
-
-- **C++20 compatible compiler** (GCC 10+, Clang 10+, MSVC 2019+)
-- **CMake 3.17 or higher**
-- **PostgreSQL 12+** (for market data storage)
-- **Docker** (optional, for containerized deployment)
-- **Required libraries**:
-  - nlohmann_json (JSON configuration handling)
-  - Apache Arrow C++ (efficient data processing and columnar storage)
-  - libpqxx (PostgreSQL connectivity)
-  - GoogleTest (included in `externals/` - testing framework)
-
-### System Requirements
-
-- **Memory**: Minimum 8GB RAM for typical backtests (28 contracts, 2 years data)
-- **Storage**: SSD recommended for database performance
-- **Database**: PostgreSQL instance with market data properly indexed
-- **OS**: Linux (preferred), Windows (WSL2 recommended), macOS
-
-### Clone the Repository
+| Capability | Description |
+|------------|-------------|
+| **Multi-Strategy Portfolio Management** | Dynamic capital allocation across multiple strategies (e.g., TREND_FOLLOWING, TREND_FOLLOWING_FAST) |
+| **Comprehensive Risk Management** | VaR constraints, position limits, leverage controls, correlation monitoring |
+| **High-Performance Backtesting** | Realistic execution simulation with tick-based spread and square-root market impact models |
+| **Live Trading Support** | Full production live trading with position persistence, email reports, and CSV exports |
+| **Fixed-Point Arithmetic** | Custom Decimal class for financial precision (no floating-point errors) |
+| **PostgreSQL Integration** | Apache Arrow for efficient data processing with connection pooling |
+| **Transaction Cost Modeling** | Explicit (commissions) + Implicit (spread, market impact) cost decomposition |
+| **Statistical Analysis** | PCA, stationarity tests (ADF, KPSS), cointegration, GARCH, Kalman Filter, HMM |
+
+---
+
+## 🚀 Quick Start (First Clone)
+
+This section provides step-by-step instructions to get trade-ngin running from a fresh clone.
+
+### Step 1: Clone the Repository
 
 ```bash
-git clone https://github.com/your-organization/trade_ngin.git
-cd trade_ngin
+git clone https://github.com/AlgoGators/trade-ngin.git
+cd trade-ngin
 ```
 
-### Setup Database
+### Step 2: Install System Dependencies
 
-1. Create a PostgreSQL database for market data and strategy results
-2. Create the necessary schemas and tables
-3. Configure database credentials:
-   ```bash
-   cp config_template.json config.json
-   # Edit config.json with your database credentials
-   ```
+**Option A: Use the automated setup script (Recommended)**
 
-### Building with CMake
+```bash
+# Make script executable
+chmod +x scripts/setup-dev-environment.sh
 
-#### Option 1: Manual Build
+# Run setup (detects OS automatically)
+./scripts/setup-dev-environment.sh
+```
+
+**Option B: Manual installation**
+
+<details>
+<summary><strong>Ubuntu/Debian</strong></summary>
+
+```bash
+sudo bash requirements/install_ubuntu.sh
+
+# Or manually:
+sudo apt-get update
+sudo apt-get install -y \
+    build-essential \
+    cmake \
+    clang-format \
+    cpplint \
+    libgtest-dev \
+    nlohmann-json3-dev \
+    libarrow-dev \
+    libpqxx-dev \
+    lcov \
+    gcovr
+```
+</details>
+
+<details>
+<summary><strong>macOS (Homebrew)</strong></summary>
+
+```bash
+bash requirements/install_macos.sh
+
+# Or manually:
+brew install \
+    cmake \
+    clang-format \
+    nlohmann-json \
+    apache-arrow \
+    libpqxx \
+    lcov \
+    googletest
+
+pip3 install cpplint
+```
+</details>
+
+### Step 3: Configure Database Connection
+
+Create or edit `config.json` with your PostgreSQL credentials:
+
+```json
+{
+  "database": {
+    "host": "your-database-host",
+    "port": "5432",
+    "username": "your-username",
+    "password": "your-password",
+    "name": "your-database-name"
+  }
+}
+```
+
+### Step 4: Build the Project
+
 ```bash
 # Create build directory
-mkdir build && cd build
+mkdir -p build && cd build
 
 # Configure CMake
 cmake ..
 
-# Build the library and applications
+# Build (Release mode)
 cmake --build . --config Release
 
-# Run tests
-ctest -C Release
+# Return to project root
+cd ..
 ```
 
-#### Option 2: Automated Build Script
+### Step 5: Verify Installation
+
 ```bash
-# Use the provided build and test script
-./build_and_test.sh
+# Check executables exist
+ls -la build/bin/Release/
+
+# Expected outputs:
+# bt_portfolio           - Main portfolio backtest
+# bt_portfolio_conservative - Conservative portfolio backtest
+# live_portfolio         - Main live trading application
+# live_portfolio_conservative - Conservative live trading
 ```
 
-#### Option 3: Docker Build
+### Step 6: Run Your First Backtest
+
 ```bash
-# Build Docker container
-./build_docker.sh
-
-# Or manually with Docker
-docker build -t trade-ngin .
-docker run -it trade-ngin
+./build/bin/Release/bt_portfolio
 ```
 
-### Building with Visual Studio
+---
 
-1. Open the project folder in Visual Studio
-2. Select "Open CMake Project"
-3. Choose the desired configuration (Debug/Release)
-4. Build the solution
+## 🚦 Quick Reference
 
-### Building with CLion
+| Document | Purpose | Location |
+|----------|---------|----------|
+| [Performance & Upkeep](docs/performance_upkeep.md) | CI/CD, testing, cron jobs | `docs/` |
+| [Live Pipeline Spec](docs/live_pipeline_spec.md) | Live trading pipeline details | `docs/` |
+| [Strategy Creation Tutorial](docs/strategy_creation_tutorial.md) | How to build your own strategy | `docs/` |
+| [Transaction Cost Model](docs/transaction_cost_refactor.md) | Comprehensive cost model documentation | `docs/` |
+| [Statistics Module](docs/statistics_module_deliverable.md) | Statistical analysis capabilities | `docs/` |
+| [CI/CD Pipeline](docs/CI_CD_README.md) | GitHub Actions workflows, linting, coverage | `docs/` |
+| [Docker Guide](docs/README.Docker.md) | Container deployment | `docs/` |
 
-1. Open the project folder in CLion
-2. CLion should automatically detect the CMake configuration
-3. Choose the desired build configuration
-4. Click "Build" to compile the project
+### Module-Specific Documentation
+
+Each source module has its own detailed README:
+
+| Module | README | Purpose |
+|--------|--------|---------|
+| Data | [src/data/README.md](src/data/README.md) | PostgreSQL, Arrow, connection pooling |
+| Transaction Cost | [src/transaction_cost/README.md](src/transaction_cost/README.md) | Spread/impact models with worked examples |
+| Statistics | [src/statistics/README.md](src/statistics/README.md) | All 9 statistical models |
+| Optimization | [src/optimization/README.md](src/optimization/README.md) | Dynamic optimizer + RiskManager |
+| Live Trading | [src/live/README.md](src/live/README.md) | Live coordinator, email, CSV export |
+| Backtest | [src/backtest/README.md](src/backtest/README.md) | BacktestCoordinator, metrics |
+| Strategy | [src/strategy/README.md](src/strategy/README.md) | Complete strategy development guide |
+| Portfolio | [src/portfolio/README.md](src/portfolio/README.md) | Multi-strategy coordination |
+
+---
+
+## 🎯 Current System State
+
+### Implemented Features
+
+- ✅ **Multi-timeframe trend following strategy** with EMA crossovers across 6 timeframes
+- ✅ **Multi-strategy portfolio support** (TREND_FOLLOWING + TREND_FOLLOWING_FAST)
+- ✅ **28 futures contracts** support (ES, NQ, GC, CL, ZN, etc.)
+- ✅ **Fixed-point arithmetic** with custom Decimal class for financial precision
+- ✅ **PostgreSQL integration** with Apache Arrow and connection pooling
+- ✅ **Comprehensive risk management** with VaR constraints and leverage limits
+- ✅ **Dynamic portfolio optimization** with transaction cost consideration
+- ✅ **Realistic transaction cost modeling** (tick-based spread + square-root impact)
+- ✅ **Live trading coordinator** with position loading and persistence
+- ✅ **Email reporting system** with embedded charts
+- ✅ **CSV export functionality** for positions and trades
+- ✅ **Non-trading day detection** (weekends + holidays)
+- ✅ **Margin validation** for futures instruments
+- ✅ **Extensive logging and debugging** capabilities
+
+### Example Configuration
+
+The system uses `config.json` for all runtime configuration. Here's an example demonstrating **multi-strategy support**:
+
+```json
+{
+  "database": {
+    "host": "your-database-host",
+    "port": "5432",
+    "username": "your-username",
+    "password": "your-password",
+    "name": "your-database-name"
+  },
+  "portfolio_id": "MY_PORTFOLIO",
+  "portfolio": {
+    "strategies": {
+      "TREND_FOLLOWING": {
+        "enabled_backtest": true,
+        "enabled_live": true,
+        "default_allocation": 0.6,
+        "type": "TrendFollowingStrategy",
+        "config": {
+          "weight": 0.03,
+          "risk_target": 0.2,
+          "idm": 2.5,
+          "use_position_buffering": true,
+          "ema_windows": [[2,8], [4,16], [8,32], [16,64], [32,128], [64,256]],
+          "vol_lookback_short": 32,
+          "vol_lookback_long": 252
+        }
+      },
+      "MEAN_REVERSION": {
+        "enabled_backtest": true,
+        "enabled_live": true,
+        "default_allocation": 0.4,
+        "type": "MeanReversionStrategy",
+        "config": {
+          "weight": 0.02,
+          "risk_target": 0.15,
+          "idm": 2.0,
+          "use_position_buffering": true,
+          "lookback_window": 20,
+          "entry_zscore": 2.0,
+          "exit_zscore": 0.5,
+          "vol_lookback": 60
+        }
+      }
+    }
+  },
+  "email": {
+    "smtp_host": "smtp.gmail.com",
+    "smtp_port": 587,
+    "username": "your-email@gmail.com",
+    "password": "your-app-password",
+    "from_email": "your-email@gmail.com",
+    "to_emails": ["recipient@example.com"],
+    "use_tls": true
+  }
+}
+```
+
+> **Note**: The system fully supports multiple strategies and portfolios. Each strategy can have different allocations (must sum to 1.0), parameters, and can be independently enabled/disabled for backtest vs. live trading.
+
+### Running Multiple Portfolios
+
+The trade-ngin system supports running **multiple independent portfolios** simultaneously. Each portfolio:
+- Has its own unique `portfolio_id`
+- Can contain different strategies with different allocations
+- Stores positions and results separately in the database
+- Generates separate CSV exports and email reports
+
+**Example: Portfolio A (Aggressive)**
+```json
+{
+  "portfolio_id": "PORTFOLIO_A",
+  "portfolio": {
+    "strategies": {
+      "TREND_FOLLOWING": { "default_allocation": 0.7 },
+      "MEAN_REVERSION": { "default_allocation": 0.3 }
+    }
+  }
+}
+```
+
+**Example: Portfolio B (Conservative)**
+```json
+{
+  "portfolio_id": "PORTFOLIO_B",
+  "portfolio": {
+    "strategies": {
+      "TREND_FOLLOWING": { "default_allocation": 1.0 }
+    }
+  }
+}
+```
+
+To run different portfolios, create separate config files (e.g., `config_portfolio_a.json`, `config_portfolio_b.json`) and build separate executables or pass the config path at runtime. All portfolio data is isolated by `portfolio_id` in the database.
+
+### Key Parameters Explained
+
+| Parameter | Value | Description |
+|-----------|-------|-------------|
+| **Initial Capital** | $500,000 | Starting portfolio capital |
+| **IDM** | 2.5 | Instrument Diversification Multiplier |
+| **Weight per Symbol** | 0.03 (3%) | Maximum allocation per instrument |
+| **Risk Target** | 0.20-0.25 | Annualized volatility target |
+| **Max Gross Leverage** | 4.0x | Maximum total exposure |
+| **Max Net Leverage** | 2.0x | Maximum directional exposure |
+| **VaR Limit** | 0.15 (15%) | Maximum 99% daily VaR |
+| **Reserve Capital** | 10% | Capital held in reserve |
+
+---
+
+## 📂 Repository Structure
+
+```
+trade-ngin/
+├── apps/                           # Application executables
+│   ├── backtest/                   # Backtesting applications
+│   │   ├── bt_portfolio.cpp        # Main portfolio backtest runner
+│   │   ├── bt_portfolio_conservative.cpp  # Conservative variant
+│   │   └── CMakeLists.txt
+│   ├── strategies/                 # Live trading applications
+│   │   ├── live_portfolio.cpp      # Main live trading application
+│   │   ├── live_portfolio_conservative.cpp
+│   │   └── results/                # Live trading CSV outputs
+│   │       └── PORTFOLIO_A/        # Portfolio-specific results
+│   └── CMakeLists.txt
+│
+├── include/trade_ngin/             # Public header files (65 total)
+│   ├── backtest/                   # Backtest components (10 headers)
+│   │   ├── backtest_coordinator.hpp
+│   │   ├── backtest_data_loader.hpp
+│   │   ├── backtest_execution_manager.hpp
+│   │   ├── backtest_metrics_calculator.hpp
+│   │   ├── backtest_pnl_manager.hpp
+│   │   ├── backtest_portfolio_constraints.hpp
+│   │   ├── backtest_price_manager.hpp
+│   │   ├── backtest_types.hpp
+│   │   ├── slippage_models.hpp
+│   │   └── transaction_cost_analysis.hpp
+│   ├── core/                       # Core system components (14 headers)
+│   │   ├── chart_generator.hpp     # Chart generation for emails
+│   │   ├── config_base.hpp
+│   │   ├── config_manager.hpp
+│   │   ├── email_sender.hpp        # Email report system
+│   │   ├── error.hpp               # Error types and Result<T>
+│   │   ├── holiday_checker.hpp     # Holiday detection
+│   │   ├── holidays.json           # CME holiday calendar
+│   │   ├── logger.hpp              # Logging framework
+│   │   ├── run_id_generator.hpp
+│   │   ├── state_manager.hpp
+│   │   ├── time_utils.hpp
+│   │   └── types.hpp               # Core types (Decimal, Bar, Position, etc.)
+│   ├── data/                       # Data management (6 headers)
+│   │   ├── conversion_utils.hpp    # Arrow ↔ domain conversion
+│   │   ├── credential_store.hpp    # Secure credential access
+│   │   ├── database_interface.hpp  # Abstract database interface
+│   │   ├── database_pooling.hpp    # Connection pool
+│   │   ├── market_data_bus.hpp     # Pub-sub for market data
+│   │   └── postgres_database.hpp   # PostgreSQL implementation
+│   ├── execution/                  # Order execution
+│   │   └── execution_engine.hpp
+│   ├── instruments/                # Financial instruments (5 headers)
+│   │   ├── equity.hpp
+│   │   ├── futures.hpp             # Futures with margin requirements
+│   │   ├── instrument.hpp          # Base instrument interface
+│   │   ├── instrument_registry.hpp # Singleton registry
+│   │   └── option.hpp
+│   ├── live/                       # Live trading components (10 headers)
+│   │   ├── csv_exporter.hpp        # CSV output generation
+│   │   ├── execution_manager.hpp
+│   │   ├── live_data_loader.hpp
+│   │   ├── live_metrics_calculator.hpp
+│   │   ├── live_pnl_manager.hpp
+│   │   ├── live_price_manager.hpp  # T-1/T-2 price tracking
+│   │   ├── live_trading_coordinator.hpp  # Main orchestrator
+│   │   ├── margin_manager.hpp      # Margin requirement validation
+│   │   ├── pnl_manager_base.hpp
+│   │   └── price_manager_base.hpp
+│   ├── optimization/               # Portfolio optimization
+│   │   └── dynamic_optimizer.hpp   # Cost-aware optimization
+│   ├── order/                      # Order management
+│   │   └── order_manager.hpp
+│   ├── portfolio/                  # Portfolio management
+│   │   └── portfolio_manager.hpp   # Multi-strategy coordination
+│   ├── risk/                       # Risk management
+│   │   └── risk_manager.hpp        # VaR, leverage limits
+│   ├── statistics/                 # Statistical analysis
+│   │   └── statistics_tools.hpp    # PCA, GARCH, Kalman, HMM
+│   ├── storage/                    # Results persistence (3 headers)
+│   │   ├── backtest_results_manager.hpp
+│   │   ├── live_results_manager.hpp
+│   │   └── results_manager_base.hpp
+│   ├── strategy/                   # Strategy components (7 headers)
+│   │   ├── base_strategy.hpp       # Common strategy functionality
+│   │   ├── regime_detector.hpp     # Market regime classification
+│   │   ├── strategy_interface.hpp  # Abstract interface
+│   │   ├── trend_following.hpp     # Main trend strategy
+│   │   ├── trend_following_fast.hpp
+│   │   ├── trend_following_slow.hpp
+│   │   └── types.hpp               # Strategy-specific types
+│   └── transaction_cost/           # Transaction cost modeling (4 headers)
+│       ├── asset_cost_config.hpp   # Per-symbol configurations
+│       ├── impact_model.hpp        # Square-root market impact
+│       ├── spread_model.hpp        # Tick-based spread with vol widening
+│       └── transaction_cost_manager.hpp  # Main orchestrator
+│
+├── src/                            # Implementation files (61 files)
+│   ├── backtest/                   # Backtest implementations (9 files)
+│   │   ├── backtest_coordinator.cpp      # Main orchestrator
+│   │   ├── backtest_data_loader.cpp
+│   │   ├── backtest_execution_manager.cpp
+│   │   ├── backtest_metrics_calculator.cpp
+│   │   ├── backtest_pnl_manager.cpp
+│   │   ├── backtest_portfolio_constraints.cpp
+│   │   ├── backtest_price_manager.cpp
+│   │   ├── slippage_model.cpp
+│   │   └── transaction_cost_analysis.cpp
+│   ├── core/                       # Core implementations (8 files)
+│   │   ├── chart_generator.cpp           # Gnuplot chart generation
+│   │   ├── config_base.cpp
+│   │   ├── config_manager.cpp
+│   │   ├── config_version.cpp
+│   │   ├── email_sender.cpp              # SMTP with HTML/charts
+│   │   ├── logger.cpp                    # File rotation, log levels
+│   │   ├── run_id_generator.cpp
+│   │   └── state_manager.cpp
+│   ├── data/                       # Data implementations (6 files)
+│   │   ├── conversion_utils.cpp
+│   │   ├── credential_store.cpp
+│   │   ├── database_pooling.cpp         # Connection pool with retry
+│   │   ├── market_data_bus.cpp
+│   │   ├── postgres_database.cpp        # All data operations
+│   │   └── postgres_database_extensions.cpp
+│   ├── execution/
+│   │   └── execution_engine.cpp
+│   ├── instruments/                # Instrument implementations (4 files)
+│   │   ├── equity.cpp
+│   │   ├── futures.cpp                  # Margin, multiplier, expiry
+│   │   ├── instrument_registry.cpp
+│   │   └── option.cpp
+│   ├── live/                       # Live trading implementations (8 files)
+│   │   ├── csv_exporter.cpp
+│   │   ├── execution_manager.cpp
+│   │   ├── live_data_loader.cpp
+│   │   ├── live_metrics_calculator.cpp
+│   │   ├── live_pnl_manager.cpp
+│   │   ├── live_price_manager.cpp
+│   │   ├── live_trading_coordinator.cpp
+│   │   └── margin_manager.cpp
+│   ├── optimization/
+│   │   └── dynamic_optimizer.cpp        # Cost-aware optimization
+│   ├── order/
+│   │   └── order_manager.cpp
+│   ├── portfolio/
+│   │   └── portfolio_manager.cpp
+│   ├── risk/
+│   │   └── risk_manager.cpp             # VaR, leverage, correlation
+│   ├── statistics/
+│   │   └── statistics_tools.cpp         # All statistical models
+│   ├── storage/                    # Results persistence (3 files)
+│   │   ├── backtest_results_manager.cpp
+│   │   ├── live_results_manager.cpp
+│   │   └── results_manager_base.cpp
+│   ├── strategy/                   # Strategy implementations (5 files)
+│   │   ├── base_strategy.cpp
+│   │   ├── regime_detector.cpp
+│   │   ├── trend_following.cpp          # Main trend strategy
+│   │   ├── trend_following_fast.cpp
+│   │   └── trend_following_slow.cpp
+│   └── transaction_cost/           # Transaction cost implementations (4 files)
+│       ├── asset_cost_config.cpp
+│       ├── impact_model.cpp
+│       ├── spread_model.cpp
+│       └── transaction_cost_manager.cpp
+│
+├── tests/                          # Unit and integration tests (27 test files)
+│   ├── backtesting/                # Backtest engine tests
+│   ├── core/                       # Logger, config tests
+│   ├── data/                       # Database, conversion tests
+│   ├── execution/                  # Execution engine tests
+│   ├── optimization/               # Optimizer tests
+│   ├── order/                      # Order manager tests
+│   ├── portfolio/                  # Portfolio manager tests
+│   ├── risk/                       # Risk manager tests
+│   ├── statistics/                 # Statistics tools tests
+│   └── strategy/                   # Strategy tests
+│
+├── docs/                           # Documentation (27 files)
+│   ├── CI_CD_README.md             # CI/CD pipeline documentation
+│   ├── CI_CD_IMPLEMENTATION_SUMMARY.md
+│   ├── LIBRARY_API_ARCHITECTURE.md # API design guide
+│   ├── README.Docker.md            # Docker deployment
+│   ├── TYPE_CONVERSION_GUIDE.md    # Type system guide
+│   ├── commission_CHANGES.md       # Commission model changes
+│   ├── commission_MIGRATION.md     # Migration guide
+│   ├── config_deliverable.md       # Configuration specification
+│   ├── futures_enhancements_transaction_costs.md
+│   ├── live_pipeline_spec.md       # Live trading specification
+│   ├── live_portfolio_multi_strategy_migration.md
+│   ├── live_portfolio_refactoring_analysis.md
+│   ├── multi_portfolio_email_csv_analysis.md
+│   ├── non_trading_day_fix.md      # Holiday handling
+│   ├── performance_upkeep.md       # Cron jobs, monitoring
+│   ├── statistics.md               # Statistics overview
+│   ├── statistics_model_improvement.md
+│   ├── statistics_module_deliverable.md
+│   ├── strategy_creation_tutorial.md
+│   ├── strategy_level_metrics.md
+│   ├── transaction_cost_config_fixes.md
+│   ├── transaction_cost_migration_guide.md
+│   └── transaction_cost_refactor.md
+│
+├── scripts/                        # Development scripts
+│   ├── dev_build_run.sh            # Quick build and run
+│   ├── pre-commit-hook.sh          # Pre-commit checks
+│   ├── run_live_trend.sh           # Live trading launcher
+│   └── setup-dev-environment.sh    # Environment setup
+│
+├── linting/                        # Code quality tools
+│   ├── lint_runner.sh              # Linting runner
+│   └── auto_fix_lint.sh            # Auto-fix formatting
+│
+├── requirements/                   # Dependency installation
+│   ├── README.md                   # Installation guide
+│   ├── install_ubuntu.sh           # Ubuntu dependencies
+│   └── install_macos.sh            # macOS dependencies
+│
+├── config.json                     # Main configuration file
+├── config_conservative.json        # Conservative portfolio config
+├── config_template.json            # Template for new configs
+├── CMakeLists.txt                  # Main build configuration
+├── Dockerfile                      # Docker container definition
+├── build_docker.sh                 # Docker build script
+└── live_trend.cron                 # Cron job definition
+```
+
+---
+
+## ⚙️ System Architecture
+
+trade-ngin follows a modular, component-based architecture with well-defined interfaces between system components.
+
+### High-Level Architecture
+
+```mermaid
+flowchart TB
+    subgraph External["External Systems"]
+        DB[(PostgreSQL<br/>Database)]
+        SMTP[Email Server]
+    end
+
+    subgraph Core["Core Infrastructure"]
+        Logger[Logger]
+        Config[ConfigManager]
+        State[StateManager]
+        Creds[CredentialStore]
+    end
+
+    subgraph Data["Data Layer"]
+        PgDB[PostgresDatabase]
+        Pool[DatabasePool]
+        MDB[MarketDataBus]
+        Conv[ConversionUtils]
+    end
+
+    subgraph Instruments["Instrument Layer"]
+        Registry[InstrumentRegistry]
+        Futures[FuturesInstrument]
+        Equity[EquityInstrument]
+    end
+
+    subgraph Strategy["Strategy Layer"]
+        BaseStrat[BaseStrategy]
+        TrendFollow[TrendFollowingStrategy]
+        TrendFast[TrendFollowingFastStrategy]
+        Regime[RegimeDetector]
+    end
+
+    subgraph Portfolio["Portfolio Layer"]
+        PM[PortfolioManager]
+        Opt[DynamicOptimizer]
+        Risk[RiskManager]
+    end
+
+    subgraph TransactionCost["Transaction Cost"]
+        TCM[TransactionCostManager]
+        Spread[SpreadModel]
+        Impact[ImpactModel]
+        ACfg[AssetCostConfig]
+    end
+
+    subgraph Backtest["Backtest Engine"]
+        BTC[BacktestCoordinator]
+        BTData[BacktestDataLoader]
+        BTPnL[BacktestPnLManager]
+        BTMetrics[BacktestMetricsCalculator]
+    end
+
+    subgraph Live["Live Trading"]
+        LTC[LiveTradingCoordinator]
+        LData[LiveDataLoader]
+        LPnL[LivePnLManager]
+        Email[EmailSender]
+        CSV[CSVExporter]
+        Margin[MarginManager]
+    end
+
+    DB --> PgDB
+    PgDB <--> Pool
+    Pool --> Data
+    Config --> Core
+    Creds --> PgDB
+    
+    Data --> Instruments
+    Instruments --> Strategy
+    Strategy --> Portfolio
+    
+    TCM --> Spread
+    TCM --> Impact
+    ACfg --> TCM
+    
+    Portfolio --> Backtest
+    Portfolio --> Live
+    TCM --> Portfolio
+    
+    Live --> Email
+    Live --> CSV
+    Email --> SMTP
+```
+
+> **Tip**: For detailed component documentation, see the module-specific READMEs listed in [Quick Reference](#-quick-reference).
+
+---
+
+## 🔢 Core Type System
+
+trade-ngin uses a custom type system for financial precision:
+
+### Decimal Class
+
+The `Decimal` class (`include/trade_ngin/core/types.hpp`) provides fixed-point arithmetic with 8 decimal places:
+
+```cpp
+// 8 decimal places for financial precision
+class Decimal {
+    static constexpr int64_t SCALE = 100000000LL;  // 10^8
+    int64_t value_;
+    
+public:
+    Decimal(double d);  // Converts with rounding
+    explicit operator double() const;
+    
+    // Arithmetic with overflow checking
+    Decimal operator+(const Decimal& other) const;
+    Decimal operator*(const Decimal& other) const;
+    // ... etc
+    
+    // Utilities
+    Decimal abs() const;
+    bool is_zero() const;
+    std::string to_string() const;
+};
+```
+
+### Type Aliases
+
+```cpp
+using Timestamp = std::chrono::system_clock::time_point;
+using Price = Decimal;
+using Quantity = Decimal;
+```
+
+### Core Structures
+
+```cpp
+// Market data bar
+struct Bar {
+    Timestamp timestamp;
+    Price open, high, low, close;
+    double volume;
+    std::string symbol;
+};
+
+// Position tracking
+struct Position {
+    std::string symbol;
+    Quantity quantity;
+    Price average_price;
+    Decimal unrealized_pnl;
+    Decimal realized_pnl;
+    Timestamp last_update;
+};
+
+// Execution report with cost breakdown
+struct ExecutionReport {
+    std::string order_id;
+    std::string symbol;
+    Side side;
+    Quantity filled_quantity;
+    Price fill_price;
+    Decimal commissions_fees;          // Explicit costs
+    Decimal implicit_price_impact;     // Spread + impact
+    Decimal slippage_market_impact;    // Implicit costs in $
+    Decimal total_transaction_costs;   // Total
+};
+```
+
+---
+
+## � Logging System
+
+trade-ngin includes a comprehensive, thread-safe logging system for debugging, monitoring, and auditing.
+
+### Log Levels
+
+| Level | Macro | Usage |
+|-------|-------|-------|
+| `TRACE` | `TRACE(msg)` | Detailed debug information (very verbose) |
+| `DEBUG` | `DEBUG(msg)` | General debug information |
+| `INFO` | `INFO(msg)` | General operational information |
+| `WARNING` | `WARN(msg)` | Warnings that don't affect operation |
+| `ERROR` | `ERROR(msg)` | Errors that affect operation but don't stop system |
+| `FATAL` | `FATAL(msg)` | Critical errors requiring system shutdown |
+
+### Using the Logger
+
+```cpp
+#include "trade_ngin/core/logger.hpp"
+
+// Initialize once at startup
+LoggerConfig config;
+config.min_level = LogLevel::INFO;
+config.destination = LogDestination::BOTH;  // Console + file
+config.log_directory = "logs";
+config.filename_prefix = "live_trend";
+config.max_file_size = 50 * 1024 * 1024;  // 50MB
+config.max_files = 10;
+
+Logger::instance().initialize(config);
+
+// Log messages
+INFO("Portfolio initialized with capital: $" << initial_capital);
+DEBUG("Loading positions for date: " << date_str);
+WARN("No market data available for: " << symbol);
+ERROR("Database connection failed: " << error_msg);
+```
+
+### Log Output Format
+
+```
+[2025-01-15 09:30:45.123] [INFO] Portfolio initialized with capital: $500000
+[2025-01-15 09:30:45.456] [DEBUG] Loading 28 instruments from registry
+[2025-01-15 09:30:46.789] [INFO] Strategy TREND_FOLLOWING generating signals
+```
+
+### Database Logging
+
+Both backtest and live trading log key operations to the database for auditing:
+
+#### Backtest Logging
+
+During backtests, the following is recorded:
+- **Daily equity snapshots** stored in `trading.backtest_equity_curve`
+- **Trade executions** with full cost breakdown
+- **Metrics calculated** at backtest completion
+
+```cpp
+// Logged during backtest
+INFO("Processing date: " << date << " | Equity: $" << equity);
+DEBUG("Symbol: " << symbol << " | Signal: " << signal << " | Position: " << position);
+```
+
+#### Live Trading Logging
+
+During live runs, extensive logging captures:
+
+```cpp
+// Position loading
+INFO("Loading positions for date: " << date << " | Portfolio: " << portfolio_id);
+
+// Strategy signals
+INFO("Strategy " << strategy_id << " signal for " << symbol << ": " << signal);
+
+// Position changes
+INFO("Position change: " << symbol << " | Old: " << old_qty << " | New: " << new_qty);
+
+// Database operations
+DEBUG("Storing position: " << symbol << " | Qty: " << qty << " | Price: " << price);
+
+// Risk validation
+INFO("Risk check: Gross=" << gross_lev << " | Net=" << net_lev << " | VaR=" << var);
+```
+
+### Log File Location
+
+| Mode | Log Location | Filename Pattern |
+|------|--------------|------------------|
+| Backtest | `logs/` | `bt_portfolio_YYYYMMDD_HHMMSS.log` |
+| Live | `logs/` | `live_trend_YYYYMMDD.log` |
+
+### Changing Log Level at Runtime
+
+```cpp
+// Change minimum log level
+Logger::instance().set_level(LogLevel::DEBUG);
+
+// Get current level
+LogLevel current = Logger::instance().get_min_level();
+```
+
+---
+
+## �💰 Transaction Cost Model
+
+trade-ngin implements a comprehensive transaction cost model based on Robert Carver's methodology. See [transaction_cost_refactor.md](docs/transaction_cost_refactor.md) for full specification or [src/transaction_cost/README.md](src/transaction_cost/README.md) for implementation details.
+
+### Cost Components
+
+```
+total_transaction_costs = explicit_costs + implicit_costs
+
+explicit_costs = |quantity| × $1.75 per contract
+implicit_costs = (spread_cost + market_impact) × |quantity| × point_value
+```
+
+### Spread Model (Tick-Based)
+
+```cpp
+spread_price_impact = 0.5 × spread_ticks × tick_size × volatility_multiplier
+```
+
+Where:
+- `spread_ticks` = baseline spread in ticks (per instrument)
+- `tick_size` = minimum price increment (e.g., 0.25 for ES)
+- `volatility_multiplier` = 1.0 ± λ × z_σ (widens in high volatility)
+
+### Market Impact (Square-Root Law)
+
+```cpp
+impact_bps = k_bps × √(|quantity| / ADV)
+market_impact_price_impact = (impact_bps / 10000) × reference_price
+```
+
+Where `k_bps` is selected based on ADV buckets:
+| ADV | k_bps | Category |
+|-----|-------|----------|
+| > 1,000,000 | 10 | Ultra liquid |
+| > 200,000 | 20 | Liquid |
+| > 50,000 | 40 | Medium |
+| > 20,000 | 60 | Thin |
+| ≤ 20,000 | 80 | Very thin |
+
+### Worked Example (ES Futures)
+
+```
+Given:
+  - Reference Price: $5,000
+  - Quantity: 10 contracts
+  - Tick Size: 0.25 points
+  - Point Value: $50
+  - ADV: 500,000 contracts
+
+Calculations:
+  Explicit:     10 × $1.75 = $17.50
+  Spread:       0.5 × 1 × 0.25 = 0.125 points
+  Impact:       10 × √(10/500000) × 5000/10000 = 0.02235 points
+  Implicit:     (0.125 + 0.02235) × 10 × 50 = $73.68
+  
+  Total:        $17.50 + $73.68 = $91.18
+```
+
+---
+
+## 📊 Statistics Module
+
+The statistics module provides quantitative analysis capabilities. See [src/statistics/README.md](src/statistics/README.md) for detailed usage.
+
+### Available Models
+
+| Category | Model | Status | Usage |
+|----------|-------|--------|-------|
+| **Transformers** | Normalizer (Z-Score, Min-Max, Robust) | ✅ Complete | Data preprocessing |
+| **Transformers** | PCA (variance threshold, whitening) | ✅ Complete | Dimensionality reduction |
+| **Stationarity** | ADF Test | ✅ Complete | Unit root testing |
+| **Stationarity** | KPSS Test | ✅ Complete | Stationarity confirmation |
+| **Cointegration** | Johansen Test | ✅ Complete | Multi-series cointegration |
+| **Cointegration** | Engle-Granger Test | ✅ Complete | Pairwise cointegration |
+| **Volatility** | GARCH(1,1) | ✅ Complete | Volatility forecasting |
+| **State Estimation** | Kalman Filter | ✅ Complete | Signal extraction |
+| **State Estimation** | Hidden Markov Model | ✅ Complete | Regime detection |
+
+### Example: Running ADF Test
+
+```cpp
+#include "trade_ngin/statistics/statistics_tools.hpp"
+
+// Test for stationarity
+auto result = statistics::adf_test(price_series, 5);  // 5 lags
+if (result.p_value < 0.05) {
+    // Series is stationary
+}
+```
+
+---
+
+## 🔄 Workflows
+
+### Backtesting Workflow
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant BTC as BacktestCoordinator
+    participant DB as PostgresDatabase
+    participant PM as PortfolioManager
+    participant Strat as Strategies
+    participant TCM as TransactionCostManager
+    participant RM as RiskManager
+
+    User->>BTC: run_portfolio()
+    BTC->>DB: load_market_data(symbols, dates)
+    DB-->>BTC: historical bars
+
+    loop For each trading day
+        BTC->>PM: process_market_data(bars)
+        PM->>Strat: on_data(bars)
+        Strat-->>PM: target_positions
+        
+        PM->>TCM: calculate_trading_costs(symbols)
+        TCM-->>PM: cost_vector
+        
+        PM->>RM: process_positions(positions)
+        RM-->>PM: risk_result (multipliers)
+        
+        PM-->>BTC: executions, positions
+        BTC->>BTC: update_equity_curve()
+    end
+
+    BTC->>BTC: calculate_metrics()
+    BTC->>DB: save_results()
+    BTC-->>User: BacktestResults
+```
+
+### Live Trading Workflow
+
+```mermaid
+sequenceDiagram
+    participant Cron as Cron Job
+    participant LTC as LiveTradingCoordinator
+    participant DB as PostgresDatabase
+    participant PM as PortfolioManager
+    participant Holiday as HolidayChecker
+    participant Email as EmailSender
+    participant CSV as CSVExporter
+
+    Cron->>LTC: main(date, --send-email)
+    LTC->>Holiday: is_holiday(yesterday)?
+    
+    alt Non-trading day
+        Holiday-->>LTC: true (weekend/holiday)
+        LTC->>DB: load_previous_positions()
+        LTC-->>Cron: Positions unchanged
+    else Trading day
+        Holiday-->>LTC: false
+        LTC->>DB: load_positions_by_date(prev_date)
+        DB-->>LTC: existing_positions
+        
+        LTC->>DB: load_market_data(today)
+        DB-->>LTC: today_bars
+        
+        LTC->>PM: process_market_data(bars)
+        PM-->>LTC: new_positions, executions
+        
+        LTC->>DB: store_positions()
+        LTC->>DB: store_executions()
+    end
+    
+    alt --send-email flag
+        LTC->>Email: prepare_report(positions, metrics)
+        Email->>Email: generate_charts()
+        Email-->>LTC: send_email()
+    end
+    
+    LTC->>CSV: export_positions()
+    LTC-->>Cron: Exit(0)
+```
+
+---
+
+## 🛠️ Setup & Installation
+
+> **Quick Start**: For the fastest setup, follow the [Quick Start](#-quick-start-first-clone) section.
+
+### Prerequisites
+
+| Requirement | Version | Purpose |
+|-------------|---------|---------|
+| C++ Compiler | GCC 10+ / Clang 10+ / MSVC 2019+ | C++20 support |
+| CMake | 3.17+ | Build configuration |
+| PostgreSQL | 12+ | Market data storage |
+| nlohmann_json | Latest | JSON configuration |
+| Apache Arrow C++ | Latest | Efficient data processing |
+| libpqxx | Latest | PostgreSQL C++ client |
+| Eigen3 | Latest | Linear algebra for optimization |
+| libcurl | Latest | Email functionality |
+| GoogleTest | Bundled | Unit testing |
+
+### System Requirements
+
+- **Memory**: 8GB+ RAM for typical backtests
+- **Storage**: SSD recommended for database
+- **OS**: Linux (preferred), macOS, Windows (WSL2)
+
+### Debug Build (with coverage)
+
+```bash
+mkdir -p build && cd build
+
+cmake .. \
+    -DCMAKE_BUILD_TYPE=Debug \
+    -DCMAKE_CXX_FLAGS="-g -O0 -fprofile-arcs -ftest-coverage"
+
+cmake --build . -j$(nproc)
+cd ..
+```
+
+### Running Unit Tests
+
+```bash
+cd build
+ctest --output-on-failure --verbose
+```
+
+---
 
 ## 🚀 Running the System
 
 ### Running Backtests
 
 ```bash
-# From the build directory
-./bin/Release/bt_trend
+# Run main backtest
+./build/bin/Release/bt_portfolio
 
-# Or from project root
-./build/apps/backtest/bt_trend
+# Run conservative portfolio backtest
+./build/bin/Release/bt_portfolio_conservative
 ```
 
 ### Running Live Trading
 
-```bash
-# From the build directory  
-./bin/Release/live_trend
-
-# Or from project root
-./build/apps/strategies/live_trend
-```
-
-### Monitoring and Logs
+Live trading requires a date argument in `MM-DD` format:
 
 ```bash
-# View real-time logs
-tail -f logs/bt_trend_*.log
+# Run for a specific date (no email)
+./build/bin/Release/live_portfolio 01-15
 
-# Run linting checks
-./linting/lint_runner.sh
+# Run for a specific date WITH email report
+./build/bin/Release/live_portfolio 01-15 --send-email
 
-# View lint reports
-cat linting/lint_report_*.txt
+# Conservative portfolio variant
+./build/bin/Release/live_portfolio_conservative 01-15 --send-email
 ```
 
-### Configuration Parameters
+> **Note**: The date-less execution mode is deprecated. Always specify the date.
 
-All components in trade-ngin are configurable through JSON configuration files:
+### Output Locations
 
-#### Backtest Configuration
+| Output Type | Location | Description |
+|-------------|----------|-------------|
+| Logs | `logs/live_trend_YYYYMMDD.log` | Daily log files |
+| CSV Exports | `apps/strategies/results/<portfolio_id>/` | Position files |
+| Database | `trading.positions` | Persisted positions |
+
+---
+
+## 📝 Additional Configuration
+
+### Strategy Types
+
+| Type | Class | Description |
+|------|-------|-------------|
+| `TrendFollowingStrategy` | `TrendFollowingStrategy` | Standard 6-window trend following |
+| `TrendFollowingFastStrategy` | `TrendFollowingFastStrategy` | Faster-reacting (shorter windows) |
+| `TrendFollowingSlowStrategy` | `TrendFollowingSlowStrategy` | Slower-reacting (longer windows) |
+
+### Email Configuration
 
 ```json
 {
-  "strategy_config": {
-    "symbols": ["ES", "NQ", "CL", "GC"],
-    "asset_class": 0,
-    "data_freq": 0,
-    "data_type": "ohlcv",
-    "start_date": "1609459200",
-    "end_date": "1640995200",
-    "initial_capital": 1000000.0,
-    "commission_rate": 0.0005,
-    "slippage_model": 1.0,
-    "store_trade_details": true
-  },
-  "portfolio_config": {
-    "initial_capital": 1000000.0,
-    "use_risk_management": true,
-    "use_optimization": true,
-    "risk_config": {
-      "var_limit": 0.15,
-      "jump_risk_limit": 0.10,
-      "max_correlation": 0.7,
-      "max_gross_leverage": 4.0,
-      "max_net_leverage": 2.0,
-      "confidence_level": 0.99,
-      "lookback_period": 252,
-      "capital": 1000000.0
-    },
-    "opt_config": {
-      "tau": 1.0,
-      "capital": 1000000.0,
-      "asymmetric_risk_buffer": 0.1,
-      "cost_penalty_scalar": 10,
-      "max_iterations": 1000,
-      "convergence_threshold": 1e-6
-    }
-  },
-  "results_db_schema": "backtest_results"
+  "email": {
+    "smtp_host": "smtp.gmail.com",
+    "smtp_port": 587,
+    "username": "your-email@gmail.com",
+    "password": "your-app-password",
+    "from_email": "your-email@gmail.com",
+    "to_emails": ["recipient1@example.com", "recipient2@example.com"],
+    "use_tls": true
+  }
 }
 ```
 
-#### Strategy Configuration
+> **Gmail Setup**: Use an [App Password](https://support.google.com/accounts/answer/185833) rather than your account password.
 
-```json
-{
-  "capital_allocation": 1000000.0,
-  "max_leverage": 3.0,
-  "max_drawdown": 0.3,
-  "var_limit": 0.1,
-  "correlation_limit": 0.7,
-  "trading_params": {
-    "ES": 50.0,
-    "NQ": 20.0,
-    "CL": 1000.0,
-    "GC": 100.0
-  },
-  "position_limits": {
-    "ES": 100,
-    "NQ": 100,
-    "CL": 50,
-    "GC": 50
-  },
-  "save_executions": true,
-  "save_signals": true,
-  "save_positions": true
-}
+---
+
+## 🗄️ Database Schema
+
+### Core Tables
+
+| Schema | Table | Purpose |
+|--------|-------|---------|
+| `trading` | `positions` | Current and historical positions |
+| `trading` | `executions` | Trade execution records |
+| `trading` | `live_run_metadata` | Daily run configuration |
+| `trading` | `strategy_trading_days_metadata` | Strategy configuration history |
+| `futures_data` | `ohlcv_1d` | Daily OHLCV data |
+| `futures_data` | `instruments` | Contract specifications |
+
+### Position Table Structure
+
+```sql
+CREATE TABLE trading.positions (
+    id SERIAL PRIMARY KEY,
+    date DATE NOT NULL,
+    portfolio_id VARCHAR(255) NOT NULL,
+    strategy_id VARCHAR(255) NOT NULL,
+    symbol VARCHAR(50) NOT NULL,
+    quantity DECIMAL(18,8),
+    average_price DECIMAL(18,8),
+    unrealized_pnl DECIMAL(18,8),
+    realized_pnl DECIMAL(18,8),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 ```
 
-## 🔍 Extending & Contributing to the System
+### Execution Table Structure
 
-### Adding New Strategies
+```sql
+CREATE TABLE trading.executions (
+    id SERIAL PRIMARY KEY,
+    date DATE NOT NULL,
+    portfolio_id VARCHAR(255) NOT NULL,
+    strategy_id VARCHAR(255) NOT NULL,
+    symbol VARCHAR(50) NOT NULL,
+    side VARCHAR(10),
+    quantity DECIMAL(18,8),
+    price DECIMAL(18,8),
+    commission DECIMAL(18,8),
+    slippage DECIMAL(18,8),
+    total_cost DECIMAL(18,8),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
 
-To create a new strategy, follow these steps:
+---
 
-1. Create a new header file in `include/trade_ngin/strategy/`
-2. Create a new implementation file in `src/strategy/`
-3. Inherit from `BaseStrategy` or implement `StrategyInterface` directly
-4. Implement the required methods for your strategy logic
-5. Register your strategy with the portfolio manager
+## 🏗️ Creating a New Strategy
 
-Example of a minimally viable strategy:
+For comprehensive strategy development instructions, see [src/strategy/README.md](src/strategy/README.md).
+
+### Quick Start
+
+1. **Create header** in `include/trade_ngin/strategy/your_strategy.hpp`
+2. **Implement** in `src/strategy/your_strategy.cpp`
+3. **Inherit from** `BaseStrategy`
+4. **Override required methods**: `initialize()`, `on_data()`, `validate_config()`
+5. **Register** in `CMakeLists.txt` (add to `TRADE_NGIN_SOURCES`)
+6. **Add to factory** in `live_portfolio.cpp` and `bt_portfolio.cpp`
+7. **Configure** in `config.json` under `portfolio.strategies`
+
+### Minimal Example
 
 ```cpp
+// include/trade_ngin/strategy/my_strategy.hpp
+#pragma once
+
+#include "trade_ngin/strategy/base_strategy.hpp"
+
+namespace trade_ngin {
+
+struct MyStrategyConfig {
+    double parameter1 = 0.5;
+    int lookback_window = 20;
+};
+
 class MyStrategy : public BaseStrategy {
 public:
-    MyStrategy(std::string id, StrategyConfig config, std::shared_ptr<DatabaseInterface> db)
-        : BaseStrategy(std::move(id), std::move(config), std::move(db)) {
-        // Initialize strategy-specific parameters
-    }
+    MyStrategy(std::string id, 
+               StrategyConfig config,
+               MyStrategyConfig my_config,
+               std::shared_ptr<PostgresDatabase> db,
+               std::shared_ptr<InstrumentRegistry> registry);
 
-    Result<void> on_data(const std::vector<Bar>& data) override {
-        // Call base class implementation first
-        auto base_result = BaseStrategy::on_data(data);
-        if (base_result.is_error()) return base_result;
+    Result<void> initialize() override;
+    Result<void> on_data(const std::vector<Bar>& data) override;
 
-        // Implement your strategy logic here
-        // Generate signals and update positions
+protected:
+    Result<void> validate_config() const override;
 
-        return Result<void>();
-    }
-
-    Result<void> initialize() override {
-        // Custom initialization logic
-        auto base_result = BaseStrategy::initialize();
-        if (base_result.is_error()) return base_result;
-
-        // Additional initialization steps
-
-        return Result<void>();
-    }
+private:
+    MyStrategyConfig my_config_;
 };
+
+}  // namespace trade_ngin
 ```
-
-### Adding New Data Sources
-
-To integrate a new data source:
-
-1. Implement a new class derived from `DatabaseInterface`
-2. Override all abstract methods to interact with your data source
-3. Implement conversion from your data source's format to trade-ngin's internal types
-
-### Adding New Execution Algorithms
-
-To add a new execution algorithm:
-
-1. Update the `ExecutionAlgo` enum in `execution_engine.hpp`
-2. Implement a new method in `ExecutionEngine` for your algorithm
-3. Update the `submit_execution` method to handle your new algorithm
-
-### Contribution Guidelines
-
-1. **Code Style**
-   - Follow the existing coding style and naming conventions
-   - Use snake_case for member variables and method names
-   - Use PascalCase for class names
-   - Use snake_case for file names
-
-2. **Error Handling**
-   - Use the `Result<T>` pattern for functions that can fail
-   - Provide detailed error messages with component context
-
-3. **Testing**
-   - Write tests for all new functionality
-   - Ensure all tests pass before submitting a pull request
-
-4. **Documentation**
-   - Document all public interfaces with clear descriptions
-   - Update relevant README sections for significant changes
-
-## 🛡️ Error Handling & Troubleshooting
-
-### Common Error Codes
-
-- `ErrorCode::INVALID_ARGUMENT` - Invalid parameter provided
-- `ErrorCode::NOT_INITIALIZED` - Component used before initialization
-- `ErrorCode::DATABASE_ERROR` - Database connection or query error
-- `ErrorCode::DATA_NOT_FOUND` - Requested data not found
-- `ErrorCode::INVALID_DATA` - Data validation failed
-- `ErrorCode::CONVERSION_ERROR` - Type conversion error
-- `ErrorCode::ORDER_REJECTED` - Order rejected by the system
-- `ErrorCode::INSUFFICIENT_FUNDS` - Insufficient capital for order
-- `ErrorCode::POSITION_LIMIT_EXCEEDED` - Position limit exceeded
-- `ErrorCode::INVALID_ORDER` - Invalid order parameters
-- `ErrorCode::STRATEGY_ERROR` - Error in strategy logic
-- `ErrorCode::RISK_LIMIT_EXCEEDED` - Risk limit exceeded
-```mermaid
-classDiagram
-    class Result~T~ {
-        -value_ T
-        -error_ unique_ptr~TradeError~
-        +Result(value T)
-        +Result(error unique_ptr~TradeError~)
-        +is_ok() bool
-        +is_error() bool
-        +value() T
-        +error() TradeError*
-    }
-    
-    class TradeError {
-        -code_ ErrorCode
-        -component_ string
-        +TradeError(code, message, component)
-        +code() ErrorCode
-        +component() string
-        +to_string() string
-    }
-    
-    class ErrorCode {
-        <<enumeration>>
-        NONE
-        UNKNOWN_ERROR
-        INVALID_ARGUMENT
-        NOT_INITIALIZED
-        DATABASE_ERROR
-        DATA_NOT_FOUND
-        INVALID_DATA
-        CONVERSION_ERROR
-        ORDER_REJECTED
-        INSUFFICIENT_FUNDS
-        POSITION_LIMIT_EXCEEDED
-        INVALID_ORDER
-        STRATEGY_ERROR
-        RISK_LIMIT_EXCEEDED
-    }
-    
-    Result~T~ o-- TradeError
-    TradeError o-- ErrorCode
-    
-    note for Result~T~ "Result<T>: Pattern for error propagation"
-    note for TradeError "TradeError: Extends std::runtime_error and provides error context"
-```
-
-### Troubleshooting Techniques
-
-#### Database Connection Issues
-
-If you encounter database connection issues:
-
-1. Verify your credentials in `config.json`
-2. Ensure the PostgreSQL server is running
-3. Check network connectivity and firewall settings
-4. Examine the error message from `PostgresDatabase::connect()`
-
-Example of handling database errors:
 
 ```cpp
-auto db = std::make_shared<PostgresDatabase>(connection_string);
-auto connect_result = db->connect();
-if (connect_result.is_error()) {
-    // Handle error case
-    std::cerr << "Database connection error: " << connect_result.error()->what() << std::endl;
-    std::cerr << "Error code: " << static_cast<int>(connect_result.error()->code()) << std::endl;
-    return 1;
+// src/strategy/my_strategy.cpp
+#include "trade_ngin/strategy/my_strategy.hpp"
+
+namespace trade_ngin {
+
+MyStrategy::MyStrategy(std::string id,
+                       StrategyConfig config,
+                       MyStrategyConfig my_config,
+                       std::shared_ptr<PostgresDatabase> db,
+                       std::shared_ptr<InstrumentRegistry> registry)
+    : BaseStrategy(std::move(id), std::move(config), db, registry),
+      my_config_(my_config) {}
+
+Result<void> MyStrategy::initialize() {
+    auto validate_result = validate_config();
+    if (validate_result.is_error()) {
+        return validate_result;
+    }
+    
+    INFO("MyStrategy initialized with parameter1=" + 
+         std::to_string(my_config_.parameter1));
+    return Result<void>();
 }
+
+Result<void> MyStrategy::on_data(const std::vector<Bar>& data) {
+    // Your trading logic here
+    for (const auto& bar : data) {
+        // Calculate signal
+        double signal = calculate_signal(bar);
+        
+        // Size position
+        double position = signal * get_position_size(bar.symbol);
+        
+        // Update target
+        update_target_position(bar.symbol, position);
+    }
+    return Result<void>();
+}
+
+Result<void> MyStrategy::validate_config() const {
+    if (my_config_.parameter1 <= 0 || my_config_.parameter1 > 1.0) {
+        return make_error<void>(ErrorCode::INVALID_ARGUMENT,
+                                "parameter1 must be in (0, 1]",
+                                "MyStrategy");
+    }
+    return Result<void>();
+}
+
+}  // namespace trade_ngin
 ```
 
-#### Strategy Initialization Failures
+---
 
-If a strategy fails to initialize:
+## 🛡️ Error Handling
 
-1. Check that the database connection is valid
-2. Verify that the strategy configuration is complete
-3. Look for specific error messages in the initialization chain
-4. Examine the strategy's `initialize()` method
-
-#### Unrealistic Backtest Results (FIXED - Dec 2024)
-
-**If you see static portfolio values or impossible metrics**:
-
-1. **Static $500k Portfolio Value**:
-   - **Cause**: Data ordering issue (symbol-first vs time-first)
-   - **Check**: Look for "Available current prices for X symbols" in logs
-   - **Expected**: Should show 28 symbols, not 8-13
-   - **Status**: FIXED in latest version
-
-2. **Impossible Metrics** (Sortino=999, MaxDD=0%):
-   - **Cause**: No position changes or P&L calculation errors  
-   - **Check**: Monitor "Period executions count" and position updates
-   - **Expected**: Should see varying execution counts (8-28 per period)
-   - **Status**: FIXED in latest version
-
-3. **Missing Data Warnings**:
-   - **Message**: "No current price available for position X"
-   - **Cause**: Normal for holidays/weekends, concerning if frequent
-   - **Action**: Monitor frequency - occasional is normal
-
-#### Backtesting Performance Issues
-
-If backtests are running slowly:
-
-1. Reduce the number of symbols or date range
-2. Check for inefficient loops or calculations in strategies  
-3. Optimize database queries to fetch data more efficiently
-4. Consider using release builds instead of debug builds
-5. Use automated build script `./build_and_test.sh` for optimized builds
-
-#### Memory Management Issues
-
-If you encounter memory issues:
-
-1. Look for resource leaks in components with manual memory management
-2. Ensure that destructors properly clean up allocated resources
-3. Check for memory-intensive operations in tight loops
-4. Consider using memory profiling tools like Valgrind
-
-## 📊 Performance Considerations & Optimizations
-
-### Data Processing Optimization
-
-trade-ngin uses Apache Arrow for efficient in-memory data representation:
-
-- Zero-copy data sharing between components
-- Columnar memory layout for efficient processing
-- Vectorized operations for performance
-- Minimal memory allocations during data processing
-
-### Concurrency Model
-
-- Components use thread-safe designs with mutex protection
-- The market data bus implements a publish-subscribe pattern for efficient event distribution
-- Strategy processing can be parallelized for multiple instruments
-
-### Memory Management
-
-- RAII pattern throughout the codebase
-- Smart pointers for automatic resource management
-- Preallocated buffers for high-performance operations
-- Limited heap allocations in performance-critical paths
-
-### Performance Profiling
-
-To profile trade-ngin performance:
-
-1. Build with profiling flags enabled
-   ```bash
-   cmake -DCMAKE_BUILD_TYPE=RelWithDebInfo -DENABLE_PROFILING=ON ..
-   ```
-
-2. Run with profiling tools
-   ```bash
-   # Linux
-   valgrind --tool=callgrind ./bin/bt_trend
-   
-   # Windows
-   Visual Studio Profiler
-   ```
-
-## 📌 Best Practices & Coding Standards
-
-### Naming Conventions
-
-- **Classes**: PascalCase (e.g., `OrderManager`)
-- **Methods**: snake_case (e.g., `add_strategy`)
-- **Variables**: snake_case (e.g., `update_allocations`)
-- **Constants**: UPPER_CASE (e.g., `MAX_ORDERS`)
-- **Files**: snake_case (e.g., `order_manager.cpp`)
-
-### Error Handling
-
-- Use `Result<T>` for functions that can fail
-- Avoid throwing exceptions across component boundaries
-- Provide detailed error messages with context
-- Check all return values for errors
-
-Example of proper error handling:
+trade-ngin uses the `Result<T>` pattern for error propagation (see `include/trade_ngin/core/error.hpp`):
 
 ```cpp
-Result<void> MyComponent::doSomething() {
-    auto result = dependentComponent_->operation();
+Result<void> MyComponent::operation() {
+    auto result = other_component->do_something();
     if (result.is_error()) {
         return make_error<void>(
             result.error()->code(),
@@ -1131,41 +1266,269 @@ Result<void> MyComponent::doSomething() {
             "MyComponent"
         );
     }
-    
-    // Continue with operation
     return Result<void>();
+}
+
+// Usage
+auto result = component.operation();
+if (result.is_error()) {
+    ERROR(result.error()->what());
+    return 1;
 }
 ```
 
+### Common Error Codes
+
+| Code | Meaning |
+|------|---------|
+| `INVALID_ARGUMENT` | Invalid parameter provided |
+| `NOT_INITIALIZED` | Component not initialized |
+| `DATABASE_ERROR` | Database operation failed |
+| `DATA_NOT_FOUND` | Requested data not found |
+| `STRATEGY_ERROR` | Strategy logic error |
+| `RISK_LIMIT_EXCEEDED` | Risk constraint violated |
+| `MARGIN_VALIDATION_FAILED` | Margin requirements not met |
+
+---
+
+## 📊 Performance Considerations
+
+### Data Processing
+- Apache Arrow for zero-copy data sharing
+- Columnar memory layout for vectorized operations
+- Connection pooling for database efficiency (5 connections by default)
+
 ### Memory Management
+- RAII pattern throughout
+- Smart pointers (`std::shared_ptr`, `std::unique_ptr`) for automatic resource management
+- Preallocated buffers for performance-critical operations
 
-- Use smart pointers (`std::shared_ptr`, `std::unique_ptr`)
-- Follow RAII principles
-- Avoid raw `new`/`delete` operations
-- Be mindful of ownership semantics
+### Concurrency
+- Thread-safe component designs with mutex protection
+- Pub-sub pattern for market data distribution
+- Connection pool with thread-safe acquisition
 
-### Documentation
+### Optimization Tips
+- Use `reserve()` on vectors when size is known
+- Avoid unnecessary copies (use `const&` or move semantics)
+- Profile with `perf` or `valgrind` for bottlenecks
 
-- Document all public interfaces
-- Include parameter descriptions
-- Document preconditions and postconditions
-- Document error conditions and handling
+---
 
-## 📚 Additional Documentation
+## 🐳 Docker Deployment
 
-- **CLAUDE.md** - Comprehensive project knowledge base with current system state, recent fixes, and development priorities
-- **TYPE_CONVERSION_GUIDE.md** - Guide for proper handling of Decimal, Price, and Quantity types
-- **README.Docker.md** - Docker setup and deployment instructions  
-- **linting/** - Code quality tools and style guides
+The system includes Docker support for containerized deployment:
 
-For detailed information about recent changes, debugging procedures, and development workflows, consult **CLAUDE.md** which is actively maintained with the latest project status.
+```bash
+# Build Docker image
+./build_docker.sh
 
-## 📖 License & Usage Terms
+# Or manually:
+docker build -t trade-ngin -f Dockerfile .
 
-trade-ngin is licensed under the [GPL v3](https://www.gnu.org/licenses/gpl-3.0) License. See LICENSE file for details.
+# Run container
+docker run -d \
+    --name trade-ngin \
+    -v $(pwd)/config.json:/app/config.json \
+    -v $(pwd)/logs:/app/logs \
+    trade-ngin
+```
 
-Third-party dependencies:
-- nlohmann_json: MIT License
-- Apache Arrow: Apache License 2.0
-- libpqxx: BSD License
-- GoogleTest: BSD 3-Clause License (included in externals/)
+### Docker Configuration
+
+The container includes:
+- All system dependencies
+- Cron job for scheduled runs (`live_trend.cron`)
+- Gnuplot for chart generation
+- Timezone set to America/New_York
+
+---
+
+## 🔧 CI/CD Pipeline
+
+The project uses GitHub Actions for continuous integration. See [docs/CI_CD_README.md](docs/CI_CD_README.md) for details.
+
+### Pipelines
+
+| Workflow | Trigger | Purpose |
+|----------|---------|---------|
+| `ci-cd-pipeline.yml` | Push, PR | Lint, build, test |
+| `code-coverage.yml` | Push, PR | Coverage reports |
+
+### Local Pre-commit Checks
+
+```bash
+# Run before each commit
+./scripts/pre-commit-hook.sh
+
+# Run linting
+./linting/lint_runner.sh
+
+# Auto-fix formatting
+./linting/auto_fix_lint.sh
+```
+
+### Coverage Requirements
+
+- **Minimum Coverage**: 75%
+- **Tools**: lcov, gcovr
+- **Reports**: HTML, XML (Cobertura)
+
+---
+
+## 🧪 Testing
+
+### Running Tests
+
+```bash
+cd build
+
+# Run all tests
+ctest --output-on-failure
+
+# Run specific test
+./tests/test_portfolio_manager
+
+# Run with verbose output
+ctest -V
+
+# Run with coverage
+cmake .. -DCMAKE_BUILD_TYPE=Debug \
+    -DCMAKE_CXX_FLAGS="-g -O0 -fprofile-arcs -ftest-coverage"
+make -j$(nproc)
+ctest
+lcov --capture --directory . --output-file coverage.info
+genhtml coverage.info --output-directory coverage_html
+```
+
+### Test Structure
+
+```
+tests/
+├── backtesting/          # BacktestCoordinator tests
+├── core/                 # Logger, config tests
+├── data/                 # Database tests
+├── execution/            # Execution engine tests
+├── optimization/         # Optimizer tests
+├── order/                # Order manager tests
+├── portfolio/            # Portfolio manager tests
+├── risk/                 # Risk manager tests
+├── statistics/           # Statistics tools tests
+└── strategy/             # Strategy tests
+```
+
+---
+
+## 📋 Troubleshooting
+
+### Common Issues
+
+#### Build Failures
+
+**Missing dependencies:**
+```bash
+# Ubuntu
+sudo apt-get install libarrow-dev nlohmann-json3-dev libpqxx-dev
+
+# macOS
+brew install apache-arrow nlohmann-json libpqxx
+```
+
+**libpqxx not found:**
+```bash
+# Check pkg-config
+pkg-config --libs libpqxx
+
+# If missing, add to PKG_CONFIG_PATH
+export PKG_CONFIG_PATH="/opt/homebrew/lib/pkgconfig:$PKG_CONFIG_PATH"
+```
+
+#### Database Connection Errors
+
+**Connection refused:**
+- Check database host is accessible
+- Verify port 5432 is open
+- Confirm credentials in `config.json`
+
+**Missing tables:**
+- Ensure required schemas exist (`trading`, `futures_data`)
+- Run database migrations if available
+
+#### Live Trading Issues
+
+**No market data:**
+- Check if date is a trading day
+- Verify data exists in `futures_data.ohlcv_1d`
+- Ensure symbols list is correct
+
+**Email not sending:**
+- Verify SMTP credentials
+- Check Gmail App Password (not account password)
+- Confirm recipient email addresses
+
+### Debug Logging
+
+Enable verbose logging:
+```cpp
+// In config or at runtime
+LoggerConfig config;
+config.min_level = LogLevel::DEBUG;  // or TRACE for maximum detail
+```
+
+### Getting Help
+
+1. Check the `logs/` directory for error details
+2. Review relevant documentation in `docs/`
+3. Create an issue with:
+   - Error message
+   - Steps to reproduce
+   - Configuration (sanitized)
+   - Log snippets
+
+---
+
+## 👥 Development Guidelines
+
+### Code Style
+
+- Follow [Google C++ Style Guide](https://google.github.io/styleguide/cppguide.html)
+- Use `clang-format` with the provided `.clang-format` configuration
+- Run linting before committing
+
+### Naming Conventions
+
+| Item | Convention | Example |
+|------|------------|---------|
+| Classes | PascalCase | `PortfolioManager` |
+| Functions | snake_case | `calculate_position()` |
+| Variables | snake_case | `target_position` |
+| Constants | UPPER_SNAKE | `MAX_LEVERAGE` |
+| Files | snake_case | `portfolio_manager.cpp` |
+| Headers | snake_case.hpp | `portfolio_manager.hpp` |
+
+### Git Workflow
+
+1. Create feature branch from `develop`
+2. Make changes with meaningful commits
+3. Run pre-commit checks
+4. Create PR to `develop`
+5. Address code review feedback
+6. Merge after approval
+
+
+
+## 📄 License
+
+This project is licensed under the GNU General Public License v3.0 - see the [LICENSE](LICENSE) file for details.
+
+---
+
+## Acknowledgments
+
+- Robert Carver for systematic trading methodology
+- AlgoGators team for contributions
+- Open source community for tooling
+
+---
+
+*Last updated: January 2026*
