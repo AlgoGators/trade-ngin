@@ -1,0 +1,9 @@
+MSBuild version 17.13.9+e0f243f1e for .NET Framework
+
+  chart_generator.cpp
+  Auto build dll exports
+     Creating library C:/Users/johnp/.gemini/antigravity/scratch/AlgoGators/tradengin/build/bin/Release/trade_ngin.lib and object C:/Users/johnp/.gemini/antigravity/scratch/AlgoGators/tradengin/build/bin/Release/trade_ngin.exp
+  trade_ngin.vcxproj -> C:\Users\johnp\.gemini\antigravity\scratch\AlgoGators\tradengin\build\bin\Release\trade_ngin.dll
+  Building Custom Rule C:/Users/johnp/.gemini/antigravity/scratch/AlgoGators/tradengin/tests/CMakeLists.txt
+  benchmark_live.cpp
+  benchmark_live.vcxproj -> C:\Users\johnp\.gemini\antigravity\scratch\AlgoGators\tradengin\build\bin\Release\benchmark_live.exe

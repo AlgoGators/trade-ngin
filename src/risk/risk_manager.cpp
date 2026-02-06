@@ -1,4 +1,5 @@
 #include "trade_ngin/risk/risk_manager.hpp"
+#include <Eigen/Dense>
 #include <algorithm>
 #include <cmath>
 #include <map>
@@ -14,8 +15,7 @@ RiskManager::RiskManager(RiskConfig config) : config_(std::move(config)) {
 }
 
 Result<RiskResult> RiskManager::process_positions(
-    const std::unordered_map<std::string, Position>& positions, 
-    const MarketData& market_data,
+    const std::unordered_map<std::string, Position>& positions, const MarketData& market_data,
     const std::unordered_map<std::string, double>& current_prices) {
     try {
         RiskResult result;
@@ -70,7 +70,8 @@ Result<RiskResult> RiskManager::process_positions(
                         }
                     }
 
-                    // Get contract multiplier from InstrumentRegistry for proper notional calculation
+                    // Get contract multiplier from InstrumentRegistry for proper notional
+                    // calculation
                     double contract_multiplier = 1.0;
                     try {
                         auto& registry = InstrumentRegistry::instance();
@@ -93,12 +94,14 @@ Result<RiskResult> RiskManager::process_positions(
                     }
 
                     double signed_quantity = static_cast<double>(pos.quantity);
-                    double position_value = signed_quantity * price_for_leverage * contract_multiplier;
+                    double position_value =
+                        signed_quantity * price_for_leverage * contract_multiplier;
                     position_values[index] = position_value;
                     total_value += std::abs(position_value);
                     position_symbols.push_back(symbol);
 
-                    // Also capture position value WITHOUT multiplier (signed) for volatility weights
+                    // Also capture position value WITHOUT multiplier (signed) for volatility
+                    // weights
                     double position_value_no_mult = signed_quantity * price_for_leverage;
                     position_values_no_multiplier[index] = position_value_no_mult;
                 }
@@ -137,8 +140,8 @@ Result<RiskResult> RiskManager::process_positions(
         result.jump_multiplier = calculate_jump_multiplier(market_data, weights, result);
         result.correlation_multiplier =
             calculate_correlation_multiplier(market_data, weights, result);
-        result.leverage_multiplier =
-            calculate_leverage_multiplier(market_data, weights, position_values, total_value, result);
+        result.leverage_multiplier = calculate_leverage_multiplier(
+            market_data, weights, position_values, total_value, result);
 
         // Recompute portfolio_var for reporting using volatility-only weights (WITHOUT multipliers)
         if (!market_data.covariance.empty() && !vol_weights.empty()) {
@@ -201,23 +204,41 @@ double RiskManager::calculate_portfolio_multiplier(const MarketData& market_data
         return 1.0;
     }
 
-    // Calculate portfolio variance using covariance matrix (SIGNED weights here)
-    double variance = 0.0;
-    for (size_t i = 0; i < weights.size(); ++i) {
-        for (size_t j = 0; j < weights.size(); ++j) {
-            variance += weights[i] * market_data.covariance[i][j] * weights[j];
+    const size_t n = weights.size();
+
+    // --- Eigen Vectorized Variance Calculation ---
+    // Convert weights to Eigen vector
+    Eigen::VectorXd w(n);
+    for (size_t i = 0; i < n; ++i) {
+        w(i) = weights[i];
+    }
+
+    // Convert covariance to Eigen matrix
+    Eigen::MatrixXd cov(n, n);
+    for (size_t i = 0; i < n; ++i) {
+        for (size_t j = 0; j < n; ++j) {
+            cov(i, j) = market_data.covariance[i][j];
         }
     }
-    result.portfolio_var = std::sqrt(variance);
+
+    // Calculate portfolio variance: w' * Cov * w (single vectorized operation)
+    double variance = w.transpose() * cov * w;
+    result.portfolio_var = std::sqrt(std::max(0.0, variance));
+
     if (result.portfolio_var <= 0.0) {
         return 1.0;
     }
 
-    // Calculate historical VaR
+    // Calculate historical VaR using Eigen dot product
     std::vector<double> historical_var;
+    historical_var.reserve(market_data.returns.size());
+
     for (const auto& daily_returns : market_data.returns) {
-        double port_return =
-            std::inner_product(daily_returns.begin(), daily_returns.end(), weights.begin(), 0.0);
+        Eigen::VectorXd ret(n);
+        for (size_t i = 0; i < n; ++i) {
+            ret(i) = daily_returns[i];
+        }
+        double port_return = w.dot(ret);
         historical_var.push_back(std::abs(port_return));
     }
 
@@ -338,7 +359,9 @@ double RiskManager::calculate_leverage_multiplier(const MarketData& market_data,
     }
 
     result.gross_leverage = gross / static_cast<double>(config_.capital);
-    result.net_leverage = net / static_cast<double>(config_.capital);  // Preserve sign: positive = net long, negative = net short
+    result.net_leverage =
+        net / static_cast<double>(
+                  config_.capital);  // Preserve sign: positive = net long, negative = net short
 
     // Historical leverage calculation
     std::vector<double> historical_leverage;
@@ -516,36 +539,30 @@ std::vector<std::vector<double>> RiskManager::calculate_covariance(
     const size_t num_assets = returns[0].size();
     const size_t num_days = returns.size();
 
-    // Calculate means
-    std::vector<double> means(num_assets, 0.0);
-    for (const auto& daily_returns : returns) {
+    // --- Eigen Vectorized Covariance Calculation ---
+    // Create returns matrix (days x assets)
+    Eigen::MatrixXd R(num_days, num_assets);
+    for (size_t t = 0; t < num_days; ++t) {
         for (size_t i = 0; i < num_assets; ++i) {
-            means[i] += daily_returns[i];
+            R(t, i) = returns[t][i];
         }
     }
 
-    for (auto& mean : means) {
-        mean /= num_days;
-    }
+    // Calculate column means
+    Eigen::VectorXd means = R.colwise().mean();
 
-    // Calculate covariance matrix
+    // Center the data (subtract means from each row)
+    Eigen::MatrixXd centered = R.rowwise() - means.transpose();
+
+    // Calculate covariance: (centered' * centered) / (n-1), then annualize
+    const double annualization = 252.0;
+    Eigen::MatrixXd cov = (centered.transpose() * centered) / (num_days - 1) * annualization;
+
+    // Convert back to std::vector<std::vector<double>>
     std::vector<std::vector<double>> covariance(num_assets, std::vector<double>(num_assets, 0.0));
-
-    for (const auto& daily_returns : returns) {
-        for (size_t i = 0; i < num_assets; ++i) {
-            for (size_t j = 0; j < num_assets; ++j) {
-                double dev_i = daily_returns[i] - means[i];
-                double dev_j = daily_returns[j] - means[j];
-                covariance[i][j] += dev_i * dev_j;
-            }
-        }
-    }
-
-    // Normalize and annualize
-    const double annualization = 252.0;  // Trading days per year
-    for (auto& row : covariance) {
-        for (auto& val : row) {
-            val = (val / (num_days - 1)) * annualization;
+    for (size_t i = 0; i < num_assets; ++i) {
+        for (size_t j = 0; j < num_assets; ++j) {
+            covariance[i][j] = cov(i, j);
         }
     }
 

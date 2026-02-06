@@ -27,24 +27,24 @@ find_package(nlohmann_json CONFIG REQUIRED)
 #set(Arrow_DIR "C:/vcpkg/installed/x64-windows/share/arrow")
 find_package(Arrow REQUIRED)
 #set(libpqxx_DIR "C:/vcpkg/installed/x64-windows/share/libpqxx")
-# find_package(libpqxx CONFIG REQUIRED)
+find_package(libpqxx CONFIG REQUIRED)
 find_package(Eigen3 REQUIRED)
 
 # Try to find libpqxx via pkg-config (works with Homebrew)
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(PQXX REQUIRED libpqxx)
+# find_package(PkgConfig REQUIRED)
+# pkg_check_modules(PQXX REQUIRED libpqxx)
 
 # Find curl for email functionality
 find_package(CURL REQUIRED)
 
-add_library(libpqxx::pqxx UNKNOWN IMPORTED)
-set_target_properties(libpqxx::pqxx PROPERTIES
-    IMPORTED_LOCATION "${PQXX_LINK_LIBRARIES}"
-    INTERFACE_INCLUDE_DIRECTORIES "${PQXX_INCLUDE_DIRS}"
-    INTERFACE_LINK_LIBRARIES "${PQXX_LIBRARIES}"
-)
+# add_library(libpqxx::pqxx UNKNOWN IMPORTED)
+# set_target_properties(libpqxx::pqxx PROPERTIES
+#     IMPORTED_LOCATION "${PQXX_LINK_LIBRARIES}"
+#     INTERFACE_INCLUDE_DIRECTORIES "${PQXX_INCLUDE_DIRS}"
+#     INTERFACE_LINK_LIBRARIES "${PQXX_LIBRARIES}"
+# )
 
-link_directories(${PQXX_LIBRARY_DIRS})
+# link_directories(${PQXX_LIBRARY_DIRS})
 
 link_directories(/opt/homebrew/lib)
 
@@ -123,6 +123,7 @@ if(WIN32)
     set_target_properties(trade_ngin PROPERTIES
         WINDOWS_EXPORT_ALL_SYMBOLS ON
     )
+    target_compile_definitions(trade_ngin PRIVATE NOMINMAX)
 endif()
 
 # Set up include directories for the library

@@ -235,12 +235,13 @@ Result<void> PostgresDatabase::store_executions(const std::vector<ExecutionRepor
             std::string exec_date = date_ss.str();
 
             // Updated INSERT to include all 4 cost breakdown fields
-            std::string query = "INSERT INTO " + table_name +
-                                " (exec_id, order_id, symbol, side, quantity, price, "
-                                "execution_time, commissions_fees, implicit_price_impact, "
-                                "slippage_market_impact, total_transaction_costs, is_partial, "
-                                "strategy_id, strategy_name, date, portfolio_id) VALUES "
-                                "($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)";
+            std::string query =
+                "INSERT INTO " + table_name +
+                " (exec_id, order_id, symbol, side, quantity, price, "
+                "execution_time, commissions_fees, implicit_price_impact, "
+                "slippage_market_impact, total_transaction_costs, is_partial, "
+                "strategy_id, strategy_name, date, portfolio_id) VALUES "
+                "($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)";
 
             std::cout << "DEBUG: About to execute SQL query" << std::endl;
             std::cout << "DEBUG: Query: " << query << std::endl;
@@ -1626,7 +1627,8 @@ Result<void> PostgresDatabase::validate_execution_report(const ExecutionReport& 
                                 "PostgresDatabase");
     }
 
-    if (exec.total_transaction_costs.is_negative() || static_cast<double>(exec.total_transaction_costs) > 1e12) {
+    if (exec.total_transaction_costs.is_negative() ||
+        static_cast<double>(exec.total_transaction_costs) > 1e12) {
         return make_error<void>(ErrorCode::INVALID_ARGUMENT,
                                 "Invalid total_transaction_costs: must be between 0 and 1e12",
                                 "PostgresDatabase");
@@ -1723,17 +1725,17 @@ Result<void> PostgresDatabase::store_backtest_executions(
             value_strings.reserve(executions.size());
 
             for (const auto& exec : executions) {
-                std::string values = "('" + run_id + "', '" + actual_portfolio_id + "', '" +
-                                     exec.exec_id + "', '" + exec.order_id + "', '" +
-                                     format_timestamp(exec.fill_time) + "', '" + exec.symbol +
-                                     "', '" + side_to_string(exec.side) + "', " +
-                                     std::to_string(static_cast<double>(exec.filled_quantity)) +
-                                     ", " + std::to_string(static_cast<double>(exec.fill_price)) +
-                                     ", " + std::to_string(static_cast<double>(exec.commissions_fees)) +
-                                     ", " + std::to_string(static_cast<double>(exec.implicit_price_impact)) +
-                                     ", " + std::to_string(static_cast<double>(exec.slippage_market_impact)) +
-                                     ", " + std::to_string(static_cast<double>(exec.total_transaction_costs)) +
-                                     ", " + (exec.is_partial ? "true" : "false") + ")";
+                std::string values =
+                    "('" + run_id + "', '" + actual_portfolio_id + "', '" + exec.exec_id + "', '" +
+                    exec.order_id + "', '" + format_timestamp(exec.fill_time) + "', '" +
+                    exec.symbol + "', '" + side_to_string(exec.side) + "', " +
+                    std::to_string(static_cast<double>(exec.filled_quantity)) + ", " +
+                    std::to_string(static_cast<double>(exec.fill_price)) + ", " +
+                    std::to_string(static_cast<double>(exec.commissions_fees)) + ", " +
+                    std::to_string(static_cast<double>(exec.implicit_price_impact)) + ", " +
+                    std::to_string(static_cast<double>(exec.slippage_market_impact)) + ", " +
+                    std::to_string(static_cast<double>(exec.total_transaction_costs)) + ", " +
+                    (exec.is_partial ? "true" : "false") + ")";
                 value_strings.push_back(values);
             }
 
@@ -1742,12 +1744,13 @@ Result<void> PostgresDatabase::store_backtest_executions(
         } else {
             // Use parameterized queries for smaller batches
             for (const auto& exec : executions) {
-                std::string query = "INSERT INTO " + table_name +
-                                    " (run_id, portfolio_id, execution_id, order_id, timestamp, "
-                                    "symbol, side, quantity, price, commissions_fees, "
-                                    "implicit_price_impact, slippage_market_impact, "
-                                    "total_transaction_costs, is_partial) "
-                                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)";
+                std::string query =
+                    "INSERT INTO " + table_name +
+                    " (run_id, portfolio_id, execution_id, order_id, timestamp, "
+                    "symbol, side, quantity, price, commissions_fees, "
+                    "implicit_price_impact, slippage_market_impact, "
+                    "total_transaction_costs, is_partial) "
+                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)";
 
                 txn.exec_params(
                     query, run_id, actual_portfolio_id, exec.exec_id, exec.order_id,
@@ -1803,17 +1806,18 @@ Result<void> PostgresDatabase::store_backtest_executions_with_strategy(
             value_strings.reserve(executions.size());
 
             for (const auto& exec : executions) {
-                std::string values = "('" + run_id + "', '" + actual_portfolio_id + "', '" +
-                                     strategy_id + "', '" + exec.exec_id + "', '" + exec.order_id +
-                                     "', '" + format_timestamp(exec.fill_time) + "', '" +
-                                     exec.symbol + "', '" + side_to_string(exec.side) + "', " +
-                                     std::to_string(static_cast<double>(exec.filled_quantity)) +
-                                     ", " + std::to_string(static_cast<double>(exec.fill_price)) +
-                                     ", " + std::to_string(static_cast<double>(exec.commissions_fees)) +
-                                     ", " + std::to_string(static_cast<double>(exec.implicit_price_impact)) +
-                                     ", " + std::to_string(static_cast<double>(exec.slippage_market_impact)) +
-                                     ", " + std::to_string(static_cast<double>(exec.total_transaction_costs)) +
-                                     ", " + (exec.is_partial ? "true" : "false") + ")";
+                std::string values =
+                    "('" + run_id + "', '" + actual_portfolio_id + "', '" + strategy_id + "', '" +
+                    exec.exec_id + "', '" + exec.order_id + "', '" +
+                    format_timestamp(exec.fill_time) + "', '" + exec.symbol + "', '" +
+                    side_to_string(exec.side) + "', " +
+                    std::to_string(static_cast<double>(exec.filled_quantity)) + ", " +
+                    std::to_string(static_cast<double>(exec.fill_price)) + ", " +
+                    std::to_string(static_cast<double>(exec.commissions_fees)) + ", " +
+                    std::to_string(static_cast<double>(exec.implicit_price_impact)) + ", " +
+                    std::to_string(static_cast<double>(exec.slippage_market_impact)) + ", " +
+                    std::to_string(static_cast<double>(exec.total_transaction_costs)) + ", " +
+                    (exec.is_partial ? "true" : "false") + ")";
                 value_strings.push_back(values);
             }
 
@@ -2051,9 +2055,9 @@ Result<void> PostgresDatabase::store_live_results(
     double daily_realized_pnl, double daily_unrealized_pnl, double portfolio_var,
     double gross_leverage, double net_leverage, double portfolio_leverage, double margin_leverage,
     double margin_cushion, double max_correlation, double jump_risk, double risk_scale,
-    double gross_notional, double net_notional, int active_positions, double total_transaction_costs,
-    double margin_posted, double cash_available, const nlohmann::json& config,
-    const std::string& table_name) {
+    double gross_notional, double net_notional, int active_positions,
+    double total_transaction_costs, double margin_posted, double cash_available,
+    const nlohmann::json& config, const std::string& table_name) {
     auto validation = validate_connection();
     if (validation.is_error())
         return validation;

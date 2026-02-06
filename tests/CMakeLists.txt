@@ -55,3 +55,9 @@ set_target_properties(trade_ngin_tests
 include(GoogleTest)
 # gtest_discover_tests(trade_ngin_tests)
 add_test(NAME trade_ngin_tests COMMAND trade_ngin_tests)
+
+# Live Benchmark Tool
+add_executable(benchmark_live benchmark_live.cpp)
+target_include_directories(benchmark_live PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(benchmark_live PRIVATE trade_ngin)
+
