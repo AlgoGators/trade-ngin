@@ -2,6 +2,8 @@ find_package(pybind11 CONFIG REQUIRED)
 
 pybind11_add_module(trade_ngin_py
     module.cpp
+    bindings/types_bindings.hpp
+    bindings/strategy_bindings.hpp
 )
 
 set_target_properties(trade_ngin_py PROPERTIES
