@@ -15,7 +15,8 @@ int main() {
 
     // Initialize database pool with connection string
     std::string conn_string =
-        "host=3.140.200.228 port=5432 dbname=algo_data user=postgres password=algogators";
+        "host=localhost port=5432 dbname=algo_data user=INSERT_USERNAME_HERE "
+        "password=INSERT_PASSWORD_HERE";
 
     // Initialize the singleton database pool
     auto pool_result = DatabasePool::instance().initialize(conn_string, 2);
