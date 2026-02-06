@@ -140,3 +140,11 @@ add_subdirectory(tests)
 
 # Add apps subdirectory
 add_subdirectory(apps)
+
+# Add python wrapper option
+option(BUILD_PYTHON_WRAPPER "Build Python wrapper using pybind11" ON)
+if (BUILD_PYTHON_WRAPPER)
+    add_subdirectory(python)
+endif()
+
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
