@@ -4,10 +4,10 @@
 #include <nlohmann/json.hpp>
 #include "trade_ngin/backtest/backtest_coordinator.hpp"
 #include "trade_ngin/backtest/transaction_cost_analysis.hpp"
+#include "trade_ngin/core/config_loader.hpp"
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/core/run_id_generator.hpp"
 #include "trade_ngin/core/time_utils.hpp"
-#include "trade_ngin/data/credential_store.hpp"
 #include "trade_ngin/data/database_pooling.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
 #include "trade_ngin/instruments/instrument_registry.hpp"
@@ -31,10 +31,6 @@ int main() {
         logger_config.destination = LogDestination::BOTH;
         logger_config.log_directory = "logs";
         logger_config.filename_prefix = "bt_portfolio_conservative";
-
-        // Use conservative config file
-        std::string config_filename = "./config_conservative.json";
-
         logger.initialize(logger_config);
 
         std::atomic_thread_fence(std::memory_order_seq_cst);
@@ -45,56 +41,28 @@ int main() {
         }
 
         INFO("Logger initialized successfully");
-        INFO("Using conservative portfolio configuration from: " + config_filename);
 
-        std::cerr << "After Logger initialization: initialized="
-                  << Logger::instance().is_initialized() << std::endl;
-
-        // Setup database connection pool
-        INFO("Initializing database connection pool...");
-        auto credentials = std::make_shared<trade_ngin::CredentialStore>(config_filename);
-
-        auto username_result = credentials->get<std::string>("database", "username");
-        if (username_result.is_error()) {
-            std::cerr << "Failed to get username: " << username_result.error()->what() << std::endl;
-            return 1;
-        }
-        std::string username = username_result.value();
-
-        auto password_result = credentials->get<std::string>("database", "password");
-        if (password_result.is_error()) {
-            std::cerr << "Failed to get password: " << password_result.error()->what() << std::endl;
-            return 1;
-        }
-        std::string password = password_result.value();
-
-        auto host_result = credentials->get<std::string>("database", "host");
-        if (host_result.is_error()) {
-            std::cerr << "Failed to get host: " << host_result.error()->what() << std::endl;
-            return 1;
-        }
-        std::string host = host_result.value();
-
-        auto port_result = credentials->get<std::string>("database", "port");
-        if (port_result.is_error()) {
-            std::cerr << "Failed to get port: " << port_result.error()->what() << std::endl;
-            return 1;
-        }
-        std::string port = port_result.value();
-
-        auto db_name_result = credentials->get<std::string>("database", "name");
-        if (db_name_result.is_error()) {
-            std::cerr << "Failed to get database name: " << db_name_result.error()->what()
+        // ========================================
+        // LOAD CONFIGURATION FROM MODULAR CONFIG FILES
+        // ========================================
+        INFO("Loading configuration from config/portfolios/conservative...");
+        auto app_config_result = ConfigLoader::load("./config", "conservative");
+        if (app_config_result.is_error()) {
+            ERROR("Failed to load configuration: " + std::string(app_config_result.error()->what()));
+            std::cerr << "Failed to load configuration: " << app_config_result.error()->what()
                       << std::endl;
             return 1;
         }
-        std::string db_name = db_name_result.value();
+        auto app_config = app_config_result.value();
+        INFO("Configuration loaded successfully for portfolio: " + app_config.portfolio_id);
 
-        std::string conn_string =
-            "postgresql://" + username + ":" + password + "@" + host + ":" + port + "/" + db_name;
+        // ========================================
+        // SETUP DATABASE CONNECTION
+        // ========================================
+        INFO("Initializing database connection pool...");
+        std::string conn_string = app_config.database.get_connection_string();
+        size_t num_connections = app_config.database.num_connections;
 
-        // Initialize only the connection pool with sufficient connections
-        size_t num_connections = 5;
         auto pool_result = DatabasePool::instance().initialize(conn_string, num_connections);
         if (pool_result.is_error()) {
             std::cerr << "Failed to initialize connection pool: " << pool_result.error()->what()
@@ -142,46 +110,22 @@ int main() {
         auto all_instruments = registry.get_all_instruments();
         INFO("Registry contains " + std::to_string(all_instruments.size()) + " instruments");
 
-        // Configure backtest parameters
-        INFO("Loading conservative portfolio configuration...");
-
-        // Load portfolio configuration from config_conservative.json FIRST (before creating engine)
-        std::ifstream config_file(config_filename);
-        if (!config_file.is_open()) {
-            ERROR("Failed to open " + config_filename);
-            return 1;
-        }
-        nlohmann::json config_json;
-        try {
-            config_file >> config_json;
-        } catch (const std::exception& e) {
-            ERROR("Failed to parse " + config_filename + ": " + std::string(e.what()));
-            return 1;
-        }
-
-        // Read portfolio_id from config (default to CONSERVATIVE_PORTFOLIO)
-        std::string portfolio_id = "CONSERVATIVE_PORTFOLIO";
-        if (config_json.contains("portfolio_id")) {
-            portfolio_id = config_json["portfolio_id"].get<std::string>();
-        } else if (config_json.contains("portfolio") &&
-                   config_json["portfolio"].contains("portfolio_id")) {
-            portfolio_id = config_json["portfolio"]["portfolio_id"].get<std::string>();
-        }
-        INFO("Using portfolio_id: " + portfolio_id);
-
+        // ========================================
+        // CONFIGURE BACKTEST PARAMETERS
+        // ========================================
         trade_ngin::backtest::BacktestConfig config;
 
-        // Set portfolio_id in backtest config BEFORE creating engine
-        config.portfolio_id = portfolio_id;
+        // Set portfolio_id from loaded config
+        config.portfolio_id = app_config.portfolio_id;
 
         // Convert timestamps to proper format
         auto now = std::chrono::system_clock::now();
         auto now_time_t = std::chrono::system_clock::to_time_t(now);
         std::tm* now_tm = std::localtime(&now_time_t);
 
-        // Set start date to 2 years ago
+        // Set start date based on lookback_years from config
         std::tm start_tm = *now_tm;
-        start_tm.tm_year -= 2;  // 2 years ago
+        start_tm.tm_year -= app_config.backtest.lookback_years;
         auto start_time_t = std::mktime(&start_tm);
         config.strategy_config.start_date = std::chrono::system_clock::from_time_t(start_time_t);
 
@@ -190,9 +134,9 @@ int main() {
 
         config.strategy_config.asset_class = trade_ngin::AssetClass::FUTURES;
         config.strategy_config.data_freq = trade_ngin::DataFrequency::DAILY;
-        // warmup_days will be calculated dynamically from strategy lookbacks
+        config.store_trade_details = app_config.backtest.store_trade_details;
 
-        // MEMORY FIXED: Restored original symbol loading with memory management
+        // Load symbols from database
         auto symbols_result = db->get_symbols(trade_ngin::AssetClass::FUTURES);
         auto symbols = symbols_result.value();
 
@@ -207,7 +151,6 @@ int main() {
             }
             config.strategy_config.symbols = symbols;
         } else {
-            // Detailed error logging
             ERROR("Failed to get symbols: " + std::string(symbols_result.error()->what()));
             throw std::runtime_error("Failed to get symbols: " +
                                      symbols_result.error()->to_string());
@@ -219,14 +162,12 @@ int main() {
         }
         std::cout << std::endl;
 
-        // CONSERVATIVE PORTFOLIO SETTINGS: Lower capital, lower risk limits
-        config.portfolio_config.initial_capital = 300000.0;  // $300k (lower than base $500k)
-        config.portfolio_config.use_risk_management = true;
-        config.portfolio_config.use_optimization = true;
-
-        // Set strategy_config.initial_capital to match portfolio_config.initial_capital to avoid
-        // confusion (This is stored in run_metadata for reference, but
-        // portfolio_config.initial_capital is what's actually used)
+        // ========================================
+        // APPLY CONFIG VALUES TO BACKTEST CONFIG
+        // ========================================
+        config.portfolio_config.initial_capital = app_config.initial_capital;
+        config.portfolio_config.use_risk_management = app_config.strategy_defaults.use_risk_management;
+        config.portfolio_config.use_optimization = app_config.strategy_defaults.use_optimization;
         config.strategy_config.initial_capital = config.portfolio_config.initial_capital;
 
         std::cout << "Retrieved " << config.strategy_config.symbols.size() << " symbols"
@@ -241,34 +182,22 @@ int main() {
              " to " +
              std::to_string(std::chrono::system_clock::to_time_t(config.strategy_config.end_date)));
 
-        // CONSERVATIVE PORTFOLIO RISK MANAGEMENT: Lower risk limits
+        // Apply risk configuration from loaded config
+        config.portfolio_config.risk_config = app_config.risk_config;
         config.portfolio_config.risk_config.capital = config.portfolio_config.initial_capital;
-        config.portfolio_config.risk_config.confidence_level = 0.99;
-        config.portfolio_config.risk_config.lookback_period = 252;
-        config.portfolio_config.risk_config.var_limit = 0.10;        // Lower than base 0.15
-        config.portfolio_config.risk_config.jump_risk_limit = 0.05;  // Lower than base 0.10
-        config.portfolio_config.risk_config.max_correlation = 0.7;
-        config.portfolio_config.risk_config.max_gross_leverage = 2.0;  // Lower than base 4.0
-        config.portfolio_config.risk_config.max_net_leverage = 1.0;    // Lower than base 2.0
 
-        // Configure portfolio optimization (same as base)
-        config.portfolio_config.opt_config.tau = 1.0;
+        // Apply optimization configuration from loaded config
+        config.portfolio_config.opt_config = app_config.opt_config;
         config.portfolio_config.opt_config.capital =
             config.portfolio_config.initial_capital.as_double();
-        config.portfolio_config.opt_config.cost_penalty_scalar = 50.0;
-        config.portfolio_config.opt_config.asymmetric_risk_buffer = 0.1;
-        config.portfolio_config.opt_config.max_iterations = 100;
-        config.portfolio_config.opt_config.convergence_threshold = 1e-6;
-        config.portfolio_config.opt_config.use_buffering = true;
-        config.portfolio_config.opt_config.buffer_size_factor = 0.05;
 
-        // Initialize backtest coordinator
-        // Right before creating BacktestCoordinator
+        // ========================================
+        // INITIALIZE BACKTEST COORDINATOR
+        // ========================================
         std::cerr << "Before BacktestCoordinator: initialized="
                   << Logger::instance().is_initialized() << std::endl;
         INFO("Initializing backtest coordinator...");
 
-        // Create BacktestCoordinatorConfig from BacktestConfig
         trade_ngin::backtest::BacktestCoordinatorConfig coord_config;
         coord_config.initial_capital = static_cast<double>(config.portfolio_config.initial_capital);
         coord_config.use_risk_management = config.portfolio_config.use_risk_management;
@@ -279,53 +208,55 @@ int main() {
         auto coordinator = std::make_unique<trade_ngin::backtest::BacktestCoordinator>(
             db, &registry, coord_config);
 
-        // After creating BacktestCoordinator
         std::cerr << "After BacktestCoordinator: initialized="
                   << Logger::instance().is_initialized() << std::endl;
 
-        // Setup portfolio configuration
+        // ========================================
+        // SETUP PORTFOLIO CONFIGURATION
+        // ========================================
         trade_ngin::PortfolioConfig portfolio_config;
         portfolio_config.total_capital = config.portfolio_config.initial_capital;
         portfolio_config.reserve_capital =
-            config.portfolio_config.initial_capital * 0.15;  // 15% reserve (higher than base 10%)
-        portfolio_config.max_strategy_allocation = 1.0;
-        portfolio_config.min_strategy_allocation = 0.1;
-        portfolio_config.use_optimization = true;
-        portfolio_config.use_risk_management = true;
+            config.portfolio_config.initial_capital * app_config.reserve_capital_pct;
+        portfolio_config.max_strategy_allocation = app_config.strategy_defaults.max_strategy_allocation;
+        portfolio_config.min_strategy_allocation = app_config.strategy_defaults.min_strategy_allocation;
+        portfolio_config.use_optimization = app_config.strategy_defaults.use_optimization;
+        portfolio_config.use_risk_management = app_config.strategy_defaults.use_risk_management;
         portfolio_config.opt_config = config.portfolio_config.opt_config;
         portfolio_config.risk_config = config.portfolio_config.risk_config;
 
-        // Load strategies from config
+        // ========================================
+        // LOAD STRATEGIES FROM CONFIG
+        // ========================================
         std::vector<std::shared_ptr<trade_ngin::StrategyInterface>> strategies;
         std::vector<std::string> strategy_names;
         std::unordered_map<std::string, double> strategy_allocations;
-        std::unordered_map<std::string, nlohmann::json> strategy_configs;
+        std::unordered_map<std::string, nlohmann::json> strategy_configs_map;
 
-        if (!config_json.contains("portfolio") ||
-            !config_json["portfolio"].contains("strategies")) {
-            ERROR("No portfolio.strategies section found in " + config_filename);
+        // Use strategies from loaded config
+        auto& strategies_config = app_config.strategies_config;
+        if (strategies_config.empty()) {
+            ERROR("No strategies found in configuration");
             return 1;
         }
 
-        auto strategies_config = config_json["portfolio"]["strategies"];
-
-        // Step 1: Load default allocations from config.json
+        // Load default allocations from config
         for (const auto& [strategy_id, strategy_def] : strategies_config.items()) {
             if (strategy_def.contains("enabled_backtest") &&
                 strategy_def["enabled_backtest"].get<bool>()) {
                 double default_allocation = strategy_def.value("default_allocation", 0.5);
                 strategy_allocations[strategy_id] = default_allocation;
-                strategy_configs[strategy_id] = strategy_def;
+                strategy_configs_map[strategy_id] = strategy_def;
                 strategy_names.push_back(strategy_id);
             }
         }
 
         if (strategy_names.empty()) {
-            ERROR("No enabled strategies found in " + config_filename + " for backtest");
+            ERROR("No enabled strategies found in configuration for backtest");
             return 1;
         }
 
-        // Step 2: Normalize allocations to sum to 1.0
+        // Normalize allocations to sum to 1.0
         double total_allocation = 0.0;
         for (const auto& [_, alloc] : strategy_allocations) {
             total_allocation += alloc;
@@ -336,31 +267,30 @@ int main() {
             }
         }
 
-        INFO("Loading " + std::to_string(strategy_names.size()) + " strategies from " +
-             config_filename);
+        INFO("Loading " + std::to_string(strategy_names.size()) +
+             " strategies from conservative config");
 
         // Create a shared_ptr that doesn't own the singleton registry
         auto registry_ptr =
             std::shared_ptr<InstrumentRegistry>(&registry, [](InstrumentRegistry*) {});
 
-        // Create base strategy configuration (conservative settings)
+        // Create base strategy configuration using loaded config values
         trade_ngin::StrategyConfig base_strategy_config;
         base_strategy_config.asset_classes = {trade_ngin::AssetClass::FUTURES};
         base_strategy_config.frequencies = {config.strategy_config.data_freq};
-        base_strategy_config.max_drawdown = 0.3;  // Lower than base 0.4
-        base_strategy_config.max_leverage = 2.0;  // Lower than base 4.0
+        base_strategy_config.max_drawdown = app_config.max_drawdown;
+        base_strategy_config.max_leverage = app_config.max_leverage;
 
-        // Add position limits and contract sizes
+        // Add position limits from config
         for (const auto& symbol : config.strategy_config.symbols) {
-            base_strategy_config.position_limits[symbol] = 1000.0;
+            base_strategy_config.position_limits[symbol] = app_config.execution.position_limit_backtest;
         }
 
         // Create and initialize each strategy
         for (const auto& strategy_id : strategy_names) {
-            const auto& strategy_def = strategy_configs[strategy_id];
+            const auto& strategy_def = strategy_configs_map[strategy_id];
             std::string strategy_type = strategy_def.value("type", "");
 
-            // Calculate capital allocation for this strategy
             double allocation = strategy_allocations[strategy_id];
             base_strategy_config.capital_allocation =
                 config.portfolio_config.initial_capital.as_double() * allocation;
@@ -371,13 +301,11 @@ int main() {
             std::shared_ptr<trade_ngin::StrategyInterface> strategy;
 
             if (strategy_type == "TrendFollowingStrategy") {
-                // Create TrendFollowingStrategy
                 trade_ngin::TrendFollowingConfig trend_config;
                 if (strategy_def.contains("config")) {
                     const auto& cfg = strategy_def["config"];
                     trend_config.weight = cfg.value("weight", 0.03);
-                    trend_config.risk_target =
-                        cfg.value("risk_target", 0.15);  // Lower than base 0.2
+                    trend_config.risk_target = cfg.value("risk_target", 0.15);  // Conservative default
                     trend_config.idm = cfg.value("idm", 2.5);
                     trend_config.use_position_buffering = cfg.value("use_position_buffering", true);
                     if (cfg.contains("ema_windows")) {
@@ -390,23 +318,20 @@ int main() {
                     trend_config.vol_lookback_short = cfg.value("vol_lookback_short", 32);
                     trend_config.vol_lookback_long = cfg.value("vol_lookback_long", 252);
                 }
-                // Set default FDM if not in config
+                // Set FDM from strategy_defaults
                 if (trend_config.fdm.empty()) {
-                    trend_config.fdm = {{1, 1.0},  {2, 1.03}, {3, 1.08},
-                                        {4, 1.13}, {5, 1.19}, {6, 1.26}};
+                    trend_config.fdm = app_config.strategy_defaults.fdm;
                 }
 
                 strategy = std::make_shared<trade_ngin::TrendFollowingStrategy>(
                     strategy_id, base_strategy_config, trend_config, db, registry_ptr);
 
             } else if (strategy_type == "TrendFollowingFastStrategy") {
-                // Create TrendFollowingFastStrategy
                 trade_ngin::TrendFollowingFastConfig trend_config;
                 if (strategy_def.contains("config")) {
                     const auto& cfg = strategy_def["config"];
                     trend_config.weight = cfg.value("weight", 0.03);
-                    trend_config.risk_target =
-                        cfg.value("risk_target", 0.20);  // Lower than base 0.25
+                    trend_config.risk_target = cfg.value("risk_target", 0.20);  // Conservative default
                     trend_config.idm = cfg.value("idm", 2.5);
                     trend_config.use_position_buffering =
                         cfg.value("use_position_buffering", false);
@@ -420,10 +345,9 @@ int main() {
                     trend_config.vol_lookback_short = cfg.value("vol_lookback_short", 16);
                     trend_config.vol_lookback_long = cfg.value("vol_lookback_long", 252);
                 }
-                // Set default FDM if not in config
+                // Set FDM from strategy_defaults
                 if (trend_config.fdm.empty()) {
-                    trend_config.fdm = {{1, 1.0},  {2, 1.03}, {3, 1.08},
-                                        {4, 1.13}, {5, 1.19}, {6, 1.26}};
+                    trend_config.fdm = app_config.strategy_defaults.fdm;
                 }
 
                 strategy = std::make_shared<trade_ngin::TrendFollowingFastStrategy>(
@@ -454,7 +378,9 @@ int main() {
             INFO("Successfully initialized and started strategy: " + strategy_id);
         }
 
-        // Create portfolio manager and add all strategies
+        // ========================================
+        // CREATE PORTFOLIO AND RUN BACKTEST
+        // ========================================
         INFO("Creating portfolio manager with " + std::to_string(strategies.size()) +
              " strategies...");
         auto portfolio = std::make_shared<trade_ngin::PortfolioManager>(portfolio_config);
@@ -515,15 +441,13 @@ int main() {
         std::cout << "Win Rate: " << (backtest_results.win_rate * 100.0) << "%" << std::endl;
         std::cout << "Total Trades: " << backtest_results.total_trades << std::endl;
 
-        // Save portfolio results to database with enhanced error handling
+        // Save portfolio results to database
         INFO("Saving conservative portfolio backtest results to database...");
         try {
-            // Generate portfolio config JSON
             nlohmann::json portfolio_config_json = portfolio_config.to_json();
             portfolio_config_json["strategy_allocations"] = strategy_allocations;
             portfolio_config_json["strategy_names"] = strategy_names;
 
-            // Save portfolio-level results with per-strategy attribution
             auto save_result = coordinator->save_portfolio_results_to_db(
                 backtest_results, strategy_names, strategy_allocations, portfolio,
                 portfolio_config_json);
@@ -541,7 +465,7 @@ int main() {
             ERROR("Exception during database save: " + std::string(e.what()));
         }
 
-        // Explicitly reset the coordinator to trigger cleanup before program exit
+        // Cleanup
         INFO("Cleaning up backtest coordinator...");
         coordinator.reset();
 

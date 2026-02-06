@@ -9,6 +9,9 @@ apps/backtest/results/
 CLAUDE.md
 .csv
 .cache/
+*email.json*
+*portfolio.json*
+*risk.json*
 
 # macOS system files
 .DS_Store

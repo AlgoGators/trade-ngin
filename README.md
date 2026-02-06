@@ -92,19 +92,13 @@ pip3 install cpplint
 
 ### Step 3: Configure Database Connection
 
-Create or edit `config.json` with your PostgreSQL credentials:
+Configuration now lives in modular JSON files under `config/`:
 
-```json
-{
-  "database": {
-    "host": "your-database-host",
-    "port": "5432",
-    "username": "your-username",
-    "password": "your-password",
-    "name": "your-database-name"
-  }
-}
-```
+- `config/defaults.json` (shared defaults)
+- `config/portfolios/base/*.json`
+- `config/portfolios/conservative/*.json`
+
+Edit the `database` section in `config/defaults.json` (or override it in a portfolio file). For a full walkthrough, see `docs/CONFIG_GUIDE.md`.
 
 ### Step 4: Build the Project
 
@@ -193,7 +187,9 @@ Each source module has its own detailed README:
 
 ### Example Configuration
 
-The system uses `config.json` for all runtime configuration. Here's an example demonstrating **multi-strategy support**:
+Configuration is modular and lives under `config/`. Shared defaults go in `config/defaults.json` and portfolio-specific overrides live in `config/portfolios/<name>/`.
+
+Example `config/defaults.json` (shared):
 
 ```json
 {
@@ -202,52 +198,36 @@ The system uses `config.json` for all runtime configuration. Here's an example d
     "port": "5432",
     "username": "your-username",
     "password": "your-password",
-    "name": "your-database-name"
+    "name": "your-database-name",
+    "num_connections": 5
   },
+  "strategy_defaults": {
+    "max_strategy_allocation": 1.0,
+    "min_strategy_allocation": 0.1
+  }
+}
+```
+
+Example `config/portfolios/base/portfolio.json` (strategies):
+
+```json
+{
   "portfolio_id": "MY_PORTFOLIO",
-  "portfolio": {
-    "strategies": {
-      "TREND_FOLLOWING": {
-        "enabled_backtest": true,
-        "enabled_live": true,
-        "default_allocation": 0.6,
-        "type": "TrendFollowingStrategy",
-        "config": {
-          "weight": 0.03,
-          "risk_target": 0.2,
-          "idm": 2.5,
-          "use_position_buffering": true,
-          "ema_windows": [[2,8], [4,16], [8,32], [16,64], [32,128], [64,256]],
-          "vol_lookback_short": 32,
-          "vol_lookback_long": 252
-        }
-      },
-      "MEAN_REVERSION": {
-        "enabled_backtest": true,
-        "enabled_live": true,
-        "default_allocation": 0.4,
-        "type": "MeanReversionStrategy",
-        "config": {
-          "weight": 0.02,
-          "risk_target": 0.15,
-          "idm": 2.0,
-          "use_position_buffering": true,
-          "lookback_window": 20,
-          "entry_zscore": 2.0,
-          "exit_zscore": 0.5,
-          "vol_lookback": 60
-        }
+  "initial_capital": 500000.0,
+  "reserve_capital_pct": 0.10,
+  "strategies": {
+    "TREND_FOLLOWING": {
+      "enabled_backtest": true,
+      "enabled_live": true,
+      "default_allocation": 0.6,
+      "type": "TrendFollowingStrategy",
+      "config": {
+        "weight": 0.03,
+        "risk_target": 0.2,
+        "idm": 2.5,
+        "ema_windows": [[2,8], [4,16], [8,32], [16,64], [32,128], [64,256]]
       }
     }
-  },
-  "email": {
-    "smtp_host": "smtp.gmail.com",
-    "smtp_port": 587,
-    "username": "your-email@gmail.com",
-    "password": "your-app-password",
-    "from_email": "your-email@gmail.com",
-    "to_emails": ["recipient@example.com"],
-    "use_tls": true
   }
 }
 ```
@@ -520,8 +500,12 @@ trade-ngin/
 │   ├── install_ubuntu.sh           # Ubuntu dependencies
 │   └── install_macos.sh            # macOS dependencies
 │
-├── config.json                     # Main configuration file
-├── config_conservative.json        # Conservative portfolio config
+├── config/                         # Modular configuration
+│   ├── defaults.json               # Shared defaults
+│   └── portfolios/                 # Per-portfolio overrides
+│       ├── base/
+│       └── conservative/
+├── config.json                     # Legacy single-file config (deprecated)
 ├── config_template.json            # Template for new configs
 ├── CMakeLists.txt                  # Main build configuration
 ├── Dockerfile                      # Docker container definition
@@ -1160,7 +1144,7 @@ For comprehensive strategy development instructions, see [src/strategy/README.md
 4. **Override required methods**: `initialize()`, `on_data()`, `validate_config()`
 5. **Register** in `CMakeLists.txt` (add to `TRADE_NGIN_SOURCES`)
 6. **Add to factory** in `live_portfolio.cpp` and `bt_portfolio.cpp`
-7. **Configure** in `config.json` under `portfolio.strategies`
+7. **Configure** in `config/portfolios/<name>/portfolio.json` under `strategies`
 
 ### Minimal Example
 
@@ -1329,7 +1313,7 @@ docker build -t trade-ngin -f Dockerfile .
 # Run container
 docker run -d \
     --name trade-ngin \
-    -v $(pwd)/config.json:/app/config.json \
+    -v $(pwd)/config:/app/config \
     -v $(pwd)/logs:/app/logs \
     trade-ngin
 ```
@@ -1448,7 +1432,7 @@ export PKG_CONFIG_PATH="/opt/homebrew/lib/pkgconfig:$PKG_CONFIG_PATH"
 **Connection refused:**
 - Check database host is accessible
 - Verify port 5432 is open
-- Confirm credentials in `config.json`
+- Confirm credentials in `config/defaults.json` (or portfolio override)
 
 **Missing tables:**
 - Ensure required schemas exist (`trading`, `futures_data`)

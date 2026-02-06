@@ -24,7 +24,7 @@ using StrategyExecutionsMap = std::unordered_map<std::string, std::vector<Execut
 /**
  * @brief Email configuration structure
  */
-struct EmailConfig {
+struct EmailSenderConfig {
     std::string smtp_host;
     int smtp_port;
     std::string username;
@@ -44,6 +44,11 @@ public:
      * @param credentials Shared pointer to credential store
      */
     explicit EmailSender(std::shared_ptr<CredentialStore> credentials);
+    /**
+     * @brief Constructor with explicit config
+     * @param config Email sender configuration
+     */
+    explicit EmailSender(const EmailSenderConfig& config);
 
     /**
      * @brief Initialize email configuration from credential store
@@ -129,7 +134,7 @@ public:
 
 private:
     std::shared_ptr<CredentialStore> credentials_;
-    EmailConfig config_;
+    EmailSenderConfig config_;
     bool initialized_;
     std::string chart_base64_;  // Store equity curve chart data for embedding in email
     std::string pnl_by_symbol_base64_;  // Store PnL by symbol chart data
