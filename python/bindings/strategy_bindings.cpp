@@ -1,4 +1,5 @@
 #include <pybind11/pybind11.h>
+
 #include "trade_ngin/strategy/strategy_interface.hpp"
 
 namespace py = pybind11;
