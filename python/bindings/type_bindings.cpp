@@ -12,8 +12,6 @@ using namespace trade_ngin;
 void bind_core_types(py::module_& m) {}
 
 // Bind types in trade_ngin/core/error.hpp
-// Due to the use of templates, we only bind Result<void> here. Other Result<T> types can be added
-// as needed.
 void bind_error_types(py::module_& m) {
     py::class_<TradeError>(m, "TradeError")
         .def(py::init<ErrorCode, std::string, std::string>(), py::arg("code"), py::arg("message"),
@@ -23,6 +21,8 @@ void bind_error_types(py::module_& m) {
         .def_property_readonly("component", &TradeError::component)
         .def("to_string", &TradeError::to_string);
 
+    // Due to the use of templates, we only bind Result<void> here. Other Result<T> types can be
+    // added as needed.
     py::class_<Result<void>>(m, "ResultVoid")
         .def(py::init<>())
         .def_property_readonly("is_ok", &Result<void>::is_ok)
