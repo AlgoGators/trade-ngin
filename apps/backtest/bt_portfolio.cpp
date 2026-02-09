@@ -184,6 +184,12 @@ int main() {
         // Apply risk configuration from loaded config
         config.portfolio_config.risk_config = app_config.risk_config;
         config.portfolio_config.risk_config.capital = config.portfolio_config.initial_capital;
+        config.portfolio_config.risk_config.confidence_level = 0.99;
+        config.portfolio_config.risk_config.lookback_period = 252;
+        config.portfolio_config.risk_config.var_limit = 0.15;
+        config.portfolio_config.risk_config.jump_risk_limit = 0.10;
+        config.portfolio_config.risk_config.max_correlation = 0.7;
+        config.portfolio_config.risk_config.max_net_leverage = 2.0;
 
         // Apply optimization configuration from loaded config
         config.portfolio_config.opt_config = app_config.opt_config;

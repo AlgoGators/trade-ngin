@@ -340,6 +340,12 @@ int main(int argc, char* argv[]) {
         // Configure portfolio risk management
         RiskConfig risk_config = app_config.risk_config;
         risk_config.capital = Decimal(initial_capital);
+        risk_config.confidence_level = 0.99;
+        risk_config.lookback_period = 252;
+        risk_config.var_limit = 0.15;
+        risk_config.jump_risk_limit = 0.10;
+        risk_config.max_correlation = 0.7;
+        risk_config.max_net_leverage = 2.0;
 
         // Configure portfolio optimization
         DynamicOptConfig opt_config = app_config.opt_config;
@@ -1451,6 +1457,19 @@ int main(int argc, char* argv[]) {
             total_posted_margin = metrics.total_posted_margin;
             maintenance_requirement_today = metrics.maintenance_requirement;
 
+            // Fix active_positions to count per-strategy positions, not per-symbol
+            // The aggregated positions map merges same-symbol positions across strategies,
+            // so metrics.active_positions undercounts when multiple strategies hold the same symbol
+            int true_active_positions = 0;
+            for (const auto& [strategy_id, pos_map] : strategy_positions_map) {
+                for (const auto& [symbol, pos] : pos_map) {
+                    if (std::abs(pos.quantity.as_double()) > 1e-6) {
+                        true_active_positions++;
+                    }
+                }
+            }
+            active_positions = true_active_positions;
+
             INFO("MarginManager calculated: gross_notional=$" + std::to_string(gross_notional) +
                  ", posted_margin=$" + std::to_string(total_posted_margin) +
                  ", active_positions=" + std::to_string(active_positions));
@@ -1466,7 +1485,7 @@ int main(int argc, char* argv[]) {
                   << std::endl;
         std::cout << "Net Notional: $" << std::fixed << std::setprecision(2) << net_notional
                   << std::endl;
-        std::cout << "Portfolio Leverage (gross/current): " << std::fixed << std::setprecision(2)
+        std::cout << "Gross Leverage: " << std::fixed << std::setprecision(2)
                   << (gross_notional / initial_capital) << "x" << std::endl;
         // Posted margin should never be zero if there are active positions; enforce and warn
         if (active_positions > 0 && total_posted_margin <= 0.0) {
@@ -1614,8 +1633,6 @@ int main(int argc, char* argv[]) {
             // Use portfolio_var as annualized volatility proxy
             std::cout << "Volatility: " << std::fixed << std::setprecision(2)
                       << (r.portfolio_var * 100.0) << "%" << std::endl;
-            std::cout << "Gross Leverage: " << std::fixed << std::setprecision(2)
-                      << r.gross_leverage << std::endl;
             std::cout << "Net Leverage: " << std::fixed << std::setprecision(2) << r.net_leverage
                       << std::endl;
             std::cout << "Max Correlation: " << std::fixed << std::setprecision(2)
@@ -1626,7 +1643,6 @@ int main(int argc, char* argv[]) {
                       << std::endl;
         } else {
             std::cout << "Volatility: N/A" << std::endl;
-            std::cout << "Gross Leverage: N/A" << std::endl;
             std::cout << "Net Leverage: N/A" << std::endl;
             std::cout << "Max Correlation: N/A" << std::endl;
             std::cout << "Jump Risk (99th): N/A" << std::endl;
@@ -1860,7 +1876,7 @@ int main(int argc, char* argv[]) {
             // Calculate yesterday's leverage and risk metrics
             // IMPORTANT: We MUST preserve existing values from the database
             // These were calculated correctly when Day T-1 was originally processed
-            double yesterday_portfolio_leverage = 0.0;
+            double yesterday_gross_leverage = 0.0;
             double yesterday_equity_to_margin_ratio = 0.0;
 
             // Load existing values from database using LiveDataLoader - DO NOT RECALCULATE
@@ -1869,7 +1885,7 @@ int main(int argc, char* argv[]) {
                     combined_strategy_id, coordinator_config.portfolio_id, previous_date);
                 if (margin_metrics.is_ok() && margin_metrics.value().valid) {
                     auto& metrics = margin_metrics.value();
-                    yesterday_portfolio_leverage = metrics.portfolio_leverage;
+                    yesterday_gross_leverage = metrics.gross_leverage;
                     yesterday_equity_to_margin_ratio = metrics.equity_to_margin_ratio;
 
                     // Also update the gross_notional and margin_posted if available
@@ -1877,7 +1893,7 @@ int main(int argc, char* argv[]) {
                     yesterday_margin_posted = metrics.margin_posted;
 
                     INFO("Preserved existing metrics from database via LiveDataLoader: leverage=" +
-                         std::to_string(yesterday_portfolio_leverage) +
+                         std::to_string(yesterday_gross_leverage) +
                          ", equity_to_margin=" + std::to_string(yesterday_equity_to_margin_ratio) +
                          ", gross_notional=" + std::to_string(yesterday_gross_notional) +
                          ", margin_posted=" + std::to_string(yesterday_margin_posted));
@@ -1947,7 +1963,7 @@ int main(int argc, char* argv[]) {
                 ", "
                 "portfolio_leverage = CASE WHEN portfolio_leverage IS NULL OR portfolio_leverage = "
                 "0 THEN " +
-                std::to_string(yesterday_portfolio_leverage) +
+                std::to_string(yesterday_gross_leverage) +
                 " ELSE portfolio_leverage END, "
                 "equity_to_margin_ratio = CASE WHEN equity_to_margin_ratio IS NULL OR "
                 "equity_to_margin_ratio = 0 THEN " +
@@ -2351,7 +2367,7 @@ int main(int argc, char* argv[]) {
                   << total_return_annualized << "%" << std::endl;
         std::cout << "Daily Return: " << std::fixed << std::setprecision(2) << daily_return << "%"
                   << std::endl;
-        std::cout << "Portfolio Leverage: " << std::fixed << std::setprecision(2)
+        std::cout << "Gross Leverage: " << std::fixed << std::setprecision(2)
                   << (gross_notional / current_portfolio_value) << "x" << std::endl;
         std::cout << "Posted Margin (Initial×Contracts): $" << std::fixed << std::setprecision(2)
                   << total_posted_margin << std::endl;
@@ -2444,17 +2460,17 @@ int main(int argc, char* argv[]) {
             }
 
             // Create configuration JSON
-            nlohmann::json report_config_json;
-            report_config_json["strategy_type"] = combined_strategy_id;  // From config (Phase 1)
-            report_config_json["capital_allocation"] = initial_capital;
-            report_config_json["max_leverage"] = base_strategy_config.max_leverage;
-            report_config_json["weight"] = 0.03;      // Default weight
-            report_config_json["risk_target"] = 0.2;  // Default risk target
-            report_config_json["idm"] = 2.5;          // Default IDM
-            report_config_json["active_positions"] = active_positions;
-            report_config_json["gross_notional"] = gross_notional;
-            report_config_json["net_notional"] = net_notional;
-            report_config_json["portfolio_leverage"] = gross_notional / initial_capital;
+            nlohmann::json config_json;
+            config_json["strategy_type"] = combined_strategy_id;  // From config (Phase 1)
+            config_json["capital_allocation"] = initial_capital;
+            config_json["max_leverage"] = base_strategy_config.max_leverage;
+            config_json["weight"] = 0.03;      // Default weight
+            config_json["risk_target"] = 0.2;  // Default risk target
+            config_json["idm"] = 2.5;          // Default IDM
+            config_json["active_positions"] = active_positions;
+            config_json["gross_notional"] = gross_notional;
+            config_json["net_notional"] = net_notional;
+            config_json["gross_leverage"] = gross_notional / initial_capital;
 
             // Create SQL insert for live_results table with correct schema
             std::stringstream date_ss;
@@ -2463,7 +2479,6 @@ int main(int argc, char* argv[]) {
 
             // Use calculated metrics from position analysis
             double portfolio_var = 0.0;
-            double gross_leverage = 0.0;
             double net_leverage = 0.0;
             double max_correlation = 0.0;
             double jump_risk = 0.0;
@@ -2472,7 +2487,6 @@ int main(int argc, char* argv[]) {
             if (risk_eval.is_ok()) {
                 const auto& r = risk_eval.value();
                 portfolio_var = r.portfolio_var;
-                gross_leverage = r.gross_leverage;
                 net_leverage = r.net_leverage;
                 max_correlation = r.correlation_risk;
                 jump_risk = r.jump_risk;
@@ -2480,7 +2494,7 @@ int main(int argc, char* argv[]) {
             }
 
             // Use LiveMetricsCalculator for portfolio metrics
-            double portfolio_leverage = metrics_calculator->calculate_portfolio_leverage(
+            double gross_leverage = metrics_calculator->calculate_gross_leverage(
                 gross_notional, current_portfolio_value);
             // equity_to_margin_ratio and margin_cushion already computed above
 
@@ -2497,9 +2511,8 @@ int main(int argc, char* argv[]) {
                 {"total_realized_pnl", total_realized_pnl},
                 {"current_portfolio_value", current_portfolio_value},
                 {"portfolio_var", portfolio_var},
-                {"gross_leverage", gross_leverage},
                 {"net_leverage", net_leverage},
-                {"portfolio_leverage", portfolio_leverage},
+                {"portfolio_leverage", gross_leverage},
                 {"equity_to_margin_ratio", equity_to_margin_ratio},
                 {"margin_cushion", margin_cushion},
                 {"max_correlation", max_correlation},
@@ -2850,14 +2863,9 @@ int main(int argc, char* argv[]) {
                     double net_leverage_calc = (current_portfolio_value != 0.0)
                                                    ? (net_notional / current_portfolio_value)
                                                    : 0.0;
-                    double portfolio_leverage_calc =
-                        (current_portfolio_value != 0.0)
-                            ? (gross_notional / current_portfolio_value)
-                            : 0.0;
 
                     strategy_metrics["Gross Leverage"] = gross_leverage_calc;
                     strategy_metrics["Net Leverage"] = net_leverage_calc;
-                    strategy_metrics["Portfolio Leverage"] = portfolio_leverage_calc;
                     strategy_metrics["Equity-to-Margin Ratio"] = equity_to_margin_ratio;
 
                     // Risk & Liquidity Metrics
