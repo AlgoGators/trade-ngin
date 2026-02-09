@@ -1458,46 +1458,19 @@ int main(int argc, char* argv[]) {
             total_posted_margin = metrics.total_posted_margin;
             maintenance_requirement_today = metrics.maintenance_requirement;
 
-            // Recompute gross_notional and net_notional from per-strategy positions.
-            // The combined positions map nets same-symbol quantities across strategies
-            // BEFORE taking absolute values, which understates gross exposure when
-            // strategies hold opposing positions in the same instrument.
-            gross_notional = 0.0;
-            net_notional = 0.0;
+            // Fix active_positions to count per-strategy positions, not per-symbol
+            // The aggregated positions map merges same-symbol positions across strategies,
+            // so metrics.active_positions undercounts when multiple strategies hold the same symbol
             int true_active_positions = 0;
-            bool notional_fallback = false;
             for (const auto& [strategy_id, pos_map] : strategy_positions_map) {
-                if (notional_fallback) break;
                 for (const auto& [symbol, pos] : pos_map) {
-                    double qty = pos.quantity.as_double();
-                    if (std::abs(qty) < 1e-6) continue;
-                    true_active_positions++;
-
-                    auto notional_result = margin_manager->calculate_position_notional(
-                        symbol, qty,
-                        previous_day_close_prices.count(symbol)
-                            ? previous_day_close_prices.at(symbol)
-                            : pos.average_price.as_double());
-                    if (notional_result.is_ok()) {
-                        double signed_notional = notional_result.value();
-                        gross_notional += std::abs(signed_notional);
-                        net_notional += signed_notional;
-                    } else {
-                        WARN("Failed to calculate per-strategy notional for " + symbol +
-                             " in strategy " + strategy_id + ", falling back to MarginManager combined value");
-                        gross_notional = metrics.gross_notional;
-                        net_notional = metrics.net_notional;
-                        notional_fallback = true;
-                        break;
+                    if (std::abs(pos.quantity.as_double()) > 1e-6) {
+                        true_active_positions++;
                     }
                 }
             }
             active_positions = true_active_positions;
 
-            INFO("Per-strategy notional: gross=$" + std::to_string(gross_notional) +
-                 ", net=$" + std::to_string(net_notional) +
-                 " (combined was gross=$" + std::to_string(metrics.gross_notional) +
-                 ", net=$" + std::to_string(metrics.net_notional) + ")");
             INFO("MarginManager calculated: gross_notional=$" + std::to_string(gross_notional) +
                  ", posted_margin=$" + std::to_string(total_posted_margin) +
                  ", active_positions=" + std::to_string(active_positions));
@@ -1661,8 +1634,6 @@ int main(int argc, char* argv[]) {
             // Use portfolio_var as annualized volatility proxy
             std::cout << "Volatility: " << std::fixed << std::setprecision(2)
                       << (r.portfolio_var * 100.0) << "%" << std::endl;
-            std::cout << "Gross Leverage (Risk): " << std::fixed << std::setprecision(2)
-                      << r.gross_leverage << std::endl;
             std::cout << "Net Leverage: " << std::fixed << std::setprecision(2) << r.net_leverage
                       << std::endl;
             std::cout << "Max Correlation: " << std::fixed << std::setprecision(2)
@@ -1673,7 +1644,6 @@ int main(int argc, char* argv[]) {
                       << std::endl;
         } else {
             std::cout << "Volatility: N/A" << std::endl;
-            std::cout << "Gross Leverage (Risk): N/A" << std::endl;
             std::cout << "Net Leverage: N/A" << std::endl;
             std::cout << "Max Correlation: N/A" << std::endl;
             std::cout << "Jump Risk (99th): N/A" << std::endl;
@@ -2518,6 +2488,7 @@ int main(int argc, char* argv[]) {
             if (risk_eval.is_ok()) {
                 const auto& r = risk_eval.value();
                 portfolio_var = r.portfolio_var;
+                net_leverage = r.net_leverage;
                 max_correlation = r.correlation_risk;
                 jump_risk = r.jump_risk;
                 risk_scale = r.recommended_scale;

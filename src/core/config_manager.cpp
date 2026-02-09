@@ -564,7 +564,6 @@ nlohmann::json ConfigManager::create_default_risk_config() const {
     config["var_limit"] = 0.15;          // 15% VaR limit
     config["jump_risk_limit"] = 0.10;    // 10% jump risk limit
     config["max_correlation"] = 0.7;     // 70% correlation limit
-    config["max_gross_leverage"] = 4.0;   // 4x gross leverage
     config["max_net_leverage"] = 2.0;    // 2x net leverage
     config["confidence_level"] = 0.99;   // 99% confidence
     config["lookback_period"] = 252;     // 1 year lookback

@@ -16,7 +16,6 @@ protected:
         config.var_limit = 0.15;          // 15% VaR limit
         config.jump_risk_limit = 0.10;    // 10% jump risk threshold
         config.max_correlation = 0.7;     // 70% correlation limit
-        config.max_gross_leverage = 4.0;  // 4x gross leverage
         config.max_net_leverage = 2.0;    // 2x net leverage
         config.capital = 1000000.0;       // $1M capital
         config.confidence_level = 0.99;   // 99% confidence
@@ -89,7 +88,6 @@ TEST_F(RiskManagerTest, LeverageExceeded) {
     ASSERT_TRUE(result.is_ok());
     const auto& risk_result = result.value();
     EXPECT_TRUE(risk_result.risk_exceeded);
-    EXPECT_GT(risk_result.gross_leverage, 4.0);
     EXPECT_GT(risk_result.net_leverage, 2.0);
     EXPECT_LT(risk_result.leverage_multiplier, 1.0);
 }
@@ -160,7 +158,6 @@ TEST_F(RiskManagerTest, PositionSymbolMismatch) {
 
     // Should still calculate leverage risks
     const auto& risk_result = result.value();
-    EXPECT_GT(risk_result.gross_leverage, 0.0);
     EXPECT_NE(risk_result.net_leverage, 0.0);
 }
 
