@@ -28,7 +28,7 @@ struct LiveResultsRow {
     double total_cumulative_return = 0.0;  // Total return since inception (non-annualized)
     double total_annualized_return = 0.0;  // Annualized return
     double current_portfolio_value = 0.0;
-    double portfolio_leverage = 0.0;
+    double gross_leverage = 0.0;
     double equity_to_margin_ratio = 0.0;
     double gross_notional = 0.0;
     double margin_posted = 0.0;
@@ -51,7 +51,7 @@ struct LiveResultsRow {
  * @brief Structure for margin-related metrics
  */
 struct MarginMetrics {
-    double portfolio_leverage = 0.0;
+    double gross_leverage = 0.0;
     double equity_to_margin_ratio = 0.0;
     double gross_notional = 0.0;
     double margin_posted = 0.0;

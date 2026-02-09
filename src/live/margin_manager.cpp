@@ -70,7 +70,7 @@ Result<MarginManager::MarginMetrics> MarginManager::calculate_margin_requirement
     }
 
     // Calculate derived metrics
-    metrics.portfolio_leverage = calculate_portfolio_leverage(metrics.gross_notional, portfolio_value);
+    metrics.gross_leverage = calculate_gross_leverage(metrics.gross_notional, portfolio_value);
     metrics.equity_to_margin_ratio = calculate_equity_to_margin_ratio(
         metrics.gross_notional, metrics.total_posted_margin);
     metrics.margin_cushion = calculate_margin_cushion(metrics.equity_to_margin_ratio);
@@ -80,7 +80,7 @@ Result<MarginManager::MarginMetrics> MarginManager::calculate_margin_requirement
          std::to_string(metrics.active_positions) + " active positions, " +
          "gross_notional=$" + std::to_string(metrics.gross_notional) + ", " +
          "posted_margin=$" + std::to_string(metrics.total_posted_margin) + ", " +
-         "leverage=" + std::to_string(metrics.portfolio_leverage) + "x");
+         "leverage=" + std::to_string(metrics.gross_leverage) + "x");
 
     return Result<MarginMetrics>(metrics);
 }
@@ -184,8 +184,8 @@ void MarginManager::print_margin_summary(
               << metrics.net_notional << std::endl;
     std::cout << "Posted Margin: $" << std::fixed << std::setprecision(2)
               << metrics.total_posted_margin << std::endl;
-    std::cout << "Portfolio Leverage: " << std::fixed << std::setprecision(2)
-              << metrics.portfolio_leverage << "x" << std::endl;
+    std::cout << "Gross Leverage: " << std::fixed << std::setprecision(2)
+              << metrics.gross_leverage << "x" << std::endl;
     std::cout << "Equity-to-Margin: " << std::fixed << std::setprecision(2)
               << metrics.equity_to_margin_ratio << std::endl;
 }
@@ -206,7 +206,7 @@ Result<void> MarginManager::validate_margins(const MarginMetrics& metrics) const
     return Result<void>();
 }
 
-double MarginManager::calculate_portfolio_leverage(
+double MarginManager::calculate_gross_leverage(
     double gross_notional,
     double portfolio_value) {
 

@@ -21,7 +21,6 @@ struct RiskConfig : public ConfigBase {
     double var_limit{0.15};          // Value at Risk limit (15%)
     double jump_risk_limit{0.10};    // Jump risk threshold (10%)
     double max_correlation{0.7};     // Maximum allowed correlation
-    double max_gross_leverage{4.0};  // Maximum gross leverage
     double max_net_leverage{2.0};    // Maximum net leverage
 
     // Calculation parameters
@@ -38,7 +37,6 @@ struct RiskConfig : public ConfigBase {
         j["var_limit"] = var_limit;
         j["jump_risk_limit"] = jump_risk_limit;
         j["max_correlation"] = max_correlation;
-        j["max_gross_leverage"] = max_gross_leverage;
         j["max_net_leverage"] = max_net_leverage;
         j["confidence_level"] = confidence_level;
         j["lookback_period"] = lookback_period;
@@ -55,8 +53,6 @@ struct RiskConfig : public ConfigBase {
             jump_risk_limit = j.at("jump_risk_limit").get<double>();
         if (j.contains("max_correlation"))
             max_correlation = j.at("max_correlation").get<double>();
-        if (j.contains("max_gross_leverage"))
-            max_gross_leverage = j.at("max_gross_leverage").get<double>();
         if (j.contains("max_net_leverage"))
             max_net_leverage = j.at("max_net_leverage").get<double>();
         if (j.contains("confidence_level"))
@@ -81,7 +77,6 @@ struct RiskResult {
     double portfolio_var{0.0};     // Portfolio Value at Risk
     double jump_risk{0.0};         // Jump risk
     double correlation_risk{0.0};  // Correlation risk
-    double gross_leverage{0.0};    // Gross leverage
     double net_leverage{0.0};      // Net leverage
 
     // Maximum observed risks

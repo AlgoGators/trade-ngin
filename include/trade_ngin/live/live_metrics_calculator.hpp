@@ -21,7 +21,7 @@ struct CalculatedMetrics {
     double annualized_return = 0.0;
 
     // Portfolio metrics
-    double portfolio_leverage = 0.0;
+    double gross_leverage = 0.0;
     double equity_to_margin_ratio = 0.0;
     double margin_cushion = 0.0;
     double cash_available = 0.0;
@@ -105,12 +105,12 @@ public:
     // ========== Leverage and Margin Calculations ==========
 
     /**
-     * @brief Calculate portfolio leverage
+     * @brief Calculate gross leverage
      * @param gross_notional Gross notional value
      * @param portfolio_value Portfolio value
-     * @return Portfolio leverage ratio
+     * @return Gross leverage ratio
      */
-    double calculate_portfolio_leverage(
+    double calculate_gross_leverage(
         double gross_notional,
         double portfolio_value) const;
 

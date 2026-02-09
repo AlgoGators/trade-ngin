@@ -245,7 +245,6 @@ int main() {
         config.portfolio_config.risk_config.var_limit = 0.15;
         config.portfolio_config.risk_config.jump_risk_limit = 0.10;
         config.portfolio_config.risk_config.max_correlation = 0.7;
-        config.portfolio_config.risk_config.max_gross_leverage = 4.0;
         config.portfolio_config.risk_config.max_net_leverage = 2.0;
 
         // Configure portfolio optimization

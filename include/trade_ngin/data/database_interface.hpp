@@ -240,9 +240,8 @@ public:
      * @param realized_pnl Realized P&L
      * @param current_portfolio_value Current portfolio value
      * @param portfolio_var Portfolio VaR
-     * @param gross_leverage Gross leverage
      * @param net_leverage Net leverage
-     * @param portfolio_leverage Portfolio leverage
+     * @param gross_leverage Gross leverage
      * @param max_correlation Max correlation risk
      * @param jump_risk Jump risk (99th percentile)
      * @param risk_scale Risk scale factor
@@ -256,7 +255,7 @@ public:
         const std::string& strategy_id, const Timestamp& date, double total_return,
         double volatility, double total_pnl, double unrealized_pnl, double realized_pnl,
         double current_portfolio_value, double daily_realized_pnl, double daily_unrealized_pnl,
-        double portfolio_var, double gross_leverage, double net_leverage, double portfolio_leverage,
+        double portfolio_var, double net_leverage, double gross_leverage,
         double margin_leverage, double margin_cushion, double max_correlation, double jump_risk,
         double risk_scale, double gross_notional, double net_notional, int active_positions,
         double total_transaction_costs, double margin_posted, double cash_available,

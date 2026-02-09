@@ -64,7 +64,7 @@ double LiveMetricsCalculator::calculate_annualized_return(
 
 // ========== Leverage and Margin Calculations ==========
 
-double LiveMetricsCalculator::calculate_portfolio_leverage(
+double LiveMetricsCalculator::calculate_gross_leverage(
     double gross_notional,
     double portfolio_value) const {
 
@@ -302,7 +302,7 @@ CalculatedMetrics LiveMetricsCalculator::calculate_all_metrics(
     metrics.annualized_return = calculate_annualized_return(total_return_decimal, trading_days);
 
     // Portfolio metrics
-    metrics.portfolio_leverage = calculate_portfolio_leverage(gross_notional, current_portfolio_value);
+    metrics.gross_leverage = calculate_gross_leverage(gross_notional, current_portfolio_value);
     metrics.equity_to_margin_ratio = calculate_equity_to_margin_ratio(current_portfolio_value, margin_posted);
     metrics.margin_cushion = calculate_margin_cushion(metrics.equity_to_margin_ratio);
     metrics.cash_available = calculate_cash_available(current_portfolio_value, margin_posted);
@@ -318,7 +318,7 @@ CalculatedMetrics LiveMetricsCalculator::calculate_all_metrics(
     //           << "daily_return=" << metrics.daily_return << "%, "
     //           << "total_return=" << metrics.total_return << "%, "
     //           << "annualized_return=" << metrics.annualized_return << "%, "
-    //           << "leverage=" << metrics.portfolio_leverage << "x";
+    //           << "leverage=" << metrics.gross_leverage << "x";
 
     return metrics;
 }
@@ -351,7 +351,7 @@ CalculatedMetrics LiveMetricsCalculator::calculate_finalization_metrics(
     metrics.annualized_return = calculate_annualized_return(total_return_decimal, trading_days);
 
     // Portfolio metrics
-    metrics.portfolio_leverage = calculate_portfolio_leverage(gross_notional, current_portfolio);
+    metrics.gross_leverage = calculate_gross_leverage(gross_notional, current_portfolio);
     metrics.equity_to_margin_ratio = calculate_equity_to_margin_ratio(current_portfolio, margin_posted);
     metrics.margin_cushion = calculate_margin_cushion(metrics.equity_to_margin_ratio);
     metrics.cash_available = calculate_cash_available(current_portfolio, margin_posted);
@@ -366,7 +366,7 @@ CalculatedMetrics LiveMetricsCalculator::calculate_finalization_metrics(
     //           << "realized_pnl=" << realized_pnl << ", "
     //           << "daily_return=" << metrics.daily_return << "%, "
     //           << "total_return=" << metrics.total_return << "%, "
-    //           << "leverage=" << metrics.portfolio_leverage << "x";
+    //           << "leverage=" << metrics.gross_leverage << "x";
 
     return metrics;
 }

@@ -99,7 +99,7 @@ Result<std::pair<double, TradingMetrics>> LiveTradingCoordinator::load_previous_
         metrics.daily_return = row.daily_return;
         metrics.total_cumulative_return = row.total_cumulative_return;
         metrics.total_annualized_return = row.total_annualized_return;
-        metrics.portfolio_leverage = row.portfolio_leverage;
+        metrics.gross_leverage = row.gross_leverage;
         metrics.equity_to_margin_ratio = row.equity_to_margin_ratio;
         metrics.active_positions = row.active_positions;
 
@@ -200,7 +200,7 @@ Result<void> LiveTradingCoordinator::store_results(const TradingMetrics& metrics
             {"total_unrealized_pnl", metrics.unrealized_pnl},
             {"total_realized_pnl", metrics.realized_pnl},
             {"current_portfolio_value", metrics.current_portfolio_value},
-            {"portfolio_leverage", metrics.portfolio_leverage},
+            {"portfolio_leverage", metrics.gross_leverage},
             {"equity_to_margin_ratio", metrics.equity_to_margin_ratio},
             {"margin_cushion", metrics.margin_cushion},
             {"gross_notional", metrics.gross_notional},
@@ -286,7 +286,7 @@ TradingMetrics LiveTradingCoordinator::convert_calculated_metrics(
     metrics.total_annualized_return = calc_metrics.annualized_return;
 
     // Portfolio metrics
-    metrics.portfolio_leverage = calc_metrics.portfolio_leverage;
+    metrics.gross_leverage = calc_metrics.gross_leverage;
     metrics.equity_to_margin_ratio = calc_metrics.equity_to_margin_ratio;
     metrics.margin_cushion = calc_metrics.margin_cushion;
     metrics.cash_available = calc_metrics.cash_available;
