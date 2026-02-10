@@ -413,6 +413,32 @@ void AssetCostConfigRegistry::initialize_default_configs() {
         configs_[config.symbol] = config;
     }
 
+    // Micro Bitcoin (MBT)
+    {
+        AssetCostConfig config;
+        config.symbol = "MBT";
+        config.baseline_spread_ticks = 1.0;
+        config.min_spread_ticks = 1.0;
+        config.max_spread_ticks = 10.0;
+        config.max_impact_bps = 80.0;
+        config.tick_size = 5.0;
+        config.point_value = 0.10;
+        configs_[config.symbol] = config;
+    }
+
+    // Micro E-mini S&P 500 (MES)
+    {
+        AssetCostConfig config;
+        config.symbol = "MES";
+        config.baseline_spread_ticks = 1.0;
+        config.min_spread_ticks = 1.0;
+        config.max_spread_ticks = 5.0;
+        config.max_impact_bps = 50.0;
+        config.tick_size = 0.25;
+        config.point_value = 5.0;
+        configs_[config.symbol] = config;
+    }
+
     // Micro E-mini Nasdaq-100 (MNQ)
     {
         AssetCostConfig config;
