@@ -273,17 +273,40 @@ jobs:
           # Generate coverage data
           lcov --capture --directory . --output-file coverage.info --ignore-errors mismatch --ignore-errors negative
 
-          # Only use files in the src directory
-          lcov --extract coverage.info '*/src/*' --output-file coverage.info --ignore-errors unused
+          # Keep coverage scope aligned with Sonar sources (src + include)
+          lcov --extract coverage.info '*/src/*' '*/include/*' --output-file coverage.info --ignore-errors unused
 
           # Generate HTML report
           genhtml coverage.info --output-directory coverage_html
 
           # Generate SonarQube-format XML coverage report (consumed by SonarCloud)
-          gcovr --root .. --filter '../src/.*' --sonarqube --output coverage-sonarqube.xml
+          gcovr --root .. --filter '../src/.*' --filter '../include/.*' --sonarqube --output coverage-sonarqube.xml
 
           # Generate XML report for GitHub
-          gcovr --root .. --filter '../src/.*' --xml --output coverage.xml
+          gcovr --root .. --filter '../src/.*' --filter '../include/.*' --xml --output coverage.xml
+
+          # Generate a text summary for easier CI diagnostics
+          gcovr --root .. --filter '../src/.*' --filter '../include/.*' --txt --output coverage.txt
+
+      - name: Validate Coverage Artifacts
+        if: matrix.build-type == 'Debug'
+        run: |
+          cd build
+          test -s coverage-sonarqube.xml || { echo "Missing build/coverage-sonarqube.xml"; exit 1; }
+          test -s coverage.xml || { echo "Missing build/coverage.xml"; exit 1; }
+
+      - name: Coverage Debug Summary
+        if: matrix.build-type == 'Debug'
+        run: |
+          cd build
+          echo "Files included in Sonar coverage report:"
+          grep -o 'path="[^"]*"' coverage-sonarqube.xml | sed 's/path="//;s/"$//' | sort -u | head -n 200
+          echo ""
+          echo "Lowest coverage files from lcov:"
+          lcov --list coverage.info | tail -n +1
+          echo ""
+          echo "gcovr text summary:"
+          cat coverage.txt
 
       - name: Check Coverage Threshold
         if: matrix.build-type == 'Debug'
@@ -317,6 +340,7 @@ jobs:
             build/coverage_html/
             build/coverage.xml
             build/coverage-sonarqube.xml
+            build/coverage.txt
             build/coverage.info
             build/compile_commands.json
 
