@@ -301,7 +301,7 @@ jobs:
             echo "✅ Coverage ($COVERAGE_PERCENT%) meets threshold (${{ env.COVERAGE_THRESHOLD }}%)"
           fi
       - name: SonarCloud Scan
-        if: matrix.build-type == 'Debug' && (github.event_name == 'pull_request' || github.ref_name == 'prod' || github.ref_name == 'staging')
+        if: matrix.build-type == 'Debug' && (github.event_name == 'pull_request' || github.ref_name == 'main' || github.ref_name == 'prod' || github.ref_name == 'staging')
         uses: SonarSource/sonarqube-scan-action@v6
         env:
           SONAR_HOST_URL: https://sonarcloud.io
