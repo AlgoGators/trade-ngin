@@ -279,6 +279,9 @@ jobs:
           # Generate HTML report
           genhtml coverage.info --output-directory coverage_html
 
+          # Generate SonarQube-format XML coverage report (consumed by SonarCloud)
+          gcovr --root .. --filter '../src/.*' --sonarqube --output coverage-sonarqube.xml
+
           # Generate XML report for GitHub
           gcovr --root .. --filter '../src/.*' --xml --output coverage.xml
 
@@ -297,14 +300,6 @@ jobs:
           else
             echo "✅ Coverage ($COVERAGE_PERCENT%) meets threshold (${{ env.COVERAGE_THRESHOLD }}%)"
           fi
-      - name: Generate gcov files for Sonar
-        if: matrix.build-type == 'Debug'
-        run: |
-          cd build
-          find . -type f -name '*.gcno' -execdir gcov -p {} \; 2>/dev/null || true
-          mkdir -p ../coverage-reports/gcov
-          find . -name '*.gcov' -exec mv {} ../coverage-reports/gcov/ \;
-
       - name: SonarCloud Scan
         if: matrix.build-type == 'Debug' && (github.event_name == 'pull_request' || github.ref_name == 'prod' || github.ref_name == 'staging')
         uses: SonarSource/sonarqube-scan-action@v6
@@ -321,8 +316,8 @@ jobs:
           path: |
             build/coverage_html/
             build/coverage.xml
+            build/coverage-sonarqube.xml
             build/coverage.info
-            coverage-reports/gcov/
             build/compile_commands.json
 
       - name: Upload Test Results
@@ -376,7 +371,7 @@ jobs:
           echo "- Build: ${{ needs.build.result }}" >> summary.md
           echo "- Security: ${{ needs.security-scan.result }}" >> summary.md
 
-          if [ -f "coverage-reports/coverage.xml" ]; then
+          if [ -f "coverage-reports/build/coverage.xml" ]; then
             echo "## Coverage Report" >> summary.md
             echo "Coverage report is available in the artifacts." >> summary.md
           fi
