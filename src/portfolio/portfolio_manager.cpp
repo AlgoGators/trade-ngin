@@ -436,9 +436,12 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data)
                         
                         // Add to recent executions
                         recent_executions_.push_back(exec);
+
+                        // Notify strategy of fill so it tracks proper entry prices
+                        info.strategy->on_execution(exec);
                     }
                 }
-            }   
+            }
         }
         
         
@@ -1170,8 +1173,8 @@ std::vector<std::shared_ptr<StrategyInterface>> PortfolioManager::get_strategies
 }
 
 double PortfolioManager::get_portfolio_value(const std::unordered_map<std::string, double>& current_prices) const {    
-    // Start with available capital
-    double portfolio_value = config_.total_capital - config_.reserve_capital;
+    // Start with full capital — reserve is still your money
+    double portfolio_value = config_.total_capital;
 
     // Acquire the mutex and get a copy of the portfolio positions
     std::unordered_map<std::string, Position> positions_copy;
@@ -1179,17 +1182,20 @@ double PortfolioManager::get_portfolio_value(const std::unordered_map<std::strin
         std::lock_guard<std::mutex> lock(mutex_);
         positions_copy = get_positions_internal();
     }
-    
+
     // Process the positions outside of the mutex lock
     for (const auto& [symbol, pos] : positions_copy) {
         auto it = current_prices.find(symbol);
-        if (it != current_prices.end()) {
-            // Use the provided price
-            portfolio_value += pos.quantity * it->second;
-        } else {
-            // Fall back to average price if current price not available
-            portfolio_value += pos.quantity * pos.average_price;
+        double price = (it != current_prices.end()) ? it->second : pos.average_price;
+        double multiplier = 1.0;
+        if (registry_) {
+            auto instrument = registry_->get_instrument(symbol);
+            if (instrument) {
+                multiplier = instrument->get_multiplier();
+            }
         }
+        // Equity change = contracts * (current_price - entry_price) * multiplier
+        portfolio_value += pos.quantity * (price - pos.average_price) * multiplier;
     }
     
     return portfolio_value;
@@ -1198,9 +1204,9 @@ double PortfolioManager::get_portfolio_value(const std::unordered_map<std::strin
 std::unordered_map<std::string, Position> PortfolioManager::get_positions_internal() const {
     // This method is called with the mutex already locked
     std::unordered_map<std::string, Position> portfolio_positions;
-    
+
     for (const auto& [_, info] : strategies_) {
-        for (const auto& [symbol, pos] : info.target_positions) {
+        for (const auto& [symbol, pos] : info.current_positions) {
             if (portfolio_positions.count(symbol) == 0) {
                 portfolio_positions[symbol] = pos;
                 portfolio_positions[symbol].quantity *= info.allocation;

@@ -151,6 +151,41 @@ public:
         return instrument_data_;
     }
 
+    /**
+     * @brief Get current EMA values for a symbol at specified windows
+     * @param symbol Instrument symbol
+     * @param windows EMA windows to compute (e.g., {8, 32, 64, 256})
+     * @return Map of window size to current EMA value
+     */
+    std::unordered_map<int, double> get_ema_values(const std::string& symbol, const std::vector<int>& windows) const {
+        std::unordered_map<int, double> result;
+        auto it = instrument_data_.find(symbol);
+        if (it == instrument_data_.end() || it->second.price_history.empty()) {
+            return result;
+        }
+        const auto& prices = it->second.price_history;
+        for (int window : windows) {
+            auto ema = calculate_ewma(prices, window);
+            if (!ema.empty()) {
+                result[window] = ema.back();
+            }
+        }
+        return result;
+    }
+
+    /**
+     * @brief Get current volatility for a symbol
+     * @param symbol Instrument symbol
+     * @return Current volatility value
+     */
+    double get_volatility(const std::string& symbol) const {
+        auto it = instrument_data_.find(symbol);
+        if (it != instrument_data_.end()) {
+            return it->second.current_volatility;
+        }
+        return 0.0;
+    }
+
 protected:
     /**
      * @brief Validate strategy configuration

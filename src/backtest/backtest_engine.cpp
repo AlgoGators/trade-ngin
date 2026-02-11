@@ -1,5 +1,6 @@
 // src/backtest/backtest_engine.cpp
 #include "trade_ngin/backtest/backtest_engine.hpp"
+#include "trade_ngin/backtest/backtest_csv_exporter.hpp"
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/core/state_manager.hpp"
 #include "trade_ngin/data/database_interface.hpp"
@@ -13,6 +14,7 @@
 #include <sstream>
 #include <iomanip>
 #include <chrono>
+#include <filesystem>
 
 namespace {
 std::string join(const std::vector<std::string>& elements, const std::string& delimiter) {
@@ -420,10 +422,25 @@ Result<BacktestResults> BacktestEngine::run_portfolio(
             bars_by_time[bar.timestamp].push_back(bar);
         }
         
-        INFO("Starting portfolio backtest simulation with " + 
+        INFO("Starting portfolio backtest simulation with " +
              std::to_string(portfolio->get_strategies().size()) + " strategies and " +
              std::to_string(data_result.value().size()) + " bars");
-        
+
+        // Initialize CSV exporter for daily position snapshots
+        std::string csv_run_id = "BT_" + std::to_string(
+            std::chrono::system_clock::now().time_since_epoch().count());
+        std::filesystem::path csv_output_dir = std::filesystem::path(config_.csv_output_path) / csv_run_id;
+        csv_exporter_ = std::make_unique<BacktestCSVExporter>(csv_output_dir.string());
+        auto csv_init_result = csv_exporter_->initialize_files();
+        if (csv_init_result.is_error()) {
+            WARN("Failed to initialize CSV exporter: " + std::string(csv_init_result.error()->what()) +
+                 ". Continuing without daily position CSV export.");
+            csv_exporter_.reset();
+        }
+
+        // Track previous positions for finalized_positions.csv
+        std::unordered_map<std::string, Position> previous_positions;
+
         size_t processed_bars = 0;
         
         // Process bars in chronological order
@@ -440,16 +457,56 @@ Result<BacktestResults> BacktestEngine::run_portfolio(
                 );
                 
                 if (result.is_error()) {
-                    WARN("Portfolio data processing failed for timestamp " + 
-                         std::to_string(std::chrono::system_clock::to_time_t(timestamp)) + 
-                         ": " + std::string(result.error()->what()) + 
+                    WARN("Portfolio data processing failed for timestamp " +
+                         std::to_string(std::chrono::system_clock::to_time_t(timestamp)) +
+                         ": " + std::string(result.error()->what()) +
                          ". Continuing with next time period.");
-                    
+
                     // Don't fail the entire backtest due to a single time period failure
                     // Instead, add a placeholder to maintain continuity
                     if (!equity_curve.empty()) {
                         // Use previous value for equity curve
                         equity_curve.emplace_back(timestamp, equity_curve.back().second);
+                    }
+                } else if (csv_exporter_) {
+                    // Export daily position snapshots
+                    try {
+                        auto portfolio_positions = portfolio->get_portfolio_positions();
+                        std::unordered_map<std::string, double> current_prices;
+                        for (const auto& bar : bars) {
+                            current_prices[bar.symbol] = bar.close;
+                        }
+
+                        double portfolio_value = equity_curve.empty() ?
+                            config_.portfolio_config.initial_capital : equity_curve.back().second;
+
+                        // Calculate gross and net notional
+                        double gross_notional = 0.0;
+                        double net_notional = 0.0;
+                        auto& registry = InstrumentRegistry::instance();
+                        for (const auto& [symbol, pos] : portfolio_positions) {
+                            auto price_it = current_prices.find(symbol);
+                            if (price_it == current_prices.end()) continue;
+                            auto instrument = registry.get_instrument(symbol);
+                            double notional = instrument ?
+                                instrument->get_notional_value(pos.quantity, price_it->second) :
+                                pos.quantity * price_it->second;
+                            gross_notional += std::abs(notional);
+                            net_notional += notional;
+                        }
+
+                        auto strategies = portfolio->get_strategies();
+                        csv_exporter_->append_daily_positions(
+                            timestamp, portfolio_positions, current_prices,
+                            portfolio_value, gross_notional, net_notional, strategies);
+
+                        csv_exporter_->append_finalized_positions(
+                            timestamp, portfolio_positions, previous_positions, current_prices);
+
+                        // Store current positions as previous for next iteration
+                        previous_positions = portfolio_positions;
+                    } catch (const std::exception& e) {
+                        WARN("Exception exporting daily positions CSV: " + std::string(e.what()));
                     }
                 }
             } catch (const std::exception& e) {
@@ -514,7 +571,20 @@ Result<BacktestResults> BacktestEngine::run_portfolio(
             ComponentState::STOPPED
         );
         
-        INFO("Portfolio backtest completed successfully with " + 
+        // Finalize CSV exporter
+        if (csv_exporter_) {
+            csv_exporter_->finalize();
+            INFO("Daily position CSVs saved to: " + csv_output_dir.string());
+        }
+
+        // Save aggregate results to CSV
+        auto csv_save_result = save_results_to_csv(results, csv_run_id);
+        if (csv_save_result.is_error()) {
+            WARN("Failed to save aggregate results to CSV: " +
+                 std::string(csv_save_result.error()->what()));
+        }
+
+        INFO("Portfolio backtest completed successfully with " +
              std::to_string(portfolio->get_strategies().size()) + " strategies");
 
         return Result<BacktestResults>(results);

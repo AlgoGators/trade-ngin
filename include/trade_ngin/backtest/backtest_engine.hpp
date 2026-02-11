@@ -10,6 +10,7 @@
 #include "trade_ngin/risk/risk_manager.hpp"
 #include "trade_ngin/optimization/dynamic_optimizer.hpp"
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
+#include "trade_ngin/backtest/backtest_csv_exporter.hpp"
 #include "trade_ngin/core/time_utils.hpp"
 #include <memory>
 #include <vector>
@@ -281,6 +282,7 @@ private:
     std::unique_ptr<RiskManager> risk_manager_;
     std::unique_ptr<DynamicOptimizer> optimizer_;
     std::unique_ptr<SlippageModel> slippage_model_;
+    std::unique_ptr<BacktestCSVExporter> csv_exporter_;
     std::string backtest_component_id_;
 
     /**

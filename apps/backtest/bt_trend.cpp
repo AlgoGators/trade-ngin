@@ -268,7 +268,8 @@ int main() {
 
         // Create portfolio manager and add strategy
         INFO("Creating portfolio manager...");
-        auto portfolio = std::make_shared<trade_ngin::PortfolioManager>(portfolio_config);
+        auto portfolio = std::make_shared<trade_ngin::PortfolioManager>(
+            portfolio_config, "PORTFOLIO_MANAGER", &registry);
         auto add_result = portfolio->add_strategy(tf_strategy, 1.0, 
                                 config.portfolio_config.use_optimization,
                                 config.portfolio_config.use_risk_management);
