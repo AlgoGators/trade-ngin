@@ -112,6 +112,11 @@ set(TRADE_NGIN_SOURCES
 # Add library target
 add_library(trade_ngin SHARED ${TRADE_NGIN_SOURCES})
 
+ # Add test-specific compile definitions when building tests
+if(BUILD_TESTING)
+    target_compile_definitions(trade_ngin PRIVATE USE_DIRECT_DB_CONNECTION)
+endif()
+
 # Link against dependencies
 target_link_libraries(trade_ngin
     PUBLIC

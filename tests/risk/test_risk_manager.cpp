@@ -162,14 +162,14 @@ TEST_F(RiskManagerTest, PositionSymbolMismatch) {
     EXPECT_GT(risk_result.gross_leverage, 0.0);
 }
 
-// TEST_F(RiskManagerTest, MultipleRiskFactors) {
-//     auto positions =
-//         create_test_positions({{"AAPL", 1000, 104.0}, {"MSFT", 500, 208.0}, {"GOOG", 100, 2580.0}});
-//     auto market_data = risk_manager_->create_market_data(default_market_data_);
-//     auto result = risk_manager_->process_positions(positions, market_data);
-//     ASSERT_TRUE(result.is_ok());
-//     const auto& risk_result = result.value();
-//
-//     EXPECT_TRUE(risk_result.risk_exceeded);
-//     EXPECT_LT(risk_result.recommended_scale, 0.7);  // Significant reduction needed
-// }
+TEST_F(RiskManagerTest, MultipleRiskFactors) {
+    auto positions =
+        create_test_positions({{"AAPL", 1000, 104.0}, {"MSFT", 500, 208.0}, {"GOOG", 100, 2580.0}});
+    auto market_data = risk_manager_->create_market_data(default_market_data_);
+    auto result = risk_manager_->process_positions(positions, market_data);
+    ASSERT_TRUE(result.is_ok());
+    const auto& risk_result = result.value();
+
+    EXPECT_TRUE(risk_result.risk_exceeded);
+    EXPECT_LT(risk_result.recommended_scale, 0.7 + 1e-9);  // Significant reduction needed
+}
