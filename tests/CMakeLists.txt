@@ -44,7 +44,7 @@ target_include_directories(trade_ngin_tests
         ${CMAKE_SOURCE_DIR}/include
 )
 
-target_compile_definitions(trade_ngin_tests PRIVATE TESTING)
+target_compile_definitions(trade_ngin_tests PRIVATE TESTING USE_DIRECT_DB_CONNECTION)
 
 target_link_libraries(trade_ngin_tests
     PRIVATE
@@ -68,5 +68,4 @@ set_target_properties(trade_ngin_tests
 
 # Enable test discovery
 include(GoogleTest)
-# gtest_discover_tests(trade_ngin_tests)
-add_test(NAME trade_ngin_tests COMMAND trade_ngin_tests)
+gtest_discover_tests(trade_ngin_tests)
