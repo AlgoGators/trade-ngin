@@ -92,13 +92,18 @@ pip3 install cpplint
 
 ### Step 3: Configure Database Connection
 
-Configuration now lives in modular JSON files under `config/`:
+Configuration uses a **template + local override** setup:
 
-- `config/defaults.json` (shared defaults)
-- `config/portfolios/base/*.json`
-- `config/portfolios/conservative/*.json`
+1. **Copy the template** (templates are committed; real configs are gitignored):
+   ```bash
+   cp -r config_template config
+   ```
 
-Edit the `database` section in `config/defaults.json` (or override it in a portfolio file). For a full walkthrough, see `docs/CONFIG_GUIDE.md`.
+2. **Fill in placeholders** in `config/`:
+   - `config/defaults.json` — database: `YOUR_DB_HOST`, `YOUR_DB_USERNAME`, `YOUR_DB_PASSWORD`, `YOUR_DB_NAME`
+   - `config/portfolios/base/email.json` and `config/portfolios/conservative/email.json` — SMTP credentials and recipients
+
+The `config/` directory is gitignored so credentials and local overrides are never committed. See [Configuration](#-configuration) for details.
 
 ### Step 4: Build the Project
 
@@ -141,6 +146,8 @@ ls -la build/bin/Release/
 
 | Document | Purpose | Location |
 |----------|---------|----------|
+| [Config Template](config_template/README.md) | Setup config from templates, placeholder list | `config_template/` |
+| [Config Guide](docs/CONFIG_GUIDE.md) | Full configuration walkthrough | `docs/` |
 | [Performance & Upkeep](docs/performance_upkeep.md) | CI/CD, testing, cron jobs | `docs/` |
 | [Live Pipeline Spec](docs/live_pipeline_spec.md) | Live trading pipeline details | `docs/` |
 | [Strategy Creation Tutorial](docs/strategy_creation_tutorial.md) | How to build your own strategy | `docs/` |
@@ -185,11 +192,42 @@ Each source module has its own detailed README:
 - ✅ **Margin validation** for futures instruments
 - ✅ **Extensive logging and debugging** capabilities
 
+### Configuration
+
+Configuration uses a **template + local override** model:
+
+| Directory       | Tracked in Git? | Purpose                                                                 |
+|----------------|-----------------|-------------------------------------------------------------------------|
+| `config_template/` | Yes             | Template files with placeholders; safe to commit                        |
+| `config/`          | No (gitignored) | Local config with real credentials; never committed                     |
+
+**Setup flow:**
+1. Copy: `cp -r config_template config`
+2. Edit `config/defaults.json` — replace `YOUR_DB_HOST`, `YOUR_DB_USERNAME`, `YOUR_DB_PASSWORD`, `YOUR_DB_NAME`
+3. Edit `config/portfolios/base/email.json` and `config/portfolios/conservative/email.json` — replace SMTP credentials and recipient emails
+
+**Structure:**
+```
+config/
+├── defaults.json           # Database, execution, optimization (shared)
+└── portfolios/
+    ├── base/               # BASE_PORTFOLIO → bt_portfolio, live_portfolio
+    │   ├── portfolio.json  # Strategies, capital, allocations
+    │   ├── risk.json       # Risk limits
+    │   └── email.json      # Email notifications
+    └── conservative/       # CONSERVATIVE_PORTFOLIO → bt_portfolio_conservative, live_portfolio_conservative
+        ├── portfolio.json
+        ├── risk.json
+        └── email.json
+```
+
+**Loading:** Applications load from `config/` via `ConfigLoader::load("./config", "base")` or `ConfigLoader::load("./config", "conservative")`. Defaults are merged with portfolio-specific files.
+
+For full placeholder list and examples, see `config_template/README.md`.
+
 ### Example Configuration
 
-Configuration is modular and lives under `config/`. Shared defaults go in `config/defaults.json` and portfolio-specific overrides live in `config/portfolios/<name>/`.
-
-Example `config/defaults.json` (shared):
+Example `config/defaults.json` (after replacing placeholders):
 
 ```json
 {
@@ -212,14 +250,14 @@ Example `config/portfolios/base/portfolio.json` (strategies):
 
 ```json
 {
-  "portfolio_id": "MY_PORTFOLIO",
+  "portfolio_id": "BASE_PORTFOLIO",
   "initial_capital": 500000.0,
   "reserve_capital_pct": 0.10,
   "strategies": {
     "TREND_FOLLOWING": {
       "enabled_backtest": true,
       "enabled_live": true,
-      "default_allocation": 0.6,
+      "default_allocation": 0.7,
       "type": "TrendFollowingStrategy",
       "config": {
         "weight": 0.03,
@@ -227,6 +265,13 @@ Example `config/portfolios/base/portfolio.json` (strategies):
         "idm": 2.5,
         "ema_windows": [[2,8], [4,16], [8,32], [16,64], [32,128], [64,256]]
       }
+    },
+    "TREND_FOLLOWING_FAST": {
+      "enabled_backtest": true,
+      "enabled_live": true,
+      "default_allocation": 0.3,
+      "type": "TrendFollowingFastStrategy",
+      "config": { "..." }
     }
   }
 }
@@ -267,7 +312,7 @@ The trade-ngin system supports running **multiple independent portfolios** simul
 }
 ```
 
-To run different portfolios, create separate config files (e.g., `config_portfolio_a.json`, `config_portfolio_b.json`) and build separate executables or pass the config path at runtime. All portfolio data is isolated by `portfolio_id` in the database.
+To run different portfolios, use the built-in `base` and `conservative` configs under `config/portfolios/`, or add a new portfolio directory (e.g., `config/portfolios/aggressive/`) and a corresponding executable. All portfolio data is isolated by `portfolio_id` in the database.
 
 ### Key Parameters Explained
 
@@ -500,13 +545,15 @@ trade-ngin/
 │   ├── install_ubuntu.sh           # Ubuntu dependencies
 │   └── install_macos.sh            # macOS dependencies
 │
-├── config/                         # Modular configuration
-│   ├── defaults.json               # Shared defaults
-│   └── portfolios/                 # Per-portfolio overrides
-│       ├── base/
+├── config_template/                # Config templates (committed, no secrets)
+│   ├── README.md                   # Setup instructions
+│   ├── defaults.json               # Placeholders: YOUR_DB_HOST, etc.
+│   └── portfolios/
+│       ├── base/                   # portfolio.json, risk.json, email.json
 │       └── conservative/
-├── config.json                     # Legacy single-file config (deprecated)
-├── config_template.json            # Template for new configs
+├── config/                         # Local config (gitignored; copy from config_template)
+│   ├── defaults.json               # Fill in database credentials
+│   └── portfolios/base/, portfolios/conservative/
 ├── CMakeLists.txt                  # Main build configuration
 ├── Dockerfile                      # Docker container definition
 ├── build_docker.sh                 # Docker build script
@@ -1326,6 +1373,8 @@ The container includes:
 - Gnuplot for chart generation
 - Timezone set to America/New_York
 
+Mount your local `config/` directory (created from `config_template/`) into the container so it has database and email credentials.
+
 ---
 
 ## 🔧 CI/CD Pipeline
@@ -1432,7 +1481,7 @@ export PKG_CONFIG_PATH="/opt/homebrew/lib/pkgconfig:$PKG_CONFIG_PATH"
 **Connection refused:**
 - Check database host is accessible
 - Verify port 5432 is open
-- Confirm credentials in `config/defaults.json` (or portfolio override)
+- Confirm credentials in `config/defaults.json` (copy from `config_template/` and fill placeholders)
 
 **Missing tables:**
 - Ensure required schemas exist (`trading`, `futures_data`)
