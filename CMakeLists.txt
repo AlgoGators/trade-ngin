@@ -72,6 +72,9 @@ set_target_properties(libpqxx::pqxx PROPERTIES
 link_directories(${PQXX_LIBRARY_DIRS})
 
 
+# Include code coverage module if enabled
+include(cmake/CodeCoverage.cmake)
+
 # Add source files for the library
 set(TRADE_NGIN_SOURCES
     src/core/state_manager.cpp
@@ -181,6 +184,11 @@ target_include_directories(trade_ngin
         ${CMAKE_CURRENT_SOURCE_DIR}/include
         ${Arrow_INCLUDE_DIRS}
 )
+
+# Apply coverage flags if enabled
+if(ENABLE_COVERAGE)
+    add_coverage_target(trade_ngin)
+endif()
 
 # Enable testing
 enable_testing()
