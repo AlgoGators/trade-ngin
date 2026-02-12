@@ -123,10 +123,12 @@ public:
      * @brief Process new market data
      * @param data New market data
      * @param skip_execution_generation If true, skip execution generation (used during warmup)
-     * @param current_timestamp Optional current day's timestamp for execution fill_time (if not provided, uses data[0].timestamp)
+     * @param current_timestamp Optional current day's timestamp for execution fill_time (if not
+     * provided, uses data[0].timestamp)
      * @return Result indicating success or failure
      */
-    Result<void> process_market_data(const std::vector<Bar>& data, bool skip_execution_generation = false, 
+    Result<void> process_market_data(const std::vector<Bar>& data,
+                                     bool skip_execution_generation = false,
                                      std::optional<Timestamp> current_timestamp = std::nullopt);
 
     /**
@@ -190,7 +192,8 @@ public:
      * @brief Get optimized positions per strategy (after optimization/rounding)
      * @return Map of strategy ID to map of symbol to position
      */
-    std::unordered_map<std::string, std::unordered_map<std::string, Position>> get_strategy_positions() const;
+    std::unordered_map<std::string, std::unordered_map<std::string, Position>>
+    get_strategy_positions() const;
 
     /**
      * @brief Update a specific position for a strategy (e.g., to update PnL values)
@@ -199,10 +202,8 @@ public:
      * @param updated_pos Updated position object
      * @return Result indicating success or failure
      */
-    Result<void> update_strategy_position(
-        const std::string& strategy_id,
-        const std::string& symbol,
-        const Position& updated_pos);
+    Result<void> update_strategy_position(const std::string& strategy_id, const std::string& symbol,
+                                          const Position& updated_pos);
 
     /**
      * @brief Get portfolio's current total value
@@ -252,8 +253,9 @@ private:
 
     std::unordered_map<std::string, StrategyInfo> strategies_;
     std::vector<ExecutionReport> recent_executions_;  // Portfolio-level (aggregated)
-    std::unordered_map<std::string, std::vector<ExecutionReport>> strategy_executions_;  // Per-strategy executions
-    
+    std::unordered_map<std::string, std::vector<ExecutionReport>>
+        strategy_executions_;  // Per-strategy executions
+
     // Track previous day close prices for PnL Lag Model (prevents lookahead bias)
     std::unordered_map<std::string, double> previous_day_close_prices_;
 
@@ -265,7 +267,14 @@ private:
     std::vector<Bar> risk_history_;
     MarketData current_market_data_;
 
-    size_t max_history_length_ = 2520;  // Keep up to 1 year of return data
+    // Cached data for convergence loop optimization (computed once per day, reused across
+    // iterations)
+    std::vector<std::string> cached_symbols_;
+    std::unordered_map<std::string, std::vector<double>> cached_returns_by_symbol_;
+    std::vector<std::vector<double>> cached_covariance_;
+    bool covariance_cache_valid_{false};
+
+    size_t max_history_length_ = 756;  // Rolling window for return data (~3 years of trading days)
 
     // Transaction cost manager for calculating execution costs
     transaction_cost::TransactionCostManager cost_manager_;

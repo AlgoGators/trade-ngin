@@ -26,6 +26,7 @@ struct TrendFollowingFastConfig {
         {1, 4}, {2, 8}, {4, 16}, {8, 32}, {16, 64}};
     int vol_lookback_short{16};   // Short lookback for volatility calculation (faster)
     int vol_lookback_long{2520};  // Long lookback for volatility calculation
+    size_t max_history_size{756}; // Rolling window cap for in-memory history (~3 years of trading days)
     std::vector<std::pair<int, double>> fdm{{1, 1.0},  {2, 1.03}, {3, 1.08},
                                             {4, 1.13}, {5, 1.19}, {6, 1.26}};
 };
@@ -225,12 +226,12 @@ private:
      * @param N Lookback period for short-term EWMA std dev.
      * @param weight_short Weight for short-term EWMA (default: 70%).
      * @param weight_long Weight for long-term EWMA (default: 30%).
-     * @param max_history Maximum historical records (default: 10 years).
+     * @param max_history Maximum historical records. Uses config max_history_size by default.
      * @return Vector of blended EWMA standard deviation.
      */
     std::vector<double> blended_ewma_stddev(const std::vector<double>& prices, int N,
                                             double weight_short = 0.7, double weight_long = 0.3,
-                                            size_t max_history = 2520) const;
+                                            size_t max_history = 0) const;
 
     /**
      * @brief Computes the EWMA standard deviation using a lambda-based approach.
@@ -243,11 +244,11 @@ private:
     /**
      * @brief Computes the long-term average of EWMA standard deviations.
      * @param history Vector storing past EWMA standard deviations.
-     * @param max_history Maximum number of historical periods (default: 10 years).
+     * @param max_history Maximum number of historical periods. Uses config max_history_size by default.
      * @return Long-term average EWMA standard deviation.
      */
     double compute_long_term_avg(const std::vector<double>& history,
-                                 size_t max_history = 2520) const;
+                                 size_t max_history = 0) const;
 
     /**
      * @brief Calculate EMA crossover signals and scale by volatility

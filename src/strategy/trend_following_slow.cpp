@@ -73,9 +73,8 @@ Result<void> TrendFollowingSlowStrategy::initialize() {
         // Initialize price history containers for each symbol with proper capacity
         for (const auto& [symbol, _] : config_.trading_params) {
             try {
-                price_history_[symbol].reserve(std::max(trend_config_.vol_lookback_long, 2520));
-                volatility_history_[symbol].reserve(
-                    std::max(trend_config_.vol_lookback_long, 2520));
+                price_history_[symbol].reserve(trend_config_.max_history_size);
+                volatility_history_[symbol].reserve(trend_config_.max_history_size);
             } catch (const std::exception& e) {
                 std::cerr << "Failed to reserve price history for symbol " << symbol << ": "
                           << e.what() << std::endl;
@@ -211,8 +210,8 @@ Result<void> TrendFollowingSlowStrategy::on_data(const std::vector<Bar>& data) {
             for (const auto& bar : symbol_bars) {
                 instrument_data.price_history.push_back(static_cast<double>(bar.close));
 
-                // MEMORY FIX: Limit price history to maximum needed lookback (2520 days)
-                if (instrument_data.price_history.size() > 2520) {
+                // Rolling window: only keep max_history_size days in memory
+                if (instrument_data.price_history.size() > trend_config_.max_history_size) {
                     instrument_data.price_history.erase(instrument_data.price_history.begin());
                 }
             }
@@ -266,12 +265,12 @@ Result<void> TrendFollowingSlowStrategy::on_data(const std::vector<Bar>& data) {
             instrument_data.volatility_history = volatility;
             instrument_data.current_volatility = volatility.back();
 
-            // MEMORY FIX: Limit volatility history to prevent unbounded growth
-            if (instrument_data.volatility_history.size() > 2520) {
+            // Rolling window: trim volatility history to max_history_size
+            if (instrument_data.volatility_history.size() > trend_config_.max_history_size) {
                 instrument_data.volatility_history.erase(
                     instrument_data.volatility_history.begin(),
                     instrument_data.volatility_history.begin() +
-                        (instrument_data.volatility_history.size() - 2520));
+                        (instrument_data.volatility_history.size() - trend_config_.max_history_size));
             }
 
             // Get raw combined forecast
@@ -735,6 +734,9 @@ double TrendFollowingSlowStrategy::compute_long_term_avg(const std::vector<doubl
     if (history.empty())
         return 0.001;  // Return a small non-zero value instead of 0.0
 
+    // Use config max_history_size when default (0) is passed
+    if (max_history == 0) max_history = trend_config_.max_history_size;
+
     size_t start_index = history.size() > max_history ? history.size() - max_history : 0;
     double sum = std::accumulate(history.begin() + start_index, history.end(), 0.0);
 
@@ -756,6 +758,9 @@ double TrendFollowingSlowStrategy::compute_long_term_avg(const std::vector<doubl
 std::vector<double> TrendFollowingSlowStrategy::blended_ewma_stddev(
     const std::vector<double>& prices, int window, double weight_short, double weight_long,
     size_t max_history) const {
+    // Use config max_history_size when default (0) is passed
+    if (max_history == 0) max_history = trend_config_.max_history_size;
+
     if (prices.empty() || window <= 0) {
         WARN("Empty price data or invalid window for blended stddev calculation");
         return std::vector<double>(1, 0.01);  // Return default value
@@ -1288,7 +1293,7 @@ double TrendFollowingSlowStrategy::calculate_vol_regime_multiplier(
     double current_vol = volatility.back();
 
     // Calculate lookback period for long-run average
-    size_t max_lookback = 2520;  // 10 years
+    size_t max_lookback = trend_config_.max_history_size;
     size_t available_days = prices.size();
     size_t lookback = std::min(available_days, max_lookback);
 

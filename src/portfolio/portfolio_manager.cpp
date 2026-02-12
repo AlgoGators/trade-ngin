@@ -235,6 +235,9 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
         // Up to 5 iterations for convergence to fully integer positions. The final rounding step
         // can cause minor tracking error/risk profile deviation
 
+        // Invalidate covariance cache - will be recomputed once on first iteration and reused
+        covariance_cache_valid_ = false;
+
         int max_iterations = 5;
         int iteration = 0;
         bool done = false;
@@ -956,8 +959,23 @@ Result<void> PortfolioManager::optimize_positions() {
             costs = calculate_trading_costs(symbols, static_cast<double>(config_.total_capital));
         }  // End of mutex lock scope
 
-        // Calculate covariance matrix (outside lock, using copied data)
-        auto covariance = calculate_covariance_matrix(returns_by_symbol);
+        // Use cached covariance if valid, otherwise compute and cache
+        std::vector<std::vector<double>> covariance;
+        if (covariance_cache_valid_ && cached_symbols_ == symbols) {
+            // Reuse cached covariance (iterations 2-5 within same day)
+            covariance = cached_covariance_;
+            DEBUG("Using cached covariance matrix for convergence iteration");
+        } else {
+            // Compute covariance matrix (first iteration or symbols changed)
+            covariance = calculate_covariance_matrix(returns_by_symbol);
+            // Cache for subsequent iterations
+            cached_symbols_ = symbols;
+            cached_returns_by_symbol_ = std::move(returns_by_symbol);
+            cached_covariance_ = covariance;
+            covariance_cache_valid_ = true;
+            DEBUG("Computed and cached covariance matrix for " + std::to_string(symbols.size()) +
+                  " symbols");
+        }
 
         // Call the optimizer
         if (!optimizer_) {

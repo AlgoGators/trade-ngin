@@ -21,6 +21,7 @@ set(TEST_SOURCES
     portfolio/test_portfolio_manager.cpp
     strategy/test_base_strategy.cpp
     strategy/test_trend_following.cpp
+    strategy/test_history_rolling_window.cpp
     statistics/test_statistics_tools.cpp
 )
 
