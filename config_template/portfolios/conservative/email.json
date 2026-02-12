@@ -1,0 +1,11 @@
+{
+  "_description": "Email configuration for CONSERVATIVE_PORTFOLIO notifications",
+  "smtp_host": "smtp.gmail.com",
+  "smtp_port": 587,
+  "username": "YOUR_SMTP_USERNAME",
+  "password": "YOUR_SMTP_APP_PASSWORD",
+  "from_email": "YOUR_FROM_EMAIL",
+  "to_emails": ["YOUR_EMAIL_FOR_NOTIFICATIONS"],
+  "to_emails_production": ["ADD", "PRODUCTION", "RECIPIENTS"],
+  "use_tls": true
+}

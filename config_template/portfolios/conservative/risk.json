@@ -1,0 +1,9 @@
+{
+  "_description": "Risk configuration for CONSERVATIVE_PORTFOLIO - tighter limits",
+  "var_limit": 0.1,
+  "jump_risk_limit": 0.05,
+  "max_gross_leverage": 2,
+  "max_net_leverage": 1,
+  "max_drawdown": 0.3,
+  "max_leverage": 2
+}
