@@ -8,12 +8,12 @@
 #include <nlohmann/json.hpp>
 #include <set>
 #include <sstream>
+#include "trade_ngin/core/config_loader.hpp"
 #include "trade_ngin/core/email_sender.hpp"
 #include "trade_ngin/core/holiday_checker.hpp"
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/core/time_utils.hpp"
 #include "trade_ngin/data/conversion_utils.hpp"
-#include "trade_ngin/data/credential_store.hpp"
 #include "trade_ngin/data/database_pooling.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
 #include "trade_ngin/instruments/futures.hpp"
@@ -96,51 +96,25 @@ int main(int argc, char* argv[]) {
         std::cerr << "After Logger initialization: initialized="
                   << Logger::instance().is_initialized() << std::endl;
 
-        // Setup database connection pool
-        INFO("Initializing database connection pool...");
-        auto credentials = std::make_shared<trade_ngin::CredentialStore>("./config.json");
-
-        auto username_result = credentials->get<std::string>("database", "username");
-        if (username_result.is_error()) {
-            std::cerr << "Failed to get username: " << username_result.error()->what() << std::endl;
-            return 1;
-        }
-        std::string username = username_result.value();
-
-        auto password_result = credentials->get<std::string>("database", "password");
-        if (password_result.is_error()) {
-            std::cerr << "Failed to get password: " << password_result.error()->what() << std::endl;
-            return 1;
-        }
-        std::string password = password_result.value();
-
-        auto host_result = credentials->get<std::string>("database", "host");
-        if (host_result.is_error()) {
-            std::cerr << "Failed to get host: " << host_result.error()->what() << std::endl;
-            return 1;
-        }
-        std::string host = host_result.value();
-
-        auto port_result = credentials->get<std::string>("database", "port");
-        if (port_result.is_error()) {
-            std::cerr << "Failed to get port: " << port_result.error()->what() << std::endl;
-            return 1;
-        }
-        std::string port = port_result.value();
-
-        auto db_name_result = credentials->get<std::string>("database", "name");
-        if (db_name_result.is_error()) {
-            std::cerr << "Failed to get database name: " << db_name_result.error()->what()
+        // ========================================
+        // LOAD CONFIGURATION FROM MODULAR CONFIG FILES
+        // ========================================
+        INFO("Loading configuration from config/portfolios/base...");
+        auto app_config_result = ConfigLoader::load("./config", "base");
+        if (app_config_result.is_error()) {
+            ERROR("Failed to load configuration: " +
+                  std::string(app_config_result.error()->what()));
+            std::cerr << "Failed to load configuration: " << app_config_result.error()->what()
                       << std::endl;
             return 1;
         }
-        std::string db_name = db_name_result.value();
+        auto app_config = app_config_result.value();
+        INFO("Configuration loaded successfully for portfolio: " + app_config.portfolio_id);
 
-        std::string conn_string =
-            "postgresql://" + username + ":" + password + "@" + host + ":" + port + "/" + db_name;
-
-        // Initialize only the connection pool with sufficient connections
-        size_t num_connections = 5;
+        // Setup database connection pool
+        INFO("Initializing database connection pool...");
+        std::string conn_string = app_config.database.get_connection_string();
+        size_t num_connections = app_config.database.num_connections;
         auto pool_result = DatabasePool::instance().initialize(conn_string, num_connections);
         if (pool_result.is_error()) {
             std::cerr << "Failed to initialize connection pool: " << pool_result.error()->what()
@@ -193,27 +167,9 @@ int main(int argc, char* argv[]) {
 
         // ========================================
         // PHASE 1: CONFIG-DRIVEN STRATEGY LOADING
-        // Load strategies from config.json using enabled_live flag
+        // Load strategies from modular config using enabled_live flag
         // ========================================
-        std::string config_filename = "./config.json";
-        std::ifstream config_stream(config_filename);
-        if (!config_stream.is_open()) {
-            ERROR("Failed to open " + config_filename);
-            return 1;
-        }
-        nlohmann::json config_json;
-        try {
-            config_stream >> config_json;
-        } catch (const std::exception& e) {
-            ERROR("Failed to parse " + config_filename + ": " + std::string(e.what()));
-            return 1;
-        }
-
-        // Tier 1: Read portfolio_id from config
-        std::string portfolio_id = "BASE_PORTFOLIO";
-        if (config_json.contains("portfolio_id")) {
-            portfolio_id = config_json["portfolio_id"].get<std::string>();
-        }
+        std::string portfolio_id = app_config.portfolio_id;
         INFO("Using portfolio_id: " + portfolio_id);
 
         // Load strategies from config (mirror bt_portfolio.cpp pattern)
@@ -221,13 +177,13 @@ int main(int argc, char* argv[]) {
         std::unordered_map<std::string, double> strategy_allocations;
         std::unordered_map<std::string, nlohmann::json> strategy_configs;
 
-        if (!config_json.contains("portfolio") ||
-            !config_json["portfolio"].contains("strategies")) {
-            ERROR("No portfolio.strategies section found in " + config_filename);
+        if (app_config.strategies_config.is_null() ||
+            !app_config.strategies_config.is_object()) {
+            ERROR("No strategies section found in loaded configuration");
             return 1;
         }
 
-        auto strategies_config = config_json["portfolio"]["strategies"];
+        const auto& strategies_config = app_config.strategies_config;
         for (const auto& [strategy_id, strategy_def] : strategies_config.items()) {
             // Use enabled_live flag for live portfolio
             if (strategy_def.contains("enabled_live") && strategy_def["enabled_live"].get<bool>()) {
@@ -241,7 +197,7 @@ int main(int argc, char* argv[]) {
         }
 
         if (strategy_names.empty()) {
-            ERROR("No enabled_live strategies found in " + config_filename);
+            ERROR("No enabled_live strategies found in loaded configuration");
             return 1;
         }
 
@@ -280,8 +236,9 @@ int main(int argc, char* argv[]) {
         auto now_time_t = std::chrono::system_clock::to_time_t(now);
         std::tm* now_tm = std::localtime(&now_time_t);
 
-        // Set start date to 300 days ago for sufficient historical data
-        auto start_date = now - std::chrono::hours(24 * 300);  // 300 days ago
+        // Set start date based on configured historical window
+        auto start_date =
+            now - std::chrono::hours(24 * app_config.live.historical_days);
 
         // Set end date based on run type to avoid lookahead bias
         auto end_date = use_override_date ? (now - std::chrono::hours(24)) : now;
@@ -295,7 +252,7 @@ int main(int argc, char* argv[]) {
         INFO("DEBUG: Target date (now): " +
              std::to_string(std::chrono::system_clock::to_time_t(now)));
 
-        double initial_capital = 500000.0;  // $500k
+        double initial_capital = app_config.initial_capital;
 
         auto symbols_result = db->get_symbols(trade_ngin::AssetClass::FUTURES);
         auto symbols = symbols_result.value();
@@ -381,53 +338,42 @@ int main(int argc, char* argv[]) {
         }
 
         // Configure portfolio risk management
-        RiskConfig risk_config;
+        RiskConfig risk_config = app_config.risk_config;
         risk_config.capital = Decimal(initial_capital);
-        risk_config.confidence_level = 0.99;
-        risk_config.lookback_period = 252;
-        risk_config.var_limit = 0.15;
-        risk_config.jump_risk_limit = 0.10;
-        risk_config.max_correlation = 0.7;
-        risk_config.max_gross_leverage = 4.0;
-        risk_config.max_net_leverage = 2.0;
 
         // Configure portfolio optimization
-        DynamicOptConfig opt_config;
-        opt_config.tau = 1.0;
+        DynamicOptConfig opt_config = app_config.opt_config;
         opt_config.capital = initial_capital;
-        opt_config.cost_penalty_scalar = 50.0;
-        opt_config.asymmetric_risk_buffer = 0.1;
-        opt_config.max_iterations = 100;
-        opt_config.convergence_threshold = 1e-6;
-        opt_config.use_buffering = true;
-        opt_config.buffer_size_factor = 0.05;
 
         // Setup portfolio configuration
         trade_ngin::PortfolioConfig portfolio_config;
         portfolio_config.total_capital = initial_capital;
-        portfolio_config.reserve_capital = initial_capital * 0.10;  // 10% reserve (match bt)
-        portfolio_config.max_strategy_allocation = 1.0;  // Only have one strategy currently
-        portfolio_config.min_strategy_allocation = 0.1;
-        portfolio_config.use_optimization = true;
-        portfolio_config.use_risk_management = true;
+        portfolio_config.reserve_capital = initial_capital * app_config.reserve_capital_pct;
+        portfolio_config.max_strategy_allocation =
+            app_config.strategy_defaults.max_strategy_allocation;
+        portfolio_config.min_strategy_allocation =
+            app_config.strategy_defaults.min_strategy_allocation;
+        portfolio_config.use_optimization = app_config.strategy_defaults.use_optimization;
+        portfolio_config.use_risk_management = app_config.strategy_defaults.use_risk_management;
         portfolio_config.opt_config = opt_config;
         portfolio_config.risk_config = risk_config;
 
         // ========================================
         // PHASE 2: STRATEGY INSTANCE FACTORY
-        // Create strategies based on type from config.json
+        // Create strategies based on type from modular config
         // ========================================
 
         // Base strategy configuration (used by all strategies)
         trade_ngin::StrategyConfig base_strategy_config;
         base_strategy_config.asset_classes = {trade_ngin::AssetClass::FUTURES};
         base_strategy_config.frequencies = {trade_ngin::DataFrequency::DAILY};
-        base_strategy_config.max_drawdown = 0.4;
-        base_strategy_config.max_leverage = 4.0;
+        base_strategy_config.max_drawdown = app_config.max_drawdown;
+        base_strategy_config.max_leverage = app_config.max_leverage;
 
         // Add position limits and costs for all symbols
         for (const auto& symbol : symbols) {
-            base_strategy_config.position_limits[symbol] = 500.0;
+            base_strategy_config.position_limits[symbol] =
+                app_config.execution.position_limit_live;
         }
 
         // Create a shared_ptr that doesn't own the singleton registry
@@ -475,8 +421,7 @@ int main(int argc, char* argv[]) {
                 }
                 // Set default FDM if not loaded
                 if (trend_config.fdm.empty()) {
-                    trend_config.fdm = {{1, 1.0},  {2, 1.03}, {3, 1.08},
-                                        {4, 1.13}, {5, 1.19}, {6, 1.26}};
+                    trend_config.fdm = app_config.strategy_defaults.fdm;
                 }
 
                 strategy = std::make_shared<trade_ngin::TrendFollowingStrategy>(
@@ -503,8 +448,7 @@ int main(int argc, char* argv[]) {
                     trend_config.vol_lookback_long = cfg.value("vol_lookback_long", 252);
                 }
                 if (trend_config.fdm.empty()) {
-                    trend_config.fdm = {{1, 1.0},  {2, 1.03}, {3, 1.08},
-                                        {4, 1.13}, {5, 1.19}, {6, 1.26}};
+                    trend_config.fdm = app_config.strategy_defaults.fdm;
                 }
 
                 strategy = std::make_shared<trade_ngin::TrendFollowingFastStrategy>(
@@ -540,8 +484,7 @@ int main(int argc, char* argv[]) {
                     trend_config.vol_lookback_long = 252;
                 }
                 if (trend_config.fdm.empty()) {
-                    trend_config.fdm = {{1, 1.0},  {2, 1.03}, {3, 1.08},
-                                        {4, 1.13}, {5, 1.19}, {6, 1.26}};
+                    trend_config.fdm = app_config.strategy_defaults.fdm;
                 }
 
                 strategy = std::make_shared<trade_ngin::TrendFollowingSlowStrategy>(
@@ -662,7 +605,7 @@ int main(int argc, char* argv[]) {
         INFO("Creating LiveTradingCoordinator for centralized component management");
         LiveTradingConfig coordinator_config;
         coordinator_config.strategy_id = combined_strategy_id;  // From config (Phase 1)
-        coordinator_config.portfolio_id = portfolio_id;         // From config.json
+        coordinator_config.portfolio_id = portfolio_id;         // From loaded config
         coordinator_config.schema = "trading";
         coordinator_config.initial_capital = initial_capital;
         coordinator_config.store_results = true;
@@ -2501,17 +2444,17 @@ int main(int argc, char* argv[]) {
             }
 
             // Create configuration JSON
-            nlohmann::json config_json;
-            config_json["strategy_type"] = combined_strategy_id;  // From config (Phase 1)
-            config_json["capital_allocation"] = initial_capital;
-            config_json["max_leverage"] = base_strategy_config.max_leverage;
-            config_json["weight"] = 0.03;      // Default weight
-            config_json["risk_target"] = 0.2;  // Default risk target
-            config_json["idm"] = 2.5;          // Default IDM
-            config_json["active_positions"] = active_positions;
-            config_json["gross_notional"] = gross_notional;
-            config_json["net_notional"] = net_notional;
-            config_json["portfolio_leverage"] = gross_notional / initial_capital;
+            nlohmann::json report_config_json;
+            report_config_json["strategy_type"] = combined_strategy_id;  // From config (Phase 1)
+            report_config_json["capital_allocation"] = initial_capital;
+            report_config_json["max_leverage"] = base_strategy_config.max_leverage;
+            report_config_json["weight"] = 0.03;      // Default weight
+            report_config_json["risk_target"] = 0.2;  // Default risk target
+            report_config_json["idm"] = 2.5;          // Default IDM
+            report_config_json["active_positions"] = active_positions;
+            report_config_json["gross_notional"] = gross_notional;
+            report_config_json["net_notional"] = net_notional;
+            report_config_json["portfolio_leverage"] = gross_notional / initial_capital;
 
             // Create SQL insert for live_results table with correct schema
             std::stringstream date_ss;
@@ -2580,7 +2523,7 @@ int main(int argc, char* argv[]) {
             results_manager->set_metrics(double_metrics, int_metrics);
 
             // Set config
-            results_manager->set_config(config_json);
+            results_manager->set_config(report_config_json);
 
             // Set equity for equity curve tracking
             results_manager->set_equity(current_portfolio_value);
@@ -2683,7 +2626,16 @@ int main(int argc, char* argv[]) {
         if (send_email) {
             INFO("Sending email report...");
             try {
-                auto email_sender = std::make_shared<EmailSender>(credentials);
+                EmailSenderConfig email_config;
+                email_config.smtp_host = app_config.email.smtp_host;
+                email_config.smtp_port = app_config.email.smtp_port;
+                email_config.username = app_config.email.username;
+                email_config.password = app_config.email.password;
+                email_config.from_email = app_config.email.from_email;
+                email_config.use_tls = app_config.email.use_tls;
+                email_config.to_emails = app_config.email.to_emails;
+
+                auto email_sender = std::make_shared<EmailSender>(email_config);
                 auto email_init_result = email_sender->initialize();
                 if (email_init_result.is_error()) {
                     ERROR("Failed to initialize email sender: " +
