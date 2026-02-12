@@ -1,50 +1,43 @@
 {
   "_version": "2.0.0",
-  "_description": "Shared defaults for all portfolios. Override in portfolio-specific configs.",
-
+  "_description": "Shared defaults for all portfolios. Copy to config/ and replace placeholders.",
   "database": {
-    "host": "HOST",
-    "port": "PORT",
-    "username": "USERNAME",
-    "password": "PASSWORD",
-    "name": "DB",
+    "host": "YOUR_DB_HOST",
+    "port": "5432",
+    "username": "YOUR_DB_USERNAME",
+    "password": "YOUR_DB_PASSWORD",
+    "name": "YOUR_DB_NAME",
     "num_connections": 5
   },
-
   "execution": {
     "commission_rate": 0.0005,
-    "slippage_bps": 1.0,
-    "position_limit_backtest": 1000.0,
-    "position_limit_live": 500.0
+    "slippage_bps": 1,
+    "position_limit_backtest": 1000,
+    "position_limit_live": 500
   },
-
   "optimization": {
-    "tau": 1.0,
-    "cost_penalty_scalar": 50.0,
+    "tau": 1,
+    "cost_penalty_scalar": 50,
     "asymmetric_risk_buffer": 0.1,
     "max_iterations": 100,
-    "convergence_threshold": 1e-6,
+    "convergence_threshold": 0.000001,
     "use_buffering": true,
     "buffer_size_factor": 0.05
   },
-
   "backtest": {
     "lookback_years": 2,
     "store_trade_details": true
   },
-
   "live": {
     "historical_days": 300
   },
-
   "strategy_defaults": {
-    "fdm": [[1, 1.0], [2, 1.03], [3, 1.08], [4, 1.13], [5, 1.19], [6, 1.26]],
-    "max_strategy_allocation": 1.0,
+    "fdm": [[1, 1], [2, 1.03], [3, 1.08], [4, 1.13], [5, 1.19], [6, 1.26]],
+    "max_strategy_allocation": 1,
     "min_strategy_allocation": 0.1,
     "use_optimization": true,
     "use_risk_management": true
   },
-
   "risk_defaults": {
     "confidence_level": 0.99,
     "lookback_period": 252,

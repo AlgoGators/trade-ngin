@@ -4,6 +4,9 @@ build/
 logs/
 config.json
 config_conservative.json
+
+# Modular config (local overrides, credentials - do not track)
+config/
 apps/backtest/results/
 .claude/
 CLAUDE.md
