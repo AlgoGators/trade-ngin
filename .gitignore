@@ -12,9 +12,13 @@ apps/backtest/results/
 CLAUDE.md
 .csv
 .cache/
-*email.json*
-*portfolio.json*
-*risk.json*
+# Ignore real configs (credentials) in config/, not config_template/
+config/*email.json*
+config/*portfolio.json*
+config/*risk.json*
+config/**/*email.json*
+config/**/*portfolio.json*
+config/**/*risk.json*
 
 # macOS system files
 .DS_Store

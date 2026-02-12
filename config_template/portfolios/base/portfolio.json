@@ -1,0 +1,38 @@
+{
+  "_description": "BASE_PORTFOLIO - Higher risk, multiple strategies",
+  "portfolio_id": "BASE_PORTFOLIO",
+  "initial_capital": 500000,
+  "reserve_capital_pct": 0.1,
+  "strategies": {
+    "TREND_FOLLOWING": {
+      "enabled_backtest": true,
+      "enabled_live": true,
+      "default_allocation": 0.7,
+      "type": "TrendFollowingStrategy",
+      "config": {
+        "weight": 0.03,
+        "risk_target": 0.2,
+        "idm": 2.5,
+        "use_position_buffering": true,
+        "ema_windows": [[2, 8], [4, 16], [8, 32], [16, 64], [32, 128], [64, 256]],
+        "vol_lookback_short": 32,
+        "vol_lookback_long": 252
+      }
+    },
+    "TREND_FOLLOWING_FAST": {
+      "enabled_backtest": true,
+      "enabled_live": true,
+      "default_allocation": 0.3,
+      "type": "TrendFollowingFastStrategy",
+      "config": {
+        "weight": 0.03,
+        "risk_target": 0.25,
+        "idm": 2.5,
+        "use_position_buffering": false,
+        "ema_windows": [[1, 4], [2, 8], [4, 16], [8, 32], [16, 64]],
+        "vol_lookback_short": 16,
+        "vol_lookback_long": 252
+      }
+    }
+  }
+}

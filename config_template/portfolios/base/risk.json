@@ -1,0 +1,9 @@
+{
+  "_description": "Risk configuration for BASE_PORTFOLIO",
+  "var_limit": 0.15,
+  "jump_risk_limit": 0.1,
+  "max_gross_leverage": 4,
+  "max_net_leverage": 2,
+  "max_drawdown": 0.4,
+  "max_leverage": 4
+}
