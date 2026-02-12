@@ -36,15 +36,25 @@ size_t read_callback(char* buffer, size_t size, size_t nitems, void* userdata) {
 }
 
 EmailSender::EmailSender(std::shared_ptr<CredentialStore> credentials)
-    : credentials_(credentials), initialized_(false), holiday_checker_("include/trade_ngin/core/holidays.json") {
+    : credentials_(std::move(credentials)),
+      initialized_(false),
+      holiday_checker_("include/trade_ngin/core/holidays.json") {
+}
+
+EmailSender::EmailSender(const EmailSenderConfig& config)
+    : credentials_(nullptr),
+      config_(config),
+      initialized_(false),
+      holiday_checker_("include/trade_ngin/core/holidays.json") {
 }
 
 Result<void> EmailSender::initialize() {
-    auto load_result = load_config();
-    if (load_result.is_error()) {
-        return load_result;
+    if (credentials_) {
+        auto load_result = load_config();
+        if (load_result.is_error()) {
+            return load_result;
+        }
     }
-
     initialized_ = true;
     INFO("Email sender initialized successfully");
     return Result<void>();

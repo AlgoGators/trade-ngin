@@ -92,19 +92,18 @@ pip3 install cpplint
 
 ### Step 3: Configure Database Connection
 
-Create or edit `config.json` with your PostgreSQL credentials:
+Configuration uses a **template + local override** setup:
 
-```json
-{
-  "database": {
-    "host": "your-database-host",
-    "port": "5432",
-    "username": "your-username",
-    "password": "your-password",
-    "name": "your-database-name"
-  }
-}
-```
+1. **Copy the template** (templates are committed; real configs are gitignored):
+   ```bash
+   cp -r config_template config
+   ```
+
+2. **Fill in placeholders** in `config/`:
+   - `config/defaults.json` — database: `YOUR_DB_HOST`, `YOUR_DB_USERNAME`, `YOUR_DB_PASSWORD`, `YOUR_DB_NAME`
+   - `config/portfolios/base/email.json` and `config/portfolios/conservative/email.json` — SMTP credentials and recipients
+
+The `config/` directory is gitignored so credentials and local overrides are never committed. See [Configuration](#-configuration) for details.
 
 ### Step 4: Build the Project
 
@@ -147,6 +146,8 @@ ls -la build/bin/Release/
 
 | Document | Purpose | Location |
 |----------|---------|----------|
+| [Config Template](config_template/README.md) | Setup config from templates, placeholder list | `config_template/` |
+| [Config Guide](docs/CONFIG_GUIDE.md) | Full configuration walkthrough | `docs/` |
 | [Performance & Upkeep](docs/performance_upkeep.md) | CI/CD, testing, cron jobs | `docs/` |
 | [Live Pipeline Spec](docs/live_pipeline_spec.md) | Live trading pipeline details | `docs/` |
 | [Strategy Creation Tutorial](docs/strategy_creation_tutorial.md) | How to build your own strategy | `docs/` |
@@ -191,9 +192,42 @@ Each source module has its own detailed README:
 - ✅ **Margin validation** for futures instruments
 - ✅ **Extensive logging and debugging** capabilities
 
+### Configuration
+
+Configuration uses a **template + local override** model:
+
+| Directory       | Tracked in Git? | Purpose                                                                 |
+|----------------|-----------------|-------------------------------------------------------------------------|
+| `config_template/` | Yes             | Template files with placeholders; safe to commit                        |
+| `config/`          | No (gitignored) | Local config with real credentials; never committed                     |
+
+**Setup flow:**
+1. Copy: `cp -r config_template config`
+2. Edit `config/defaults.json` — replace `YOUR_DB_HOST`, `YOUR_DB_USERNAME`, `YOUR_DB_PASSWORD`, `YOUR_DB_NAME`
+3. Edit `config/portfolios/base/email.json` and `config/portfolios/conservative/email.json` — replace SMTP credentials and recipient emails
+
+**Structure:**
+```
+config/
+├── defaults.json           # Database, execution, optimization (shared)
+└── portfolios/
+    ├── base/               # BASE_PORTFOLIO → bt_portfolio, live_portfolio
+    │   ├── portfolio.json  # Strategies, capital, allocations
+    │   ├── risk.json       # Risk limits
+    │   └── email.json      # Email notifications
+    └── conservative/       # CONSERVATIVE_PORTFOLIO → bt_portfolio_conservative, live_portfolio_conservative
+        ├── portfolio.json
+        ├── risk.json
+        └── email.json
+```
+
+**Loading:** Applications load from `config/` via `ConfigLoader::load("./config", "base")` or `ConfigLoader::load("./config", "conservative")`. Defaults are merged with portfolio-specific files.
+
+For full placeholder list and examples, see `config_template/README.md`.
+
 ### Example Configuration
 
-The system uses `config.json` for all runtime configuration. Here's an example demonstrating **multi-strategy support**:
+Example `config/defaults.json` (after replacing placeholders):
 
 ```json
 {
@@ -202,52 +236,43 @@ The system uses `config.json` for all runtime configuration. Here's an example d
     "port": "5432",
     "username": "your-username",
     "password": "your-password",
-    "name": "your-database-name"
+    "name": "your-database-name",
+    "num_connections": 5
   },
-  "portfolio_id": "MY_PORTFOLIO",
-  "portfolio": {
-    "strategies": {
-      "TREND_FOLLOWING": {
-        "enabled_backtest": true,
-        "enabled_live": true,
-        "default_allocation": 0.6,
-        "type": "TrendFollowingStrategy",
-        "config": {
-          "weight": 0.03,
-          "risk_target": 0.2,
-          "idm": 2.5,
-          "use_position_buffering": true,
-          "ema_windows": [[2,8], [4,16], [8,32], [16,64], [32,128], [64,256]],
-          "vol_lookback_short": 32,
-          "vol_lookback_long": 252
-        }
-      },
-      "MEAN_REVERSION": {
-        "enabled_backtest": true,
-        "enabled_live": true,
-        "default_allocation": 0.4,
-        "type": "MeanReversionStrategy",
-        "config": {
-          "weight": 0.02,
-          "risk_target": 0.15,
-          "idm": 2.0,
-          "use_position_buffering": true,
-          "lookback_window": 20,
-          "entry_zscore": 2.0,
-          "exit_zscore": 0.5,
-          "vol_lookback": 60
-        }
+  "strategy_defaults": {
+    "max_strategy_allocation": 1.0,
+    "min_strategy_allocation": 0.1
+  }
+}
+```
+
+Example `config/portfolios/base/portfolio.json` (strategies):
+
+```json
+{
+  "portfolio_id": "BASE_PORTFOLIO",
+  "initial_capital": 500000.0,
+  "reserve_capital_pct": 0.10,
+  "strategies": {
+    "TREND_FOLLOWING": {
+      "enabled_backtest": true,
+      "enabled_live": true,
+      "default_allocation": 0.7,
+      "type": "TrendFollowingStrategy",
+      "config": {
+        "weight": 0.03,
+        "risk_target": 0.2,
+        "idm": 2.5,
+        "ema_windows": [[2,8], [4,16], [8,32], [16,64], [32,128], [64,256]]
       }
+    },
+    "TREND_FOLLOWING_FAST": {
+      "enabled_backtest": true,
+      "enabled_live": true,
+      "default_allocation": 0.3,
+      "type": "TrendFollowingFastStrategy",
+      "config": { "..." }
     }
-  },
-  "email": {
-    "smtp_host": "smtp.gmail.com",
-    "smtp_port": 587,
-    "username": "your-email@gmail.com",
-    "password": "your-app-password",
-    "from_email": "your-email@gmail.com",
-    "to_emails": ["recipient@example.com"],
-    "use_tls": true
   }
 }
 ```
@@ -287,7 +312,7 @@ The trade-ngin system supports running **multiple independent portfolios** simul
 }
 ```
 
-To run different portfolios, create separate config files (e.g., `config_portfolio_a.json`, `config_portfolio_b.json`) and build separate executables or pass the config path at runtime. All portfolio data is isolated by `portfolio_id` in the database.
+To run different portfolios, use the built-in `base` and `conservative` configs under `config/portfolios/`, or add a new portfolio directory (e.g., `config/portfolios/aggressive/`) and a corresponding executable. All portfolio data is isolated by `portfolio_id` in the database.
 
 ### Key Parameters Explained
 
@@ -520,9 +545,15 @@ trade-ngin/
 │   ├── install_ubuntu.sh           # Ubuntu dependencies
 │   └── install_macos.sh            # macOS dependencies
 │
-├── config.json                     # Main configuration file
-├── config_conservative.json        # Conservative portfolio config
-├── config_template.json            # Template for new configs
+├── config_template/                # Config templates (committed, no secrets)
+│   ├── README.md                   # Setup instructions
+│   ├── defaults.json               # Placeholders: YOUR_DB_HOST, etc.
+│   └── portfolios/
+│       ├── base/                   # portfolio.json, risk.json, email.json
+│       └── conservative/
+├── config/                         # Local config (gitignored; copy from config_template)
+│   ├── defaults.json               # Fill in database credentials
+│   └── portfolios/base/, portfolios/conservative/
 ├── CMakeLists.txt                  # Main build configuration
 ├── Dockerfile                      # Docker container definition
 ├── build_docker.sh                 # Docker build script
@@ -1160,7 +1191,7 @@ For comprehensive strategy development instructions, see [src/strategy/README.md
 4. **Override required methods**: `initialize()`, `on_data()`, `validate_config()`
 5. **Register** in `CMakeLists.txt` (add to `TRADE_NGIN_SOURCES`)
 6. **Add to factory** in `live_portfolio.cpp` and `bt_portfolio.cpp`
-7. **Configure** in `config.json` under `portfolio.strategies`
+7. **Configure** in `config/portfolios/<name>/portfolio.json` under `strategies`
 
 ### Minimal Example
 
@@ -1329,7 +1360,7 @@ docker build -t trade-ngin -f Dockerfile .
 # Run container
 docker run -d \
     --name trade-ngin \
-    -v $(pwd)/config.json:/app/config.json \
+    -v $(pwd)/config:/app/config \
     -v $(pwd)/logs:/app/logs \
     trade-ngin
 ```
@@ -1341,6 +1372,8 @@ The container includes:
 - Cron job for scheduled runs (`live_trend.cron`)
 - Gnuplot for chart generation
 - Timezone set to America/New_York
+
+Mount your local `config/` directory (created from `config_template/`) into the container so it has database and email credentials.
 
 ---
 
@@ -1448,7 +1481,7 @@ export PKG_CONFIG_PATH="/opt/homebrew/lib/pkgconfig:$PKG_CONFIG_PATH"
 **Connection refused:**
 - Check database host is accessible
 - Verify port 5432 is open
-- Confirm credentials in `config.json`
+- Confirm credentials in `config/defaults.json` (copy from `config_template/` and fill placeholders)
 
 **Missing tables:**
 - Ensure required schemas exist (`trading`, `futures_data`)
