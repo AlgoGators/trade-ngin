@@ -35,13 +35,17 @@ target_include_directories(trade_ngin_tests
 
 target_compile_definitions(trade_ngin_tests PRIVATE TESTING)
 
-# Link against Google Test and our library
 target_link_libraries(trade_ngin_tests
     PRIVATE
     trade_ngin
     GTest::gtest
     GTest::gtest_main
 )
+
+# Apply coverage flags if enabled
+if(ENABLE_COVERAGE)
+    add_coverage_target(trade_ngin_tests)
+endif()
 
 # Set output directory
 set_target_properties(trade_ngin_tests
