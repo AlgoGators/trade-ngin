@@ -1,6 +1,7 @@
 .env
 .vscode/
 build/
+build_coverage/
 logs/
 config.json
 config_conservative.json
