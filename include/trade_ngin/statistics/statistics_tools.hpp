@@ -603,6 +603,7 @@ private:
     double forward_backward(const Eigen::MatrixXd& observations,
                            Eigen::MatrixXd& gamma,
                            Eigen::MatrixXd& xi) const;
+    double log_emission_probability(const Eigen::VectorXd& obs, int state) const;
     double emission_probability(const Eigen::VectorXd& obs, int state) const;
 };
 
