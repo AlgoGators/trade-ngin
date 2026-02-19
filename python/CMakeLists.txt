@@ -4,8 +4,7 @@ find_package(pybind11_json CONFIG REQUIRED)
 # Create the Python module
 pybind11_add_module(trade_ngin_py
     module.cpp
-    bindings/type_bindings.hpp
-    bindings/strategy_bindings.hpp
+    bindings/bindings.hpp
 )
 
 # Link against pybind11_json
