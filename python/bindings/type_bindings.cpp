@@ -8,6 +8,28 @@
 namespace py = pybind11;
 using namespace trade_ngin;
 
+// Custom type caster for Decimal to convert between C++ Decimal and Python's decimal.Decimal
+namespace pybind11::detail {
+
+template <>
+struct type_caster<trade_ngin::Decimal> {
+public:
+    PYBIND11_TYPE_CASTER(trade_ngin::Decimal, _("Decimal"));
+
+    bool load(handle src, bool) {
+        std::string s = py::str(src);
+        value = trade_ngin::Decimal(s);
+        return true;
+    }
+
+    static handle cast(const trade_ngin::Decimal& src, return_value_policy, handle) {
+        py::object DecimalClass = py::module_::import("decimal").attr("Decimal");
+        return DecimalClass(src.to_string()).release();
+    }
+};
+
+}  // namespace pybind11::detail
+
 // Bind types in trade_ngin/core/types.hpp
 void bind_core_types(py::module_& m) {
     py::class_<Bar>(m, "Bar")
