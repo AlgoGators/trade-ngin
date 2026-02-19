@@ -7,6 +7,7 @@ pybind11_add_module(trade_ngin_py
     bindings/type_bindings.cpp
     bindings/database_bindings.cpp
     bindings/strategy_bindings.cpp
+    bindings/api_bindings.cpp
 )
 
 # Set the output name of the Python module
