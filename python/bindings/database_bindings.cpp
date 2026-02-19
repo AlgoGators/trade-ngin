@@ -1,3 +1,5 @@
+#include "bindings.hpp"
+
 #include <pybind11/pybind11.h>
 
 #include "trade_ngin/data/postgres_database.hpp"
