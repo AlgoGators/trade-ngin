@@ -10,11 +10,11 @@ struct PyBaseStrategy : public trade_ngin::BaseStrategy {
 
     // The only required override
     Result<void> on_data(const std::vector<Bar>& data) override {
-        PYBIND11_OVERRIDE(Result<void>, StrategyInterface, on_data, data);
+        PYBIND11_OVERRIDE(Result<void>, BaseStrategy, on_data, data);
     };
     // Optional override for custom logging and logic over internal PnL logic
     Result<void> on_execution(const ExecutionReport& report) override {
-        PYBIND11_OVERRIDE(Result<void>, StrategyInterface, on_execution, report);
+        PYBIND11_OVERRIDE(Result<void>, BaseStrategy, on_execution, report);
     };
 };
 

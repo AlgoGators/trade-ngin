@@ -8,6 +8,6 @@ PYBIND11_MODULE(trade_ngin, m) {
     bind_core_types(m);
     // bind_error_types(m);
     // bind_strategy_types(m);
-    bind_database_interface(m);
+    bind_database(m);
     bind_base_strategy(m);
 }
