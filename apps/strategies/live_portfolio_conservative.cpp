@@ -1451,25 +1451,49 @@ int main(int argc, char* argv[]) {
 
         if (margin_result.is_ok()) {
             auto& metrics = margin_result.value();
-            gross_notional = metrics.gross_notional;
-            net_notional = metrics.net_notional;
-            active_positions = metrics.active_positions;
             total_posted_margin = metrics.total_posted_margin;
             maintenance_requirement_today = metrics.maintenance_requirement;
 
-            // Fix active_positions to count per-strategy positions, not per-symbol
-            // The aggregated positions map merges same-symbol positions across strategies,
-            // so metrics.active_positions undercounts when multiple strategies hold the same symbol
+            // Recompute gross_notional and net_notional from per-strategy positions.
+            // The combined positions map nets same-symbol quantities across strategies
+            // BEFORE taking absolute values, which understates gross exposure when
+            // strategies hold opposing positions in the same instrument.
+            gross_notional = 0.0;
+            net_notional = 0.0;
             int true_active_positions = 0;
+            bool notional_fallback = false;
             for (const auto& [strategy_id, pos_map] : strategy_positions_map) {
+                if (notional_fallback) break;
                 for (const auto& [symbol, pos] : pos_map) {
-                    if (std::abs(pos.quantity.as_double()) > 1e-6) {
-                        true_active_positions++;
+                    double qty = pos.quantity.as_double();
+                    if (std::abs(qty) < 1e-6) continue;
+                    true_active_positions++;
+
+                    auto notional_result = margin_manager->calculate_position_notional(
+                        symbol, qty,
+                        previous_day_close_prices.count(symbol)
+                            ? previous_day_close_prices.at(symbol)
+                            : pos.average_price.as_double());
+                    if (notional_result.is_ok()) {
+                        double signed_notional = notional_result.value();
+                        gross_notional += std::abs(signed_notional);
+                        net_notional += signed_notional;
+                    } else {
+                        WARN("Failed to calculate per-strategy notional for " + symbol +
+                             " in strategy " + strategy_id + ", falling back to MarginManager combined value");
+                        gross_notional = metrics.gross_notional;
+                        net_notional = metrics.net_notional;
+                        notional_fallback = true;
+                        break;
                     }
                 }
             }
             active_positions = true_active_positions;
 
+            INFO("Per-strategy notional: gross=$" + std::to_string(gross_notional) +
+                 ", net=$" + std::to_string(net_notional) +
+                 " (combined was gross=$" + std::to_string(metrics.gross_notional) +
+                 ", net=$" + std::to_string(metrics.net_notional) + ")");
             INFO("MarginManager calculated: gross_notional=$" + std::to_string(gross_notional) +
                  ", posted_margin=$" + std::to_string(total_posted_margin) +
                  ", active_positions=" + std::to_string(active_positions));
@@ -2487,7 +2511,6 @@ int main(int argc, char* argv[]) {
             if (risk_eval.is_ok()) {
                 const auto& r = risk_eval.value();
                 portfolio_var = r.portfolio_var;
-                net_leverage = r.net_leverage;
                 max_correlation = r.correlation_risk;
                 jump_risk = r.jump_risk;
                 risk_scale = r.recommended_scale;
@@ -2496,6 +2519,10 @@ int main(int argc, char* argv[]) {
             // Use LiveMetricsCalculator for gross leverage (notional / portfolio value)
             double gross_leverage = metrics_calculator->calculate_gross_leverage(
                 gross_notional, current_portfolio_value);
+            // Net leverage: net_notional / current_portfolio_value (standard definition)
+            net_leverage = (current_portfolio_value > 0.0)
+                ? (net_notional / current_portfolio_value)
+                : 0.0;
             // equity_to_margin_ratio and margin_cushion already computed above
 
             // Use the LiveResultsManager
