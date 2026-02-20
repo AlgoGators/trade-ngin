@@ -22,7 +22,7 @@ struct RiskConfig : public ConfigBase {
     double jump_risk_limit{0.10};    // Jump risk threshold (10%)
     double max_correlation{0.7};     // Maximum allowed correlation
     double max_gross_leverage{4.0};  // Maximum gross leverage
-    double max_net_leverage{2.0};    // Maximum net leverage
+    double max_net_leverage{2.0};     // Maximum net leverage
 
     // Calculation parameters
     double confidence_level{0.99};  // Confidence level for risk calcs
@@ -81,7 +81,7 @@ struct RiskResult {
     double portfolio_var{0.0};     // Portfolio Value at Risk
     double jump_risk{0.0};         // Jump risk
     double correlation_risk{0.0};  // Correlation risk
-    double gross_leverage{0.0};    // Gross leverage
+    double gross_leverage{0.0};    // Gross leverage (total_value / capital)
     double net_leverage{0.0};      // Net leverage
 
     // Maximum observed risks

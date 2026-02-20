@@ -81,7 +81,7 @@ TEST_F(RiskManagerTest, InitializationAndConfig) {
     EXPECT_DOUBLE_EQ(config.confidence_level, 0.99);
 }
 
-TEST_F(RiskManagerTest, GrossLeverageExceeded) {
+TEST_F(RiskManagerTest, LeverageExceeded) {
     auto positions = create_test_positions(
         {{"AAPL", 10000, 104.0}, {"MSFT", 5000, 208.0}, {"GOOG", 1000, 2580.0}});
     auto market_data = risk_manager_->create_market_data(default_market_data_);
@@ -90,6 +90,7 @@ TEST_F(RiskManagerTest, GrossLeverageExceeded) {
     const auto& risk_result = result.value();
     EXPECT_TRUE(risk_result.risk_exceeded);
     EXPECT_GT(risk_result.gross_leverage, 4.0);
+    EXPECT_GT(risk_result.net_leverage, 2.0);
     EXPECT_LT(risk_result.leverage_multiplier, 1.0);
 }
 
@@ -160,6 +161,7 @@ TEST_F(RiskManagerTest, PositionSymbolMismatch) {
     // Should still calculate leverage risks
     const auto& risk_result = result.value();
     EXPECT_GT(risk_result.gross_leverage, 0.0);
+    EXPECT_NE(risk_result.net_leverage, 0.0);
 }
 
 // TEST_F(RiskManagerTest, MultipleRiskFactors) {

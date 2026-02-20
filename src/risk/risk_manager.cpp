@@ -329,6 +329,7 @@ double RiskManager::calculate_leverage_multiplier(const MarketData& market_data,
                                                   double total_value, RiskResult& result) const {
     // Calculate gross and net leverage
     double gross = total_value;
+    result.gross_leverage = gross / static_cast<double>(config_.capital);
 
     // Net leverage should be the sum of signed position values (net exposure)
     // Calculate net from the position_values array (which preserves signs)
@@ -337,7 +338,6 @@ double RiskManager::calculate_leverage_multiplier(const MarketData& market_data,
         net += position_values[i];  // This preserves the sign (long/short)
     }
 
-    result.gross_leverage = gross / static_cast<double>(config_.capital);
     result.net_leverage = net / static_cast<double>(config_.capital);  // Preserve sign: positive = net long, negative = net short
 
     // Historical leverage calculation
@@ -349,11 +349,10 @@ double RiskManager::calculate_leverage_multiplier(const MarketData& market_data,
 
     result.max_leverage_risk = calculate_99th_percentile(historical_leverage);
 
-    // Only scale down positions if leverage exceeds limits
+    // Scale down positions if gross or net leverage exceeds limits
     double gross_multiplier = result.gross_leverage > config_.max_gross_leverage
                                   ? config_.max_gross_leverage / result.gross_leverage
                                   : 1.0;
-
     double net_multiplier = result.net_leverage > config_.max_net_leverage
                                 ? config_.max_net_leverage / result.net_leverage
                                 : 1.0;
