@@ -157,19 +157,17 @@ int main() {
     }
 
     // =====================================================
-    // TEST 4: max_gross_leverage removed from RiskConfig
+    // TEST 4: RiskConfig and RiskResult leverage fields (gross restored)
     // =====================================================
     std::cout << "\n=== TEST 4: RiskConfig changes ===" << std::endl;
     {
         RiskConfig rc;
         check("max_net_leverage default is 2.0", rc.max_net_leverage == 2.0);
-        // Compile-time proof: rc.max_gross_leverage would fail here
-        check("max_gross_leverage removed (proven by compilation)", true);
+        check("max_gross_leverage default is 4.0", rc.max_gross_leverage == 4.0);
 
         RiskResult rr;
         check("RiskResult.net_leverage exists", rr.net_leverage == 0.0);
-        // Compile-time proof: rr.gross_leverage would fail here
-        check("RiskResult.gross_leverage removed (proven by compilation)", true);
+        check("RiskResult.gross_leverage exists", rr.gross_leverage == 0.0);
     }
 
     // =====================================================
