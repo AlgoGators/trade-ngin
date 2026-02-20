@@ -224,7 +224,7 @@ Result<LiveResultsRow> LiveDataLoader::load_live_results(const std::string& stra
     row.total_cumulative_return = get_double();
     row.total_annualized_return = get_double();
     row.current_portfolio_value = get_double();
-    row.portfolio_leverage = get_double();
+    row.gross_leverage = get_double();
     row.equity_to_margin_ratio = get_double();
     row.gross_notional = get_double();
     row.margin_posted = get_double();
@@ -654,7 +654,7 @@ Result<MarginMetrics> LiveDataLoader::load_margin_metrics(const std::string& str
     auto notional_array = std::static_pointer_cast<arrow::DoubleArray>(table->column(2)->chunk(0));
     auto margin_array = std::static_pointer_cast<arrow::DoubleArray>(table->column(3)->chunk(0));
 
-    metrics.portfolio_leverage = leverage_array->IsNull(0) ? 0.0 : leverage_array->Value(0);
+    metrics.gross_leverage = leverage_array->IsNull(0) ? 0.0 : leverage_array->Value(0);
     metrics.equity_to_margin_ratio =
         equity_ratio_array->IsNull(0) ? 0.0 : equity_ratio_array->Value(0);
     metrics.gross_notional = notional_array->IsNull(0) ? 0.0 : notional_array->Value(0);
@@ -667,7 +667,7 @@ Result<MarginMetrics> LiveDataLoader::load_margin_metrics(const std::string& str
 
     metrics.valid = true;
 
-    INFO("Loaded margin metrics: Leverage=" + std::to_string(metrics.portfolio_leverage) +
+    INFO("Loaded margin metrics: Gross Leverage=" + std::to_string(metrics.gross_leverage) +
          ", Equity/Margin=" + std::to_string(metrics.equity_to_margin_ratio));
 
     return Result<MarginMetrics>(metrics);

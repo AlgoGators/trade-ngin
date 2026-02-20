@@ -42,7 +42,7 @@ public:
         double net_notional = 0.0;               // Net position notional (can be negative)
         double equity_to_margin_ratio = 0.0;     // Gross notional / posted margin
         double margin_cushion = 0.0;              // (equity_to_margin - 1) * 100
-        double portfolio_leverage = 0.0;         // Gross notional / portfolio value
+        double gross_leverage = 0.0;              // Gross notional / portfolio value
         double cash_available = 0.0;             // Portfolio value - posted margin
         int active_positions = 0;                // Number of non-zero positions
 
@@ -111,13 +111,13 @@ public:
     Result<void> validate_margins(const MarginMetrics& metrics) const;
 
     /**
-     * Calculate portfolio leverage
+     * Calculate gross leverage
      *
      * @param gross_notional Total gross notional exposure
      * @param portfolio_value Current portfolio value
-     * @return Portfolio leverage ratio
+     * @return Gross leverage ratio
      */
-    static double calculate_portfolio_leverage(
+    static double calculate_gross_leverage(
         double gross_notional,
         double portfolio_value);
 
