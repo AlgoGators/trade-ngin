@@ -104,6 +104,7 @@ set(TRADE_NGIN_SOURCES
     src/live/margin_manager.cpp
     src/live/csv_exporter.cpp
     src/statistics/statistics_tools.cpp
+    src/api/backtest_api.cpp
 )
 
 # Add library target

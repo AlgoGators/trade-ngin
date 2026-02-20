@@ -2,11 +2,9 @@
 
 #include "trade_ngin/backtest/backtest_types.hpp"
 
-using namespace trade_ngin::backtest;
-
 namespace trade_ngin::api {
 
-BacktestResults run_backtest();
+trade_ngin::backtest::BacktestResults run_backtest();
 
 // Example usage in bt_portfolio.cpp
 // auto result = coordinator->run_portfolio(
