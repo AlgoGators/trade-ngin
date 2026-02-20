@@ -1,5 +1,6 @@
 #include "bindings.hpp"
 
+#include <pybind11/chrono.h>
 #include <pybind11/pybind11.h>
 #include <pybind11_json/pybind11_json.hpp>
 
@@ -16,17 +17,17 @@ using namespace trade_ngin::backtest;
 namespace pybind11::detail {
 
 template <>
-struct type_caster<trade_ngin::Decimal> {
+struct type_caster<Decimal> {
 public:
-    PYBIND11_TYPE_CASTER(trade_ngin::Decimal, _("Decimal"));
+    PYBIND11_TYPE_CASTER(Decimal, _("Decimal"));
 
     bool load(handle src, bool) {
         std::string s = py::str(src);
-        value = trade_ngin::Decimal(s);
+        value = Decimal(s);
         return true;
     }
 
-    static handle cast(const trade_ngin::Decimal& src, return_value_policy, handle) {
+    static handle cast(const Decimal& src, return_value_policy, handle) {
         py::object DecimalClass = py::module_::import("decimal").attr("Decimal");
         return DecimalClass(src.to_string()).release();
     }
@@ -45,6 +46,17 @@ void bind_core_types(py::module_& m) {
         .def_readwrite("close", &Bar::close)
         .def_readwrite("volume", &Bar::volume)
         .def_readwrite("symbol", &Bar::symbol);
+
+    py::class_<Position>(m, "Position")
+        .def(py::init<>())
+        .def_readwrite("symbol", &Position::symbol)
+        .def_readwrite("quantity", &Position::quantity)
+        .def_readwrite("avg_price", &Position::average_price)
+        .def_readwrite("unrealized_pnl", &Position::unrealized_pnl)
+        .def_readwrite("realized_pnl", &Position::realized_pnl)
+        .def_readwrite("last_update", &Position::last_update);
+    // TODO pybind chrono type - since Timestamp is system_clock, it converts automatically to
+    // Python datetime
 
     py::class_<ExecutionReport>(m, "ExecutionReport")
         .def(py::init<>())
@@ -66,6 +78,28 @@ void bind_core_types(py::module_& m) {
 void bind_backtest_types(py::module_& m) {
     py::class_<BacktestResults>(m, "BacktestResults")
         .def(py::init<>())
+        .def("__str__",
+             [](const BacktestResults& r) {
+                 return "BacktestResults(total_return=" + std::to_string(r.total_return) +
+                        ", volatility=" + std::to_string(r.volatility) +
+                        ", sharpe_ratio=" + std::to_string(r.sharpe_ratio) +
+                        ", sortino_ratio=" + std::to_string(r.sortino_ratio) +
+                        ", max_drawdown=" + std::to_string(r.max_drawdown) +
+                        ", calmar_ratio=" + std::to_string(r.calmar_ratio) +
+                        ", total_trades=" + std::to_string(r.total_trades) +
+                        ", win_rate=" + std::to_string(r.win_rate) +
+                        ", profit_factor=" + std::to_string(r.profit_factor) +
+                        ", avg_win=" + std::to_string(r.avg_win) +
+                        ", avg_loss=" + std::to_string(r.avg_loss) +
+                        ", max_win=" + std::to_string(r.max_win) +
+                        ", max_loss=" + std::to_string(r.max_loss) +
+                        ", avg_holding_period=" + std::to_string(r.avg_holding_period) +
+                        ", var_95=" + std::to_string(r.var_95) +
+                        ", cvar_95=" + std::to_string(r.cvar_95) +
+                        ", beta=" + std::to_string(r.beta) +
+                        ", correlation=" + std::to_string(r.correlation) +
+                        ", downside_volatility=" + std::to_string(r.downside_volatility) + ")";
+             })
         .def_readwrite("total_return", &BacktestResults::total_return)
         .def_readwrite("volatility", &BacktestResults::volatility)
         .def_readwrite("sharpe_ratio", &BacktestResults::sharpe_ratio)
