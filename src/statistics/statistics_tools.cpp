@@ -1,4 +1,5 @@
 #include "trade_ngin/statistics/statistics_tools.hpp"
+#include "trade_ngin/statistics/critical_values.hpp"
 #include <cmath>
 #include <algorithm>
 #include <numeric>
@@ -431,8 +432,9 @@ Result<TestResult> ADFTest::test(const std::vector<double>& data) const {
         }
     }
 
-    // OLS estimation
-    Eigen::VectorXd beta = (X.transpose() * X).ldlt().solve(X.transpose() * y);
+    // OLS estimation using LDLT decomposition (numerically stable)
+    Eigen::LDLT<Eigen::MatrixXd> ldlt_decomp = (X.transpose() * X).ldlt();
+    Eigen::VectorXd beta = ldlt_decomp.solve(X.transpose() * y);
     Eigen::VectorXd residuals = y - X * beta;
     double rss = residuals.squaredNorm();
     double sigma2 = rss / (n_obs - n_regressors);
@@ -442,8 +444,10 @@ Result<TestResult> ADFTest::test(const std::vector<double>& data) const {
                     (config_.regression == ADFTestConfig::RegressionType::CONSTANT) ? 1 : 2;
     double gamma = beta(gamma_idx);
 
-    Eigen::MatrixXd XtX_inv = (X.transpose() * X).inverse();
-    double se_gamma = std::sqrt(sigma2 * XtX_inv(gamma_idx, gamma_idx));
+    // Extract diagonal element via solve instead of full inverse
+    Eigen::VectorXd e_gamma = Eigen::VectorXd::Zero(n_regressors);
+    e_gamma(gamma_idx) = 1.0;
+    double se_gamma = std::sqrt(sigma2 * ldlt_decomp.solve(e_gamma)(gamma_idx));
 
     // Test statistic
     double adf_stat = gamma / se_gamma;
@@ -476,15 +480,14 @@ int ADFTest::select_lag_order(const std::vector<double>& data) const {
 }
 
 double ADFTest::calculate_critical_value(int n_obs, double significance) const {
-    // MacKinnon (1996) approximate critical values for constant term
-    // These are rough approximations
-    if (significance <= 0.01) {
-        return -3.43;
-    } else if (significance <= 0.05) {
-        return -2.86;
-    } else {
-        return -2.57;
+    // MacKinnon (1996) critical values interpolated by sample size and regression type
+    int reg_type;
+    switch (config_.regression) {
+        case ADFTestConfig::RegressionType::NO_CONSTANT: reg_type = 0; break;
+        case ADFTestConfig::RegressionType::CONSTANT_TREND: reg_type = 2; break;
+        default: reg_type = 1; break;
     }
+    return critical_values::interpolate_adf_cv(n_obs, reg_type, significance);
 }
 
 // ============================================================================
@@ -574,18 +577,7 @@ int KPSSTest::select_lag_order(int n_obs) const {
 }
 
 double KPSSTest::calculate_critical_value(double significance, bool has_trend) const {
-    // Critical values from Kwiatkowski et al. (1992)
-    if (!has_trend) {
-        // Level stationarity
-        if (significance <= 0.01) return 0.739;
-        if (significance <= 0.05) return 0.463;
-        return 0.347;
-    } else {
-        // Trend stationarity
-        if (significance <= 0.01) return 0.216;
-        if (significance <= 0.05) return 0.146;
-        return 0.119;
-    }
+    return critical_values::kpss_critical_value(significance, has_trend);
 }
 
 // ============================================================================
@@ -704,26 +696,7 @@ Result<CointegrationResult> JohansenTest::test(const Eigen::MatrixXd& data) cons
 }
 
 std::vector<double> JohansenTest::get_critical_values(int n_series, int rank) const {
-    // Approximate critical values at 5% significance (trace test)
-    // These are for constant term, should be extended for full implementation
-    std::vector<double> critical_values(n_series);
-
-    // Rough approximations - in practice, use Osterwald-Lenum (1992) tables
-    if (n_series == 2) {
-        critical_values[0] = 15.41;
-        critical_values[1] = 3.76;
-    } else if (n_series == 3) {
-        critical_values[0] = 29.68;
-        critical_values[1] = 15.41;
-        critical_values[2] = 3.76;
-    } else {
-        // General approximation
-        for (int i = 0; i < n_series; ++i) {
-            critical_values[i] = 15.0 + (n_series - i - 1) * 8.0;
-        }
-    }
-
-    return critical_values;
+    return critical_values::johansen_trace_critical_values(n_series, config_.significance_level);
 }
 
 // ============================================================================
@@ -1047,8 +1020,15 @@ Result<Eigen::VectorXd> KalmanFilter::update(const Eigen::VectorXd& observation)
     // Innovation covariance: S = H * P_k|k-1 * H^T + R
     Eigen::MatrixXd S = H_ * P_ * H_.transpose() + R_;
 
-    // Kalman gain: K = P_k|k-1 * H^T * S^{-1}
-    Eigen::MatrixXd K = P_ * H_.transpose() * S.inverse();
+    // Kalman gain: K = P*H' * S^{-1} = (S^{-1} * (P*H')')' using Cholesky
+    Eigen::MatrixXd PH_t = P_ * H_.transpose();
+    Eigen::MatrixXd K;
+    Eigen::LLT<Eigen::MatrixXd> llt_S(S);
+    if (llt_S.info() == Eigen::Success) {
+        K = llt_S.solve(PH_t.transpose()).transpose();
+    } else {
+        K = Eigen::LDLT<Eigen::MatrixXd>(S).solve(PH_t.transpose()).transpose();
+    }
 
     // Update state: x_k|k = x_k|k-1 + K * y
     x_ = x_ + K * y;
@@ -1231,79 +1211,123 @@ double HMM::forward_backward(const Eigen::MatrixXd& observations,
                             Eigen::MatrixXd& gamma,
                             Eigen::MatrixXd& xi) const {
     int T = observations.rows();
+    int N = config_.n_states;
 
-    // Forward pass
-    Eigen::MatrixXd alpha(T, config_.n_states);
-
-    // Initialize
-    for (int i = 0; i < config_.n_states; ++i) {
-        alpha(0, i) = initial_probs_(i) * emission_probability(observations.row(0), i);
-    }
-
-    // Forward recursion
-    for (int t = 1; t < T; ++t) {
-        for (int j = 0; j < config_.n_states; ++j) {
-            double sum = 0.0;
-            for (int i = 0; i < config_.n_states; ++i) {
-                sum += alpha(t - 1, i) * transition_matrix_(i, j);
-            }
-            alpha(t, j) = sum * emission_probability(observations.row(t), j);
+    // Pre-compute log quantities
+    Eigen::MatrixXd log_emit(T, N);
+    for (int t = 0; t < T; ++t) {
+        for (int j = 0; j < N; ++j) {
+            log_emit(t, j) = log_emission_probability(observations.row(t), j);
         }
     }
 
-    // Backward pass
-    Eigen::MatrixXd beta(T, config_.n_states);
-    beta.row(T - 1).setOnes();
+    Eigen::MatrixXd log_A(N, N);
+    for (int i = 0; i < N; ++i) {
+        for (int j = 0; j < N; ++j) {
+            log_A(i, j) = (transition_matrix_(i, j) > 0)
+                ? std::log(transition_matrix_(i, j))
+                : -std::numeric_limits<double>::infinity();
+        }
+    }
+
+    Eigen::VectorXd log_pi(N);
+    for (int i = 0; i < N; ++i) {
+        log_pi(i) = (initial_probs_(i) > 0)
+            ? std::log(initial_probs_(i))
+            : -std::numeric_limits<double>::infinity();
+    }
+
+    // Log forward pass
+    Eigen::MatrixXd log_alpha(T, N);
+    for (int i = 0; i < N; ++i) {
+        log_alpha(0, i) = log_pi(i) + log_emit(0, i);
+    }
+
+    std::vector<double> temp(N);
+    for (int t = 1; t < T; ++t) {
+        for (int j = 0; j < N; ++j) {
+            for (int i = 0; i < N; ++i) {
+                temp[i] = log_alpha(t - 1, i) + log_A(i, j);
+            }
+            log_alpha(t, j) = critical_values::log_sum_exp(temp.data(), N) + log_emit(t, j);
+        }
+    }
+
+    // Log backward pass
+    Eigen::MatrixXd log_beta(T, N);
+    log_beta.row(T - 1).setZero();  // log(1) = 0
 
     for (int t = T - 2; t >= 0; --t) {
-        for (int i = 0; i < config_.n_states; ++i) {
-            double sum = 0.0;
-            for (int j = 0; j < config_.n_states; ++j) {
-                sum += transition_matrix_(i, j) *
-                      emission_probability(observations.row(t + 1), j) *
-                      beta(t + 1, j);
+        for (int i = 0; i < N; ++i) {
+            for (int j = 0; j < N; ++j) {
+                temp[j] = log_A(i, j) + log_emit(t + 1, j) + log_beta(t + 1, j);
             }
-            beta(t, i) = sum;
+            log_beta(t, i) = critical_values::log_sum_exp(temp.data(), N);
         }
     }
 
-    // Compute gamma (state probabilities)
+    // Compute gamma: convert back to probability space for M-step
     for (int t = 0; t < T; ++t) {
-        double norm = (alpha.row(t).array() * beta.row(t).array()).sum();
-        for (int i = 0; i < config_.n_states; ++i) {
-            gamma(t, i) = alpha(t, i) * beta(t, i) / norm;
+        // log_norm for this time step
+        for (int i = 0; i < N; ++i) {
+            temp[i] = log_alpha(t, i) + log_beta(t, i);
+        }
+        double log_norm = critical_values::log_sum_exp(temp.data(), N);
+        for (int i = 0; i < N; ++i) {
+            gamma(t, i) = std::exp(log_alpha(t, i) + log_beta(t, i) - log_norm);
         }
     }
 
-    // Compute xi (transition probabilities)
+    // Compute xi: transition posterior
+    std::vector<double> temp_xi(N * N);
     for (int t = 0; t < T - 1; ++t) {
-        double norm = 0.0;
-        for (int i = 0; i < config_.n_states; ++i) {
-            for (int j = 0; j < config_.n_states; ++j) {
-                double val = alpha(t, i) * transition_matrix_(i, j) *
-                           emission_probability(observations.row(t + 1), j) *
-                           beta(t + 1, j);
-                xi(t, i * config_.n_states + j) = val;
-                norm += val;
+        for (int i = 0; i < N; ++i) {
+            for (int j = 0; j < N; ++j) {
+                temp_xi[i * N + j] = log_alpha(t, i) + log_A(i, j) +
+                                     log_emit(t + 1, j) + log_beta(t + 1, j);
             }
         }
-        if (norm > 0) {
-            xi.row(t) /= norm;
+        double log_norm = critical_values::log_sum_exp(temp_xi.data(), N * N);
+        for (int i = 0; i < N; ++i) {
+            for (int j = 0; j < N; ++j) {
+                xi(t, i * N + j) = std::exp(temp_xi[i * N + j] - log_norm);
+            }
         }
     }
 
-    // Return log likelihood
-    return std::log(alpha.row(T - 1).sum());
+    // Return log-likelihood from forward variables
+    for (int i = 0; i < N; ++i) {
+        temp[i] = log_alpha(T - 1, i);
+    }
+    return critical_values::log_sum_exp(temp.data(), N);
+}
+
+double HMM::log_emission_probability(const Eigen::VectorXd& obs, int state) const {
+    int D = obs.size();
+    Eigen::VectorXd diff = obs - means_[state];
+
+    // Use LLT Cholesky for numerical stability
+    Eigen::LLT<Eigen::MatrixXd> llt(covariances_[state]);
+    if (llt.info() == Eigen::Success) {
+        // Mahalanobis distance via triangular solve
+        Eigen::VectorXd v = llt.matrixL().solve(diff);
+        double mahal_sq = v.squaredNorm();
+        // Log-determinant = 2 * sum(log(diag(L)))
+        double log_det = 2.0 * llt.matrixL().toDenseMatrix().diagonal().array().log().sum();
+        return -0.5 * (D * std::log(2.0 * M_PI) + log_det + mahal_sq);
+    } else {
+        // LDLT fallback
+        Eigen::LDLT<Eigen::MatrixXd> ldlt(covariances_[state]);
+        Eigen::VectorXd solved = ldlt.solve(diff);
+        double mahal_sq = diff.dot(solved);
+        // Log-determinant from LDLT: sum of log of |D diagonal|
+        double log_det = ldlt.vectorD().array().abs().log().sum();
+        return -0.5 * (D * std::log(2.0 * M_PI) + log_det + mahal_sq);
+    }
 }
 
 double HMM::emission_probability(const Eigen::VectorXd& obs, int state) const {
-    // Multivariate Gaussian probability
-    Eigen::VectorXd diff = obs - means_[state];
-    double exponent = -0.5 * diff.transpose() * covariances_[state].inverse() * diff;
-    double det = covariances_[state].determinant();
-    int D = obs.size();
-    double norm = 1.0 / std::sqrt(std::pow(2.0 * M_PI, D) * det);
-    return norm * std::exp(exponent);
+    return std::exp(log_emission_probability(obs, state));
 }
 
 Result<std::vector<int>> HMM::decode(const Eigen::MatrixXd& observations) const {
@@ -1325,8 +1349,10 @@ Result<std::vector<int>> HMM::decode(const Eigen::MatrixXd& observations) const 
 
     // Initialize
     for (int i = 0; i < config_.n_states; ++i) {
-        delta(0, i) = std::log(initial_probs_(i)) +
-                     std::log(emission_probability(observations.row(0), i));
+        double log_pi = (initial_probs_(i) > 0)
+            ? std::log(initial_probs_(i))
+            : -std::numeric_limits<double>::infinity();
+        delta(0, i) = log_pi + log_emission_probability(observations.row(0), i);
         psi(0, i) = 0;
     }
 
@@ -1337,14 +1363,17 @@ Result<std::vector<int>> HMM::decode(const Eigen::MatrixXd& observations) const 
             int max_state = 0;
 
             for (int i = 0; i < config_.n_states; ++i) {
-                double val = delta(t - 1, i) + std::log(transition_matrix_(i, j));
+                double log_a = (transition_matrix_(i, j) > 0)
+                    ? std::log(transition_matrix_(i, j))
+                    : -std::numeric_limits<double>::infinity();
+                double val = delta(t - 1, i) + log_a;
                 if (val > max_val) {
                     max_val = val;
                     max_state = i;
                 }
             }
 
-            delta(t, j) = max_val + std::log(emission_probability(observations.row(t), j));
+            delta(t, j) = max_val + log_emission_probability(observations.row(t), j);
             psi(t, j) = max_state;
         }
     }

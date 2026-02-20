@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include "trade_ngin/statistics/statistics_tools.hpp"
+#include "trade_ngin/statistics/critical_values.hpp"
 #include <Eigen/Dense>
 #include <vector>
 #include <cmath>
@@ -753,4 +754,225 @@ TEST_F(IntegrationTest, StatisticalTestsOnReturns) {
     auto vol = garch.get_current_volatility();
     ASSERT_TRUE(vol.is_ok());
     EXPECT_GT(vol.value(), 0.0);
+}
+
+// ============================================================================
+// Numerical Stability & Critical Value Tests
+// ============================================================================
+
+TEST(ADFCriticalValues, SmallSampleMoreNegativeThanLarge) {
+    // For any regression type, small-sample CV should be more negative
+    double cv_small = trade_ngin::statistics::critical_values::interpolate_adf_cv(25, 1, 0.05);
+    double cv_large = trade_ngin::statistics::critical_values::interpolate_adf_cv(500, 1, 0.05);
+    EXPECT_LT(cv_small, cv_large);
+}
+
+TEST(ADFCriticalValues, ConstantTrendMoreNegativeThanConstant) {
+    double cv_constant = trade_ngin::statistics::critical_values::interpolate_adf_cv(100, 1, 0.05);
+    double cv_trend = trade_ngin::statistics::critical_values::interpolate_adf_cv(100, 2, 0.05);
+    EXPECT_LT(cv_trend, cv_constant);
+}
+
+TEST(ADFCriticalValues, NoConstantWorks) {
+    double cv = trade_ngin::statistics::critical_values::interpolate_adf_cv(100, 0, 0.05);
+    EXPECT_LT(cv, 0.0);
+    // No-constant CVs should be less negative than constant CVs
+    double cv_constant = trade_ngin::statistics::critical_values::interpolate_adf_cv(100, 1, 0.05);
+    EXPECT_GT(cv, cv_constant);
+}
+
+TEST(ADFCriticalValues, InterpolationBetweenSampleSizes) {
+    // CV at n=75 should be between n=50 and n=100
+    double cv_50 = trade_ngin::statistics::critical_values::interpolate_adf_cv(50, 1, 0.05);
+    double cv_75 = trade_ngin::statistics::critical_values::interpolate_adf_cv(75, 1, 0.05);
+    double cv_100 = trade_ngin::statistics::critical_values::interpolate_adf_cv(100, 1, 0.05);
+    // CVs become less negative as n increases, so cv_50 < cv_75 < cv_100
+    EXPECT_LT(cv_50, cv_75);
+    EXPECT_LT(cv_75, cv_100);
+}
+
+TEST(ADFCriticalValues, RegressionTypeAffectsTestResult) {
+    // Generate white noise — should be stationary regardless of regression type
+    std::mt19937 gen(42);
+    std::normal_distribution<> d(0.0, 1.0);
+    std::vector<double> data(200);
+    for (auto& v : data) v = d(gen);
+
+    ADFTestConfig config_const;
+    config_const.regression = ADFTestConfig::RegressionType::CONSTANT;
+    ADFTest adf_const(config_const);
+    auto r1 = adf_const.test(data);
+    ASSERT_TRUE(r1.is_ok());
+
+    ADFTestConfig config_trend;
+    config_trend.regression = ADFTestConfig::RegressionType::CONSTANT_TREND;
+    ADFTest adf_trend(config_trend);
+    auto r2 = adf_trend.test(data);
+    ASSERT_TRUE(r2.is_ok());
+
+    // Trend CV should be more negative
+    EXPECT_LT(r2.value().critical_value, r1.value().critical_value);
+}
+
+TEST(KalmanIllConditioned, NoNaNWithTinyMeasurementNoise) {
+    KalmanFilterConfig config;
+    config.state_dim = 2;
+    config.obs_dim = 1;
+    config.process_noise = 0.01;
+    config.measurement_noise = 1e-12;
+
+    KalmanFilter kf(config);
+
+    Eigen::VectorXd initial_state(2);
+    initial_state << 0.0, 1.0;
+    auto init_result = kf.initialize(initial_state);
+    ASSERT_TRUE(init_result.is_ok());
+
+    Eigen::MatrixXd F(2, 2);
+    F << 1.0, 1.0, 0.0, 1.0;
+    kf.set_transition_matrix(F);
+
+    Eigen::MatrixXd H(1, 2);
+    H << 1.0, 0.0;
+    kf.set_observation_matrix(H);
+
+    // Run several predict-update cycles
+    for (int i = 0; i < 20; ++i) {
+        auto pred = kf.predict();
+        ASSERT_TRUE(pred.is_ok());
+
+        Eigen::VectorXd obs(1);
+        obs << static_cast<double>(i);
+        auto upd = kf.update(obs);
+        ASSERT_TRUE(upd.is_ok());
+
+        const auto& state = upd.value();
+        for (int j = 0; j < state.size(); ++j) {
+            EXPECT_FALSE(std::isnan(state(j))) << "NaN at step " << i << " dim " << j;
+            EXPECT_FALSE(std::isinf(state(j))) << "Inf at step " << i << " dim " << j;
+        }
+    }
+}
+
+TEST(HMMLongSequence, FitAndDecodeT500) {
+    // Generate T=500 observation sequence from 2 well-separated states
+    std::mt19937 gen(123);
+    std::normal_distribution<> state0(0.0, 0.5);
+    std::normal_distribution<> state1(5.0, 0.5);
+
+    int T = 500;
+    Eigen::MatrixXd obs(T, 1);
+    std::vector<int> true_states(T);
+
+    int current_state = 0;
+    for (int i = 0; i < T; ++i) {
+        if (std::uniform_real_distribution<>(0, 1)(gen) < 0.05) {
+            current_state = 1 - current_state;
+        }
+        true_states[i] = current_state;
+        obs(i, 0) = (current_state == 0) ? state0(gen) : state1(gen);
+    }
+
+    HMMConfig config;
+    config.n_states = 2;
+    config.max_iterations = 100;
+    config.tolerance = 1e-4;
+
+    HMM hmm(config);
+    auto fit_result = hmm.fit(obs);
+    ASSERT_TRUE(fit_result.is_ok());
+
+    auto decode_result = hmm.decode(obs);
+    ASSERT_TRUE(decode_result.is_ok());
+
+    const auto& decoded = decode_result.value();
+    EXPECT_EQ(static_cast<int>(decoded.size()), T);
+
+    // Check states are valid
+    for (int s : decoded) {
+        EXPECT_TRUE(s == 0 || s == 1);
+    }
+
+    // Decoded states should mostly agree with true states (allowing label swap)
+    int agree = 0, disagree = 0;
+    for (int i = 0; i < T; ++i) {
+        if (decoded[i] == true_states[i]) agree++;
+        else disagree++;
+    }
+    // Either direct or swapped labels should have >80% accuracy
+    int best_match = std::max(agree, disagree);
+    EXPECT_GT(best_match, T * 0.80) << "Decoded states don't match true states well enough";
+}
+
+TEST(HMMIllConditioned, NearlyIdenticalObservations) {
+    // Observations very close together — should not crash
+    int T = 50;
+    Eigen::MatrixXd obs(T, 1);
+    for (int i = 0; i < T; ++i) {
+        obs(i, 0) = 1.0 + 1e-8 * i;  // Nearly identical
+    }
+
+    HMMConfig config;
+    config.n_states = 2;
+    config.max_iterations = 20;
+
+    HMM hmm(config);
+    auto fit_result = hmm.fit(obs);
+    // Should complete without crashing; may or may not converge well
+    EXPECT_TRUE(fit_result.is_ok());
+}
+
+TEST(JohansenCriticalValues, ThreeSeriesMatchTable) {
+    auto cv = trade_ngin::statistics::critical_values::johansen_trace_critical_values(3, 0.05);
+    ASSERT_EQ(cv.size(), 3);
+    EXPECT_DOUBLE_EQ(cv[0], 29.68);
+    EXPECT_DOUBLE_EQ(cv[1], 15.41);
+    EXPECT_DOUBLE_EQ(cv[2], 3.76);
+}
+
+TEST(JohansenCriticalValues, OnePercentMoreStringent) {
+    auto cv_5 = trade_ngin::statistics::critical_values::johansen_trace_critical_values(2, 0.05);
+    auto cv_1 = trade_ngin::statistics::critical_values::johansen_trace_critical_values(2, 0.01);
+    // 1% CVs should be larger (harder to reject)
+    for (size_t i = 0; i < cv_5.size(); ++i) {
+        EXPECT_GT(cv_1[i], cv_5[i]);
+    }
+}
+
+TEST(JohansenCriticalValues, FourAndFiveSeriesWork) {
+    auto cv4 = trade_ngin::statistics::critical_values::johansen_trace_critical_values(4, 0.05);
+    ASSERT_EQ(cv4.size(), 4);
+    EXPECT_DOUBLE_EQ(cv4[0], 47.21);
+
+    auto cv5 = trade_ngin::statistics::critical_values::johansen_trace_critical_values(5, 0.05);
+    ASSERT_EQ(cv5.size(), 5);
+    EXPECT_DOUBLE_EQ(cv5[0], 68.52);
+}
+
+TEST(LogSumExp, BasicProperties) {
+    using trade_ngin::statistics::critical_values::log_sum_exp;
+
+    // log(exp(0) + exp(0)) = log(2)
+    EXPECT_NEAR(log_sum_exp(0.0, 0.0), std::log(2.0), 1e-12);
+
+    // log(exp(-1000) + exp(0)) ≈ 0
+    EXPECT_NEAR(log_sum_exp(-1000.0, 0.0), 0.0, 1e-12);
+
+    // log(exp(1000) + exp(0)) ≈ 1000
+    EXPECT_NEAR(log_sum_exp(1000.0, 0.0), 1000.0, 1e-12);
+
+    // -inf + x = x
+    double neg_inf = -std::numeric_limits<double>::infinity();
+    EXPECT_DOUBLE_EQ(log_sum_exp(neg_inf, 5.0), 5.0);
+}
+
+TEST(LogSumExp, ArrayVersion) {
+    using trade_ngin::statistics::critical_values::log_sum_exp;
+
+    double values[] = {-1000.0, 0.0, -1000.0};
+    EXPECT_NEAR(log_sum_exp(values, 3), 0.0, 1e-12);
+
+    double values2[] = {1.0, 2.0, 3.0};
+    double expected = std::log(std::exp(1.0) + std::exp(2.0) + std::exp(3.0));
+    EXPECT_NEAR(log_sum_exp(values2, 3), expected, 1e-12);
 }
