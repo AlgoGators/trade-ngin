@@ -1657,6 +1657,8 @@ int main(int argc, char* argv[]) {
             // Use portfolio_var as annualized volatility proxy
             std::cout << "Volatility: " << std::fixed << std::setprecision(2)
                       << (r.portfolio_var * 100.0) << "%" << std::endl;
+            std::cout << "Gross Leverage (Risk): " << std::fixed << std::setprecision(2)
+                      << r.gross_leverage << std::endl;
             std::cout << "Net Leverage: " << std::fixed << std::setprecision(2) << r.net_leverage
                       << std::endl;
             std::cout << "Max Correlation: " << std::fixed << std::setprecision(2)
@@ -1667,6 +1669,7 @@ int main(int argc, char* argv[]) {
                       << std::endl;
         } else {
             std::cout << "Volatility: N/A" << std::endl;
+            std::cout << "Gross Leverage (Risk): N/A" << std::endl;
             std::cout << "Net Leverage: N/A" << std::endl;
             std::cout << "Max Correlation: N/A" << std::endl;
             std::cout << "Jump Risk (99th): N/A" << std::endl;
