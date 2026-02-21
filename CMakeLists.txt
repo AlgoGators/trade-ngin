@@ -112,8 +112,19 @@ set(TRADE_NGIN_SOURCES
     src/statistics/tests/johansen_test.cpp
     src/statistics/tests/engle_granger_test.cpp
     src/statistics/volatility/garch.cpp
+    src/statistics/volatility/egarch.cpp
+    src/statistics/volatility/gjr_garch.cpp
+    src/statistics/volatility/dcc_garch.cpp
+    src/statistics/tests/phillips_perron_test.cpp
+    src/statistics/tests/variance_ratio_test.cpp
     src/statistics/state_estimation/kalman_filter.cpp
     src/statistics/state_estimation/hmm.cpp
+    src/statistics/state_estimation/markov_switching.cpp
+    src/statistics/state_estimation/extended_kalman_filter.cpp
+    src/statistics/regression/ols_regression.cpp
+    src/statistics/regression/ridge_regression.cpp
+    src/statistics/regression/lasso_regression.cpp
+    src/statistics/hurst_exponent.cpp
 )
 
 # Add library target
