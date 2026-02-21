@@ -1,5 +1,7 @@
 #include "trade_ngin/statistics/statistics_tools.hpp"
 #include "trade_ngin/statistics/critical_values.hpp"
+#include "trade_ngin/statistics/validation.hpp"
+#include "trade_ngin/core/logger.hpp"
 #include <cmath>
 #include <algorithm>
 #include <numeric>
@@ -106,13 +108,11 @@ Normalizer::Normalizer(NormalizationConfig config)
 Result<void> Normalizer::fit(const Eigen::MatrixXd& data) {
     std::lock_guard<std::mutex> lock(mutex_);
 
-    if (data.rows() == 0 || data.cols() == 0) {
-        return make_error<void>(
-            ErrorCode::INVALID_ARGUMENT,
-            "Input data is empty",
-            "Normalizer"
-        );
-    }
+    auto valid = validation::validate_matrix(data, 1, 1, "Normalizer");
+    if (valid.is_error()) return valid;
+
+    DEBUG("[Normalizer::fit] entry: rows=" << data.rows() << " cols=" << data.cols()
+          << " method=" << static_cast<int>(config_.method));
 
     switch (config_.method) {
         case NormalizationConfig::Method::Z_SCORE: {
@@ -158,11 +158,19 @@ Result<void> Normalizer::fit(const Eigen::MatrixXd& data) {
     }
 
     fitted_ = true;
+    DEBUG("[Normalizer::fit] exit: fitted=true");
     return Result<void>();
 }
 
 Result<Eigen::MatrixXd> Normalizer::transform(const Eigen::MatrixXd& data) const {
     std::lock_guard<std::mutex> lock(mutex_);
+
+    {
+        auto valid = validation::validate_matrix(data, 1, 1, "Normalizer");
+        if (valid.is_error()) {
+            return make_error<Eigen::MatrixXd>(valid.error()->code(), valid.error()->what(), "Normalizer");
+        }
+    }
 
     if (!fitted_) {
         return make_error<Eigen::MatrixXd>(
@@ -208,6 +216,13 @@ Result<Eigen::MatrixXd> Normalizer::transform(const Eigen::MatrixXd& data) const
 Result<Eigen::MatrixXd> Normalizer::inverse_transform(const Eigen::MatrixXd& data) const {
     std::lock_guard<std::mutex> lock(mutex_);
 
+    {
+        auto valid = validation::validate_matrix(data, 1, 1, "Normalizer");
+        if (valid.is_error()) {
+            return make_error<Eigen::MatrixXd>(valid.error()->code(), valid.error()->what(), "Normalizer");
+        }
+    }
+
     if (!fitted_) {
         return make_error<Eigen::MatrixXd>(
             ErrorCode::NOT_INITIALIZED,
@@ -251,13 +266,11 @@ PCA::PCA(PCAConfig config)
 Result<void> PCA::fit(const Eigen::MatrixXd& data) {
     std::lock_guard<std::mutex> lock(mutex_);
 
-    if (data.rows() == 0 || data.cols() == 0) {
-        return make_error<void>(
-            ErrorCode::INVALID_ARGUMENT,
-            "Input data is empty",
-            "PCA"
-        );
-    }
+    auto valid = validation::validate_matrix(data, 1, 1, "PCA");
+    if (valid.is_error()) return valid;
+
+    DEBUG("[PCA::fit] entry: rows=" << data.rows() << " cols=" << data.cols()
+          << " n_components=" << config_.n_components);
 
     // Center the data
     mean_ = data.colwise().mean();
@@ -316,11 +329,19 @@ Result<void> PCA::fit(const Eigen::MatrixXd& data) {
     }
 
     fitted_ = true;
+    DEBUG("[PCA::fit] exit: n_components=" << n_components_);
     return Result<void>();
 }
 
 Result<Eigen::MatrixXd> PCA::transform(const Eigen::MatrixXd& data) const {
     std::lock_guard<std::mutex> lock(mutex_);
+
+    {
+        auto valid = validation::validate_matrix(data, 1, 1, "PCA");
+        if (valid.is_error()) {
+            return make_error<Eigen::MatrixXd>(valid.error()->code(), valid.error()->what(), "PCA");
+        }
+    }
 
     if (!fitted_) {
         return make_error<Eigen::MatrixXd>(
@@ -342,6 +363,13 @@ Result<Eigen::MatrixXd> PCA::transform(const Eigen::MatrixXd& data) const {
 
 Result<Eigen::MatrixXd> PCA::inverse_transform(const Eigen::MatrixXd& data) const {
     std::lock_guard<std::mutex> lock(mutex_);
+
+    {
+        auto valid = validation::validate_matrix(data, 1, 1, "PCA");
+        if (valid.is_error()) {
+            return make_error<Eigen::MatrixXd>(valid.error()->code(), valid.error()->what(), "PCA");
+        }
+    }
 
     if (!fitted_) {
         return make_error<Eigen::MatrixXd>(
@@ -368,15 +396,15 @@ ADFTest::ADFTest(ADFTestConfig config)
     : config_(config) {}
 
 Result<TestResult> ADFTest::test(const std::vector<double>& data) const {
-    if (data.size() < 10) {
-        return make_error<TestResult>(
-            ErrorCode::INVALID_ARGUMENT,
-            "Insufficient data for ADF test (minimum 10 observations required)",
-            "ADFTest"
-        );
+    {
+        auto valid = validation::validate_time_series(data, 10, "ADFTest");
+        if (valid.is_error()) {
+            return make_error<TestResult>(valid.error()->code(), valid.error()->what(), "ADFTest");
+        }
     }
 
     int n = data.size();
+    DEBUG("[ADFTest::test] entry: n=" << n << " max_lags=" << config_.max_lags);
     int lag_order = config_.max_lags;
     if (lag_order < 0) {
         lag_order = select_lag_order(data);
@@ -470,6 +498,9 @@ Result<TestResult> ADFTest::test(const std::vector<double>& data) const {
     result.additional_stats["lag_order"] = lag_order;
     result.additional_stats["n_observations"] = n_obs;
 
+    DEBUG("[ADFTest::test] exit: statistic=" << result.statistic
+          << " reject_null=" << result.reject_null);
+
     return Result<TestResult>(std::move(result));
 }
 
@@ -498,15 +529,15 @@ KPSSTest::KPSSTest(KPSSTestConfig config)
     : config_(config) {}
 
 Result<TestResult> KPSSTest::test(const std::vector<double>& data) const {
-    if (data.size() < 10) {
-        return make_error<TestResult>(
-            ErrorCode::INVALID_ARGUMENT,
-            "Insufficient data for KPSS test (minimum 10 observations required)",
-            "KPSSTest"
-        );
+    {
+        auto valid = validation::validate_time_series(data, 10, "KPSSTest");
+        if (valid.is_error()) {
+            return make_error<TestResult>(valid.error()->code(), valid.error()->what(), "KPSSTest");
+        }
     }
 
     int n = data.size();
+    DEBUG("[KPSSTest::test] entry: n=" << n << " max_lags=" << config_.max_lags);
     Eigen::VectorXd y = Eigen::Map<const Eigen::VectorXd>(data.data(), n);
 
     // Regression on constant or constant + trend
@@ -568,6 +599,9 @@ Result<TestResult> KPSSTest::test(const std::vector<double>& data) const {
     result.additional_stats["lag_order"] = lag_order;
     result.additional_stats["long_run_variance"] = s2;
 
+    DEBUG("[KPSSTest::test] exit: statistic=" << result.statistic
+          << " reject_null=" << result.reject_null);
+
     return Result<TestResult>(std::move(result));
 }
 
@@ -588,15 +622,16 @@ JohansenTest::JohansenTest(JohansenTestConfig config)
     : config_(config) {}
 
 Result<CointegrationResult> JohansenTest::test(const Eigen::MatrixXd& data) const {
-    if (data.rows() < 20 || data.cols() < 2) {
-        return make_error<CointegrationResult>(
-            ErrorCode::INVALID_ARGUMENT,
-            "Insufficient data for Johansen test (minimum 20 observations, 2 series)",
-            "JohansenTest"
-        );
+    {
+        auto valid = validation::validate_matrix(data, 20, 2, "JohansenTest");
+        if (valid.is_error()) {
+            return make_error<CointegrationResult>(valid.error()->code(), valid.error()->what(), "JohansenTest");
+        }
     }
 
     int n = data.rows();
+    DEBUG("[JohansenTest::test] entry: rows=" << n << " cols=" << data.cols()
+          << " max_lags=" << config_.max_lags);
     int p = data.cols();
     int k = config_.max_lags;
 
@@ -692,6 +727,8 @@ Result<CointegrationResult> JohansenTest::test(const Eigen::MatrixXd& data) cons
         }
     }
 
+    DEBUG("[JohansenTest::test] exit: cointegration_rank=" << result.cointegration_rank);
+
     return Result<CointegrationResult>(std::move(result));
 }
 
@@ -709,13 +746,26 @@ EngleGrangerTest::EngleGrangerTest(EngleGrangerConfig config)
 
 Result<TestResult> EngleGrangerTest::test(const std::vector<double>& y,
                                          const std::vector<double>& x) const {
-    if (y.size() != x.size() || y.size() < 20) {
-        return make_error<TestResult>(
-            ErrorCode::INVALID_ARGUMENT,
-            "Invalid input: series must have same length and at least 20 observations",
-            "EngleGrangerTest"
-        );
+    {
+        auto valid_y = validation::validate_time_series(y, 20, "EngleGrangerTest");
+        if (valid_y.is_error()) {
+            return make_error<TestResult>(valid_y.error()->code(), valid_y.error()->what(), "EngleGrangerTest");
+        }
+        auto valid_x = validation::validate_time_series(x, 20, "EngleGrangerTest");
+        if (valid_x.is_error()) {
+            return make_error<TestResult>(valid_x.error()->code(), valid_x.error()->what(), "EngleGrangerTest");
+        }
+        if (y.size() != x.size()) {
+            return make_error<TestResult>(
+                ErrorCode::INVALID_ARGUMENT,
+                "Series length mismatch: y has " + std::to_string(y.size()) +
+                " observations, x has " + std::to_string(x.size()),
+                "EngleGrangerTest"
+            );
+        }
     }
+
+    DEBUG("[EngleGrangerTest::test] entry: n=" << y.size());
 
     // Step 1: OLS regression of y on x
     auto [beta, residuals] = ols_regression(y, x);
@@ -785,13 +835,13 @@ GARCH::GARCH(GARCHConfig config)
 Result<void> GARCH::fit(const std::vector<double>& returns) {
     std::lock_guard<std::mutex> lock(mutex_);
 
-    if (returns.size() < 50) {
-        return make_error<void>(
-            ErrorCode::INVALID_ARGUMENT,
-            "Insufficient data for GARCH model (minimum 50 observations)",
-            "GARCH"
-        );
+    {
+        auto valid = validation::validate_time_series(returns, 50, "GARCH");
+        if (valid.is_error()) return valid;
     }
+
+    DEBUG("[GARCH::fit] entry: n=" << returns.size()
+          << " p=" << config_.p << " q=" << config_.q);
 
     // Calculate mean return (assume zero for simplicity)
     double mean_return = calculate_mean(returns);
@@ -823,6 +873,12 @@ Result<void> GARCH::fit(const std::vector<double>& returns) {
 
     current_volatility_ = std::sqrt(conditional_variances_.back());
     fitted_ = true;
+
+    if (alpha_ + beta_ > 0.98) {
+        WARN("[GARCH::fit] near non-stationarity: alpha+beta=" << (alpha_ + beta_));
+    }
+
+    DEBUG("[GARCH::fit] exit: omega=" << omega_ << " alpha=" << alpha_ << " beta=" << beta_);
 
     return Result<void>();
 }
@@ -857,6 +913,8 @@ Result<void> GARCH::estimate_parameters(const std::vector<double>& returns) {
                     omega_ = w;
                     alpha_ = a;
                     beta_ = b;
+                    TRACE("[GARCH::estimate_parameters] new best: omega=" << w
+                          << " alpha=" << a << " beta=" << b << " ll=" << ll);
                 }
             }
         }
@@ -968,6 +1026,16 @@ Result<void> KalmanFilter::initialize(const Eigen::VectorXd& initial_state) {
         );
     }
 
+    if (!initial_state.allFinite()) {
+        return make_error<void>(
+            ErrorCode::INVALID_DATA,
+            "NaN/Inf detected in initial state",
+            "KalmanFilter"
+        );
+    }
+
+    DEBUG("[KalmanFilter::initialize] entry: state_dim=" << config_.state_dim);
+
     x_ = initial_state;
     P_ = Eigen::MatrixXd::Identity(config_.state_dim, config_.state_dim);
     initialized_ = true;
@@ -1014,11 +1082,32 @@ Result<Eigen::VectorXd> KalmanFilter::update(const Eigen::VectorXd& observation)
         );
     }
 
+    if (!observation.allFinite()) {
+        return make_error<Eigen::VectorXd>(
+            ErrorCode::INVALID_DATA,
+            "NaN/Inf detected in observation",
+            "KalmanFilter"
+        );
+    }
+
+    DEBUG("[KalmanFilter::update] entry: obs_dim=" << observation.size()
+          << " state_dim=" << x_.size());
+
     // Innovation: y = z - H * x_k|k-1
     Eigen::VectorXd y = observation - H_ * x_;
 
     // Innovation covariance: S = H * P_k|k-1 * H^T + R
     Eigen::MatrixXd S = H_ * P_ * H_.transpose() + R_;
+
+    // Check condition number of S
+    {
+        Eigen::JacobiSVD<Eigen::MatrixXd> svd(S);
+        double cond = svd.singularValues()(0) /
+                      svd.singularValues()(svd.singularValues().size() - 1);
+        if (cond > 1e10) {
+            WARN("[KalmanFilter::update] ill-conditioned innovation covariance S: cond=" << cond);
+        }
+    }
 
     // Kalman gain: K = P*H' * S^{-1} = (S^{-1} * (P*H')')' using Cholesky
     Eigen::MatrixXd PH_t = P_ * H_.transpose();
@@ -1054,6 +1143,90 @@ Result<Eigen::VectorXd> KalmanFilter::get_state() const {
     return Result<Eigen::VectorXd>(x_);
 }
 
+Result<void> KalmanFilter::set_transition_matrix(const Eigen::MatrixXd& F) {
+    if (F.rows() != config_.state_dim || F.cols() != config_.state_dim) {
+        return make_error<void>(
+            ErrorCode::INVALID_ARGUMENT,
+            "Transition matrix dimension mismatch: expected " +
+            std::to_string(config_.state_dim) + "x" + std::to_string(config_.state_dim) +
+            ", got " + std::to_string(F.rows()) + "x" + std::to_string(F.cols()),
+            "KalmanFilter"
+        );
+    }
+    if (!F.allFinite()) {
+        return make_error<void>(ErrorCode::INVALID_DATA, "NaN/Inf detected in transition matrix", "KalmanFilter");
+    }
+    F_ = F;
+    return Result<void>();
+}
+
+Result<void> KalmanFilter::set_observation_matrix(const Eigen::MatrixXd& H) {
+    if (H.rows() != config_.obs_dim || H.cols() != config_.state_dim) {
+        return make_error<void>(
+            ErrorCode::INVALID_ARGUMENT,
+            "Observation matrix dimension mismatch: expected " +
+            std::to_string(config_.obs_dim) + "x" + std::to_string(config_.state_dim) +
+            ", got " + std::to_string(H.rows()) + "x" + std::to_string(H.cols()),
+            "KalmanFilter"
+        );
+    }
+    if (!H.allFinite()) {
+        return make_error<void>(ErrorCode::INVALID_DATA, "NaN/Inf detected in observation matrix", "KalmanFilter");
+    }
+    H_ = H;
+    return Result<void>();
+}
+
+Result<void> KalmanFilter::set_process_noise(const Eigen::MatrixXd& Q) {
+    if (Q.rows() != config_.state_dim || Q.cols() != config_.state_dim) {
+        return make_error<void>(
+            ErrorCode::INVALID_ARGUMENT,
+            "Process noise dimension mismatch: expected " +
+            std::to_string(config_.state_dim) + "x" + std::to_string(config_.state_dim) +
+            ", got " + std::to_string(Q.rows()) + "x" + std::to_string(Q.cols()),
+            "KalmanFilter"
+        );
+    }
+    if (!Q.allFinite()) {
+        return make_error<void>(ErrorCode::INVALID_DATA, "NaN/Inf detected in process noise matrix", "KalmanFilter");
+    }
+    Eigen::LLT<Eigen::MatrixXd> llt(Q);
+    if (llt.info() != Eigen::Success) {
+        return make_error<void>(
+            ErrorCode::INVALID_ARGUMENT,
+            "Process noise matrix Q is not positive-definite",
+            "KalmanFilter"
+        );
+    }
+    Q_ = Q;
+    return Result<void>();
+}
+
+Result<void> KalmanFilter::set_measurement_noise(const Eigen::MatrixXd& R) {
+    if (R.rows() != config_.obs_dim || R.cols() != config_.obs_dim) {
+        return make_error<void>(
+            ErrorCode::INVALID_ARGUMENT,
+            "Measurement noise dimension mismatch: expected " +
+            std::to_string(config_.obs_dim) + "x" + std::to_string(config_.obs_dim) +
+            ", got " + std::to_string(R.rows()) + "x" + std::to_string(R.cols()),
+            "KalmanFilter"
+        );
+    }
+    if (!R.allFinite()) {
+        return make_error<void>(ErrorCode::INVALID_DATA, "NaN/Inf detected in measurement noise matrix", "KalmanFilter");
+    }
+    Eigen::LLT<Eigen::MatrixXd> llt(R);
+    if (llt.info() != Eigen::Success) {
+        return make_error<void>(
+            ErrorCode::INVALID_ARGUMENT,
+            "Measurement noise matrix R is not positive-definite",
+            "KalmanFilter"
+        );
+    }
+    R_ = R;
+    return Result<void>();
+}
+
 // ============================================================================
 // HMM Implementation
 // ============================================================================
@@ -1068,6 +1241,14 @@ Result<void> HMM::initialize(const Eigen::VectorXd& initial_state) {
         return make_error<void>(
             ErrorCode::INVALID_ARGUMENT,
             "Initial state dimension must match number of states",
+            "HMM"
+        );
+    }
+
+    if (!initial_state.allFinite()) {
+        return make_error<void>(
+            ErrorCode::INVALID_DATA,
+            "NaN/Inf detected in initial state",
             "HMM"
         );
     }
@@ -1101,22 +1282,22 @@ Result<void> HMM::initialize(const Eigen::VectorXd& initial_state) {
 Result<void> HMM::fit(const Eigen::MatrixXd& observations) {
     std::lock_guard<std::mutex> lock(mutex_);
 
-    if (observations.rows() < 10) {
-        return make_error<void>(
-            ErrorCode::INVALID_ARGUMENT,
-            "Insufficient observations for HMM fitting",
-            "HMM"
-        );
+    {
+        auto valid = validation::validate_matrix(observations, 10, 1, "HMM");
+        if (valid.is_error()) return valid;
     }
 
     int T = observations.rows();
     int D = observations.cols();
+
+    DEBUG("[HMM::fit] entry: T=" << T << " D=" << D << " n_states=" << config_.n_states);
 
     // Initialize parameters
     initialize_parameters(observations);
 
     // Baum-Welch algorithm (EM)
     double prev_log_likelihood = -std::numeric_limits<double>::infinity();
+    bool converged = false;
 
     for (int iter = 0; iter < config_.max_iterations; ++iter) {
         Eigen::MatrixXd gamma(T, config_.n_states);
@@ -1125,8 +1306,12 @@ Result<void> HMM::fit(const Eigen::MatrixXd& observations) {
         // E-step: Forward-backward algorithm
         double log_likelihood = forward_backward(observations, gamma, xi);
 
+        double delta = std::abs(log_likelihood - prev_log_likelihood);
+        TRACE("[HMM::fit] iter=" << iter << " ll=" << log_likelihood << " delta=" << delta);
+
         // Check convergence
-        if (std::abs(log_likelihood - prev_log_likelihood) < config_.tolerance) {
+        if (delta < config_.tolerance) {
+            converged = true;
             break;
         }
         prev_log_likelihood = log_likelihood;
@@ -1167,12 +1352,23 @@ Result<void> HMM::fit(const Eigen::MatrixXd& observations) {
             }
             covariances_[k] /= gamma_sum;
 
+            // Check for near-singular covariance before regularization
+            Eigen::LLT<Eigen::MatrixXd> llt_check(covariances_[k]);
+            if (llt_check.info() != Eigen::Success) {
+                WARN("[HMM::fit] near-singular covariance for state " << k << " at iter " << iter);
+            }
+
             // Add small regularization to prevent singularity
             covariances_[k] += Eigen::MatrixXd::Identity(D, D) * 1e-6;
         }
     }
 
+    if (!converged) {
+        WARN("[HMM::fit] did not converge after " << config_.max_iterations << " iterations");
+    }
+
     initialized_ = true;
+    DEBUG("[HMM::fit] exit: converged=" << converged);
     return Result<void>();
 }
 
