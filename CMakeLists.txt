@@ -29,6 +29,7 @@ find_package(Arrow REQUIRED)
 #set(libpqxx_DIR "C:/vcpkg/installed/x64-windows/share/libpqxx")
 # find_package(libpqxx CONFIG REQUIRED)
 find_package(Eigen3 REQUIRED)
+find_package(NLopt REQUIRED)
 
 # Try to find libpqxx via pkg-config (works with Homebrew)
 find_package(PkgConfig REQUIRED)
@@ -126,6 +127,7 @@ target_link_libraries(trade_ngin
         Arrow::arrow_shared
         CURL::libcurl
         Eigen3::Eigen
+        NLopt::nlopt
 )
 
 # Windows-specific settings
