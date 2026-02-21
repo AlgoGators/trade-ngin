@@ -32,6 +32,17 @@ set(TEST_SOURCES
     statistics/test_hmm.cpp
     statistics/test_critical_values.cpp
     statistics/test_statistics_integration.cpp
+    statistics/test_ols_regression.cpp
+    statistics/test_ridge_regression.cpp
+    statistics/test_lasso_regression.cpp
+    statistics/test_egarch.cpp
+    statistics/test_hurst_exponent.cpp
+    statistics/test_markov_switching.cpp
+    statistics/test_phillips_perron.cpp
+    statistics/test_variance_ratio.cpp
+    statistics/test_gjr_garch.cpp
+    statistics/test_dcc_garch.cpp
+    statistics/test_extended_kalman_filter.cpp
 )
 
 # Create test executable

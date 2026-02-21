@@ -153,5 +153,196 @@ struct CointegrationResult {
     bool is_cointegrated;
 };
 
+// ============================================================================
+// Regression Configuration & Result Structures
+// ============================================================================
+
+struct OLSRegressionConfig {
+    bool include_intercept{true};
+};
+
+struct OLSResult {
+    Eigen::VectorXd coefficients;
+    double r_squared{0.0};
+    double adj_r_squared{0.0};
+    Eigen::VectorXd residuals;
+    Eigen::VectorXd standard_errors;
+    Eigen::VectorXd t_statistics;
+    Eigen::VectorXd p_values;
+};
+
+struct RidgeRegressionConfig {
+    bool include_intercept{true};
+    double alpha{1.0};
+    int cv_folds{0};                    // 0 = no CV, >0 = k-fold CV for alpha selection
+    std::vector<double> alpha_candidates; // Alphas to try during CV
+};
+
+struct RidgeResult {
+    Eigen::VectorXd coefficients;
+    double intercept{0.0};
+    double r_squared{0.0};
+    double best_alpha{0.0};
+};
+
+struct LassoRegressionConfig {
+    bool include_intercept{true};
+    double alpha{1.0};
+    int max_iterations{1000};
+    double tolerance{1e-6};
+    int cv_folds{0};
+    std::vector<double> alpha_candidates;
+};
+
+struct LassoResult {
+    Eigen::VectorXd coefficients;
+    double intercept{0.0};
+    double r_squared{0.0};
+    double best_alpha{0.0};
+    std::vector<int> selected_features;
+    int n_nonzero{0};
+};
+
+// ============================================================================
+// EGARCH Configuration
+// ============================================================================
+
+struct EGARCHConfig {
+    double omega{-0.1};        // Constant in log-variance equation
+    double alpha{0.1};         // Magnitude effect coefficient
+    double gamma{-0.05};       // Leverage/asymmetry coefficient
+    double beta{0.95};         // Persistence coefficient
+    int max_iterations{1000};
+    double tolerance{1e-6};
+};
+
+// ============================================================================
+// Hurst Exponent Configuration & Result
+// ============================================================================
+
+struct HurstExponentConfig {
+    enum class Method {
+        RS_ANALYSIS,    // Rescaled range analysis
+        DFA,            // Detrended fluctuation analysis (default)
+        PERIODOGRAM     // Log-periodogram regression
+    };
+
+    Method method{Method::DFA};
+    int min_window{10};
+    int max_window{-1};         // -1 = auto (N/4)
+    int n_windows{20};          // Number of log-spaced window sizes
+};
+
+struct HurstResult {
+    double hurst_exponent{0.0};
+    double r_squared{0.0};      // Goodness of fit of log-log regression
+    std::string interpretation;  // "mean-reverting", "random walk", or "trending"
+};
+
+// ============================================================================
+// Markov Switching Configuration & Result
+// ============================================================================
+
+struct MarkovSwitchingConfig {
+    int n_states{2};
+    int max_iterations{100};
+    double tolerance{1e-4};
+};
+
+struct MarkovSwitchingResult {
+    Eigen::VectorXd state_means;
+    Eigen::VectorXd state_variances;
+    Eigen::MatrixXd transition_matrix;
+    Eigen::MatrixXd smoothed_probabilities;
+    std::vector<int> decoded_states;
+    double log_likelihood{0.0};
+    bool converged{false};
+    int n_iterations{0};
+};
+
+// ============================================================================
+// Phillips-Perron Test Configuration
+// ============================================================================
+
+struct PhillipsPerronConfig {
+    enum class RegressionType {
+        CONSTANT,
+        CONSTANT_TREND,
+        NO_CONSTANT
+    };
+
+    enum class KernelType {
+        BARTLETT,
+        PARZEN,
+        QUADRATIC_SPECTRAL
+    };
+
+    RegressionType regression{RegressionType::CONSTANT};
+    int bandwidth{-1};                  // -1 = auto (Newey-West)
+    KernelType kernel{KernelType::BARTLETT};
+    double significance_level{0.05};
+};
+
+// ============================================================================
+// Variance Ratio Test Configuration
+// ============================================================================
+
+struct VarianceRatioConfig {
+    std::vector<int> holding_periods{2, 5, 10};
+    double significance_level{0.05};
+    bool heteroskedasticity_robust{true};
+};
+
+struct VarianceRatioResult {
+    std::vector<double> vr_statistics;      // VR(q) for each holding period
+    std::vector<double> z_statistics;       // Z-stat for each holding period
+    std::vector<double> p_values;
+    std::vector<int> holding_periods;
+    bool reject_random_walk{false};         // True if any period rejects
+    std::string interpretation;
+};
+
+// ============================================================================
+// GJR-GARCH Configuration
+// ============================================================================
+
+struct GJRGARCHConfig {
+    double omega{0.0001};
+    double alpha{0.05};
+    double gamma{0.1};                      // Asymmetry coefficient for negative shocks
+    double beta{0.85};
+    int max_iterations{1000};
+    double tolerance{1e-6};
+};
+
+// ============================================================================
+// DCC-GARCH Configuration & Result
+// ============================================================================
+
+struct DCCGARCHConfig {
+    double dcc_a{0.05};                     // DCC parameter a
+    double dcc_b{0.93};                     // DCC parameter b
+    GARCHConfig univariate_config;          // Config for univariate GARCH fits
+    int max_iterations{500};
+    double tolerance{1e-6};
+};
+
+struct DCCGARCHResult {
+    double dcc_a{0.0};
+    double dcc_b{0.0};
+    Eigen::MatrixXd unconditional_correlation;  // Q̄
+    std::vector<Eigen::MatrixXd> conditional_correlations;  // R_t for each t
+    std::vector<Eigen::VectorXd> conditional_volatilities;  // σ_t for each t
+};
+
+// ============================================================================
+// Extended Kalman Filter Configuration
+// ============================================================================
+
+struct ExtendedKalmanFilterConfig {
+    int state_dim{1};
+    int obs_dim{1};
+};
+
 } // namespace statistics
 } // namespace trade_ngin
