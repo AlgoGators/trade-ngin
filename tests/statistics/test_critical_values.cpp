@@ -1,9 +1,11 @@
 #include <gtest/gtest.h>
 #include "trade_ngin/statistics/critical_values.hpp"
 #include "trade_ngin/statistics/tests/adf_test.hpp"
+#include "trade_ngin/statistics/tests/kpss_test.hpp"
 #include <cmath>
 #include <random>
 #include <limits>
+#include <numeric>
 
 using namespace trade_ngin::statistics;
 
@@ -114,4 +116,92 @@ TEST(LogSumExp, ArrayVersion) {
     double values2[] = {1.0, 2.0, 3.0};
     double expected = std::log(std::exp(1.0) + std::exp(2.0) + std::exp(3.0));
     EXPECT_NEAR(log_sum_exp(values2, 3), expected, 1e-12);
+}
+
+// ============================================================================
+// ADF P-Value Tests
+// ============================================================================
+
+TEST(ADFPValue, StationarySeriesSmallPValue) {
+    // White noise should be stationary → ADF should reject → small p-value
+    std::mt19937 gen(42);
+    std::normal_distribution<> d(0.0, 1.0);
+    std::vector<double> data(200);
+    for (auto& v : data) v = d(gen);
+
+    trade_ngin::statistics::ADFTestConfig config;
+    config.regression = trade_ngin::statistics::ADFTestConfig::RegressionType::CONSTANT;
+    trade_ngin::statistics::ADFTest adf(config);
+    auto result = adf.test(data);
+    ASSERT_TRUE(result.is_ok());
+    EXPECT_LT(result.value().p_value, 0.05);
+    EXPECT_GT(result.value().p_value, 0.0);
+}
+
+TEST(ADFPValue, NonStationarySeriesLargePValue) {
+    // Random walk should be non-stationary → ADF should not reject → large p-value
+    std::mt19937 gen(42);
+    std::normal_distribution<> d(0.0, 1.0);
+    std::vector<double> data(200);
+    data[0] = 0.0;
+    for (size_t i = 1; i < data.size(); ++i) {
+        data[i] = data[i-1] + d(gen);
+    }
+
+    trade_ngin::statistics::ADFTestConfig config;
+    config.regression = trade_ngin::statistics::ADFTestConfig::RegressionType::CONSTANT;
+    trade_ngin::statistics::ADFTest adf(config);
+    auto result = adf.test(data);
+    ASSERT_TRUE(result.is_ok());
+    EXPECT_GT(result.value().p_value, 0.05);
+}
+
+TEST(ADFPValue, MonotonicInStatistic) {
+    // More negative statistic → smaller p-value
+    using trade_ngin::statistics::critical_values::approximate_adf_p_value;
+
+    double p1 = approximate_adf_p_value(-5.0, 100, 1);  // Very negative
+    double p2 = approximate_adf_p_value(-3.0, 100, 1);  // Moderately negative
+    double p3 = approximate_adf_p_value(-1.0, 100, 1);  // Barely negative
+
+    EXPECT_LE(p1, p2);
+    EXPECT_LE(p2, p3);
+}
+
+// ============================================================================
+// KPSS P-Value Tests
+// ============================================================================
+
+TEST(KPSSPValue, StationarySeriesLargePValue) {
+    // White noise should be stationary → KPSS should not reject → large p-value
+    std::mt19937 gen(42);
+    std::normal_distribution<> d(0.0, 1.0);
+    std::vector<double> data(200);
+    for (auto& v : data) v = d(gen);
+
+    trade_ngin::statistics::KPSSTestConfig config;
+    config.regression = trade_ngin::statistics::KPSSTestConfig::RegressionType::CONSTANT;
+    trade_ngin::statistics::KPSSTest kpss(config);
+    auto result = kpss.test(data);
+    ASSERT_TRUE(result.is_ok());
+    EXPECT_GT(result.value().p_value, 0.05);
+}
+
+TEST(KPSSPValue, NonStationarySeriesSmallPValue) {
+    // Random walk with drift should be non-stationary → KPSS should reject → small p-value
+    std::mt19937 gen(42);
+    std::normal_distribution<> d(0.0, 1.0);
+    std::vector<double> data(500);
+    data[0] = 0.0;
+    for (size_t i = 1; i < data.size(); ++i) {
+        data[i] = data[i-1] + d(gen);
+    }
+
+    trade_ngin::statistics::KPSSTestConfig config;
+    config.regression = trade_ngin::statistics::KPSSTestConfig::RegressionType::CONSTANT;
+    config.max_lags = 4;  // Use shorter lags to avoid inflating long-run variance estimate
+    trade_ngin::statistics::KPSSTest kpss(config);
+    auto result = kpss.test(data);
+    ASSERT_TRUE(result.is_ok());
+    EXPECT_LT(result.value().p_value, 0.05);
 }

@@ -129,6 +129,39 @@ inline double interpolate_adf_cv(int n_obs, int regression_type, double signific
 }
 
 // ============================================================================
+// ADF Approximate P-Value
+// ============================================================================
+
+/**
+ * @brief Approximate ADF p-value by interpolating between 1%, 5%, 10% critical values
+ * @param statistic The ADF test statistic
+ * @param n_obs Number of observations
+ * @param regression_type 0=no_constant, 1=constant, 2=constant_trend
+ * @return Approximate p-value in [0.01, 0.10], or boundary values outside that range
+ */
+inline double approximate_adf_p_value(double statistic, int n_obs, int regression_type) {
+    double cv_01 = interpolate_adf_cv(n_obs, regression_type, 0.01);
+    double cv_05 = interpolate_adf_cv(n_obs, regression_type, 0.05);
+    double cv_10 = interpolate_adf_cv(n_obs, regression_type, 0.10);
+
+    // ADF rejects when statistic is more negative than critical value
+    // More negative statistic → smaller p-value
+    if (statistic <= cv_01) {
+        return 0.01;
+    } else if (statistic <= cv_05) {
+        // Interpolate between 1% and 5%
+        double t = (statistic - cv_01) / (cv_05 - cv_01);
+        return 0.01 + t * (0.05 - 0.01);
+    } else if (statistic <= cv_10) {
+        // Interpolate between 5% and 10%
+        double t = (statistic - cv_05) / (cv_10 - cv_05);
+        return 0.05 + t * (0.10 - 0.05);
+    } else {
+        return 0.10;
+    }
+}
+
+// ============================================================================
 // KPSS Critical Values — Kwiatkowski et al. (1992)
 // ============================================================================
 
@@ -151,6 +184,34 @@ inline double kpss_critical_value(double significance, bool has_trend) {
         if (significance <= 0.05) return 0.146;
         if (significance <= 0.10) return 0.119;
         return 0.119;  // default to 10%
+    }
+}
+
+/**
+ * @brief Approximate KPSS p-value by interpolating between 10%, 5%, 1% critical values
+ * @param statistic The KPSS test statistic
+ * @param has_trend Whether regression includes a trend
+ * @return Approximate p-value in [0.01, 0.10], or boundary values outside that range
+ */
+inline double approximate_kpss_p_value(double statistic, bool has_trend) {
+    double cv_10 = kpss_critical_value(0.10, has_trend);
+    double cv_05 = kpss_critical_value(0.05, has_trend);
+    double cv_01 = kpss_critical_value(0.01, has_trend);
+
+    // KPSS rejects when statistic is LARGE (opposite of ADF)
+    // Larger statistic → smaller p-value
+    if (statistic >= cv_01) {
+        return 0.01;
+    } else if (statistic >= cv_05) {
+        // Interpolate between 1% and 5%
+        double t = (cv_01 - statistic) / (cv_01 - cv_05);
+        return 0.01 + t * (0.05 - 0.01);
+    } else if (statistic >= cv_10) {
+        // Interpolate between 5% and 10%
+        double t = (cv_05 - statistic) / (cv_05 - cv_10);
+        return 0.05 + t * (0.10 - 0.05);
+    } else {
+        return 0.10;
     }
 }
 
