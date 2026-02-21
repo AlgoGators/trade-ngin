@@ -11,14 +11,42 @@ The statistics module provides quantitative analysis capabilities for the tradin
 ## Architecture
 
 ```
-statistics/
-└── statistics_tools.cpp    # All implementations
-
 include/trade_ngin/statistics/
-└── statistics_tools.hpp    # All declarations
+├── statistics_common.hpp              # Config structs + result types
+├── statistics_utils.hpp               # Helper function declarations
+├── critical_values.hpp                # ADF/KPSS/Johansen critical value tables
+├── validation.hpp                     # Input validation utilities
+├── base/
+│   ├── data_transformer.hpp           # DataTransformer ABC
+│   ├── statistical_test.hpp           # StatisticalTest ABC
+│   ├── volatility_model.hpp           # VolatilityModel ABC
+│   └── state_estimator.hpp            # StateEstimator ABC
+├── transformers/
+│   ├── normalizer.hpp                 # Normalizer class
+│   └── pca.hpp                        # PCA class
+├── tests/                             # Statistical test classes
+│   ├── adf_test.hpp
+│   ├── kpss_test.hpp
+│   ├── johansen_test.hpp
+│   └── engle_granger_test.hpp
+├── volatility/
+│   └── garch.hpp
+├── state_estimation/
+│   ├── kalman_filter.hpp
+│   └── hmm.hpp
+├── statistics.hpp                     # Convenience header (includes all)
+└── statistics_tools.hpp               # Deprecated redirect to statistics.hpp
+
+src/statistics/
+├── utils/statistics_utils.cpp
+├── transformers/normalizer.cpp, pca.cpp
+├── tests/adf_test.cpp, kpss_test.cpp, johansen_test.cpp, engle_granger_test.cpp
+├── volatility/garch.cpp
+└── state_estimation/kalman_filter.cpp, hmm.cpp
 ```
 
 All classes are in the `trade_ngin::statistics` namespace.
+Helper functions are in `trade_ngin::statistics::utils`.
 
 ---
 
@@ -60,7 +88,7 @@ All classes are in the `trade_ngin::statistics` namespace.
 ### Normalizer
 
 ```cpp
-#include "trade_ngin/statistics/statistics_tools.hpp"
+#include "trade_ngin/statistics/statistics.hpp"
 
 using namespace trade_ngin::statistics;
 
@@ -431,7 +459,7 @@ cd build
 ctest -R statistics --output-on-failure
 ```
 
-Test file: `tests/statistics/test_statistics_tools.cpp`
+Test files: `tests/statistics/test_*.cpp` (one per class + integration)
 
 ---
 

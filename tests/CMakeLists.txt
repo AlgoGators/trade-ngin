@@ -21,7 +21,17 @@ set(TEST_SOURCES
     portfolio/test_portfolio_manager.cpp
     strategy/test_base_strategy.cpp
     strategy/test_trend_following.cpp
-    statistics/test_statistics_tools.cpp
+    statistics/test_normalizer.cpp
+    statistics/test_pca.cpp
+    statistics/test_adf.cpp
+    statistics/test_kpss.cpp
+    statistics/test_johansen.cpp
+    statistics/test_engle_granger.cpp
+    statistics/test_garch.cpp
+    statistics/test_kalman_filter.cpp
+    statistics/test_hmm.cpp
+    statistics/test_critical_values.cpp
+    statistics/test_statistics_integration.cpp
 )
 
 # Create test executable
