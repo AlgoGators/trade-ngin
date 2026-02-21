@@ -588,11 +588,11 @@ TEST_F(KalmanFilterTest, PredictUpdateCycle) {
     Eigen::MatrixXd F(2, 2);
     F << 1.0, 1.0,
          0.0, 1.0;  // [position; velocity], dt=1
-    kf.set_transition_matrix(F);
+    ASSERT_TRUE(kf.set_transition_matrix(F).is_ok());
 
     Eigen::MatrixXd H(1, 2);
     H << 1.0, 0.0;  // Observe position only
-    kf.set_observation_matrix(H);
+    ASSERT_TRUE(kf.set_observation_matrix(H).is_ok());
 
     Eigen::VectorXd initial_state(2);
     initial_state << 0.0, 1.0;  // Position=0, velocity=1
@@ -830,11 +830,11 @@ TEST(KalmanIllConditioned, NoNaNWithTinyMeasurementNoise) {
 
     Eigen::MatrixXd F(2, 2);
     F << 1.0, 1.0, 0.0, 1.0;
-    kf.set_transition_matrix(F);
+    ASSERT_TRUE(kf.set_transition_matrix(F).is_ok());
 
     Eigen::MatrixXd H(1, 2);
     H << 1.0, 0.0;
-    kf.set_observation_matrix(H);
+    ASSERT_TRUE(kf.set_observation_matrix(H).is_ok());
 
     // Run several predict-update cycles
     for (int i = 0; i < 20; ++i) {
@@ -975,4 +975,248 @@ TEST(LogSumExp, ArrayVersion) {
     double values2[] = {1.0, 2.0, 3.0};
     double expected = std::log(std::exp(1.0) + std::exp(2.0) + std::exp(3.0));
     EXPECT_NEAR(log_sum_exp(values2, 3), expected, 1e-12);
+}
+
+// ============================================================================
+// Validation Edge-Case Tests
+// ============================================================================
+
+TEST(ValidationTests, NaNRejectedByTimeSeries) {
+    std::vector<double> data(50, 1.0);
+    data[25] = std::numeric_limits<double>::quiet_NaN();
+
+    ADFTestConfig config;
+    ADFTest adf(config);
+    auto result = adf.test(data);
+    EXPECT_TRUE(result.is_error());
+    EXPECT_EQ(result.error()->code(), trade_ngin::ErrorCode::INVALID_DATA);
+}
+
+TEST(ValidationTests, InfRejectedByTimeSeries) {
+    std::vector<double> data(50, 1.0);
+    data[10] = std::numeric_limits<double>::infinity();
+
+    KPSSTestConfig config;
+    KPSSTest kpss(config);
+    auto result = kpss.test(data);
+    EXPECT_TRUE(result.is_error());
+    EXPECT_EQ(result.error()->code(), trade_ngin::ErrorCode::INVALID_DATA);
+}
+
+TEST(ValidationTests, NaNRejectedByMatrix) {
+    Eigen::MatrixXd data(5, 3);
+    data.setOnes();
+    data(2, 1) = std::numeric_limits<double>::quiet_NaN();
+
+    NormalizationConfig config;
+    Normalizer normalizer(config);
+    auto result = normalizer.fit(data);
+    EXPECT_TRUE(result.is_error());
+    EXPECT_EQ(result.error()->code(), trade_ngin::ErrorCode::INVALID_DATA);
+}
+
+TEST(ValidationTests, EmptyMatrixRejected) {
+    Eigen::MatrixXd empty(0, 0);
+
+    PCAConfig config;
+    PCA pca(config);
+    auto result = pca.fit(empty);
+    EXPECT_TRUE(result.is_error());
+    EXPECT_EQ(result.error()->code(), trade_ngin::ErrorCode::INVALID_ARGUMENT);
+}
+
+TEST(ValidationTests, EmptyTimeSeriesRejected) {
+    std::vector<double> empty;
+
+    GARCHConfig config;
+    GARCH garch(config);
+    auto result = garch.fit(empty);
+    EXPECT_TRUE(result.is_error());
+    EXPECT_EQ(result.error()->code(), trade_ngin::ErrorCode::INVALID_ARGUMENT);
+}
+
+TEST(ValidationTests, NaNRejectedByGARCH) {
+    std::vector<double> data(100, 0.01);
+    data[50] = std::numeric_limits<double>::quiet_NaN();
+
+    GARCHConfig config;
+    GARCH garch(config);
+    auto result = garch.fit(data);
+    EXPECT_TRUE(result.is_error());
+    EXPECT_EQ(result.error()->code(), trade_ngin::ErrorCode::INVALID_DATA);
+}
+
+TEST(ValidationTests, EngleGrangerNaNRejected) {
+    std::vector<double> y(50, 1.0);
+    std::vector<double> x(50, 2.0);
+    y[10] = std::numeric_limits<double>::quiet_NaN();
+
+    EngleGrangerConfig config;
+    EngleGrangerTest eg(config);
+    auto result = eg.test(y, x);
+    EXPECT_TRUE(result.is_error());
+    EXPECT_EQ(result.error()->code(), trade_ngin::ErrorCode::INVALID_DATA);
+}
+
+TEST(ValidationTests, JohansenNaNRejected) {
+    Eigen::MatrixXd data(30, 2);
+    data.setOnes();
+    data(15, 0) = std::numeric_limits<double>::quiet_NaN();
+
+    JohansenTestConfig config;
+    JohansenTest johansen(config);
+    auto result = johansen.test(data);
+    EXPECT_TRUE(result.is_error());
+    EXPECT_EQ(result.error()->code(), trade_ngin::ErrorCode::INVALID_DATA);
+}
+
+// ============================================================================
+// KalmanFilter Setter Validation Tests
+// ============================================================================
+
+TEST(KalmanSetterTests, TransitionMatrixDimensionMismatch) {
+    KalmanFilterConfig config;
+    config.state_dim = 2;
+    config.obs_dim = 1;
+    KalmanFilter kf(config);
+
+    Eigen::MatrixXd wrong_F(3, 3);
+    wrong_F.setIdentity();
+    auto result = kf.set_transition_matrix(wrong_F);
+    EXPECT_TRUE(result.is_error());
+    EXPECT_EQ(result.error()->code(), trade_ngin::ErrorCode::INVALID_ARGUMENT);
+}
+
+TEST(KalmanSetterTests, ObservationMatrixDimensionMismatch) {
+    KalmanFilterConfig config;
+    config.state_dim = 2;
+    config.obs_dim = 1;
+    KalmanFilter kf(config);
+
+    Eigen::MatrixXd wrong_H(2, 2);
+    wrong_H.setIdentity();
+    auto result = kf.set_observation_matrix(wrong_H);
+    EXPECT_TRUE(result.is_error());
+    EXPECT_EQ(result.error()->code(), trade_ngin::ErrorCode::INVALID_ARGUMENT);
+}
+
+TEST(KalmanSetterTests, NaNTransitionMatrixRejected) {
+    KalmanFilterConfig config;
+    config.state_dim = 2;
+    config.obs_dim = 1;
+    KalmanFilter kf(config);
+
+    Eigen::MatrixXd F(2, 2);
+    F.setIdentity();
+    F(0, 1) = std::numeric_limits<double>::quiet_NaN();
+    auto result = kf.set_transition_matrix(F);
+    EXPECT_TRUE(result.is_error());
+    EXPECT_EQ(result.error()->code(), trade_ngin::ErrorCode::INVALID_DATA);
+}
+
+TEST(KalmanSetterTests, NonPositiveDefiniteQRejected) {
+    KalmanFilterConfig config;
+    config.state_dim = 2;
+    config.obs_dim = 1;
+    KalmanFilter kf(config);
+
+    // Non-positive-definite matrix
+    Eigen::MatrixXd Q(2, 2);
+    Q << 1.0, 5.0,
+         5.0, 1.0;  // eigenvalues: 6 and -4
+    auto result = kf.set_process_noise(Q);
+    EXPECT_TRUE(result.is_error());
+    EXPECT_EQ(result.error()->code(), trade_ngin::ErrorCode::INVALID_ARGUMENT);
+}
+
+TEST(KalmanSetterTests, NonPositiveDefiniteRRejected) {
+    KalmanFilterConfig config;
+    config.state_dim = 2;
+    config.obs_dim = 2;
+    KalmanFilter kf(config);
+
+    Eigen::MatrixXd R(2, 2);
+    R << 1.0, 10.0,
+         10.0, 1.0;
+    auto result = kf.set_measurement_noise(R);
+    EXPECT_TRUE(result.is_error());
+    EXPECT_EQ(result.error()->code(), trade_ngin::ErrorCode::INVALID_ARGUMENT);
+}
+
+TEST(KalmanSetterTests, ValidSettersAccepted) {
+    KalmanFilterConfig config;
+    config.state_dim = 2;
+    config.obs_dim = 1;
+    KalmanFilter kf(config);
+
+    Eigen::MatrixXd F(2, 2);
+    F << 1.0, 1.0, 0.0, 1.0;
+    EXPECT_TRUE(kf.set_transition_matrix(F).is_ok());
+
+    Eigen::MatrixXd H(1, 2);
+    H << 1.0, 0.0;
+    EXPECT_TRUE(kf.set_observation_matrix(H).is_ok());
+
+    Eigen::MatrixXd Q = Eigen::MatrixXd::Identity(2, 2) * 0.01;
+    EXPECT_TRUE(kf.set_process_noise(Q).is_ok());
+
+    Eigen::MatrixXd R(1, 1);
+    R << 0.1;
+    EXPECT_TRUE(kf.set_measurement_noise(R).is_ok());
+}
+
+TEST(ValidationTests, KalmanInitializeNaNRejected) {
+    KalmanFilterConfig config;
+    config.state_dim = 2;
+    config.obs_dim = 1;
+    KalmanFilter kf(config);
+
+    Eigen::VectorXd state(2);
+    state << 0.0, std::numeric_limits<double>::quiet_NaN();
+    auto result = kf.initialize(state);
+    EXPECT_TRUE(result.is_error());
+    EXPECT_EQ(result.error()->code(), trade_ngin::ErrorCode::INVALID_DATA);
+}
+
+TEST(ValidationTests, KalmanUpdateNaNRejected) {
+    KalmanFilterConfig config;
+    config.state_dim = 2;
+    config.obs_dim = 1;
+    KalmanFilter kf(config);
+
+    Eigen::VectorXd state(2);
+    state << 0.0, 0.0;
+    kf.initialize(state);
+    kf.predict();
+
+    Eigen::VectorXd obs(1);
+    obs << std::numeric_limits<double>::quiet_NaN();
+    auto result = kf.update(obs);
+    EXPECT_TRUE(result.is_error());
+    EXPECT_EQ(result.error()->code(), trade_ngin::ErrorCode::INVALID_DATA);
+}
+
+TEST(ValidationTests, HMMInitializeNaNRejected) {
+    HMMConfig config;
+    config.n_states = 2;
+    HMM hmm(config);
+
+    Eigen::VectorXd state(2);
+    state << 0.5, std::numeric_limits<double>::quiet_NaN();
+    auto result = hmm.initialize(state);
+    EXPECT_TRUE(result.is_error());
+    EXPECT_EQ(result.error()->code(), trade_ngin::ErrorCode::INVALID_DATA);
+}
+
+TEST(ValidationTests, HMMFitNaNRejected) {
+    HMMConfig config;
+    config.n_states = 2;
+    HMM hmm(config);
+
+    Eigen::MatrixXd obs(20, 1);
+    obs.setOnes();
+    obs(10, 0) = std::numeric_limits<double>::quiet_NaN();
+    auto result = hmm.fit(obs);
+    EXPECT_TRUE(result.is_error());
+    EXPECT_EQ(result.error()->code(), trade_ngin::ErrorCode::INVALID_DATA);
 }

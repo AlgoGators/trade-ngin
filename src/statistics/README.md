@@ -229,26 +229,30 @@ kf_config.obs_dim = 1;     // Number of observations
 
 KalmanFilter kf(kf_config);
 
-// Set state transition matrix (A)
+// Set state transition matrix (A) — returns Result<void>
 Eigen::MatrixXd A(2, 2);
 A << 1, 1,
      0, 1;
-kf.set_transition_matrix(A);
+auto set_F = kf.set_transition_matrix(A);
+if (set_F.is_error()) { /* handle dimension/NaN/Inf error */ }
 
 // Set observation matrix (H)
 Eigen::MatrixXd H(1, 2);
 H << 1, 0;
-kf.set_observation_matrix(H);
+auto set_H = kf.set_observation_matrix(H);
+if (set_H.is_error()) { /* handle error */ }
 
-// Set noise covariances
+// Set noise covariances (must be positive-definite)
 Eigen::MatrixXd Q(2, 2);  // Process noise
 Q << 0.1, 0,
      0, 0.1;
-kf.set_process_noise(Q);
+auto set_Q = kf.set_process_noise(Q);
+if (set_Q.is_error()) { /* handle error */ }
 
 Eigen::MatrixXd R(1, 1);  // Measurement noise
 R << 1.0;
-kf.set_measurement_noise(R);
+auto set_R = kf.set_measurement_noise(R);
+if (set_R.is_error()) { /* handle error */ }
 
 // Initialize state
 Eigen::VectorXd x0(2);

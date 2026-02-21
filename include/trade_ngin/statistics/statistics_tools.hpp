@@ -505,23 +505,31 @@ public:
 
     /**
      * @brief Set transition matrix (state dynamics)
+     * @param F Matrix of dimensions state_dim x state_dim
+     * @return Result indicating success or validation failure
      */
-    void set_transition_matrix(const Eigen::MatrixXd& F) { F_ = F; }
+    Result<void> set_transition_matrix(const Eigen::MatrixXd& F);
 
     /**
      * @brief Set observation matrix
+     * @param H Matrix of dimensions obs_dim x state_dim
+     * @return Result indicating success or validation failure
      */
-    void set_observation_matrix(const Eigen::MatrixXd& H) { H_ = H; }
+    Result<void> set_observation_matrix(const Eigen::MatrixXd& H);
 
     /**
      * @brief Set process noise covariance
+     * @param Q Positive-definite matrix of dimensions state_dim x state_dim
+     * @return Result indicating success or validation failure
      */
-    void set_process_noise(const Eigen::MatrixXd& Q) { Q_ = Q; }
+    Result<void> set_process_noise(const Eigen::MatrixXd& Q);
 
     /**
      * @brief Set measurement noise covariance
+     * @param R Positive-definite matrix of dimensions obs_dim x obs_dim
+     * @return Result indicating success or validation failure
      */
-    void set_measurement_noise(const Eigen::MatrixXd& R) { R_ = R; }
+    Result<void> set_measurement_noise(const Eigen::MatrixXd& R);
 
     const Eigen::MatrixXd& get_state_covariance() const { return P_; }
 
