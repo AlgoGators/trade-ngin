@@ -103,13 +103,7 @@ Result<TestResult> ADFTest::test(const std::vector<double>& data) const {
     result.statistic = adf_stat;
     result.critical_value = critical_val;
     result.reject_null = adf_stat < critical_val;  // Reject if stat < critical (more negative)
-    int reg_type;
-    switch (config_.regression) {
-        case ADFTestConfig::RegressionType::NO_CONSTANT: reg_type = 0; break;
-        case ADFTestConfig::RegressionType::CONSTANT_TREND: reg_type = 2; break;
-        default: reg_type = 1; break;
-    }
-    result.p_value = critical_values::approximate_adf_p_value(adf_stat, n_obs, reg_type);
+    result.p_value = -1.0;  // Exact p-value requires MacKinnon tables
 
     if (result.reject_null) {
         result.interpretation = "Reject null hypothesis: Series appears to be stationary";
