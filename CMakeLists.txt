@@ -125,6 +125,8 @@ set(TRADE_NGIN_SOURCES
     src/statistics/regression/ridge_regression.cpp
     src/statistics/regression/lasso_regression.cpp
     src/statistics/hurst_exponent.cpp
+    src/statistics/preprocessing/outlier_handler.cpp
+    src/statistics/preprocessing/missing_data_handler.cpp
 )
 
 # Add library target

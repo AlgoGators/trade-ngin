@@ -17,6 +17,9 @@ public:
     Result<void> update(double new_return) override;
     bool is_fitted() const override { return fitted_; }
 
+    Result<ConvergenceInfo> fit_with_diagnostics(const std::vector<double>& returns);
+    const ConvergenceInfo& get_convergence_info() const { return last_convergence_info_; }
+
     double get_omega() const { return omega_; }
     double get_alpha() const { return alpha_; }
     double get_gamma() const { return gamma_; }
@@ -32,6 +35,7 @@ private:
     std::vector<double> log_variances_;
     double current_volatility_{0.0};
     bool fitted_{false};
+    ConvergenceInfo last_convergence_info_;
     mutable std::mutex mutex_;
 
     Result<void> estimate_parameters(const std::vector<double>& returns);

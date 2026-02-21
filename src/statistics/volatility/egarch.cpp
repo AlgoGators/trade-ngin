@@ -129,6 +129,9 @@ Result<void> EGARCH::estimate_parameters(const std::vector<double>& returns) {
     TRACE("[EGARCH::estimate_parameters] grid best: omega=" << omega_
           << " alpha=" << alpha_ << " gamma=" << gamma_ << " beta=" << beta_);
 
+    last_convergence_info_ = ConvergenceInfo{};
+    last_convergence_info_.objective_history.push_back(best_ll);
+
     // Phase 2: nlopt BOBYQA refinement
     try {
         nlopt::opt opt(nlopt::LN_BOBYQA, 4);
@@ -143,9 +146,21 @@ Result<void> EGARCH::estimate_parameters(const std::vector<double>& returns) {
 
         std::vector<double> x = {omega_, alpha_, gamma_, beta_};
         double min_obj;
-        opt.optimize(x, min_obj);
+        auto nlopt_result = opt.optimize(x, min_obj);
 
         double refined_ll = -min_obj;
+        last_convergence_info_.objective_history.push_back(refined_ll);
+        last_convergence_info_.iterations = static_cast<int>(opt.get_numevals());
+        last_convergence_info_.final_tolerance = std::abs(refined_ll - best_ll);
+
+        if (nlopt_result > 0) {
+            last_convergence_info_.converged = true;
+            last_convergence_info_.termination_reason = "tolerance";
+        } else {
+            last_convergence_info_.converged = false;
+            last_convergence_info_.termination_reason = "max_iterations";
+        }
+
         if (refined_ll > best_ll && std::abs(x[3]) < 0.999) {
             omega_ = x[0];
             alpha_ = x[1];
@@ -157,9 +172,20 @@ Result<void> EGARCH::estimate_parameters(const std::vector<double>& returns) {
     } catch (const std::exception& e) {
         DEBUG("[EGARCH::estimate_parameters] nlopt failed (" << e.what()
               << "), keeping grid search result");
+        last_convergence_info_.converged = true;
+        last_convergence_info_.termination_reason = "tolerance";
+        last_convergence_info_.iterations = 1;
     }
 
     return Result<void>();
+}
+
+Result<ConvergenceInfo> EGARCH::fit_with_diagnostics(const std::vector<double>& returns) {
+    auto result = fit(returns);
+    if (result.is_error()) {
+        return make_error<ConvergenceInfo>(result.error()->code(), result.error()->what(), "EGARCH");
+    }
+    return Result<ConvergenceInfo>(last_convergence_info_);
 }
 
 double EGARCH::log_likelihood(const std::vector<double>& returns,

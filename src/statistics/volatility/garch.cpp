@@ -137,6 +137,9 @@ Result<void> GARCH::estimate_parameters(const std::vector<double>& returns) {
     TRACE("[GARCH::estimate_parameters] grid best: omega=" << omega_
           << " alpha=" << alpha_ << " beta=" << beta_ << " ll=" << best_ll);
 
+    last_convergence_info_ = ConvergenceInfo{};
+    last_convergence_info_.objective_history.push_back(best_ll);
+
     // Phase 2: Refine with nlopt BOBYQA
     try {
         nlopt::opt opt(nlopt::LN_BOBYQA, 3);
@@ -153,9 +156,22 @@ Result<void> GARCH::estimate_parameters(const std::vector<double>& returns) {
 
         std::vector<double> x = {omega_, alpha_, beta_};
         double min_obj;
-        opt.optimize(x, min_obj);
+        auto nlopt_result = opt.optimize(x, min_obj);
 
         double refined_ll = -min_obj;
+        last_convergence_info_.objective_history.push_back(refined_ll);
+        last_convergence_info_.iterations = static_cast<int>(opt.get_numevals());
+
+        if (nlopt_result > 0) {
+            last_convergence_info_.converged = true;
+            last_convergence_info_.termination_reason = "tolerance";
+        } else {
+            last_convergence_info_.converged = false;
+            last_convergence_info_.termination_reason = "max_iterations";
+        }
+
+        last_convergence_info_.final_tolerance = std::abs(refined_ll - best_ll);
+
         if (refined_ll > best_ll && x[1] + x[2] < 0.995 && x[0] > 0) {
             omega_ = x[0];
             alpha_ = x[1];
@@ -167,9 +183,20 @@ Result<void> GARCH::estimate_parameters(const std::vector<double>& returns) {
         // Fallback: keep grid search result
         DEBUG("[GARCH::estimate_parameters] nlopt failed (" << e.what()
               << "), keeping grid search result");
+        last_convergence_info_.converged = true;
+        last_convergence_info_.termination_reason = "tolerance";
+        last_convergence_info_.iterations = 1;
     }
 
     return Result<void>();
+}
+
+Result<ConvergenceInfo> GARCH::fit_with_diagnostics(const std::vector<double>& returns) {
+    auto result = fit(returns);
+    if (result.is_error()) {
+        return make_error<ConvergenceInfo>(result.error()->code(), result.error()->what(), "GARCH");
+    }
+    return Result<ConvergenceInfo>(last_convergence_info_);
 }
 
 double GARCH::log_likelihood(const std::vector<double>& returns,
