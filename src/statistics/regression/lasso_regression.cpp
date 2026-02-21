@@ -29,6 +29,9 @@ LassoResult LassoRegression::fit_alpha(const Eigen::MatrixXd& Xc, const Eigen::V
     Eigen::VectorXd beta = Eigen::VectorXd::Zero(p);
     Eigen::VectorXd residuals = yc;
 
+    int actual_iterations = 0;
+    bool cd_converged = false;
+
     for (int iter = 0; iter < config_.max_iterations; ++iter) {
         double max_change = 0.0;
 
@@ -50,8 +53,17 @@ LassoResult LassoRegression::fit_alpha(const Eigen::MatrixXd& Xc, const Eigen::V
             }
         }
 
-        if (max_change < config_.tolerance) break;
+        actual_iterations = iter + 1;
+        if (max_change < config_.tolerance) {
+            cd_converged = true;
+            break;
+        }
     }
+
+    last_convergence_info_ = ConvergenceInfo{};
+    last_convergence_info_.iterations = actual_iterations;
+    last_convergence_info_.converged = cd_converged;
+    last_convergence_info_.termination_reason = cd_converged ? "tolerance" : "max_iterations";
 
     // Compute R²
     double ss_res = residuals.squaredNorm();

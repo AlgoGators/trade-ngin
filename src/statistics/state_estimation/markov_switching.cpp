@@ -254,6 +254,16 @@ Result<MarkovSwitchingResult> MarkovSwitching::fit(const std::vector<double>& da
         result.decoded_states[t] = max_idx;
     }
 
+    // Build convergence info
+    last_convergence_info_ = ConvergenceInfo{};
+    last_convergence_info_.iterations = result.n_iterations;
+    last_convergence_info_.converged = result.converged;
+    last_convergence_info_.termination_reason = result.converged ? "tolerance" : "max_iterations";
+    if (!last_convergence_info_.objective_history.empty()) {
+        last_convergence_info_.final_tolerance = 0.0;
+    }
+    last_convergence_info_.objective_history.push_back(result.log_likelihood);
+
     DEBUG("[MarkovSwitching::fit] exit: converged=" << converged);
 
     return Result<MarkovSwitchingResult>(std::move(result));

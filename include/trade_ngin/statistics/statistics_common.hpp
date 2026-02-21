@@ -8,6 +8,7 @@
 #include <unordered_map>
 #include <optional>
 #include <mutex>
+#include <sstream>
 
 namespace trade_ngin {
 namespace statistics {
@@ -342,6 +343,62 @@ struct DCCGARCHResult {
 struct ExtendedKalmanFilterConfig {
     int state_dim{1};
     int obs_dim{1};
+};
+
+// ============================================================================
+// Convergence Diagnostics
+// ============================================================================
+
+struct ConvergenceInfo {
+    int iterations{0};
+    double final_tolerance{0.0};
+    bool converged{false};
+    std::string termination_reason;        // "tolerance", "max_iterations", "error"
+    std::vector<double> objective_history;  // log-likelihood or loss per iteration
+
+    bool is_successful() const { return converged && termination_reason == "tolerance"; }
+
+    std::string summary() const {
+        std::ostringstream oss;
+        if (converged) {
+            oss << "Converged in " << iterations << " iterations (tol=" << final_tolerance << ")";
+        } else {
+            oss << "Did not converge after " << iterations << " iterations";
+            if (!termination_reason.empty()) {
+                oss << " (" << termination_reason << ")";
+            }
+        }
+        return oss.str();
+    }
+};
+
+// ============================================================================
+// Preprocessing Configurations
+// ============================================================================
+
+struct OutlierHandlerConfig {
+    enum class Method {
+        WINSORIZE,
+        TRIM,
+        MAD_FILTER
+    };
+
+    Method method{Method::WINSORIZE};
+    double lower_percentile{0.05};
+    double upper_percentile{0.95};
+    double mad_threshold{3.0};  // For MAD_FILTER: median ± threshold * MAD
+};
+
+struct MissingDataHandlerConfig {
+    enum class Strategy {
+        ERROR,
+        DROP,
+        FORWARD_FILL,
+        INTERPOLATE,
+        MEAN_FILL
+    };
+
+    Strategy strategy{Strategy::ERROR};
 };
 
 } // namespace statistics

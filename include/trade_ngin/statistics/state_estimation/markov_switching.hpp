@@ -21,6 +21,7 @@ public:
     // Markov Switching specific
     Result<MarkovSwitchingResult> fit(const std::vector<double>& data);
     Result<std::vector<int>> decode() const;
+    const ConvergenceInfo& get_convergence_info() const { return last_convergence_info_; }
 
     const Eigen::MatrixXd& get_transition_matrix() const { return transition_matrix_; }
     const Eigen::VectorXd& get_state_means() const { return state_means_; }
@@ -35,6 +36,7 @@ private:
     Eigen::MatrixXd smoothed_probs_;
     double log_likelihood_{0.0};
     bool initialized_{false};
+    ConvergenceInfo last_convergence_info_;
     mutable std::mutex mutex_;
 
     void initialize_parameters(const std::vector<double>& data);

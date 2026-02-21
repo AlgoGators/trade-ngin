@@ -41,5 +41,9 @@
 #include "trade_ngin/statistics/regression/ridge_regression.hpp"
 #include "trade_ngin/statistics/regression/lasso_regression.hpp"
 
+// Preprocessing
+#include "trade_ngin/statistics/preprocessing/outlier_handler.hpp"
+#include "trade_ngin/statistics/preprocessing/missing_data_handler.hpp"
+
 // Analysis tools
 #include "trade_ngin/statistics/hurst_exponent.hpp"

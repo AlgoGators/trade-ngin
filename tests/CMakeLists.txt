@@ -43,6 +43,9 @@ set(TEST_SOURCES
     statistics/test_gjr_garch.cpp
     statistics/test_dcc_garch.cpp
     statistics/test_extended_kalman_filter.cpp
+    statistics/test_outlier_handler.cpp
+    statistics/test_missing_data_handler.cpp
+    statistics/test_convergence_monitoring.cpp
 )
 
 # Create test executable

@@ -16,6 +16,7 @@ public:
     bool is_fitted() const { return fitted_; }
 
     const LassoResult& result() const { return result_; }
+    const ConvergenceInfo& get_convergence_info() const { return last_convergence_info_; }
 
 private:
     LassoRegressionConfig config_;
@@ -23,6 +24,7 @@ private:
     Eigen::VectorXd x_mean_;
     double y_mean_{0.0};
     bool fitted_{false};
+    mutable ConvergenceInfo last_convergence_info_;
     mutable std::mutex mutex_;
 
     LassoResult fit_alpha(const Eigen::MatrixXd& Xc, const Eigen::VectorXd& yc, double alpha) const;
