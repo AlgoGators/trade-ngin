@@ -103,8 +103,16 @@ set(TRADE_NGIN_SOURCES
     src/live/execution_manager.cpp
     src/live/margin_manager.cpp
     src/live/csv_exporter.cpp
-    src/statistics/statistics_tools.cpp
-    src/api/backtest_api.cpp
+    src/statistics/utils/statistics_utils.cpp
+    src/statistics/transformers/normalizer.cpp
+    src/statistics/transformers/pca.cpp
+    src/statistics/tests/adf_test.cpp
+    src/statistics/tests/kpss_test.cpp
+    src/statistics/tests/johansen_test.cpp
+    src/statistics/tests/engle_granger_test.cpp
+    src/statistics/volatility/garch.cpp
+    src/statistics/state_estimation/kalman_filter.cpp
+    src/statistics/state_estimation/hmm.cpp
 )
 
 # Add library target
