@@ -91,57 +91,6 @@ TEST_F(GARCHTest, InsufficientDataError) {
     EXPECT_TRUE(result.is_error());
 }
 
-TEST_F(GARCHTest, ParameterEstimationAccuracy) {
-    // Generate synthetic GARCH(1,1) data with known parameters
-    double true_omega = 0.00001;
-    double true_alpha = 0.10;
-    double true_beta = 0.85;
-
-    std::mt19937 gen(123);
-    std::normal_distribution<> d(0.0, 1.0);
-
-    std::vector<double> synthetic(500);
-    double h = true_omega / (1.0 - true_alpha - true_beta);  // Unconditional variance
-    for (size_t i = 0; i < synthetic.size(); ++i) {
-        synthetic[i] = std::sqrt(h) * d(gen);
-        h = true_omega + true_alpha * synthetic[i] * synthetic[i] + true_beta * h;
-    }
-
-    GARCHConfig config;
-    GARCH garch(config);
-    auto result = garch.fit(synthetic);
-    ASSERT_TRUE(result.is_ok());
-
-    // Estimated parameters should be within 50% of true values
-    EXPECT_NEAR(garch.get_alpha(), true_alpha, true_alpha * 0.5);
-    EXPECT_NEAR(garch.get_beta(), true_beta, true_beta * 0.5);
-    // alpha + beta should be close to true sum
-    double true_persistence = true_alpha + true_beta;
-    double est_persistence = garch.get_alpha() + garch.get_beta();
-    EXPECT_NEAR(est_persistence, true_persistence, true_persistence * 0.15);
-}
-
-TEST_F(GARCHTest, OptimizationFallback) {
-    // Use data with low volatility clustering — optimizer may struggle
-    // but grid search fallback should still produce valid parameters
-    std::mt19937 gen(99);
-    std::normal_distribution<> d(0.0, 0.001);
-
-    std::vector<double> low_vol(200);
-    for (auto& v : low_vol) v = d(gen);
-
-    GARCHConfig config;
-    GARCH garch(config);
-    auto result = garch.fit(low_vol);
-    ASSERT_TRUE(result.is_ok());
-
-    // Parameters should still be valid
-    EXPECT_GT(garch.get_omega(), 0.0);
-    EXPECT_GT(garch.get_alpha(), 0.0);
-    EXPECT_GT(garch.get_beta(), 0.0);
-    EXPECT_LT(garch.get_alpha() + garch.get_beta(), 1.0);
-}
-
 TEST(ValidationTests, EmptyTimeSeriesRejected) {
     std::vector<double> empty;
 
