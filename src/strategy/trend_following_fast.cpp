@@ -164,17 +164,9 @@ Result<void> TrendFollowingFastStrategy::on_data(const std::vector<Bar>& data) {
         previous_positions_loaded = true;
     }
 
-    // Call base class data processing first
-    auto base_result = BaseStrategy::on_data(data);
-    if (base_result.is_error())
-        return base_result;
-
-    // Get longest window in ema pairs
-    int max_window = 0;
-    for (const auto& window_pair : trend_config_.ema_windows) {
-        max_window = std::max(max_window, window_pair.second);
-    }
-
+    // CRITICAL FIX: Update price history BEFORE base class processing
+    // This ensures price data is always updated even if leverage checks fail
+    // in BaseStrategy::on_data(), preventing stuck prices in final_positions table
     const size_t MAX_HISTORY_SIZE = 2500;
 
     try {
@@ -203,7 +195,7 @@ Result<void> TrendFollowingFastStrategy::on_data(const std::vector<Bar>& data) {
             bars_by_symbol[bar.symbol].push_back(bar);
         }
 
-        // Process each symbol
+        // Process each symbol - update price history first
         for (const auto& [symbol, symbol_bars] : bars_by_symbol) {
             auto& instrument_data = instrument_data_[symbol];
 
@@ -216,6 +208,35 @@ Result<void> TrendFollowingFastStrategy::on_data(const std::vector<Bar>& data) {
                     instrument_data.price_history.erase(instrument_data.price_history.begin());
                 }
             }
+        }
+    } catch (const std::exception& e) {
+        return make_error<void>(ErrorCode::INVALID_DATA,
+                                "Exception updating price history: " + std::string(e.what()),
+                                "TrendFollowingFastStrategy");
+    }
+
+    // Call base class data processing (leverage checks, etc.)
+    // If this fails due to leverage, price history is already updated above
+    auto base_result = BaseStrategy::on_data(data);
+    if (base_result.is_error())
+        return base_result;
+
+    // Get longest window in ema pairs
+    int max_window = 0;
+    for (const auto& window_pair : trend_config_.ema_windows) {
+        max_window = std::max(max_window, window_pair.second);
+    }
+
+    try {
+        // Retrieve bars_by_symbol again for signal processing
+        std::unordered_map<std::string, std::vector<Bar>> bars_by_symbol;
+        for (const auto& bar : data) {
+            bars_by_symbol[bar.symbol].push_back(bar);
+        }
+
+        // Process each symbol for signal generation
+        for (const auto& [symbol, symbol_bars] : bars_by_symbol) {
+            auto& instrument_data = instrument_data_[symbol];
 
             // Wait for enough data before processing
             if (instrument_data.price_history.size() < max_window) {
@@ -617,21 +638,36 @@ std::unordered_map<std::string, Position> TrendFollowingFastStrategy::get_target
         pos.symbol = symbol;
         pos.quantity = instrument_data.final_position;
 
-        // Use the latest price from price history as default
+        // For futures with daily mark-to-market, use current market price
+        // This matches REALIZED_ONLY accounting behavior where average_price
+        // resets to current_price after daily settlement (calculate_position line 552)
         if (!instrument_data.price_history.empty()) {
             pos.average_price = instrument_data.price_history.back();
         }
 
-        // Copy PnL values from the standard positions_ map (which has calculated PnL)
+        // Copy PnL values from the positions_ map
+        // Note: We deliberately do NOT copy average_price from positions_ map
+        // because it may be stale if the position hasn't changed recently
         auto pos_it = positions_.find(symbol);
         if (pos_it != positions_.end()) {
             pos.realized_pnl = pos_it->second.realized_pnl;
             pos.unrealized_pnl = pos_it->second.unrealized_pnl;
-            pos.average_price = pos_it->second.average_price;  // Use calculated avg price
+            // Do NOT overwrite average_price - keep the current market price
         }
 
         pos.last_update = instrument_data.last_update;
         target_positions[symbol] = pos;
+
+        // STICKY_DEBUG: Trace average_price at FAST get_target_positions stage
+        if (symbol == "MBT.v.0" || symbol == "NQ.v.0") {
+            INFO("STICKY_DEBUG_GTP_FAST: symbol=" + symbol + " price_history.size()=" +
+                 std::to_string(instrument_data.price_history.size()) + " price_history.back()=" +
+                 (instrument_data.price_history.empty()
+                      ? "EMPTY"
+                      : std::to_string(instrument_data.price_history.back())) +
+                 " pos.average_price=" + std::to_string(static_cast<double>(pos.average_price)) +
+                 " pos.quantity=" + std::to_string(static_cast<double>(pos.quantity)));
+        }
     }
 
     return target_positions;
@@ -1061,14 +1097,30 @@ std::unordered_map<std::string, double> TrendFollowingFastStrategy::get_weights(
 
     double sector_weight = 1.0 / total_sectors;
 
+    // Maximum weight any single symbol can have within its sector (50% of sector weight)
+    const double MAX_SYMBOL_TO_SECTOR_RATIO = 0.50;
+
     for (const auto& [sector, symbols] : sector_to_symbols) {
         int num_symbols = static_cast<int>(symbols.size());
         if (num_symbols == 0)
             continue;
 
         double per_symbol_weight = sector_weight / num_symbols;
+
+        // Cap individual symbol weight to maximum % of sector allocation
+        double max_symbol_weight = sector_weight * MAX_SYMBOL_TO_SECTOR_RATIO;
+        double capped_weight = std::min(per_symbol_weight, max_symbol_weight);
+
         for (const auto& symbol : symbols) {
-            symbol_weights[symbol] = per_symbol_weight;
+            symbol_weights[symbol] = capped_weight;
+
+            // Log when a symbol's weight is capped
+            if (capped_weight < per_symbol_weight) {
+                INFO("Symbol " + symbol + " in sector " + sector +
+                     " weight capped from " + std::to_string(per_symbol_weight * 100.0) +
+                     "% to " + std::to_string(capped_weight * 100.0) +
+                     "% (max 50% of sector allocation)");
+            }
         }
     }
 
