@@ -274,6 +274,8 @@ BacktestMetricsCalculator::TradeStatistics BacktestMetricsCalculator::calculate_
 
         if (is_closing_trade) {
             stats.actual_trades.push_back(exec);
+            INFO("DEBUG_TRADE: " + symbol + " pos=" + std::to_string(current_pos) +
+                 " qty=" + std::to_string(signed_qty) + " -> " + std::to_string(positions[symbol]));
 
             if (trade_pnl > 0) {
                 stats.total_profit += trade_pnl;

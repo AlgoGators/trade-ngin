@@ -550,10 +550,20 @@ Result<void> BacktestCoordinator::process_portfolio_day(
 
         if (had_previous_bars) {
             try {
-                period_executions = portfolio->get_recent_executions();
-                portfolio->clear_execution_history();
+                // Use per-strategy executions (the same accurate data saved to DB)
+                // instead of portfolio-level phantom executions
+                auto all_strategy_execs = portfolio->get_strategy_executions();
+                for (const auto& [strategy_id, strat_execs] : all_strategy_execs) {
+                    // Only take new executions since last check
+                    size_t prev_count = strategy_exec_counts_before.count(strategy_id) > 0
+                                      ? strategy_exec_counts_before.at(strategy_id)
+                                      : 0;
+                    for (size_t i = prev_count; i < strat_execs.size(); ++i) {
+                        period_executions.push_back(strat_execs[i]);
+                    }
+                }
             } catch (const std::exception& e) {
-                WARN("Exception getting recent executions: " + std::string(e.what()));
+                WARN("Exception getting strategy executions: " + std::string(e.what()));
                 period_executions.clear();
             }
         }
