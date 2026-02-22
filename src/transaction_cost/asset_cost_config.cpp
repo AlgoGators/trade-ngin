@@ -23,11 +23,11 @@ void AssetCostConfigRegistry::initialize_default_configs() {
     }
 
     // Crude Oil (CL)
-    // Liquid, typically 1-2 tick spread
+    // Liquid, typically 2 tick spread (observed)
     {
         AssetCostConfig config;
         config.symbol = "CL";
-        config.baseline_spread_ticks = 1.0;
+        config.baseline_spread_ticks = 2.0;
         config.min_spread_ticks = 1.0;
         config.max_spread_ticks = 5.0;
         config.max_impact_bps = 50.0;
@@ -37,17 +37,17 @@ void AssetCostConfigRegistry::initialize_default_configs() {
     }
 
     // Gold (GC)
-    // CME: tick_size = 0.01 ($0.10/oz), contract_size = 100 troy oz
-    // Liquid, typically 1 tick spread
+    // CME: tick $0.10/oz, 100 oz → tick_value = 0.10 * 100 = $10. Price feed in $/oz.
+    // Liquid, typically 2 tick spread (observed)
     {
         AssetCostConfig config;
         config.symbol = "GC";
-        config.baseline_spread_ticks = 1.0;
+        config.baseline_spread_ticks = 2.0;
         config.min_spread_ticks = 1.0;
         config.max_spread_ticks = 5.0;
         config.max_impact_bps = 50.0;
-        config.tick_size = 0.01;  // Fixed: was 0.10
-        config.point_value = 100.0;
+        config.tick_size = 0.10;   // $0.10 per oz
+        config.point_value = 100.0;  // $ per 1 $/oz (100 oz)
         configs_[config.symbol] = config;
     }
 
@@ -153,47 +153,44 @@ void AssetCostConfigRegistry::initialize_default_configs() {
     }
 
     // Corn (ZC)
-    // CME: tick_size = 0.0025 (1/4 cent/bushel), contract_size = 5,000 bushels
-    // tick_value = 0.0025 * 5000 = $12.50
+    // Price feed in cents (e.g. 435.25). 1 tick = 0.25 cents; $50 per 1 cent on 5000 bu → tick_value = 0.25 * 50 = $12.50
     {
         AssetCostConfig config;
         config.symbol = "ZC";
-        config.baseline_spread_ticks = 1.0;
+        config.baseline_spread_ticks = 2.0;  // match observed avg
         config.min_spread_ticks = 1.0;
         config.max_spread_ticks = 5.0;
         config.max_impact_bps = 60.0;
-        config.tick_size = 0.0025;  // Fixed: was 0.25
-        config.point_value = 5000.0;  // Fixed: was 50
+        config.tick_size = 0.25;    // cents
+        config.point_value = 50.0;  // $ per 1 cent
         configs_[config.symbol] = config;
     }
 
     // Soybeans (ZS)
-    // CME: tick_size = 0.0025 (1/4 cent/bushel), contract_size = 5,000 bushels
-    // tick_value = 0.0025 * 5000 = $12.50
+    // Price feed in cents. 1 tick = 0.25 cents; $50 per 1 cent on 5000 bu → tick_value = 0.25 * 50 = $12.50
     {
         AssetCostConfig config;
         config.symbol = "ZS";
-        config.baseline_spread_ticks = 1.0;
+        config.baseline_spread_ticks = 2.0;  // match observed avg
         config.min_spread_ticks = 1.0;
         config.max_spread_ticks = 5.0;
         config.max_impact_bps = 60.0;
-        config.tick_size = 0.0025;  // Fixed: was 0.25
-        config.point_value = 5000.0;  // Fixed: was 50
+        config.tick_size = 0.25;    // cents
+        config.point_value = 50.0;  // $ per 1 cent
         configs_[config.symbol] = config;
     }
 
     // Wheat (ZW)
-    // CME: tick_size = 0.0025 (1/4 cent/bushel), contract_size = 5,000 bushels
-    // tick_value = 0.0025 * 5000 = $12.50
+    // Price feed in cents. 1 tick = 0.25 cents; $50 per 1 cent on 5000 bu → tick_value = 0.25 * 50 = $12.50
     {
         AssetCostConfig config;
         config.symbol = "ZW";
-        config.baseline_spread_ticks = 1.0;
+        config.baseline_spread_ticks = 2.0;  // match observed avg
         config.min_spread_ticks = 1.0;
         config.max_spread_ticks = 5.0;
         config.max_impact_bps = 60.0;
-        config.tick_size = 0.0025;  // Fixed: was 0.25
-        config.point_value = 5000.0;  // Fixed: was 50
+        config.tick_size = 0.25;    // cents
+        config.point_value = 50.0;  // $ per 1 cent
         configs_[config.symbol] = config;
     }
 
@@ -313,32 +310,30 @@ void AssetCostConfigRegistry::initialize_default_configs() {
     }
 
     // Feeder Cattle (GF)
-    // CME: tick_size = 0.00025 (2.5 cents/cwt = $0.00025/lb), contract_size = 50,000 lbs
-    // tick_value = 0.00025 * 50000 = $12.50
+    // Price feed in cents/lb (e.g. 364.45). 1 tick = 0.025 cents/lb; $500 per 1 cent on 50k lbs → tick_value = 0.025 * 500 = $12.50
     {
         AssetCostConfig config;
         config.symbol = "GF";
-        config.baseline_spread_ticks = 1.0;
+        config.baseline_spread_ticks = 2.0;  // observed table has 2
         config.min_spread_ticks = 1.0;
         config.max_spread_ticks = 5.0;
         config.max_impact_bps = 80.0;
-        config.tick_size = 0.00025;  // Fixed: was 0.025
-        config.point_value = 50000.0;  // Fixed: was 500
+        config.tick_size = 0.025;   // cents/lb (0.00025 dollars)
+        config.point_value = 500.0;  // $ per 1 cent/lb
         configs_[config.symbol] = config;
     }
 
     // Lean Hogs (HE)
-    // CME: tick_size = 0.00025 (2.5 cents/cwt = $0.00025/lb), contract_size = 40,000 lbs
-    // tick_value = 0.00025 * 40000 = $10.00
+    // Price feed in cents/lb (e.g. 98.575). 1 tick = 0.025 cents/lb; $400 per 1 cent on 40k lbs → tick_value = 0.025 * 400 = $10
     {
         AssetCostConfig config;
         config.symbol = "HE";
-        config.baseline_spread_ticks = 1.0;
+        config.baseline_spread_ticks = 2.0;  // observed table has 2
         config.min_spread_ticks = 1.0;
         config.max_spread_ticks = 5.0;
         config.max_impact_bps = 80.0;
-        config.tick_size = 0.00025;  // Fixed: was 0.025
-        config.point_value = 40000.0;  // Fixed: was 400
+        config.tick_size = 0.025;   // cents/lb (0.00025 dollars)
+        config.point_value = 400.0;  // $ per 1 cent/lb
         configs_[config.symbol] = config;
     }
 
@@ -371,32 +366,30 @@ void AssetCostConfigRegistry::initialize_default_configs() {
     }
 
     // KC Wheat (KE)
-    // CME: tick_size = 0.0025 (1/4 cent/bushel), contract_size = 5,000 bushels
-    // tick_value = 0.0025 * 5000 = $12.50
+    // Price feed in cents. 1 tick = 0.25 cents; $50 per 1 cent on 5000 bu → tick_value = 0.25 * 50 = $12.50
     {
         AssetCostConfig config;
         config.symbol = "KE";
-        config.baseline_spread_ticks = 1.0;
+        config.baseline_spread_ticks = 2.0;  // match observed avg
         config.min_spread_ticks = 1.0;
         config.max_spread_ticks = 5.0;
         config.max_impact_bps = 60.0;
-        config.tick_size = 0.0025;  // Fixed: was 0.25
-        config.point_value = 5000.0;  // Fixed: was 50
+        config.tick_size = 0.25;    // cents
+        config.point_value = 50.0;  // $ per 1 cent
         configs_[config.symbol] = config;
     }
 
     // Live Cattle (LE)
-    // CME: tick_size = 0.00025 (2.5 cents/cwt = $0.00025/lb), contract_size = 40,000 lbs
-    // tick_value = 0.00025 * 40000 = $10.00
+    // Price feed in cents/lb (e.g. 235.65). 1 tick = 0.025 cents/lb; $400 per 1 cent on 40k lbs → tick_value = 0.025 * 400 = $10
     {
         AssetCostConfig config;
         config.symbol = "LE";
-        config.baseline_spread_ticks = 1.0;
+        config.baseline_spread_ticks = 2.0;  // observed table has 2
         config.min_spread_ticks = 1.0;
         config.max_spread_ticks = 5.0;
         config.max_impact_bps = 80.0;
-        config.tick_size = 0.00025;  // Fixed: was 0.025
-        config.point_value = 40000.0;  // Fixed: was 400
+        config.tick_size = 0.025;   // cents/lb (0.00025 dollars)
+        config.point_value = 400.0;  // $ per 1 cent/lb
         configs_[config.symbol] = config;
     }
 
@@ -533,17 +526,16 @@ void AssetCostConfigRegistry::initialize_default_configs() {
     }
 
     // Soybean Oil (ZL)
-    // CME: tick_size = 0.0001 (1/100 cent/lb), contract_size = 60,000 lbs
-    // tick_value = 0.0001 * 60000 = $6.00
+    // Price feed in cents/lb (e.g. 55.63). 1 tick = 0.01 cents/lb; $600 per 1 cent on 60k lbs → tick_value = 0.01 * 600 = $6
     {
         AssetCostConfig config;
         config.symbol = "ZL";
-        config.baseline_spread_ticks = 1.0;
+        config.baseline_spread_ticks = 2.0;
         config.min_spread_ticks = 1.0;
         config.max_spread_ticks = 5.0;
         config.max_impact_bps = 60.0;
-        config.tick_size = 0.0001;  // Fixed: was 0.01
-        config.point_value = 60000.0;  // Fixed: was 600
+        config.tick_size = 0.01;     // cents/lb
+        config.point_value = 600.0;  // $ per 1 cent/lb
         configs_[config.symbol] = config;
     }
 
