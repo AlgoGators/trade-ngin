@@ -1,22 +1,21 @@
 #include "trade_ngin/backtest/backtest_coordinator.hpp"
-#include "trade_ngin/core/logger.hpp"
-#include "trade_ngin/core/run_id_generator.hpp"
-#include "trade_ngin/core/time_utils.hpp"
-#include "trade_ngin/storage/backtest_results_manager.hpp"
-#include "trade_ngin/strategy/trend_following.hpp"
-#include "trade_ngin/strategy/trend_following_fast.hpp"
-#include "trade_ngin/data/market_data_bus.hpp"
 #include <algorithm>
 #include <iomanip>
 #include <sstream>
+#include "trade_ngin/core/logger.hpp"
+#include "trade_ngin/core/run_id_generator.hpp"
+#include "trade_ngin/core/time_utils.hpp"
+#include "trade_ngin/data/market_data_bus.hpp"
+#include "trade_ngin/storage/backtest_results_manager.hpp"
+#include "trade_ngin/strategy/trend_following.hpp"
+#include "trade_ngin/strategy/trend_following_fast.hpp"
 
 namespace trade_ngin {
 namespace backtest {
 
-BacktestCoordinator::BacktestCoordinator(
-    std::shared_ptr<PostgresDatabase> db,
-    InstrumentRegistry* registry,
-    const BacktestCoordinatorConfig& config)
+BacktestCoordinator::BacktestCoordinator(std::shared_ptr<PostgresDatabase> db,
+                                         InstrumentRegistry* registry,
+                                         const BacktestCoordinatorConfig& config)
     : config_(config),
       db_(std::move(db)),
       registry_(registry),
@@ -74,16 +73,16 @@ Result<void> BacktestCoordinator::create_components() {
 
 Result<void> BacktestCoordinator::validate_connection() const {
     if (!db_) {
-        return make_error<void>(ErrorCode::CONNECTION_ERROR,
-            "Database interface is null", "BacktestCoordinator");
+        return make_error<void>(ErrorCode::CONNECTION_ERROR, "Database interface is null",
+                                "BacktestCoordinator");
     }
 
     if (!db_->is_connected()) {
         auto connect_result = db_->connect();
         if (connect_result.is_error()) {
-            return make_error<void>(connect_result.error()->code(),
-                "Failed to connect to database: " +
-                    std::string(connect_result.error()->what()),
+            return make_error<void>(
+                connect_result.error()->code(),
+                "Failed to connect to database: " + std::string(connect_result.error()->what()),
                 "BacktestCoordinator");
         }
     }
@@ -92,19 +91,15 @@ Result<void> BacktestCoordinator::validate_connection() const {
 }
 
 Result<BacktestResults> BacktestCoordinator::run_single_strategy(
-    std::shared_ptr<StrategyInterface> strategy,
-    const std::vector<std::string>& symbols,
-    const Timestamp& start_date,
-    const Timestamp& end_date,
-    AssetClass asset_class,
+    std::shared_ptr<StrategyInterface> strategy, const std::vector<std::string>& symbols,
+    const Timestamp& start_date, const Timestamp& end_date, AssetClass asset_class,
     DataFrequency data_freq) {
-
     // Ensure initialized
     if (!is_initialized_) {
         auto init_result = initialize();
         if (init_result.is_error()) {
             return make_error<BacktestResults>(init_result.error()->code(),
-                init_result.error()->what(), "BacktestCoordinator");
+                                               init_result.error()->what(), "BacktestCoordinator");
         }
     }
 
@@ -121,8 +116,8 @@ Result<BacktestResults> BacktestCoordinator::run_single_strategy(
 
     auto data_result = data_loader_->load_market_data(load_config);
     if (data_result.is_error()) {
-        return make_error<BacktestResults>(data_result.error()->code(),
-            data_result.error()->what(), "BacktestCoordinator");
+        return make_error<BacktestResults>(data_result.error()->code(), data_result.error()->what(),
+                                           "BacktestCoordinator");
     }
 
     auto& all_bars = data_result.value();
@@ -139,9 +134,8 @@ Result<BacktestResults> BacktestCoordinator::run_single_strategy(
     for (const auto& [timestamp, bars] : grouped_bars) {
         bool is_warmup = (day_count < config_.warmup_days);
 
-        auto process_result = process_day(
-            timestamp, bars, strategy,
-            all_executions, equity_curve, risk_metrics, is_warmup);
+        auto process_result = process_day(timestamp, bars, strategy, all_executions, equity_curve,
+                                          risk_metrics, is_warmup);
 
         if (process_result.is_error()) {
             WARN("Error processing day: " + std::string(process_result.error()->what()));
@@ -151,8 +145,8 @@ Result<BacktestResults> BacktestCoordinator::run_single_strategy(
     }
 
     // Calculate final metrics
-    auto results = metrics_calculator_->calculate_all_metrics(
-        equity_curve, all_executions, config_.warmup_days);
+    auto results = metrics_calculator_->calculate_all_metrics(equity_curve, all_executions,
+                                                              config_.warmup_days);
 
     // Copy executions to results
     results.executions = all_executions;
@@ -170,18 +164,14 @@ Result<BacktestResults> BacktestCoordinator::run_single_strategy(
 }
 
 Result<BacktestResults> BacktestCoordinator::run_portfolio(
-    std::shared_ptr<PortfolioManager> portfolio,
-    const std::vector<std::string>& symbols,
-    const Timestamp& start_date,
-    const Timestamp& end_date,
-    AssetClass asset_class,
+    std::shared_ptr<PortfolioManager> portfolio, const std::vector<std::string>& symbols,
+    const Timestamp& start_date, const Timestamp& end_date, AssetClass asset_class,
     DataFrequency data_freq) {
-
     // Validate portfolio
     if (!portfolio) {
         return make_error<BacktestResults>(ErrorCode::INVALID_ARGUMENT,
-            "Null portfolio manager provided for backtest",
-            "BacktestCoordinator");
+                                           "Null portfolio manager provided for backtest",
+                                           "BacktestCoordinator");
     }
 
     // Ensure initialized
@@ -189,7 +179,7 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
         auto init_result = initialize();
         if (init_result.is_error()) {
             return make_error<BacktestResults>(init_result.error()->code(),
-                init_result.error()->what(), "BacktestCoordinator");
+                                               init_result.error()->what(), "BacktestCoordinator");
         }
     }
 
@@ -226,8 +216,8 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
     INFO("Re-enabled MarketDataBus publishing");
 
     if (data_result.is_error()) {
-        return make_error<BacktestResults>(data_result.error()->code(),
-            data_result.error()->what(), "BacktestCoordinator");
+        return make_error<BacktestResults>(data_result.error()->code(), data_result.error()->what(),
+                                           "BacktestCoordinator");
     }
 
     auto& all_bars = data_result.value();
@@ -267,7 +257,8 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
     for (auto& strategy : portfolio->get_strategies()) {
         strategy->set_backtest_mode(true);
     }
-    INFO("Backtest mode enabled on " + std::to_string(portfolio->get_strategies().size()) + " strategies");
+    INFO("Backtest mode enabled on " + std::to_string(portfolio->get_strategies().size()) +
+         " strategies");
 
     // Calculate warmup days dynamically from strategy lookbacks
     int calculated_warmup_days = calculate_warmup_days(portfolio->get_strategies());
@@ -283,9 +274,9 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
         bool is_warmup = (day_index < calculated_warmup_days);
 
         try {
-            auto process_result = process_portfolio_day(
-                timestamp, bars, portfolio, all_executions,
-                equity_curve, risk_metrics, is_warmup, initial_capital);
+            auto process_result =
+                process_portfolio_day(timestamp, bars, portfolio, all_executions, equity_curve,
+                                      risk_metrics, is_warmup, initial_capital);
 
             if (process_result.is_error()) {
                 WARN("Portfolio data processing failed: " +
@@ -330,8 +321,8 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
 
     // Calculate final metrics
     INFO("Calculating portfolio backtest metrics");
-    auto results = metrics_calculator_->calculate_all_metrics(
-        equity_curve, all_executions, calculated_warmup_days);
+    auto results = metrics_calculator_->calculate_all_metrics(equity_curve, all_executions,
+                                                              calculated_warmup_days);
     results.warmup_days = calculated_warmup_days;
 
     // Add executions and equity curve to results
@@ -356,14 +347,10 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
 }
 
 Result<void> BacktestCoordinator::process_day(
-    const Timestamp& timestamp,
-    const std::vector<Bar>& bars,
-    std::shared_ptr<StrategyInterface> strategy,
-    std::vector<ExecutionReport>& executions,
-    std::vector<std::pair<Timestamp, double>>& equity_curve,
-    std::vector<RiskResult>& risk_metrics,
+    const Timestamp& timestamp, const std::vector<Bar>& bars,
+    std::shared_ptr<StrategyInterface> strategy, std::vector<ExecutionReport>& executions,
+    std::vector<std::pair<Timestamp, double>>& equity_curve, std::vector<RiskResult>& risk_metrics,
     bool is_warmup) {
-
     try {
         // BEGINNING-OF-DAY MODEL:
         // 1. Use previous day's bars for signal generation
@@ -380,14 +367,12 @@ Result<void> BacktestCoordinator::process_day(
             const auto& strategy_positions = strategy->get_positions();
 
             // Convert to std::map for execution manager
-            std::map<std::string, Position> new_positions(
-                strategy_positions.begin(), strategy_positions.end());
+            std::map<std::string, Position> new_positions(strategy_positions.begin(),
+                                                          strategy_positions.end());
 
             // Generate executions at previous day's close prices
             auto new_executions = execution_manager_->generate_executions(
-                current_positions_,
-                new_positions,
-                price_manager_->get_all_previous_day_prices(),
+                current_positions_, new_positions, price_manager_->get_all_previous_day_prices(),
                 timestamp);
 
             // Update current positions
@@ -430,12 +415,11 @@ Result<void> BacktestCoordinator::process_day(
         equity_curve.emplace_back(timestamp, portfolio_value);
 
         // Apply portfolio constraints if enabled (updates current_positions_)
-        if (constraints_manager_ &&
-            (constraints_manager_->is_risk_management_enabled() ||
-             constraints_manager_->is_optimization_enabled())) {
+        if (constraints_manager_ && (constraints_manager_->is_risk_management_enabled() ||
+                                     constraints_manager_->is_optimization_enabled())) {
             constraints_manager_->update_historical_returns(bars);
-            auto constraint_result = constraints_manager_->apply_constraints(
-                bars, current_positions_, risk_metrics);
+            auto constraint_result =
+                constraints_manager_->apply_constraints(bars, current_positions_, risk_metrics);
             if (constraint_result.is_error()) {
                 WARN("Constraint application failed: " +
                      std::string(constraint_result.error()->what()));
@@ -450,21 +434,16 @@ Result<void> BacktestCoordinator::process_day(
 
     } catch (const std::exception& e) {
         return make_error<void>(ErrorCode::UNKNOWN_ERROR,
-            std::string("Error processing day: ") + e.what(),
-            "BacktestCoordinator");
+                                std::string("Error processing day: ") + e.what(),
+                                "BacktestCoordinator");
     }
 }
 
 Result<void> BacktestCoordinator::process_portfolio_day(
-    const Timestamp& timestamp,
-    const std::vector<Bar>& bars,
-    std::shared_ptr<PortfolioManager> portfolio,
-    std::vector<ExecutionReport>& executions,
-    std::vector<std::pair<Timestamp, double>>& equity_curve,
-    std::vector<RiskResult>& risk_metrics,
-    bool is_warmup,
-    double initial_capital) {
-
+    const Timestamp& timestamp, const std::vector<Bar>& bars,
+    std::shared_ptr<PortfolioManager> portfolio, std::vector<ExecutionReport>& executions,
+    std::vector<std::pair<Timestamp, double>>& equity_curve, std::vector<RiskResult>& risk_metrics,
+    bool is_warmup, double initial_capital) {
     try {
         // BEGINNING-OF-DAY MODEL FOR PORTFOLIO BACKTEST:
         // - Use previous day's bars for signal generation via PortfolioManager
@@ -473,8 +452,8 @@ Result<void> BacktestCoordinator::process_portfolio_day(
         // Check for empty data
         if (bars.empty()) {
             return make_error<void>(ErrorCode::MARKET_DATA_ERROR,
-                "Empty market data provided for portfolio backtest",
-                "BacktestCoordinator");
+                                    "Empty market data provided for portfolio backtest",
+                                    "BacktestCoordinator");
         }
 
         // If this is the first bar set, initialize previous_bars
@@ -556,8 +535,8 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                 for (const auto& [strategy_id, strat_execs] : all_strategy_execs) {
                     // Only take new executions since last check
                     size_t prev_count = strategy_exec_counts_before.count(strategy_id) > 0
-                                      ? strategy_exec_counts_before.at(strategy_id)
-                                      : 0;
+                                            ? strategy_exec_counts_before.at(strategy_id)
+                                            : 0;
                     for (size_t i = prev_count; i < strat_execs.size(); ++i) {
                         period_executions.push_back(strat_execs[i]);
                     }
@@ -577,8 +556,9 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                 double ref_price = static_cast<double>(exec.fill_price);
                 double qty = static_cast<double>(exec.filled_quantity);
 
-                auto cost_result = execution_manager_->get_transaction_cost_manager().calculate_costs(
-                    exec.symbol, qty, ref_price);
+                auto cost_result =
+                    execution_manager_->get_transaction_cost_manager().calculate_costs(
+                        exec.symbol, qty, ref_price);
 
                 exec.commissions_fees = Decimal(cost_result.commissions_fees);
                 exec.implicit_price_impact = Decimal(cost_result.implicit_price_impact);
@@ -587,7 +567,8 @@ Result<void> BacktestCoordinator::process_portfolio_day(
 
                 executions.push_back(exec);
             } catch (const std::exception& e) {
-                WARN("Exception processing execution for " + exec.symbol + ": " + std::string(e.what()));
+                WARN("Exception processing execution for " + exec.symbol + ": " +
+                     std::string(e.what()));
             }
         }
 
@@ -627,7 +608,8 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                 double qty = static_cast<double>(pos.quantity);
 
                 // Skip zero quantity positions
-                if (std::abs(qty) < 1e-8) continue;
+                if (std::abs(qty) < 1e-8)
+                    continue;
 
                 // Get current close price
                 auto curr_it = current_close_prices.find(symbol);
@@ -645,8 +627,8 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                 double prev_close = pnl_manager_->get_previous_close(symbol);
 
                 // Calculate PnL using BacktestPnLManager
-                auto pnl_result = pnl_manager_->calculate_position_pnl(
-                    symbol, qty, prev_close, current_close);
+                auto pnl_result =
+                    pnl_manager_->calculate_position_pnl(symbol, qty, prev_close, current_close);
 
                 if (pnl_result.valid) {
                     // Update this strategy's position with calculated PnL
@@ -654,8 +636,8 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                     updated_pos.realized_pnl = Decimal(pnl_result.daily_pnl);
                     updated_pos.unrealized_pnl = Decimal(0.0);
 
-                    auto update_result = portfolio->update_strategy_position(
-                        strategy_id, symbol, updated_pos);
+                    auto update_result =
+                        portfolio->update_strategy_position(strategy_id, symbol, updated_pos);
 
                     if (!update_result.is_error()) {
                         total_portfolio_pnl += pnl_result.daily_pnl;
@@ -668,7 +650,8 @@ Result<void> BacktestCoordinator::process_portfolio_day(
         pnl_manager_->update_previous_closes(current_close_prices);
 
         // Calculate portfolio value: previous value + daily PnL - transaction costs
-        double portfolio_value = equity_curve.empty() ? initial_capital : equity_curve.back().second;
+        double portfolio_value =
+            equity_curve.empty() ? initial_capital : equity_curve.back().second;
         portfolio_value += (total_portfolio_pnl - total_transaction_costs);
 
         // Add to equity curve
@@ -682,7 +665,8 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                     MarketData market_data = risk_manager_->create_market_data(bars);
                     std::unordered_map<std::string, Position> positions_for_risk(
                         portfolio_positions.begin(), portfolio_positions.end());
-                    auto risk_result = risk_manager_->process_positions(positions_for_risk, market_data);
+                    auto risk_result =
+                        risk_manager_->process_positions(positions_for_risk, market_data);
                     if (risk_result.is_ok()) {
                         risk_metrics.push_back(risk_result.value());
                     }
@@ -700,8 +684,8 @@ Result<void> BacktestCoordinator::process_portfolio_day(
 
     } catch (const std::exception& e) {
         return make_error<void>(ErrorCode::UNKNOWN_ERROR,
-            std::string("Error processing portfolio data: ") + e.what(),
-            "BacktestCoordinator");
+                                std::string("Error processing portfolio data: ") + e.what(),
+                                "BacktestCoordinator");
     }
 }
 
@@ -726,9 +710,7 @@ void BacktestCoordinator::reset() {
 }
 
 double BacktestCoordinator::calculate_portfolio_value(
-    const std::map<std::string, Position>& positions,
-    const std::vector<Bar>& bars) {
-
+    const std::map<std::string, Position>& positions, const std::vector<Bar>& bars) {
     // Start with last known portfolio value
     double portfolio_value = current_portfolio_value_;
 
@@ -741,7 +723,8 @@ double BacktestCoordinator::calculate_portfolio_value(
     // Calculate daily PnL for each position
     for (const auto& [symbol, pos] : positions) {
         double quantity = static_cast<double>(pos.quantity);
-        if (std::abs(quantity) < 1e-6) continue;
+        if (std::abs(quantity) < 1e-6)
+            continue;
 
         auto curr_it = current_prices.find(symbol);
         auto prev_result = price_manager_->get_previous_day_price(symbol);
@@ -751,8 +734,7 @@ double BacktestCoordinator::calculate_portfolio_value(
             double previous_price = prev_result.value();
 
             // Get point value from PnL manager
-            double point_value = pnl_manager_ ?
-                pnl_manager_->get_point_value(symbol) : 1.0;
+            double point_value = pnl_manager_ ? pnl_manager_->get_point_value(symbol) : 1.0;
 
             // Daily PnL = quantity * (current - previous) * point_value
             double daily_pnl = quantity * (current_price - previous_price) * point_value;
@@ -803,17 +785,15 @@ void BacktestCoordinator::reset_portfolio_state() {
 }
 
 std::string BacktestCoordinator::generate_portfolio_run_id(
-    const std::vector<std::string>& strategy_names,
-    const Timestamp& end_date) {
+    const std::vector<std::string>& strategy_names, const Timestamp& end_date) {
     return RunIdGenerator::generate_portfolio_run_id(strategy_names, end_date);
 }
 
-Result<void> BacktestCoordinator::save_daily_positions(
-    std::shared_ptr<PortfolioManager> portfolio,
-    const std::string& run_id,
-    const Timestamp& timestamp) {
-
-    if (!db_) return Result<void>();
+Result<void> BacktestCoordinator::save_daily_positions(std::shared_ptr<PortfolioManager> portfolio,
+                                                       const std::string& run_id,
+                                                       const Timestamp& timestamp) {
+    if (!db_)
+        return Result<void>();
 
     auto strategy_positions = portfolio->get_strategy_positions();
     int total_positions_saved = 0;
@@ -831,15 +811,19 @@ Result<void> BacktestCoordinator::save_daily_positions(
             Position pos_with_date = pos;
             pos_with_date.last_update = timestamp;
             positions_vec.push_back(pos_with_date);
+
+            // STICKY_DEBUG: Trace average_price at DB save point
+            if (symbol == "MBT.v.0" || symbol == "NQ.v.0") {
+                INFO("STICKY_DEBUG_SAVE: strategy=" + strategy_id + " symbol=" + symbol +
+                     " avg_price=" + std::to_string(static_cast<double>(pos.average_price)) +
+                     " qty=" + std::to_string(static_cast<double>(pos.quantity)));
+            }
         }
 
         if (!positions_vec.empty()) {
             std::string composite_run_id = run_id + "|" + strategy_id;
             auto save_result = db_->store_backtest_positions(
-                positions_vec,
-                composite_run_id,
-                config_.portfolio_id,
-                "backtest.final_positions");
+                positions_vec, composite_run_id, config_.portfolio_id, "backtest.final_positions");
 
             if (save_result.is_error()) {
                 WARN("Failed to save daily positions for strategy " + strategy_id +
@@ -852,8 +836,8 @@ Result<void> BacktestCoordinator::save_daily_positions(
     }
 
     if (strategies_with_positions > 0) {
-        DEBUG("Saved " + std::to_string(total_positions_saved) +
-              " positions across " + std::to_string(strategies_with_positions) + " strategies");
+        DEBUG("Saved " + std::to_string(total_positions_saved) + " positions across " +
+              std::to_string(strategies_with_positions) + " strategies");
     }
 
     return Result<void>();
@@ -862,15 +846,13 @@ Result<void> BacktestCoordinator::save_daily_positions(
 double BacktestCoordinator::calculate_period_transaction_costs(
     std::shared_ptr<PortfolioManager> portfolio,
     const std::unordered_map<std::string, size_t>& exec_counts_before) {
-
     double total_transaction_costs = 0.0;
 
     auto all_strategy_executions = portfolio->get_strategy_executions();
 
     for (const auto& [strategy_id, execs] : all_strategy_executions) {
-        size_t count_before = exec_counts_before.count(strategy_id) > 0
-                            ? exec_counts_before.at(strategy_id)
-                            : 0;
+        size_t count_before =
+            exec_counts_before.count(strategy_id) > 0 ? exec_counts_before.at(strategy_id) : 0;
 
         // Get only the new executions (those added after count_before)
         for (size_t i = count_before; i < execs.size(); ++i) {
@@ -881,10 +863,8 @@ double BacktestCoordinator::calculate_period_transaction_costs(
     return total_transaction_costs;
 }
 
-std::optional<Bar> BacktestCoordinator::find_bar_for_symbol(
-    const std::vector<Bar>& bars,
-    const std::string& symbol) {
-
+std::optional<Bar> BacktestCoordinator::find_bar_for_symbol(const std::vector<Bar>& bars,
+                                                            const std::string& symbol) {
     for (const auto& bar : bars) {
         if (bar.symbol == symbol) {
             return bar;
@@ -894,12 +874,9 @@ std::optional<Bar> BacktestCoordinator::find_bar_for_symbol(
 }
 
 Result<void> BacktestCoordinator::save_portfolio_results_to_db(
-    const BacktestResults& results,
-    const std::vector<std::string>& strategy_names,
+    const BacktestResults& results, const std::vector<std::string>& strategy_names,
     const std::unordered_map<std::string, double>& strategy_allocations,
-    std::shared_ptr<PortfolioManager> portfolio,
-    const nlohmann::json& portfolio_config) const {
-
+    std::shared_ptr<PortfolioManager> portfolio, const nlohmann::json& portfolio_config) const {
     if (!config_.store_trade_details) {
         return Result<void>();
     }
@@ -909,8 +886,8 @@ Result<void> BacktestCoordinator::save_portfolio_results_to_db(
     auto db_ptr = std::dynamic_pointer_cast<PostgresDatabase>(db_);
     if (!db_ptr) {
         ERROR("Database is not a PostgresDatabase instance");
-        return make_error<void>(ErrorCode::DATABASE_ERROR,
-                               "Invalid database type", "BacktestCoordinator");
+        return make_error<void>(ErrorCode::DATABASE_ERROR, "Invalid database type",
+                                "BacktestCoordinator");
     }
 
     // Use the run_id from daily position storage if available, otherwise generate a new one
@@ -927,11 +904,7 @@ Result<void> BacktestCoordinator::save_portfolio_results_to_db(
 
     // Create results manager for portfolio-level storage
     auto results_manager = std::make_unique<BacktestResultsManager>(
-        db_ptr,
-        config_.store_trade_details,
-        portfolio_run_id,
-        config_.portfolio_id
-    );
+        db_ptr, config_.store_trade_details, portfolio_run_id, config_.portfolio_id);
 
     // Set metadata with portfolio configuration
     nlohmann::json hyperparameters;
@@ -941,13 +914,9 @@ Result<void> BacktestCoordinator::save_portfolio_results_to_db(
     hyperparameters["portfolio_config"] = portfolio_config;
 
     // Use the actual backtest start/end dates that were stored in run_portfolio()
-    results_manager->set_metadata(
-        backtest_start_date_,
-        backtest_end_date_,
-        hyperparameters,
-        "Portfolio Backtest Run: " + portfolio_run_id,
-        "Multi-strategy portfolio backtest"
-    );
+    results_manager->set_metadata(backtest_start_date_, backtest_end_date_, hyperparameters,
+                                  "Portfolio Backtest Run: " + portfolio_run_id,
+                                  "Multi-strategy portfolio backtest");
 
     // Set performance metrics (portfolio-level)
     std::unordered_map<std::string, double> metrics = {
@@ -969,8 +938,7 @@ Result<void> BacktestCoordinator::save_portfolio_results_to_db(
         {"cvar_95", results.cvar_95},
         {"beta", results.beta},
         {"correlation", results.correlation},
-        {"downside_volatility", results.downside_volatility}
-    };
+        {"downside_volatility", results.downside_volatility}};
     results_manager->set_performance_metrics(metrics);
 
     // Set portfolio-level equity curve
@@ -1003,7 +971,8 @@ Result<void> BacktestCoordinator::save_portfolio_results_to_db(
     // Save per-strategy executions
     auto executions_result = results_manager->save_strategy_executions(portfolio_run_id);
     if (executions_result.is_error()) {
-        WARN("Failed to save strategy executions: " + std::string(executions_result.error()->what()));
+        WARN("Failed to save strategy executions: " +
+             std::string(executions_result.error()->what()));
         // Non-fatal, continue
     }
 
@@ -1019,5 +988,5 @@ Result<void> BacktestCoordinator::save_portfolio_results_to_db(
     return Result<void>();
 }
 
-} // namespace backtest
-} // namespace trade_ngin
+}  // namespace backtest
+}  // namespace trade_ngin

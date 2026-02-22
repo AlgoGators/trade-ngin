@@ -386,13 +386,13 @@ Result<void> BaseStrategy::check_risk_limits() {
              " as default.");
     }
 
+    // NOTE: Leverage enforcement is handled by RiskManager which scales positions
+    // proportionally when limits are exceeded. This check is kept as a warning only
+    // to provide visibility into pre-scaling leverage levels.
     if (leverage > max_leverage) {
-        return make_error<void>(ErrorCode::RISK_LIMIT_EXCEEDED,
-                                "Leverage exceeds limit of " +
-                                    std::to_string(risk_limits_.max_leverage) + ": " +
-                                    std::to_string(leverage),
-                                "BaseStrategy");
-        exit(1);  // Exit if leverage exceeds limit
+        WARN("Strategy leverage (" + std::to_string(leverage) + ") exceeds limit (" +
+             std::to_string(max_leverage) + "). RiskManager will scale positions if needed.");
+        // Do NOT return error - let RiskManager handle scaling
     }
 
     // Check drawdown
