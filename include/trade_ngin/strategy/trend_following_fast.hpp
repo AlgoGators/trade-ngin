@@ -20,6 +20,7 @@ struct TrendFollowingFastConfig {
     double risk_target{0.25};            // Target annualized risk level (higher than standard)
     double fx_rate{1.0};                // FX conversion rate
     double idm{2.5};                    // Instrument diversification multiplier
+    double max_symbol_concentration{0.15};  // Max % of gross exposure per symbol (15% default)
     bool use_position_buffering{false}; // Disable position buffering for more frequent trades
     std::vector<std::pair<int, int>> ema_windows{
         // EMA window pairs for crossovers (faster/shorter lookback periods)

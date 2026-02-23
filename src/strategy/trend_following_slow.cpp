@@ -1178,17 +1178,44 @@ double TrendFollowingSlowStrategy::calculate_position(const std::string& symbol,
         }
 
         // Apply position limits as a safeguard
+        double final_position = position;
+
+        // 1. First apply contract-based limit (legacy safeguard)
         double position_limit = 1000.0;
         if (config_.position_limits.count(symbol) > 0) {
             position_limit = config_.position_limits.at(symbol);
         }
+        final_position = std::clamp(final_position, -position_limit, position_limit);
 
-        double final_position = std::clamp(position, -position_limit, position_limit);
-        if (abs(final_position) >= 1000.0) {
-            WARN("Position limit reached for " + symbol + ": " + std::to_string(final_position));
+        // 2. Apply notional-based limit (concentration control)
+        // Calculate target gross exposure based on max leverage
+        double target_gross_exposure = capital * config_.max_leverage;
+        double max_notional_per_symbol = target_gross_exposure * trend_config_.max_symbol_concentration;
+
+        double actual_notional = std::abs(final_position) * contract_size * price;
+
+        if (actual_notional > max_notional_per_symbol && max_notional_per_symbol > 0) {
+            double scale_factor = max_notional_per_symbol / actual_notional;
+            double original_position = final_position;
+            final_position *= scale_factor;
+
+            INFO("Notional concentration limit applied for " + symbol +
+                 ": scaled from " + std::to_string(original_position) +
+                 " to " + std::to_string(final_position) + " contracts " +
+                 "(notional: $" + std::to_string(actual_notional) +
+                 " -> $" + std::to_string(max_notional_per_symbol) +
+                 ", max " + std::to_string(trend_config_.max_symbol_concentration * 100.0) +
+                 "% of gross exposure)");
         }
 
-        INFO("Final position: " + std::to_string(final_position));
+        // Log contract limit hits
+        if (std::abs(position) >= position_limit * 0.99) {
+            WARN("Contract limit reached for " + symbol + ": " + std::to_string(position) +
+                 " capped at " + std::to_string(position_limit));
+        }
+
+        INFO("Final position: " + std::to_string(final_position) +
+             " (notional: $" + std::to_string(std::abs(final_position) * contract_size * price) + ")");
 
         return final_position;
     } else {
