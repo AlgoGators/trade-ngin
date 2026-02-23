@@ -305,6 +305,7 @@ int main() {
                     trend_config.weight = cfg.value("weight", 0.03);
                     trend_config.risk_target = cfg.value("risk_target", 0.2);
                     trend_config.idm = cfg.value("idm", 2.5);
+                    trend_config.max_symbol_concentration = cfg.value("max_symbol_concentration", 0.15);
                     trend_config.use_position_buffering = cfg.value("use_position_buffering", true);
                     if (cfg.contains("ema_windows")) {
                         trend_config.ema_windows.clear();
@@ -331,6 +332,7 @@ int main() {
                     trend_config.weight = cfg.value("weight", 0.03);
                     trend_config.risk_target = cfg.value("risk_target", 0.25);
                     trend_config.idm = cfg.value("idm", 2.5);
+                    trend_config.max_symbol_concentration = cfg.value("max_symbol_concentration", 0.15);
                     trend_config.use_position_buffering =
                         cfg.value("use_position_buffering", false);
                     if (cfg.contains("ema_windows")) {
