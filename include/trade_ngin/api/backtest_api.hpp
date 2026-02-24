@@ -1,15 +1,12 @@
 #pragma once
 
 #include "trade_ngin/backtest/backtest_types.hpp"
+#include "trade_ngin/core/error.hpp"
 
-namespace trade_ngin::api {
+namespace trade_ngin {
+namespace api {
 
-trade_ngin::backtest::BacktestResults run_backtest();
+Result<backtest::BacktestResults> run_backtest();
 
-// Example usage in bt_portfolio.cpp
-// auto result = coordinator->run_portfolio(
-//     portfolio, config.strategy_config.symbols, config.strategy_config.start_date,
-//     config.strategy_config.end_date, config.strategy_config.asset_class,
-//     config.strategy_config.data_freq);
-
-}  // namespace trade_ngin::api
+}  // namespace api
+}  // namespace trade_ngin
