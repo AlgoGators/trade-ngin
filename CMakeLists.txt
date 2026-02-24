@@ -114,6 +114,7 @@ set(TRADE_NGIN_SOURCES
     src/statistics/volatility/garch.cpp
     src/statistics/state_estimation/kalman_filter.cpp
     src/statistics/state_estimation/hmm.cpp
+    src/api/backtest_api.cpp
 )
 
 # Add library target
