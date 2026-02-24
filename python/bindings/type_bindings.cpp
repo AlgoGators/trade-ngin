@@ -121,6 +121,7 @@ void bind_backtest_types(py::module_& m) {
         .def_readwrite("downside_volatility", &BacktestResults::downside_volatility);
 
     // TODO add bindings for other results
+    // TODO bind to a dataframe?
 }
 
 // Bind types in trade_ngin/strategy/types.hpp
