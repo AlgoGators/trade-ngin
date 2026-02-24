@@ -21,6 +21,7 @@ set(TEST_SOURCES
     portfolio/test_portfolio_manager.cpp
     strategy/test_base_strategy.cpp
     strategy/test_trend_following.cpp
+    strategy/test_mean_reversion_backtest.cpp
     statistics/test_normalizer.cpp
     statistics/test_pca.cpp
     statistics/test_adf.cpp
