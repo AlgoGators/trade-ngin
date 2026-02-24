@@ -215,6 +215,13 @@ std::vector<std::shared_ptr<Instrument>> InstrumentRegistry::get_instruments_by_
     return result;
 }
 
+void InstrumentRegistry::register_instrument(const std::string& symbol,
+                                              std::shared_ptr<Instrument> instrument) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    instruments_[symbol] = std::move(instrument);
+    DEBUG("Registered instrument: " + symbol);
+}
+
 bool InstrumentRegistry::has_instrument(const std::string& symbol) const {
     std::lock_guard<std::mutex> lock(mutex_);
 

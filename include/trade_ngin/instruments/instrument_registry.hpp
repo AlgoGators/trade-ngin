@@ -89,6 +89,13 @@ public:
      */
     bool has_instrument(const std::string& symbol) const;
 
+    /**
+     * @brief Register an instrument at runtime (e.g., for equity backtests)
+     * @param symbol Instrument symbol
+     * @param instrument Shared pointer to the instrument
+     */
+    void register_instrument(const std::string& symbol, std::shared_ptr<Instrument> instrument);
+
 private:
     InstrumentRegistry() = default;  // Private constructor for singleton pattern
     InstrumentRegistry(const InstrumentRegistry&) = delete;

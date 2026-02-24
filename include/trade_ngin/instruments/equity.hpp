@@ -7,6 +7,14 @@
 
 namespace trade_ngin {
 
+/**
+ * @brief Dividend event information
+ *
+ * Note: The current equity strategy implementation relies on adjusted close prices
+ * (closeadj) from the database to account for dividends and splits. This struct
+ * and the associated get_next_dividend() method are available for future use by
+ * strategies that need explicit dividend awareness (e.g., dividend capture strategies).
+ */
 struct DividendInfo {
     Timestamp ex_date;
     Timestamp payment_date;
