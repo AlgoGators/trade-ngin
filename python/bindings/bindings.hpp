@@ -18,6 +18,7 @@ void bind_instrument_registry(py::module_& m);
 void bind_base_strategy(py::module_& m);
 void bind_trend_following_config(py::module_& m);
 void bind_trend_following_strategy(py::module_& m);
+void bind_trend_following_fast_config(py::module_& m);
 void bind_trend_following_fast_strategy(py::module_& m);
 
 void bind_backtest_api(py::module_& m);
