@@ -38,6 +38,5 @@ void bind_base_strategy(py::module_& m) {
         .def("on_execution", &BaseStrategy::on_execution)
         .def("update_position", &BaseStrategy::update_position, py::arg("symbol"),
              py::arg("position"));
-    // TODO according to the strategy README, I need to expose .initialize()?
-    // We can expose more that we need as we go on
+    // TODO We can expose more that we need as we go on
 }

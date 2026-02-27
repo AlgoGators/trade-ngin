@@ -8,12 +8,12 @@
 #include "trade_ngin/data/database_pooling.hpp"
 #include "trade_ngin/instruments/instrument_registry.hpp"
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
-#include "trade_ngin/strategy/trend_following.hpp"
-#include "trade_ngin/strategy/trend_following_fast.hpp"
+// #include "trade_ngin/strategy/trend_following.hpp"
+// #include "trade_ngin/strategy/trend_following_fast.hpp"
 
-namespace trade_ngin {
+namespace trade_ngin::api {
 
-Result<backtest::BacktestResults> api::run_backtest() {
+Result<backtest::BacktestResults> BacktestRunner::run_backtest() {
     try {
         // Reset all singletons to ensure clean state between runs
         StateManager::reset_instance();
@@ -316,71 +316,51 @@ Result<backtest::BacktestResults> api::run_backtest() {
             INFO("Creating strategy: " + strategy_id + " (type: " + strategy_type +
                  ", allocation: " + std::to_string(allocation * 100.0) + "%)");
 
-            std::shared_ptr<trade_ngin::StrategyInterface> strategy;
-
-            if (strategy_type == "TrendFollowingStrategy") {
-                trade_ngin::TrendFollowingConfig trend_config;
-                if (strategy_def.contains("config")) {
-                    const auto& cfg = strategy_def["config"];
-                    trend_config.weight = cfg.value("weight", 0.03);
-                    trend_config.risk_target = cfg.value("risk_target", 0.2);
-                    trend_config.idm = cfg.value("idm", 2.5);
-                    trend_config.max_symbol_concentration =
-                        cfg.value("max_symbol_concentration", 0.15);
-                    trend_config.use_position_buffering = cfg.value("use_position_buffering", true);
-                    if (cfg.contains("ema_windows")) {
-                        trend_config.ema_windows.clear();
-                        for (const auto& window : cfg["ema_windows"]) {
-                            trend_config.ema_windows.push_back(
-                                {window[0].get<int>(), window[1].get<int>()});
-                        }
-                    }
-                    trend_config.vol_lookback_short = cfg.value("vol_lookback_short", 32);
-                    trend_config.vol_lookback_long = cfg.value("vol_lookback_long", 252);
-                }
-                // Set FDM from strategy_defaults
-                if (trend_config.fdm.empty()) {
-                    trend_config.fdm = app_config.strategy_defaults.fdm;
-                }
-
-                strategy = std::make_shared<trade_ngin::TrendFollowingStrategy>(
-                    strategy_id, base_strategy_config, trend_config, db, registry_ptr);
-
-            } else if (strategy_type == "TrendFollowingFastStrategy") {
-                trade_ngin::TrendFollowingFastConfig trend_config;
-                if (strategy_def.contains("config")) {
-                    const auto& cfg = strategy_def["config"];
-                    trend_config.weight = cfg.value("weight", 0.03);
-                    trend_config.risk_target = cfg.value("risk_target", 0.25);
-                    trend_config.idm = cfg.value("idm", 2.5);
-                    trend_config.max_symbol_concentration =
-                        cfg.value("max_symbol_concentration", 0.15);
-                    trend_config.use_position_buffering =
-                        cfg.value("use_position_buffering", false);
-                    if (cfg.contains("ema_windows")) {
-                        trend_config.ema_windows.clear();
-                        for (const auto& window : cfg["ema_windows"]) {
-                            trend_config.ema_windows.push_back(
-                                {window[0].get<int>(), window[1].get<int>()});
-                        }
-                    }
-                    trend_config.vol_lookback_short = cfg.value("vol_lookback_short", 16);
-                    trend_config.vol_lookback_long = cfg.value("vol_lookback_long", 252);
-                }
-                // Set FDM from strategy_defaults
-                if (trend_config.fdm.empty()) {
-                    trend_config.fdm = app_config.strategy_defaults.fdm;
-                }
-
-                strategy = std::make_shared<trade_ngin::TrendFollowingFastStrategy>(
-                    strategy_id, base_strategy_config, trend_config, db, registry_ptr);
-
-            } else {
-                ERROR("Unknown strategy type: " + strategy_type + " for strategy: " + strategy_id);
+            if (registered_strategies_.find(strategy_id) == registered_strategies_.end()) {
+                ERROR("Strategy " + strategy_id + " is not registered");
                 return make_error<backtest::BacktestResults>(
-                    ErrorCode::INVALID_DATA, "Unknown strategy type: " + strategy_type,
+                    ErrorCode::INVALID_DATA, "Strategy " + strategy_id + " is not registered",
                     "BacktestAPI");
             }
+
+            std::shared_ptr<trade_ngin::StrategyInterface> strategy =
+                registered_strategies_[strategy_id];
+
+            // TODO remove this - keeping it as an example
+            // if (strategy_type == "TrendFollowingStrategy") {
+            //     trade_ngin::TrendFollowingConfig trend_config;
+            //     if (strategy_def.contains("config")) {
+            //         const auto& cfg = strategy_def["config"];
+            //         trend_config.weight = cfg.value("weight", 0.03);
+            //         trend_config.risk_target = cfg.value("risk_target", 0.2);
+            //         trend_config.idm = cfg.value("idm", 2.5);
+            //         trend_config.max_symbol_concentration =
+            //             cfg.value("max_symbol_concentration", 0.15);
+            //         trend_config.use_position_buffering = cfg.value("use_position_buffering",
+            //         true); if (cfg.contains("ema_windows")) {
+            //             trend_config.ema_windows.clear();
+            //             for (const auto& window : cfg["ema_windows"]) {
+            //                 trend_config.ema_windows.push_back(
+            //                     {window[0].get<int>(), window[1].get<int>()});
+            //             }
+            //         }
+            //         trend_config.vol_lookback_short = cfg.value("vol_lookback_short", 32);
+            //         trend_config.vol_lookback_long = cfg.value("vol_lookback_long", 252);
+            //     }
+            //     // Set FDM from strategy_defaults
+            //     if (trend_config.fdm.empty()) {
+            //         trend_config.fdm = app_config.strategy_defaults.fdm;
+            //     }
+            //
+            //     strategy = std::make_shared<trade_ngin::TrendFollowingStrategy>(
+            //         strategy_id, base_strategy_config, trend_config, db, registry_ptr);
+            //
+            // } else {
+            //     ERROR("Unknown strategy type: " + strategy_type + " for strategy: " +
+            //     strategy_id); return make_error<backtest::BacktestResults>(
+            //         ErrorCode::INVALID_DATA, "Unknown strategy type: " + strategy_type,
+            //         "BacktestAPI");
+            // }
 
             // Initialize strategy
             auto init_result = strategy->initialize();
@@ -526,4 +506,27 @@ Result<backtest::BacktestResults> api::run_backtest() {
     }
 }
 
-}  // namespace trade_ngin
+Result<void> BacktestRunner::register_strategy(const std::string& strategy_id,
+                                               const StrategyConfig& config,
+                                               std::shared_ptr<PostgresDatabase> db) {
+    if (registered_strategies_.find(strategy_id) != registered_strategies_.end()) {
+        return make_error<void>(ErrorCode::INVALID_DATA,
+                                "Strategy ID already registered: " + strategy_id, "BacktestAPI");
+    } else {
+        // Create a default strategy instance based on the provided config
+        auto strategy = std::make_shared<BaseStrategy>(strategy_id, config, db);
+        registered_strategies_[strategy_id] = strategy;
+        INFO("Registered strategy with config: " + strategy_id);
+        return {};
+    }
+}
+
+std::vector<std::shared_ptr<BaseStrategy>> BacktestRunner::get_registered_strategies() const {
+    std::vector<std::shared_ptr<BaseStrategy>> strategies;
+    for (const auto& [_, strategy] : registered_strategies_) {
+        strategies.push_back(strategy);
+    }
+    return strategies;
+}
+
+}  // namespace trade_ngin::api
