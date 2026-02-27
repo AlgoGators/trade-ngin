@@ -16,6 +16,7 @@ PYBIND11_MODULE(trade_ngin, m) {
     bind_base_strategy(m);
     bind_trend_following_config(m);
     bind_trend_following_strategy(m);
+    bind_trend_following_fast_config(m);
     bind_trend_following_fast_strategy(m);
 
     bind_backtest_api(m);
