@@ -42,6 +42,35 @@ void bind_base_strategy(py::module_& m) {
     // TODO We can expose more that we need as we go on
 }
 
+void bind_trend_following_config(py::module_& m) {
+    py::class_<TrendFollowingConfig>(m, "TrendFollowingConfig")
+        .def(py::init<>())
+        .def_readwrite("weight", &TrendFollowingConfig::weight)
+        .def_readwrite("risk_target", &TrendFollowingConfig::risk_target)
+        .def_readwrite("fx_rate", &TrendFollowingConfig::fx_rate)
+        .def_readwrite("idm", &TrendFollowingConfig::idm)
+        .def_readwrite("max_symbol_concentration", &TrendFollowingConfig::max_symbol_concentration)
+        .def_readwrite("use_position_buffering", &TrendFollowingConfig::use_position_buffering)
+        .def_readwrite("ema_windows", &TrendFollowingConfig::ema_windows)
+        .def_readwrite("vol_lookback_short", &TrendFollowingConfig::vol_lookback_short)
+        .def_readwrite("vol_lookback_long", &TrendFollowingConfig::vol_lookback_long)
+        .def_readwrite("fdm", &TrendFollowingConfig::fdm)
+        .def("to_dict", [](const TrendFollowingConfig& cfg) {
+            py::dict d;
+            d["weight"] = cfg.weight;
+            d["risk_target"] = cfg.risk_target;
+            d["fx_rate"] = cfg.fx_rate;
+            d["idm"] = cfg.idm;
+            d["max_symbol_concentration"] = cfg.max_symbol_concentration;
+            d["use_position_buffering"] = cfg.use_position_buffering;
+            d["ema_windows"] = cfg.ema_windows;
+            d["vol_lookback_short"] = cfg.vol_lookback_short;
+            d["vol_lookback_long"] = cfg.vol_lookback_long;
+            d["fdm"] = cfg.fdm;
+            return d;
+        });
+}
+
 void bind_trend_following_strategy(py::module_& m) {
     py::class_<TrendFollowingStrategy, BaseStrategy, std::shared_ptr<TrendFollowingStrategy>>(
         m, "TrendFollowingStrategy")
