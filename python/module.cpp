@@ -11,8 +11,10 @@ PYBIND11_MODULE(trade_ngin, m) {
     // bind_error_types(m);
 
     bind_database(m);
+    bind_instrument_registry(m);
 
     bind_base_strategy(m);
+    bind_trend_following_config(m);
     bind_trend_following_strategy(m);
     bind_trend_following_fast_strategy(m);
 

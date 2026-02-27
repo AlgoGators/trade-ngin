@@ -6,6 +6,7 @@ pybind11_add_module(trade_ngin_py
     module.cpp
     bindings/type_bindings.cpp
     bindings/database_bindings.cpp
+    bindings/instrument_registry_bindings.cpp
     bindings/strategy_bindings.cpp
     bindings/api_bindings.cpp
 )
