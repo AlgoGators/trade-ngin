@@ -243,7 +243,7 @@ Result<backtest::BacktestResults> BacktestRunner::run_backtest() {
         // ========================================
         // LOAD STRATEGIES FROM CONFIG
         // ========================================
-        std::vector<std::shared_ptr<trade_ngin::StrategyInterface>> strategies;
+        std::vector<std::shared_ptr<trade_ngin::BaseStrategy>> strategies;
         std::vector<std::string> strategy_names;
         std::unordered_map<std::string, double> strategy_allocations;
         std::unordered_map<std::string, nlohmann::json> strategy_configs_map;
@@ -307,6 +307,8 @@ Result<backtest::BacktestResults> BacktestRunner::run_backtest() {
         // Create and initialize each strategy
         for (const auto& strategy_id : strategy_names) {
             const auto& strategy_def = strategy_configs_map[strategy_id];
+            // TODO do we even need this anyways? What's the point of this versus just using
+            // strategy_id
             std::string strategy_type = strategy_def.value("type", "");
 
             double allocation = strategy_allocations[strategy_id];
@@ -323,44 +325,32 @@ Result<backtest::BacktestResults> BacktestRunner::run_backtest() {
                     "BacktestAPI");
             }
 
-            std::shared_ptr<trade_ngin::StrategyInterface> strategy =
-                registered_strategies_[strategy_id];
-
             // TODO remove this - keeping it as an example
-            // if (strategy_type == "TrendFollowingStrategy") {
-            //     trade_ngin::TrendFollowingConfig trend_config;
-            //     if (strategy_def.contains("config")) {
-            //         const auto& cfg = strategy_def["config"];
-            //         trend_config.weight = cfg.value("weight", 0.03);
-            //         trend_config.risk_target = cfg.value("risk_target", 0.2);
-            //         trend_config.idm = cfg.value("idm", 2.5);
-            //         trend_config.max_symbol_concentration =
-            //             cfg.value("max_symbol_concentration", 0.15);
-            //         trend_config.use_position_buffering = cfg.value("use_position_buffering",
-            //         true); if (cfg.contains("ema_windows")) {
-            //             trend_config.ema_windows.clear();
-            //             for (const auto& window : cfg["ema_windows"]) {
-            //                 trend_config.ema_windows.push_back(
-            //                     {window[0].get<int>(), window[1].get<int>()});
-            //             }
-            //         }
-            //         trend_config.vol_lookback_short = cfg.value("vol_lookback_short", 32);
-            //         trend_config.vol_lookback_long = cfg.value("vol_lookback_long", 252);
-            //     }
-            //     // Set FDM from strategy_defaults
-            //     if (trend_config.fdm.empty()) {
-            //         trend_config.fdm = app_config.strategy_defaults.fdm;
-            //     }
+            // This should be outside and done by the user - for future reference
+            // bt.register_strategy(
+            //     "TrendFollowingStrategy",  // strategy ID
+            //     [](const StrategyContext& ctx, const nlohmann::json& cfg) ->
+            //     std::shared_ptr<BaseStrategy> {
             //
-            //     strategy = std::make_shared<trade_ngin::TrendFollowingStrategy>(
-            //         strategy_id, base_strategy_config, trend_config, db, registry_ptr);
+            //         // Build the trend following config from JSON or defaults
+            //         TrendFollowingConfig trend_config;
+            //         trend_config.vol_lookback_short = cfg.value("vol_lookback_short", 22);
+            //         trend_config.vol_lookback_long =
+            //             cfg.value("vol_lookback_long", trend_config.vol_lookback_short * 4);
             //
-            // } else {
-            //     ERROR("Unknown strategy type: " + strategy_type + " for strategy: " +
-            //     strategy_id); return make_error<backtest::BacktestResults>(
-            //         ErrorCode::INVALID_DATA, "Unknown strategy type: " + strategy_type,
-            //         "BacktestAPI");
-            // }
+            //         // Construct the strategy with context and config
+            //         return std::make_shared<TrendFollowingStrategy>(
+            //             "TF1",                 // strategy instance ID
+            //             ctx.portfolio_config,   // base StrategyConfig (capital, symbols, etc.)
+            //             trend_config,           // TrendFollowingConfig
+            //             ctx.db,                 // database connection
+            //             ctx.registry            // instrument registry
+            //         );
+            //     });
+
+            auto factory = registered_strategies_[strategy_id];
+            StrategyContext strategy_ctx{base_strategy_config, db, registry_ptr};
+            auto strategy = factory(strategy_ctx, strategy_def);
 
             // Initialize strategy
             auto init_result = strategy->initialize();
@@ -507,26 +497,15 @@ Result<backtest::BacktestResults> BacktestRunner::run_backtest() {
 }
 
 Result<void> BacktestRunner::register_strategy(const std::string& strategy_id,
-                                               const StrategyConfig& config,
-                                               std::shared_ptr<PostgresDatabase> db) {
+                                               StrategyFactory factory) {
     if (registered_strategies_.find(strategy_id) != registered_strategies_.end()) {
         return make_error<void>(ErrorCode::INVALID_DATA,
                                 "Strategy ID already registered: " + strategy_id, "BacktestAPI");
-    } else {
-        // Create a default strategy instance based on the provided config
-        auto strategy = std::make_shared<BaseStrategy>(strategy_id, config, db);
-        registered_strategies_[strategy_id] = strategy;
-        INFO("Registered strategy with config: " + strategy_id);
-        return {};
     }
-}
 
-std::vector<std::shared_ptr<BaseStrategy>> BacktestRunner::get_registered_strategies() const {
-    std::vector<std::shared_ptr<BaseStrategy>> strategies;
-    for (const auto& [_, strategy] : registered_strategies_) {
-        strategies.push_back(strategy);
-    }
-    return strategies;
+    registered_strategies_[strategy_id] = factory;
+    INFO("Registered strategy factory for strategy ID: " + strategy_id);
+    return {};
 }
 
 }  // namespace trade_ngin::api

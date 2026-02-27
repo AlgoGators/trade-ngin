@@ -220,3 +220,5 @@ void bind_strategy_types(py::module_& m) {
 //         .def_property_readonly("is_ok", &Result<void>::is_ok)
 //         .def_property_readonly("error", &Result<void>::error);
 // }
+
+// Bind example from existing trend following strategy in trade_ngin/strategy/trend_following.hpp

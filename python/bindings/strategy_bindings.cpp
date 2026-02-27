@@ -4,6 +4,7 @@
 #include <pybind11/stl.h>
 
 #include "trade_ngin/strategy/base_strategy.hpp"
+#include "trade_ngin/strategy/trend_following.hpp"
 
 namespace py = pybind11;
 using namespace trade_ngin;
@@ -39,4 +40,17 @@ void bind_base_strategy(py::module_& m) {
         .def("update_position", &BaseStrategy::update_position, py::arg("symbol"),
              py::arg("position"));
     // TODO We can expose more that we need as we go on
+}
+
+void bind_trend_following_strategy(py::module_& m) {
+    py::class_<TrendFollowingStrategy, BaseStrategy, std::shared_ptr<TrendFollowingStrategy>>(
+        m, "TrendFollowingStrategy")
+        .def(py::init<std::string, StrategyConfig, TrendFollowingConfig,
+                      std::shared_ptr<PostgresDatabase>, std::shared_ptr<InstrumentRegistry>>(),
+             py::arg("id"), py::arg("config"), py::arg("trend_config"), py::arg("db"),
+             py::arg("registry") = nullptr);
+}
+
+void bind_trend_following_fast_strategy(py::module_& m) {
+    // TODO add bindings for trend following fast strategy
 }
