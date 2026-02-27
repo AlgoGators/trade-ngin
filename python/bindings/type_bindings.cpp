@@ -5,7 +5,6 @@
 #include <pybind11_json/pybind11_json.hpp>
 
 #include "trade_ngin/backtest/backtest_types.hpp"
-#include "trade_ngin/core/error.hpp"
 #include "trade_ngin/core/types.hpp"
 #include "trade_ngin/strategy/types.hpp"
 
@@ -13,13 +12,13 @@ namespace py = pybind11;
 using namespace trade_ngin;
 using namespace trade_ngin::backtest;
 
-// Custom type caster for Decimal to convert between C++ Decimal and Python's decimal.Decimal
 namespace pybind11::detail {
 
+// Custom type caster for Decimal to convert between C++ Decimal and Python's decimal.Decimal
 template <>
-struct type_caster<Decimal> {
+struct type_caster<trade_ngin::Decimal> {
 public:
-    PYBIND11_TYPE_CASTER(Decimal, _("Decimal"));
+    PYBIND11_TYPE_CASTER(trade_ngin::Decimal, _("Decimal"));
 
     bool load(handle src, bool) {
         std::string s = py::str(src);
@@ -27,7 +26,7 @@ public:
         return true;
     }
 
-    static handle cast(const Decimal& src, return_value_policy, handle) {
+    static handle cast(const trade_ngin::Decimal& src, return_value_policy policy, handle parent) {
         py::object DecimalClass = py::module_::import("decimal").attr("Decimal");
         return DecimalClass(src.to_string()).release();
     }
@@ -204,55 +203,20 @@ void bind_strategy_types(py::module_& m) {
 }
 
 // Bind types in trade_ngin/core/error.hpp
-void bind_error_types(py::module_& m) {
-    py::class_<TradeError>(m, "TradeError")
-        .def(py::init<ErrorCode, std::string, std::string>(), py::arg("code"), py::arg("message"),
-             py::arg("component") = "")
-        .def_property_readonly("code", &TradeError::code)
-        .def_property_readonly("message", &TradeError::what)
-        .def_property_readonly("component", &TradeError::component)
-        .def("to_string", &TradeError::to_string);
-
-    // Due to the use of templates, we only bind Result<void> here. Other Result<T> types can be
-    // added as needed.
-    py::class_<Result<void>>(m, "ResultVoid")
-        .def(py::init<>())
-        .def_property_readonly("is_ok", &Result<void>::is_ok)
-        .def_property_readonly("error", &Result<void>::error);
-
-    // For the API
-    py::class_<Result<BacktestResults>>(m, "ResultBacktestResults")
-        .def(py::init<BacktestResults>())
-        .def("__str__",
-             [](const Result<BacktestResults>& r) {
-                 if (r.is_ok()) {
-                     return "BacktestResults(total_return=" +
-                            std::to_string(r.value().total_return) +
-                            ", volatility=" + std::to_string(r.value().volatility) +
-                            ", sharpe_ratio=" + std::to_string(r.value().sharpe_ratio) +
-                            ", sortino_ratio=" + std::to_string(r.value().sortino_ratio) +
-                            ", max_drawdown=" + std::to_string(r.value().max_drawdown) +
-                            ", calmar_ratio=" + std::to_string(r.value().calmar_ratio) +
-                            ", total_trades=" + std::to_string(r.value().total_trades) +
-                            ", win_rate=" + std::to_string(r.value().win_rate) +
-                            ", profit_factor=" + std::to_string(r.value().profit_factor) +
-                            ", avg_win=" + std::to_string(r.value().avg_win) +
-                            ", avg_loss=" + std::to_string(r.value().avg_loss) +
-                            ", max_win=" + std::to_string(r.value().max_win) +
-                            ", max_loss=" + std::to_string(r.value().max_loss) +
-                            ", avg_holding_period=" + std::to_string(r.value().avg_holding_period) +
-                            ", var_95=" + std::to_string(r.value().var_95) +
-                            ", cvar_95=" + std::to_string(r.value().cvar_95) +
-                            ", beta=" + std::to_string(r.value().beta) +
-                            ", correlation=" + std::to_string(r.value().correlation) +
-                            ", downside_volatility=" +
-                            std::to_string(r.value().downside_volatility) + ")";
-                 } else {
-                     return "Result<BacktestResults>(value=None, error=" + r.error()->to_string() +
-                            ")";
-                 }
-             })
-        .def_property_readonly("is_ok", &Result<BacktestResults>::is_ok)
-        .def_property_readonly("error", &Result<BacktestResults>::error)
-        .def_property_readonly("value", &Result<BacktestResults>::value);
-}
+// void bind_error_types(py::module_& m) {
+//     py::class_<TradeError>(m, "TradeError")
+//         .def(py::init<ErrorCode, std::string, std::string>(), py::arg("code"),
+//         py::arg("message"),
+//              py::arg("component") = "")
+//         .def_property_readonly("code", &TradeError::code)
+//         .def_property_readonly("message", &TradeError::what)
+//         .def_property_readonly("component", &TradeError::component)
+//         .def("to_string", &TradeError::to_string);
+//
+//     // Due to the use of templates, we only bind Result<void> here. Other Result<T> types can be
+//     // added as needed.
+//     py::class_<Result<void>>(m, "ResultVoid")
+//         .def(py::init<>())
+//         .def_property_readonly("is_ok", &Result<void>::is_ok)
+//         .def_property_readonly("error", &Result<void>::error);
+// }
