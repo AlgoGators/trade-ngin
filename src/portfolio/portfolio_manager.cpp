@@ -705,16 +705,13 @@ void PortfolioManager::update_historical_returns(const std::vector<Bar>& data) {
 
             // For each symbol, update our price history
             for (const auto& [symbol, prices] : price_history) {
-                // Only process if this symbol is in the current data (for efficiency)
-                if (data_symbols.count(symbol) > 0) {
-                    // Update our price history with the strategy's data
-                    price_history_[symbol] = prices;
+                // Update our price history with the strategy's data
+                price_history_[symbol] = prices;
 
-                    DEBUG("Updated price history for " + symbol + " with " +
-                          std::to_string(prices.size()) + " points");
+                DEBUG("Updated price history for " + symbol + " with " +
+                      std::to_string(prices.size()) + " points");
 
-                    got_history = true;
-                }
+                got_history = true;
             }
         }
     }

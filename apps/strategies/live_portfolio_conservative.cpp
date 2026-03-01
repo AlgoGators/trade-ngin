@@ -15,6 +15,7 @@
 #include "trade_ngin/core/time_utils.hpp"
 #include "trade_ngin/data/conversion_utils.hpp"
 #include "trade_ngin/data/database_pooling.hpp"
+#include "trade_ngin/data/market_data_bus.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
 #include "trade_ngin/instruments/futures.hpp"
 #include "trade_ngin/instruments/instrument_registry.hpp"
@@ -644,9 +645,14 @@ int main(int argc, char* argv[]) {
 
         // Load market data for daily processing
         INFO("Loading market data for daily processing...");
+        // Disable MarketDataBus auto-publish to prevent duplicate processing
+        MarketDataBus::instance().set_publish_enabled(false);
+        INFO("MarketDataBus publishing DISABLED before get_market_data");
         auto market_data_result =
             db->get_market_data(symbols, start_date, end_date, trade_ngin::AssetClass::FUTURES,
                                 trade_ngin::DataFrequency::DAILY, "ohlcv");
+        INFO("MarketDataBus publishing RE-ENABLED after get_market_data");
+        MarketDataBus::instance().set_publish_enabled(true);
 
         if (market_data_result.is_error()) {
             ERROR("Failed to load market data: " + std::string(market_data_result.error()->what()));
@@ -866,7 +872,12 @@ int main(int argc, char* argv[]) {
 
         // Process data through portfolio pipeline (optimization + risk), mirroring backtest
         INFO("Processing data through portfolio manager (optimization + risk)...");
+        // Disable MarketDataBus to prevent duplicate processing during explicit data feed
+        MarketDataBus::instance().set_publish_enabled(false);
+        INFO("MarketDataBus publishing DISABLED before process_market_data");
         auto port_process_result = portfolio->process_market_data(all_bars);
+        INFO("MarketDataBus publishing RE-ENABLED after process_market_data");
+        MarketDataBus::instance().set_publish_enabled(true);
         if (port_process_result.is_error()) {
             std::cerr << "Failed to process data in portfolio manager: "
                       << port_process_result.error()->what() << std::endl;

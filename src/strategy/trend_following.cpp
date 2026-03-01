@@ -198,6 +198,13 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
         for (const auto& [symbol, symbol_bars] : bars_by_symbol) {
             auto& instrument_data = instrument_data_[symbol];
 
+            // Clear price history ONLY if processing bulk historical data (live mode)
+            // In backtest mode, on_data is called daily with small batches, so we accumulate
+            // Heuristic: if processing >100 bars for this symbol, it's bulk mode
+            if (symbol_bars.size() > 100) {
+                instrument_data.price_history.clear();
+            }
+
             // Update price history
             for (const auto& bar : symbol_bars) {
                 instrument_data.price_history.push_back(static_cast<double>(bar.close));
