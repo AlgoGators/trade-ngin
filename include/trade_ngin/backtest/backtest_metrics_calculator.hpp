@@ -91,12 +91,12 @@ public:
         double minimum_acceptable_return = 0.0) const;
 
     /**
-     * @brief Calculate Calmar ratio
-     * @param total_return Total return as decimal
+     * @brief Calculate Calmar ratio (annualized return / max drawdown)
+     * @param annualized_return Annualized return as decimal
      * @param max_drawdown Maximum drawdown as decimal
      * @return Calmar ratio
      */
-    double calculate_calmar_ratio(double total_return, double max_drawdown) const;
+    double calculate_calmar_ratio(double annualized_return, double max_drawdown) const;
 
     // ========== Volatility Metrics ==========
 
@@ -207,10 +207,17 @@ public:
     std::unordered_map<std::string, double> calculate_monthly_returns(
         const std::vector<std::pair<Timestamp, double>>& equity_curve) const;
 
-    // ========== Beta and Correlation ==========
+    // ========== Beta and Correlation (Autocorrelation-Based) ==========
 
     /**
-     * @brief Calculate beta and correlation (simplified self-correlation)
+     * @brief Calculate beta and correlation from lag-1 autocorrelation
+     *
+     * NOTE: These are AUTOCORRELATION metrics, NOT market beta/correlation.
+     * - beta: regression slope of today's return on yesterday's return
+     * - correlation: lag-1 autocorrelation (today vs yesterday)
+     * For true market beta/correlation vs a benchmark (e.g. S&P 500),
+     * benchmark returns would need to be supplied.
+     *
      * @param returns Vector of daily returns
      * @return Pair of (beta, correlation)
      */

@@ -62,9 +62,9 @@ double BacktestMetricsCalculator::calculate_sharpe_ratio(
         return 0.0;
     }
 
-    // Annualize mean return using actual trading days
-    double annualization_factor = 252.0 / static_cast<double>(trading_days);
-    double annualized_return = mean_return * annualization_factor;
+    // Annualize mean daily return: multiply by 252 (trading days per year)
+    // mean_return is already a daily rate; 252 scales it to annual
+    double annualized_return = mean_return * 252.0;
 
     // Sharpe = (annualized return - risk free rate) / annualized volatility
     return (annualized_return - risk_free_rate) / volatility;
@@ -83,19 +83,19 @@ double BacktestMetricsCalculator::calculate_sortino_ratio(
 
     if (downside_vol <= 0.0) {
         // No negative returns - cap at reasonable value
-        double annualization_factor = 252.0 / static_cast<double>(trading_days);
-        return (mean_return * annualization_factor) >= 0 ? 999.0 : 0.0;
+        return (mean_return * 252.0) >= 0 ? 999.0 : 0.0;
     }
 
-    double annualization_factor = 252.0 / static_cast<double>(trading_days);
-    return (mean_return * annualization_factor - minimum_acceptable_return) / downside_vol;
+    // Annualize mean daily return: multiply by 252 (trading days per year)
+    double annualized_return = mean_return * 252.0;
+    return (annualized_return - minimum_acceptable_return) / downside_vol;
 }
 
-double BacktestMetricsCalculator::calculate_calmar_ratio(double total_return, double max_drawdown) const {
+double BacktestMetricsCalculator::calculate_calmar_ratio(double annualized_return, double max_drawdown) const {
     if (max_drawdown <= 0.0) {
-        return total_return >= 0 ? 999.0 : 0.0;
+        return annualized_return >= 0 ? 999.0 : 0.0;
     }
-    return total_return / max_drawdown;
+    return annualized_return / max_drawdown;
 }
 
 // ========== Volatility Metrics ==========
@@ -387,7 +387,13 @@ std::unordered_map<std::string, double> BacktestMetricsCalculator::calculate_mon
     return monthly_returns;
 }
 
-// ========== Beta and Correlation ==========
+// ========== Beta and Correlation (Autocorrelation-Based) ==========
+//
+// NOTE: These are AUTOCORRELATION metrics, NOT market beta/correlation.
+// - beta: regression slope of today's return on yesterday's return
+// - correlation: lag-1 autocorrelation (today vs yesterday)
+// For true market beta/correlation vs a benchmark (e.g. S&P 500), benchmark
+// returns would need to be supplied and used instead of lagged strategy returns.
 
 std::pair<double, double> BacktestMetricsCalculator::calculate_beta_correlation(
     const std::vector<double>& returns) const {
@@ -397,7 +403,7 @@ std::pair<double, double> BacktestMetricsCalculator::calculate_beta_correlation(
 
     double mean_return = calculate_mean(returns);
 
-    // Simplified self-correlation calculation
+    // Lag-1 autocorrelation: regress returns[i] on returns[i-1]
     double covariance = 0.0;
     double variance_benchmark = 0.0;
     double variance_strategy = 0.0;
@@ -466,8 +472,10 @@ backtest::BacktestResults BacktestMetricsCalculator::calculate_all_metrics(
         results.drawdown_curve = drawdowns;
     }
 
-    // Calmar ratio
-    results.calmar_ratio = calculate_calmar_ratio(results.total_return, results.max_drawdown);
+    // Calmar ratio: annualized return / max drawdown (industry standard)
+    double mean_return = calculate_mean(returns);
+    double annualized_return = mean_return * 252.0;
+    results.calmar_ratio = calculate_calmar_ratio(annualized_return, results.max_drawdown);
 
     // Risk metrics
     auto risk_metrics = calculate_risk_metrics(returns, actual_trading_days);
