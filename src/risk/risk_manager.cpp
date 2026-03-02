@@ -158,6 +158,19 @@ Result<RiskResult> RiskManager::process_positions(
 
         result.risk_exceeded = result.recommended_scale < 1.0;
 
+        // DEBUG: Log which constraint is binding when positions are heavily scaled
+        if (result.recommended_scale < 0.5) {
+            INFO("RISK_DEBUG: Heavy scaling detected! scale=" + std::to_string(result.recommended_scale));
+            INFO("RISK_DEBUG:   portfolio_mult=" + std::to_string(result.portfolio_multiplier) +
+                 " (VaR=" + std::to_string(result.portfolio_var) + ", limit=" + std::to_string(config_.var_limit) + ")");
+            INFO("RISK_DEBUG:   jump_mult=" + std::to_string(result.jump_multiplier) +
+                 " (jump_risk=" + std::to_string(result.jump_risk) + ", limit=" + std::to_string(config_.jump_risk_limit) + ")");
+            INFO("RISK_DEBUG:   corr_mult=" + std::to_string(result.correlation_multiplier) +
+                 " (max_corr=" + std::to_string(result.correlation_risk) + ", limit=" + std::to_string(config_.max_correlation) + ")");
+            INFO("RISK_DEBUG:   lev_mult=" + std::to_string(result.leverage_multiplier) +
+                 " (gross=" + std::to_string(result.gross_leverage) + ", net=" + std::to_string(result.net_leverage) + ")");
+        }
+
         return Result<RiskResult>(result);
 
     } catch (const std::exception& e) {

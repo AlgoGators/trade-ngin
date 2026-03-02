@@ -552,7 +552,7 @@ nlohmann::json ConfigManager::create_default_strategy_config() const {
     config["capital_allocation"] = 1000000.0;  // $1M
     config["max_leverage"] = 3.0;              // 3x leverage
     config["max_drawdown"] = 0.3;              // 30% max drawdown
-    config["var_limit"] = 0.1;                 // 10% VaR limit
+    config["var_limit"] = 0.25;                // 25% VaR limit (trend-following)
     config["correlation_limit"] = 0.7;         // 70% correlation limit
     config["version"] = "1.0.0";
 
@@ -561,9 +561,9 @@ nlohmann::json ConfigManager::create_default_strategy_config() const {
 
 nlohmann::json ConfigManager::create_default_risk_config() const {
     nlohmann::json config;
-    config["var_limit"] = 0.15;          // 15% VaR limit
-    config["jump_risk_limit"] = 0.10;    // 10% jump risk limit
-    config["max_correlation"] = 0.7;     // 70% correlation limit
+    config["var_limit"] = 0.25;          // 25% VaR limit (trend-following appropriate)
+    config["jump_risk_limit"] = 0.05;    // 5% jump risk limit
+    config["max_correlation"] = 0.70;    // 70% correlation limit
     config["max_gross_leverage"] = 4.0;   // 4x gross leverage
     config["max_net_leverage"] = 2.0;    // 2x net leverage
     config["confidence_level"] = 0.99;   // 99% confidence
