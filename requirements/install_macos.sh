@@ -16,13 +16,15 @@ brew install \
   git \
   jq
 
-echo "[3/5] Installing libraries (Arrow, Postgres, libpqxx, JSON, GTest)..."
+echo "[3/5] Installing libraries (Arrow, Postgres, libpqxx, JSON, GTest, Eigen, NLopt)..."
 brew install \
   apache-arrow \
   nlohmann-json \
   libpq \
   libpqxx \
-  googletest
+  googletest \
+  eigen \
+  nlopt
 
 echo "[4/5] Ensuring libpq tools are linked into PATH (optional)..."
 # On macOS, Homebrew may not link libpq binaries by default

@@ -73,15 +73,18 @@ elif [[ "$OS" == "macos" ]]; then
         nlohmann-json \
         apache-arrow \
         libpqxx \
-        lcov
-    
-    # Install cpplint via pip
+        lcov \
+        googletest \
+        eigen \
+        nlopt
+
+    # Install cpplint and gcovr via pip
     if ! command_exists cpplint; then
         pip3 install cpplint
     fi
-    
-    # Install Google Test
-    brew install googletest
+    if ! command_exists gcovr; then
+        pip3 install gcovr
+    fi
 
 else
     echo -e "${RED}❌ Unsupported operating system. Please install dependencies manually.${NC}"
@@ -127,7 +130,7 @@ chmod +x linting/auto_fix_lint.sh
 echo -e "${BLUE}🔨 Testing build process...${NC}"
 cd build
 cmake .. -DCMAKE_BUILD_TYPE=Debug
-make -j$(nproc) || echo -e "${YELLOW}⚠️  Build test failed (this is normal if dependencies are missing)${NC}"
+cmake --build . -- -j$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4) || echo -e "${YELLOW}⚠️  Build test failed (this is normal if dependencies are missing)${NC}"
 cd ..
 
 echo -e "${GREEN}🎉 Development environment setup complete!${NC}"

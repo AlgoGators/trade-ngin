@@ -20,7 +20,10 @@ apt-get install -y \
   gnupg \
   lsb-release \
   pkg-config \
-  libpq-dev
+  libpq-dev \
+  libcurl4-openssl-dev \
+  libeigen3-dev \
+  libnlopt-dev
 
 echo "[3/6] Installing GoogleTest from source..."
 apt-get install -y libgtest-dev
