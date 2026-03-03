@@ -368,6 +368,7 @@ double TransactionCostAnalyzer::calculate_opportunity_cost(
 
 std::string TransactionCostAnalyzer::generate_report(const TransactionCostMetrics& metrics,
                                                      bool include_charts) const {
+    (void)include_charts;
     std::stringstream report;
     report << std::fixed << std::setprecision(4);
 

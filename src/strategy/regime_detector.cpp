@@ -324,6 +324,7 @@ double RegimeDetector::calculate_variance_ratio(const std::vector<double>& price
 
 DetailedMarketRegime RegimeDetector::detect_regime_change(const RegimeFeatures& features,
                                                           const std::string& symbol) const {
+    (void)symbol;
     // Start with trend analysis
     if (std::abs(features.trend_strength) > 0.7) {
         if (features.trend_strength > 0) {

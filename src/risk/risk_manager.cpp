@@ -327,6 +327,7 @@ double RiskManager::calculate_leverage_multiplier(const MarketData& market_data,
                                                   const std::vector<double>& weights,
                                                   const std::vector<double>& position_values,
                                                   double total_value, RiskResult& result) const {
+    (void)weights;
     // Calculate gross and net leverage
     double gross = total_value;
     result.gross_leverage = gross / static_cast<double>(config_.capital);

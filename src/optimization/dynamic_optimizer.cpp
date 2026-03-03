@@ -268,6 +268,7 @@ double DynamicOptimizer::calculate_pure_tracking_error(
             sum_cov += std::abs(covariance[i][j]);
         }
     }
+    (void)sum_cov;
 
     // Calculate quadratic form e'Σe
     double tracking_error_squared = 0.0;

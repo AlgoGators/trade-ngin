@@ -288,6 +288,7 @@ CalculatedMetrics LiveMetricsCalculator::calculate_all_metrics(
     int trading_days,
     double daily_transaction_costs) const {
 
+    (void)daily_transaction_costs;
     CalculatedMetrics metrics;
 
     // Return metrics
@@ -333,6 +334,7 @@ CalculatedMetrics LiveMetricsCalculator::calculate_finalization_metrics(
     int trading_days,
     double commissions) const {
 
+    (void)commissions;
     CalculatedMetrics metrics;
 
     // For finalization, daily PnL is the realized PnL

@@ -24,6 +24,7 @@ std::string g_email_payload;
 size_t g_payload_pos = 0;
 
 size_t read_callback(char* buffer, size_t size, size_t nitems, void* userdata) {
+    (void)userdata;
     size_t buffer_size = size * nitems;
     size_t remaining = g_email_payload.size() - g_payload_pos;
     size_t copy_size = std::min(buffer_size, remaining);
@@ -478,7 +479,7 @@ namespace {
     }
     
     // Helper function to filter out agricultural positions
-    std::unordered_map<std::string, Position> filter_non_agricultural_positions(
+    [[maybe_unused]] std::unordered_map<std::string, Position> filter_non_agricultural_positions(
         const std::unordered_map<std::string, Position>& positions)
     {
         std::unordered_map<std::string, Position> filtered;
@@ -505,6 +506,7 @@ std::string EmailSender::generate_trading_report_body(
    const std::unordered_map<std::string, double>& two_days_ago_close_prices,
    const std::map<std::string, double>& yesterday_daily_metrics)
 {
+   (void)risk_metrics;
    std::ostringstream html;
 
    // Parse the date to check day of week
@@ -926,6 +928,7 @@ std::string EmailSender::format_positions_table(const std::unordered_map<std::st
                                                 bool is_daily_strategy,
                                                 const std::unordered_map<std::string, double>& current_prices,
                                                 const std::map<std::string, double>& strategy_metrics) {
+    (void)is_daily_strategy;
     std::ostringstream html;
 
     html << "<table>\n";
@@ -1090,6 +1093,7 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
     const std::map<std::string, double>& strategy_metrics,
     const std::string& yesterday_date
 ) {
+    (void)db;
     std::ostringstream html;
 
     if (yesterday_positions.empty()) {
@@ -1163,6 +1167,7 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
 
         total_realized_pnl += realized_pnl;
     }
+    (void)total_realized_pnl;
 
     // Sort by symbol
     std::sort(position_data.begin(), position_data.end(),
@@ -1303,6 +1308,7 @@ std::string EmailSender::format_yesterday_finalized_positions_table(
     const std::map<std::string, double>& strategy_metrics,
     const std::string& yesterday_date
 ) {
+    (void)db;
     std::ostringstream html;
 
     // Check if there are any positions across all strategies
@@ -2159,7 +2165,7 @@ std::string EmailSender::format_rollover_warning(
     };
 
     // Helper: Get nth business day of month
-    auto get_nth_business_day = [&is_business_day, &get_next_business_day](int year, int month, int n) -> std::tm {
+    auto get_nth_business_day = [&get_next_business_day](int year, int month, int n) -> std::tm {
         std::tm result = {};
         result.tm_year = year - 1900;
         result.tm_mon = month - 1;
@@ -3019,6 +3025,7 @@ std::string EmailSender::generate_trading_report_body(
    const std::unordered_map<std::string, double>& two_days_ago_close_prices,
    const std::map<std::string, double>& yesterday_daily_metrics)
 {
+   (void)risk_metrics;
    std::ostringstream html;
 
    // Parse the date to check day of week

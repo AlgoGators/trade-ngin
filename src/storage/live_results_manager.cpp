@@ -34,6 +34,7 @@ std::string LiveResultsManager::generate_run_id(const std::string& strategy_id,
 
 Result<void> LiveResultsManager::save_all_results(const std::string& run_id,
                                                   const Timestamp& date) {
+    (void)run_id;
     // Validate storage is enabled
     auto validation = validate_storage_enabled();
     if (validation.is_error()) {

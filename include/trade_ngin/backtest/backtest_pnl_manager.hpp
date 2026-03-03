@@ -64,6 +64,10 @@ private:
     bool debug_enabled_ = true;
 
 public:
+    // Bring base class overloads into scope to avoid hiding them
+    using PnLManagerBase::calculate_daily_pnl;
+    using PnLManagerBase::calculate_position_pnl;
+
     /**
      * Constructor
      * @param initial_capital Starting capital
@@ -71,8 +75,8 @@ public:
      */
     explicit BacktestPnLManager(double initial_capital, InstrumentRegistry& registry)
         : PnLManagerBase(initial_capital)
-        , registry_(registry)
-        , current_portfolio_value_(initial_capital) {
+        , current_portfolio_value_(initial_capital)
+        , registry_(registry) {
         log_debug("[BACKTEST_PNL] Initialized with capital=" + std::to_string(initial_capital));
     }
     

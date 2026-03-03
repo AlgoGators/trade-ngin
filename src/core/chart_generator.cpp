@@ -213,7 +213,7 @@ ChartData ChartGenerator::fetch_equity_curve_data(
             recent_data.push_back(date_equity_pairs.back());
 
             // Work backwards to find consecutive data
-            for (int i = date_equity_pairs.size() - 2; i >= 0; i--) {
+            for (int i = static_cast<int>(date_equity_pairs.size()) - 2; i >= 0; i--) {
                 std::tm tm1 = {}, tm2 = {};
                 std::istringstream ss1(date_equity_pairs[i].first);
                 std::istringstream ss2(recent_data.front().first);
@@ -1360,7 +1360,7 @@ std::string ChartGenerator::render_line_chart(const ChartData& data, const Chart
         int num_ticks = std::min(5, static_cast<int>(data.labels.size()));
         script << "set xtics (";
         for (int i = 0; i < num_ticks; i++) {
-            int idx = (i * (data.labels.size() - 1)) / std::max(1, num_ticks - 1);
+            int idx = (i * (static_cast<int>(data.labels.size()) - 1)) / std::max(1, num_ticks - 1);
             if (i > 0) script << ", ";
             script << "'" << data.labels[idx] << "' '" << data.labels[idx] << "'";
         }
@@ -1596,6 +1596,7 @@ std::string ChartGenerator::render_pie_chart(const ChartData& data, const ChartC
         for (size_t i = 0; i < data.labels.size(); ++i) {
             double value = std::abs(data.values[i]);
             double percentage = (value / total) * 100.0;
+            (void)percentage;
             double angle_span = (value / total) * 360.0;
             double start_angle = cumulative_angle;
             double end_angle = cumulative_angle + angle_span;

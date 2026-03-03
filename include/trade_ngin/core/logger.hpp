@@ -233,7 +233,7 @@ private:
     LoggerConfig config_;
     std::ofstream log_file_;
     std::atomic<bool> initialized_{false};
-    bool locked_initialization_{false};  // Prevent re-initialization after first call
+    [[maybe_unused]] bool locked_initialization_{false};  // Prevent re-initialization after first call
     static thread_local std::string current_component_;  // Thread-local component name
 
     // New members for improved file naming

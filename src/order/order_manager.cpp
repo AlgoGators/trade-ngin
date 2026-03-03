@@ -181,7 +181,7 @@ Result<void> OrderManager::process_execution(const ExecutionReport& report) {
          static_cast<double>(report.fill_price) * static_cast<double>(report.filled_quantity)) /
         new_qty;
     entry.filled_quantity = new_qty;
-    entry.status = std::abs(new_qty >= (static_cast<double>(entry.order.quantity) - 1e-6))
+    entry.status = (new_qty >= (static_cast<double>(entry.order.quantity) - 1e-6))
                        ? OrderStatus::FILLED
                        : OrderStatus::PARTIALLY_FILLED;
     entry.last_update = report.fill_time;
@@ -202,6 +202,9 @@ Result<void> OrderManager::send_to_broker(const std::string& order_id) {
                                entry.order.quantity,
                                entry.order.price,
                                std::chrono::system_clock::now(),
+                               Decimal(0.0),
+                               Decimal(0.0),
+                               Decimal(0.0),
                                Decimal(0.0),
                                false};
         return process_execution(report);

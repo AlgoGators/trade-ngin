@@ -14,8 +14,6 @@ namespace utils {
 // Retry function with exponential backoff
 template <typename Func>
 auto retry_with_backoff(Func func, int max_retries = 3) -> decltype(func()) {
-    using ReturnType = decltype(func());
-
     int attempt = 0;
     std::chrono::milliseconds delay(30);  // Start with 30ms delay
 

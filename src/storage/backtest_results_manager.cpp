@@ -41,6 +41,7 @@ std::string BacktestResultsManager::generate_run_id(const std::string& strategy_
 
 Result<void> BacktestResultsManager::save_all_results(const std::string& run_id,
                                                      const Timestamp& date) {
+    (void)date;
     // Validate storage is enabled
     auto validation = validate_storage_enabled();
     if (validation.is_error()) {

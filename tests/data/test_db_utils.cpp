@@ -66,10 +66,11 @@ std::vector<ExecutionReport> create_test_executions() {
     std::vector<ExecutionReport> executions;
     auto now = std::chrono::system_clock::now();
 
-    executions.push_back({"ORD-001", "EXEC-001", "AAPL", Side::BUY, 100, 150.25, now, 1.50, false});
+    executions.push_back({"ORD-001", "EXEC-001", "AAPL", Side::BUY, 100, 150.25, now, 1.50, 0.0,
+                          0.0, 0.0, false});
 
     executions.push_back({"ORD-002", "EXEC-002", "MSFT", Side::SELL, 50, 250.75,
-                          now + std::chrono::minutes(5), 2.25, true});
+                          now + std::chrono::minutes(5), 2.25, 0.0, 0.0, 0.0, true});
 
     return executions;
 }

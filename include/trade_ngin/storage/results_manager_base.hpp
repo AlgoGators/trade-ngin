@@ -15,8 +15,8 @@
 namespace trade_ngin {
 
 // Forward declarations
-class Position;
-class ExecutionReport;
+struct Position;
+struct ExecutionReport;
 
 /**
  * @brief Base class for all results storage managers
