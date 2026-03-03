@@ -52,7 +52,7 @@ struct LiveResultsRow {
     double gross_profit = 0.0;
     double gross_loss = 0.0;
     int active_positions = 0;
-    int total_trades = 0;
+    // Removed total_trades - will be implemented properly later with closing trades logic
     int winning_days = 0;
     int losing_days = 0;
     int total_days = 0;

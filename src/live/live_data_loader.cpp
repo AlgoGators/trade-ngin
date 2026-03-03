@@ -172,7 +172,7 @@ Result<LiveResultsRow> LiveDataLoader::load_live_results(const std::string& stra
         "sharpe_ratio, sortino_ratio, max_drawdown, volatility, "
         "win_rate, avg_win, avg_loss, profit_factor, best_day, worst_day, downside_deviation, "
         "gross_profit, gross_loss, "
-        "active_positions, total_trades, winning_days, "
+        "active_positions, winning_days, "
         "losing_days, total_days "
         "FROM " +
         schema_ +
@@ -275,7 +275,7 @@ Result<LiveResultsRow> LiveDataLoader::load_live_results(const std::string& stra
     row.gross_profit = get_double();
     row.gross_loss = get_double();
     row.active_positions = get_int();
-    row.total_trades = get_int();
+    // Removed total_trades - column dropped from database
     row.winning_days = get_int();
     row.losing_days = get_int();
     row.total_days = get_int();
