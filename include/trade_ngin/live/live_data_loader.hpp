@@ -42,9 +42,20 @@ struct LiveResultsRow {
     double sortino_ratio = 0.0;
     double max_drawdown = 0.0;
     double volatility = 0.0;
+    double win_rate = 0.0;
+    double avg_win = 0.0;
+    double avg_loss = 0.0;
+    double profit_factor = 0.0;
+    double best_day = 0.0;
+    double worst_day = 0.0;
+    double downside_deviation = 0.0;
+    double gross_profit = 0.0;
+    double gross_loss = 0.0;
     int active_positions = 0;
-    int winning_trades = 0;
-    int losing_trades = 0;
+    int total_trades = 0;
+    int winning_days = 0;
+    int losing_days = 0;
+    int total_days = 0;
 };
 
 /**
@@ -156,6 +167,48 @@ public:
     Result<int> get_live_results_count(const std::string& strategy_id,
                                        const std::string& portfolio_id = "BASE_PORTFOLIO");
 
+    // ========== Historical Series Methods (since inception, as-of date) ==========
+
+    /**
+     * @brief Load daily return history (percentage) up to and including a given date.
+     *
+     * Each value corresponds to the `daily_return` column from trading.live_results,
+     * ordered by date ascending.
+     */
+    Result<std::vector<double>> load_daily_returns_history(const std::string& strategy_id,
+                                                           const std::string& portfolio_id,
+                                                           const Timestamp& as_of_date);
+
+    /**
+     * @brief Load daily PnL history (dollars) up to and including a given date.
+     *
+     * Each value corresponds to the `daily_pnl` column from trading.live_results,
+     * ordered by date ascending.
+     */
+    Result<std::vector<double>> load_daily_pnl_history(const std::string& strategy_id,
+                                                       const std::string& portfolio_id,
+                                                       const Timestamp& as_of_date);
+
+    /**
+     * @brief Load equity curve history up to and including a given date.
+     *
+     * Each value corresponds to the `equity` column from trading.equity_curve,
+     * ordered by timestamp ascending.
+     */
+    Result<std::vector<double>> load_equity_curve_history(const std::string& strategy_id,
+                                                          const std::string& portfolio_id,
+                                                          const Timestamp& as_of_date);
+
+    /**
+     * @brief Load total trade count (number of executions) since inception up to a date.
+     *
+     * Counts rows in trading.executions for the given strategy and portfolio where
+     * DATE(execution_time) <= as_of_date.
+     */
+    Result<int> load_total_trades_count(const std::string& strategy_id,
+                                        const std::string& portfolio_id,
+                                        const Timestamp& as_of_date);
+
     // ========== Position Methods ==========
 
     /**
@@ -195,7 +248,8 @@ public:
      * @return Total transaction costs or error
      */
     Result<double> load_daily_transaction_costs(const std::string& strategy_id,
-                                                const std::string& portfolio_id, const Timestamp& date);
+                                                const std::string& portfolio_id,
+                                                const Timestamp& date);
 
     // ========== Margin and Risk Methods ==========
 

@@ -1,6 +1,16 @@
 cmake_minimum_required(VERSION 3.17)
 project(trade_ngin VERSION 1.0.0 LANGUAGES CXX)
 
+# Fix macOS SDK path to prevent recurring SDK errors
+if(APPLE)
+    execute_process(
+        COMMAND xcrun --show-sdk-path
+        OUTPUT_VARIABLE CMAKE_OSX_SYSROOT
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
+    message(STATUS "Using macOS SDK: ${CMAKE_OSX_SYSROOT}")
+endif()
+
 # Set build type if not specified
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)
@@ -97,6 +107,7 @@ set(TRADE_NGIN_SOURCES
     src/storage/backtest_results_manager.cpp
     src/storage/live_results_manager.cpp
     src/live/live_data_loader.cpp
+    src/live/live_historical_metrics.cpp
     src/live/live_metrics_calculator.cpp
     src/live/live_trading_coordinator.cpp
     src/live/live_price_manager.cpp

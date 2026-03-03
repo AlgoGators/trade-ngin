@@ -170,7 +170,10 @@ Result<LiveResultsRow> LiveDataLoader::load_live_results(const std::string& stra
         "portfolio_leverage, equity_to_margin_ratio, gross_notional, "
         "margin_posted, cash_available, daily_transaction_costs, "
         "sharpe_ratio, sortino_ratio, max_drawdown, volatility, "
-        "active_positions, winning_trades, losing_trades "
+        "win_rate, avg_win, avg_loss, profit_factor, best_day, worst_day, downside_deviation, "
+        "gross_profit, gross_loss, "
+        "active_positions, total_trades, winning_days, "
+        "losing_days, total_days "
         "FROM " +
         schema_ +
         ".live_results "
@@ -205,15 +208,43 @@ Result<LiveResultsRow> LiveDataLoader::load_live_results(const std::string& stra
     row.date = date;
 
     // Extract all fields from the result
+    // NOTE: convert_generic_to_arrow() builds ALL columns as arrow::utf8() (strings),
+    // so we must read via StringArray and convert to numeric types.
+    //
+    // TODO(ARROW-STRING-BUG): The same static_pointer_cast<DoubleArray> / <Int64Array> bug
+    // exists in the following functions — they return 0 silently when the actual Arrow type
+    // is StringArray. Fix these when they cause visible issues:
+    //   - load_total_equity() line ~90
+    //   - load_total_trades_count() lines ~143, ~414
+    //   - load_previous_day_data() lines ~313-318
+    //   - has_live_results() line ~377
+    //   - load_equity_curve_history() line ~599
+    //   - load_portfolio_positions() lines ~714-720
+    //   - load_yesterday_metrics() line ~790
+    //   - load_portfolio_value() line ~846
+    //   - load_leverage_metrics() lines ~903-907
+    //   - load_yesterday_daily_metrics() lines ~977-983
     int col = 0;
     auto get_double = [&table, &col]() -> double {
-        auto array = std::static_pointer_cast<arrow::DoubleArray>(table->column(col++)->chunk(0));
-        return array->IsNull(0) ? 0.0 : array->Value(0);
+        auto array = std::static_pointer_cast<arrow::StringArray>(table->column(col++)->chunk(0));
+        if (array->IsNull(0))
+            return 0.0;
+        try {
+            return std::stod(array->GetString(0));
+        } catch (const std::exception&) {
+            return 0.0;
+        }
     };
 
     auto get_int = [&table, &col]() -> int {
-        auto array = std::static_pointer_cast<arrow::Int64Array>(table->column(col++)->chunk(0));
-        return array->IsNull(0) ? 0 : static_cast<int>(array->Value(0));
+        auto array = std::static_pointer_cast<arrow::StringArray>(table->column(col++)->chunk(0));
+        if (array->IsNull(0))
+            return 0;
+        try {
+            return std::stoi(array->GetString(0));
+        } catch (const std::exception&) {
+            return 0;
+        }
     };
 
     row.daily_pnl = get_double();
@@ -234,9 +265,20 @@ Result<LiveResultsRow> LiveDataLoader::load_live_results(const std::string& stra
     row.sortino_ratio = get_double();
     row.max_drawdown = get_double();
     row.volatility = get_double();
+    row.win_rate = get_double();
+    row.avg_win = get_double();
+    row.avg_loss = get_double();
+    row.profit_factor = get_double();
+    row.best_day = get_double();
+    row.worst_day = get_double();
+    row.downside_deviation = get_double();
+    row.gross_profit = get_double();
+    row.gross_loss = get_double();
     row.active_positions = get_int();
-    row.winning_trades = get_int();
-    row.losing_trades = get_int();
+    row.total_trades = get_int();
+    row.winning_days = get_int();
+    row.losing_days = get_int();
+    row.total_days = get_int();
 
     INFO("Loaded live results for " + date_ss.str() + ": PnL=$" + std::to_string(row.daily_pnl) +
          ", Portfolio=$" + std::to_string(row.current_portfolio_value));
@@ -399,6 +441,253 @@ Result<int> LiveDataLoader::get_live_results_count(const std::string& strategy_i
 
     auto array = std::static_pointer_cast<arrow::Int64Array>(table->column(0)->chunk(0));
     int count = static_cast<int>(array->Value(0));
+
+    return Result<int>(count);
+}
+
+// ========== Historical Series Methods ==========
+
+Result<std::vector<double>> LiveDataLoader::load_daily_returns_history(
+    const std::string& strategy_id, const std::string& portfolio_id, const Timestamp& as_of_date) {
+    auto validation = validate_connection();
+    if (validation.is_error()) {
+        return make_error<std::vector<double>>(ErrorCode::DATABASE_ERROR,
+                                               validation.error()->what(), "LiveDataLoader");
+    }
+
+    auto time_t = std::chrono::system_clock::to_time_t(as_of_date);
+    std::stringstream date_ss;
+    date_ss << std::put_time(std::gmtime(&time_t), "%Y-%m-%d");
+
+    std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
+
+    std::string query =
+        "SELECT daily_return::double precision as daily_return "
+        "FROM " +
+        schema_ +
+        ".live_results "
+        "WHERE strategy_id = '" +
+        strategy_id +
+        "' "
+        "AND portfolio_id = '" +
+        actual_portfolio_id +
+        "' "
+        "AND DATE(date) <= '" +
+        date_ss.str() +
+        "' "
+        "ORDER BY date ASC";
+
+    DEBUG("Loading daily returns history: " + query);
+
+    auto result = db_->execute_query(query);
+    if (result.is_error()) {
+        return make_error<std::vector<double>>(
+            ErrorCode::DATABASE_ERROR,
+            "Failed to load daily returns history: " + std::string(result.error()->what()),
+            "LiveDataLoader");
+    }
+
+    std::vector<double> returns;
+    auto table = result.value();
+    if (!table || table->num_rows() == 0) {
+        return Result<std::vector<double>>(returns);
+    }
+
+    // convert_generic_to_arrow builds ALL columns as arrow::utf8() (strings)
+    // so we must read via StringArray and convert to double
+    auto array = std::static_pointer_cast<arrow::StringArray>(table->column(0)->chunk(0));
+    returns.reserve(static_cast<size_t>(table->num_rows()));
+    for (int64_t i = 0; i < table->num_rows(); ++i) {
+        if (array->IsNull(i)) {
+            returns.push_back(0.0);
+        } else {
+            try {
+                returns.push_back(std::stod(array->GetString(i)));
+            } catch (const std::exception&) {
+                returns.push_back(0.0);
+            }
+        }
+    }
+
+    return Result<std::vector<double>>(returns);
+}
+
+Result<std::vector<double>> LiveDataLoader::load_daily_pnl_history(const std::string& strategy_id,
+                                                                   const std::string& portfolio_id,
+                                                                   const Timestamp& as_of_date) {
+    auto validation = validate_connection();
+    if (validation.is_error()) {
+        return make_error<std::vector<double>>(ErrorCode::DATABASE_ERROR,
+                                               validation.error()->what(), "LiveDataLoader");
+    }
+
+    auto time_t = std::chrono::system_clock::to_time_t(as_of_date);
+    std::stringstream date_ss;
+    date_ss << std::put_time(std::gmtime(&time_t), "%Y-%m-%d");
+
+    std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
+
+    std::string query =
+        "SELECT daily_pnl::double precision as daily_pnl "
+        "FROM " +
+        schema_ +
+        ".live_results "
+        "WHERE strategy_id = '" +
+        strategy_id +
+        "' "
+        "AND portfolio_id = '" +
+        actual_portfolio_id +
+        "' "
+        "AND DATE(date) <= '" +
+        date_ss.str() +
+        "' "
+        "ORDER BY date ASC";
+
+    DEBUG("Loading daily PnL history: " + query);
+
+    auto result = db_->execute_query(query);
+    if (result.is_error()) {
+        return make_error<std::vector<double>>(
+            ErrorCode::DATABASE_ERROR,
+            "Failed to load daily PnL history: " + std::string(result.error()->what()),
+            "LiveDataLoader");
+    }
+
+    std::vector<double> pnls;
+    auto table = result.value();
+    if (!table || table->num_rows() == 0) {
+        return Result<std::vector<double>>(pnls);
+    }
+
+    // convert_generic_to_arrow builds ALL columns as arrow::utf8() (strings)
+    // so we must read via StringArray and convert to double
+    auto array = std::static_pointer_cast<arrow::StringArray>(table->column(0)->chunk(0));
+    pnls.reserve(static_cast<size_t>(table->num_rows()));
+    for (int64_t i = 0; i < table->num_rows(); ++i) {
+        if (array->IsNull(i)) {
+            pnls.push_back(0.0);
+        } else {
+            try {
+                pnls.push_back(std::stod(array->GetString(i)));
+            } catch (const std::exception&) {
+                pnls.push_back(0.0);
+            }
+        }
+    }
+
+    return Result<std::vector<double>>(pnls);
+}
+
+Result<std::vector<double>> LiveDataLoader::load_equity_curve_history(
+    const std::string& strategy_id, const std::string& portfolio_id, const Timestamp& as_of_date) {
+    auto validation = validate_connection();
+    if (validation.is_error()) {
+        return make_error<std::vector<double>>(ErrorCode::DATABASE_ERROR,
+                                               validation.error()->what(), "LiveDataLoader");
+    }
+
+    auto time_t = std::chrono::system_clock::to_time_t(as_of_date);
+    std::stringstream date_ss;
+    date_ss << std::put_time(std::gmtime(&time_t), "%Y-%m-%d");
+
+    std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
+
+    std::string query =
+        "SELECT equity "
+        "FROM " +
+        schema_ +
+        ".equity_curve "
+        "WHERE strategy_id = '" +
+        strategy_id +
+        "' "
+        "AND portfolio_id = '" +
+        actual_portfolio_id +
+        "' "
+        "AND DATE(timestamp) <= '" +
+        date_ss.str() +
+        "' "
+        "ORDER BY timestamp ASC";
+
+    DEBUG("Loading equity curve history: " + query);
+
+    auto result = db_->execute_query(query);
+    if (result.is_error()) {
+        return make_error<std::vector<double>>(
+            ErrorCode::DATABASE_ERROR,
+            "Failed to load equity curve history: " + std::string(result.error()->what()),
+            "LiveDataLoader");
+    }
+
+    std::vector<double> equity;
+    auto table = result.value();
+    if (!table || table->num_rows() == 0) {
+        return Result<std::vector<double>>(equity);
+    }
+
+    // convert_generic_to_arrow builds ALL columns as arrow::utf8() (strings)
+    auto array = std::static_pointer_cast<arrow::StringArray>(table->column(0)->chunk(0));
+    equity.reserve(static_cast<size_t>(table->num_rows()));
+    for (int64_t i = 0; i < table->num_rows(); ++i) {
+        if (array->IsNull(i)) {
+            equity.push_back(0.0);
+        } else {
+            try {
+                equity.push_back(std::stod(array->GetString(i)));
+            } catch (const std::exception&) {
+                equity.push_back(0.0);
+            }
+        }
+    }
+
+    return Result<std::vector<double>>(equity);
+}
+
+Result<int> LiveDataLoader::load_total_trades_count(const std::string& strategy_id,
+                                                    const std::string& portfolio_id,
+                                                    const Timestamp& as_of_date) {
+    auto validation = validate_connection();
+    if (validation.is_error()) {
+        return make_error<int>(ErrorCode::DATABASE_ERROR, validation.error()->what(),
+                               "LiveDataLoader");
+    }
+
+    auto time_t = std::chrono::system_clock::to_time_t(as_of_date);
+    std::stringstream date_ss;
+    date_ss << std::put_time(std::gmtime(&time_t), "%Y-%m-%d");
+
+    std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
+
+    std::string query =
+        "SELECT COUNT(*) "
+        "FROM " +
+        schema_ +
+        ".executions "
+        "WHERE strategy_id = '" +
+        strategy_id +
+        "' "
+        "AND portfolio_id = '" +
+        actual_portfolio_id +
+        "' "
+        "AND DATE(execution_time) <= '" +
+        date_ss.str() + "'";
+
+    DEBUG("Loading total trades count: " + query);
+
+    auto result = db_->execute_query(query);
+    if (result.is_error()) {
+        return make_error<int>(
+            ErrorCode::DATABASE_ERROR,
+            "Failed to load total trades count: " + std::string(result.error()->what()),
+            "LiveDataLoader");
+    }
+
+    auto table = result.value();
+    if (!table || table->num_rows() == 0) {
+        return Result<int>(0);
+    }
+
+    auto array = std::static_pointer_cast<arrow::Int64Array>(table->column(0)->chunk(0));
+    int count = array->IsNull(0) ? 0 : static_cast<int>(array->Value(0));
 
     return Result<int>(count);
 }
@@ -735,7 +1024,8 @@ Result<std::unordered_map<std::string, double>> LiveDataLoader::load_daily_metri
         daily_unrealized->IsNull(0) ? 0.0 : daily_unrealized->Value(0);
     metrics["Daily Realized PnL"] = daily_realized->IsNull(0) ? 0.0 : daily_realized->Value(0);
     metrics["Daily Total PnL"] = daily_total->IsNull(0) ? 0.0 : daily_total->Value(0);
-    metrics["Daily Transaction Costs"] = daily_transaction_costs->IsNull(0) ? 0.0 : daily_transaction_costs->Value(0);
+    metrics["Daily Transaction Costs"] =
+        daily_transaction_costs->IsNull(0) ? 0.0 : daily_transaction_costs->Value(0);
 
     INFO("Loaded email metrics: Return=" + std::to_string(metrics["Daily Return"]) + "%");
 

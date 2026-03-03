@@ -22,6 +22,7 @@
 #include "trade_ngin/live/csv_exporter.hpp"
 #include "trade_ngin/live/execution_manager.hpp"
 #include "trade_ngin/live/live_data_loader.hpp"
+#include "trade_ngin/live/live_historical_metrics.hpp"
 #include "trade_ngin/live/live_metrics_calculator.hpp"
 #include "trade_ngin/live/live_pnl_manager.hpp"
 #include "trade_ngin/live/live_price_manager.hpp"
@@ -178,8 +179,7 @@ int main(int argc, char* argv[]) {
         std::unordered_map<std::string, double> strategy_allocations;
         std::unordered_map<std::string, nlohmann::json> strategy_configs;
 
-        if (app_config.strategies_config.is_null() ||
-            !app_config.strategies_config.is_object()) {
+        if (app_config.strategies_config.is_null() || !app_config.strategies_config.is_object()) {
             ERROR("No strategies section found in loaded configuration");
             return 1;
         }
@@ -238,8 +238,7 @@ int main(int argc, char* argv[]) {
         std::tm* now_tm = std::localtime(&now_time_t);
 
         // Set start date based on configured historical window
-        auto start_date =
-            now - std::chrono::hours(24 * app_config.live.historical_days);
+        auto start_date = now - std::chrono::hours(24 * app_config.live.historical_days);
 
         // Set end date based on run type to avoid lookahead bias
         auto end_date = use_override_date ? (now - std::chrono::hours(24)) : now;
@@ -373,8 +372,7 @@ int main(int argc, char* argv[]) {
 
         // Add position limits and costs for all symbols
         for (const auto& symbol : symbols) {
-            base_strategy_config.position_limits[symbol] =
-                app_config.execution.position_limit_live;
+            base_strategy_config.position_limits[symbol] = app_config.execution.position_limit_live;
         }
 
         // Create a shared_ptr that doesn't own the singleton registry
@@ -701,12 +699,12 @@ int main(int argc, char* argv[]) {
         // Uses same logic as email system for robustness
         // ========================================
         auto early_previous_day_close_prices = price_manager->get_all_previous_day_prices();
-        
+
         // Determine if yesterday was a non-trading day
         int day_of_week = now_tm->tm_wday;  // 0=Sunday, 6=Saturday
         bool is_sunday = (day_of_week == 0);
         bool is_saturday = (day_of_week == 6);
-        
+
         // Check if yesterday was a holiday using HolidayChecker
         HolidayChecker holiday_checker("include/trade_ngin/core/holidays.json");
         auto yesterday_for_check = now - std::chrono::hours(24);
@@ -716,17 +714,19 @@ int main(int argc, char* argv[]) {
         yesterday_oss_check << std::put_time(&yesterday_tm_check, "%Y-%m-%d");
         std::string yesterday_date_str_check = yesterday_oss_check.str();
         bool is_yesterday_holiday = holiday_checker.is_holiday(yesterday_date_str_check);
-        
-        // Yesterday was non-trading if: today is Sunday (Sat was non-trading) OR yesterday was holiday
+
+        // Yesterday was non-trading if: today is Sunday (Sat was non-trading) OR yesterday was
+        // holiday
         bool is_non_trading_day = is_sunday || is_yesterday_holiday;
-        
+
         // Flag to track if we should skip strategy processing
         bool skip_strategy_processing = false;
-        
+
         // Data structures for non-trading day case
-        std::unordered_map<std::string, std::unordered_map<std::string, Position>> strategy_positions_map;
+        std::unordered_map<std::string, std::unordered_map<std::string, Position>>
+            strategy_positions_map;
         std::unordered_map<std::string, Position> positions;
-        
+
         if (early_previous_day_close_prices.empty()) {
             if (is_non_trading_day) {
                 // ========================================
@@ -736,35 +736,31 @@ int main(int argc, char* argv[]) {
                 INFO("═══════════════════════════════════════════════════════════════");
                 INFO("NON-TRADING DAY DETECTED - POSITIONS UNCHANGED");
                 INFO("═══════════════════════════════════════════════════════════════");
-                
+
                 if (is_sunday) {
                     INFO("Today is Sunday - Saturday was not a trading day");
                 } else if (is_yesterday_holiday) {
-                    INFO("Yesterday (" + yesterday_date_str_check + ") was a holiday: " + 
+                    INFO("Yesterday (" + yesterday_date_str_check + ") was a holiday: " +
                          holiday_checker.get_holiday_name(yesterday_date_str_check));
                 }
-                
+
                 INFO("No new market data available - positions will remain unchanged");
                 INFO("Loading previous trading day positions to carry forward...");
-                
+
                 // Calculate previous date for position loading
                 auto previous_date_nontrade = now - std::chrono::hours(24);
-                
+
                 // Load previous positions for each strategy and use as current
                 for (const auto& [strategy_name, allocation] : strategy_allocations) {
                     auto prev_result = db->load_positions_by_date(
-                        combined_strategy_id,
-                        strategy_name,
-                        coordinator_config.portfolio_id,
-                        previous_date_nontrade,
-                        "trading.positions"
-                    );
-                    
+                        combined_strategy_id, strategy_name, coordinator_config.portfolio_id,
+                        previous_date_nontrade, "trading.positions");
+
                     if (prev_result.is_ok() && !prev_result.value().empty()) {
                         strategy_positions_map[strategy_name] = prev_result.value();
-                        INFO("Loaded " + std::to_string(prev_result.value().size()) + 
+                        INFO("Loaded " + std::to_string(prev_result.value().size()) +
                              " positions for strategy: " + strategy_name);
-                        
+
                         // Also add to combined positions map
                         for (const auto& [symbol, pos] : prev_result.value()) {
                             positions[symbol] = pos;
@@ -774,14 +770,14 @@ int main(int argc, char* argv[]) {
                         strategy_positions_map[strategy_name] = {};
                     }
                 }
-                
+
                 INFO("Total positions carried forward: " + std::to_string(positions.size()));
                 INFO("═══════════════════════════════════════════════════════════════");
                 INFO("Skipping strategy calculations - proceeding to storage phase");
                 INFO("═══════════════════════════════════════════════════════════════");
-                
+
                 skip_strategy_processing = true;
-                
+
             } else {
                 // ========================================
                 // UNEXPECTED: No prices on a trading day
@@ -794,7 +790,8 @@ int main(int argc, char* argv[]) {
                 ERROR("Today: " + std::string(use_override_date ? "HISTORICAL RUN" : "LIVE RUN"));
                 ERROR("Day of week: " + std::to_string(day_of_week) + " (0=Sun, 6=Sat)");
                 ERROR("Yesterday: " + yesterday_date_str_check);
-                ERROR("Is yesterday a holiday? " + std::string(is_yesterday_holiday ? "YES" : "NO"));
+                ERROR("Is yesterday a holiday? " +
+                      std::string(is_yesterday_holiday ? "YES" : "NO"));
                 ERROR("");
                 ERROR("This indicates missing market data in the database.");
                 ERROR("Please investigate the data pipeline before re-running.");
@@ -861,111 +858,112 @@ int main(int argc, char* argv[]) {
         // Only run strategy calculations if NOT a non-trading day
         // ========================================
         if (!skip_strategy_processing) {
-        // Pre-warm strategy state so portfolio can pull price history for optimization/risk
-        INFO("Preprocessing data in strategy to populate price history...");
-        auto strat_prewarm = tf_strategy->on_data(all_bars);
-        if (strat_prewarm.is_error()) {
-            std::cerr << "Failed to preprocess data in strategy: " << strat_prewarm.error()->what()
-                      << std::endl;
-            return 1;
-        }
+            // Pre-warm strategy state so portfolio can pull price history for optimization/risk
+            INFO("Preprocessing data in strategy to populate price history...");
+            auto strat_prewarm = tf_strategy->on_data(all_bars);
+            if (strat_prewarm.is_error()) {
+                std::cerr << "Failed to preprocess data in strategy: "
+                          << strat_prewarm.error()->what() << std::endl;
+                return 1;
+            }
 
-        // Process data through portfolio pipeline (optimization + risk), mirroring backtest
-        INFO("Processing data through portfolio manager (optimization + risk)...");
-        // Disable MarketDataBus to prevent duplicate processing during explicit data feed
-        MarketDataBus::instance().set_publish_enabled(false);
-        INFO("MarketDataBus publishing DISABLED before process_market_data");
-        auto port_process_result = portfolio->process_market_data(all_bars);
-        INFO("MarketDataBus publishing RE-ENABLED after process_market_data");
-        MarketDataBus::instance().set_publish_enabled(true);
-        if (port_process_result.is_error()) {
-            std::cerr << "Failed to process data in portfolio manager: "
-                      << port_process_result.error()->what() << std::endl;
-            return 1;
-        }
-        INFO("Portfolio processing completed");
+            // Process data through portfolio pipeline (optimization + risk), mirroring backtest
+            INFO("Processing data through portfolio manager (optimization + risk)...");
+            // Disable MarketDataBus to prevent duplicate processing during explicit data feed
+            MarketDataBus::instance().set_publish_enabled(false);
+            INFO("MarketDataBus publishing DISABLED before process_market_data");
+            auto port_process_result = portfolio->process_market_data(all_bars);
+            INFO("MarketDataBus publishing RE-ENABLED after process_market_data");
+            MarketDataBus::instance().set_publish_enabled(true);
+            if (port_process_result.is_error()) {
+                std::cerr << "Failed to process data in portfolio manager: "
+                          << port_process_result.error()->what() << std::endl;
+                return 1;
+            }
+            INFO("Portfolio processing completed");
 
-        // ========================================
-        // PHASE 4: PER-STRATEGY SIGNALS STORAGE
-        // Extract and store signals from each strategy after portfolio processing
-        // ========================================
-        INFO("PHASE 4: Storing per-strategy signals to database...");
+            // ========================================
+            // PHASE 4: PER-STRATEGY SIGNALS STORAGE
+            // Extract and store signals from each strategy after portfolio processing
+            // ========================================
+            INFO("PHASE 4: Storing per-strategy signals to database...");
 
-        for (const auto& strategy : strategies) {
-            const auto& metadata = strategy->get_metadata();
-            std::string strategy_name = metadata.id;
+            for (const auto& strategy : strategies) {
+                const auto& metadata = strategy->get_metadata();
+                std::string strategy_name = metadata.id;
 
-            // Try to extract signals from either TrendFollowingStrategy or
-            // TrendFollowingFastStrategy
-            std::unordered_map<std::string, double> signals_map;
-            bool signals_extracted = false;
+                // Try to extract signals from either TrendFollowingStrategy or
+                // TrendFollowingFastStrategy
+                std::unordered_map<std::string, double> signals_map;
+                bool signals_extracted = false;
 
-            // Try TrendFollowingStrategy first
-            auto tf_strategy_ptr = std::dynamic_pointer_cast<TrendFollowingStrategy>(strategy);
-            if (tf_strategy_ptr) {
-                // Get all instrument data (contains signals for all symbols)
-                const auto& all_instrument_data = tf_strategy_ptr->get_all_instrument_data();
-
-                // Extract signals (current_forecast) from instrument data
-                for (const auto& [symbol, data] : all_instrument_data) {
-                    // Use current_forecast as the signal value
-                    signals_map[symbol] = data.current_forecast;
-                }
-                signals_extracted = true;
-            } else {
-                // Try TrendFollowingFastStrategy
-                auto tf_fast_ptr = std::dynamic_pointer_cast<TrendFollowingFastStrategy>(strategy);
-                if (tf_fast_ptr) {
-                    // Get all instrument data from fast strategy
-                    const auto& all_instrument_data = tf_fast_ptr->get_all_instrument_data();
+                // Try TrendFollowingStrategy first
+                auto tf_strategy_ptr = std::dynamic_pointer_cast<TrendFollowingStrategy>(strategy);
+                if (tf_strategy_ptr) {
+                    // Get all instrument data (contains signals for all symbols)
+                    const auto& all_instrument_data = tf_strategy_ptr->get_all_instrument_data();
 
                     // Extract signals (current_forecast) from instrument data
                     for (const auto& [symbol, data] : all_instrument_data) {
+                        // Use current_forecast as the signal value
                         signals_map[symbol] = data.current_forecast;
                     }
                     signals_extracted = true;
+                } else {
+                    // Try TrendFollowingFastStrategy
+                    auto tf_fast_ptr =
+                        std::dynamic_pointer_cast<TrendFollowingFastStrategy>(strategy);
+                    if (tf_fast_ptr) {
+                        // Get all instrument data from fast strategy
+                        const auto& all_instrument_data = tf_fast_ptr->get_all_instrument_data();
+
+                        // Extract signals (current_forecast) from instrument data
+                        for (const auto& [symbol, data] : all_instrument_data) {
+                            signals_map[symbol] = data.current_forecast;
+                        }
+                        signals_extracted = true;
+                    }
                 }
-            }
 
-            if (signals_extracted) {
-                INFO("DEBUG PHASE 4: Strategy '" + strategy_name + "' has " +
-                     std::to_string(signals_map.size()) + " signals");
+                if (signals_extracted) {
+                    INFO("DEBUG PHASE 4: Strategy '" + strategy_name + "' has " +
+                         std::to_string(signals_map.size()) + " signals");
 
-                if (!signals_map.empty()) {
-                    auto save_result =
-                        db->store_signals(signals_map,
-                                          combined_strategy_id,  // Combined strategy_id for tier 2
-                                          strategy_name,  // Individual strategy_name for tier 3
-                                          portfolio_id,   // Portfolio identifier
-                                          now, "trading.signals");
+                    if (!signals_map.empty()) {
+                        auto save_result = db->store_signals(
+                            signals_map,
+                            combined_strategy_id,  // Combined strategy_id for tier 2
+                            strategy_name,         // Individual strategy_name for tier 3
+                            portfolio_id,          // Portfolio identifier
+                            now, "trading.signals");
 
-                    if (save_result.is_error()) {
-                        ERROR("Failed to store signals for strategy " + strategy_name + ": " +
-                              std::string(save_result.error()->what()));
+                        if (save_result.is_error()) {
+                            ERROR("Failed to store signals for strategy " + strategy_name + ": " +
+                                  std::string(save_result.error()->what()));
+                        } else {
+                            INFO("Successfully stored " + std::to_string(signals_map.size()) +
+                                 " signals for strategy: " + strategy_name);
+                        }
                     } else {
-                        INFO("Successfully stored " + std::to_string(signals_map.size()) +
-                             " signals for strategy: " + strategy_name);
+                        WARN("No signals to store for strategy: " + strategy_name);
                     }
                 } else {
-                    WARN("No signals to store for strategy: " + strategy_name);
+                    WARN("Strategy " + strategy_name +
+                         " does not support signal extraction (not TrendFollowing or "
+                         "TrendFollowingFast)");
                 }
-            } else {
-                WARN("Strategy " + strategy_name +
-                     " does not support signal extraction (not TrendFollowing or "
-                     "TrendFollowingFast)");
             }
-        }
 
-        // Get optimized portfolio positions (integer-rounded after optimization/risk)
-        INFO("Retrieving optimized portfolio positions...");
-        positions = portfolio->get_portfolio_positions();
+            // Get optimized portfolio positions (integer-rounded after optimization/risk)
+            INFO("Retrieving optimized portfolio positions...");
+            positions = portfolio->get_portfolio_positions();
 
-        // Extract per-strategy positions map (needed for Phase 4 & 5)
-        INFO("Extracting per-strategy positions from PortfolioManager...");
-        strategy_positions_map = portfolio->get_strategy_positions();
-        INFO("DEBUG: Retrieved " + std::to_string(strategy_positions_map.size()) +
-             " strategies from PortfolioManager");
-        } // End of if (!skip_strategy_processing) - strategy processing block
+            // Extract per-strategy positions map (needed for Phase 4 & 5)
+            INFO("Extracting per-strategy positions from PortfolioManager...");
+            strategy_positions_map = portfolio->get_strategy_positions();
+            INFO("DEBUG: Retrieved " + std::to_string(strategy_positions_map.size()) +
+                 " strategies from PortfolioManager");
+        }  // End of if (!skip_strategy_processing) - strategy processing block
 
         // Load previous day positions for PnL calculation
         INFO("Loading previous day positions for PnL calculation...");
@@ -1013,15 +1011,16 @@ int main(int argc, char* argv[]) {
         // For agricultural symbols missing T-1 prices on Monday, reuse previous positions.
         // ========================================
         bool is_monday = (day_of_week == 1);
-        
+
         // Agricultural futures that don't trade Sunday evening
         const std::set<std::string> AGRICULTURAL_FUTURES_BASE = {
             "ZC", "ZS", "ZW", "ZL", "ZM", "KE", "ZR",  // Grains
             "LE", "HE", "GF"                           // Livestock
         };
-        
+
         // Helper lambda to check if a symbol is an agricultural future
-        auto is_agricultural_future = [&AGRICULTURAL_FUTURES_BASE](const std::string& symbol) -> bool {
+        auto is_agricultural_future =
+            [&AGRICULTURAL_FUTURES_BASE](const std::string& symbol) -> bool {
             // Extract base symbol (e.g., "ZC.v.0" -> "ZC")
             std::string base = symbol;
             auto dot_pos = symbol.find('.');
@@ -1030,37 +1029,34 @@ int main(int argc, char* argv[]) {
             }
             return AGRICULTURAL_FUTURES_BASE.count(base) > 0;
         };
-        
+
         if (is_monday && !skip_strategy_processing) {
             INFO("═══════════════════════════════════════════════════════════════");
             INFO("MONDAY AGRICULTURAL FUTURES CHECK");
             INFO("Agricultural futures don't trade Sunday - checking for missing T-1 prices");
             INFO("═══════════════════════════════════════════════════════════════");
-            
+
             int ag_symbols_fixed = 0;
-            
+
             // For each strategy, check agricultural symbols
             for (auto& [strategy_name, current_positions_map] : strategy_positions_map) {
                 // Load previous positions for this strategy
                 auto prev_strategy_result = db->load_positions_by_date(
-                    combined_strategy_id,
-                    strategy_name,
-                    coordinator_config.portfolio_id,
-                    previous_date,
-                    "trading.positions"
-                );
-                
+                    combined_strategy_id, strategy_name, coordinator_config.portfolio_id,
+                    previous_date, "trading.positions");
+
                 std::unordered_map<std::string, Position> prev_strategy_positions;
                 if (prev_strategy_result.is_ok()) {
                     prev_strategy_positions = prev_strategy_result.value();
                 }
-                
+
                 // Check each position in the current strategy
                 for (auto& [symbol, current_pos] : current_positions_map) {
                     if (is_agricultural_future(symbol)) {
                         // Check if T-1 price is missing for this symbol
-                        bool has_t1_price = previous_day_close_prices.find(symbol) != previous_day_close_prices.end();
-                        
+                        bool has_t1_price = previous_day_close_prices.find(symbol) !=
+                                            previous_day_close_prices.end();
+
                         if (!has_t1_price) {
                             // This agricultural future has no Sunday data
                             // Reuse Friday's position to avoid phantom execution
@@ -1068,13 +1064,13 @@ int main(int argc, char* argv[]) {
                             if (prev_it != prev_strategy_positions.end()) {
                                 double prev_qty = prev_it->second.quantity.as_double();
                                 double curr_qty = current_pos.quantity.as_double();
-                                
+
                                 if (std::abs(curr_qty - prev_qty) > 1e-10) {
-                                    INFO("Monday fix for " + symbol + " (" + strategy_name + "): " +
-                                         "No Sunday data - reverting position from " +
-                                         std::to_string(curr_qty) + " to " + std::to_string(prev_qty) +
-                                         " (Friday's position)");
-                                    
+                                    INFO("Monday fix for " + symbol + " (" + strategy_name +
+                                         "): " + "No Sunday data - reverting position from " +
+                                         std::to_string(curr_qty) + " to " +
+                                         std::to_string(prev_qty) + " (Friday's position)");
+
                                     // Override with previous position
                                     current_pos = prev_it->second;
                                     current_pos.last_update = now;  // Update timestamp
@@ -1088,16 +1084,16 @@ int main(int argc, char* argv[]) {
                         }
                     }
                 }
-                
+
                 // Also update the combined positions map
                 for (const auto& [symbol, pos] : current_positions_map) {
-                    if (is_agricultural_future(symbol) && 
+                    if (is_agricultural_future(symbol) &&
                         previous_day_close_prices.find(symbol) == previous_day_close_prices.end()) {
                         positions[symbol] = pos;
                     }
                 }
             }
-            
+
             if (ag_symbols_fixed > 0) {
                 INFO("Monday agricultural fix: Reverted " + std::to_string(ag_symbols_fixed) +
                      " positions to Friday's values (no Sunday trading data)");
@@ -1122,7 +1118,8 @@ int main(int argc, char* argv[]) {
             if (previous_day_close_prices.find(symbol) == previous_day_close_prices.end()) {
                 // On Monday, agricultural futures missing T-1 is expected (handled above)
                 if (is_monday && is_agricultural_future(symbol)) {
-                    INFO("Expected: Missing T-1 price for agricultural future " + symbol + " on Monday");
+                    INFO("Expected: Missing T-1 price for agricultural future " + symbol +
+                         " on Monday");
                 } else {
                     WARN("Missing T-1 price for symbol: " + symbol);
                 }
@@ -1468,10 +1465,12 @@ int main(int argc, char* argv[]) {
             int true_active_positions = 0;
             bool notional_fallback = false;
             for (const auto& [strategy_id, pos_map] : strategy_positions_map) {
-                if (notional_fallback) break;
+                if (notional_fallback)
+                    break;
                 for (const auto& [symbol, pos] : pos_map) {
                     double qty = pos.quantity.as_double();
-                    if (std::abs(qty) < 1e-6) continue;
+                    if (std::abs(qty) < 1e-6)
+                        continue;
                     true_active_positions++;
 
                     auto notional_result = margin_manager->calculate_position_notional(
@@ -1485,7 +1484,8 @@ int main(int argc, char* argv[]) {
                         net_notional += signed_notional;
                     } else {
                         WARN("Failed to calculate per-strategy notional for " + symbol +
-                             " in strategy " + strategy_id + ", falling back to MarginManager combined value");
+                             " in strategy " + strategy_id +
+                             ", falling back to MarginManager combined value");
                         gross_notional = metrics.gross_notional;
                         net_notional = metrics.net_notional;
                         notional_fallback = true;
@@ -1495,10 +1495,10 @@ int main(int argc, char* argv[]) {
             }
             active_positions = true_active_positions;
 
-            INFO("Per-strategy notional: gross=$" + std::to_string(gross_notional) +
-                 ", net=$" + std::to_string(net_notional) +
-                 " (combined was gross=$" + std::to_string(metrics.gross_notional) +
-                 ", net=$" + std::to_string(metrics.net_notional) + ")");
+            INFO("Per-strategy notional: gross=$" + std::to_string(gross_notional) + ", net=$" +
+                 std::to_string(net_notional) + " (combined was gross=$" +
+                 std::to_string(metrics.gross_notional) + ", net=$" +
+                 std::to_string(metrics.net_notional) + ")");
             INFO("MarginManager calculated: gross_notional=$" + std::to_string(gross_notional) +
                  ", posted_margin=$" + std::to_string(total_posted_margin) +
                  ", active_positions=" + std::to_string(active_positions));
@@ -1697,7 +1697,8 @@ int main(int argc, char* argv[]) {
 
         double daily_realized_pnl = 0.0;
         double daily_unrealized_pnl = 0.0;
-        double daily_pnl_for_today = -total_daily_transaction_costs;  // Only transaction costs on Day T
+        double daily_pnl_for_today =
+            -total_daily_transaction_costs;  // Only transaction costs on Day T
 
         INFO("Day T PnL (placeholder): $0.00");
         INFO("Day T transaction costs: $" + std::to_string(total_daily_transaction_costs));
@@ -1747,7 +1748,8 @@ int main(int argc, char* argv[]) {
                     auto& row = live_results.value();
                     yesterday_transaction_costs = row.daily_transaction_costs;
                     yesterday_total_transaction_costs =
-                        row.daily_transaction_costs;  // Note: total_transaction_costs field may not exist
+                        row.daily_transaction_costs;  // Note: total_transaction_costs field may not
+                                                      // exist
                     yesterday_gross_notional = row.gross_notional;
                     yesterday_net_notional =
                         row.gross_notional;  // Note: using gross_notional as net_notional not in
@@ -1787,7 +1789,8 @@ int main(int argc, char* argv[]) {
             INFO("  Net PnL (yesterday_daily_pnl_finalized): $" +
                  std::to_string(yesterday_daily_pnl_finalized));
 
-            // Get the day BEFORE yesterday's portfolio value, total_pnl, and total_transaction_costs
+            // Get the day BEFORE yesterday's portfolio value, total_pnl, and
+            // total_transaction_costs
             double day_before_yesterday_portfolio_value = initial_capital;
             double day_before_aggregate_yesterday_total_pnl = 0.0;
             double day_before_yesterday_total_transaction_costs = 0.0;
@@ -2167,6 +2170,110 @@ int main(int argc, char* argv[]) {
                 }
             }
 
+            // Recalculate historical performance metrics for Day T-1 and update live_results
+            try {
+                HistoricalMetrics yesterday_hist_metrics;
+
+                if (data_loader && data_loader->is_connected()) {
+                    auto returns_hist_res = data_loader->load_daily_returns_history(
+                        combined_strategy_id, coordinator_config.portfolio_id, previous_date);
+                    auto pnl_hist_res = data_loader->load_daily_pnl_history(
+                        combined_strategy_id, coordinator_config.portfolio_id, previous_date);
+                    auto equity_hist_res = data_loader->load_equity_curve_history(
+                        combined_strategy_id, coordinator_config.portfolio_id, previous_date);
+                    auto trades_hist_res = data_loader->load_total_trades_count(
+                        combined_strategy_id, coordinator_config.portfolio_id, previous_date);
+
+                    std::vector<double> returns_hist;
+                    std::vector<double> pnl_hist;
+                    std::vector<double> equity_hist;
+                    int total_trades_hist = 0;
+
+                    if (returns_hist_res.is_ok()) {
+                        returns_hist = returns_hist_res.value();
+                    }
+                    if (pnl_hist_res.is_ok()) {
+                        pnl_hist = pnl_hist_res.value();
+                    }
+                    if (equity_hist_res.is_ok()) {
+                        equity_hist = equity_hist_res.value();
+                    }
+                    if (trades_hist_res.is_ok()) {
+                        total_trades_hist = trades_hist_res.value();
+                    }
+
+                    LiveHistoricalMetricsCalculator hist_calc;
+                    // Convert decimal returns to percentage points for calculator
+                    // (stored as 0.06 = 6%, calculator expects 6.0)
+                    for (auto& r : returns_hist) {
+                        r *= 100.0;
+                    }
+                    yesterday_hist_metrics =
+                        hist_calc.calculate(returns_hist, pnl_hist, equity_hist,
+                                            yesterday_total_return_annualized, total_trades_hist);
+
+                    // Override total_days with authoritative trading days count
+                    yesterday_hist_metrics.total_days = trading_days_count;
+                    if (trading_days_count > 0) {
+                        yesterday_hist_metrics.win_rate =
+                            static_cast<double>(yesterday_hist_metrics.winning_days) /
+                            static_cast<double>(trading_days_count) * 100.0;
+                    }
+
+                    INFO("HIST_METRICS [Day T-1]: volatility=" +
+                         std::to_string(yesterday_hist_metrics.volatility) +
+                         " sharpe=" + std::to_string(yesterday_hist_metrics.sharpe_ratio) +
+                         " winning_days=" + std::to_string(yesterday_hist_metrics.winning_days) +
+                         " losing_days=" + std::to_string(yesterday_hist_metrics.losing_days) +
+                         " total_days=" + std::to_string(yesterday_hist_metrics.total_days) +
+                         " best_day=" + std::to_string(yesterday_hist_metrics.best_day) +
+                         " worst_day=" + std::to_string(yesterday_hist_metrics.worst_day) +
+                         " avg_win=" + std::to_string(yesterday_hist_metrics.avg_win) +
+                         " avg_loss=" + std::to_string(yesterday_hist_metrics.avg_loss) +
+                         " gross_profit=" + std::to_string(yesterday_hist_metrics.gross_profit) +
+                         " gross_loss=" + std::to_string(yesterday_hist_metrics.gross_loss));
+
+                    std::unordered_map<std::string, double> metric_updates = {
+                        {"sharpe_ratio", yesterday_hist_metrics.sharpe_ratio},
+                        {"sortino_ratio", yesterday_hist_metrics.sortino_ratio},
+                        {"max_drawdown", yesterday_hist_metrics.max_drawdown},
+                        {"volatility", yesterday_hist_metrics.volatility},
+                        {"downside_deviation", yesterday_hist_metrics.downside_deviation},
+                        {"win_rate", yesterday_hist_metrics.win_rate},
+                        {"avg_win", yesterday_hist_metrics.avg_win},
+                        {"avg_loss", yesterday_hist_metrics.avg_loss},
+                        {"profit_factor", yesterday_hist_metrics.profit_factor},
+                        {"best_day", yesterday_hist_metrics.best_day},
+                        {"worst_day", yesterday_hist_metrics.worst_day},
+                        {"gross_profit", yesterday_hist_metrics.gross_profit},
+                        {"gross_loss", yesterday_hist_metrics.gross_loss},
+                        {"total_trades", static_cast<double>(yesterday_hist_metrics.total_trades)},
+                        {"winning_days", static_cast<double>(yesterday_hist_metrics.winning_days)},
+                        {"losing_days", static_cast<double>(yesterday_hist_metrics.losing_days)},
+                        {"total_days", static_cast<double>(yesterday_hist_metrics.total_days)}};
+
+                    auto yesterday_metrics_manager = std::make_unique<LiveResultsManager>(
+                        db, true, combined_strategy_id, coordinator_config.portfolio_id);
+                    auto update_metrics_result = yesterday_metrics_manager->update_live_results(
+                        previous_date, metric_updates);
+                    if (update_metrics_result.is_error()) {
+                        WARN("Failed to update historical performance metrics for Day T-1: " +
+                             std::string(update_metrics_result.error()->what()));
+                    } else {
+                        INFO(
+                            "Successfully updated historical performance metrics for Day T-1 in "
+                            "trading.live_results");
+                    }
+                } else {
+                    WARN(
+                        "LiveDataLoader not available or not connected; skipping Day T-1 "
+                        "historical metrics update.");
+                }
+            } catch (const std::exception& e) {
+                WARN("Exception while updating historical performance metrics for Day T-1: " +
+                     std::string(e.what()));
+            }
+
             // Load updated metrics from database for email - MUST do this AFTER the UPDATE
             try {
                 std::string metrics_query =
@@ -2528,10 +2635,102 @@ int main(int argc, char* argv[]) {
             double gross_leverage = metrics_calculator->calculate_gross_leverage(
                 gross_notional, current_portfolio_value);
             // Net leverage: net_notional / current_portfolio_value (standard definition)
-            net_leverage = (current_portfolio_value > 0.0)
-                ? (net_notional / current_portfolio_value)
-                : 0.0;
+            net_leverage =
+                (current_portfolio_value > 0.0) ? (net_notional / current_portfolio_value) : 0.0;
             // equity_to_margin_ratio and margin_cushion already computed above
+
+            // Calculate since-inception performance metrics (Sharpe, Sortino, MaxDD, etc.)
+            HistoricalMetrics historical_metrics;
+            try {
+                if (data_loader && data_loader->is_connected()) {
+                    // Use previous_date so history comes from all fully finalized days (<= Day T-1)
+                    auto returns_hist_res = data_loader->load_daily_returns_history(
+                        combined_strategy_id, coordinator_config.portfolio_id, previous_date);
+                    auto pnl_hist_res = data_loader->load_daily_pnl_history(
+                        combined_strategy_id, coordinator_config.portfolio_id, previous_date);
+                    auto equity_hist_res = data_loader->load_equity_curve_history(
+                        combined_strategy_id, coordinator_config.portfolio_id, previous_date);
+                    auto trades_hist_res = data_loader->load_total_trades_count(
+                        combined_strategy_id, coordinator_config.portfolio_id, current_date);
+
+                    std::vector<double> returns_hist;
+                    std::vector<double> pnl_hist;
+                    std::vector<double> equity_hist;
+                    int total_trades_hist = 0;
+
+                    if (returns_hist_res.is_ok()) {
+                        returns_hist = returns_hist_res.value();
+                    }
+                    if (pnl_hist_res.is_ok()) {
+                        pnl_hist = pnl_hist_res.value();
+                    }
+                    if (equity_hist_res.is_ok()) {
+                        equity_hist = equity_hist_res.value();
+                    }
+                    if (trades_hist_res.is_ok()) {
+                        total_trades_hist = trades_hist_res.value();
+                    }
+
+                    // Append today's data so metrics are up-to-date as of Day T
+                    // Debug: dump raw returns before ×100 conversion
+                    {
+                        std::string raw_dump = "RETURNS_RAW [Day T]: [";
+                        for (size_t i = 0; i < returns_hist.size(); ++i) {
+                            if (i > 0)
+                                raw_dump += ", ";
+                            raw_dump += std::to_string(returns_hist[i]);
+                        }
+                        raw_dump += "] (size=" + std::to_string(returns_hist.size()) + ")";
+                        INFO(raw_dump);
+                    }
+                    // Convert decimal returns to percentage points for calculator
+                    // (stored as 0.06 = 6%, calculator expects 6.0)
+                    for (auto& r : returns_hist) {
+                        r *= 100.0;
+                    }
+                    returns_hist.push_back(daily_return * 100.0);
+                    pnl_hist.push_back(daily_pnl);
+                    equity_hist.push_back(current_portfolio_value);
+
+                    LiveHistoricalMetricsCalculator hist_calc;
+                    historical_metrics =
+                        hist_calc.calculate(returns_hist, pnl_hist, equity_hist,
+                                            total_return_annualized, total_trades_hist);
+
+                    // Keep volatility variable aligned with return-volatility definition
+                    volatility = historical_metrics.volatility;
+
+                    // Override total_days with authoritative trading days count from
+                    // get_trading_days() DB function, which uses strategy_trading_days_metadata
+                    historical_metrics.total_days = trading_days_count;
+                    // Recalculate win_rate using actual trading days as denominator
+                    if (trading_days_count > 0) {
+                        historical_metrics.win_rate =
+                            static_cast<double>(historical_metrics.winning_days) /
+                            static_cast<double>(trading_days_count) * 100.0;
+                    }
+
+                    INFO("HIST_METRICS [Day T]: volatility=" +
+                         std::to_string(historical_metrics.volatility) +
+                         " sharpe=" + std::to_string(historical_metrics.sharpe_ratio) +
+                         " winning_days=" + std::to_string(historical_metrics.winning_days) +
+                         " losing_days=" + std::to_string(historical_metrics.losing_days) +
+                         " total_days=" + std::to_string(historical_metrics.total_days) +
+                         " best_day=" + std::to_string(historical_metrics.best_day) +
+                         " worst_day=" + std::to_string(historical_metrics.worst_day) +
+                         " avg_win=" + std::to_string(historical_metrics.avg_win) +
+                         " avg_loss=" + std::to_string(historical_metrics.avg_loss) +
+                         " gross_profit=" + std::to_string(historical_metrics.gross_profit) +
+                         " gross_loss=" + std::to_string(historical_metrics.gross_loss));
+                } else {
+                    WARN(
+                        "LiveDataLoader not available or not connected; historical performance "
+                        "metrics will remain at default values for today.");
+                }
+            } catch (const std::exception& e) {
+                WARN("Exception while calculating historical performance metrics for today: " +
+                     std::string(e.what()));
+            }
 
             // Use the LiveResultsManager
             INFO("Setting metrics in LiveResultsManager...");
@@ -2540,7 +2739,19 @@ int main(int argc, char* argv[]) {
             std::unordered_map<std::string, double> double_metrics = {
                 {"total_cumulative_return", total_cumulative_return_pct},
                 {"total_annualized_return", total_return_annualized},
-                {"volatility", volatility},
+                {"volatility", historical_metrics.volatility},
+                {"downside_deviation", historical_metrics.downside_deviation},
+                {"sharpe_ratio", historical_metrics.sharpe_ratio},
+                {"sortino_ratio", historical_metrics.sortino_ratio},
+                {"max_drawdown", historical_metrics.max_drawdown},
+                {"win_rate", historical_metrics.win_rate},
+                {"avg_win", historical_metrics.avg_win},
+                {"avg_loss", historical_metrics.avg_loss},
+                {"profit_factor", historical_metrics.profit_factor},
+                {"best_day", historical_metrics.best_day},
+                {"worst_day", historical_metrics.worst_day},
+                {"gross_profit", historical_metrics.gross_profit},
+                {"gross_loss", historical_metrics.gross_loss},
                 {"total_pnl", total_pnl},
                 {"total_unrealized_pnl", total_unrealized_pnl},
                 {"total_realized_pnl", total_realized_pnl},
@@ -2565,7 +2776,11 @@ int main(int argc, char* argv[]) {
                 {"cash_available", current_portfolio_value - total_posted_margin}};
 
             std::unordered_map<std::string, int> int_metrics = {
-                {"active_positions", active_positions}};
+                {"active_positions", active_positions},
+                {"total_trades", historical_metrics.total_trades},
+                {"winning_days", historical_metrics.winning_days},
+                {"losing_days", historical_metrics.losing_days},
+                {"total_days", historical_metrics.total_days}};
 
             // Set all metrics at once
             results_manager->set_metrics(double_metrics, int_metrics);
@@ -2874,6 +3089,25 @@ int main(int argc, char* argv[]) {
                     // Create strategy metrics map with all relevant metrics organized by category
                     std::map<std::string, double> strategy_metrics;
 
+                    // Load today's stored metrics from live_results (including Sharpe, Sortino,
+                    // etc.)
+                    LiveResultsRow today_row;
+                    bool has_today_row_metrics = false;
+                    try {
+                        auto today_row_result = data_loader->load_live_results(
+                            combined_strategy_id, coordinator_config.portfolio_id, now);
+                        if (today_row_result.is_ok()) {
+                            today_row = today_row_result.value();
+                            has_today_row_metrics = true;
+                        } else {
+                            WARN("Failed to load today's live_results row for email metrics: " +
+                                 std::string(today_row_result.error()->what()));
+                        }
+                    } catch (const std::exception& e) {
+                        WARN("Exception while loading today's live_results for email metrics: " +
+                             std::string(e.what()));
+                    }
+
                     // Performance Metrics
                     strategy_metrics["Daily Return"] = daily_return;
                     strategy_metrics["Daily Unrealized PnL"] = daily_unrealized_pnl;
@@ -2884,8 +3118,34 @@ int main(int argc, char* argv[]) {
                     strategy_metrics["Total Unrealized PnL"] = total_unrealized_pnl;
                     strategy_metrics["Total Realized PnL"] = total_realized_pnl;
                     strategy_metrics["Total PnL"] = total_pnl;
+
+                    if (has_today_row_metrics) {
+                        // Risk-adjusted and distribution metrics from live_results
+                        strategy_metrics["Sharpe Ratio"] = today_row.sharpe_ratio;
+                        strategy_metrics["Sortino Ratio"] = today_row.sortino_ratio;
+                        strategy_metrics["Max Drawdown"] = today_row.max_drawdown;
+                        strategy_metrics["Volatility"] = today_row.volatility;
+                        strategy_metrics["Win Rate"] = today_row.win_rate;
+                        strategy_metrics["Average Win"] = today_row.avg_win;
+                        strategy_metrics["Average Loss"] = today_row.avg_loss;
+                        strategy_metrics["Profit Factor"] = today_row.profit_factor;
+                        strategy_metrics["Best Day"] = today_row.best_day;
+                        strategy_metrics["Worst Day"] = today_row.worst_day;
+                        strategy_metrics["Downside Deviation"] = today_row.downside_deviation;
+                        strategy_metrics["Gross Profit"] = today_row.gross_profit;
+                        strategy_metrics["Gross Loss"] = today_row.gross_loss;
+                        strategy_metrics["Total Trades"] =
+                            static_cast<double>(today_row.total_trades);
+                        strategy_metrics["Winning Days"] =
+                            static_cast<double>(today_row.winning_days);
+                        strategy_metrics["Losing Days"] =
+                            static_cast<double>(today_row.losing_days);
+                        strategy_metrics["Total Days"] = static_cast<double>(today_row.total_days);
+                    }
+                    // Portfolio VaR is always sourced from the live risk evaluation,
+                    // separate from historical volatility stored in live_results
                     if (risk_eval.is_ok()) {
-                        strategy_metrics["Volatility"] = risk_eval.value().portfolio_var * 100.0;
+                        strategy_metrics["Portfolio VaR"] = risk_eval.value().portfolio_var * 100.0;
                     }
                     strategy_metrics["Total Transaction Costs"] =
                         total_transaction_costs_cumulative;
