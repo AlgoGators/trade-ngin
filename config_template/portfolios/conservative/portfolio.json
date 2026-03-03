@@ -1,6 +1,7 @@
 {
-  "_description": "CONSERVATIVE_PORTFOLIO - Lower risk, single strategy",
-  "portfolio_id": "CONSERVATIVE_PORTFOLIO",
+  "_description": "CONSERVATIVE_PORTFOLIO - Lower risk, single strategy (customize portfolio_id for personalization)",
+  "portfolio_id": "Dustin's Portfolio",
+  "_note": "portfolio_id appears in emails, database records, and logs. Change to personalize (e.g., 'Your Name Portfolio')",
   "initial_capital": 300000,
   "reserve_capital_pct": 0.15,
   "strategies": {

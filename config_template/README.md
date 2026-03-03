@@ -23,6 +23,13 @@ cp -r config_template config
 - `YOUR_EMAIL_FOR_NOTIFICATIONS` - Recipient(s) for testing (in `to_emails` array)
 - `to_emails_production` - Replace placeholder array with actual production recipient emails
 
+### portfolios/*/portfolio.json
+- `portfolio_id` - Personalize this name! It appears in:
+  - Email subject lines and headers
+  - Database records
+  - Log files
+  - Example: `"Dustin's Portfolio"`, `"Aggressive Growth"`, `"Your Name Portfolio"`
+
 ## Structure
 
 ```

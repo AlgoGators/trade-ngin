@@ -1,6 +1,7 @@
 {
-  "_description": "BASE_PORTFOLIO - Higher risk, multiple strategies",
+  "_description": "BASE_PORTFOLIO - Higher risk, multiple strategies (customize portfolio_id for personalization)",
   "portfolio_id": "BASE_PORTFOLIO",
+  "_note": "portfolio_id appears in emails, database records, and logs. Change to personalize (e.g., 'Your Name Portfolio')",
   "initial_capital": 500000,
   "reserve_capital_pct": 0.1,
   "strategies": {
