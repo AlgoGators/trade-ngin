@@ -3,6 +3,7 @@
 #include <arrow/type.h>
 #include <iomanip>
 #include <sstream>
+#include <unordered_set>
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/data/database_interface.hpp"
 #include "trade_ngin/instruments/instrument_registry.hpp"
@@ -118,12 +119,42 @@ Result<std::string> CSVExporter::export_current_positions(
             << "symbol,quantity,market_price,notional,pct_of_gross_notional,pct_of_portfolio_value,"
             << "forecast,volatility,ema_8,ema_32,ema_64,ema_256\n";
 
+        // Get all tradeable symbols from strategy to include even zero positions
+        std::unordered_set<std::string> all_symbols;
+        if (strategy != nullptr) {
+            auto* tf_strategy = dynamic_cast<TrendFollowingStrategy*>(strategy);
+            auto* tf_slow_strategy = dynamic_cast<TrendFollowingSlowStrategy*>(strategy);
+            if (tf_strategy != nullptr) {
+                const auto& instrument_data = tf_strategy->get_all_instrument_data();
+                for (const auto& [symbol, _] : instrument_data) {
+                    all_symbols.insert(symbol);
+                }
+            } else if (tf_slow_strategy != nullptr) {
+                const auto& instrument_data = tf_slow_strategy->get_all_instrument_data();
+                for (const auto& [symbol, _] : instrument_data) {
+                    all_symbols.insert(symbol);
+                }
+            }
+        }
+        // Also include symbols from actual positions
+        for (const auto& [symbol, _] : positions) {
+            all_symbols.insert(symbol);
+        }
+
         // Write position data
-        for (const auto& [symbol, position] : positions) {
-            double quantity = position.quantity.as_double();
+        for (const auto& symbol : all_symbols) {
+            // Get position quantity (0 if not in positions map)
+            double quantity = 0.0;
+            auto pos_it = positions.find(symbol);
+            if (pos_it != positions.end()) {
+                quantity = pos_it->second.quantity.as_double();
+            }
 
             // Get market price (Day T-1 close)
-            double market_price = position.average_price.as_double();  // Default fallback
+            double market_price = 0.0;
+            if (pos_it != positions.end()) {
+                market_price = pos_it->second.average_price.as_double();  // Default fallback
+            }
             auto price_it = market_prices.find(symbol);
             if (price_it != market_prices.end()) {
                 market_price = price_it->second;
@@ -467,16 +498,41 @@ Result<std::string> CSVExporter::export_current_positions(
                 strategy = strategy_it->second;
             }
 
-            for (const auto& [symbol, position] : positions) {
-                double quantity = position.quantity.as_double();
+            // Get all tradeable symbols from strategy to include even zero positions
+            std::unordered_set<std::string> all_symbols;
+            if (strategy != nullptr) {
+                auto* tf_strategy = dynamic_cast<TrendFollowingStrategy*>(strategy);
+                auto* tf_slow_strategy = dynamic_cast<TrendFollowingSlowStrategy*>(strategy);
+                if (tf_strategy != nullptr) {
+                    const auto& instrument_data = tf_strategy->get_all_instrument_data();
+                    for (const auto& [symbol, _] : instrument_data) {
+                        all_symbols.insert(symbol);
+                    }
+                } else if (tf_slow_strategy != nullptr) {
+                    const auto& instrument_data = tf_slow_strategy->get_all_instrument_data();
+                    for (const auto& [symbol, _] : instrument_data) {
+                        all_symbols.insert(symbol);
+                    }
+                }
+            }
+            // Also include symbols from actual positions
+            for (const auto& [symbol, _] : positions) {
+                all_symbols.insert(symbol);
+            }
 
-                // Skip zero positions
-                if (std::abs(quantity) < 0.0001) {
-                    continue;
+            for (const auto& symbol : all_symbols) {
+                // Get position quantity (0 if not in positions map)
+                double quantity = 0.0;
+                auto pos_it = positions.find(symbol);
+                if (pos_it != positions.end()) {
+                    quantity = pos_it->second.quantity.as_double();
                 }
 
                 // Get market price (Day T-1 close)
-                double market_price = position.average_price.as_double();  // Default fallback
+                double market_price = 0.0;
+                if (pos_it != positions.end()) {
+                    market_price = pos_it->second.average_price.as_double();  // Default fallback
+                }
                 auto price_it = market_prices.find(symbol);
                 if (price_it != market_prices.end()) {
                     market_price = price_it->second;

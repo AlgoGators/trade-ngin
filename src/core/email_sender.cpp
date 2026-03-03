@@ -870,10 +870,9 @@ std::string EmailSender::generate_trading_report_body(
         html << "<strong>Note:</strong> This strategy is based on daily OHLCV data. We currently "
                 "only provide data for the front-month contract.<br><br>\n";
         html << "All values reflect a trading start date of October 5th, 2025.<br><br>\n";
-        html
-            << "The ES, NQ, and YM positions are micro contracts (MES, MNQ, and MYM), not the "
-               "standard mini or full-size contracts. All values reflect this accurately, and this "
-               "is only a mismatch in representation, which we are currently working on fixing.\n";
+        html << "As of March 1st, 2026, we expanded our tradeable universe by adding 6 new contracts: "
+                "ZT (2-Year T-Note), ZF (5-Year T-Note), 6A (Australian Dollar), 6L (Brazilian Real), "
+                "HO (Heating Oil), and NG (Natural Gas).\n";
         html << "</div>\n";
     }
 
@@ -1872,8 +1871,9 @@ std::string EmailSender::format_symbols_table_for_positions(
     std::shared_ptr<DatabaseInterface> db, const std::string& date) {
     std::ostringstream html;
 
-    // 1) Collect normalized base symbols from active positions
+    // 1) Collect normalized base symbols from non-zero positions only
     std::set<std::string> base_syms;
+    INFO("EmailSender: Collecting symbols from positions for symbols reference table");
     for (const auto& [sym, pos] : positions) {
         if (pos.quantity.as_double() == 0.0)
             continue;
@@ -1887,9 +1887,19 @@ std::string EmailSender::format_symbols_table_for_positions(
         b.erase(std::remove_if(b.begin(), b.end(),
                                [](unsigned char c) { return !(std::isalnum(c) || c == '/'); }),
                 b.end());
-        if (!b.empty())
+        if (!b.empty()) {
+            INFO("EmailSender: Position " + sym + " (qty=" + std::to_string(pos.quantity.as_double()) + ") -> normalized symbol: " + b);
             base_syms.insert(b);
+        }
     }
+
+    // Log all collected symbols
+    std::ostringstream collected_syms;
+    for (const auto& s : base_syms) {
+        if (!collected_syms.str().empty()) collected_syms << ", ";
+        collected_syms << s;
+    }
+    INFO("EmailSender: Collected symbols for query: " + collected_syms.str());
 
     if (base_syms.empty()) {
         html << "<p>No active positions to display symbol metadata for.</p>\n";
@@ -2073,18 +2083,33 @@ std::string EmailSender::format_symbols_table_for_positions(
                     e = get_previous_business_day(e);
                     e = get_previous_business_day(e);
                 } else if (sym == "6B" || sym == "6E" || sym == "6J" || sym == "6M" ||
-                           sym == "6N" || sym == "6S") {
+                           sym == "6N" || sym == "6S" || sym == "6A" || sym == "6L") {
+                    // FX futures: 3rd Wednesday, then 2 business days before
                     e = get_nth_weekday(y, m, 3, 3);
                     e = get_previous_business_day(e);
                     e = get_previous_business_day(e);
                 } else if (sym == "6C") {
                     e = get_nth_weekday(y, m, 3, 3);
                     e = get_previous_business_day(e);
-                } else if (sym == "ZN" || sym == "UB") {
+                } else if (sym == "ZN" || sym == "UB" || sym == "ZT" || sym == "ZF") {
+                    // Treasury futures: Last business day of month, then 7 business days before
                     e = get_last_day_of_month(y, m);
                     if (!is_business_day(e))
                         e = get_previous_business_day(e);
                     for (int j = 0; j < 7; ++j)
+                        e = get_previous_business_day(e);
+                } else if (sym == "CL" || sym == "HO" || sym == "RB" || sym == "NG") {
+                    // Energy futures: 3rd business day prior to 25th of month before contract month
+                    e.tm_year = y - 1900;
+                    e.tm_mon = m - 2;  // Month before contract month
+                    if (e.tm_mon < 0) {
+                        e.tm_mon += 12;
+                        e.tm_year -= 1;
+                    }
+                    e.tm_mday = 25;
+                    std::mktime(&e);
+                    // Go back 3 business days
+                    for (int j = 0; j < 3; ++j)
                         e = get_previous_business_day(e);
                 } else if (sym == "HE") {
                     e = get_nth_business_day(y, m, 10);
@@ -2163,30 +2188,35 @@ std::string EmailSender::format_symbols_table_for_positions(
             }
 
             // For quarterly contracts, find the next contract month
+            // Convert to uppercase for case-insensitive matching
+            std::string months_upper = contract_months;
+            std::transform(months_upper.begin(), months_upper.end(), months_upper.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+
             std::vector<int> month_codes;
-            if (contract_months.find("MAR") != std::string::npos)
+            if (months_upper.find("MAR") != std::string::npos)
                 month_codes.push_back(3);
-            if (contract_months.find("JUN") != std::string::npos)
+            if (months_upper.find("JUN") != std::string::npos)
                 month_codes.push_back(6);
-            if (contract_months.find("SEP") != std::string::npos)
+            if (months_upper.find("SEP") != std::string::npos)
                 month_codes.push_back(9);
-            if (contract_months.find("DEC") != std::string::npos)
+            if (months_upper.find("DEC") != std::string::npos)
                 month_codes.push_back(12);
-            if (contract_months.find("JAN") != std::string::npos && month_codes.empty())
+            if (months_upper.find("JAN") != std::string::npos && month_codes.empty())
                 month_codes.push_back(1);
-            if (contract_months.find("FEB") != std::string::npos)
+            if (months_upper.find("FEB") != std::string::npos)
                 month_codes.push_back(2);
-            if (contract_months.find("APR") != std::string::npos)
+            if (months_upper.find("APR") != std::string::npos)
                 month_codes.push_back(4);
-            if (contract_months.find("MAY") != std::string::npos)
+            if (months_upper.find("MAY") != std::string::npos)
                 month_codes.push_back(5);
-            if (contract_months.find("JULY") != std::string::npos)
+            if (months_upper.find("JULY") != std::string::npos)
                 month_codes.push_back(7);
-            if (contract_months.find("AUG") != std::string::npos)
+            if (months_upper.find("AUG") != std::string::npos)
                 month_codes.push_back(8);
-            if (contract_months.find("OCT") != std::string::npos)
+            if (months_upper.find("OCT") != std::string::npos)
                 month_codes.push_back(10);
-            if (contract_months.find("NOV") != std::string::npos)
+            if (months_upper.find("NOV") != std::string::npos)
                 month_codes.push_back(11);
 
             if (month_codes.empty())
@@ -2289,26 +2319,7 @@ std::string EmailSender::format_symbols_table_for_positions(
             return s;
         };
 
-        // --- HARD-CODED ROWS: always render first ---
-        struct Row {
-            std::string db, ib, name, months;
-        };
-        const std::vector<Row> hardcoded = {
-            {"NQ", "NQ", "E-mini Nasdaq - 100 Index", "MAR, JUN, SEP, DEC"},
-            {"YM", "YM", "E-mini Dow Jones Industrial Average Index", "MAR, JUN, SEP, DEC"}};
-
-        for (const auto& r : hardcoded) {
-            std::string front_month = get_front_month_symbol(r.ib, r.months, date);
-            html << "<tr>\n"
-                 << "<td>" << r.db << "</td>\n"
-                 << "<td>" << r.ib << "</td>\n"
-                 << "<td>" << r.name << "</td>\n"
-                 << "<td>" << r.months << "</td>\n"
-                 << "<td>" << front_month << "</td>\n"
-                 << "</tr>\n";
-            matched.insert(up(r.db));
-            matched.insert(up(r.ib));
-        }
+        // No hard-coded rows - only show symbols from actual positions
 
         for (int64_t i = 0; i < combined->num_rows(); ++i) {
             std::string json_txt = get_str(col_symbol, i);
@@ -2334,6 +2345,11 @@ std::string EmailSender::format_symbols_table_for_positions(
                 matched.insert(up(ib_sym));
 
             std::string front_month = get_front_month_symbol(ib_sym, months, date);
+            if (front_month.empty()) {
+                INFO("EmailSender: Front month calculation returned empty for " + ib_sym + " (" + months + ")");
+            } else {
+                INFO("EmailSender: Front month for " + ib_sym + " = " + front_month);
+            }
             html << "<tr>\n";
             html << "<td>" << db_sym << "</td>\n";
             html << "<td>" << ib_sym << "</td>\n";
@@ -2511,7 +2527,7 @@ std::string EmailSender::format_rollover_warning(
         return std::string(1, month_code) + std::to_string(year_digit);
     };
 
-    // Get contract month info from database
+    // Get contract month info from database - only for non-zero positions
     std::set<std::string> active_symbols;
     for (const auto& [symbol, pos] : positions) {
         if (pos.quantity.as_double() != 0.0) {
@@ -2682,22 +2698,38 @@ std::string EmailSender::format_rollover_warning(
                                 expiry_date.tm_mday--;
                                 std::mktime(&expiry_date);
                             }
-                        } else if (symbol == "ZN" || symbol == "UB") {
+                        } else if (symbol == "ZN" || symbol == "UB" || symbol == "ZT" || symbol == "ZF") {
+                            // Treasury futures: Last business day of month, then 7 business days before
                             expiry_date = get_last_day_of_month_local(disp_year, disp_month);
                             if (!is_business_day_local(expiry_date))
                                 expiry_date = get_previous_business_day_local(expiry_date);
                             for (int j = 0; j < 7; ++j)
                                 expiry_date = get_previous_business_day_local(expiry_date);
                         } else if (symbol == "6B" || symbol == "6E" || symbol == "6J" ||
-                                   symbol == "6M" || symbol == "6N" || symbol == "6S") {
+                                   symbol == "6M" || symbol == "6N" || symbol == "6S" ||
+                                   symbol == "6A" || symbol == "6L") {
+                            // FX futures: 3rd Wednesday, then 2 business days before
                             expiry_date = get_nth_weekday_local(disp_year, disp_month, 3, 3);
                             expiry_date = get_previous_business_day_local(expiry_date);
                             expiry_date = get_previous_business_day_local(expiry_date);
                         } else if (symbol == "6C") {
                             expiry_date = get_nth_weekday_local(disp_year, disp_month, 3, 3);
                             expiry_date = get_previous_business_day_local(expiry_date);
+                        } else if (symbol == "CL" || symbol == "HO" || symbol == "RB" || symbol == "NG") {
+                            // Energy futures: 3rd business day prior to 25th of month before contract month
+                            expiry_date.tm_year = disp_year - 1900;
+                            expiry_date.tm_mon = disp_month - 2;  // Month before contract month
+                            if (expiry_date.tm_mon < 0) {
+                                expiry_date.tm_mon += 12;
+                                expiry_date.tm_year -= 1;
+                            }
+                            expiry_date.tm_mday = 25;
+                            std::mktime(&expiry_date);
+                            // Go back 3 business days
+                            for (int j = 0; j < 3; ++j)
+                                expiry_date = get_previous_business_day_local(expiry_date);
                         } else {
-                            // Default monthly (e.g., energy like CL, RB): 3rd Friday
+                            // Default monthly (e.g., equity indices): 3rd Friday
                             expiry_date = get_nth_weekday_local(disp_year, disp_month, 5, 3);
                         }
 
@@ -3220,7 +3252,6 @@ std::string EmailSender::format_strategy_positions_tables(
     // Portfolio-wide summary
     html << "<div class=\"summary-stats\" style=\"margin-top: 20px; border-top: 2px solid #2c5aa0; "
             "padding-top: 15px;\">\n";
-    html << "<h3 style=\"margin: 0 0 10px 0; color: #333;\">Portfolio Summary</h3>\n";
     html << "<div class=\"metric\"><strong>Active Positions:</strong> " << portfolio_total_positions
          << "</div>\n";
 
@@ -3446,7 +3477,6 @@ std::string EmailSender::format_strategy_executions_tables(
     // Portfolio-wide summary
     html << "<div class=\"summary-stats\" style=\"margin-top: 20px; border-top: 2px solid #2c5aa0; "
             "padding-top: 15px;\">\n";
-    html << "<h3 style=\"margin: 0 0 10px 0; color: #333;\">Portfolio Summary</h3>\n";
     html << "<div class=\"metric\"><strong>Total Trades:</strong> " << portfolio_total_trades
          << "</div>\n";
     html << "<div class=\"metric\"><strong>Total Notional Traded:</strong> $"
@@ -3816,10 +3846,9 @@ std::string EmailSender::generate_trading_report_body(
         html << "<strong>Note:</strong> This strategy is based on daily OHLCV data. We currently "
                 "only provide data for the front-month contract.<br><br>\n";
         html << "All values reflect a trading start date of October 5th, 2025.<br><br>\n";
-        html
-            << "The ES, NQ, and YM positions are micro contracts (MES, MNQ, and MYM), not the "
-               "standard mini or full-size contracts. All values reflect this accurately, and this "
-               "is only a mismatch in representation, which we are currently working on fixing.\n";
+        html << "As of March 1st, 2026, we expanded our tradeable universe by adding 6 new contracts: "
+                "ZT (2-Year T-Note), ZF (5-Year T-Note), 6A (Australian Dollar), 6L (Brazilian Real), "
+                "HO (Heating Oil), and NG (Natural Gas).\n";
         html << "</div>\n";
     }
 
