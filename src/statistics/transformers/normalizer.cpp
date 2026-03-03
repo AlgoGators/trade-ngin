@@ -36,7 +36,7 @@ Result<void> Normalizer::fit(const Eigen::MatrixXd& data) {
             min_ = data.colwise().minCoeff();
             max_ = data.colwise().maxCoeff();
             // Prevent division by zero
-            for (int i = 0; i < min_.size(); ++i) {
+            for (Eigen::Index i = 0; i < min_.size(); ++i) {
                 if (std::abs(max_(i) - min_(i)) < 1e-10) {
                     max_(i) = min_(i) + 1.0;
                 }

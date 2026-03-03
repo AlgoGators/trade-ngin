@@ -44,12 +44,12 @@ Result<TestResult> PhillipsPerronTest::test(const std::vector<double>& data) con
         }
     }
 
-    int n = data.size();
+    int n = static_cast<int>(data.size());
     DEBUG("[PhillipsPerronTest::test] entry: n=" << n);
 
     // Step 1: OLS regression Δy_t = α + γ*y_{t-1} + ε_t (or with trend)
     std::vector<double> y_diff = utils::difference(data, 1);
-    int T = y_diff.size();
+    int T = static_cast<int>(y_diff.size());
 
     int n_regressors = 1; // y_{t-1}
     if (config_.regression == PhillipsPerronConfig::RegressionType::CONSTANT ||

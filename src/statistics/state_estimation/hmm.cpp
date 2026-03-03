@@ -306,7 +306,7 @@ double HMM::forward_backward(const Eigen::MatrixXd& observations,
 }
 
 double HMM::log_emission_probability(const Eigen::VectorXd& obs, int state) const {
-    int D = obs.size();
+    Eigen::Index D = obs.size();
     Eigen::VectorXd diff = obs - means_[state];
 
     // Use LLT Cholesky for numerical stability
