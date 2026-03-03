@@ -2247,7 +2247,7 @@ int main(int argc, char* argv[]) {
                         {"worst_day", yesterday_hist_metrics.worst_day},
                         {"gross_profit", yesterday_hist_metrics.gross_profit},
                         {"gross_loss", yesterday_hist_metrics.gross_loss},
-                        {"total_trades", static_cast<double>(yesterday_hist_metrics.total_trades)},
+                        // Removed total_trades - will be implemented properly later with closing trades logic
                         {"winning_days", static_cast<double>(yesterday_hist_metrics.winning_days)},
                         {"losing_days", static_cast<double>(yesterday_hist_metrics.losing_days)},
                         {"total_days", static_cast<double>(yesterday_hist_metrics.total_days)}};
@@ -2777,7 +2777,7 @@ int main(int argc, char* argv[]) {
 
             std::unordered_map<std::string, int> int_metrics = {
                 {"active_positions", active_positions},
-                {"total_trades", historical_metrics.total_trades},
+                // Removed total_trades - will be implemented properly later with closing trades logic
                 {"winning_days", historical_metrics.winning_days},
                 {"losing_days", historical_metrics.losing_days},
                 {"total_days", historical_metrics.total_days}};
