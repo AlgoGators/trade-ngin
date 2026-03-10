@@ -14,8 +14,8 @@ using namespace trade_ngin;
 using namespace trade_ngin::testing;
 
 // ============================================================================
-// Test fixture: creates two identical strategies — one with the new default
-// max_history_size (756) and one with the old 2520 — then feeds identical data
+// Test fixture: creates two identical strategies with different
+// max_history_size values, then feeds identical data
 // to both, verifying they produce the same positions when data fits within the
 // smaller window, and that the rolling trim works correctly at boundaries.
 // ============================================================================
@@ -287,13 +287,16 @@ TEST_F(HistoryRollingWindowTest, VolatilityHistoryAlsoTrimmed) {
 }
 
 // ---------------------------------------------------------------------------
-// 7. Default config uses 756: verify the default TrendFollowingConfig has
-//    max_history_size = 756.
+// 7. Default config uses dynamic computation: verify the default TrendFollowingConfig
+//    has max_history_size = 0 (computed as max(vol_lookback_long, 756) in constructor).
 // ---------------------------------------------------------------------------
-TEST_F(HistoryRollingWindowTest, DefaultConfigIs756) {
+TEST_F(HistoryRollingWindowTest, DefaultConfigIsDynamic) {
     TrendFollowingConfig default_cfg;
-    EXPECT_EQ(default_cfg.max_history_size, 756u)
-        << "Default max_history_size should be 756 (~3 years of trading days)";
+    EXPECT_EQ(default_cfg.max_history_size, 0u)
+        << "Default max_history_size should be 0 (dynamically computed in constructor)";
+    // After constructor runs, it becomes max(vol_lookback_long=2520, 756) = 2520
+    EXPECT_EQ(default_cfg.vol_lookback_long, 2520)
+        << "Default vol_lookback_long should be 2520";
 }
 
 // ---------------------------------------------------------------------------

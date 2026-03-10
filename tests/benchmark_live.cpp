@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
+#include <fstream>
 #include <iostream>
 #include <memory>
 #include <numeric>
@@ -9,6 +10,7 @@
 #include <vector>
 
 #include "trade_ngin/core/types.hpp"
+#include "trade_ngin/data/credential_store.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
 #include "trade_ngin/optimization/dynamic_optimizer.hpp"
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
@@ -37,12 +39,41 @@ int main() {
     std::cout << "   Trade-NGIN Live Benchmark (Postgres-Backed)    " << std::endl;
     std::cout << "==================================================" << std::endl;
 
-    // 1. Connection Setup
-    const char* env_conn = std::getenv("TRADENGIN_DB_CONN");
-    std::string connection_string =
-        env_conn ? env_conn : "postgresql://postgres:algogators@13.58.153.216:5432/new_algo_data";
+    // 1. Connection Setup - Load credentials from config.json
+    std::string config_filename = "./config.json";
+    auto credentials = std::make_shared<CredentialStore>(config_filename);
 
-    std::cout << "[INFO] connecting to database: " << connection_string << std::endl;
+    auto username_result = credentials->get<std::string>("database", "username");
+    if (username_result.is_error()) {
+        std::cerr << "[CRITICAL] Failed to get username: " << username_result.error()->what() << std::endl;
+        return 1;
+    }
+    auto password_result = credentials->get<std::string>("database", "password");
+    if (password_result.is_error()) {
+        std::cerr << "[CRITICAL] Failed to get password: " << password_result.error()->what() << std::endl;
+        return 1;
+    }
+    auto host_result = credentials->get<std::string>("database", "host");
+    if (host_result.is_error()) {
+        std::cerr << "[CRITICAL] Failed to get host: " << host_result.error()->what() << std::endl;
+        return 1;
+    }
+    auto port_result = credentials->get<std::string>("database", "port");
+    if (port_result.is_error()) {
+        std::cerr << "[CRITICAL] Failed to get port: " << port_result.error()->what() << std::endl;
+        return 1;
+    }
+    auto db_name_result = credentials->get<std::string>("database", "name");
+    if (db_name_result.is_error()) {
+        std::cerr << "[CRITICAL] Failed to get database name: " << db_name_result.error()->what() << std::endl;
+        return 1;
+    }
+
+    std::string connection_string = "postgresql://" + username_result.value() + ":" +
+                                    password_result.value() + "@" + host_result.value() + ":" +
+                                    port_result.value() + "/" + db_name_result.value();
+
+    std::cout << "[INFO] connecting to database..." << std::endl;
 
     PostgresDatabase db(connection_string);
     auto conn_res = db.connect();

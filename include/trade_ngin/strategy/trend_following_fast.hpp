@@ -1,6 +1,7 @@
 // include/trade_ngin/strategy/trend_following_fast.hpp
 #pragma once
 
+#include <deque>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -25,8 +26,8 @@ struct TrendFollowingFastConfig {
         // EMA window pairs for crossovers (faster/shorter lookback periods)
         {1, 4}, {2, 8}, {4, 16}, {8, 32}, {16, 64}};
     int vol_lookback_short{16};   // Short lookback for volatility calculation (faster)
-    int vol_lookback_long{2520};  // Long lookback for volatility calculation
-    size_t max_history_size{756}; // Rolling window cap for in-memory history (~3 years of trading days)
+    int vol_lookback_long{2520};  // Long lookback for vol regime detection (configurable)
+    size_t max_history_size{0};   // Rolling window cap — computed as max(vol_lookback_long, 756) if 0
     std::vector<std::pair<int, double>> fdm{{1, 1.0},  {2, 1.03}, {3, 1.08},
                                             {4, 1.13}, {5, 1.19}, {6, 1.26}};
 };
@@ -39,18 +40,18 @@ struct TrendFollowingFastInstrumentData {
     double contract_size = 1.0;
     double weight = 1.0;
 
-    // Dynamic forecast data
-    std::vector<double> raw_forecasts;
-    std::vector<double> scaled_forecasts;
+    // Dynamic forecast data (scalars only — full vectors are local to on_data())
+    double current_raw_forecast = 0.0;
+    double current_scaled_forecast = 0.0;
     double current_forecast = 0.0;
 
     // Position data
     double raw_position = 0.0;
     double final_position = 0.0;
 
-    // Market data
-    std::vector<double> price_history;
-    std::vector<double> volatility_history;
+    // Market data (deque for O(1) front removal during rolling window trimming)
+    std::deque<double> price_history;
+    std::deque<double> volatility_history;
     double current_volatility = 0.01;
 
     // Timestamp of last update
@@ -104,9 +105,9 @@ public:
     std::unordered_map<std::string, std::vector<double>> get_price_history() const override {
         std::unordered_map<std::string, std::vector<double>> history;
 
-        // Convert from map of vectors to map of maps
+        // Convert from deque to vector for each symbol
         for (const auto& [symbol, prices] : instrument_data_) {
-            history[symbol] = prices.price_history;
+            history[symbol].assign(prices.price_history.begin(), prices.price_history.end());
         }
 
         return history;
@@ -197,10 +198,6 @@ protected:
 private:
     TrendFollowingFastConfig trend_config_;
 
-    // Price and signal storage
-    std::unordered_map<std::string, std::vector<double>> price_history_;
-    std::unordered_map<std::string, std::vector<double>> volatility_history_;
-
     std::shared_ptr<InstrumentRegistry> registry_;
 
     std::unordered_map<std::string, double> contract_size_cache_;
@@ -258,16 +255,16 @@ private:
      * @return Vector of crossover signals
      */
     std::vector<double> get_raw_forecast(const std::vector<double>& prices, int short_window,
-                                         int long_window) const;
+                                         int long_window,
+                                         const std::vector<double>* cached_blended_stddev = nullptr,
+                                         const double* cached_vol_multiplier = nullptr) const;
 
     /**
-     * @brief Scale raw forecasts by volatility
+     * @brief Scale raw forecasts to target absolute average of 10
      * @param raw_forecasts Raw forecast values
-     * @param blended_stddev Blended EWMA standard deviation
      * @return Scaled forecast values
      */
-    std::vector<double> get_scaled_forecast(const std::vector<double>& raw_forecasts,
-                                            const std::vector<double>& blended_stddev) const;
+    std::vector<double> get_scaled_forecast(const std::vector<double>& raw_forecasts) const;
 
     /**
      * @brief Generate raw forecast from EMA crossovers

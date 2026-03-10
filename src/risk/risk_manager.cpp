@@ -453,36 +453,8 @@ MarketData RiskManager::create_market_data(const std::vector<Bar>& data) {
         }
     }
 
-    // Calculate Covariance Matrix
-    market_data.covariance.clear();
-    if (!market_data.returns.empty()) {
-        size_t num_assets = market_data.ordered_symbols.size();
-        size_t num_periods = market_data.returns.size();
-
-        // Calculate means
-        std::vector<double> means(num_assets, 0.0);
-        for (const auto& daily_returns : market_data.returns) {
-            for (size_t i = 0; i < num_assets; ++i) {
-                means[i] += daily_returns[i];
-            }
-        }
-        for (auto& mean : means) {
-            mean /= num_periods;
-        }
-
-        // Calculate covariance
-        market_data.covariance.resize(num_assets, std::vector<double>(num_assets, 0.0));
-        for (size_t i = 0; i < num_assets; ++i) {
-            for (size_t j = 0; j < num_assets; ++j) {
-                for (size_t k = 0; k < num_periods; ++k) {
-                    market_data.covariance[i][j] += (market_data.returns[k][i] - means[i]) *
-                                                    (market_data.returns[k][j] - means[j]);
-                }
-                market_data.covariance[i][j] /= (num_periods - 1);
-                market_data.covariance[i][j] *= 252.0;  // Annualize
-            }
-        }
-    }
+    // Calculate Covariance Matrix (Eigen-vectorized)
+    market_data.covariance = calculate_covariance(market_data.returns);
 
     return market_data;
 }
