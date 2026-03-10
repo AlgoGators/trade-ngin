@@ -19,6 +19,7 @@
 #include "trade_ngin/backtest/backtest_execution_manager.hpp"
 #include "trade_ngin/backtest/backtest_portfolio_constraints.hpp"
 #include "trade_ngin/backtest/backtest_types.hpp"
+#include "trade_ngin/backtest/backtest_csv_exporter.hpp"
 #include "trade_ngin/risk/risk_manager.hpp"
 
 namespace trade_ngin {
@@ -40,6 +41,7 @@ struct BacktestCoordinatorConfig {
     std::string results_schema = "backtest";
     bool store_trade_details = true;
     std::string portfolio_id = "BASE_PORTFOLIO";
+    std::string csv_output_path = "apps/backtest/results";
 };
 
 /**
@@ -89,6 +91,10 @@ private:
     std::string current_run_id_;
     Timestamp backtest_start_date_;
     Timestamp backtest_end_date_;
+
+    // CSV exporter for portfolio backtest
+    std::unique_ptr<BacktestCSVExporter> csv_exporter_;
+    std::unordered_map<std::string, Position> portfolio_previous_positions_;
 
     // Optional components for portfolio backtest
     std::shared_ptr<RiskManager> risk_manager_;
