@@ -24,3 +24,10 @@ daily_positions_*.csv
 .idea/
 
 cmake-build-debug/
+
+# Planning docs
+plan.md
+
+# Build artifacts
+build.log
+tmpclaude-*

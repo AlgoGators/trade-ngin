@@ -970,7 +970,6 @@ Result<void> PortfolioManager::optimize_positions() {
             covariance = calculate_covariance_matrix(returns_by_symbol);
             // Cache for subsequent iterations
             cached_symbols_ = symbols;
-            cached_returns_by_symbol_ = std::move(returns_by_symbol);
             cached_covariance_ = covariance;
             covariance_cache_valid_ = true;
             DEBUG("Computed and cached covariance matrix for " + std::to_string(symbols.size()) +

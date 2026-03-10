@@ -108,13 +108,8 @@ Result<OptimizationResult> DynamicOptimizer::optimize_single_period(
         // Initialize solution at 0.0
         Eigen::VectorXd current_best = Eigen::VectorXd::Zero(n);
 
-        // Pre-compute Cov * target (used for incremental updates)
-        Eigen::VectorXd cov_target = cov * target;
-
         // --- Initial Tracking Error (Vectorized) ---
-        // Tracking error weights: e = target - current_best
         Eigen::VectorXd e = target - current_best;
-        // Quadratic form: e' * Cov * e
         double tracking_error_sq = e.transpose() * cov * e;
         double pure_tracking_error = std::sqrt(std::max(0.0, tracking_error_sq));
 
@@ -128,57 +123,60 @@ Result<OptimizationResult> DynamicOptimizer::optimize_single_period(
         bool improved = true;
         int iteration = 0;
 
-        // Pre-allocate for incremental update
-        Eigen::VectorXd proposed = current_best;
+        // Pre-extract covariance diagonal (reused across all iterations)
+        Eigen::VectorXd cov_diag = cov.diagonal();
 
-        // Main optimization loop - greedy algorithm with incremental updates
+        // Main optimization loop - greedy coordinate descent with rank-1 updates
         while (improved && iteration++ < config_.max_iterations) {
             improved = false;
 
+            // Pre-compute rank-1 base values for this iteration: O(N^2) + O(N)
+            e = target - current_best;
+            Eigen::VectorXd cov_e = cov * e;
+            double base_te_sq = e.dot(cov_e);
+
+            // Pre-compute base cost for current_best: O(N)
+            trade_diff = current_best - actual_eigen;
+            double base_cost = (trade_diff.cwiseAbs().array() * costs_eigen.array()).sum() *
+                               config_.cost_penalty_scalar;
+
             double proposed_err = best_tracking_error;
-            Eigen::VectorXd best_proposed = current_best;
+            int best_i = -1;
+            double best_step = 0.0;
 
             for (size_t i = 0; i < n; ++i) {
-                // Try adding one weight unit (one contract)
                 double raw_diff = target(i) - current_best(i);
                 if (std::abs(raw_diff) < 1e-12) {
-                    continue;  // No need to adjust if already close to target
+                    continue;
                 }
 
                 double step = weights_per_contract[i] * (raw_diff > 0 ? +1.0 : -1.0);
 
-                // --- Incremental Tracking Error Update ---
-                // When we change proposed[i] by 'step':
-                // New e_i = old e_i - step
-                // Delta in e'*Cov*e can be computed efficiently
-
-                Eigen::VectorXd candidate = current_best;
-                candidate(i) += step;
-
-                // New error vector
-                Eigen::VectorXd new_e = target - candidate;
-
-                // Quadratic form (using vectorized Eigen)
-                double new_te_sq = new_e.transpose() * cov * new_e;
+                // Rank-1 tracking error update: O(1)
+                // e_new = e - step*e_i, so:
+                // e_new'*Cov*e_new = base_te_sq - 2*step*cov_e(i) + step^2*Cov(i,i)
+                double new_te_sq = base_te_sq - 2.0 * step * cov_e(i) + step * step * cov_diag(i);
                 double new_pure_te = std::sqrt(std::max(0.0, new_te_sq));
 
-                // New cost penalty
-                Eigen::VectorXd new_trade_diff = candidate - actual_eigen;
-                double new_cost = (new_trade_diff.cwiseAbs().array() * costs_eigen.array()).sum() *
-                                  config_.cost_penalty_scalar;
+                // Incremental cost update: O(1)
+                double old_trade_i = std::abs(current_best(i) - actual_eigen(i));
+                double new_trade_i = std::abs(current_best(i) + step - actual_eigen(i));
+                double new_cost =
+                    base_cost + (new_trade_i - old_trade_i) * costs_eigen(i) *
+                                    config_.cost_penalty_scalar;
 
                 double total_err = new_pure_te + new_cost;
 
-                // If it strictly improves this pass's proposed, keep it
                 if (total_err + config_.convergence_threshold < proposed_err) {
-                    best_proposed = candidate;
+                    best_i = static_cast<int>(i);
+                    best_step = step;
                     proposed_err = total_err;
                 }
             }
 
             // If the best candidate from this pass is better than our overall best, adopt it
-            if (proposed_err + config_.convergence_threshold < best_tracking_error) {
-                current_best = best_proposed;
+            if (best_i >= 0 && proposed_err + config_.convergence_threshold < best_tracking_error) {
+                current_best(best_i) += best_step;
                 best_tracking_error = proposed_err;
                 improved = true;
             }

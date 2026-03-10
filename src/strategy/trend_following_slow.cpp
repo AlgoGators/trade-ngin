@@ -25,6 +25,11 @@ TrendFollowingSlowStrategy::TrendFollowingSlowStrategy(std::string id, StrategyC
         trend_config_.vol_lookback_long = trend_config_.vol_lookback_short * 4;
     }
 
+    // Compute memory cap: must hold enough data for the longest lookback
+    if (trend_config_.max_history_size == 0) {
+        trend_config_.max_history_size = std::max(static_cast<size_t>(trend_config_.vol_lookback_long), size_t{756});
+    }
+
     // Initialize metadata
     metadata_.name = "Slow Trend Following Strategy";
     metadata_.description =
@@ -70,21 +75,8 @@ Result<void> TrendFollowingSlowStrategy::initialize() {
     INFO("Slow trend following strategy initialized with REALIZED_ONLY PnL accounting for futures");
 
     try {
-        // Initialize price history containers for each symbol with proper capacity
+        // Initialize positions for each symbol
         for (const auto& [symbol, _] : config_.trading_params) {
-            try {
-                price_history_[symbol].reserve(trend_config_.max_history_size);
-                volatility_history_[symbol].reserve(trend_config_.max_history_size);
-            } catch (const std::exception& e) {
-                std::cerr << "Failed to reserve price history for symbol " << symbol << ": "
-                          << e.what() << std::endl;
-                return make_error<void>(
-                    ErrorCode::INVALID_ARGUMENT,
-                    std::string("Failed to reserve price history for symbol ") + symbol,
-                    "TrendFollowingSlowStrategy");
-            }
-
-            // Initialize positions with zero quantity
             Position pos;
             pos.symbol = symbol;
             pos.quantity = 0.0;
@@ -174,8 +166,6 @@ Result<void> TrendFollowingSlowStrategy::on_data(const std::vector<Bar>& data) {
         max_window = std::max(max_window, window_pair.second);
     }
 
-    const size_t MAX_HISTORY_SIZE = 2500;
-
     try {
         // Group data by symbol and update price history
         std::unordered_map<std::string, std::vector<Bar>> bars_by_symbol;
@@ -212,7 +202,7 @@ Result<void> TrendFollowingSlowStrategy::on_data(const std::vector<Bar>& data) {
 
                 // Rolling window: only keep max_history_size days in memory
                 if (instrument_data.price_history.size() > trend_config_.max_history_size) {
-                    instrument_data.price_history.erase(instrument_data.price_history.begin());
+                    instrument_data.price_history.pop_front();
                 }
             }
 
@@ -232,7 +222,7 @@ Result<void> TrendFollowingSlowStrategy::on_data(const std::vector<Bar>& data) {
             if (full_prices.size() > 1000) {
                 prices.assign(full_prices.end() - 1000, full_prices.end());
             } else {
-                prices = full_prices;
+                prices.assign(full_prices.begin(), full_prices.end());
             }
 
             // Calculate volatility
@@ -258,19 +248,13 @@ Result<void> TrendFollowingSlowStrategy::on_data(const std::vector<Bar>& data) {
                       std::to_string(*std::max_element(volatility.begin(), volatility.end())));
             }
 
-            if (volatility.size() > MAX_HISTORY_SIZE) {
-                ERROR("Volatility history for " + symbol + " exceeds max size.");
-            }
             // Save volatility history with memory management
-            instrument_data.volatility_history = volatility;
+            instrument_data.volatility_history.assign(volatility.begin(), volatility.end());
             instrument_data.current_volatility = volatility.back();
 
             // Rolling window: trim volatility history to max_history_size
-            if (instrument_data.volatility_history.size() > trend_config_.max_history_size) {
-                instrument_data.volatility_history.erase(
-                    instrument_data.volatility_history.begin(),
-                    instrument_data.volatility_history.begin() +
-                        (instrument_data.volatility_history.size() - trend_config_.max_history_size));
+            while (instrument_data.volatility_history.size() > trend_config_.max_history_size) {
+                instrument_data.volatility_history.pop_front();
             }
 
             // Get raw combined forecast
@@ -298,7 +282,7 @@ Result<void> TrendFollowingSlowStrategy::on_data(const std::vector<Bar>& data) {
                     std::to_string(*std::max_element(raw_forecasts.begin(), raw_forecasts.end())));
             }
 
-            instrument_data.raw_forecasts = raw_forecasts;
+            instrument_data.current_raw_forecast = raw_forecasts.back();
 
             // Get scaled forecast
             std::vector<double> scaled_forecasts;
@@ -313,7 +297,7 @@ Result<void> TrendFollowingSlowStrategy::on_data(const std::vector<Bar>& data) {
                 scaled_forecasts.resize(raw_forecasts.size(), 0.0);
             }
 
-            instrument_data.scaled_forecasts = scaled_forecasts;
+            instrument_data.current_scaled_forecast = scaled_forecasts.back();
             instrument_data.current_forecast = scaled_forecasts.back();
 
             // Load instruments if not yet cached
@@ -734,8 +718,8 @@ double TrendFollowingSlowStrategy::compute_long_term_avg(const std::vector<doubl
     if (history.empty())
         return 0.001;  // Return a small non-zero value instead of 0.0
 
-    // Use config max_history_size when default (0) is passed
-    if (max_history == 0) max_history = trend_config_.max_history_size;
+    // Use vol_lookback_long for calculation lookback (not memory cap)
+    if (max_history == 0) max_history = static_cast<size_t>(trend_config_.vol_lookback_long);
 
     size_t start_index = history.size() > max_history ? history.size() - max_history : 0;
     double sum = std::accumulate(history.begin() + start_index, history.end(), 0.0);
@@ -758,8 +742,8 @@ double TrendFollowingSlowStrategy::compute_long_term_avg(const std::vector<doubl
 std::vector<double> TrendFollowingSlowStrategy::blended_ewma_stddev(
     const std::vector<double>& prices, int window, double weight_short, double weight_long,
     size_t max_history) const {
-    // Use config max_history_size when default (0) is passed
-    if (max_history == 0) max_history = trend_config_.max_history_size;
+    // Use vol_lookback_long for calculation lookback (not memory cap)
+    if (max_history == 0) max_history = static_cast<size_t>(trend_config_.vol_lookback_long);
 
     if (prices.empty() || window <= 0) {
         WARN("Empty price data or invalid window for blended stddev calculation");
@@ -828,7 +812,9 @@ std::vector<double> TrendFollowingSlowStrategy::blended_ewma_stddev(
 
 std::vector<double> TrendFollowingSlowStrategy::get_raw_forecast(const std::vector<double>& prices,
                                                                  int short_window,
-                                                                 int long_window) const {
+                                                                 int long_window,
+                                                                 const std::vector<double>* cached_blended_stddev,
+                                                                 const double* cached_vol_multiplier) const {
     // Validation
     if (prices.size() < std::max(short_window, long_window)) {
         ERROR("Not enough price data for raw forecast");
@@ -852,25 +838,30 @@ std::vector<double> TrendFollowingSlowStrategy::get_raw_forecast(const std::vect
         return std::vector<double>(prices.size(), 0.0);  // Return neutral forecast
     }
 
-    // Get volatility with error handling
+    // Get volatility with error handling — use cached values if provided
     std::vector<double> blended_stddev;
     double vol_multiplier = 1.0;  // Default value
 
-    try {
-        blended_stddev = blended_ewma_stddev(prices, trend_config_.vol_lookback_short);
+    if (cached_blended_stddev && cached_vol_multiplier) {
+        blended_stddev = *cached_blended_stddev;
+        vol_multiplier = *cached_vol_multiplier;
+    } else {
+        try {
+            blended_stddev = blended_ewma_stddev(prices, trend_config_.vol_lookback_short);
 
-        // Only calculate vol_multiplier if we have sufficient data
-        if (prices.size() >= 252) {
-            vol_multiplier = calculate_vol_regime_multiplier(prices, blended_stddev);
-            // Ensure vol_multiplier is valid
-            if (std::isnan(vol_multiplier) || std::isinf(vol_multiplier)) {
-                vol_multiplier = 1.0;
+            // Only calculate vol_multiplier if we have sufficient data
+            if (prices.size() >= 252) {
+                vol_multiplier = calculate_vol_regime_multiplier(prices, blended_stddev);
+                // Ensure vol_multiplier is valid
+                if (std::isnan(vol_multiplier) || std::isinf(vol_multiplier)) {
+                    vol_multiplier = 1.0;
+                }
             }
+        } catch (const std::exception& e) {
+            ERROR("Exception in get_raw_forecast: " + std::string(e.what()));
+            // If volatility calculation fails, use a default value
+            blended_stddev.resize(prices.size(), 0.01);
         }
-    } catch (const std::exception& e) {
-        ERROR("Exception in get_raw_forecast: " + std::string(e.what()));
-        // If volatility calculation fails, use a default value
-        blended_stddev.resize(prices.size(), 0.01);
     }
 
     // Check volatility calculation
@@ -904,8 +895,8 @@ std::vector<double> TrendFollowingSlowStrategy::get_raw_forecast(const std::vect
 }
 
 std::vector<double> TrendFollowingSlowStrategy::get_scaled_forecast(
-    const std::vector<double>& raw_forecasts, const std::vector<double>& blended_stddev) const {
-    if (raw_forecasts.empty() || blended_stddev.empty())
+    const std::vector<double>& raw_forecasts) const {
+    if (raw_forecasts.empty())
         return {};
 
     double abs_sum = get_abs_value(raw_forecasts);
@@ -935,36 +926,38 @@ std::vector<double> TrendFollowingSlowStrategy::get_raw_combined_forecast(
     std::vector<double> combined_forecast(prices.size(), 0.0);
     int valid_window_pairs = 0;
 
+    // Cache blended_stddev and vol_multiplier — these are pure functions with const inputs,
+    // so computing once and reusing is mathematically equivalent to recomputing per window pair
+    std::vector<double> cached_blended_stddev;
+    double cached_vol_multiplier = 1.0;
+    try {
+        cached_blended_stddev = blended_ewma_stddev(prices, trend_config_.vol_lookback_short);
+        if (prices.size() >= 252) {
+            cached_vol_multiplier = calculate_vol_regime_multiplier(prices, cached_blended_stddev);
+            if (std::isnan(cached_vol_multiplier) || std::isinf(cached_vol_multiplier)) {
+                cached_vol_multiplier = 1.0;
+            }
+        }
+    } catch (const std::exception& e) {
+        ERROR("Exception caching vol data in get_raw_combined_forecast: " + std::string(e.what()));
+        cached_blended_stddev.resize(prices.size(), 0.01);
+    }
+
     // Iterate through each window pair
     for (const auto& window_pair : trend_config_.ema_windows) {
         try {
-            // Calculate raw forecast for this window pair
+            // Calculate raw forecast for this window pair (with cached vol data)
             std::vector<double> raw_forecast =
-                get_raw_forecast(prices, window_pair.first, window_pair.second);
+                get_raw_forecast(prices, window_pair.first, window_pair.second,
+                                 &cached_blended_stddev, &cached_vol_multiplier);
             // Skip if invalid
             if (raw_forecast.empty() || raw_forecast.size() != prices.size()) {
                 WARN("Invalid raw forecast for window pair (" + std::to_string(window_pair.first) +
                      ", " + std::to_string(window_pair.second) + "), skipping");
                 continue;
             }
-            // Get volatility for scaling
-            std::vector<double> blended_stddev;
-            try {
-                blended_stddev = blended_ewma_stddev(prices, window_pair.first);
-
-                // Check if volatility calculation failed
-                if (blended_stddev.empty() || blended_stddev.size() != prices.size()) {
-                    WARN("Invalid volatility for window pair (" +
-                         std::to_string(window_pair.first) + ", " +
-                         std::to_string(window_pair.second) + "), using default");
-                    blended_stddev.resize(prices.size(), 0.01);
-                }
-            } catch (const std::exception& e) {
-                ERROR("Exception in get_raw_combined_forecast: " + std::string(e.what()));
-                blended_stddev.resize(prices.size(), 0.01);
-            }
-            // Get scaled forecast
-            std::vector<double> scaled_forecast = get_scaled_forecast(raw_forecast, blended_stddev);
+            // Get scaled forecast (no blended_stddev needed — param was unused)
+            std::vector<double> scaled_forecast = get_scaled_forecast(raw_forecast);
 
             // Combine forecasts
             for (size_t i = 0; i < combined_forecast.size(); ++i) {
@@ -1090,10 +1083,10 @@ double TrendFollowingSlowStrategy::calculate_position(const std::string& symbol,
 
     if (std::isnan(price) || price <= 0.0) {
         WARN("Invalid price in position calculation for " + symbol + ": " + std::to_string(price));
-        // Try to find last valid price
-        auto it = price_history_.find(symbol);
-        if (it != price_history_.end() && !it->second.empty()) {
-            price = it->second.back();
+        // Try to find last valid price from instrument data
+        auto inst_it = instrument_data_.find(symbol);
+        if (inst_it != instrument_data_.end() && !inst_it->second.price_history.empty()) {
+            price = inst_it->second.price_history.back();
         } else {
             WARN("Cannot find valid price for " + symbol + ", using 1.0");
             price = 1.0;  // Use safe default
@@ -1292,8 +1285,8 @@ double TrendFollowingSlowStrategy::calculate_vol_regime_multiplier(
     // Get current blended volatility (last value in volatility vector)
     double current_vol = volatility.back();
 
-    // Calculate lookback period for long-run average
-    size_t max_lookback = trend_config_.max_history_size;
+    // Calculate lookback period for long-run average (uses vol_lookback_long, not memory cap)
+    size_t max_lookback = static_cast<size_t>(trend_config_.vol_lookback_long);
     size_t available_days = prices.size();
     size_t lookback = std::min(available_days, max_lookback);
 
@@ -1428,7 +1421,8 @@ std::unordered_map<int, double> TrendFollowingSlowStrategy::get_ema_values(
         return ema_values;
     }
 
-    const auto& price_history = it->second.price_history;
+    const auto& price_deque = it->second.price_history;
+    std::vector<double> price_history(price_deque.begin(), price_deque.end());
 
     // Calculate EMA for each requested window
     for (int window : windows) {

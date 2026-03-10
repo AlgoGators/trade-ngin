@@ -270,7 +270,6 @@ private:
     // Cached data for convergence loop optimization (computed once per day, reused across
     // iterations)
     std::vector<std::string> cached_symbols_;
-    std::unordered_map<std::string, std::vector<double>> cached_returns_by_symbol_;
     std::vector<std::vector<double>> cached_covariance_;
     bool covariance_cache_valid_{false};
 

@@ -2,9 +2,11 @@
 // This verifies the new database methods work correctly
 
 #include <chrono>
+#include <fstream>
 #include <iostream>
 #include <unordered_map>
 #include "trade_ngin/core/types.hpp"
+#include "trade_ngin/data/credential_store.hpp"
 #include "trade_ngin/data/database_pooling.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
 
@@ -13,10 +15,39 @@ using namespace trade_ngin;
 int main() {
     std::cout << "Testing Database Extensions...\n" << std::endl;
 
-    // Initialize database pool with connection string
-    std::string conn_string =
-        "host=localhost port=5432 dbname=algo_data user=INSERT_USERNAME_HERE "
-        "password=INSERT_PASSWORD_HERE";
+    // Load credentials from config.json
+    std::string config_filename = "./config.json";
+    auto credentials = std::make_shared<CredentialStore>(config_filename);
+
+    auto username_result = credentials->get<std::string>("database", "username");
+    if (username_result.is_error()) {
+        std::cerr << "Failed to get username: " << username_result.error()->what() << std::endl;
+        return 1;
+    }
+    auto password_result = credentials->get<std::string>("database", "password");
+    if (password_result.is_error()) {
+        std::cerr << "Failed to get password: " << password_result.error()->what() << std::endl;
+        return 1;
+    }
+    auto host_result = credentials->get<std::string>("database", "host");
+    if (host_result.is_error()) {
+        std::cerr << "Failed to get host: " << host_result.error()->what() << std::endl;
+        return 1;
+    }
+    auto port_result = credentials->get<std::string>("database", "port");
+    if (port_result.is_error()) {
+        std::cerr << "Failed to get port: " << port_result.error()->what() << std::endl;
+        return 1;
+    }
+    auto db_name_result = credentials->get<std::string>("database", "name");
+    if (db_name_result.is_error()) {
+        std::cerr << "Failed to get database name: " << db_name_result.error()->what() << std::endl;
+        return 1;
+    }
+
+    std::string conn_string = "postgresql://" + username_result.value() + ":" +
+                              password_result.value() + "@" + host_result.value() + ":" +
+                              port_result.value() + "/" + db_name_result.value();
 
     // Initialize the singleton database pool
     auto pool_result = DatabasePool::instance().initialize(conn_string, 2);
