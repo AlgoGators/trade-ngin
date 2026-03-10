@@ -98,6 +98,7 @@ set(TRADE_NGIN_SOURCES
     src/backtest/backtest_data_loader.cpp
     src/backtest/backtest_portfolio_constraints.cpp
     src/backtest/backtest_coordinator.cpp
+    src/backtest/backtest_csv_exporter.cpp
     src/backtest/slippage_model.cpp
     src/transaction_cost/asset_cost_config.cpp
     src/transaction_cost/spread_model.cpp

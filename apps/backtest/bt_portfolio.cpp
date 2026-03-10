@@ -203,6 +203,7 @@ int main() {
         coord_config.use_optimization = config.portfolio_config.use_optimization;
         coord_config.store_trade_details = config.store_trade_details;
         coord_config.portfolio_id = config.portfolio_id;
+        coord_config.csv_output_path = config.csv_output_path;
 
         auto coordinator = std::make_unique<trade_ngin::backtest::BacktestCoordinator>(
             db, &registry, coord_config);

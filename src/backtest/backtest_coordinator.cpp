@@ -265,6 +265,16 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
     INFO("Calculated warmup days from strategies: " + std::to_string(calculated_warmup_days) +
          ", total available days: " + std::to_string(grouped_bars.size()));
 
+    // Initialize CSV exporter
+    csv_exporter_ = std::make_unique<BacktestCSVExporter>(config_.csv_output_path);
+    auto csv_init_result = csv_exporter_->initialize_files();
+    if (csv_init_result.is_error()) {
+        WARN("Failed to initialize CSV exporter: " + std::string(csv_init_result.error()->what()));
+        csv_exporter_.reset();
+    } else {
+        INFO("CSV exporter initialized, output: " + config_.csv_output_path);
+    }
+
     // Track last saved date
     std::string last_saved_date;
 
@@ -338,6 +348,12 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
         }
     } catch (const std::exception& e) {
         WARN("Exception getting final portfolio positions: " + std::string(e.what()));
+    }
+
+    // Finalize CSV exporter
+    if (csv_exporter_) {
+        csv_exporter_->finalize();
+        INFO("CSV export finalized to: " + config_.csv_output_path);
     }
 
     INFO("Portfolio backtest completed: " + std::to_string(day_index) + " days processed, " +
@@ -660,6 +676,49 @@ Result<void> BacktestCoordinator::process_portfolio_day(
         // Add to equity curve
         equity_curve.emplace_back(timestamp, portfolio_value);
 
+        // CSV export: append daily and finalized positions
+        if (csv_exporter_) {
+            // Build market_prices map
+            std::unordered_map<std::string, double> market_prices;
+            for (const auto& bar : bars) {
+                market_prices[bar.symbol] = static_cast<double>(bar.close);
+            }
+
+            // Get portfolio positions as unordered_map
+            auto portfolio_positions = portfolio->get_portfolio_positions();
+
+            // Calculate gross and net notional
+            double gross_notional = 0.0;
+            double net_notional = 0.0;
+            auto& csv_registry = InstrumentRegistry::instance();
+            for (const auto& [symbol, pos] : portfolio_positions) {
+                double qty = static_cast<double>(pos.quantity);
+                if (std::abs(qty) < 1e-10) continue;
+                auto price_it = market_prices.find(symbol);
+                double price = (price_it != market_prices.end()) ? price_it->second : 0.0;
+                auto instrument = csv_registry.get_instrument(symbol);
+                double notional = instrument
+                    ? instrument->get_notional_value(qty, price)
+                    : qty * price;
+                gross_notional += std::abs(notional);
+                net_notional += notional;
+            }
+
+            csv_exporter_->append_equity_curve(timestamp, portfolio_value);
+
+            csv_exporter_->append_daily_positions(
+                timestamp, portfolio_positions, market_prices,
+                portfolio_value, gross_notional, net_notional,
+                portfolio->get_strategies());
+
+            csv_exporter_->append_finalized_positions(
+                timestamp, portfolio_positions, portfolio_previous_positions_,
+                market_prices);
+
+            // Update previous positions for next day's finalized tracking
+            portfolio_previous_positions_ = portfolio_positions;
+        }
+
         // Get risk metrics if enabled
         if (config_.use_risk_management && risk_manager_) {
             try {
@@ -785,6 +844,8 @@ void BacktestCoordinator::reset_portfolio_state() {
     portfolio_has_previous_bars_ = false;
     portfolio_previous_bars_.clear();
     current_run_id_.clear();
+    portfolio_previous_positions_.clear();
+    csv_exporter_.reset();
 }
 
 std::string BacktestCoordinator::generate_portfolio_run_id(
