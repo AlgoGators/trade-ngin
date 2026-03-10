@@ -38,7 +38,6 @@ public:
      */
     explicit BacktestExecutionManager(const BacktestExecutionConfig& config);
 
-    /**
     ~BacktestExecutionManager() = default;
 
     /**

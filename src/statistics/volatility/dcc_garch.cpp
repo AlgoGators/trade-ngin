@@ -36,6 +36,7 @@ static double dcc_nlopt_objective(const std::vector<double>& x, std::vector<doub
     const auto& Q_bar = *opt_data->Q_bar;
     int T = eps.rows();
     int K = opt_data->n_series;
+    (void)K;
 
     Eigen::MatrixXd Q = Q_bar;
     double ll = 0.0;

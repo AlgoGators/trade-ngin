@@ -34,6 +34,10 @@ public:
                                   const std::string& strategy_id, const std::string& strategy_name,
                                   const std::string& portfolio_id,
                                   const std::string& table_name) override {
+        (void)strategy_id;
+        (void)strategy_name;
+        (void)portfolio_id;
+        (void)table_name;
         executions_stored = executions;
         return Result<void>();
     }

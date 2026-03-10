@@ -212,7 +212,7 @@ TEST_F(PortfolioManagerTest, ProcessMarketData) {
 
         // Create market data
         std::vector<Bar> data;
-        auto now = std::chrono::system_clock::now();
+        [[maybe_unused]] auto now = std::chrono::system_clock::now();
 
         auto historical_data = create_historical_data("AAPL");
         auto historical_data2 = create_historical_data("MSFT");

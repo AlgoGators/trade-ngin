@@ -19,7 +19,7 @@ Result<TestResult> ADFTest::test(const std::vector<double>& data) const {
         }
     }
 
-    int n = data.size();
+    int n = static_cast<int>(data.size());
     DEBUG("[ADFTest::test] entry: n=" << n << " max_lags=" << config_.max_lags);
     int lag_order = config_.max_lags;
     if (lag_order < 0) {
@@ -28,7 +28,7 @@ Result<TestResult> ADFTest::test(const std::vector<double>& data) const {
 
     // Prepare regression: Δy_t = α + βt + γy_{t-1} + Σδ_i Δy_{t-i} + ε_t
     std::vector<double> y_diff = utils::difference(data, 1);
-    int n_obs = y_diff.size() - lag_order;
+    int n_obs = static_cast<int>(y_diff.size()) - lag_order;
 
     if (n_obs < 3) {
         return make_error<TestResult>(
@@ -128,7 +128,7 @@ Result<TestResult> ADFTest::test(const std::vector<double>& data) const {
 
 int ADFTest::select_lag_order(const std::vector<double>& data) const {
     // Use Schwarz criterion: lag = floor(12 * (n/100)^(1/4))
-    int n = data.size();
+    int n = static_cast<int>(data.size());
     return std::max(1, static_cast<int>(std::floor(12.0 * std::pow(n / 100.0, 0.25))));
 }
 

@@ -105,6 +105,7 @@ Result<void> TrendFollowingStrategy::initialize() {
 }
 
 Result<void> TrendFollowingStrategy::on_execution(const ExecutionReport& report) {
+    (void)report;
     // Override base class to prevent PnL corruption.
     // TrendFollowingStrategy calculates PnL in on_data() with proper point_value multiplier.
     // The base class on_execution() calculates PnL without point_value, which would corrupt
@@ -253,7 +254,7 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
             auto& instrument_data = instrument_data_[symbol];
 
             // Wait for enough data before processing
-            if (instrument_data.price_history.size() < max_window) {
+            if (instrument_data.price_history.size() < static_cast<size_t>(max_window)) {
                 if (instrument_data.price_history.size() % 50 == 0) {
                     INFO("Waiting for enough data for symbol " + symbol + " (" +
                          std::to_string(instrument_data.price_history.size()) + " of " +
@@ -876,7 +877,7 @@ std::vector<double> TrendFollowingStrategy::get_raw_forecast(const std::vector<d
                                                              int short_window,
                                                              int long_window) const {
     // Validation
-    if (prices.size() < std::max(short_window, long_window)) {
+    if (prices.size() < static_cast<size_t>(std::max(short_window, long_window))) {
         ERROR("Not enough price data for raw forecast");
         return std::vector<double>(prices.size(), 0.0);  // Return neutral forecast
     }
@@ -1043,7 +1044,7 @@ std::vector<double> TrendFollowingStrategy::get_scaled_combined_forecast(
     size_t num_rules = trend_config_.ema_windows.size();
     double fdm = 1.0;  // Default if not found
     for (const auto& fdm_pair : trend_config_.fdm) {
-        if (fdm_pair.first == num_rules) {
+        if (fdm_pair.first == static_cast<int>(num_rules)) {
             fdm = fdm_pair.second;
             break;
         }

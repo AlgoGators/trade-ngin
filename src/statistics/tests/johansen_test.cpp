@@ -123,6 +123,7 @@ Result<CointegrationResult> JohansenTest::test(const Eigen::MatrixXd& data) cons
 }
 
 std::vector<double> JohansenTest::get_critical_values(int n_series, int rank) const {
+    (void)rank;
     return critical_values::johansen_trace_critical_values(n_series, config_.significance_level);
 }
 

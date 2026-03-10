@@ -91,6 +91,7 @@ Result<void> ResultsManagerBase::save_positions(const std::vector<Position>& pos
 
 Result<void> ResultsManagerBase::save_executions(const std::vector<ExecutionReport>& executions,
                                                  const std::string& run_id, const Timestamp& date) {
+    (void)date;
     // Validate preconditions
     auto validation = validate_storage_enabled();
     if (validation.is_error()) {

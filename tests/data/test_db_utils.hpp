@@ -48,6 +48,7 @@ public:
     template <typename... Args>
     pqxx::result exec(const std::string& query, Args&&... args) {
         last_query_ = query;
+        (void)(... , (void)args);
         return pqxx::result();
     }
 
@@ -57,7 +58,7 @@ public:
     void commit() {}
 
 private:
-    MockConnection& conn_;
+    [[maybe_unused]] MockConnection& conn_;
     std::string last_query_;
 };
 
@@ -89,6 +90,7 @@ public:
         const Timestamp& end_date, AssetClass asset_class,
         DataFrequency freq = DataFrequency::DAILY,
         const std::string& data_type = "ohlcv") override {
+        (void)symbols; (void)asset_class; (void)freq; (void)data_type;
         // Validate date range
         if (start_date > end_date) {
             return make_error<std::shared_ptr<arrow::Table>>(ErrorCode::INVALID_ARGUMENT,
@@ -108,6 +110,10 @@ public:
                                   const std::string& strategy_id, const std::string& strategy_name,
                                   const std::string& portfolio_id,
                                   const std::string& table_name) override {
+        (void)executions;
+        (void)strategy_id;
+        (void)strategy_name;
+        (void)portfolio_id;
         if (!connected_)
             return make_error<void>(ErrorCode::DATABASE_ERROR, "Not connected");
 
@@ -123,6 +129,9 @@ public:
                                  const std::string& strategy_id, const std::string& strategy_name,
                                  const std::string& portfolio_id,
                                  const std::string& table_name) override {
+        (void)strategy_id;
+        (void)strategy_name;
+        (void)portfolio_id;
         if (!connected_)
             return make_error<void>(ErrorCode::DATABASE_ERROR, "Not connected");
 
@@ -148,6 +157,12 @@ public:
                                const std::string& strategy_id, const std::string& strategy_name,
                                const std::string& portfolio_id, const Timestamp& timestamp,
                                const std::string& table_name) override {
+        (void)signals;
+        (void)strategy_id;
+        (void)strategy_name;
+        (void)portfolio_id;
+        (void)timestamp;
+        (void)table_name;
         if (!connected_)
             return make_error<void>(ErrorCode::DATABASE_ERROR, "Not connected");
 
@@ -158,6 +173,9 @@ public:
     Result<std::vector<std::string>> get_symbols(AssetClass asset_class,
                                                  DataFrequency freq = DataFrequency::DAILY,
                                                  const std::string& data_type = "ohlcv") override {
+        (void)asset_class;
+        (void)freq;
+        (void)data_type;
         return Result<std::vector<std::string>>({"AAPL", "GOOG"});
     }
 
@@ -184,6 +202,7 @@ public:
 
     // Direct query execution
     Result<void> execute_direct_query(const std::string& query) {
+        (void)query;
         if (!connected_) {
             return make_error<void>(ErrorCode::DATABASE_ERROR, "Not connected");
         }
@@ -195,6 +214,10 @@ public:
                                            const std::string& run_id,
                                            const std::string& portfolio_id,
                                            const std::string& table_name) override {
+        (void)executions;
+        (void)run_id;
+        (void)portfolio_id;
+        (void)table_name;
         if (!connected_) {
             return make_error<void>(ErrorCode::DATABASE_ERROR, "Not connected");
         }
@@ -205,6 +228,12 @@ public:
                                         const std::string& strategy_id, const std::string& run_id,
                                         const Timestamp& timestamp, const std::string& portfolio_id,
                                         const std::string& table_name) override {
+        (void)signals;
+        (void)strategy_id;
+        (void)run_id;
+        (void)timestamp;
+        (void)portfolio_id;
+        (void)table_name;
         if (!connected_) {
             return make_error<void>(ErrorCode::DATABASE_ERROR, "Not connected");
         }
@@ -217,6 +246,14 @@ public:
                                          const nlohmann::json& hyperparameters,
                                          const std::string& portfolio_id,
                                          const std::string& table_name) override {
+        (void)run_id;
+        (void)name;
+        (void)description;
+        (void)start_date;
+        (void)end_date;
+        (void)hyperparameters;
+        (void)portfolio_id;
+        (void)table_name;
         if (!connected_) {
             return make_error<void>(ErrorCode::DATABASE_ERROR, "Not connected");
         }
@@ -231,6 +268,29 @@ public:
         double avg_loss, double max_win, double max_loss, double avg_holding_period, double var_95,
         double cvar_95, double beta, double correlation, double downside_volatility,
         const nlohmann::json& config, const std::string& table_name) override {
+        (void)strategy_id;
+        (void)date;
+        (void)total_return;
+        (void)sharpe_ratio;
+        (void)sortino_ratio;
+        (void)max_drawdown;
+        (void)calmar_ratio;
+        (void)volatility;
+        (void)total_trades;
+        (void)win_rate;
+        (void)profit_factor;
+        (void)avg_win;
+        (void)avg_loss;
+        (void)max_win;
+        (void)max_loss;
+        (void)avg_holding_period;
+        (void)var_95;
+        (void)cvar_95;
+        (void)beta;
+        (void)correlation;
+        (void)downside_volatility;
+        (void)config;
+        (void)table_name;
         if (!connected_) {
             return make_error<void>(ErrorCode::DATABASE_ERROR, "Not connected");
         }
@@ -241,6 +301,11 @@ public:
                                             const Timestamp& timestamp, double equity,
                                             const std::string& portfolio_id,
                                             const std::string& table_name) override {
+        (void)strategy_id;
+        (void)timestamp;
+        (void)equity;
+        (void)portfolio_id;
+        (void)table_name;
         if (!connected_) {
             return make_error<void>(ErrorCode::DATABASE_ERROR, "Not connected");
         }
@@ -251,6 +316,10 @@ public:
         const std::string& strategy_id,
         const std::vector<std::pair<Timestamp, double>>& equity_points,
         const std::string& portfolio_id, const std::string& table_name) override {
+        (void)strategy_id;
+        (void)equity_points;
+        (void)portfolio_id;
+        (void)table_name;
         if (!connected_) {
             return make_error<void>(ErrorCode::DATABASE_ERROR, "Not connected");
         }

@@ -10,7 +10,7 @@ VarianceRatioTest::VarianceRatioTest(VarianceRatioConfig config)
     : config_(config) {}
 
 double VarianceRatioTest::compute_vr(const std::vector<double>& data, int q) const {
-    int T = data.size();
+    int T = static_cast<int>(data.size());
 
     // 1-period returns (first differences)
     double mean_r = (data.back() - data.front()) / (T - 1);
@@ -37,14 +37,14 @@ double VarianceRatioTest::compute_vr(const std::vector<double>& data, int q) con
 }
 
 double VarianceRatioTest::compute_z_homo(const std::vector<double>& data, int q, double vr) const {
-    int T = data.size() - 1;
+    int T = static_cast<int>(data.size()) - 1;
     // Asymptotic variance under homoskedasticity
     double avar = 2.0 * (2.0 * q - 1.0) * (q - 1.0) / (3.0 * q * T);
     return (vr - 1.0) / std::sqrt(avar);
 }
 
 double VarianceRatioTest::compute_z_hetero(const std::vector<double>& data, int q, double vr) const {
-    int T = data.size();
+    int T = static_cast<int>(data.size());
     int nq = T - 1;
 
     double mean_r = (data.back() - data.front()) / nq;

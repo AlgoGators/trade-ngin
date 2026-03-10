@@ -622,8 +622,9 @@ std::vector<double> PortfolioManager::calculate_weights_per_contract(
             contract_size = instrument->get_multiplier();
 
             // Get latest price from positions or market data
-            auto pos_it = get_portfolio_positions().find(symbol);
-            if (pos_it != get_portfolio_positions().end()) {
+            const auto& portfolio_positions = get_portfolio_positions();
+            auto pos_it = portfolio_positions.find(symbol);
+            if (pos_it != portfolio_positions.end()) {
                 price = static_cast<double>(pos_it->second.average_price);
             }
         }
@@ -670,7 +671,7 @@ std::vector<double> PortfolioManager::calculate_trading_costs(
             double fx_rate = 1.0;  // Default exchange rate
 
             // Calculate notional per contract
-            double notional_per_contract = contract_size * price * fx_rate;
+            [[maybe_unused]] double notional_per_contract = contract_size * price * fx_rate;
             auto cost_result = cost_manager_.calculate_costs(symbol, 1.0, price);
             double cost_per_contract = cost_result.total_transaction_costs;
             costs[i] = (capital > 0.0) ? (cost_per_contract / capital) : 0.0;
@@ -715,6 +716,7 @@ void PortfolioManager::update_historical_returns(const std::vector<Bar>& data) {
             }
         }
     }
+    (void)got_history;
 
     // Now calculate returns for each symbol that has price history
     for (const auto& [symbol, prices] : price_history_) {

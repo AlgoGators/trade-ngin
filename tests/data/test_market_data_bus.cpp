@@ -50,6 +50,7 @@ TEST_F(MarketDataBusTest, BasicSubscription) {
     std::atomic<int> callback_count{0};
 
     MarketDataCallback callback = [&callback_count](const MarketDataEvent& event) {
+        (void)event;
         callback_count++;
     };
 
@@ -106,6 +107,7 @@ TEST_F(MarketDataBusTest, UnsubscribeTest) {
     std::atomic<int> callback_count{0};
 
     MarketDataCallback callback = [&callback_count](const MarketDataEvent& event) {
+        (void)event;
         callback_count++;
     };
 
@@ -206,7 +208,7 @@ TEST_F(MarketDataBusTest, ConcurrentOperations) {
     // Launch multiple publisher threads
     std::vector<std::thread> publishers;
     for (int i = 0; i < num_publishers; ++i) {
-        publishers.emplace_back([this, i, events_per_publisher]() {
+        publishers.emplace_back([this, i]() {
             for (int j = 0; j < events_per_publisher; ++j) {
                 auto event = create_test_event("SYM" + std::to_string(i), MarketDataEventType::BAR,
                                                100.0 + j);

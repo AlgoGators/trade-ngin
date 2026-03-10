@@ -245,9 +245,10 @@ Result<void> PostgresDatabase::store_executions(const std::vector<ExecutionRepor
             std::cout << "DEBUG: About to execute SQL query" << std::endl;
             std::cout << "DEBUG: Query: " << query << std::endl;
 
-            // Updated exec_params to include all 4 cost fields
-            txn.exec_params(
-                query, exec.exec_id, exec.order_id, exec.symbol, side_to_string(exec.side),
+            // Updated exec to include all 4 cost fields
+            txn.exec(
+                query, pqxx::params{
+                exec.exec_id, exec.order_id, exec.symbol, side_to_string(exec.side),
                 static_cast<double>(exec.filled_quantity), static_cast<double>(exec.fill_price),
                 format_timestamp(exec.fill_time),
                 static_cast<double>(exec.commissions_fees),         // $8
@@ -258,7 +259,7 @@ Result<void> PostgresDatabase::store_executions(const std::vector<ExecutionRepor
                 strategy_id,    // $13 - combined (e.g., LIVE_TREND_FOLLOWING_TREND_FOLLOWING_FAST)
                 strategy_name,  // $14 - individual (e.g., TREND_FOLLOWING)
                 exec_date,      // $15
-                portfolio_id);  // $16 - portfolio identifier
+                portfolio_id}); // $16 - portfolio identifier
 
             std::cout << "DEBUG: SQL executed successfully for " << exec.symbol << std::endl;
         }
@@ -502,8 +503,8 @@ Result<void> PostgresDatabase::store_signals(const std::unordered_map<std::strin
                 "ON CONFLICT (portfolio_id, strategy_id, strategy_name, symbol, timestamp) "
                 "DO UPDATE SET signal_value = EXCLUDED.signal_value";
 
-            txn.exec_params(query, strategy_id, symbol, signal, format_timestamp(timestamp),
-                            portfolio_id, strategy_name);
+            txn.exec(query, pqxx::params{strategy_id, symbol, signal, format_timestamp(timestamp),
+                            portfolio_id, strategy_name});
         }
 
         txn.commit();
@@ -605,7 +606,7 @@ Result<std::unordered_map<std::string, double>> PostgresDatabase::get_latest_pri
             "WHERE symbol = ANY($1) "
             "ORDER BY symbol, time DESC";
 
-        auto result = txn.exec_params(query, symbols);
+        auto result = txn.exec(query, pqxx::params{symbols});
         txn.commit();
 
         std::unordered_map<std::string, double> prices;
@@ -661,7 +662,7 @@ Result<std::unordered_map<std::string, Position>> PostgresDatabase::load_positio
                   strategy_name + ", portfolio_id: " + actual_portfolio_id + ", date: " + date_str);
             DEBUG("Full query: " + query);
             result =
-                txn.exec_params(query, strategy_id, strategy_name, actual_portfolio_id, date_str);
+                txn.exec(query, pqxx::params{strategy_id, strategy_name, actual_portfolio_id, date_str});
         } else {
             // If strategy_name is empty, filter by strategy_id and portfolio_id (for aggregate
             // loading)
@@ -676,7 +677,7 @@ Result<std::unordered_map<std::string, Position>> PostgresDatabase::load_positio
             DEBUG("Querying positions for strategy_id: " + strategy_id +
                   ", portfolio_id: " + actual_portfolio_id + ", date: " + date_str);
             DEBUG("Full query: " + query);
-            result = txn.exec_params(query, strategy_id, actual_portfolio_id, date_str);
+            result = txn.exec(query, pqxx::params{strategy_id, actual_portfolio_id, date_str});
         }
         txn.commit();
 
@@ -847,7 +848,7 @@ Result<pqxx::result> PostgresDatabase::execute_market_data_query(
         // No symbol filter
         std::string query = base_query + " ORDER BY time, symbol";
         try {
-            return Result<pqxx::result>(txn.exec_params(query, start_ts, end_ts));
+            return Result<pqxx::result>(txn.exec(query, pqxx::params{start_ts, end_ts}));
         } catch (const std::exception& e) {
             return make_error<pqxx::result>(ErrorCode::DATABASE_ERROR,
                                             "Query execution failed: " + std::string(e.what()));
@@ -864,7 +865,7 @@ Result<pqxx::result> PostgresDatabase::execute_market_data_query(
         std::string query = base_query + " AND symbol = ANY($3) ORDER BY time, symbol";
 
         try {
-            return Result<pqxx::result>(txn.exec_params(query, start_ts, end_ts, symbols));
+            return Result<pqxx::result>(txn.exec(query, pqxx::params{start_ts, end_ts, symbols}));
         } catch (const std::exception& e) {
             return make_error<pqxx::result>(ErrorCode::DATABASE_ERROR,
                                             "Query execution failed: " + std::string(e.what()));
@@ -1068,13 +1069,13 @@ Result<std::shared_ptr<arrow::Table>> PostgresDatabase::convert_metadata_to_arro
     const int UNITS_IDX = 11;
     const int MIN_PRICE_FLUCTUATION_IDX = 12;
     const int TICK_SIZE_IDX = 13;
-    const int SETTLEMENT_TYPE_IDX = 14;  // Not needed in final table
+    [[maybe_unused]] const int SETTLEMENT_TYPE_IDX = 14;  // Not needed in final table
     const int TRADING_HOURS_IDX = 15;
     const int DATA_PROVIDER_IDX = 16;
     const int DATASET_IDX = 17;
-    const int NEWEST_MONTH_ADDITIONS_IDX = 18;  // Not needed in final table
+    [[maybe_unused]] const int NEWEST_MONTH_ADDITIONS_IDX = 18;  // Not needed in final table
     const int CONTRACT_MONTHS_IDX = 19;
-    const int TIME_OF_EXPIRY_IDX = 20;  // Not needed in final table
+    [[maybe_unused]] const int TIME_OF_EXPIRY_IDX = 20;  // Not needed in final table
 
     // Helper function to safely append string values
     auto append_string = [](arrow::StringBuilder& builder, const pqxx::row& row, int index) {
@@ -1367,7 +1368,7 @@ Result<Timestamp> PostgresDatabase::get_latest_data_time(AssetClass asset_class,
         }
 
         std::string query = "SELECT MAX(time) FROM " + full_table_name;
-        auto result = txn.exec1(query);
+        auto result = txn.exec(query).one_row();
 
         if (result[0].is_null()) {
             return make_error<Timestamp>(ErrorCode::DATA_NOT_FOUND,
@@ -1411,7 +1412,7 @@ Result<std::pair<Timestamp, Timestamp>> PostgresDatabase::get_data_time_range(
         }
 
         std::string query = "SELECT MIN(time), MAX(time) FROM " + full_table_name;
-        auto result = txn.exec1(query);
+        auto result = txn.exec(query).one_row();
 
         if (result[0].is_null() || result[1].is_null()) {
             return make_error<std::pair<Timestamp, Timestamp>>(
@@ -1468,7 +1469,7 @@ Result<size_t> PostgresDatabase::get_data_count(AssetClass asset_class, DataFreq
         }
 
         std::string query = "SELECT COUNT(*) FROM " + full_table_name + " WHERE symbol = $1";
-        auto result = txn.exec_params1(query, symbol);
+        auto result = txn.exec(query, pqxx::params{symbol}).one_row();
 
         return Result<size_t>(result[0].as<size_t>());
 
@@ -1749,14 +1750,15 @@ Result<void> PostgresDatabase::store_backtest_executions(
                                     "total_transaction_costs, is_partial) "
                                     "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)";
 
-                txn.exec_params(
-                    query, run_id, actual_portfolio_id, exec.exec_id, exec.order_id,
+                txn.exec(
+                    query, pqxx::params{
+                    run_id, actual_portfolio_id, exec.exec_id, exec.order_id,
                     format_timestamp(exec.fill_time), exec.symbol, side_to_string(exec.side),
                     static_cast<double>(exec.filled_quantity), static_cast<double>(exec.fill_price),
                     static_cast<double>(exec.commissions_fees),
                     static_cast<double>(exec.implicit_price_impact),
                     static_cast<double>(exec.slippage_market_impact),
-                    static_cast<double>(exec.total_transaction_costs), exec.is_partial);
+                    static_cast<double>(exec.total_transaction_costs), exec.is_partial});
             }
         }
 
@@ -1829,14 +1831,15 @@ Result<void> PostgresDatabase::store_backtest_executions_with_strategy(
                     "slippage_market_impact, total_transaction_costs, is_partial) "
                     "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)";
 
-                txn.exec_params(
-                    query, run_id, actual_portfolio_id, strategy_id, exec.exec_id, exec.order_id,
+                txn.exec(
+                    query, pqxx::params{
+                    run_id, actual_portfolio_id, strategy_id, exec.exec_id, exec.order_id,
                     format_timestamp(exec.fill_time), exec.symbol, side_to_string(exec.side),
                     static_cast<double>(exec.filled_quantity), static_cast<double>(exec.fill_price),
                     static_cast<double>(exec.commissions_fees),
                     static_cast<double>(exec.implicit_price_impact),
                     static_cast<double>(exec.slippage_market_impact),
-                    static_cast<double>(exec.total_transaction_costs), exec.is_partial);
+                    static_cast<double>(exec.total_transaction_costs), exec.is_partial});
             }
         }
 
@@ -1880,8 +1883,8 @@ Result<void> PostgresDatabase::store_backtest_signals(
                         "ON CONFLICT (run_id, strategy_id, symbol, timestamp) "
                         "DO UPDATE SET signal_value = EXCLUDED.signal_value, portfolio_id = "
                         "EXCLUDED.portfolio_id, portfolio_run_id = EXCLUDED.portfolio_run_id";
-                txn.exec_params(query, run_id, actual_portfolio_id, strategy_id, symbol,
-                                signal_value, format_timestamp(timestamp), run_id);
+                txn.exec(query, pqxx::params{run_id, actual_portfolio_id, strategy_id, symbol,
+                                signal_value, format_timestamp(timestamp), run_id});
             } else {
                 // Single strategy run or other table: include portfolio_id
                 query = "INSERT INTO " + table_name +
@@ -1890,8 +1893,8 @@ Result<void> PostgresDatabase::store_backtest_signals(
                         "ON CONFLICT (run_id, strategy_id, symbol, timestamp) "
                         "DO UPDATE SET signal_value = EXCLUDED.signal_value, portfolio_id = "
                         "EXCLUDED.portfolio_id";
-                txn.exec_params(query, run_id, actual_portfolio_id, strategy_id, symbol,
-                                signal_value, format_timestamp(timestamp));
+                txn.exec(query, pqxx::params{run_id, actual_portfolio_id, strategy_id, symbol,
+                                signal_value, format_timestamp(timestamp)});
             }
         }
 
@@ -1929,9 +1932,9 @@ Result<void> PostgresDatabase::store_backtest_metadata(
             "start_date = EXCLUDED.start_date, end_date = EXCLUDED.end_date, "
             "hyperparameters = EXCLUDED.hyperparameters";
 
-        txn.exec_params(query, run_id, actual_portfolio_id, name, description,
+        txn.exec(query, pqxx::params{run_id, actual_portfolio_id, name, description,
                         format_timestamp(start_date), format_timestamp(end_date),
-                        hyperparameters.dump());
+                        hyperparameters.dump()});
 
         txn.commit();
         INFO("Successfully stored backtest metadata for run: " + run_id);
@@ -1972,10 +1975,10 @@ Result<void> PostgresDatabase::store_backtest_metadata_with_portfolio(
             "start_date = EXCLUDED.start_date, end_date = EXCLUDED.end_date, "
             "hyperparameters = EXCLUDED.hyperparameters";
 
-        txn.exec_params(query, run_id, actual_portfolio_id, portfolio_run_id, strategy_id,
+        txn.exec(query, pqxx::params{run_id, actual_portfolio_id, portfolio_run_id, strategy_id,
                         strategy_allocation, portfolio_config.dump(), name, description,
                         format_timestamp(start_date), format_timestamp(end_date),
-                        hyperparameters.dump());
+                        hyperparameters.dump()});
 
         txn.commit();
         INFO("Successfully stored backtest metadata with portfolio for run: " + run_id +
@@ -2028,11 +2031,11 @@ Result<void> PostgresDatabase::store_trading_results(
             "cvar_95 = EXCLUDED.cvar_95, beta = EXCLUDED.beta, correlation = EXCLUDED.correlation, "
             "downside_volatility = EXCLUDED.downside_volatility, config = EXCLUDED.config";
 
-        txn.exec_params(query, strategy_id, format_timestamp(date), total_return, sharpe_ratio,
+        txn.exec(query, pqxx::params{strategy_id, format_timestamp(date), total_return, sharpe_ratio,
                         sortino_ratio, max_drawdown, calmar_ratio, volatility, total_trades,
                         win_rate, profit_factor, avg_win, avg_loss, max_win, max_loss,
                         avg_holding_period, var_95, cvar_95, beta, correlation, downside_volatility,
-                        config.dump());
+                        config.dump()});
 
         txn.commit();
         INFO("Successfully stored trading results for strategy: " + strategy_id + " on " +
@@ -2098,13 +2101,13 @@ Result<void> PostgresDatabase::store_live_results(
             "EXCLUDED.margin_posted, cash_available = EXCLUDED.cash_available, config = "
             "EXCLUDED.config";
 
-        txn.exec_params(query, strategy_id, format_timestamp(date), total_return, volatility,
+        txn.exec(query, pqxx::params{strategy_id, format_timestamp(date), total_return, volatility,
                         total_pnl, unrealized_pnl, realized_pnl, current_portfolio_value,
                         daily_realized_pnl, daily_unrealized_pnl, portfolio_var,
                         net_leverage, gross_leverage, margin_leverage, margin_cushion,
                         max_correlation, jump_risk, risk_scale, gross_notional, net_notional,
                         active_positions, total_transaction_costs, margin_posted, cash_available,
-                        config.dump());
+                        config.dump()});
 
         txn.commit();
         INFO("Successfully stored live results for strategy: " + strategy_id + " on " +
@@ -2150,7 +2153,7 @@ Result<std::tuple<double, double, double>> PostgresDatabase::get_previous_live_a
             "ORDER BY date DESC, created_at DESC LIMIT 1";
 
         auto result =
-            txn.exec_params(query, strategy_id, actual_portfolio_id, format_timestamp(date));
+            txn.exec(query, pqxx::params{strategy_id, actual_portfolio_id, format_timestamp(date)});
         txn.commit();
 
         if (result.empty()) {
@@ -2206,7 +2209,7 @@ Result<void> PostgresDatabase::store_trading_equity_curve(const std::string& str
                             "ON CONFLICT (portfolio_id, strategy_id, timestamp) "
                             "DO UPDATE SET equity = EXCLUDED.equity";
 
-        txn.exec_params(query, strategy_id, format_timestamp(timestamp), equity, portfolio_id);
+        txn.exec(query, pqxx::params{strategy_id, format_timestamp(timestamp), equity, portfolio_id});
 
         txn.commit();
         return Result<void>();
@@ -2240,7 +2243,7 @@ Result<void> PostgresDatabase::store_trading_equity_curve_batch(
                                 "ON CONFLICT (portfolio_id, strategy_id, timestamp) "
                                 "DO UPDATE SET equity = EXCLUDED.equity";
 
-            txn.exec_params(query, strategy_id, format_timestamp(timestamp), equity, portfolio_id);
+            txn.exec(query, pqxx::params{strategy_id, format_timestamp(timestamp), equity, portfolio_id});
         }
 
         txn.commit();

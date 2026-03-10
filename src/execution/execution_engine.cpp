@@ -79,7 +79,7 @@ Result<void> ExecutionEngine::initialize() {
 
     try {
         // Subscribe to market data for execution analysis
-        MarketDataCallback callback = [this](const MarketDataEvent& event) {
+        MarketDataCallback callback = [](const MarketDataEvent& event) {
             if (event.type == MarketDataEventType::TRADE) {
                 // Process market trades for participation tracking and scheduling
                 // Implementation depends on specific algorithm needs
@@ -407,7 +407,7 @@ Result<void> ExecutionEngine::execute_twap(const ExecutionJob& job) {
                                     "ExecutionEngine");
         }
 
-        const auto& parent_order = order_result.value().order;
+        [[maybe_unused]] const auto& parent_order = order_result.value().order;
         const auto& config = job.config;
 
         // Calculate number of slices based on time and participation rate
@@ -526,7 +526,7 @@ Result<void> ExecutionEngine::execute_pov(const ExecutionJob& job) {
                                     "ExecutionEngine");
         }
 
-        const auto& parent_order = order_status.value().order;
+        [[maybe_unused]] const auto& parent_order = order_status.value().order;
         const auto& config = job.config;
 
         // Generate at least 2 child orders
@@ -575,7 +575,7 @@ Result<void> ExecutionEngine::execute_adaptive_limit(const ExecutionJob& job) {
         }
 
         const auto& parent_order = order_status.value().order;
-        const auto& config = job.config;
+        [[maybe_unused]] const auto& config = job.config;
 
         // Create a mutable copy of the job to modify in the callback
         auto job_id = job.job_id;

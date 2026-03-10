@@ -97,6 +97,7 @@ Result<std::string> CSVExporter::export_current_positions(
     const std::unordered_map<std::string, double>& market_prices, double portfolio_value,
     double gross_notional, double net_notional, ITrendFollowingStrategy* strategy,
     const std::unordered_map<std::string, double>& symbol_commissions) {
+    (void)symbol_commissions;
     try {
         INFO("CSVExporter: Exporting current positions...");
 
@@ -265,7 +266,6 @@ Result<std::string> CSVExporter::export_finalized_positions(
         file << "symbol,quantity,entry_price,exit_price,realized_pnl\n";
 
         // Try to load finalized positions from database
-        bool use_database = false;
         std::shared_ptr<arrow::RecordBatch> table;
 
         // TODO: Re-enable database loading after fixing includes

@@ -90,6 +90,7 @@ Result<std::pair<double, double>> MarginManager::calculate_position_margin(
     double quantity,
     double market_price) {
 
+    (void)market_price;
     // Get instrument from registry
     auto instrument_result = get_instrument_safe(symbol);
     if (instrument_result.is_error()) {

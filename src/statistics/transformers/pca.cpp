@@ -51,7 +51,7 @@ Result<void> PCA::fit(const Eigen::MatrixXd& data) {
         double total_variance = eigenvalues.sum();
         double cumsum = 0.0;
         n_components_ = 0;
-        for (int i = 0; i < eigenvalues.size(); ++i) {
+        for (Eigen::Index i = 0; i < eigenvalues.size(); ++i) {
             cumsum += eigenvalues(i);
             n_components_++;
             if (cumsum / total_variance >= config_.variance_threshold) {

@@ -703,7 +703,6 @@ int main(int argc, char* argv[]) {
         // Determine if yesterday was a non-trading day
         int day_of_week = now_tm->tm_wday;  // 0=Sunday, 6=Saturday
         bool is_sunday = (day_of_week == 0);
-        bool is_saturday = (day_of_week == 6);
 
         // Check if yesterday was a holiday using HolidayChecker
         HolidayChecker holiday_checker("include/trade_ngin/core/holidays.json");
@@ -1727,10 +1726,7 @@ int main(int argc, char* argv[]) {
 
             // Get yesterday's transaction costs and other existing metrics from database
             double yesterday_transaction_costs = 0.0;
-            double yesterday_total_transaction_costs = 0.0;
             double yesterday_gross_notional = 0.0;
-            double yesterday_net_notional = 0.0;
-            int yesterday_active_positions = 0;
             double yesterday_margin_posted = 0.0;
 
             std::stringstream yesterday_date_ss;
@@ -1747,14 +1743,7 @@ int main(int argc, char* argv[]) {
                 if (live_results.is_ok()) {
                     auto& row = live_results.value();
                     yesterday_transaction_costs = row.daily_transaction_costs;
-                    yesterday_total_transaction_costs =
-                        row.daily_transaction_costs;  // Note: total_transaction_costs field may not
-                                                      // exist
                     yesterday_gross_notional = row.gross_notional;
-                    yesterday_net_notional =
-                        row.gross_notional;  // Note: using gross_notional as net_notional not in
-                                             // LiveResultsRow
-                    yesterday_active_positions = row.active_positions;
                     yesterday_margin_posted = row.margin_posted;
 
                     INFO("Successfully loaded yesterday's metrics via LiveDataLoader:");
@@ -1829,10 +1818,6 @@ int main(int argc, char* argv[]) {
                 yesterday_total_transaction_costs_cumulative;
             double yesterday_portfolio_value_finalized =
                 day_before_yesterday_portfolio_value + yesterday_daily_pnl_finalized;
-
-            // Calculate yesterday's returns using LiveMetricsCalculator
-            double yesterday_daily_return = metrics_calculator->calculate_daily_return(
-                yesterday_daily_pnl_finalized, day_before_yesterday_portfolio_value);
 
             // Note: Yesterday's metrics for email will be loaded from database after update
 
@@ -1938,11 +1923,6 @@ int main(int argc, char* argv[]) {
             } catch (const std::exception& e) {
                 WARN("Failed to load existing metrics: " + std::string(e.what()));
             }
-
-            // DO NOT recalculate these values - they should remain as loaded from database
-            // These values were correctly calculated when the day was originally processed
-            double yesterday_cash_available =
-                yesterday_portfolio_value_finalized - yesterday_margin_posted;
 
             // UPDATE yesterday's live_results with ALL recalculated metrics
             // Note: We calculate daily_pnl, total_pnl, and current_portfolio_value in SQL
@@ -2568,34 +2548,12 @@ int main(int argc, char* argv[]) {
             auto current_date = now;
 
             // Use the calculated returns from above
-            double sharpe_ratio = 0.0;   // Would need historical data to calculate
-            double sortino_ratio = 0.0;  // Would need historical data to calculate
-            double max_drawdown = 0.0;   // Would need historical data to calculate
-            double calmar_ratio = 0.0;   // Would need historical data to calculate
             double volatility = 0.0;
-            int total_trades = 0;             // No trades in daily position generation
-            double win_rate = 0.0;            // No trades in daily position generation
-            double profit_factor = 0.0;       // No trades in daily position generation
-            double avg_win = 0.0;             // No trades in daily position generation
-            double avg_loss = 0.0;            // No trades in daily position generation
-            double max_win = 0.0;             // No trades in daily position generation
-            double max_loss = 0.0;            // No trades in daily position generation
-            double avg_holding_period = 0.0;  // No trades in daily position generation
-            double var_95 = 0.0;
-            double cvar_95 = 0.0;
-            double beta = 0.0;
-            double correlation = 0.0;
-            double downside_volatility = 0.0;
 
             // Get volatility from risk evaluation if available
             if (risk_eval.is_ok()) {
                 const auto& r = risk_eval.value();
                 volatility = r.portfolio_var * 100.0;  // Convert to percentage
-                var_95 = r.portfolio_var * 100.0;      // Use portfolio VaR as proxy
-                cvar_95 =
-                    r.portfolio_var * 100.0;       // Use portfolio VaR as proxy (no CVaR available)
-                beta = 0.0;                        // No beta available in RiskResult
-                correlation = r.correlation_risk;  // Use correlation risk
             }
 
             // Create configuration JSON

@@ -9,6 +9,7 @@ Result<std::unordered_map<std::string, double>> LivePriceManager::load_close_pri
     const std::vector<std::string>& symbols,
     const Timestamp& date) const {
 
+    (void)date;
     if (symbols.empty()) {
         return Result<std::unordered_map<std::string, double>>({});
     }
@@ -137,6 +138,7 @@ Result<double> LivePriceManager::get_settlement_price(
     const std::string& symbol,
     const Timestamp& date) const {
 
+    (void)date;
     // Check cache first
     // TODO: Create proper date string formatting
     // std::string cache_key = symbol + "_" + date_string;
@@ -183,6 +185,7 @@ Result<double> LivePriceManager::get_price(
     const std::string& symbol,
     const Timestamp& timestamp) const {
 
+    (void)timestamp;
     // For live, we typically want the latest price
     return get_latest_price(symbol);
 }
@@ -191,6 +194,7 @@ Result<std::unordered_map<std::string, double>> LivePriceManager::get_prices(
     const std::vector<std::string>& symbols,
     const Timestamp& timestamp) const {
 
+    (void)timestamp;
     std::unordered_map<std::string, double> prices;
 
     for (const auto& symbol : symbols) {

@@ -436,7 +436,7 @@ TEST_F(ExecutionEngineTest, StressTest) {
     EXPECT_GE(active_count, 0) << "Expected at least one active job";
 
     // Cancel jobs with better error handling
-    size_t successful_cancels = 0;
+    [[maybe_unused]] size_t successful_cancels = 0;
     for (size_t i = 0; i < job_ids.size() / 2; ++i) {
         auto cancel_result = engine_->cancel_execution(job_ids[i]);
         if (cancel_result.is_ok()) {

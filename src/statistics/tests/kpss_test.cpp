@@ -18,7 +18,7 @@ Result<TestResult> KPSSTest::test(const std::vector<double>& data) const {
         }
     }
 
-    int n = data.size();
+    int n = static_cast<int>(data.size());
     DEBUG("[KPSSTest::test] entry: n=" << n << " max_lags=" << config_.max_lags);
     Eigen::VectorXd y = Eigen::Map<const Eigen::VectorXd>(data.data(), n);
 

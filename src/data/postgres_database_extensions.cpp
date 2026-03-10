@@ -55,7 +55,7 @@ Result<void> PostgresDatabase::delete_stale_executions(const std::vector<std::st
                             in_list + ")";
 
         // Execute delete for the specified date (YYYY-MM-DD)
-        txn.exec_params(query, format_timestamp(date).substr(0, 10), strategy_name);
+        txn.exec(query, pqxx::params{format_timestamp(date).substr(0, 10), strategy_name});
 
         txn.commit();
 
@@ -272,7 +272,7 @@ Result<void> PostgresDatabase::store_backtest_positions(const std::vector<Positi
             " (run_id, portfolio_id, strategy_id, date, symbol, quantity, average_price, "
             "unrealized_pnl, realized_pnl, last_update, updated_at) VALUES ";
 
-        bool first = true;
+        [[maybe_unused]] bool first = true;
         std::vector<std::string> position_values;
 
         for (const auto& pos : positions) {

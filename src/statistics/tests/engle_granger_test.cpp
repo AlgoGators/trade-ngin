@@ -63,7 +63,7 @@ std::pair<double, std::vector<double>> EngleGrangerTest::ols_regression(
     const std::vector<double>& y,
     const std::vector<double>& x) const {
 
-    int n = y.size();
+    int n = static_cast<int>(y.size());
 
     // Calculate means
     double mean_x = utils::calculate_mean(x);
