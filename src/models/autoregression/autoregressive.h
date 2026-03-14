@@ -24,7 +24,10 @@ class AutoRegressiveModel {
         double predict_next(const std::vector<double>& data);
 
         std::vector<double> get_coefficients() const {
-            return coefficients;
+            // create vector of coefficients, starting with omega followed by the AR coeffs
+            std::vector<double> temp_coeffs {omega};
+            temp_coeffs.insert(temp_coeffs.end(), coefficients.begin(), coefficients.end());
+            return temp_coeffs;
         }
 
 };

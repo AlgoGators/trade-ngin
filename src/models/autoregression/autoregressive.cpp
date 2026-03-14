@@ -1,46 +1,27 @@
 #include "autoregressive.h"
+#include "matrix_ops.h"
+#include <algorithm>
 #include <cstdio>
 #include <cmath>
 #include <iostream>
+#include <random>
 
 using std::vector;
 
-matrix operator*(const matrix& a, const matrix& b) {
-    if (a.empty() || b.empty() || a[0].size() != b.size()) {
-        throw std::invalid_argument("Incompatible matrix dimensions for multiplication.");
+namespace {
+
+double sample_gaussian_noise(double variance) {
+    if (variance <= 0.0) {
+        return 0.0;
     }
 
-    size_t a_num_rows = a.size();
-    size_t b_num_columns = b[0].size();
-    size_t shared_dim = b.size();
-    matrix result(a_num_rows, std::vector<double>(b_num_columns, 0.0));
-    for (size_t i {0}; i < a_num_rows; ++i) {
-        const auto& a_row = a[i];
-        for (size_t j {0}; j < b_num_columns; ++j) {
-            double sum = 0.0;
-            for (size_t k {0}; k < shared_dim; ++k) {
-                sum += a_row[k] * b[k][j];
-            }
-            result[i][j] = sum;
-        }
-    }
-    return result;
+    static thread_local std::mt19937 generator(std::random_device{}());
+    std::normal_distribution<double> distribution(0.0, std::sqrt(variance));
+    return distribution(generator);
 }
 
-matrix transpose(const matrix& mat) {
-    if (mat.empty()) {
-        return {};
-    }
-    size_t num_rows = mat.size();
-    size_t num_cols = mat[0].size();
-    matrix transposed(num_cols, std::vector<double>(num_rows, 0.0));
-    for (size_t i {0}; i < num_rows; ++i) {
-        for (size_t j {0}; j < num_cols; ++j) {
-            transposed[j][i] = mat[i][j];
-        }
-    }
-    return transposed;
 }
+
 
 // Gaussian elimination to solve Ax = b for x, where A is a square matrix and b is a column vector
 std::vector<double> gaussian_elimination(const matrix& A, const matrix& b) {
@@ -82,10 +63,20 @@ std::vector<double> gaussian_elimination(const matrix& A, const matrix& b) {
 
 void AutoRegressiveModel::fit_model(const matrix& data) {
 
+    if (data.empty()) {
+        throw std::invalid_argument("Input data must not be empty.");
+    }
+
     // Only want to work with vectors
     if (data[0].size() != 1) {
         throw std::invalid_argument("Input data must be a vector (matrix with one column).");
     }
+    if (data.size() <= static_cast<size_t>(lag)) {
+        throw std::invalid_argument("Input data must contain more rows than the configured lag.");
+    }
+    // print shape of data
+    // std::cout << data.size() << " " << data[0].size() << std::endl;
+
 
     matrix y{data.begin() + lag, data.end()};
     matrix x{data.begin(), data.end() - lag};
@@ -139,10 +130,9 @@ double AutoRegressiveModel::predict_next(const matrix& data) {
         throw std::invalid_argument("Input data should match length of lag window");
     }
 
-    double prediction = omega;
+    double prediction = omega + sample_gaussian_noise(var);
     for (size_t i {0}; i < coefficients.size(); ++i) {
-        double noise = sqrt(var) * 2.0 * ((double)rand() / RAND_MAX - 0.5);
-        prediction += coefficients[i] * data[data.size() - 1 - i][0] + noise;
+        prediction += coefficients[i] * data[data.size() - 1 - i][0];
     }
     return prediction;
 }
@@ -163,63 +153,10 @@ double AutoRegressiveModel::predict_next(const vector<double>& data) {
 *************************************/
 
 
-void test_transpose(const matrix& mat) {
-    std::printf("Original matrix:\n");
-    for (const auto& row : mat) {
-        for (const auto& val : row) {
-            std::printf("%f ", val);
-        }
-        std::printf("\n");
-    }
-
-    matrix transposed {transpose(mat)};
-    std::printf("Transposed matrix:\n");
-    for (const auto& row : transposed) {
-        for (const auto& val : row) {
-            std::printf("%f ", val);
-        }
-        std::printf("\n");
-    }
-}
-
-void test_matrix_multiplication(const matrix& a, const matrix& b) {
-    std::printf("Matrix A:\n");
-    for (const auto& row : a) {
-        for (const auto& val : row) {
-            std::printf("%f ", val);
-        }
-        std::printf("\n");
-    }
-
-    std::printf("Matrix B:\n");
-    for (const auto& row : b) {
-        for (const auto& val : row) {
-            std::printf("%f ", val);
-        }
-        std::printf("\n");
-    }
-
-    try {
-        matrix result = a * b;
-        std::printf("Result of A * B:\n");
-        for (const auto& row : result) {
-            for (const auto& val : row) {
-                std::printf("%f ", val);
-            }
-            std::printf("\n");
-        }
-    } catch (const std::invalid_argument& e) {
-        std::printf("Error: %s\n", e.what());
-    }
-}
-
-void test_autoregression_model() {
-    matrix data 
-    {
-        {1.0}, {2.1}, {2.9}, {4.2}, {4.8}, {6.3}, {6.9}, {8.1}
-    };
+void test_autoregression_model(matrix data, matrix window, std::vector<double> eval_data, int lag) {
     std::cout << data.size() << " " << data[0].size() << std::endl;
-    AutoRegressiveModel ar_model(2);
+    AutoRegressiveModel ar_model(lag);
+
     ar_model.fit_model(data);
     std::vector<double> coefficients = ar_model.get_coefficients();
     std::printf("Fitted coefficients:\n");
@@ -228,33 +165,93 @@ void test_autoregression_model() {
     }
     std::printf("\n");
 
-    // predict_next expects exactly `lag` (2) most recent points
-    matrix window {{6.9}, {8.1}};
+    std::printf("Window for prediction:\n");
+    for (const auto& row : window) {
+        std::printf("%f ", row[0]);
+    }
+    std::printf("\n");
+    // predict_next expects exactly `lag` most recent points
     double prediction = ar_model.predict_next(window);
     std::printf("Predicted next value: %f\n", prediction);
+    std::printf("Actual next value: %f\n", eval_data[0]);
 }
 
+#include <pqxx/pqxx>
+#include <map>
+#include <string>
+
 int main() {
-    /*
-    matrix mat = 
-    {
-        {1, 2, 3}, 
-        {4, 5, 6}
-    };
-    test_transpose(mat);
 
-    matrix a {
-        {1, 2},
-        {3, 4}
+    std::map<std::string, std::string> database = {
+        {"host", "13.58.153.216"},
+        {"port", "5432"},
+        {"user", "postgres"},
+        {"password", "algogators"},
+        {"dbname", "new_algo_data"}
     };
-    matrix b {
-        {5, 6},
-        {7, 8}
-    };
-    test_matrix_multiplication(a, b);
-    */
+    
+    try {
+        pqxx::connection c(
+            "dbname=" + database["dbname"] +
+            " user=" + database["user"] +
+            " password=" + database["password"] +
+            " hostaddr=" + database["host"] +
+            " port=" + database["port"]
+        );
+        
+        pqxx::work txn(c);
 
-    std::cout << "Testing AutoRegressiveModel" << std::endl;
-    test_autoregression_model();
-    return 0;
+        int lag = 5;
+        int predict_next_n = 1;
+        int limit = (lag * 3) + predict_next_n;
+
+        std::vector<double> fit_data;
+        std::vector<double> test_data;
+        std::vector<double> eval_data;
+        std::vector<double> historical_data;
+
+        pqxx::result r = txn.exec(
+            "SELECT close "
+            "FROM futures_data.new_data_ohlcv_1d "
+            "WHERE symbol = 'NG' "
+            "ORDER BY \"time\" DESC "
+            "LIMIT " + std::to_string(limit) + ";"
+        );
+
+        for (const pqxx::row &row : r) {
+            double price = row["close"].as<double>();
+            historical_data.push_back(price);
+            std::cout << "Closing value: " << price << std::endl;
+        }
+
+        if (historical_data.size() <= static_cast<size_t>(lag + predict_next_n)) {
+            throw std::invalid_argument("Not enough historical data to fit the model and evaluate the next step.");
+        }
+
+        // Query returns newest-to-oldest values; reverse to work in chronological order.
+        std::reverse(historical_data.begin(), historical_data.end());
+        
+        // Train on all but the held-out evaluation point and use the most recent lag values as the window.
+        fit_data = std::vector(historical_data.begin(), historical_data.end() - predict_next_n);
+        test_data = std::vector(fit_data.end() - lag, fit_data.end());
+        eval_data = std::vector<double>(historical_data.end() - predict_next_n, historical_data.end());
+
+        matrix test_data_matrix = matrix(test_data.size(), vector<double>(1, 0.0));
+        for (size_t i {0}; i < test_data.size(); ++i) {
+            test_data_matrix[i][0] = test_data[i];
+        }
+        matrix fit_data_matrix = matrix(fit_data.size(), vector<double>(1, 0.0));
+        for (size_t i {0}; i < fit_data.size(); ++i) {
+            fit_data_matrix[i][0] = fit_data[i];
+        }
+
+        std::cout << "Testing AutoRegressiveModel" << std::endl;
+        test_autoregression_model(fit_data_matrix, test_data_matrix, eval_data, lag);
+        return 0;
+
+        txn.commit();
+    } catch (const std::exception &e) {
+        std::cerr << "Error: " << e.what() << std::endl;
+        return 1;
+    }
 }
