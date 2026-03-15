@@ -1,13 +1,24 @@
+#ifndef _USE_MATH_DEFINES
+#define _USE_MATH_DEFINES
+#endif
+
+// Map popen/pclose to _popen/_pclose on Windows
+#ifdef _WIN32
+#define popen _popen
+#define pclose _pclose
+#endif
+
 #include "trade_ngin/core/chart_generator.hpp"
+#include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <cstdio>  // for popen, pclose
+#include <ctime>
+#include <fstream>
+#include <iomanip>
+#include <sstream>
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/instruments/instrument_registry.hpp"
-#include <fstream>
-#include <sstream>
-#include <iomanip>
-#include <algorithm>
-#include <cmath>
-#include <ctime>
-#include <chrono>
 
 namespace trade_ngin {
 

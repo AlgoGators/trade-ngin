@@ -1127,10 +1127,10 @@ double TrendFollowingSlowStrategy::calculate_position(const std::string& symbol,
 
     if (std::isnan(price) || price <= 0.0) {
         WARN("Invalid price in position calculation for " + symbol + ": " + std::to_string(price));
-        // Try to find last valid price
-        auto it = price_history_.find(symbol);
-        if (it != price_history_.end() && !it->second.empty()) {
-            price = it->second.back();
+        // Try to find last valid price from instrument data
+        auto inst_it = instrument_data_.find(symbol);
+        if (inst_it != instrument_data_.end() && !inst_it->second.price_history.empty()) {
+            price = inst_it->second.price_history.back();
         } else {
             WARN("Cannot find valid price for " + symbol + ", using 1.0");
             price = 1.0;  // Use safe default
