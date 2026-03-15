@@ -267,6 +267,11 @@ private:
 
     size_t max_history_length_ = 2520;  // Keep up to 1 year of return data
 
+    // Covariance cache for multi-iteration convergence optimization
+    bool covariance_cache_valid_{false};
+    std::vector<std::string> cached_symbols_;
+    std::vector<std::vector<double>> cached_covariance_;
+
     // Transaction cost manager for calculating execution costs
     transaction_cost::TransactionCostManager cost_manager_;
 

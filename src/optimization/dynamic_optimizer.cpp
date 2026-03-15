@@ -1,5 +1,6 @@
 // src/optimization/dynamic_optimizer.cpp
 #include "trade_ngin/optimization/dynamic_optimizer.hpp"
+#include <Eigen/Dense>
 #include <algorithm>
 #include <cmath>
 #include <numeric>
@@ -73,74 +74,133 @@ Result<OptimizationResult> DynamicOptimizer::optimize_single_period(
     }
 
     try {
-        // Initialize solution at 0.0
+        const size_t n = current_positions.size();
+        const auto& actual = current_positions;
 
-        const auto actual = current_positions;
-
-        size_t num_assets = current_positions.size();
-        std::vector<double> current_best(target_positions.size(), 0.0);
-        std::vector<double> proposed_solution = current_best;
-
-        for (size_t i = 0; i < num_assets; ++i) {
-            DEBUG("DynOpt INIT [" + std::to_string(i) +
-                  "] current=" + std::to_string(current_positions[i]) +
-                  ", target=" + std::to_string(target_positions[i]));
+        // --- Eigen Setup for Vectorized Math ---
+        // Convert covariance to Eigen matrix (done once)
+        Eigen::MatrixXd cov(n, n);
+        for (size_t i = 0; i < n; ++i) {
+            for (size_t j = 0; j < n; ++j) {
+                cov(i, j) = covariance[i][j];
+            }
         }
 
-        // Calculate initial tracking error
-        double cost_penalty = calculate_cost_penalty(actual, current_best, costs);
-        double best_tracking_error =
-            calculate_tracking_error(target_positions, current_best, covariance, cost_penalty);
+        // Convert target positions to Eigen vector
+        Eigen::VectorXd target(n);
+        for (size_t i = 0; i < n; ++i) {
+            target(i) = target_positions[i];
+        }
+
+        // Convert actual positions to Eigen vector
+        Eigen::VectorXd actual_eigen(n);
+        for (size_t i = 0; i < n; ++i) {
+            actual_eigen(i) = actual[i];
+        }
+
+        // Convert costs to Eigen vector
+        Eigen::VectorXd costs_eigen(n);
+        for (size_t i = 0; i < n; ++i) {
+            costs_eigen(i) = costs[i];
+        }
+
+        // Initialize solution at 0.0
+        Eigen::VectorXd current_best = Eigen::VectorXd::Zero(n);
+
+        // --- Initial Tracking Error (Vectorized) ---
+        Eigen::VectorXd e = target - current_best;
+        double tracking_error_sq = e.transpose() * cov * e;
+        double pure_tracking_error = std::sqrt(std::max(0.0, tracking_error_sq));
+
+        // Cost penalty (vectorized)
+        Eigen::VectorXd trade_diff = current_best - actual_eigen;
+        double cost_penalty = (trade_diff.cwiseAbs().array() * costs_eigen.array()).sum() *
+                              config_.cost_penalty_scalar;
+
+        double best_tracking_error = pure_tracking_error + cost_penalty;
 
         bool improved = true;
         int iteration = 0;
 
-        // Main optimization loop - using greedy algorithm
+        // Pre-extract covariance diagonal (reused across all iterations)
+        Eigen::VectorXd cov_diag = cov.diagonal();
+
+        // Main optimization loop - greedy coordinate descent with rank-1 updates
         while (improved && iteration++ < config_.max_iterations) {
             improved = false;
 
-            std::vector<double> proposed = current_best;
-            double proposed_err = best_tracking_error;
+            // Pre-compute rank-1 base values for this iteration: O(N^2) + O(N)
+            e = target - current_best;
+            Eigen::VectorXd cov_e = cov * e;
+            double base_te_sq = e.dot(cov_e);
 
-            for (size_t i = 0; i < num_assets; ++i) {
-                // Try adding one weight unit (one contract)
-                double raw_diff = target_positions[i] - current_best[i];
+            // Pre-compute base cost for current_best: O(N)
+            trade_diff = current_best - actual_eigen;
+            double base_cost = (trade_diff.cwiseAbs().array() * costs_eigen.array()).sum() *
+                               config_.cost_penalty_scalar;
+
+            double proposed_err = best_tracking_error;
+            int best_i = -1;
+            double best_step = 0.0;
+
+            for (size_t i = 0; i < n; ++i) {
+                double raw_diff = target(i) - current_best(i);
                 if (std::abs(raw_diff) < 1e-12) {
-                    continue;  // No need to adjust if already close to target
+                    continue;
                 }
 
                 double step = weights_per_contract[i] * (raw_diff > 0 ? +1.0 : -1.0);
 
-                std::vector<double> candidate = current_best;
-                candidate[i] += step;
+                // Rank-1 tracking error update: O(1)
+                // e_new = e - step*e_i, so:
+                // e_new'*Cov*e_new = base_te_sq - 2*step*cov_e(i) + step^2*Cov(i,i)
+                double new_te_sq = base_te_sq - 2.0 * step * cov_e(i) + step * step * cov_diag(i);
+                double new_pure_te = std::sqrt(std::max(0.0, new_te_sq));
 
-                // Evaluate its cost & error
-                double c = calculate_cost_penalty(actual, candidate, costs);
-                double e = calculate_tracking_error(target_positions, candidate, covariance, c);
+                // Incremental cost update: O(1)
+                double old_trade_i = std::abs(current_best(i) - actual_eigen(i));
+                double new_trade_i = std::abs(current_best(i) + step - actual_eigen(i));
+                double new_cost =
+                    base_cost + (new_trade_i - old_trade_i) * costs_eigen(i) *
+                                    config_.cost_penalty_scalar;
 
-                // If it strictly improves this pass’s proposed, keep it
-                if (e + config_.convergence_threshold < proposed_err) {
-                    proposed = std::move(candidate);
-                    proposed_err = e;
+                double total_err = new_pure_te + new_cost;
+
+                if (total_err + config_.convergence_threshold < proposed_err) {
+                    best_i = static_cast<int>(i);
+                    best_step = step;
+                    proposed_err = total_err;
                 }
             }
 
-            // 4) If the best candidate from this pass is better than our overall best, adopt it
-            if (proposed_err + config_.convergence_threshold < best_tracking_error) {
-                current_best = std::move(proposed);
+            // If the best candidate from this pass is better than our overall best, adopt it
+            if (best_i >= 0 && proposed_err + config_.convergence_threshold < best_tracking_error) {
+                current_best(best_i) += best_step;
                 best_tracking_error = proposed_err;
                 improved = true;
             }
         }
 
-        // Final metrics
-        double final_cost = calculate_cost_penalty(actual, current_best, costs);
-        double final_err =
-            calculate_tracking_error(target_positions, current_best, covariance, final_cost);
+        // --- Final Metrics ---
+        Eigen::VectorXd final_e = target - current_best;
+        double final_te_sq = final_e.transpose() * cov * final_e;
+        double final_pure_te = std::sqrt(std::max(0.0, final_te_sq));
 
-        OptimizationResult result{current_best, final_err, final_cost, iteration, !improved};
+        Eigen::VectorXd final_trade_diff = current_best - actual_eigen;
+        double final_cost = (final_trade_diff.cwiseAbs().array() * costs_eigen.array()).sum() *
+                            config_.cost_penalty_scalar;
 
-        DEBUG("Final positions: " + std::to_string(current_best.size()) + ", tracking error: " +
+        double final_err = final_pure_te + final_cost;
+
+        // Convert result back to std::vector
+        std::vector<double> result_positions(n);
+        for (size_t i = 0; i < n; ++i) {
+            result_positions[i] = current_best(i);
+        }
+
+        OptimizationResult result{result_positions, final_err, final_cost, iteration, !improved};
+
+        DEBUG("Final positions: " + std::to_string(result_positions.size()) + ", tracking error: " +
               std::to_string(final_err) + ", cost: " + std::to_string(final_cost) +
               ", iterations: " + std::to_string(iteration));
 
