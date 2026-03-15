@@ -25,6 +25,14 @@ TrendFollowingFastStrategy::TrendFollowingFastStrategy(std::string id, StrategyC
         trend_config_.vol_lookback_long = trend_config_.vol_lookback_short * 4;
     }
 
+    // Compute memory cap: must hold enough data for the longest lookback
+    if (trend_config_.max_history_size == 0) {
+        trend_config_.max_history_size = std::max(
+            static_cast<size_t>(trend_config_.vol_lookback_long),
+            size_t{756}
+        );
+    }
+
     // Initialize metadata
     metadata_.name = "Fast Trend Following Strategy";
     metadata_.description =
@@ -70,21 +78,8 @@ Result<void> TrendFollowingFastStrategy::initialize() {
     INFO("Trend following strategy initialized with REALIZED_ONLY PnL accounting for futures");
 
     try {
-        // Initialize price history containers for each symbol with proper capacity
+        // Initialize positions for each symbol
         for (const auto& [symbol, _] : config_.trading_params) {
-            try {
-                price_history_[symbol].reserve(std::max(trend_config_.vol_lookback_long, 2520));
-                volatility_history_[symbol].reserve(
-                    std::max(trend_config_.vol_lookback_long, 2520));
-            } catch (const std::exception& e) {
-                std::cerr << "Failed to reserve price history for symbol " << symbol << ": "
-                          << e.what() << std::endl;
-                return make_error<void>(
-                    ErrorCode::INVALID_ARGUMENT,
-                    std::string("Failed to reserve price history for symbol ") + symbol,
-                    "TrendFollowingFastStrategy");
-            }
-
             // Initialize positions with zero quantity
             Position pos;
             pos.symbol = symbol;
@@ -204,9 +199,9 @@ Result<void> TrendFollowingFastStrategy::on_data(const std::vector<Bar>& data) {
             for (const auto& bar : symbol_bars) {
                 instrument_data.price_history.push_back(static_cast<double>(bar.close));
 
-                // MEMORY FIX: Limit price history to maximum needed lookback (2520 days)
-                if (instrument_data.price_history.size() > 2520) {
-                    instrument_data.price_history.erase(instrument_data.price_history.begin());
+                // MEMORY FIX: Limit price history to maximum needed lookback
+                if (instrument_data.price_history.size() > trend_config_.max_history_size) {
+                    instrument_data.price_history.pop_front();
                 }
             }
         }
@@ -255,7 +250,7 @@ Result<void> TrendFollowingFastStrategy::on_data(const std::vector<Bar>& data) {
             if (full_prices.size() > 1000) {
                 prices.assign(full_prices.end() - 1000, full_prices.end());
             } else {
-                prices = full_prices;
+                prices.assign(full_prices.begin(), full_prices.end());
             }
 
             // Calculate volatility
@@ -285,15 +280,12 @@ Result<void> TrendFollowingFastStrategy::on_data(const std::vector<Bar>& data) {
                 ERROR("Volatility history for " + symbol + " exceeds max size.");
             }
             // Save volatility history with memory management
-            instrument_data.volatility_history = volatility;
+            instrument_data.volatility_history.assign(volatility.begin(), volatility.end());
             instrument_data.current_volatility = volatility.back();
 
             // MEMORY FIX: Limit volatility history to prevent unbounded growth
-            if (instrument_data.volatility_history.size() > 2520) {
-                instrument_data.volatility_history.erase(
-                    instrument_data.volatility_history.begin(),
-                    instrument_data.volatility_history.begin() +
-                        (instrument_data.volatility_history.size() - 2520));
+            while (instrument_data.volatility_history.size() > trend_config_.max_history_size) {
+                instrument_data.volatility_history.pop_front();
             }
 
             // Get raw combined forecast
@@ -321,7 +313,7 @@ Result<void> TrendFollowingFastStrategy::on_data(const std::vector<Bar>& data) {
                     std::to_string(*std::max_element(raw_forecasts.begin(), raw_forecasts.end())));
             }
 
-            instrument_data.raw_forecasts = raw_forecasts;
+            instrument_data.current_raw_forecast = raw_forecasts.back();
 
             // Get scaled forecast
             std::vector<double> scaled_forecasts;
@@ -336,7 +328,7 @@ Result<void> TrendFollowingFastStrategy::on_data(const std::vector<Bar>& data) {
                 scaled_forecasts.resize(raw_forecasts.size(), 0.0);
             }
 
-            instrument_data.scaled_forecasts = scaled_forecasts;
+            instrument_data.current_scaled_forecast = scaled_forecasts.back();
             instrument_data.current_forecast = scaled_forecasts.back();
 
             // Load instruments if not yet cached
@@ -1368,7 +1360,7 @@ double TrendFollowingFastStrategy::calculate_vol_regime_multiplier(
     double current_vol = volatility.back();
 
     // Calculate lookback period for long-run average
-    size_t max_lookback = 2520;  // 10 years
+    size_t max_lookback = static_cast<size_t>(trend_config_.vol_lookback_long);
     size_t available_days = prices.size();
     size_t lookback = std::min(available_days, max_lookback);
 
@@ -1503,7 +1495,8 @@ std::unordered_map<int, double> TrendFollowingFastStrategy::get_ema_values(
         return ema_values;
     }
 
-    const auto& price_history = it->second.price_history;
+    const auto& price_deque = it->second.price_history;
+    std::vector<double> price_history(price_deque.begin(), price_deque.end());
 
     // Calculate EMA for each requested window
     for (int window : windows) {

@@ -1,6 +1,7 @@
 // include/trade_ngin/strategy/trend_following.hpp
 #pragma once
 
+#include <deque>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -26,6 +27,7 @@ struct TrendFollowingConfig {
         {2, 8}, {4, 16}, {8, 32}, {16, 64}, {32, 128}, {64, 256}};
     int vol_lookback_short{32};   // Short lookback for volatility calculation
     int vol_lookback_long{2520};  // Long lookback for volatility calculation
+    size_t max_history_size{0};   // 0 = auto-compute from vol_lookback_long
     std::vector<std::pair<int, double>> fdm{{1, 1.0},  {2, 1.03}, {3, 1.08},
                                             {4, 1.13}, {5, 1.19}, {6, 1.26}};
 };
@@ -38,18 +40,18 @@ struct InstrumentData {
     double contract_size = 1.0;
     double weight = 1.0;
 
-    // Dynamic forecast data
-    std::vector<double> raw_forecasts;
-    std::vector<double> scaled_forecasts;
+    // Dynamic forecast data (scalars only, vectors computed locally)
+    double current_raw_forecast = 0.0;
+    double current_scaled_forecast = 0.0;
     double current_forecast = 0.0;
 
     // Position data
     double raw_position = 0.0;
     double final_position = 0.0;
 
-    // Market data
-    std::vector<double> price_history;
-    std::vector<double> volatility_history;
+    // Market data (deque for O(1) front removal)
+    std::deque<double> price_history;
+    std::deque<double> volatility_history;
     double current_volatility = 0.01;
 
     // Timestamp of last update
@@ -101,12 +103,10 @@ public:
      */
     std::unordered_map<std::string, std::vector<double>> get_price_history() const override {
         std::unordered_map<std::string, std::vector<double>> history;
-
-        // Convert from map of vectors to map of maps
-        for (const auto& [symbol, prices] : instrument_data_) {
-            history[symbol] = prices.price_history;
+        for (const auto& [symbol, data] : instrument_data_) {
+            // Convert deque → vector for return
+            history[symbol].assign(data.price_history.begin(), data.price_history.end());
         }
-
         return history;
     }
 
@@ -194,10 +194,6 @@ protected:
 
 private:
     TrendFollowingConfig trend_config_;
-
-    // Price and signal storage
-    std::unordered_map<std::string, std::vector<double>> price_history_;
-    std::unordered_map<std::string, std::vector<double>> volatility_history_;
 
     std::shared_ptr<InstrumentRegistry> registry_;
 
