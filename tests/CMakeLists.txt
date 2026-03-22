@@ -22,6 +22,7 @@ set(TEST_SOURCES
     strategy/test_base_strategy.cpp
     strategy/test_trend_following.cpp
     strategy/test_mean_reversion_backtest.cpp
+    strategy/test_equity_backtest_db_validation.cpp
     statistics/test_normalizer.cpp
     statistics/test_pca.cpp
     statistics/test_adf.cpp

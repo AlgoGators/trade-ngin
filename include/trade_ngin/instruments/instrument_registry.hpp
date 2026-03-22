@@ -69,6 +69,13 @@ public:
     Result<void> load_instruments();
 
     /**
+     * @brief Register equity instruments from a list of symbols
+     * @param symbols Vector of equity ticker symbols to register
+     * @return Result indicating success or failure
+     */
+    Result<void> load_equity_instruments(const std::vector<std::string>& symbols);
+
+    /**
      * @brief Get all loaded instruments
      * @return Map of symbols to instruments
      */

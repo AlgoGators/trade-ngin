@@ -172,6 +172,36 @@ Result<void> InstrumentRegistry::load_instruments() {
     }
 }
 
+Result<void> InstrumentRegistry::load_equity_instruments(
+    const std::vector<std::string>& symbols) {
+    if (!initialized_) {
+        return make_error<void>(ErrorCode::NOT_INITIALIZED, "InstrumentRegistry not initialized",
+                                "InstrumentRegistry");
+    }
+
+    int registered = 0;
+    for (const auto& symbol : symbols) {
+        if (has_instrument(symbol)) {
+            continue;
+        }
+
+        EquitySpec spec;
+        spec.exchange = "NYSE";
+        spec.currency = "USD";
+        spec.tick_size = 0.01;
+        spec.commission_per_share = 0.0;
+
+        register_instrument(symbol, std::make_shared<EquityInstrument>(symbol, std::move(spec)));
+        registered++;
+    }
+
+    INFO("Registered " + std::to_string(registered) + " equity instruments (" +
+         std::to_string(symbols.size()) + " total symbols, " +
+         std::to_string(symbols.size() - registered) + " already existed)");
+
+    return Result<void>();
+}
+
 std::unordered_map<std::string, std::shared_ptr<Instrument>>
 InstrumentRegistry::get_all_instruments() const {
     std::lock_guard<std::mutex> lock(mutex_);

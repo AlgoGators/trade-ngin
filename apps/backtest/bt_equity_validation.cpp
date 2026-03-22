@@ -24,6 +24,7 @@
 #include <arrow/api.h>
 
 #include "trade_ngin/backtest/backtest_coordinator.hpp"
+#include "trade_ngin/core/config_loader.hpp"
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/core/time_utils.hpp"
 #include "trade_ngin/data/conversion_utils.hpp"
@@ -101,15 +102,21 @@ int main() {
         std::cout << "======================================================\n" << std::endl;
 
         // ====================================================================
-        // SETUP — Direct connection (no config file needed)
+        // SETUP — Load config and connect to database
         // ====================================================================
-        INFO("Setting up direct database connection...");
+        INFO("Loading configuration...");
+        auto app_config_result = ConfigLoader::load("./config", "equity_mr");
+        if (app_config_result.is_error()) {
+            ERROR("Failed to load equity_mr configuration: " +
+                  std::string(app_config_result.error()->what()));
+            return 1;
+        }
+        auto app_config = app_config_result.value();
+        INFO("Configuration loaded for portfolio: " + app_config.portfolio_id);
 
-        // Database connection — same credentials as test_database_extensions
-        std::string conn_string =
-            "host=13.58.153.216 port=5432 dbname=new_algo_data user=postgres password=algogators";
-
-        auto pool_result = DatabasePool::instance().initialize(conn_string, 2);
+        std::string conn_string = app_config.database.get_connection_string();
+        auto pool_result = DatabasePool::instance().initialize(
+            conn_string, app_config.database.num_connections);
         if (pool_result.is_error()) {
             std::cerr << "Failed to initialize connection pool: " << pool_result.error()->what() << std::endl;
             return 1;
@@ -180,16 +187,11 @@ int main() {
         std::cout << std::endl;
 
         // Register equity instruments
-        for (const auto& symbol : symbols) {
-            if (!registry.has_instrument(symbol)) {
-                EquitySpec spec;
-                spec.exchange = "NYSE";
-                spec.currency = "USD";
-                spec.tick_size = 0.01;
-                spec.commission_per_share = 0.0;
-                registry.register_instrument(symbol,
-                    std::make_shared<EquityInstrument>(symbol, std::move(spec)));
-            }
+        auto equity_reg_result = registry.load_equity_instruments(symbols);
+        if (equity_reg_result.is_error()) {
+            ERROR("Failed to register equity instruments: " +
+                  std::string(equity_reg_result.error()->what()));
+            return 1;
         }
 
         // Determine date range from actual data in DB for selected symbols

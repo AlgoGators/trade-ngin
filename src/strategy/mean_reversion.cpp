@@ -52,8 +52,8 @@ Result<void> MeanReversionStrategy::initialize() {
         return base_result;
     }
 
-    set_pnl_accounting_method(PnLAccountingMethod::REALIZED_ONLY);
-    INFO("Mean reversion strategy initialized with REALIZED_ONLY PnL accounting");
+    set_pnl_accounting_method(PnLAccountingMethod::UNREALIZED_ONLY);
+    INFO("Mean reversion strategy initialized with UNREALIZED_ONLY PnL accounting");
 
     try {
         for (const auto& [symbol, _] : config_.trading_params) {

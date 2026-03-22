@@ -6,9 +6,10 @@
 #include <ctime>
 #include <set>
 #include <algorithm>
+#include <nlohmann/json.hpp>
+#include "trade_ngin/core/config_loader.hpp"
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/core/time_utils.hpp"
-#include "trade_ngin/data/credential_store.hpp"
 #include "trade_ngin/data/database_pooling.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
 #include "trade_ngin/data/conversion_utils.hpp"
@@ -91,51 +92,23 @@ int main(int argc, char* argv[]) {
         std::cerr << "After Logger initialization: initialized="
                   << Logger::instance().is_initialized() << std::endl;
 
+        // ========================================
+        // LOAD CONFIGURATION FROM MODULAR CONFIG FILES
+        // ========================================
+        INFO("Loading configuration from config/portfolios/equity_mr...");
+        auto app_config_result = ConfigLoader::load("./config", "equity_mr");
+        if (app_config_result.is_error()) {
+            ERROR("Failed to load equity_mr configuration: " +
+                  std::string(app_config_result.error()->what()));
+            return 1;
+        }
+        auto app_config = app_config_result.value();
+        INFO("Configuration loaded successfully for portfolio: " + app_config.portfolio_id);
+
         // Setup database connection pool
         INFO("Initializing database connection pool...");
-        auto credentials = std::make_shared<trade_ngin::CredentialStore>("./config.json");
-
-        auto username_result = credentials->get<std::string>("database", "username");
-        if (username_result.is_error()) {
-            std::cerr << "Failed to get username: " << username_result.error()->what() << std::endl;
-            return 1;
-        }
-        std::string username = username_result.value();
-
-        auto password_result = credentials->get<std::string>("database", "password");
-        if (password_result.is_error()) {
-            std::cerr << "Failed to get password: " << password_result.error()->what() << std::endl;
-            return 1;
-        }
-        std::string password = password_result.value();
-
-        auto host_result = credentials->get<std::string>("database", "host");
-        if (host_result.is_error()) {
-            std::cerr << "Failed to get host: " << host_result.error()->what() << std::endl;
-            return 1;
-        }
-        std::string host = host_result.value();
-
-        auto port_result = credentials->get<std::string>("database", "port");
-        if (port_result.is_error()) {
-            std::cerr << "Failed to get port: " << port_result.error()->what() << std::endl;
-            return 1;
-        }
-        std::string port = port_result.value();
-
-        auto db_name_result = credentials->get<std::string>("database", "name");
-        if (db_name_result.is_error()) {
-            std::cerr << "Failed to get database name: " << db_name_result.error()->what()
-                      << std::endl;
-            return 1;
-        }
-        std::string db_name = db_name_result.value();
-
-        std::string conn_string =
-            "postgresql://" + username + ":" + password + "@" + host + ":" + port + "/" + db_name;
-
-        // Initialize only the connection pool with sufficient connections
-        size_t num_connections = 5;
+        std::string conn_string = app_config.database.get_connection_string();
+        size_t num_connections = app_config.database.num_connections;
         auto pool_result = DatabasePool::instance().initialize(conn_string, num_connections);
         if (pool_result.is_error()) {
             std::cerr << "Failed to initialize connection pool: " << pool_result.error()->what()
@@ -166,65 +139,48 @@ int main(int argc, char* argv[]) {
             return 1;
         }
 
-        // Load equity instruments
+        // Load futures instruments (if any exist in DB metadata)
         auto load_result = registry.load_instruments();
-        if (load_result.is_error() || registry.get_all_instruments().empty()) {
-            std::cerr << "Failed to load equity instruments: " << load_result.error()->what()
-                      << std::endl;
-            ERROR("Failed to load equity instruments: " +
-                  std::string(load_result.error()->what()));
-            return 1;
-        } else {
-            INFO("Successfully loaded equity instruments from database");
+        if (load_result.is_error()) {
+            WARN("Could not load instruments from DB (may not have futures metadata): " +
+                 std::string(load_result.error()->what()));
         }
-
-        // After loading instruments
-        DEBUG("Verifying instrument registry contents");
-        auto all_instruments = registry.get_all_instruments();
-        INFO("Registry contains " + std::to_string(all_instruments.size()) + " instruments");
-
-        // Configure daily position generation parameters
-        INFO("Loading configuration...");
 
         // Get current date for daily processing (or use override date)
         auto now = use_override_date ? target_date : std::chrono::system_clock::now();
         auto now_time_t = std::chrono::system_clock::to_time_t(now);
         std::tm* now_tm = std::localtime(&now_time_t);
 
-        // Set start date to 300 days ago for sufficient historical data
-        auto start_date = now - std::chrono::hours(24 * 300);  // 300 days ago
+        // Set start date based on config historical_days
+        int historical_days = app_config.live.historical_days;
+        auto start_date = now - std::chrono::hours(24 * historical_days);
 
         // Set end date based on run type to avoid lookahead bias
         auto end_date = use_override_date ? (now - std::chrono::hours(24)) : now;
-        // For historical runs: exclude current day's data (use previous day)
-        // For live runs: include current day's data (use current day)
-        
+
         DEBUG("Run type: " + std::string(use_override_date ? "HISTORICAL" : "LIVE"));
         DEBUG("Start date: " + std::to_string(std::chrono::system_clock::to_time_t(start_date)));
         DEBUG("End date: " + std::to_string(std::chrono::system_clock::to_time_t(end_date)));
         DEBUG("Target date (now): " + std::to_string(std::chrono::system_clock::to_time_t(now)));
 
-        double initial_capital = 500000.0;  // $500k
-        double commission_rate = 0.0005;    // 5 basis points
-        double slippage_model = 1.0;       // 1 basis point
+        double initial_capital = app_config.initial_capital;
+        double commission_rate = app_config.execution.commission_rate;
+        double slippage_model = app_config.execution.slippage_bps;
 
+        // Load equity symbols from database
         auto symbols_result = db->get_symbols(trade_ngin::AssetClass::EQUITIES);
+        if (symbols_result.is_error()) {
+            ERROR("Failed to get symbols: " + std::string(symbols_result.error()->what()));
+            return 1;
+        }
         auto symbols = symbols_result.value();
 
-        if (symbols_result.is_ok()) {
-            for (const auto& symbol : symbols) {
-                if (symbol.find(".c.0") != std::string::npos ||
-                    symbol.find("MES.c.0") != std::string::npos ||
-                    symbol.find("ES.v.0") != std::string::npos) {
-                    symbols.erase(std::remove(symbols.begin(), symbols.end(), symbol),
-                                  symbols.end());
-                }
-            }
-        } else {
-            // Detailed error logging
-            ERROR("Failed to get symbols: " + std::string(symbols_result.error()->what()));
-            throw std::runtime_error("Failed to get symbols: " +
-                                     symbols_result.error()->to_string());
+        // Register equity instruments
+        auto equity_reg_result = registry.load_equity_instruments(symbols);
+        if (equity_reg_result.is_error()) {
+            ERROR("Failed to register equity instruments: " +
+                  std::string(equity_reg_result.error()->what()));
+            return 1;
         }
 
         std::cout << "Symbols: ";
@@ -250,63 +206,59 @@ int main(int argc, char* argv[]) {
         INFO("Asset class: EQUITIES - skipping futures margin validation");
         INFO("Equity instruments use price-per-share model without futures-style margin requirements");
 
-        // Configure portfolio risk management
-        RiskConfig risk_config;
+        // Configure portfolio from loaded config
+        RiskConfig risk_config = app_config.risk_config;
         risk_config.capital = Decimal(initial_capital);
-        risk_config.confidence_level = 0.99;
-        risk_config.lookback_period = 252;
-        risk_config.var_limit = 0.15;
-        risk_config.jump_risk_limit = 0.10;
-        risk_config.max_correlation = 0.7;
-        risk_config.max_gross_leverage = 4.0;
-        risk_config.max_net_leverage = 2.0;
 
-        // Configure portfolio optimization
-        DynamicOptConfig opt_config;
-        opt_config.tau = 1.0;
+        DynamicOptConfig opt_config = app_config.opt_config;
         opt_config.capital = initial_capital;
-        opt_config.cost_penalty_scalar = 50.0;
-        opt_config.asymmetric_risk_buffer = 0.1;
-        opt_config.max_iterations = 100;
-        opt_config.convergence_threshold = 1e-6;
-        opt_config.use_buffering = true;
-        opt_config.buffer_size_factor = 0.05;
 
-        // Setup portfolio configuration
         trade_ngin::PortfolioConfig portfolio_config;
         portfolio_config.total_capital = initial_capital;
-        portfolio_config.reserve_capital = initial_capital * 0.10;  // 10% reserve (match bt)
-        portfolio_config.max_strategy_allocation = 1.0;     // Only have one strategy currently
-        portfolio_config.min_strategy_allocation = 0.1;
-        portfolio_config.use_optimization = true;
-        portfolio_config.use_risk_management = true;
+        portfolio_config.reserve_capital = initial_capital * app_config.reserve_capital_pct;
+        portfolio_config.max_strategy_allocation = app_config.strategy_defaults.max_strategy_allocation;
+        portfolio_config.min_strategy_allocation = app_config.strategy_defaults.min_strategy_allocation;
+        portfolio_config.use_optimization = app_config.strategy_defaults.use_optimization;
+        portfolio_config.use_risk_management = app_config.strategy_defaults.use_risk_management;
         portfolio_config.opt_config = opt_config;
         portfolio_config.risk_config = risk_config;
 
+        // Load mean reversion strategy config from config file
+        if (!app_config.strategies_config.contains("MEAN_REVERSION")) {
+            ERROR("MEAN_REVERSION strategy not found in config");
+            return 1;
+        }
+        const auto& strategy_def = app_config.strategies_config["MEAN_REVERSION"];
+        if (!strategy_def.contains("config")) {
+            ERROR("MEAN_REVERSION strategy missing 'config' section");
+            return 1;
+        }
+        const auto& mr_cfg = strategy_def["config"];
+
         // Create mean reversion strategy configuration
         trade_ngin::StrategyConfig mr_config;
-        mr_config.capital_allocation = initial_capital;  // Match backtest (reserve handled separately)
+        mr_config.capital_allocation = initial_capital;
         mr_config.asset_classes = {trade_ngin::AssetClass::EQUITIES};
         mr_config.frequencies = {trade_ngin::DataFrequency::DAILY};
-        mr_config.max_drawdown = 0.3;   // 30% max drawdown for equities
-        mr_config.max_leverage = 2.0;   // Lower leverage for equities
-        // Add position limits for equities (whole shares)
+        mr_config.max_drawdown = app_config.max_drawdown;
+        mr_config.max_leverage = app_config.max_leverage;
         for (const auto& symbol : symbols) {
-            mr_config.position_limits[symbol] = 10000.0;  // Max shares per symbol
-            mr_config.trading_params[symbol] = 1.0;       // Price per share (not multiplier)
+            mr_config.position_limits[symbol] = app_config.execution.position_limit_live;
+            mr_config.trading_params[symbol] = 1.0;
             mr_config.costs[symbol] = commission_rate;
         }
 
-        // Configure mean reversion parameters
+        // Configure mean reversion parameters from config
         trade_ngin::MeanReversionConfig mean_rev_config;
-        mean_rev_config.lookback_period = 20;        // 20-day moving average
-        mean_rev_config.entry_threshold = 2.0;       // Enter at 2 standard deviations
-        mean_rev_config.exit_threshold = 0.5;        // Exit at 0.5 standard deviations
-        mean_rev_config.risk_target = 0.15;          // 15% annualized risk
-        mean_rev_config.position_size = 0.1;         // 10% of capital per position
-        mean_rev_config.vol_lookback = 20;           // 20-day volatility
-        mean_rev_config.use_stop_loss = true;
-        mean_rev_config.stop_loss_pct = 0.05;        // 5% stop loss
+        mean_rev_config.lookback_period = mr_cfg.value("lookback_period", 20);
+        mean_rev_config.entry_threshold = mr_cfg.value("entry_threshold", 2.0);
+        mean_rev_config.exit_threshold = mr_cfg.value("exit_threshold", 0.5);
+        mean_rev_config.risk_target = mr_cfg.value("risk_target", 0.15);
+        mean_rev_config.position_size = mr_cfg.value("position_size", 0.1);
+        mean_rev_config.vol_lookback = mr_cfg.value("vol_lookback", 20);
+        mean_rev_config.use_stop_loss = mr_cfg.value("use_stop_loss", true);
+        mean_rev_config.stop_loss_pct = mr_cfg.value("stop_loss_pct", 0.05);
+        mean_rev_config.allow_fractional_shares = mr_cfg.value("allow_fractional_shares", true);
 
         // Create and initialize the strategies
         // Before MeanReversionStrategy
@@ -1079,7 +1031,7 @@ int main(int argc, char* argv[]) {
                 auto margin_metrics = data_loader->load_margin_metrics("LIVE_EQUITY_MEAN_REVERSION", "BASE_PORTFOLIO", previous_date);
                 if (margin_metrics.is_ok() && margin_metrics.value().valid) {
                     auto& metrics = margin_metrics.value();
-                    yesterday_portfolio_leverage = metrics.portfolio_leverage;
+                    yesterday_portfolio_leverage = metrics.gross_leverage;
                     yesterday_equity_to_margin_ratio = metrics.equity_to_margin_ratio;
 
                     // Also update the gross_notional and margin_posted if available
@@ -1500,7 +1452,7 @@ int main(int argc, char* argv[]) {
             }
 
             // Use LiveMetricsCalculator for portfolio metrics
-            double portfolio_leverage = metrics_calculator->calculate_portfolio_leverage(gross_notional, current_portfolio_value);
+            double portfolio_leverage = metrics_calculator->calculate_gross_leverage(gross_notional, current_portfolio_value);
             // equity_to_margin_ratio and margin_cushion already computed above
             
             // Use the LiveResultsManager
@@ -1610,7 +1562,15 @@ int main(int argc, char* argv[]) {
         if (send_email) {
             INFO("Sending email report...");
             try {
-                auto email_sender = std::make_shared<EmailSender>(credentials);
+                EmailSenderConfig email_config;
+                email_config.smtp_host = app_config.email.smtp_host;
+                email_config.smtp_port = app_config.email.smtp_port;
+                email_config.username = app_config.email.username;
+                email_config.password = app_config.email.password;
+                email_config.use_tls = app_config.email.use_tls;
+                email_config.to_emails = app_config.email.to_emails;
+
+                auto email_sender = std::make_shared<EmailSender>(email_config);
                 auto email_init_result = email_sender->initialize();
                 if (email_init_result.is_error()) {
                     ERROR("Failed to initialize email sender: " + std::string(email_init_result.error()->what()));

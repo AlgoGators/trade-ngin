@@ -44,14 +44,9 @@ int main() {
         INFO("Loading configuration...");
         auto app_config_result = ConfigLoader::load("./config", "equity_mr");
         if (app_config_result.is_error()) {
-            // Fall back to base config if equity_mr config doesn't exist
-            WARN("equity_mr config not found, falling back to base config");
-            app_config_result = ConfigLoader::load("./config", "base");
-            if (app_config_result.is_error()) {
-                ERROR("Failed to load configuration: " +
-                      std::string(app_config_result.error()->what()));
-                return 1;
-            }
+            ERROR("Failed to load equity_mr configuration: " +
+                  std::string(app_config_result.error()->what()));
+            return 1;
         }
         auto app_config = app_config_result.value();
         INFO("Configuration loaded for portfolio: " + app_config.portfolio_id);
@@ -98,34 +93,38 @@ int main() {
         }
 
         // ========================================
-        // LOAD EQUITY SYMBOLS
+        // LOAD EQUITY SYMBOLS FROM CONFIG
         // ========================================
-        auto symbols_result = db->get_symbols(AssetClass::EQUITIES);
-        if (symbols_result.is_error()) {
-            ERROR("Failed to get equity symbols: " + std::string(symbols_result.error()->what()));
-            return 1;
+        std::vector<std::string> symbols;
+        const auto& mr_strategy_def = app_config.strategies_config["MEAN_REVERSION"];
+        if (mr_strategy_def.contains("symbols")) {
+            for (const auto& sym : mr_strategy_def["symbols"]) {
+                symbols.push_back(sym.get<std::string>());
+            }
+            INFO("Loaded " + std::to_string(symbols.size()) + " symbols from config");
         }
-        auto symbols = symbols_result.value();
-        INFO("Found " + std::to_string(symbols.size()) + " equity symbols in database");
+        if (symbols.empty()) {
+            WARN("No symbols in strategy config, falling back to database scan (slow)");
+            auto symbols_result = db->get_symbols(AssetClass::EQUITIES);
+            if (symbols_result.is_error()) {
+                ERROR("Failed to get equity symbols: " + std::string(symbols_result.error()->what()));
+                return 1;
+            }
+            symbols = symbols_result.value();
+        }
 
         if (symbols.empty()) {
-            ERROR("No equity symbols found in database");
+            ERROR("No equity symbols found");
             return 1;
         }
 
-        // Register equity instruments in the registry (multiplier=1.0 for stocks)
-        for (const auto& symbol : symbols) {
-            if (!registry.has_instrument(symbol)) {
-                EquitySpec spec;
-                spec.exchange = "NYSE";
-                spec.currency = "USD";
-                spec.tick_size = 0.01;
-                spec.commission_per_share = 0.0;
-                registry.register_instrument(symbol,
-                    std::make_shared<EquityInstrument>(symbol, std::move(spec)));
-            }
+        // Register equity instruments in the registry
+        auto equity_reg_result = registry.load_equity_instruments(symbols);
+        if (equity_reg_result.is_error()) {
+            ERROR("Failed to register equity instruments: " +
+                  std::string(equity_reg_result.error()->what()));
+            return 1;
         }
-        INFO("Registered " + std::to_string(symbols.size()) + " equity instruments");
 
         // Print symbols
         std::cout << "Symbols (" << symbols.size() << "): ";
@@ -176,33 +175,28 @@ int main() {
         // ========================================
         // CREATE MEAN REVERSION STRATEGY
         // ========================================
-        MeanReversionConfig mr_config;
-        mr_config.lookback_period = 20;
-        mr_config.entry_threshold = 2.0;
-        mr_config.exit_threshold = 0.5;
-        mr_config.risk_target = 0.15;
-        mr_config.position_size = 0.1;
-        mr_config.vol_lookback = 20;
-        mr_config.use_stop_loss = true;
-        mr_config.stop_loss_pct = 0.05;
-        mr_config.allow_fractional_shares = true;
-
-        // Override from config if available
-        if (app_config.strategies_config.contains("MEAN_REVERSION")) {
-            const auto& cfg = app_config.strategies_config["MEAN_REVERSION"];
-            if (cfg.contains("config")) {
-                const auto& mr_cfg = cfg["config"];
-                mr_config.lookback_period = mr_cfg.value("lookback_period", 20);
-                mr_config.entry_threshold = mr_cfg.value("entry_threshold", 2.0);
-                mr_config.exit_threshold = mr_cfg.value("exit_threshold", 0.5);
-                mr_config.risk_target = mr_cfg.value("risk_target", 0.15);
-                mr_config.position_size = mr_cfg.value("position_size", 0.1);
-                mr_config.vol_lookback = mr_cfg.value("vol_lookback", 20);
-                mr_config.use_stop_loss = mr_cfg.value("use_stop_loss", true);
-                mr_config.stop_loss_pct = mr_cfg.value("stop_loss_pct", 0.05);
-                mr_config.allow_fractional_shares = mr_cfg.value("allow_fractional_shares", true);
-            }
+        // Load mean reversion config from strategy definition
+        if (!app_config.strategies_config.contains("MEAN_REVERSION")) {
+            ERROR("MEAN_REVERSION strategy not found in config");
+            return 1;
         }
+        const auto& strategy_def = app_config.strategies_config["MEAN_REVERSION"];
+        if (!strategy_def.contains("config")) {
+            ERROR("MEAN_REVERSION strategy missing 'config' section");
+            return 1;
+        }
+        const auto& mr_cfg = strategy_def["config"];
+
+        MeanReversionConfig mr_config;
+        mr_config.lookback_period = mr_cfg.value("lookback_period", 20);
+        mr_config.entry_threshold = mr_cfg.value("entry_threshold", 2.0);
+        mr_config.exit_threshold = mr_cfg.value("exit_threshold", 0.5);
+        mr_config.risk_target = mr_cfg.value("risk_target", 0.15);
+        mr_config.position_size = mr_cfg.value("position_size", 0.1);
+        mr_config.vol_lookback = mr_cfg.value("vol_lookback", 20);
+        mr_config.use_stop_loss = mr_cfg.value("use_stop_loss", true);
+        mr_config.stop_loss_pct = mr_cfg.value("stop_loss_pct", 0.05);
+        mr_config.allow_fractional_shares = mr_cfg.value("allow_fractional_shares", true);
 
         StrategyConfig strategy_config;
         strategy_config.asset_classes = {AssetClass::EQUITIES};
