@@ -34,6 +34,15 @@ struct AssetCostConfig {
     double tick_size = 0.01;     // Minimum price increment
     double point_value = 1.0;    // Dollar value per point (contract multiplier)
 
+    // Per-unit commission override (-1.0 = use manager's global fee_per_contract)
+    // For equities: set to ~0.005 (IBKR Pro $0.005/share)
+    // For futures: leave as -1.0 to use the global explicit_fee_per_contract
+    double commission_per_unit = -1.0;
+
+    // Min/max commission per order (only applied when commission_per_unit >= 0)
+    double min_commission_per_order = 0.0;
+    double max_commission_per_order = 1e9;  // effectively no cap by default
+
     // Optional: max total implicit cost cap
     double max_total_implicit_bps = 200.0;
 };

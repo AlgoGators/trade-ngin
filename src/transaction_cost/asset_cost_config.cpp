@@ -578,6 +578,61 @@ void AssetCostConfigRegistry::initialize_default_configs() {
         config.point_value = 2000.0;
         configs_[config.symbol] = config;
     }
+
+    // ========================================
+    // EQUITIES — point_value = 1.0 (shares, not contracts)
+    // ========================================
+
+    // Mega-cap equities: very tight spreads, deep liquidity
+    for (const auto& sym : {"AAPL", "MSFT", "AMZN", "GOOGL", "META"}) {
+        AssetCostConfig config;
+        config.symbol = sym;
+        config.baseline_spread_ticks = 1.0;   // ~$0.01 spread (1 penny)
+        config.min_spread_ticks = 0.5;
+        config.max_spread_ticks = 3.0;
+        config.tick_size = 0.01;
+        config.point_value = 1.0;             // 1 share = 1 point
+        config.commission_per_unit = 0.005;   // IBKR Pro: $0.005/share
+        config.min_commission_per_order = 1.00;
+        config.max_commission_per_order = 9.79;
+        config.max_impact_bps = 50.0;
+        config.max_total_implicit_bps = 75.0;
+        configs_[config.symbol] = config;
+    }
+
+    // Large-cap equities: slightly wider spreads
+    for (const auto& sym : {"TMUS", "NSC", "ABT"}) {
+        AssetCostConfig config;
+        config.symbol = sym;
+        config.baseline_spread_ticks = 2.0;   // ~$0.02 spread
+        config.min_spread_ticks = 1.0;
+        config.max_spread_ticks = 5.0;
+        config.tick_size = 0.01;
+        config.point_value = 1.0;
+        config.commission_per_unit = 0.005;
+        config.min_commission_per_order = 1.00;
+        config.max_commission_per_order = 9.79;
+        config.max_impact_bps = 75.0;
+        config.max_total_implicit_bps = 100.0;
+        configs_[config.symbol] = config;
+    }
+
+    // Mid-cap / ADR equities: wider spreads, thinner liquidity
+    for (const auto& sym : {"ABEV", "ABM"}) {
+        AssetCostConfig config;
+        config.symbol = sym;
+        config.baseline_spread_ticks = 3.0;   // ~$0.03 spread
+        config.min_spread_ticks = 1.5;
+        config.max_spread_ticks = 8.0;
+        config.tick_size = 0.01;
+        config.point_value = 1.0;
+        config.commission_per_unit = 0.005;
+        config.min_commission_per_order = 1.00;
+        config.max_commission_per_order = 9.79;
+        config.max_impact_bps = 100.0;
+        config.max_total_implicit_bps = 150.0;
+        configs_[config.symbol] = config;
+    }
 }
 
 AssetCostConfig AssetCostConfigRegistry::get_config(const std::string& symbol) const {

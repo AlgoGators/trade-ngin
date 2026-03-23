@@ -50,8 +50,15 @@ TransactionCostResult TransactionCostManager::calculate_costs(
     AssetCostConfig asset_config = asset_configs_.get_config(symbol);
 
     // 1. Calculate explicit costs
-    // commissions_fees = |qty| * fee_per_contract
-    result.commissions_fees = abs_qty * config_.explicit_fee_per_contract;
+    if (asset_config.commission_per_unit >= 0.0) {
+        // Per-asset commission (e.g., equities: $0.005/share with min/max per order)
+        double raw_commission = abs_qty * asset_config.commission_per_unit;
+        result.commissions_fees = std::max(asset_config.min_commission_per_order,
+                                           std::min(asset_config.max_commission_per_order, raw_commission));
+    } else {
+        // Global fee per contract (futures default)
+        result.commissions_fees = abs_qty * config_.explicit_fee_per_contract;
+    }
 
     // 2. Calculate spread cost (in price units per contract)
     result.spread_price_impact = spread_model_.calculate_spread_price_impact(
