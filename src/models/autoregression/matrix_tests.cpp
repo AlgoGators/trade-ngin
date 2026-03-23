@@ -57,6 +57,7 @@ void test_matrix_multiplication(const matrix& a, const matrix& b) {
     }
 }
 
+
 int main() {
     matrix mat = 
     {
