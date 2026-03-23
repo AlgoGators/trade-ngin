@@ -3,8 +3,10 @@
 #include <algorithm>
 #include <cstdio>
 #include <cmath>
-#include <iostream>
 #include <random>
+#include <pqxx/pqxx>
+#include <map>
+#include <string>
 
 using std::vector;
 
@@ -145,6 +147,27 @@ double AutoRegressiveModel::predict_next(const vector<double>& data) {
     return predict_next(mat_data);
 }
 
+double AutoRegressiveModel::backtest(const matrix& data) {
+    if (data.empty()) {
+        throw std::invalid_argument("Input data must not be empty.");
+    }
+    if (data[0].size() != 1) {
+        throw std::invalid_argument("Input data must be a vector (matrix with one column).");
+    }
+    if (data.size() <= static_cast<size_t>(lag)) {
+        throw std::invalid_argument("Input data must contain more rows than the configured lag.");
+    }
+
+    double total_error = 0.0;
+    for (size_t t {lag}; t < data.size(); ++t) {
+        matrix window(data.begin() + t - lag, data.begin() + t);
+        double prediction = predict_next(window);
+        double actual = data[t][0];
+        total_error += std::abs(prediction - actual);
+    }
+    return total_error / (data.size() - lag);
+}
+
 
 /*************************************
 
@@ -153,11 +176,13 @@ double AutoRegressiveModel::predict_next(const vector<double>& data) {
 *************************************/
 
 
+
 void test_autoregression_model(matrix data, matrix window, std::vector<double> eval_data, int lag) {
     std::cout << data.size() << " " << data[0].size() << std::endl;
-    AutoRegressiveModel ar_model(lag);
 
+    AutoRegressiveModel ar_model(lag);
     ar_model.fit_model(data);
+
     std::vector<double> coefficients = ar_model.get_coefficients();
     std::printf("Fitted coefficients:\n");
     for (const auto& coeff : coefficients) {
@@ -170,18 +195,55 @@ void test_autoregression_model(matrix data, matrix window, std::vector<double> e
         std::printf("%f ", row[0]);
     }
     std::printf("\n");
-    // predict_next expects exactly `lag` most recent points
+
     double prediction = ar_model.predict_next(window);
     std::printf("Predicted next value: %f\n", prediction);
     std::printf("Actual next value: %f\n", eval_data[0]);
 }
 
-#include <pqxx/pqxx>
-#include <map>
-#include <string>
+void historical_backtest_autoregression_model(const matrix& full_data, size_t lag, size_t min_train_size) {
+    if (full_data.size() <= static_cast<size_t>(min_train_size)) {
+        throw std::invalid_argument("Not enough data for historical backtest.");
+    }
+
+    if (min_train_size < lag) {
+        throw std::invalid_argument("min_train_size must be at least as large as lag.");
+    }
+
+    double abs_error_sum = 0.0;
+    size_t num_predictions = 0;
+
+    // t is the index of the value we are trying to predict
+    // train on [0, t), predict full_data[t]
+    for (size_t t {min_train_size}; t < full_data.size(); ++t) {
+        matrix train_data(full_data.begin(), full_data.begin() + t);
+        matrix prediction_window(full_data.begin() + (t - lag), full_data.begin() + t);
+
+        AutoRegressiveModel ar_model(lag);
+        ar_model.fit_model(train_data);
+
+        double prediction = ar_model.predict_next(prediction_window);
+        double actual = full_data[t][0];
+        double abs_error = std::abs(prediction - actual);
+
+        abs_error_sum += abs_error;
+        ++num_predictions;
+
+        std::printf(
+            "Step %zu | train_size=%zu | prediction=%f | actual=%f | abs_error=%f\n",
+            t - min_train_size + 1,
+            train_data.size(),
+            prediction,
+            actual,
+            abs_error
+        );
+    }
+
+    double mae = (num_predictions > 0) ? abs_error_sum / num_predictions : 0.0;
+    std::printf("Historical backtest MAE over %zu forecasts: %f\n", num_predictions, mae);
+}
 
 int main() {
-
     std::map<std::string, std::string> database = {
         {"host", "13.58.153.216"},
         {"port", "5432"},
@@ -189,7 +251,7 @@ int main() {
         {"password", "algogators"},
         {"dbname", "new_algo_data"}
     };
-    
+
     try {
         pqxx::connection c(
             "dbname=" + database["dbname"] +
@@ -198,59 +260,44 @@ int main() {
             " hostaddr=" + database["host"] +
             " port=" + database["port"]
         );
-        
+
         pqxx::work txn(c);
 
-        int lag = 5;
-        int predict_next_n = 1;
-        int limit = (lag * 3) + predict_next_n;
+        size_t lag = 5;
 
-        std::vector<double> fit_data;
-        std::vector<double> test_data;
-        std::vector<double> eval_data;
+
+        size_t total_points = 5000;
+
+        // minimum amount of data required before first forecast
+        size_t min_train_size = lag * 3;
+
         std::vector<double> historical_data;
 
         pqxx::result r = txn.exec(
             "SELECT close "
             "FROM futures_data.new_data_ohlcv_1d "
             "WHERE symbol = 'NG' "
-            "ORDER BY \"time\" DESC "
-            "LIMIT " + std::to_string(limit) + ";"
+            "ORDER BY \"time\" ASC "
+            "LIMIT " + std::to_string(total_points) + ";"
         );
 
         for (const pqxx::row &row : r) {
             double price = row["close"].as<double>();
             historical_data.push_back(price);
-            std::cout << "Closing value: " << price << std::endl;
         }
-
-        if (historical_data.size() <= static_cast<size_t>(lag + predict_next_n)) {
-            throw std::invalid_argument("Not enough historical data to fit the model and evaluate the next step.");
-        }
-
-        // Query returns newest-to-oldest values; reverse to work in chronological order.
-        std::reverse(historical_data.begin(), historical_data.end());
-        
-        // Train on all but the held-out evaluation point and use the most recent lag values as the window.
-        fit_data = std::vector(historical_data.begin(), historical_data.end() - predict_next_n);
-        test_data = std::vector(fit_data.end() - lag, fit_data.end());
-        eval_data = std::vector<double>(historical_data.end() - predict_next_n, historical_data.end());
-
-        matrix test_data_matrix = matrix(test_data.size(), vector<double>(1, 0.0));
-        for (size_t i {0}; i < test_data.size(); ++i) {
-            test_data_matrix[i][0] = test_data[i];
-        }
-        matrix fit_data_matrix = matrix(fit_data.size(), vector<double>(1, 0.0));
-        for (size_t i {0}; i < fit_data.size(); ++i) {
-            fit_data_matrix[i][0] = fit_data[i];
-        }
-
-        std::cout << "Testing AutoRegressiveModel" << std::endl;
-        test_autoregression_model(fit_data_matrix, test_data_matrix, eval_data, lag);
-        return 0;
 
         txn.commit();
-    } catch (const std::exception &e) {
+
+        if (historical_data.size() <= static_cast<size_t>(min_train_size)) {
+            throw std::invalid_argument("Not enough historical data for requested backtest.");
+        }
+
+        matrix historical_data_matrix = to_column_matrix(historical_data);
+        historical_backtest_autoregression_model(historical_data_matrix, lag, min_train_size);
+
+        return 0;
+    }
+    catch (const std::exception &e) {
         std::cerr << "Error: " << e.what() << std::endl;
         return 1;
     }

@@ -9,10 +9,10 @@ class AutoRegressiveModel {
         std::vector<double> coefficients;
         double var;
 
-        int lag;
+        size_t lag;
 
     public:
-        AutoRegressiveModel(int lag) 
+        AutoRegressiveModel(size_t lag) 
         : lag(lag) {};
 
         // Fit the AR coefficients and variance to the data
@@ -29,5 +29,6 @@ class AutoRegressiveModel {
             temp_coeffs.insert(temp_coeffs.end(), coefficients.begin(), coefficients.end());
             return temp_coeffs;
         }
+        double backtest(const matrix& data);
 
 };

@@ -41,3 +41,11 @@ matrix transpose(const matrix& mat) {
     }
     return transposed;
 }
+
+matrix to_column_matrix(const std::vector<double>& data) {
+    matrix m(data.size(), std::vector<double>(1, 0.0));
+    for (size_t i = 0; i < data.size(); ++i) {
+        m[i][0] = data[i];
+    }
+    return m;
+}
