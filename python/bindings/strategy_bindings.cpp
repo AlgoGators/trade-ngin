@@ -34,10 +34,27 @@ struct PyBaseStrategy : public BaseStrategy {
 
 void bind_base_strategy(py::module_& m) {
     py::class_<BaseStrategy, PyBaseStrategy, std::shared_ptr<BaseStrategy>>(m, "BaseStrategy")
-        // .def(py::init<std::string, StrategyConfig, std::shared_ptr<PostgresDatabase>>(),
-        //      py::arg("id"), py::arg("config"), py::arg("db"))
+        .def(py::init<>())
+        .def("initialize_from_context", &BaseStrategy::initialize_from_context, py::arg("id"),
+             py::arg("config"),
+             py::arg("db"))  // Hidden internal initializer for Python subclasses to set up the
+                             // strategy from the context passed in by the backtest runner
+        .def("config",
+             [](BaseStrategy& self) -> const StrategyConfig& {
+                 return self.get_config();
+             })  // Necessarily expose config from C++ side instead of Python side since we're
+                 // getting the configs from the config files. Also, currently read only which
+                 // should be sufficient, but potentially might want to add some setters in the
+                 // future if we want to allow dynamic config updates from Python side.
+        .def("initialize", &BaseStrategy::initialize)
         .def("on_data", &BaseStrategy::on_data)
         .def("on_execution", &BaseStrategy::on_execution)
+        .def_property_readonly(
+            "positions",
+            [](const BaseStrategy& self) -> const std::unordered_map<std::string, Position>& {
+                return self.get_positions();
+            },
+            py::return_value_policy::reference_internal)
         .def("update_position", &BaseStrategy::update_position, py::arg("symbol"),
              py::arg("position"));
     // TODO We can expose more that we need as we go on

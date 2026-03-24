@@ -28,6 +28,22 @@ BaseStrategy::BaseStrategy(std::string id, StrategyConfig config,
     Logger::register_component("BaseStrategy");
 }
 
+BaseStrategy::BaseStrategy() : state_(StrategyState::INITIALIZED) {
+    // Default constructor for Python bindings
+    // Fields will be initialized in initialize_from_context()
+
+    // Initialize metadata
+    metadata_.id = id_;
+    metadata_.name = "Base Strategy";
+    metadata_.description = "Base strategy implementation";
+
+    // Initialize risk limits from config
+    risk_limits_.max_leverage = config_.max_leverage;
+    risk_limits_.max_drawdown = config_.max_drawdown;
+
+    Logger::register_component("BaseStrategy");
+}
+
 Result<void> BaseStrategy::initialize() {
     std::lock_guard<std::mutex> lock(mutex_);
 
@@ -106,6 +122,15 @@ Result<void> BaseStrategy::initialize() {
         return make_error<void>(ErrorCode::NOT_INITIALIZED,
                                 std::string("Initialization failed: ") + e.what(), "BaseStrategy");
     }
+}
+
+void BaseStrategy::initialize_from_context(const std::string& id, const StrategyConfig& config,
+                                           std::shared_ptr<PostgresDatabase> db) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    id_ = id;
+    config_ = config;
+    db_ = db;
+    state_ = StrategyState::INITIALIZED;
 }
 
 Result<void> BaseStrategy::start() {

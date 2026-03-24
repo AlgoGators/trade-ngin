@@ -8,8 +8,6 @@
 #include "trade_ngin/data/database_pooling.hpp"
 #include "trade_ngin/instruments/instrument_registry.hpp"
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
-// #include "trade_ngin/strategy/trend_following.hpp"
-// #include "trade_ngin/strategy/trend_following_fast.hpp"
 
 namespace trade_ngin::api {
 
@@ -318,7 +316,6 @@ Result<backtest::BacktestResults> BacktestRunner::run_backtest() {
             INFO("Creating strategy: " + strategy_id + " (type: " + strategy_type +
                  ", allocation: " + std::to_string(allocation * 100.0) + "%)");
 
-            // TODO freezes here, probably because of the Python boundary
             if (registered_strategies_.find(strategy_id) == registered_strategies_.end()) {
                 ERROR("Strategy " + strategy_id + " is not registered");
                 return make_error<backtest::BacktestResults>(

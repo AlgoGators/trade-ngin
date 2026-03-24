@@ -20,10 +20,13 @@ void bind_backtest_api(py::module_& m) {
                     const StrategyContext& ctx,
                     const nlohmann::json& strategy_def) -> std::shared_ptr<BaseStrategy> {
                     py::gil_scoped_acquire gil;
-                    // TODO make it so the user doesn't have to define __init__ somehow, or only
-                    // needs to define init for py_config
-                    py::object py_instance = py_class(strategy_id, ctx.base_strategy_config,
-                                                      py_config, ctx.db, ctx.registry);
+
+                    // Construct Python object with no args
+                    py::object py_instance = py_class();
+
+                    // Inject state
+                    py_instance.attr("initialize_from_context")(strategy_id,
+                                                                ctx.base_strategy_config, ctx.db);
 
                     return py_instance.cast<std::shared_ptr<BaseStrategy>>();
                 });
