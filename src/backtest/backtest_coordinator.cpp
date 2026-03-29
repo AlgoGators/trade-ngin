@@ -366,7 +366,7 @@ Result<void> BacktestCoordinator::process_day(
     const Timestamp& timestamp, const std::vector<Bar>& bars,
     std::shared_ptr<StrategyInterface> strategy, std::vector<ExecutionReport>& executions,
     std::vector<std::pair<Timestamp, double>>& equity_curve, std::vector<RiskResult>& risk_metrics,
-    bool is_warmup) {
+    [[maybe_unused]] bool is_warmup) {
     try {
         // BEGINNING-OF-DAY MODEL:
         // 1. Use previous day's bars for signal generation
