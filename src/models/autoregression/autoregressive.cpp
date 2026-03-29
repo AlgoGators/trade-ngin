@@ -1,304 +1,269 @@
-#include "autoregressive.h"
-#include "matrix_ops.h"
-#include <algorithm>
-#include <cstdio>
-#include <cmath>
-#include <random>
-#include <pqxx/pqxx>
-#include <map>
-#include <string>
+//#include "trade_ngin/statistics/state_estimation/msar.hpp"
+#include "trade_ngin/src/models/autoregression/msar.hpp"
+#include "trade_ngin/statistics/state_estimation/markov_switching.hpp"
 
-using std::vector;
+
+#include <stdexcept>
+#include <algorithm>
+#include <cmath>
+#include <iostream>
+#include <vector>
+
+
+namespace trade_ngin {
+namespace statistics {
+
 
 namespace {
 
-double sample_gaussian_noise(double variance) {
-    if (variance <= 0.0) {
-        return 0.0;
+
+std::vector<double> eigen_to_std_vector(const Eigen::VectorXd& values) {
+    std::vector<double> out(static_cast<std::size_t>(values.size()));
+    for (Eigen::Index i = 0; i < values.size(); ++i) {
+        out[static_cast<std::size_t>(i)] = values(i);
+    }
+    return out;
+}
+
+
+}
+
+
+MarketMSAR::MarketMSAR(int lag)
+    : lag_(lag) {
+    if (lag_ <= 0) {
+        throw std::invalid_argument("MarketMSAR lag must be positive.");
+    }
+}
+
+
+void MarketMSAR::fit(const Eigen::VectorXd& returns,
+                     const Eigen::MatrixXd& state_probs,
+                     const Eigen::MatrixXd& transition_matrix) {
+    if (returns.size() <= lag_) {
+        throw std::invalid_argument("MarketMSAR::fit requires returns.size() > lag.");
+    }
+    if (state_probs.rows() != returns.size()) {
+        throw std::invalid_argument("state_probs rows must equal returns size.");
+    }
+    if (transition_matrix.rows() != transition_matrix.cols()) {
+        throw std::invalid_argument("transition_matrix must be square.");
+    }
+    if (state_probs.cols() != transition_matrix.rows()) {
+        throw std::invalid_argument("state_probs cols must match transition_matrix size.");
     }
 
-    static thread_local std::mt19937 generator(std::random_device{}());
-    std::normal_distribution<double> distribution(0.0, std::sqrt(variance));
-    return distribution(generator);
-}
 
-}
+    n_states_ = static_cast<int>(state_probs.cols());
+    transition_matrix_ = transition_matrix;
+    ar_coeffs_ = Eigen::MatrixXd::Zero(n_states_, lag_);
+    intercepts_ = Eigen::VectorXd::Zero(n_states_);
+    residual_variances_ = Eigen::VectorXd::Zero(n_states_);
 
 
-// Gaussian elimination to solve Ax = b for x, where A is a square matrix and b is a column vector
-std::vector<double> gaussian_elimination(const matrix& A, const matrix& b) {
-    size_t n = A.size();
-    matrix augmented(n, std::vector<double>(n + 1, 0.0));
-    for (size_t i {0}; i < n; ++i) {
-        for (size_t j {0}; j < n; ++j) {
-            augmented[i][j] = A[i][j];
+    const Eigen::Index T = returns.size();
+    const Eigen::Index N = T - lag_;
+
+
+    Eigen::MatrixXd X(N, lag_);
+    Eigen::VectorXd y(N);
+
+
+    // Fill X (lagged return data) and y (current/target returns)
+    for (Eigen::Index t = lag_; t < T; ++t) {
+        const Eigen::Index row = t - lag_;
+        y(row) = returns(t);
+
+
+        for (size_t k {0}; k < lag_; ++k) {
+            X(row, k) = returns(t - 1 - k);
         }
-        augmented[i][n] = b[i][0];
     }
 
-    for (size_t i {0}; i < n; ++i) {
-        size_t max_row = i;
-        for (size_t k {i + 1}; k < n; ++k) {
-            if (std::abs(augmented[k][i]) > std::abs(augmented[max_row][i])) {
-                max_row = k;
-            }
+
+    for (int s {0}; s < n_states_; ++s) {
+        Eigen::VectorXd weights(N);
+        for (Eigen::Index t = lag_; t < T; ++t) {
+            weights(t - lag_) = std::max(state_probs(t, s), 1e-8);
         }
-        std::swap(augmented[i], augmented[max_row]);
 
-        for (size_t k {i + 1}; k < n; ++k) {
-            double factor = augmented[k][i] / augmented[i][i];
-            for (size_t j {i}; j <= n; ++j) {
-                augmented[k][j] -= factor * augmented[i][j];
-            }
+
+        Eigen::VectorXd coeffs(lag_);
+        double intercept = 0.0;
+        double residual_var = 0.0;
+
+
+        fit_single_regime(X, y, weights, coeffs, intercept, residual_var);
+
+
+        ar_coeffs_.row(s) = coeffs.transpose();
+        intercepts_(s) = intercept;
+        residual_variances_(s) = residual_var;
+    }
+}
+
+
+void MarketMSAR::fit_single_regime(const Eigen::MatrixXd& X,
+                                   const Eigen::VectorXd& y,
+                                   const Eigen::VectorXd& weights,
+                                   Eigen::VectorXd& coeffs,
+                                   double& intercept,
+                                   double& residual_var) {
+    const Eigen::Index N = X.rows();
+    const Eigen::Index lag_order = X.cols();
+
+
+    Eigen::MatrixXd X_aug(N, lag_order + 1); // additional column for intercept
+    X_aug.col(0) = Eigen::VectorXd::Ones(N);
+    X_aug.block(0, 1, N, lag_order) = X;
+
+
+    Eigen::VectorXd w = weights.array().max(1e-8);
+    Eigen::MatrixXd W = w.asDiagonal();
+
+
+    Eigen::MatrixXd normal_mat = X_aug.transpose() * W * X_aug;
+    Eigen::VectorXd rhs = X_aug.transpose() * W * y;
+
+
+    Eigen::VectorXd beta = normal_mat.ldlt().solve(rhs);
+
+
+    intercept = beta(0);
+    coeffs = beta.tail(lag_order);
+
+
+    Eigen::VectorXd residuals = y - X_aug * beta;
+    double w_sum = w.sum();
+    residual_var = (w_sum > 0.0)
+        ? (residuals.array().square() * w.array()).sum() / w_sum
+        : 0.0;
+}
+
+
+MSARForecastBreakdown MarketMSAR::predict_next_detailed(const Eigen::VectorXd& lag_window,
+                                                        const Eigen::VectorXd& current_probs) const {
+    if (lag_window.size() != lag_) {
+        throw std::invalid_argument("lag_window size must equal lag.");
+    }
+    if (current_probs.size() != n_states_) {
+        throw std::invalid_argument("current_probs size must equal n_states.");
+    }
+
+
+    MSARForecastBreakdown out;
+    out.next_state_probs = transition_matrix_.transpose() * current_probs;
+    out.regime_predictions = Eigen::VectorXd::Zero(n_states_);
+
+
+    for (int s = 0; s < n_states_; ++s) {
+        double pred = intercepts_(s);
+        for (int k = 0; k < lag_; ++k) {
+            pred += ar_coeffs_(s, k) * lag_window(lag_window.size() - 1 - k);
         }
+        out.regime_predictions(s) = pred;
+        out.weighted_forecast += out.next_state_probs(s) * pred;
     }
 
-    std::vector<double> x(n, 0.0);
-    for (int i {static_cast<int>(n) - 1}; i >= 0; --i) {
-        x[i] = augmented[i][n] / augmented[i][i];
-        for (int k {i - 1}; k >= 0; --k) {
-            augmented[k][n] -= augmented[k][i] * x[i];
-        }
-    }
-    return x;
-}
 
-void AutoRegressiveModel::fit_model(const matrix& data) {
-
-    if (data.empty()) {
-        throw std::invalid_argument("Input data must not be empty.");
-    }
-
-    // Only want to work with vectors
-    if (data[0].size() != 1) {
-        throw std::invalid_argument("Input data must be a vector (matrix with one column).");
-    }
-    if (data.size() <= static_cast<size_t>(lag)) {
-        throw std::invalid_argument("Input data must contain more rows than the configured lag.");
-    }
-    // print shape of data
-    // std::cout << data.size() << " " << data[0].size() << std::endl;
-
-
-    matrix y{data.begin() + lag, data.end()};
-    matrix x{data.begin(), data.end() - lag};
-    // add column of 1s to x for omega
-    for (auto& row : x) {
-        row.insert(row.begin(), 1.0);
-    }
-    matrix x_T = transpose(x);
-
-    matrix numerator = x_T * y;
-    matrix denominator = x_T * x;
-    coefficients = gaussian_elimination(denominator, numerator);
-
-    // set omega to first value of result and coefficients to the rest
-    omega = coefficients[0];
-    coefficients.erase(coefficients.begin());
-
-    // approx error distribution
-    double forecast {0.0};
-    std::vector<double> residuals(y.size(), 0.0);
-    for (size_t t {0}; t < y.size(); ++t) {
-        forecast = omega;
-        for (size_t j {0}; j < coefficients.size(); ++j) {
-            forecast += coefficients[j] * x[t][j + 1];  // j+1 skips the leading 1.0 bias column
-        }
-        residuals[t] = y[t][0] - forecast;
-    }
-
-    var = 0.0;
-    double N = residuals.size();
-    for (double& residual : residuals) {
-        var += (residual * residual);
-    }
-    var /= N;
-}
-
-void AutoRegressiveModel::fit_model(const vector<double>& data) {
-    matrix mat_data(data.size(), vector<double>(1, 0.0));
-    for (size_t i {0}; i < data.size(); ++i) {
-        mat_data[i][0] = data[i];
-    }
-    fit_model(mat_data);
-}
-
-double AutoRegressiveModel::predict_next(const matrix& data) {
-    
-    if (data[0].size() != 1) {
-        throw std::invalid_argument("Input data must be a vector (matrix with one column).");
-    }
-    if (data.size() != static_cast<size_t>(lag)) {
-        throw std::invalid_argument("Input data should match length of lag window");
-    }
-
-    double prediction = omega + sample_gaussian_noise(var);
-    for (size_t i {0}; i < coefficients.size(); ++i) {
-        prediction += coefficients[i] * data[data.size() - 1 - i][0];
-    }
-    return prediction;
-}
-
-double AutoRegressiveModel::predict_next(const vector<double>& data) {
-    matrix mat_data(data.size(), vector<double>(1, 0.0));
-    for (size_t i {0}; i < data.size(); ++i) {
-        mat_data[i][0] = data[i];
-    }
-    return predict_next(mat_data);
-}
-
-double AutoRegressiveModel::backtest(const matrix& data) {
-    if (data.empty()) {
-        throw std::invalid_argument("Input data must not be empty.");
-    }
-    if (data[0].size() != 1) {
-        throw std::invalid_argument("Input data must be a vector (matrix with one column).");
-    }
-    if (data.size() <= static_cast<size_t>(lag)) {
-        throw std::invalid_argument("Input data must contain more rows than the configured lag.");
-    }
-
-    double total_error = 0.0;
-    for (size_t t {lag}; t < data.size(); ++t) {
-        matrix window(data.begin() + t - lag, data.begin() + t);
-        double prediction = predict_next(window);
-        double actual = data[t][0];
-        total_error += std::abs(prediction - actual);
-    }
-    return total_error / (data.size() - lag);
+    return out;
 }
 
 
-/*************************************
-
- Test functions for matrix operations
-
-*************************************/
-
-
-
-void test_autoregression_model(matrix data, matrix window, std::vector<double> eval_data, int lag) {
-    std::cout << data.size() << " " << data[0].size() << std::endl;
-
-    AutoRegressiveModel ar_model(lag);
-    ar_model.fit_model(data);
-
-    std::vector<double> coefficients = ar_model.get_coefficients();
-    std::printf("Fitted coefficients:\n");
-    for (const auto& coeff : coefficients) {
-        std::printf("%f ", coeff);
-    }
-    std::printf("\n");
-
-    std::printf("Window for prediction:\n");
-    for (const auto& row : window) {
-        std::printf("%f ", row[0]);
-    }
-    std::printf("\n");
-
-    double prediction = ar_model.predict_next(window);
-    std::printf("Predicted next value: %f\n", prediction);
-    std::printf("Actual next value: %f\n", eval_data[0]);
+double MarketMSAR::predict_next(const Eigen::VectorXd& lag_window,
+                                const Eigen::VectorXd& current_probs) const {
+    return predict_next_detailed(lag_window, current_probs).weighted_forecast;
 }
 
-void historical_backtest_autoregression_model(const matrix& full_data, size_t lag, size_t min_train_size) {
-    if (full_data.size() <= static_cast<size_t>(min_train_size)) {
+
+// -----------------------------------------------------------------------------
+// Historical backtest helper
+// -----------------------------------------------------------------------------
+
+
+MSARBacktestResult historical_backtest_market_msar(
+    const Eigen::VectorXd& returns,
+    int ar_lag,
+    std::size_t min_train_size,
+    const MarkovSwitchingConfig& ms_config,
+    bool verbose = true
+) {
+    if (ar_lag <= 0) {
+        throw std::invalid_argument("ar_lag must be positive.");
+    }
+    if (returns.size() <= static_cast<Eigen::Index>(min_train_size)) {
         throw std::invalid_argument("Not enough data for historical backtest.");
     }
-
-    if (min_train_size < lag) {
-        throw std::invalid_argument("min_train_size must be at least as large as lag.");
+    if (min_train_size <= static_cast<std::size_t>(ar_lag)) {
+        throw std::invalid_argument("min_train_size must be > ar_lag.");
     }
 
+
+    MSARBacktestResult result;
     double abs_error_sum = 0.0;
-    size_t num_predictions = 0;
+    double sq_error_sum = 0.0;
 
-    // t is the index of the value we are trying to predict
-    // train on [0, t), predict full_data[t]
-    for (size_t t {min_train_size}; t < full_data.size(); ++t) {
-        matrix train_data(full_data.begin(), full_data.begin() + t);
-        matrix prediction_window(full_data.begin() + (t - lag), full_data.begin() + t);
 
-        AutoRegressiveModel ar_model(lag);
-        ar_model.fit_model(train_data);
+    for (Eigen::Index t {static_cast<Eigen::Index>(min_train_size)}; t < returns.size(); ++t) {
+        Eigen::VectorXd train_returns = returns.head(t);
 
-        double prediction = ar_model.predict_next(prediction_window);
-        double actual = full_data[t][0];
+
+        MarkovSwitching ms_model(ms_config);
+        auto fit_result = ms_model.fit(eigen_to_std_vector(train_returns));
+        const MarkovSwitchingResult& ms = fit_result.value();
+
+
+        MarketMSAR msar(ar_lag);
+        msar.fit(train_returns, ms.smoothed_probabilities, ms.transition_matrix);
+
+
+        Eigen::VectorXd lag_window = returns.segment(t - ar_lag, ar_lag);
+        Eigen::VectorXd current_probs = ms.smoothed_probabilities.row(train_returns.size() - 1).transpose();
+
+
+        double prediction = msar.predict_next(lag_window, current_probs);
+        double actual = returns(t);
         double abs_error = std::abs(prediction - actual);
+        double sq_error = (prediction - actual) * (prediction - actual);
 
-        abs_error_sum += abs_error;
-        ++num_predictions;
 
-        std::printf(
-            "Step %zu | train_size=%zu | prediction=%f | actual=%f | abs_error=%f\n",
-            t - min_train_size + 1,
-            train_data.size(),
+        result.points.push_back(MSARBacktestPoint{
+            static_cast<std::size_t>(t),
+            static_cast<std::size_t>(train_returns.size()),
             prediction,
             actual,
-            abs_error
-        );
+            abs_error,
+            sq_error
+        });
+
+
+        abs_error_sum += abs_error;
+        sq_error_sum += sq_error;
+
+
+        if (verbose) {
+            std::cout
+                << "Step " << result.points.size()
+                << "  t=" << t
+                << "  train_size=" << train_returns.size()
+                << "  pred=" << prediction
+                << "  actual=" << actual
+                << "  abs_err=" << abs_error
+                << "  sq_err=" << sq_error
+                << '\n';
+        }
     }
 
-    double mae = (num_predictions > 0) ? abs_error_sum / num_predictions : 0.0;
-    std::printf("Historical backtest MAE over %zu forecasts: %f\n", num_predictions, mae);
+
+    if (!result.points.empty()) {
+        result.mae = abs_error_sum / static_cast<double>(result.points.size());
+        result.rmse = std::sqrt(sq_error_sum / static_cast<double>(result.points.size()));
+    }
+
+
+    return result;
 }
 
-int main() {
-    std::map<std::string, std::string> database = {
-        {"host", "13.58.153.216"},
-        {"port", "5432"},
-        {"user", "postgres"},
-        {"password", "algogators"},
-        {"dbname", "new_algo_data"}
-    };
 
-    try {
-        pqxx::connection c(
-            "dbname=" + database["dbname"] +
-            " user=" + database["user"] +
-            " password=" + database["password"] +
-            " hostaddr=" + database["host"] +
-            " port=" + database["port"]
-        );
-
-        pqxx::work txn(c);
-
-        size_t lag = 5;
-
-
-        size_t total_points = 5000;
-
-        // minimum amount of data required before first forecast
-        size_t min_train_size = lag * 3;
-
-        std::vector<double> historical_data;
-
-        pqxx::result r = txn.exec(
-            "SELECT close "
-            "FROM futures_data.new_data_ohlcv_1d "
-            "WHERE symbol = 'NG' "
-            "ORDER BY \"time\" ASC "
-            "LIMIT " + std::to_string(total_points) + ";"
-        );
-
-        for (const pqxx::row &row : r) {
-            double price = row["close"].as<double>();
-            historical_data.push_back(price);
-        }
-
-        txn.commit();
-
-        if (historical_data.size() <= static_cast<size_t>(min_train_size)) {
-            throw std::invalid_argument("Not enough historical data for requested backtest.");
-        }
-
-        matrix historical_data_matrix = to_column_matrix(historical_data);
-        historical_backtest_autoregression_model(historical_data_matrix, lag, min_train_size);
-
-        return 0;
-    }
-    catch (const std::exception &e) {
-        std::cerr << "Error: " << e.what() << std::endl;
-        return 1;
-    }
-}
+} // namespace statistics
+} // namespace trade_ngin
