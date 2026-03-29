@@ -2340,11 +2340,6 @@ std::string EmailSender::format_symbols_table_for_positions(
                 }
             } catch (...) {
             }
-            auto up = [](std::string s) {
-                std::transform(s.begin(), s.end(), s.begin(),
-                               [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
-                return s;
-            };
             if (!db_sym.empty())
                 matched.insert(up(db_sym));
             if (!ib_sym.empty())
