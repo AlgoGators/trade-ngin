@@ -141,14 +141,15 @@ int main() {
         auto symbols = symbols_result.value();
 
         if (symbols_result.is_ok()) {
-            for (const auto& symbol : symbols) {
-                if (symbol.find(".c.0") != std::string::npos ||
-                    symbol.find("MES.c.0") != std::string::npos ||
-                    symbol.find("ES.v.0") != std::string::npos) {
-                    symbols.erase(std::remove(symbols.begin(), symbols.end(), symbol),
-                                  symbols.end());
-                }
-            }
+            // Remove continuous contract variants (.c.0) and full-size ES
+            // Using remove_if to avoid undefined behavior from erase-during-iteration
+            symbols.erase(
+                std::remove_if(symbols.begin(), symbols.end(),
+                    [](const std::string& s) {
+                        return s.find(".c.0") != std::string::npos ||
+                               s == "ES.v.0";
+                    }),
+                symbols.end());
             config.strategy_config.symbols = symbols;
         } else {
             ERROR("Failed to get symbols: " + std::string(symbols_result.error()->what()));

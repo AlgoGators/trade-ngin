@@ -200,7 +200,7 @@ private:
     std::shared_ptr<InstrumentRegistry> registry_;
 
     std::unordered_map<std::string, double> contract_size_cache_;
-    std::unordered_map<std::string, double> weight_cache_;
+    mutable std::unordered_map<std::string, double> weight_cache_;
 
     std::unordered_map<std::string, TrendFollowingFastInstrumentData> instrument_data_;
 
