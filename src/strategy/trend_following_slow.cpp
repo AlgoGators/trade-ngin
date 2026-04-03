@@ -5,6 +5,7 @@
 #include <iostream>
 #include <numeric>
 #include <set>
+#include <unordered_set>
 
 namespace trade_ngin {
 
@@ -356,8 +357,9 @@ Result<void> TrendFollowingSlowStrategy::on_data(const std::vector<Bar>& data) {
                     }
 
                     // Get weight
-                    if (get_weights().count(lookup_symbol) > 0) {
-                        instrument_data.weight = get_weights().at(lookup_symbol);
+                    const auto& weights = get_weights();
+                    if (weights.count(lookup_symbol) > 0) {
+                        instrument_data.weight = weights.at(lookup_symbol);
                     } else {
                         WARN("Weight not found for " + symbol);
                     }
@@ -1032,11 +1034,27 @@ double TrendFollowingSlowStrategy::get_abs_value(const std::vector<double>& valu
 }
 
 std::unordered_map<std::string, double> TrendFollowingSlowStrategy::get_weights() const {
+    if (!weight_cache_.empty()) {
+        return weight_cache_;
+    }
     auto metadata_result = db_->get_contract_metadata();
     if (!metadata_result.is_ok()) {
         ERROR(std::string("Failed to get contract metadata: ")
                   .append(metadata_result.error()->what()));
         return {};
+    }
+
+    // Get actually-traded symbols from HLCV table to filter phantom instruments
+    std::unordered_set<std::string> traded_base_symbols;
+    auto hlcv_symbols_result = db_->get_symbols(AssetClass::FUTURES);
+    if (hlcv_symbols_result.is_ok()) {
+        for (const auto& sym : hlcv_symbols_result.value()) {
+            auto dot_pos = sym.find('.');
+            std::string base = (dot_pos != std::string::npos) ? sym.substr(0, dot_pos) : sym;
+            if (base != "ES") {
+                traded_base_symbols.insert(base);
+            }
+        }
     }
 
     auto metadata = metadata_result.value();
@@ -1051,7 +1069,7 @@ std::unordered_map<std::string, double> TrendFollowingSlowStrategy::get_weights(
     auto sector_col = metadata->column(sector_idx);
     auto symbol_col = metadata->column(symbol_idx);
 
-    // Build map of sector -> list of symbols
+    // Build map of sector -> list of symbols, filtered to only traded instruments
     std::unordered_map<std::string, std::vector<std::string>> sector_to_symbols;
 
     for (int chunk_idx = 0; chunk_idx < sector_col->num_chunks(); ++chunk_idx) {
@@ -1065,7 +1083,9 @@ std::unordered_map<std::string, double> TrendFollowingSlowStrategy::get_weights(
             if (!sector_array->IsNull(i) && !symbol_array->IsNull(i)) {
                 std::string sector = sector_array->GetString(i);
                 std::string symbol = symbol_array->GetString(i);
-                sector_to_symbols[sector].push_back(symbol);
+                if (traded_base_symbols.empty() || traded_base_symbols.count(symbol) > 0) {
+                    sector_to_symbols[sector].push_back(symbol);
+                }
             }
         }
     }
@@ -1106,7 +1126,19 @@ std::unordered_map<std::string, double> TrendFollowingSlowStrategy::get_weights(
         }
     }
 
-    return symbol_weights;
+    // Normalize weights to sum to 100%
+    double weight_sum = 0.0;
+    for (const auto& [symbol, weight] : symbol_weights) {
+        weight_sum += weight;
+    }
+    if (weight_sum > 0.0 && std::abs(weight_sum - 1.0) > 0.001) {
+        for (auto& [symbol, weight] : symbol_weights) {
+            weight /= weight_sum;
+        }
+    }
+
+    weight_cache_ = symbol_weights;
+    return weight_cache_;
 }
 
 double TrendFollowingSlowStrategy::calculate_position(const std::string& symbol, double forecast,
