@@ -61,3 +61,22 @@ set_target_properties(bt_transaction_cost_report
     RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/bin/Debug"
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/bin/Release"
 )
+
+# Copper-Gold IP macro regime strategy backtest
+set(BT_COPPER_GOLD_IP_SOURCES
+    bt_copper_gold_ip.cpp
+)
+
+add_executable(bt_copper_gold_ip ${BT_COPPER_GOLD_IP_SOURCES})
+
+target_link_libraries(bt_copper_gold_ip
+    PRIVATE
+        trade_ngin
+)
+
+set_target_properties(bt_copper_gold_ip
+    PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/bin/Debug"
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/bin/Release"
+)

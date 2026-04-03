@@ -109,6 +109,8 @@ set(TRADE_NGIN_SOURCES
     src/strategy/trend_following_slow.cpp
     src/strategy/trend_following_fast.cpp
     src/strategy/regime_detector.cpp
+    src/strategy/copper_gold_ip.cpp
+    src/data/daily_macro_csv_loader.cpp
     src/storage/results_manager_base.cpp
     src/storage/backtest_results_manager.cpp
     src/storage/live_results_manager.cpp
