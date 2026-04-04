@@ -181,6 +181,9 @@ int main() {
         cg_config.breakeven_lookback = cg_cfg.value("breakeven_lookback", 20);
         cg_config.liquidity_zscore_window = cg_cfg.value("liquidity_zscore_window", 60);
         cg_config.liquidity_threshold = cg_cfg.value("liquidity_threshold", -1.5);
+        cg_config.inflation_shock_threshold = cg_cfg.value("inflation_shock_threshold", 0.15);
+        cg_config.growth_positive_threshold = cg_cfg.value("growth_positive_threshold", 0.5);
+        cg_config.growth_negative_threshold = cg_cfg.value("growth_negative_threshold", -0.5);
         cg_config.dxy_momentum_lookback = cg_cfg.value("dxy_momentum_lookback", 20);
         cg_config.dxy_momentum_threshold = cg_cfg.value("dxy_momentum_threshold", 0.03);
         cg_config.china_cli_avg_window = cg_cfg.value("china_cli_avg_window", 65);
@@ -244,13 +247,16 @@ int main() {
         portfolio_config.total_capital = Decimal(initial_capital);
         portfolio_config.reserve_capital = Decimal(initial_capital * app_config.reserve_capital_pct);
         portfolio_config.use_optimization = false;
-        portfolio_config.use_risk_management = app_config.strategy_defaults.use_risk_management;
+        // Disable coordinator-level risk management — the strategy has its own internal
+        // risk controls (drawdown stops, size multiplier cascade, margin utilization cap).
+        // The coordinator's risk manager conflicts with the strategy's leverage target
+        // because it divides notional by coordinator equity (which starts at zero).
+        portfolio_config.use_risk_management = false;
         portfolio_config.risk_config = app_config.risk_config;
 
         auto portfolio = std::make_shared<PortfolioManager>(portfolio_config);
 
-        auto add_result = portfolio->add_strategy(strategy, 1.0, false,
-                                                   portfolio_config.use_risk_management);
+        auto add_result = portfolio->add_strategy(strategy, 1.0, false, false);
         if (add_result.is_error()) {
             ERROR("Failed to add strategy to portfolio: " +
                   std::string(add_result.error()->what()));

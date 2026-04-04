@@ -7,6 +7,26 @@
 namespace trade_ngin {
 
 // ============================================================
+// Strip continuous contract suffix (e.g. "HG.v.0" -> "HG")
+// ============================================================
+static std::string strip_suffix(const std::string& sym) {
+    auto pos = sym.find('.');
+    return (pos != std::string::npos) ? sym.substr(0, pos) : sym;
+}
+
+// Find a futures_state_ entry whose base symbol matches (e.g. "HG" finds "HG.v.0")
+template <typename MapT>
+static auto find_by_base(MapT& map, const std::string& base) -> decltype(map.begin()) {
+    // Try exact match first
+    auto it = map.find(base);
+    if (it != map.end()) return it;
+    // Try with .v.0 suffix
+    it = map.find(base + ".v.0");
+    if (it != map.end()) return it;
+    return map.end();
+}
+
+// ============================================================
 // Contract specs from strategy document (lines 449-458)
 // ============================================================
 const std::unordered_map<std::string, FuturesContractSpec> CopperGoldIPStrategy::CONTRACT_SPECS = {
@@ -16,6 +36,8 @@ const std::unordered_map<std::string, FuturesContractSpec> CopperGoldIPStrategy:
     {"SI",  {10000.0, 150000.0, 0.005,    25.00,  2.50,  1.0, 1.0}},
     {"ZN",  {2500.0,  110000.0, 0.015625, 15.625, 1.50,  0.5, 0.5}},
     {"UB",  {9000.0,  130000.0, 0.03125,  31.25,  2.50,  0.0, 0.0}},
+    {"6J",  {4000.0,   80000.0, 0.0000005, 6.25,  2.50,  1.0, 0.5}},
+    {"MES", {1500.0,   25000.0, 0.25,      1.25,  0.50,  1.0, 0.5}},
     {"MNQ", {2000.0,   40000.0, 0.25,      0.50,  0.50,  1.0, 0.5}},
 };
 
@@ -23,6 +45,7 @@ const std::unordered_map<std::string, double> CopperGoldIPStrategy::ASSET_CLASS_
     {"equity_index", 0.30},
     {"commodities",  0.35},
     {"fixed_income", 0.25},
+    {"fx",           0.10},
 };
 
 // ============================================================
@@ -88,8 +111,13 @@ Result<void> CopperGoldIPStrategy::initialize() {
     // Initialize per-symbol state and positions
     // Include HG (needed for ratio even though not directly traded in V5 simplified set)
     auto all_symbols = cg_config_.futures_symbols;
-    if (std::find(all_symbols.begin(), all_symbols.end(), "HG") == all_symbols.end()) {
-        all_symbols.push_back("HG");
+    // Ensure HG is in the symbol list (needed for Cu/Au ratio even if not traded)
+    bool has_hg = false;
+    for (const auto& s : all_symbols) {
+        if (strip_suffix(s) == "HG") { has_hg = true; break; }
+    }
+    if (!has_hg) {
+        all_symbols.push_back("HG.v.0");
     }
 
     for (const auto& symbol : all_symbols) {
@@ -126,8 +154,8 @@ Result<void> CopperGoldIPStrategy::on_data(const std::vector<Bar>& data) {
         update_price_histories(data);
 
         // 2. Compute Cu/Au ratio
-        auto hg_it = futures_state_.find("HG");
-        auto gc_it = futures_state_.find("GC");
+        auto hg_it = find_by_base(futures_state_, "HG");
+        auto gc_it = find_by_base(futures_state_, "GC");
         if (hg_it == futures_state_.end() || gc_it == futures_state_.end() ||
             hg_it->second.current_price <= 0.0 || gc_it->second.current_price <= 0.0) {
             return Result<void>();  // Not enough data yet
@@ -248,44 +276,15 @@ Result<void> CopperGoldIPStrategy::on_data(const std::vector<Bar>& data) {
         bool corr_spike = compute_correlation_spike();
 
         // ============================================================
-        // PnL & Equity Update
-        // ============================================================
-        // Mark-to-market: compute daily PnL from position changes
-        double daily_pnl = 0.0;
-        for (const auto& [sym, pos] : positions_) {
-            double qty = pos.quantity.as_double();
-            if (std::abs(qty) < 1e-9) continue;
-
-            auto fs_it = futures_state_.find(sym);
-            if (fs_it == futures_state_.end() || fs_it->second.price_history.size() < 2) continue;
-
-            size_t sz = fs_it->second.price_history.size();
-            double prev_price = fs_it->second.price_history[sz - 2];
-            double curr_price = fs_it->second.price_history[sz - 1];
-
-            auto spec_it = CONTRACT_SPECS.find(sym);
-            double pv = (spec_it != CONTRACT_SPECS.end()) ? spec_it->second.point_value() : 1.0;
-
-            daily_pnl += qty * (curr_price - prev_price) * pv;
-        }
-
-        signal_state_.equity += daily_pnl;
-        if (signal_state_.equity > signal_state_.peak_equity) {
-            signal_state_.peak_equity = signal_state_.equity;
-        }
-
-        // ============================================================
         // Size Multiplier (Layers 2-5 combined)
+        // Note: Internal PnL/equity tracking removed per co-worker review.
+        // The backtest coordinator is the single source of truth for PnL.
+        // Drawdown management is handled by the coordinator's risk manager.
         // ============================================================
-        double drawdown = 0.0;
-        if (signal_state_.peak_equity > 0.0) {
-            drawdown = (signal_state_.peak_equity - signal_state_.equity) / signal_state_.peak_equity;
-        }
-
         double size_mult = compute_size_multiplier(
-            macro_tilt, regime, dxy_filter, supp_liquidity, corr_spike, drawdown);
+            macro_tilt, regime, dxy_filter, supp_liquidity, corr_spike);
 
-        bool stop_triggered = signal_state_.drawdown_stop_active || signal_state_.drawdown_warning_active;
+        bool stop_triggered = false;
 
         // ============================================================
         // Rebalance Decision
@@ -301,66 +300,40 @@ Result<void> CopperGoldIPStrategy::on_data(const std::vector<Bar>& data) {
         bool do_rebalance = should_rebalance(
             friday, tilt_changed, regime_changed, filter_triggered, stop_triggered, current_pos);
 
-        if (!do_rebalance) {
-            // Update position prices for mark-to-market
-            for (const auto& bar : data) {
-                auto pos_it = positions_.find(bar.symbol);
+        // ============================================================
+        // Position Sizing (only recalculate on rebalance days)
+        // ============================================================
+        if (do_rebalance) {
+            auto new_positions = compute_target_positions(
+                macro_tilt, regime, size_mult, china_adj, skip_gold_short, composite);
+
+            apply_position_limits(new_positions);
+
+            // Apply margin utilization cap
+            double total_margin = 0.0;
+            for (const auto& [sym, qty] : new_positions) {
+                auto spec_it = CONTRACT_SPECS.find(strip_suffix(sym));
+                double margin = (spec_it != CONTRACT_SPECS.end()) ? spec_it->second.margin : 5000.0;
+                total_margin += std::abs(qty) * margin;
+            }
+            double margin_util = (config_.capital_allocation > 0.0) ? total_margin / config_.capital_allocation : 0.0;
+            if (margin_util > cg_config_.max_margin_utilization && margin_util > 0.0) {
+                double scale = cg_config_.max_margin_utilization / margin_util;
+                for (auto& [sym, qty] : new_positions) {
+                    qty = std::floor(qty * scale + 0.5);
+                }
+            }
+
+            // Update positions with new target quantities
+            for (const auto& [sym, qty] : new_positions) {
+                auto pos_it = positions_.find(sym);
                 if (pos_it != positions_.end()) {
-                    pos_it->second.average_price = bar.close;
-                    pos_it->second.last_update = bar.timestamp;
-                }
-            }
-            return Result<void>();
-        }
-
-        // ============================================================
-        // Position Sizing
-        // ============================================================
-        auto new_positions = compute_target_positions(
-            macro_tilt, regime, size_mult, china_adj, skip_gold_short, composite);
-
-        apply_position_limits(new_positions);
-
-        // Apply margin utilization cap
-        double total_margin = 0.0;
-        for (const auto& [sym, qty] : new_positions) {
-            auto spec_it = CONTRACT_SPECS.find(sym);
-            double margin = (spec_it != CONTRACT_SPECS.end()) ? spec_it->second.margin : 5000.0;
-            total_margin += std::abs(qty) * margin;
-        }
-        double margin_util = (signal_state_.equity > 0.0) ? total_margin / signal_state_.equity : 0.0;
-        if (margin_util > cg_config_.max_margin_utilization && margin_util > 0.0) {
-            double scale = cg_config_.max_margin_utilization / margin_util;
-            for (auto& [sym, qty] : new_positions) {
-                qty = std::floor(qty * scale + 0.5);
-            }
-        }
-
-        // Deduct transaction costs for position changes
-        for (const auto& [sym, new_qty] : new_positions) {
-            double old_qty = current_pos.count(sym) ? current_pos.at(sym) : 0.0;
-            double qty_change = std::abs(new_qty - old_qty);
-            if (qty_change > 0.0) {
-                auto spec_it = CONTRACT_SPECS.find(sym);
-                double cost = (spec_it != CONTRACT_SPECS.end()) ?
-                    spec_it->second.total_cost_rt() * qty_change : 0.0;
-                signal_state_.equity -= cost;
-            }
-        }
-
-        // Update positions
-        for (const auto& [sym, qty] : new_positions) {
-            auto pos_it = positions_.find(sym);
-            if (pos_it != positions_.end()) {
-                pos_it->second.quantity = Quantity(qty);
-                auto fs_it = futures_state_.find(sym);
-                if (fs_it != futures_state_.end() && fs_it->second.current_price > 0.0) {
-                    pos_it->second.average_price = Price(fs_it->second.current_price);
+                    pos_it->second.quantity = Quantity(qty);
                 }
             }
         }
 
-        // Update position prices for mark-to-market
+        // Always update position prices for mark-to-market (coordinator needs this)
         for (const auto& bar : data) {
             auto pos_it = positions_.find(bar.symbol);
             if (pos_it != positions_.end()) {
@@ -445,11 +418,12 @@ EconRegime CopperGoldIPStrategy::classify_econ_regime(
 
     if (regime_liquidity < cg_config_.liquidity_threshold) {
         return EconRegime::LIQUIDITY_SHOCK;
-    } else if (inflation > 1.0 && growth < 0.5) {
+    } else if (inflation > cg_config_.inflation_shock_threshold &&
+               growth < cg_config_.growth_positive_threshold) {
         return EconRegime::INFLATION_SHOCK;
-    } else if (growth > 0.5) {
+    } else if (growth > cg_config_.growth_positive_threshold) {
         return EconRegime::GROWTH_POSITIVE;
-    } else if (growth < -0.5) {
+    } else if (growth < cg_config_.growth_negative_threshold) {
         return EconRegime::GROWTH_NEGATIVE;
     }
     return EconRegime::NEUTRAL;
@@ -472,7 +446,7 @@ DXYFilter CopperGoldIPStrategy::compute_dxy_filter(double dxy_momentum, MacroTil
 // ============================================================
 double CopperGoldIPStrategy::compute_size_multiplier(
     MacroTilt tilt, EconRegime regime, DXYFilter dxy_filter,
-    double supp_liquidity, bool corr_spike, double drawdown) {
+    double supp_liquidity, bool corr_spike) {
 
     double size_mult = 1.0;
 
@@ -480,7 +454,7 @@ double CopperGoldIPStrategy::compute_size_multiplier(
     if (regime == EconRegime::LIQUIDITY_SHOCK) {
         size_mult = 0.0;
     } else if (tilt == MacroTilt::RISK_OFF && regime == EconRegime::GROWTH_POSITIVE) {
-        size_mult = 0.0;
+        size_mult = 0.25;  // Reduced but not eliminated — Cu/Au signal may still be valid
     } else if (tilt == MacroTilt::RISK_ON && regime == EconRegime::GROWTH_NEGATIVE) {
         size_mult = 0.5;
     } else if (regime == EconRegime::NEUTRAL) {
@@ -502,18 +476,6 @@ double CopperGoldIPStrategy::compute_size_multiplier(
     // Correlation spike
     if (corr_spike) {
         size_mult *= 0.5;
-    }
-
-    // Drawdown management
-    signal_state_.drawdown_stop_active = false;
-    signal_state_.drawdown_warning_active = false;
-
-    if (drawdown > cg_config_.drawdown_stop_pct) {
-        size_mult = 0.0;
-        signal_state_.drawdown_stop_active = true;
-    } else if (drawdown > cg_config_.drawdown_warning_pct) {
-        size_mult *= 0.5;
-        signal_state_.drawdown_warning_active = true;
     }
 
     return size_mult;
@@ -542,14 +504,13 @@ bool CopperGoldIPStrategy::compute_safe_haven_override() {
         return false;
     }
 
-    auto gc_it = futures_state_.find("GC");
+    auto gc_it = find_by_base(futures_state_, "GC");
     if (gc_it == futures_state_.end() || gc_it->second.price_history.size() < 2) {
         return false;
     }
 
     double vix_90 = compute_percentile(macro_state_.vix_history, 60,
         macro_state_.vix_history.back());
-    double current_vix = macro_state_.vix_history.back();
 
     size_t gc_sz = gc_it->second.price_history.size();
     double gold_ret = (gc_it->second.price_history[gc_sz - 1] /
@@ -559,8 +520,13 @@ bool CopperGoldIPStrategy::compute_safe_haven_override() {
     double eq_ret = (macro_state_.spx_history[spx_sz - 1] /
                      macro_state_.spx_history[spx_sz - 2]) - 1.0;
 
-    // VIX > 90th percentile AND gold up >1.5% AND equities down >1.5%
-    return (current_vix > 0.0 && vix_90 > 0.90 && gold_ret > 0.015 && eq_ret < -0.015);
+    // Safe-haven override: skip gold short if 2-of-3 crisis conditions met.
+    // Previously required all 3 simultaneously (<1% of days); now fires more often.
+    int crisis_count = 0;
+    if (vix_90 > 0.90) crisis_count++;     // VIX in 90th percentile
+    if (gold_ret > 0.015) crisis_count++;   // Gold up >1.5%
+    if (eq_ret < -0.015) crisis_count++;    // Equities down >1.5%
+    return crisis_count >= 2;
 }
 
 // ============================================================
@@ -640,9 +606,13 @@ double CopperGoldIPStrategy::contracts_for(
     std::string ac = asset_class_of(sym);
     double w = ASSET_CLASS_WEIGHTS.count(ac) ? ASSET_CLASS_WEIGHTS.at(ac) : 0.1;
 
-    double notional_alloc = signal_state_.equity * cg_config_.leverage_target * w;
+    // Use fixed capital allocation for sizing — not drifting internal equity.
+    // The coordinator tracks actual PnL; internal equity drift causes positions
+    // to shrink over time and prevents the coordinator from detecting rebalances.
+    double notional_alloc = config_.capital_allocation * cg_config_.leverage_target * w;
 
-    auto spec_it = CONTRACT_SPECS.find(sym);
+    std::string base = strip_suffix(sym);
+    auto spec_it = CONTRACT_SPECS.find(base);
     double notional = (spec_it != CONTRACT_SPECS.end()) ? spec_it->second.notional : 100000.0;
 
     double raw = (notional_alloc / notional) * size_mult * vol_adj;
@@ -651,8 +621,8 @@ double CopperGoldIPStrategy::contracts_for(
 
 double CopperGoldIPStrategy::compute_si_vol_adjustment() const {
     // Silver volatility relative to gold (for position sizing normalization)
-    auto gc_it = futures_state_.find("GC");
-    auto si_it = futures_state_.find("SI");
+    auto gc_it = find_by_base(futures_state_, "GC");
+    auto si_it = find_by_base(futures_state_, "SI");
     if (gc_it == futures_state_.end() || si_it == futures_state_.end()) return 1.0;
 
     const auto& gc_ph = gc_it->second.price_history;
@@ -694,43 +664,60 @@ std::unordered_map<std::string, double> CopperGoldIPStrategy::compute_target_pos
         return pos;
     }
 
+    // Map base symbol -> configured symbol name (e.g. "HG" -> "HG.v.0")
+    std::unordered_map<std::string, std::string> sym_map;
+    for (const auto& s : cg_config_.futures_symbols) {
+        sym_map[strip_suffix(s)] = s;
+    }
+    auto S = [&](const std::string& base) -> const std::string& {
+        return sym_map.count(base) ? sym_map.at(base) : base;
+    };
+
     double si_adj = compute_si_vol_adjustment();
     bool strong_signal = !std::isnan(composite) && std::abs(composite) > 0.5;
 
     if (tilt == MacroTilt::RISK_ON) {
         if (regime == EconRegime::INFLATION_SHOCK) {
             // Long commodities only, no equity beta
-            pos["HG"] = contracts_for("HG", 1.0, size_mult) * china_adj;
-            pos["CL"] = contracts_for("CL", 1.0, size_mult);
-            pos["SI"] = contracts_for("SI", 1.0, size_mult, si_adj);
-            // GC, MNQ, ZN, UB = 0
+            pos[S("HG")] = contracts_for(S("HG"), 1.0, size_mult) * china_adj;
+            pos[S("CL")] = contracts_for(S("CL"), 1.0, size_mult);
+            pos[S("SI")] = contracts_for(S("SI"), 1.0, size_mult, si_adj);
+            // GC, MES, MNQ, ZN, UB = 0
+            pos[S("6J")] = contracts_for(S("6J"), -1.0, size_mult);  // Short yen in risk-on
         } else {
-            pos["MNQ"] = contracts_for("MNQ", 1.0, size_mult);
-            pos["HG"]  = contracts_for("HG",  1.0, size_mult) * china_adj;
-            pos["CL"]  = contracts_for("CL",  1.0, size_mult);
-            pos["GC"]  = skip_gold_short ? 0.0 : contracts_for("GC", -1.0, size_mult);
-            pos["SI"]  = strong_signal ? contracts_for("SI", 1.0, size_mult, si_adj) : 0.0;
-            pos["ZN"]  = contracts_for("ZN", -1.0, size_mult);
-            pos["UB"]  = contracts_for("UB", -1.0, size_mult);
+            pos[S("MES")] = contracts_for(S("MES"), 1.0, size_mult);
+            pos[S("MNQ")] = contracts_for(S("MNQ"), 1.0, size_mult);
+            pos[S("HG")]  = contracts_for(S("HG"),  1.0, size_mult) * china_adj;
+            pos[S("CL")]  = contracts_for(S("CL"),  1.0, size_mult);
+            pos[S("GC")]  = skip_gold_short ? 0.0 : contracts_for(S("GC"), -1.0, size_mult);
+            pos[S("SI")]  = strong_signal ? contracts_for(S("SI"), 1.0, size_mult, si_adj) : 0.0;
+            pos[S("ZN")]  = contracts_for(S("ZN"), -1.0, size_mult);
+            pos[S("UB")]  = contracts_for(S("UB"), -1.0, size_mult);
+            pos[S("6J")]  = contracts_for(S("6J"), -1.0, size_mult);  // Short yen in risk-on
         }
     } else if (tilt == MacroTilt::RISK_OFF) {
         if (regime == EconRegime::INFLATION_SHOCK) {
             // Long gold, short duration
-            pos["GC"] = contracts_for("GC", 1.0, size_mult);
-            pos["ZN"] = contracts_for("ZN", -1.0, size_mult);
-            pos["UB"] = contracts_for("UB", -1.0, size_mult);
-            pos["SI"] = contracts_for("SI", 1.0, size_mult, si_adj);
-            // MNQ, HG, CL = 0
+            pos[S("GC")] = contracts_for(S("GC"), 1.0, size_mult);
+            pos[S("ZN")] = contracts_for(S("ZN"), -1.0, size_mult);
+            pos[S("UB")] = contracts_for(S("UB"), -1.0, size_mult);
+            pos[S("SI")] = contracts_for(S("SI"), 1.0, size_mult, si_adj);
+            // MES, MNQ, HG, CL = 0; 6J = skip in inflation shock
         } else {
-            pos["MNQ"] = contracts_for("MNQ", -1.0, size_mult);
-            pos["HG"]  = contracts_for("HG",  -1.0, size_mult) * china_adj;
-            pos["CL"]  = contracts_for("CL",  -1.0, size_mult);
-            pos["GC"]  = contracts_for("GC",   1.0, size_mult);
-            pos["SI"]  = strong_signal ?
-                contracts_for("SI", 1.0, size_mult, si_adj) :
-                contracts_for("SI", 1.0, size_mult, si_adj * 0.5);
-            pos["ZN"]  = contracts_for("ZN",  1.0, size_mult);
-            pos["UB"]  = contracts_for("UB",  1.0, size_mult);
+            pos[S("MES")] = contracts_for(S("MES"), -1.0, size_mult);
+            pos[S("MNQ")] = contracts_for(S("MNQ"), -1.0, size_mult);
+            pos[S("HG")]  = contracts_for(S("HG"),  -1.0, size_mult) * china_adj;
+            pos[S("CL")]  = contracts_for(S("CL"),  -1.0, size_mult);
+            pos[S("GC")]  = contracts_for(S("GC"),   1.0, size_mult);
+            pos[S("SI")]  = strong_signal ?
+                contracts_for(S("SI"), 1.0, size_mult, si_adj) :
+                contracts_for(S("SI"), 1.0, size_mult, si_adj * 0.5);
+            pos[S("ZN")]  = contracts_for(S("ZN"),  1.0, size_mult);
+            pos[S("UB")]  = contracts_for(S("UB"),  1.0, size_mult);
+            // 6J: long only in GROWTH_NEGATIVE (safe-haven yen bid)
+            if (regime == EconRegime::GROWTH_NEGATIVE) {
+                pos[S("6J")] = contracts_for(S("6J"), 1.0, size_mult);
+            }
         }
     }
 
@@ -743,7 +730,7 @@ std::unordered_map<std::string, double> CopperGoldIPStrategy::compute_target_pos
 void CopperGoldIPStrategy::apply_position_limits(
     std::unordered_map<std::string, double>& positions) {
 
-    double equity = signal_state_.equity;
+    double equity = config_.capital_allocation;
     if (equity <= 0.0) return;
 
     // Per-instrument notional caps
@@ -754,7 +741,8 @@ void CopperGoldIPStrategy::apply_position_limits(
         else if (ac == "commodities") limit_pct = cg_config_.max_single_commodity_notional;
         else continue;
 
-        auto spec_it = CONTRACT_SPECS.find(sym);
+        std::string base = strip_suffix(sym);
+        auto spec_it = CONTRACT_SPECS.find(base);
         double notional = (spec_it != CONTRACT_SPECS.end()) ? spec_it->second.notional : 100000.0;
         double max_q = std::max(0.0, std::floor(equity * limit_pct / notional));
         if (std::abs(qty) > max_q) {
@@ -767,7 +755,7 @@ void CopperGoldIPStrategy::apply_position_limits(
         double eq_not = 0.0;
         for (const auto& [sym, qty] : positions) {
             if (asset_class_of(sym) == "equity_index") {
-                auto spec_it = CONTRACT_SPECS.find(sym);
+                auto spec_it = CONTRACT_SPECS.find(strip_suffix(sym));
                 double notional = (spec_it != CONTRACT_SPECS.end()) ? spec_it->second.notional : 40000.0;
                 eq_not += std::abs(qty) * notional;
             }
@@ -788,7 +776,7 @@ void CopperGoldIPStrategy::apply_position_limits(
         double com_not = 0.0;
         for (const auto& [sym, qty] : positions) {
             if (asset_class_of(sym) == "commodities") {
-                auto spec_it = CONTRACT_SPECS.find(sym);
+                auto spec_it = CONTRACT_SPECS.find(strip_suffix(sym));
                 double notional = (spec_it != CONTRACT_SPECS.end()) ? spec_it->second.notional : 100000.0;
                 com_not += std::abs(qty) * notional;
             }
@@ -957,9 +945,11 @@ bool CopperGoldIPStrategy::is_friday(const Timestamp& ts) {
 }
 
 std::string CopperGoldIPStrategy::asset_class_of(const std::string& sym) {
-    if (sym == "MNQ" || sym == "MES") return "equity_index";
-    if (sym == "CL" || sym == "HG" || sym == "GC" || sym == "SI") return "commodities";
-    if (sym == "ZN" || sym == "UB") return "fixed_income";
+    std::string base = strip_suffix(sym);
+    if (base == "MNQ" || base == "MES") return "equity_index";
+    if (base == "CL" || base == "HG" || base == "GC" || base == "SI") return "commodities";
+    if (base == "ZN" || base == "UB") return "fixed_income";
+    if (base == "6J") return "fx";
     return "commodities";
 }
 

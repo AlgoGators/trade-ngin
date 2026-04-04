@@ -9,7 +9,7 @@
             "enabled_live": false,
             "default_allocation": 1.0,
             "type": "CopperGoldIPStrategy",
-            "symbols": ["HG", "GC", "CL", "SI", "ZN", "UB", "MNQ"],
+            "symbols": ["HG.v.0", "GC.v.0", "CL.v.0", "SI.v.0", "ZN.v.0", "UB.v.0", "6J.v.0", "MES.v.0", "MNQ.v.0"],
             "config": {
                 "macro_csv_path": "data/macro/copper_gold_daily.csv",
                 "roc_window": 20,
@@ -25,6 +25,9 @@
                 "breakeven_lookback": 20,
                 "liquidity_zscore_window": 60,
                 "liquidity_threshold": -1.5,
+                "inflation_shock_threshold": 0.15,
+                "growth_positive_threshold": 0.5,
+                "growth_negative_threshold": -0.5,
                 "dxy_momentum_lookback": 20,
                 "dxy_momentum_threshold": 0.03,
                 "china_cli_avg_window": 65,

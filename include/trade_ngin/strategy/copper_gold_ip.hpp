@@ -45,6 +45,9 @@ struct CopperGoldIPConfig {
     int breakeven_lookback{20};
     int liquidity_zscore_window{60};
     double liquidity_threshold{-1.5};
+    double inflation_shock_threshold{0.15};    // 15bps breakeven change over lookback
+    double growth_positive_threshold{0.5};     // SPX momentum % for GROWTH_POSITIVE
+    double growth_negative_threshold{-0.5};    // SPX momentum % for GROWTH_NEGATIVE
 
     // Layer 3: DXY filter
     int dxy_momentum_lookback{20};
@@ -70,9 +73,10 @@ struct CopperGoldIPConfig {
     double max_total_equity_notional{0.35};
     double max_total_commodity_notional{0.40};
 
-    // Instrument universe
+    // Instrument universe (use .v.0 continuous contract symbols)
     std::vector<std::string> futures_symbols{
-        "HG", "GC", "CL", "SI", "ZN", "UB", "MNQ"};
+        "HG.v.0", "GC.v.0", "CL.v.0", "SI.v.0", "ZN.v.0", "UB.v.0",
+        "6J.v.0", "MES.v.0", "MNQ.v.0"};
 };
 
 // ============================================================
@@ -176,8 +180,7 @@ private:
     EconRegime classify_econ_regime(double growth, double inflation, double regime_liquidity);
     DXYFilter compute_dxy_filter(double dxy_momentum, MacroTilt tilt);
     double compute_size_multiplier(MacroTilt tilt, EconRegime regime, DXYFilter dxy_filter,
-                                   double supp_liquidity, bool corr_spike,
-                                   double drawdown);
+                                   double supp_liquidity, bool corr_spike);
     double compute_china_adjustment();
     bool compute_safe_haven_override();
     bool compute_correlation_spike();
