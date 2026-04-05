@@ -136,7 +136,10 @@ set(TRADE_NGIN_SOURCES
     src/statistics/tests/variance_ratio_test.cpp
     src/statistics/state_estimation/kalman_filter.cpp
     src/statistics/state_estimation/hmm.cpp
+    src/statistics/state_estimation/dynamic_factor_model.cpp
+    src/statistics/state_estimation/macro_data_loader.cpp
     src/statistics/state_estimation/markov_switching.cpp
+    src/statistics/state_estimation/ms_dfm.cpp
     src/statistics/state_estimation/extended_kalman_filter.cpp
     src/statistics/regression/ols_regression.cpp
     src/statistics/regression/ridge_regression.cpp
@@ -182,3 +185,6 @@ add_subdirectory(tests)
 
 # Add apps subdirectory
 add_subdirectory(apps)
+add_executable(test_dfm src/statistics/tests/test_dynamic_factor_model.cpp)
+target_link_libraries(test_dfm PRIVATE trade_ngin GTest::gtest_main)
+add_test(NAME test_dfm COMMAND test_dfm)

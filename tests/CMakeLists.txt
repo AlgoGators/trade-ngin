@@ -46,6 +46,8 @@ set(TEST_SOURCES
     statistics/test_outlier_handler.cpp
     statistics/test_missing_data_handler.cpp
     statistics/test_convergence_monitoring.cpp
+    statistics/test_dynamic_factor_model.cpp
+    statistics/test_ms_dfm.cpp
 )
 
 # Create test executable
