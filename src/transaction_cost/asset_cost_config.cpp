@@ -587,14 +587,17 @@ void AssetCostConfigRegistry::initialize_default_configs() {
     for (const auto& sym : {"AAPL", "MSFT", "AMZN", "GOOGL", "META"}) {
         AssetCostConfig config;
         config.symbol = sym;
+        config.asset_type = AssetType::EQUITY;
         config.baseline_spread_ticks = 1.0;   // ~$0.01 spread (1 penny)
-        config.min_spread_ticks = 0.5;
+        config.min_spread_ticks = 1.0;        // Cannot go below 1 tick ($0.01) for equities
         config.max_spread_ticks = 3.0;
         config.tick_size = 0.01;
         config.point_value = 1.0;             // 1 share = 1 point
         config.commission_per_unit = 0.005;   // IBKR Pro: $0.005/share
         config.min_commission_per_order = 1.00;
-        config.max_commission_per_order = 9.79;
+        config.max_commission_per_order = 1e9;
+        config.max_commission_pct = 0.005;    // 0.5% of trade value (IBKR Tiered cap)
+        config.apply_regulatory_fees = true;
         config.max_impact_bps = 50.0;
         config.max_total_implicit_bps = 75.0;
         configs_[config.symbol] = config;
@@ -604,6 +607,7 @@ void AssetCostConfigRegistry::initialize_default_configs() {
     for (const auto& sym : {"TMUS", "NSC", "ABT"}) {
         AssetCostConfig config;
         config.symbol = sym;
+        config.asset_type = AssetType::EQUITY;
         config.baseline_spread_ticks = 2.0;   // ~$0.02 spread
         config.min_spread_ticks = 1.0;
         config.max_spread_ticks = 5.0;
@@ -611,7 +615,9 @@ void AssetCostConfigRegistry::initialize_default_configs() {
         config.point_value = 1.0;
         config.commission_per_unit = 0.005;
         config.min_commission_per_order = 1.00;
-        config.max_commission_per_order = 9.79;
+        config.max_commission_per_order = 1e9;
+        config.max_commission_pct = 0.005;
+        config.apply_regulatory_fees = true;
         config.max_impact_bps = 75.0;
         config.max_total_implicit_bps = 100.0;
         configs_[config.symbol] = config;
@@ -621,6 +627,7 @@ void AssetCostConfigRegistry::initialize_default_configs() {
     for (const auto& sym : {"ABEV", "ABM"}) {
         AssetCostConfig config;
         config.symbol = sym;
+        config.asset_type = AssetType::EQUITY;
         config.baseline_spread_ticks = 3.0;   // ~$0.03 spread
         config.min_spread_ticks = 1.5;
         config.max_spread_ticks = 8.0;
@@ -628,14 +635,17 @@ void AssetCostConfigRegistry::initialize_default_configs() {
         config.point_value = 1.0;
         config.commission_per_unit = 0.005;
         config.min_commission_per_order = 1.00;
-        config.max_commission_per_order = 9.79;
+        config.max_commission_per_order = 1e9;
+        config.max_commission_pct = 0.005;
+        config.apply_regulatory_fees = true;
         config.max_impact_bps = 100.0;
         config.max_total_implicit_bps = 150.0;
         configs_[config.symbol] = config;
     }
 }
 
-AssetCostConfig AssetCostConfigRegistry::get_config(const std::string& symbol) const {
+AssetCostConfig AssetCostConfigRegistry::get_config(const std::string& symbol,
+                                                    AssetType asset_type) const {
     // First try exact match
     auto it = configs_.find(symbol);
     if (it != configs_.end()) {
@@ -643,6 +653,7 @@ AssetCostConfig AssetCostConfigRegistry::get_config(const std::string& symbol) c
     }
 
     // Strip continuous contract suffix (e.g., ".v.0", ".v.1") and try again
+    // This is futures-specific; equity symbols don't use this suffix
     std::string base_symbol = symbol;
     size_t dot_pos = symbol.find('.');
     if (dot_pos != std::string::npos) {
@@ -655,7 +666,13 @@ AssetCostConfig AssetCostConfigRegistry::get_config(const std::string& symbol) c
         }
     }
 
-    // Return default config for unknown symbols
+    // Return asset-class-appropriate default for unknown symbols
+    if (asset_type == AssetType::EQUITY) {
+        auto config = get_equity_default_config();
+        config.symbol = symbol;
+        return config;
+    }
+
     auto default_config = get_default_config();
     default_config.symbol = symbol;
     return default_config;
@@ -670,9 +687,10 @@ bool AssetCostConfigRegistry::has_config(const std::string& symbol) const {
 }
 
 AssetCostConfig AssetCostConfigRegistry::get_default_config() {
-    // Conservative defaults for unknown instruments
+    // Conservative defaults for unknown futures instruments
     AssetCostConfig config;
     config.symbol = "UNKNOWN";
+    config.asset_type = AssetType::FUTURE;
     config.baseline_spread_ticks = 2.0;
     config.min_spread_ticks = 1.0;
     config.max_spread_ticks = 10.0;
@@ -680,6 +698,76 @@ AssetCostConfig AssetCostConfigRegistry::get_default_config() {
     config.tick_size = 0.01;
     config.point_value = 100.0;
     config.max_total_implicit_bps = 200.0;
+    return config;
+}
+
+AssetCostConfig AssetCostConfigRegistry::get_equity_default_config() {
+    // Sensible defaults for unknown equity symbols
+    // Prevents 100x cost scaling and 300x commission overstatement
+    AssetCostConfig config;
+    config.symbol = "EQUITY_DEFAULT";
+    config.asset_type = AssetType::EQUITY;
+    config.baseline_spread_ticks = 2.0;
+    config.min_spread_ticks = 1.0;
+    config.max_spread_ticks = 10.0;
+    config.tick_size = 0.01;
+    config.point_value = 1.0;              // 1 share = 1 point (not 100.0!)
+    config.commission_per_unit = 0.005;    // IBKR Pro: $0.005/share
+    config.min_commission_per_order = 1.00;
+    config.max_commission_per_order = 1e9;
+    config.max_commission_pct = 0.005;     // 0.5% of trade value cap
+    config.apply_regulatory_fees = true;   // SEC + FINRA on sells
+    config.max_impact_bps = 100.0;
+    config.max_total_implicit_bps = 200.0;
+    return config;
+}
+
+AssetCostConfig AssetCostConfigRegistry::get_tiered_equity_config(double price, double adv) {
+    auto config = get_equity_default_config();
+
+    // Sub-dollar stocks use different tick size (SEC Rule 612)
+    if (price < 1.0) {
+        config.tick_size = 0.0001;
+    }
+
+    // Tier by ADV (calibrated to TCA literature: Almgren 2005, Deutsche Bank, Virtu/ITG)
+    if (adv > 10000000.0) {
+        // Mega-cap / ultra-liquid
+        config.baseline_spread_ticks = 1.0;
+        config.min_spread_ticks = 1.0;
+        config.max_spread_ticks = 3.0;
+        config.max_impact_bps = 50.0;
+        config.max_total_implicit_bps = 75.0;
+    } else if (adv > 2000000.0) {
+        // Large-cap
+        config.baseline_spread_ticks = 2.0;
+        config.min_spread_ticks = 1.0;
+        config.max_spread_ticks = 5.0;
+        config.max_impact_bps = 75.0;
+        config.max_total_implicit_bps = 100.0;
+    } else if (adv > 500000.0) {
+        // Mid-cap
+        config.baseline_spread_ticks = 3.0;
+        config.min_spread_ticks = 1.5;
+        config.max_spread_ticks = 8.0;
+        config.max_impact_bps = 100.0;
+        config.max_total_implicit_bps = 150.0;
+    } else if (adv > 100000.0) {
+        // Small-cap
+        config.baseline_spread_ticks = 5.0;
+        config.min_spread_ticks = 2.0;
+        config.max_spread_ticks = 15.0;
+        config.max_impact_bps = 150.0;
+        config.max_total_implicit_bps = 250.0;
+    } else {
+        // Penny / illiquid
+        config.baseline_spread_ticks = 10.0;
+        config.min_spread_ticks = 5.0;
+        config.max_spread_ticks = 50.0;
+        config.max_impact_bps = 300.0;
+        config.max_total_implicit_bps = 500.0;
+    }
+
     return config;
 }
 

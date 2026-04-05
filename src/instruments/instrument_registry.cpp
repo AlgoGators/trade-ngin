@@ -1,6 +1,9 @@
 // src/instruments/instrument_registry.cpp
 #include "trade_ngin/instruments/instrument_registry.hpp"
 #include <arrow/api.h>
+#include <fstream>
+#include <nlohmann/json.hpp>
+#include <unordered_set>
 #include "trade_ngin/core/logger.hpp"
 
 namespace trade_ngin {
@@ -173,10 +176,37 @@ Result<void> InstrumentRegistry::load_instruments() {
 }
 
 Result<void> InstrumentRegistry::load_equity_instruments(
-    const std::vector<std::string>& symbols) {
+    const std::vector<std::string>& symbols,
+    const std::string& exchange_lookup_path) {
     if (!initialized_) {
         return make_error<void>(ErrorCode::NOT_INITIALIZED, "InstrumentRegistry not initialized",
                                 "InstrumentRegistry");
+    }
+
+    // Load exchange lookup table from JSON if provided
+    std::unordered_map<std::string, std::string> exchange_map;
+    if (!exchange_lookup_path.empty()) {
+        try {
+            std::ifstream file(exchange_lookup_path);
+            if (file.is_open()) {
+                nlohmann::json j;
+                file >> j;
+                for (auto& [exchange, symbols_array] : j.items()) {
+                    if (exchange.front() == '_') continue;  // Skip comment fields
+                    for (const auto& sym : symbols_array) {
+                        exchange_map[sym.get<std::string>()] = exchange;
+                    }
+                }
+                INFO("Loaded exchange lookup with " + std::to_string(exchange_map.size()) +
+                     " symbols from " + exchange_lookup_path);
+            } else {
+                WARN("Could not open exchange lookup file: " + exchange_lookup_path +
+                     " -- falling back to NYSE");
+            }
+        } catch (const std::exception& e) {
+            WARN("Error loading exchange lookup: " + std::string(e.what()) +
+                 " -- falling back to NYSE");
+        }
     }
 
     int registered = 0;
@@ -186,7 +216,9 @@ Result<void> InstrumentRegistry::load_equity_instruments(
         }
 
         EquitySpec spec;
-        spec.exchange = "NYSE";
+        // Determine exchange from lookup table, default to NYSE
+        auto ex_it = exchange_map.find(symbol);
+        spec.exchange = (ex_it != exchange_map.end()) ? ex_it->second : "NYSE";
         spec.currency = "USD";
         spec.tick_size = 0.01;
         spec.commission_per_share = 0.0;

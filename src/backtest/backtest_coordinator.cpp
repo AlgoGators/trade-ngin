@@ -391,15 +391,17 @@ Result<void> BacktestCoordinator::process_day(
                 current_positions_, new_positions, price_manager_->get_all_previous_day_prices(),
                 timestamp);
 
-            // Update current positions
-            for (const auto& [symbol, pos] : new_positions) {
-                current_positions_[symbol] = pos;
-            }
-
-            // Notify strategy of fills
+            // Generate executions first, then notify strategy of fills
             for (const auto& exec : new_executions) {
                 strategy->on_execution(exec);
                 executions.push_back(exec);
+            }
+
+            // Update current positions AFTER on_execution so average_price
+            // and unrealized_pnl reflect fill-updated values (not stale on_data values)
+            const auto& updated_positions = strategy->get_positions();
+            for (const auto& [symbol, pos] : updated_positions) {
+                current_positions_[symbol] = pos;
             }
         }
 
@@ -412,12 +414,18 @@ Result<void> BacktestCoordinator::process_day(
             double volume = static_cast<double>(bar.volume);
 
             // Get previous close for log return calculation
-            double prev_close = close;  // Default to current if no previous
+            double prev_close = 0.0;
+            bool found_prev = false;
             for (const auto& prev_bar : previous_bars_) {
                 if (prev_bar.symbol == bar.symbol) {
                     prev_close = static_cast<double>(prev_bar.close);
+                    found_prev = true;
                     break;
                 }
+            }
+            if (!found_prev) {
+                WARN("No T-1 bar found for " + bar.symbol + " -- skipping market data update");
+                continue;
             }
 
             execution_manager_->update_market_data(bar.symbol, volume, close, prev_close);
@@ -489,12 +497,18 @@ Result<void> BacktestCoordinator::process_portfolio_day(
             double volume = static_cast<double>(bar.volume);
 
             // Get previous close for log return calculation
-            double prev_close = close;  // Default to current if no previous
+            double prev_close = 0.0;
+            bool found_prev = false;
             for (const auto& prev_bar : portfolio_previous_bars_) {
                 if (prev_bar.symbol == bar.symbol) {
                     prev_close = static_cast<double>(prev_bar.close);
+                    found_prev = true;
                     break;
                 }
+            }
+            if (!found_prev) {
+                WARN("No T-1 bar found for " + bar.symbol + " -- skipping market data update");
+                continue;
             }
 
             execution_manager_->update_market_data(bar.symbol, volume, close, prev_close);
@@ -653,7 +667,14 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                     // Update this strategy's position with calculated PnL
                     Position updated_pos = pos;
                     updated_pos.realized_pnl = Decimal(pnl_result.daily_pnl);
-                    updated_pos.unrealized_pnl = Decimal(0.0);
+                    // For equities: unrealized = (current_price - cost_basis) * qty
+                    // For futures: unrealized = 0 (mark-to-market settles daily)
+                    double avg_price = static_cast<double>(pos.average_price);
+                    if (avg_price > 0.0 && std::abs(qty) > 1e-8) {
+                        updated_pos.unrealized_pnl = Decimal((current_close - avg_price) * qty);
+                    } else {
+                        updated_pos.unrealized_pnl = Decimal(0.0);
+                    }
 
                     auto update_result =
                         portfolio->update_strategy_position(strategy_id, symbol, updated_pos);

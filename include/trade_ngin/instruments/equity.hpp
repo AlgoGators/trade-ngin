@@ -1,8 +1,10 @@
 // include/trade_ngin/instruments/equity.hpp
 #pragma once
 
+#include <memory>
 #include <string>
 #include <vector>
+#include "trade_ngin/core/holiday_checker.hpp"
 #include "trade_ngin/instruments/instrument.hpp"
 
 namespace trade_ngin {
@@ -36,7 +38,7 @@ struct EquitySpec {
     double margin_requirement{0.5};            // Initial margin requirement (typically 50%)
     std::string sector;                        // Industry sector
     std::string industry;                      // Specific industry
-    std::string trading_hours{"09:30-16:00"};  // Default NYSE hours
+    std::string trading_hours{"09:30-16:00"};  // NYSE and NASDAQ regular session hours
     std::vector<DividendInfo> dividends;       // Upcoming dividends
 };
 
@@ -139,9 +141,17 @@ public:
      */
     std::optional<DividendInfo> get_next_dividend(const Timestamp& from) const;
 
+    /**
+     * @brief Set a shared holiday checker for all equity instruments
+     * @param checker Shared pointer to HolidayChecker instance
+     */
+    static void set_holiday_checker(std::shared_ptr<HolidayChecker> checker);
+
 private:
     std::string symbol_;
     EquitySpec spec_;
+
+    static std::shared_ptr<HolidayChecker> holiday_checker_;
 };
 
 }  // namespace trade_ngin

@@ -1,0 +1,16 @@
+{
+    "_comment": "Primary listing exchange for equities. Updatable without recompilation.",
+    "_updated": "2026-04-04",
+    "NASDAQ": [
+        "AAPL", "MSFT", "AMZN", "GOOGL", "GOOG", "META", "NVDA", "TSLA",
+        "AVGO", "COST", "NFLX", "TMUS", "ADBE", "AMD", "QCOM", "INTC",
+        "INTU", "AMAT", "ISRG", "BKNG", "ADP", "SBUX", "LRCX", "MRVL",
+        "PYPL", "KLAC", "MDLZ", "REGN", "ABNB", "SNPS", "CDNS", "NXPI",
+        "CSCO", "PEP", "CMCSA", "TXN", "HON", "AMGN", "GILD", "VRTX",
+        "PANW", "MELI", "LULU", "FTNT", "MNST", "DXCM", "IDXX", "ODFL",
+        "CTAS", "ON", "WMT", "DASH", "CRWD", "TEAM", "WDAY", "ZS",
+        "CPRT", "FANG", "CEG", "FAST", "VRSK", "ANSS", "EXC", "XEL",
+        "EA", "BIIB", "ILMN", "ALGN", "ENPH", "WBA", "JD", "SIRI",
+        "ROKU", "ZM", "DOCU", "OKTA", "DDOG", "MDB", "NET", "SNOW"
+    ]
+}

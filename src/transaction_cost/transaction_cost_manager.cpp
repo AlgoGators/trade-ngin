@@ -49,15 +49,34 @@ TransactionCostResult TransactionCostManager::calculate_costs(
     // Get asset configuration
     AssetCostConfig asset_config = asset_configs_.get_config(symbol);
 
-    // 1. Calculate explicit costs
+    // 1. Calculate explicit costs (commissions)
     if (asset_config.commission_per_unit >= 0.0) {
         // Per-asset commission (e.g., equities: $0.005/share with min/max per order)
         double raw_commission = abs_qty * asset_config.commission_per_unit;
+        double effective_max;
+        if (asset_config.max_commission_pct >= 0.0) {
+            // Percentage-based cap: e.g., 0.5% of trade value (IBKR Tiered)
+            // IBKR Fixed uses 1.0% -- configurable via max_commission_pct
+            effective_max = asset_config.max_commission_pct * abs_qty * reference_price;
+        } else {
+            effective_max = asset_config.max_commission_per_order;
+        }
         result.commissions_fees = std::max(asset_config.min_commission_per_order,
-                                           std::min(asset_config.max_commission_per_order, raw_commission));
+                                           std::min(effective_max, raw_commission));
     } else {
         // Global fee per contract (futures default)
         result.commissions_fees = abs_qty * config_.explicit_fee_per_contract;
+    }
+
+    // 1b. Regulatory fees (equity sell-side only)
+    if (asset_config.apply_regulatory_fees && quantity < 0) {
+        double trade_value = abs_qty * reference_price;
+        // SEC Transaction Fee (sell-side only)
+        double sec_fee = (trade_value / 1000000.0) * asset_config.sec_fee_per_million;
+        // FINRA TAF (sell-side only, capped per trade)
+        double taf = std::min(abs_qty * asset_config.finra_taf_per_share,
+                              asset_config.finra_taf_cap_per_trade);
+        result.commissions_fees += sec_fee + taf;
     }
 
     // 2. Calculate spread cost (in price units per contract)

@@ -23,7 +23,8 @@ struct MeanReversionConfig {
     int vol_lookback{20};             // Lookback for volatility calculation
     bool use_stop_loss{true};         // Whether to use stop loss
     double stop_loss_pct{0.05};       // Stop loss percentage (5%)
-    bool allow_fractional_shares{true}; // Allow fractional share quantities
+    bool allow_fractional_shares{true};   // Allow fractional share quantities
+    double fractional_min_price{1.0};     // Min price for fractional eligibility ($1.00 industry standard)
 };
 
 /**

@@ -52,8 +52,8 @@ Result<void> MeanReversionStrategy::initialize() {
         return base_result;
     }
 
-    set_pnl_accounting_method(PnLAccountingMethod::UNREALIZED_ONLY);
-    INFO("Mean reversion strategy initialized with UNREALIZED_ONLY PnL accounting");
+    set_pnl_accounting_method(PnLAccountingMethod::MIXED);
+    INFO("Mean reversion strategy initialized with MIXED PnL accounting");
 
     try {
         for (const auto& [symbol, _] : config_.trading_params) {
@@ -127,37 +127,19 @@ Result<void> MeanReversionStrategy::on_data(const std::vector<Bar>& data) {
             double signal = generate_signal(bar.symbol, inst_data);
             signals[bar.symbol] = signal;
 
-            double current_position = positions_[bar.symbol].quantity.as_double();
-
             // Calculate position size
             if (std::abs(signal) > 0.01) {
                 double position_size = calculate_position_size(bar.symbol, bar.close.as_double(), inst_data.current_volatility);
                 double new_target = signal * position_size;
-
-                // FIX (MOD #3 Part B): Update entry price with cost-basis averaging when adding to position
-                if (std::abs(current_position) > 1e-8 && std::abs(new_target) > std::abs(current_position)) {
-                    double new_shares = std::abs(new_target) - std::abs(current_position);
-                    double total_cost = (std::abs(current_position) * inst_data.entry_price) +
-                                        (new_shares * bar.close.as_double());
-                    inst_data.entry_price = total_cost / std::abs(new_target);
-                }
-
                 inst_data.target_position = new_target;
-
-                // Track entry price for new positions
-                if (std::abs(current_position) < 1e-8) {
-                    inst_data.entry_price = bar.close.as_double();
-                }
             } else {
-                // FIX (MOD #3 Part A): Clear entry price on position close
                 inst_data.target_position = 0.0;
-                inst_data.entry_price = 0.0;
             }
 
-            // Update position in base class
+            // Update position quantity in base class
+            // DO NOT set average_price here -- on_execution() manages cost basis
             Position pos = positions_[bar.symbol];
             pos.quantity = Quantity(inst_data.target_position);
-            pos.average_price = bar.close;
             pos.last_update = bar.timestamp;
             positions_[bar.symbol] = pos;
 
@@ -167,6 +149,16 @@ Result<void> MeanReversionStrategy::on_data(const std::vector<Bar>& data) {
                   " | Z-Score: " + std::to_string(inst_data.z_score) +
                   " | Signal: " + std::to_string(signal) +
                   " | Position: " + std::to_string(inst_data.target_position));
+        }
+
+        // Update unrealized PnL for all positions based on current prices
+        // (BaseStrategy::on_data does this but we override it, so compute here)
+        for (const auto& bar : data) {
+            auto pos_it = positions_.find(bar.symbol);
+            if (pos_it != positions_.end()) {
+                pos_it->second.unrealized_pnl =
+                    (bar.close - pos_it->second.average_price) * pos_it->second.quantity;
+            }
         }
 
         return Result<void>();
@@ -209,6 +201,7 @@ double MeanReversionStrategy::calculate_std_dev(const std::vector<double>& price
         return 0.0;
     }
 
+    // Population std dev (n) for technical indicators (z-score, Bollinger Bands)
     double sum_squared_diff = 0.0;
     for (size_t i = prices.size() - period; i < prices.size(); ++i) {
         double diff = prices[i] - mean;
@@ -240,8 +233,9 @@ double MeanReversionStrategy::calculate_position_size(const std::string& symbol,
     double position_value = target_value * vol_scalar;
     double num_shares = position_value / price;
 
-    // FIX (MAJOR #5): Support fractional shares (configurable)
-    if (mr_config_.allow_fractional_shares) {
+    // Fractional shares: disabled for stocks below min price threshold
+    // Industry standard: $1.00 (exchange listing maintenance, SEC Rule 612 boundary)
+    if (mr_config_.allow_fractional_shares && price >= mr_config_.fractional_min_price) {
         num_shares = std::round(num_shares * 1000000.0) / 1000000.0;
     } else {
         num_shares = std::floor(num_shares);
@@ -283,7 +277,8 @@ double MeanReversionStrategy::calculate_volatility(const std::vector<double>& pr
         double diff = ret - mean;
         sum_squared_diff += diff * diff;
     }
-    double std_dev = std::sqrt(sum_squared_diff / returns.size());
+    // Sample std dev (n-1) for risk/volatility estimation (position sizing)
+    double std_dev = std::sqrt(sum_squared_diff / (returns.size() - 1));
 
     // Annualize (assuming daily data, 252 trading days)
     return std_dev * std::sqrt(252.0);
@@ -306,13 +301,15 @@ double MeanReversionStrategy::generate_signal(const std::string& symbol, const M
         return 0.0;
     }
 
-    // Exit signals
+    // Exit signals — use pos.average_price (maintained by on_execution) for stop-loss
+    double avg_price = static_cast<double>(pos_it->second.average_price);
+
     if (current_position > 0) {
         if (data.z_score > -mr_config_.exit_threshold) {
             return 0.0;  // Mean reversion complete - exit long
         }
-        if (mr_config_.use_stop_loss && data.entry_price > 0) {
-            double pnl_pct = (data.current_price - data.entry_price) / data.entry_price;
+        if (mr_config_.use_stop_loss && avg_price > 0) {
+            double pnl_pct = (data.current_price - avg_price) / avg_price;
             if (pnl_pct < -mr_config_.stop_loss_pct) {
                 return 0.0;  // Stop loss hit
             }
@@ -324,8 +321,8 @@ double MeanReversionStrategy::generate_signal(const std::string& symbol, const M
         if (data.z_score < mr_config_.exit_threshold) {
             return 0.0;  // Mean reversion complete - exit short
         }
-        if (mr_config_.use_stop_loss && data.entry_price > 0) {
-            double pnl_pct = (data.entry_price - data.current_price) / data.entry_price;
+        if (mr_config_.use_stop_loss && avg_price > 0) {
+            double pnl_pct = (avg_price - data.current_price) / avg_price;
             if (pnl_pct < -mr_config_.stop_loss_pct) {
                 return 0.0;  // Stop loss hit
             }

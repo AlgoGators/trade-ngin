@@ -7,6 +7,12 @@
 
 namespace trade_ngin {
 
+std::shared_ptr<HolidayChecker> EquityInstrument::holiday_checker_ = nullptr;
+
+void EquityInstrument::set_holiday_checker(std::shared_ptr<HolidayChecker> checker) {
+    holiday_checker_ = std::move(checker);
+}
+
 EquityInstrument::EquityInstrument(std::string symbol, EquitySpec spec)
     : symbol_(std::move(symbol)), spec_(std::move(spec)) {}
 
@@ -26,6 +32,15 @@ bool EquityInstrument::is_market_open(const Timestamp& timestamp) const {
         // Check for weekdays only
         if (local_time->tm_wday == 0 || local_time->tm_wday == 6) {
             return false;
+        }
+
+        // Check for market holidays
+        if (holiday_checker_) {
+            char date_buf[11];
+            std::strftime(date_buf, sizeof(date_buf), "%Y-%m-%d", local_time);
+            if (holiday_checker_->is_holiday(std::string(date_buf))) {
+                return false;
+            }
         }
 
         // Parse trading hours (format: "HH:MM-HH:MM")

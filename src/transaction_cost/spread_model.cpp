@@ -19,6 +19,15 @@ double SpreadModel::calculate_spread_price_impact(
     // Clamp to min/max bounds
     spread_ticks = std::clamp(spread_ticks, config.min_spread_ticks, config.max_spread_ticks);
 
+    // For equities, the minimum tick is the binding constraint for quoted spreads.
+    // Standard NMS stocks (>= $1.00): min 1 tick ($0.01)
+    // Tick-constrained stocks (TWAQS <= $0.015, Nov 2025 Rule 612): 0.5 tick ($0.005)
+    // Sub-dollar stocks (< $1.00): tick_size = $0.0001
+    if (config.asset_type == AssetType::EQUITY) {
+        double min_ticks = config.tick_constrained ? 0.5 : 1.0;
+        spread_ticks = std::max(spread_ticks, min_ticks);
+    }
+
     // Spread cost (one-way) in price units per contract.
     // Default multiplier=0.5 models crossing half the quoted spread.
     // For limit-order style execution, use a smaller multiplier (e.g. 0.25)
