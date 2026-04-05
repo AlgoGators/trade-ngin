@@ -199,6 +199,51 @@ int main() {
         cg_config.max_total_equity_notional = cg_cfg.value("max_total_equity_notional", 0.35);
         cg_config.max_total_commodity_notional = cg_cfg.value("max_total_commodity_notional", 0.40);
 
+        // --- Improvement feature flags ---
+
+        // 1. Ensemble ROC
+        cg_config.use_ensemble_roc = cg_cfg.value("use_ensemble_roc", false);
+        if (cg_cfg.contains("roc_windows")) {
+            cg_config.roc_windows.clear();
+            for (const auto& w : cg_cfg["roc_windows"]) {
+                cg_config.roc_windows.push_back(w.get<int>());
+            }
+        }
+
+        // 2. Gold/Silver ratio filter
+        cg_config.use_gsr_filter = cg_cfg.value("use_gsr_filter", false);
+        cg_config.gsr_fear_threshold = cg_cfg.value("gsr_fear_threshold", 80.0);
+        cg_config.gsr_greed_threshold = cg_cfg.value("gsr_greed_threshold", 65.0);
+        cg_config.gsr_conflict_scale = cg_cfg.value("gsr_conflict_scale", 0.75);
+
+        // 3. Inverse-volatility weights
+        cg_config.use_inverse_vol_weights = cg_cfg.value("use_inverse_vol_weights", false);
+        cg_config.vol_weight_lookback = cg_cfg.value("vol_weight_lookback", 63);
+        cg_config.min_asset_class_weight = cg_cfg.value("min_asset_class_weight", 0.10);
+        cg_config.max_asset_class_weight = cg_cfg.value("max_asset_class_weight", 0.50);
+
+        // 4. Conditional volatility targeting
+        cg_config.use_vol_targeting = cg_cfg.value("use_vol_targeting", false);
+        cg_config.target_portfolio_vol = cg_cfg.value("target_portfolio_vol", 0.15);
+        cg_config.vol_target_lookback = cg_cfg.value("vol_target_lookback", 63);
+        cg_config.min_leverage = cg_cfg.value("min_leverage", 0.5);
+        cg_config.max_leverage = cg_cfg.value("max_leverage", 3.0);
+
+        // 5. Cross-asset momentum confirmation
+        cg_config.use_momentum_confirmation = cg_cfg.value("use_momentum_confirmation", false);
+        if (cg_cfg.contains("momentum_lookbacks")) {
+            cg_config.momentum_lookbacks.clear();
+            for (const auto& lb : cg_cfg["momentum_lookbacks"]) {
+                cg_config.momentum_lookbacks.push_back(lb.get<int>());
+            }
+        }
+        cg_config.momentum_disagreement_scale = cg_cfg.value("momentum_disagreement_scale", 0.5);
+
+        // 6. Carry signal (approximate)
+        cg_config.use_carry_modifier = cg_cfg.value("use_carry_modifier", false);
+        cg_config.carry_lookback = cg_cfg.value("carry_lookback", 63);
+        cg_config.carry_disagreement_scale = cg_cfg.value("carry_disagreement_scale", 0.65);
+
         // Load custom symbol list if provided
         if (cg_cfg.contains("futures_symbols")) {
             cg_config.futures_symbols.clear();

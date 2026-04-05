@@ -77,6 +77,41 @@ struct CopperGoldIPConfig {
     std::vector<std::string> futures_symbols{
         "HG.v.0", "GC.v.0", "CL.v.0", "SI.v.0", "ZN.v.0", "UB.v.0",
         "6J.v.0", "MES.v.0", "MNQ.v.0"};
+
+    // --- Improvement feature flags (all default OFF to preserve baseline) ---
+
+    // 1. Ensemble ROC lookbacks
+    bool use_ensemble_roc{false};
+    std::vector<int> roc_windows{10, 20, 60, 120};
+
+    // 2. Gold/Silver ratio filter
+    bool use_gsr_filter{false};
+    double gsr_fear_threshold{80.0};
+    double gsr_greed_threshold{65.0};
+    double gsr_conflict_scale{0.75};
+
+    // 3. Inverse-volatility asset class weights
+    bool use_inverse_vol_weights{false};
+    int vol_weight_lookback{63};
+    double min_asset_class_weight{0.10};
+    double max_asset_class_weight{0.50};
+
+    // 4. Conditional volatility targeting
+    bool use_vol_targeting{false};
+    double target_portfolio_vol{0.15};
+    int vol_target_lookback{63};
+    double min_leverage{0.5};
+    double max_leverage{3.0};
+
+    // 5. Cross-asset momentum confirmation
+    bool use_momentum_confirmation{false};
+    std::vector<int> momentum_lookbacks{21, 63, 252};
+    double momentum_disagreement_scale{0.5};
+
+    // 6. Carry signal (approximate)
+    bool use_carry_modifier{false};
+    int carry_lookback{63};
+    double carry_disagreement_scale{0.65};
 };
 
 // ============================================================
@@ -167,12 +202,22 @@ private:
 
         bool drawdown_warning_active{false};
         bool drawdown_stop_active{false};
+
+        int bars_processed{0};
+        bool warmup_reset_done{false};
     };
     SignalState signal_state_;
 
     // Contract specs (hardcoded from strategy doc)
     static const std::unordered_map<std::string, FuturesContractSpec> CONTRACT_SPECS;
     static const std::unordered_map<std::string, double> ASSET_CLASS_WEIGHTS;
+
+    // Improvement 3: Cached dynamic weights
+    std::unordered_map<std::string, double> dynamic_weights_;
+
+    // Improvement 4: Portfolio return history for vol targeting
+    std::deque<double> portfolio_return_history_;
+    double prev_portfolio_value_{0.0};
 
     // --- Layer methods ---
     double compute_layer1_composite();
@@ -184,6 +229,16 @@ private:
     double compute_china_adjustment();
     bool compute_safe_haven_override();
     bool compute_correlation_spike();
+
+    // --- Improvement methods ---
+    double compute_gold_silver_ratio() const;                                    // Improvement 2
+    double compute_gsr_modifier(MacroTilt tilt) const;                           // Improvement 2
+    std::unordered_map<std::string, double> compute_dynamic_weights() const;     // Improvement 3
+    double compute_portfolio_vol() const;                                        // Improvement 4
+    double compute_dynamic_leverage() const;                                     // Improvement 4
+    double compute_momentum_agreement(const std::string& sym, double dir) const; // Improvement 5
+    double compute_approximate_carry(const std::string& sym) const;              // Improvement 6
+    double compute_carry_modifier(const std::string& sym, double dir) const;     // Improvement 6
 
     // --- Position sizing ---
     std::unordered_map<std::string, double> compute_target_positions(

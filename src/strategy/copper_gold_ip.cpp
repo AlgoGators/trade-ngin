@@ -153,6 +153,27 @@ Result<void> CopperGoldIPStrategy::on_data(const std::vector<Bar>& data) {
         // 1. Update futures price histories
         update_price_histories(data);
 
+        // Improvement 4: Track portfolio returns for vol targeting
+        if (cg_config_.use_vol_targeting) {
+            double curr_pv = 0.0;
+            for (const auto& [sym, pos] : positions_) {
+                double qty = pos.quantity.as_double();
+                if (std::abs(qty) < 1e-9) continue;
+                auto fs_it = futures_state_.find(sym);
+                if (fs_it != futures_state_.end() && fs_it->second.current_price > 0.0) {
+                    auto spec_it = CONTRACT_SPECS.find(strip_suffix(sym));
+                    double pv = (spec_it != CONTRACT_SPECS.end()) ? spec_it->second.point_value() : 1.0;
+                    curr_pv += qty * fs_it->second.current_price * pv;
+                }
+            }
+            if (std::abs(prev_portfolio_value_) > 1e-9) {
+                portfolio_return_history_.push_back(
+                    (curr_pv - prev_portfolio_value_) / config_.capital_allocation);
+                trim_deque(portfolio_return_history_);
+            }
+            prev_portfolio_value_ = curr_pv;
+        }
+
         // 2. Compute Cu/Au ratio
         auto hg_it = find_by_base(futures_state_, "HG");
         auto gc_it = find_by_base(futures_state_, "GC");
@@ -275,16 +296,70 @@ Result<void> CopperGoldIPStrategy::on_data(const std::vector<Bar>& data) {
         double china_adj = compute_china_adjustment();
         bool corr_spike = compute_correlation_spike();
 
+        // Reset equity tracking after warmup so drawdown is measured from trading start
+        signal_state_.bars_processed++;
+        if (!signal_state_.warmup_reset_done && signal_state_.bars_processed > 300) {
+            signal_state_.equity = config_.capital_allocation;
+            signal_state_.peak_equity = config_.capital_allocation;
+            signal_state_.warmup_reset_done = true;
+        }
+
+        // ============================================================
+        // Drawdown Safety Valve (mark-to-market for stop detection only)
+        // This does NOT drive position sizing — only triggers stop_triggered.
+        // The coordinator remains the single source of truth for PnL.
+        // ============================================================
+        double daily_pnl = 0.0;
+        for (const auto& [sym, pos] : positions_) {
+            double qty = pos.quantity.as_double();
+            if (std::abs(qty) < 1e-9) continue;
+            auto fs_it = futures_state_.find(sym);
+            if (fs_it == futures_state_.end() || fs_it->second.price_history.size() < 2) continue;
+            size_t sz = fs_it->second.price_history.size();
+            double prev_price = fs_it->second.price_history[sz - 2];
+            double curr_price = fs_it->second.price_history[sz - 1];
+            auto spec_it = CONTRACT_SPECS.find(strip_suffix(sym));
+            double pv = (spec_it != CONTRACT_SPECS.end()) ? spec_it->second.point_value() : 1.0;
+            daily_pnl += qty * (curr_price - prev_price) * pv;
+        }
+        signal_state_.equity += daily_pnl;
+        if (signal_state_.equity > signal_state_.peak_equity) {
+            signal_state_.peak_equity = signal_state_.equity;
+        }
+
+        double drawdown = 0.0;
+        if (signal_state_.peak_equity > 0.0) {
+            drawdown = (signal_state_.peak_equity - signal_state_.equity) / signal_state_.peak_equity;
+        }
+
+        // Drawdown stop: flatten all positions and stay flat until recovery
+        bool stop_triggered = false;
+        if (drawdown > cg_config_.drawdown_stop_pct) {
+            stop_triggered = true;
+            signal_state_.drawdown_stop_active = true;
+        } else if (signal_state_.drawdown_stop_active && drawdown < cg_config_.drawdown_warning_pct) {
+            // Hysteresis: only clear stop when drawdown recovers below warning level
+            signal_state_.drawdown_stop_active = false;
+        }
+
+        if (signal_state_.drawdown_stop_active) {
+            stop_triggered = true;
+        }
+
         // ============================================================
         // Size Multiplier (Layers 2-5 combined)
-        // Note: Internal PnL/equity tracking removed per co-worker review.
-        // The backtest coordinator is the single source of truth for PnL.
-        // Drawdown management is handled by the coordinator's risk manager.
         // ============================================================
-        double size_mult = compute_size_multiplier(
-            macro_tilt, regime, dxy_filter, supp_liquidity, corr_spike);
+        double size_mult = 0.0;
+        if (!signal_state_.drawdown_stop_active) {
+            size_mult = compute_size_multiplier(
+                macro_tilt, regime, dxy_filter, supp_liquidity, corr_spike);
+        }
+        // When drawdown_stop_active, size_mult stays 0.0 → all positions flatten
 
-        bool stop_triggered = false;
+        // Improvement 3: Compute dynamic weights for this bar
+        if (cg_config_.use_inverse_vol_weights) {
+            dynamic_weights_ = compute_dynamic_weights();
+        }
 
         // ============================================================
         // Rebalance Decision
@@ -360,9 +435,23 @@ double CopperGoldIPStrategy::compute_layer1_composite() {
         return std::numeric_limits<double>::quiet_NaN();
     }
 
-    // ROC(20)
-    double roc20 = compute_roc(cu_au_ratio_history_, cg_config_.roc_window);
-    double sign_roc = std::isnan(roc20) ? 0.0 : (roc20 > 0.0 ? 1.0 : -1.0);
+    // ROC signal (single or ensemble)
+    double sign_roc = 0.0;
+    if (cg_config_.use_ensemble_roc) {
+        int valid_count = 0;
+        double sign_sum = 0.0;
+        for (int w : cg_config_.roc_windows) {
+            double roc_w = compute_roc(cu_au_ratio_history_, w);
+            if (!std::isnan(roc_w)) {
+                sign_sum += (roc_w > 0.0) ? 1.0 : -1.0;
+                valid_count++;
+            }
+        }
+        sign_roc = (valid_count > 0) ? sign_sum / valid_count : 0.0;
+    } else {
+        double roc20 = compute_roc(cu_au_ratio_history_, cg_config_.roc_window);
+        sign_roc = std::isnan(roc20) ? 0.0 : (roc20 > 0.0 ? 1.0 : -1.0);
+    }
 
     // MA crossover: SMA(fast) vs SMA(slow)
     double sma_fast = compute_sma(cu_au_ratio_history_, cg_config_.ma_fast);
@@ -478,7 +567,202 @@ double CopperGoldIPStrategy::compute_size_multiplier(
         size_mult *= 0.5;
     }
 
+    // Improvement 2: Gold/Silver ratio filter
+    if (cg_config_.use_gsr_filter) {
+        size_mult *= compute_gsr_modifier(tilt);
+    }
+
     return size_mult;
+}
+
+// ============================================================
+// Improvement 2: Gold/Silver ratio filter
+// ============================================================
+double CopperGoldIPStrategy::compute_gold_silver_ratio() const {
+    auto gc_it = find_by_base(futures_state_, "GC");
+    auto si_it = find_by_base(futures_state_, "SI");
+    if (gc_it == futures_state_.end() || si_it == futures_state_.end() ||
+        gc_it->second.current_price <= 0.0 || si_it->second.current_price <= 0.0) {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+    return gc_it->second.current_price / si_it->second.current_price;
+}
+
+double CopperGoldIPStrategy::compute_gsr_modifier(MacroTilt tilt) const {
+    if (!cg_config_.use_gsr_filter) return 1.0;
+    double gsr = compute_gold_silver_ratio();
+    if (std::isnan(gsr)) return 1.0;
+
+    if (tilt == MacroTilt::RISK_ON && gsr > cg_config_.gsr_fear_threshold) {
+        return cg_config_.gsr_conflict_scale;
+    }
+    if (tilt == MacroTilt::RISK_OFF && gsr < cg_config_.gsr_greed_threshold) {
+        return cg_config_.gsr_conflict_scale;
+    }
+    return 1.0;
+}
+
+// ============================================================
+// Improvement 3: Inverse-volatility asset class weights
+// ============================================================
+std::unordered_map<std::string, double> CopperGoldIPStrategy::compute_dynamic_weights() const {
+    if (!cg_config_.use_inverse_vol_weights) {
+        return ASSET_CLASS_WEIGHTS;
+    }
+
+    struct ACRep { std::string asset_class; std::string base_symbol; };
+    std::vector<ACRep> reps = {
+        {"equity_index", "MES"}, {"commodities", "HG"},
+        {"fixed_income", "ZN"}, {"fx", "6J"}
+    };
+
+    std::unordered_map<std::string, double> inv_vols;
+    double inv_vol_sum = 0.0;
+    int valid_count = 0;
+
+    for (const auto& rep : reps) {
+        auto it = find_by_base(futures_state_, rep.base_symbol);
+        if (it == futures_state_.end() ||
+            static_cast<int>(it->second.price_history.size()) < cg_config_.vol_weight_lookback + 1) {
+            continue;
+        }
+
+        const auto& ph = it->second.price_history;
+        int n = cg_config_.vol_weight_lookback;
+        double sum_sq = 0.0;
+        int count = 0;
+        for (size_t i = ph.size() - n; i < ph.size(); ++i) {
+            if (i > 0 && ph[i - 1] > 0.0 && ph[i] > 0.0) {
+                double ret = std::log(ph[i] / ph[i - 1]);
+                sum_sq += ret * ret;
+                count++;
+            }
+        }
+        double vol = (count > 1) ? std::sqrt(sum_sq / count) * std::sqrt(252.0) : 0.0;
+
+        if (vol > 1e-9) {
+            double iv = 1.0 / vol;
+            inv_vols[rep.asset_class] = iv;
+            inv_vol_sum += iv;
+            valid_count++;
+        }
+    }
+
+    if (valid_count < 2 || inv_vol_sum <= 0.0) {
+        return ASSET_CLASS_WEIGHTS;
+    }
+
+    std::unordered_map<std::string, double> weights;
+    for (const auto& [ac, _] : ASSET_CLASS_WEIGHTS) {
+        weights[ac] = inv_vols.count(ac) ? inv_vols.at(ac) / inv_vol_sum : ASSET_CLASS_WEIGHTS.at(ac);
+    }
+
+    double total = 0.0;
+    for (auto& [ac, w] : weights) {
+        w = std::max(cg_config_.min_asset_class_weight, std::min(cg_config_.max_asset_class_weight, w));
+        total += w;
+    }
+    if (total > 0.0) {
+        for (auto& [ac, w] : weights) { w /= total; }
+    }
+    return weights;
+}
+
+// ============================================================
+// Improvement 4: Conditional volatility targeting
+// ============================================================
+double CopperGoldIPStrategy::compute_portfolio_vol() const {
+    int n = cg_config_.vol_target_lookback;
+    if (static_cast<int>(portfolio_return_history_.size()) < n) return 0.0;
+
+    double sum = 0.0, sum_sq = 0.0;
+    int count = 0;
+    for (size_t i = portfolio_return_history_.size() - n; i < portfolio_return_history_.size(); ++i) {
+        sum += portfolio_return_history_[i];
+        sum_sq += portfolio_return_history_[i] * portfolio_return_history_[i];
+        count++;
+    }
+    if (count < 2) return 0.0;
+    double mean = sum / count;
+    double var = (sum_sq / count) - (mean * mean);
+    return (var > 0.0) ? std::sqrt(var) * std::sqrt(252.0) : 0.0;
+}
+
+double CopperGoldIPStrategy::compute_dynamic_leverage() const {
+    if (!cg_config_.use_vol_targeting) return cg_config_.leverage_target;
+    double realized_vol = compute_portfolio_vol();
+    if (realized_vol < 1e-9) return cg_config_.leverage_target;
+    double dynamic_lev = cg_config_.target_portfolio_vol / realized_vol;
+    return std::max(cg_config_.min_leverage, std::min(cg_config_.max_leverage, dynamic_lev));
+}
+
+// ============================================================
+// Improvement 5: Cross-asset momentum confirmation
+// ============================================================
+double CopperGoldIPStrategy::compute_momentum_agreement(
+    const std::string& sym, double direction) const {
+    if (!cg_config_.use_momentum_confirmation || std::abs(direction) < 1e-9) return 1.0;
+
+    auto it = futures_state_.find(sym);
+    if (it == futures_state_.end()) return 1.0;
+
+    const auto& ph = it->second.price_history;
+    int agreeing = 0, valid = 0;
+    for (int lb : cg_config_.momentum_lookbacks) {
+        double mom = compute_momentum(ph, lb);
+        if (std::abs(mom) < 1e-12) continue;
+        valid++;
+        if ((mom > 0.0 && direction > 0.0) || (mom < 0.0 && direction < 0.0)) agreeing++;
+    }
+    if (valid == 0) return 1.0;
+    double agreement_ratio = static_cast<double>(agreeing) / valid;
+    return (agreement_ratio < 0.5) ? cg_config_.momentum_disagreement_scale : 1.0;
+}
+
+// ============================================================
+// Improvement 6: Carry signal (approximate)
+// ============================================================
+double CopperGoldIPStrategy::compute_approximate_carry(const std::string& sym) const {
+    auto it = futures_state_.find(sym);
+    if (it == futures_state_.end()) return 0.0;
+
+    const auto& ph = it->second.price_history;
+    int n = cg_config_.carry_lookback;
+    if (static_cast<int>(ph.size()) < n) return 0.0;
+
+    // Linear regression slope of log-prices
+    double x_mean = (n - 1.0) / 2.0;
+    double y_sum = 0.0;
+    std::vector<double> log_prices;
+    log_prices.reserve(n);
+    for (size_t i = ph.size() - n; i < ph.size(); ++i) {
+        double lp = (ph[i] > 0.0) ? std::log(ph[i]) : 0.0;
+        log_prices.push_back(lp);
+        y_sum += lp;
+    }
+    double y_mean = y_sum / n;
+
+    double num = 0.0, den = 0.0;
+    for (int i = 0; i < n; ++i) {
+        double dx = i - x_mean;
+        num += dx * (log_prices[i] - y_mean);
+        den += dx * dx;
+    }
+    double slope = (den > 0.0) ? num / den : 0.0;
+
+    double vol = compute_std(ph, n);
+    if (std::isnan(vol) || vol < 1e-9 || ph.back() <= 0.0) return 0.0;
+    return (slope * 252.0) / (vol / ph.back());
+}
+
+double CopperGoldIPStrategy::compute_carry_modifier(
+    const std::string& sym, double direction) const {
+    if (!cg_config_.use_carry_modifier || std::abs(direction) < 1e-9) return 1.0;
+    double carry = compute_approximate_carry(sym);
+    if (std::abs(carry) < 1e-9) return 1.0;
+    bool carry_positive = (carry > 0.0);
+    bool direction_positive = (direction > 0.0);
+    return (carry_positive != direction_positive) ? cg_config_.carry_disagreement_scale : 1.0;
 }
 
 // ============================================================
@@ -604,12 +888,18 @@ double CopperGoldIPStrategy::contracts_for(
     if (std::abs(direction) < 1e-9 || std::abs(size_mult) < 1e-9) return 0.0;
 
     std::string ac = asset_class_of(sym);
-    double w = ASSET_CLASS_WEIGHTS.count(ac) ? ASSET_CLASS_WEIGHTS.at(ac) : 0.1;
 
-    // Use fixed capital allocation for sizing — not drifting internal equity.
-    // The coordinator tracks actual PnL; internal equity drift causes positions
-    // to shrink over time and prevents the coordinator from detecting rebalances.
-    double notional_alloc = config_.capital_allocation * cg_config_.leverage_target * w;
+    // Improvement 3: Use dynamic inverse-vol weights if enabled
+    double w = 0.1;
+    if (cg_config_.use_inverse_vol_weights && !dynamic_weights_.empty()) {
+        w = dynamic_weights_.count(ac) ? dynamic_weights_.at(ac) : 0.1;
+    } else {
+        w = ASSET_CLASS_WEIGHTS.count(ac) ? ASSET_CLASS_WEIGHTS.at(ac) : 0.1;
+    }
+
+    // Improvement 4: Use dynamic leverage if vol targeting enabled
+    double leverage = cg_config_.use_vol_targeting ? compute_dynamic_leverage() : cg_config_.leverage_target;
+    double notional_alloc = config_.capital_allocation * leverage * w;
 
     std::string base = strip_suffix(sym);
     auto spec_it = CONTRACT_SPECS.find(base);
@@ -721,6 +1011,30 @@ std::unordered_map<std::string, double> CopperGoldIPStrategy::compute_target_pos
         }
     }
 
+    // Improvement 5: Cross-asset momentum confirmation
+    if (cg_config_.use_momentum_confirmation) {
+        for (auto& [sym, qty] : pos) {
+            if (std::abs(qty) < 1e-9) continue;
+            double direction = (qty > 0.0) ? 1.0 : -1.0;
+            double mom_scale = compute_momentum_agreement(sym, direction);
+            if (mom_scale < 1.0) {
+                qty = std::floor(qty * mom_scale + 0.5);
+            }
+        }
+    }
+
+    // Improvement 6: Carry signal modifier
+    if (cg_config_.use_carry_modifier) {
+        for (auto& [sym, qty] : pos) {
+            if (std::abs(qty) < 1e-9) continue;
+            double direction = (qty > 0.0) ? 1.0 : -1.0;
+            double carry_scale = compute_carry_modifier(sym, direction);
+            if (carry_scale < 1.0) {
+                qty = std::floor(qty * carry_scale + 0.5);
+            }
+        }
+    }
+
     return pos;
 }
 
@@ -801,16 +1115,7 @@ bool CopperGoldIPStrategy::should_rebalance(
     bool filter_triggered, bool stop_triggered,
     const std::unordered_map<std::string, double>& positions) {
 
-    if (friday || tilt_changed || regime_changed || filter_triggered || stop_triggered) {
-        return true;
-    }
-
-    // Force rebalance if all positions are zero but we should be trading
-    bool all_flat = true;
-    for (const auto& [sym, qty] : positions) {
-        if (std::abs(qty) > 1e-9) { all_flat = false; break; }
-    }
-    return all_flat;
+    return friday || tilt_changed || regime_changed || filter_triggered || stop_triggered;
 }
 
 // ============================================================

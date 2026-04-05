@@ -41,7 +41,34 @@
                 "max_single_equity_notional": 0.20,
                 "max_single_commodity_notional": 0.15,
                 "max_total_equity_notional": 0.35,
-                "max_total_commodity_notional": 0.40
+                "max_total_commodity_notional": 0.40,
+
+                "use_ensemble_roc": false,
+                "roc_windows": [10, 20, 60, 120],
+
+                "use_gsr_filter": false,
+                "gsr_fear_threshold": 80.0,
+                "gsr_greed_threshold": 65.0,
+                "gsr_conflict_scale": 0.75,
+
+                "use_inverse_vol_weights": false,
+                "vol_weight_lookback": 63,
+                "min_asset_class_weight": 0.10,
+                "max_asset_class_weight": 0.50,
+
+                "use_vol_targeting": false,
+                "target_portfolio_vol": 0.15,
+                "vol_target_lookback": 63,
+                "min_leverage": 0.5,
+                "max_leverage": 3.0,
+
+                "use_momentum_confirmation": false,
+                "momentum_lookbacks": [21, 63, 252],
+                "momentum_disagreement_scale": 0.5,
+
+                "use_carry_modifier": false,
+                "carry_lookback": 63,
+                "carry_disagreement_scale": 0.65
             }
         }
     }
