@@ -1,0 +1,129 @@
+[data] reading assets/weekly_macro_prices.csv
+[data] 638 weekly rows
+[bsts] ETF series...
+  SPY     LL=8e+02
+  EEM     LL=1e+03
+  TLT     LL=1e+03
+  HYG     LL=1e+03
+  GLD     LL=1e+03
+  UUP     LL=2e+03
+  USO     LL=6e+02
+  CPER    LL=1e+03
+[bsts] macro series...
+  cpi_yoy                 LL=-3e+02
+  pce_yoy                 LL=-1e+02
+  breakeven_10y           LL=7e+02
+  gdp_qoq                 LL=-2e+03
+  cfnai                   LL=-1e+03
+  indpro_yoy              LL=-1e+03
+  t10y2y                  LL=4e+02
+  real_rate_10y           LL=3e+02
+  hy_oas                  LL=-2e+02
+  unrate                  LL=-5e+02
+  payrolls_mom            LL=-8e+02
+  init_claims             LL=-9e+03
+[features] building 638 x 50 matrix
+[pca] 12 components
+  variance explained: 8e+01%
+[gmm] K=4  restarts=10  (K-means++ init)
+    restart 1/10  ll=-11206.0
+    restart 2/10  ll=-10872.2
+    restart 3/10  ll=-10709.4
+    restart 4/10  ll=-10965.4
+    restart 5/10  ll=-9577.9
+    restart 6/10  ll=-9793.0
+    restart 7/10  ll=-10318.1
+    restart 8/10  ll=-10789.8
+    restart 9/10  ll=-9390.1
+    restart 10/10  ll=-10478.3
+  best ll=-9390.1
+  high-conviction obs: 96.6%
+[labelling] cluster macro composite profiles:
+  cluster 0  gi=-0.02  gs=0.36  inf=0.05  str=-0.60  ros=1.47
+  cluster 1  gi=0.71  gs=0.32  inf=-0.66  str=-0.67  ros=-1.26
+  cluster 2  gi=-1.62  gs=0.99  inf=1.61  str=-0.46  ros=0.24
+  cluster 3  gi=0.93  gs=-1.67  inf=-0.99  str=1.73  ros=-0.45
+  assign cluster 3 -> R1 Risk-Off/Crash  (score=4.639)
+  assign cluster 2 -> R2 Stagflation  (score=4.416)
+  assign cluster 0 -> R3 Reflation  (score=2.421)
+  assign cluster 1 -> R0 Risk-On Growth  (score=1.156)
+
+╔══════════════════════════════════════════════════════════════════╗
+║  BSTS MULTI-ASSET MACRO REGIME DETECTOR                         ║
+║  AlgoGators Investment Fund  ·  Quantitative Research            ║
+╚══════════════════════════════════════════════════════════════════╝
+  Observations: 638 weekly
+  ETF series:   8  (market momentum — Block 1)
+  Macro series: 12  (fundamental drivers — Block 2)
+  PCA:          12 components  (84.2% var explained)
+  GMM:          4 regimes
+
+  ┌──────────────────────────────────────────────────────────────┐
+  │  CURRENT REGIME                                              │
+  │  R2 Stagflation                                               │
+  │  GMM structural label: R0 Risk-On Growth                       │
+  │  Entropy  0.0000   HIGH CONVICTION (entropy <= 0.20)          │
+  └──────────────────────────────────────────────────────────────┘
+
+  POSTERIOR PROBABILITIES  P(regime_k | BSTS features)
+  ──────────────────────────────────────────────────────────────
+  R0 Risk-On Growth       1.0000  ########################################
+  R1 Risk-Off/Crash       0.0000  
+  R2 Stagflation          0.0000    <
+  R3 Reflation            0.0000  
+
+  MACRO COMPOSITES  (current week)
+  ──────────────────────────────────────────────────────────────
+  Risk-On Score (ETF β)       = -0.00274  →  RISK-OFF
+  Growth Score  (PMI/IP/GDP)  = -0.039  →  CONTRACTING
+  Inflation Score (CPI/PCE/BE) = 2.616%
+  Growth-Inflation Quad        = -1.347
+                               →  STAGFLATION  (Low Growth + High Inflation)
+
+  PER-ASSET SMOOTHED SLOPE beta_T
+  ──────────────────────────────────────────────────────────────
+  SPY    beta=-0.00021  sigma_b=0.00820  
+  EEM    beta=+0.00396  sigma_b=0.00429  ^^^
+  TLT    beta=-0.00056  sigma_b=0.00435  
+  HYG    beta=+0.00030  sigma_b=0.00260  
+  GLD    beta=+0.00976  sigma_b=0.00613  ^^^^^^^^^
+  UUP    beta=+0.00120  sigma_b=0.00210  ^
+  USO    beta=+0.04141  sigma_b=0.01443  ^^^^^^^^^^^^^^^^^^^^
+  CPER   beta=-0.00091  sigma_b=0.00683  
+
+  KEY MACRO LEVELS  (BSTS smoothed μ_t)
+  ──────────────────────────────────────────────────────────────
+  cpi_yoy               μ=   2.652  slope=-0.0146
+  pce_yoy               μ=   2.842  slope=+0.0021
+  breakeven_10y         μ=   2.355  slope=+0.0046
+  gdp_qoq               μ=   0.649  slope=-0.0203
+  cfnai                 μ=  -0.109  slope=+0.0002
+  indpro_yoy            μ=   1.443  slope=+0.0093
+  t10y2y                μ=   0.584  slope=-0.0023
+  real_rate_10y         μ=   1.882  slope=+0.0017
+  hy_oas                μ=   3.229  slope=+0.0038
+  unrate                μ=   4.402  slope=+0.0035
+  payrolls_mom          μ=  -0.059  slope=-0.0014
+  init_claims           μ=206283.532  slope=-501.9531
+
+  REGIME DISTRIBUTION  (full sample)
+  ──────────────────────────────────────────────────────────────
+  R0 Risk-On Growth        12.4%  ####
+  R1 Risk-Off/Crash        16.6%  #####
+  R2 Stagflation           30.7%  ##########
+  R3 Reflation             40.3%  #############
+
+  REGIME PLAYBOOK
+  ──────────────────────────────────────────────────────────────
+  Regime                Long                Short             Watch
+  ------------------------------------------------------------------------------
+  R0 Risk-On Growth     SP500,EM,Copper     Bonds,USD         Oil momentum
+  R1 Risk-Off/Crash     Bonds,Gold,USD      Equities,Oil,HY   Vol carry
+  R2 Stagflation        Gold,Oil            Bonds,EM          Real assets  <- NOW
+  R3 Reflation          Equities,Oil,Gold   Bonds,USD         HY spread tightening
+
+[output] regime CSV -> assets/regime_output.csv
+[output] summary CSV -> regime_summary.csv
+Done. Rows=638  Regimes=4
+Output:  assets/regime_output.csv
+Summary: regime_summary.csv
