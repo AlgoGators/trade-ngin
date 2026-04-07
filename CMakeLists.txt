@@ -24,6 +24,8 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # Enable common compiler warnings
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     add_compile_options(-Wall -Wextra -Wsign-compare)
+elseif(MSVC)
+    add_compile_definitions(_USE_MATH_DEFINES NOMINMAX)
 endif()
 
 # Output directories
@@ -41,28 +43,29 @@ find_package(GTest CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
 #set(Arrow_DIR "C:/vcpkg/installed/x64-windows/share/arrow")
 find_package(Arrow REQUIRED)
-#set(libpqxx_DIR "C:/vcpkg/installed/x64-windows/share/libpqxx")
-# find_package(libpqxx CONFIG REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(NLopt REQUIRED)
-
-# Try to find libpqxx via pkg-config (works with Homebrew)
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(PQXX REQUIRED libpqxx)
-
-# Find curl for email functionality
 find_package(CURL REQUIRED)
 
-add_library(libpqxx::pqxx UNKNOWN IMPORTED)
-set_target_properties(libpqxx::pqxx PROPERTIES
-    IMPORTED_LOCATION "${PQXX_LINK_LIBRARIES}"
-    INTERFACE_INCLUDE_DIRECTORIES "${PQXX_INCLUDE_DIRS}"
-    INTERFACE_LINK_LIBRARIES "${PQXX_LIBRARIES}"
-)
+# Find libpqxx — try CMake config first (vcpkg), fall back to pkg-config (Homebrew)
+find_package(libpqxx CONFIG QUIET)
+if(libpqxx_FOUND)
+    message(STATUS "Found libpqxx via CMake config")
+else()
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(PQXX REQUIRED libpqxx)
+    add_library(libpqxx::pqxx UNKNOWN IMPORTED)
+    set_target_properties(libpqxx::pqxx PROPERTIES
+        IMPORTED_LOCATION "${PQXX_LINK_LIBRARIES}"
+        INTERFACE_INCLUDE_DIRECTORIES "${PQXX_INCLUDE_DIRS}"
+        INTERFACE_LINK_LIBRARIES "${PQXX_LIBRARIES}"
+    )
+    link_directories(${PQXX_LIBRARY_DIRS})
+endif()
 
-link_directories(${PQXX_LIBRARY_DIRS})
-
-link_directories(/opt/homebrew/lib)
+if(APPLE)
+    link_directories(/opt/homebrew/lib)
+endif()
 
 # Add source files for the library
 set(TRADE_NGIN_SOURCES
@@ -144,6 +147,7 @@ set(TRADE_NGIN_SOURCES
     src/statistics/hurst_exponent.cpp
     src/statistics/preprocessing/outlier_handler.cpp
     src/statistics/preprocessing/missing_data_handler.cpp
+    src/regime_engine/growth_inflation_quadrant.cpp
 )
 
 # Add library target
