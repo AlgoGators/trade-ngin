@@ -46,6 +46,7 @@ set(TEST_SOURCES
     statistics/test_outlier_handler.cpp
     statistics/test_missing_data_handler.cpp
     statistics/test_convergence_monitoring.cpp
+    regime_engine/test_growth_inflation_quadrant.cpp
 )
 
 # Create test executable
