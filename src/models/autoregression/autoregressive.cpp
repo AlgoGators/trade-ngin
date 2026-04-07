@@ -37,20 +37,28 @@ MarketMSAR::MarketMSAR(int lag)
 }
 
 
-void MarketMSAR::fit(const Eigen::VectorXd& returns,
-                     const Eigen::MatrixXd& state_probs,
-                     const Eigen::MatrixXd& transition_matrix) {
+Result<void> MarketMSAR::fit(const Eigen::VectorXd& returns,
+                             const Eigen::MatrixXd& state_probs,
+                             const Eigen::MatrixXd& transition_matrix) {
     if (returns.size() <= lag_) {
-        throw std::invalid_argument("MarketMSAR::fit requires returns.size() > lag.");
+        return make_error<void>(ErrorCode::INVALID_ARGUMENT,
+                                "MarketMSAR::fit requires returns.size() > lag.",
+                                "MarketMSAR");
     }
     if (state_probs.rows() != returns.size()) {
-        throw std::invalid_argument("state_probs rows must equal returns size.");
+        return make_error<void>(ErrorCode::INVALID_ARGUMENT,
+                                "state_probs rows must equal returns size.",
+                                "MarketMSAR");
     }
     if (transition_matrix.rows() != transition_matrix.cols()) {
-        throw std::invalid_argument("transition_matrix must be square.");
+        return make_error<void>(ErrorCode::INVALID_ARGUMENT,
+                                "transition_matrix must be square.",
+                                "MarketMSAR");
     }
     if (state_probs.cols() != transition_matrix.rows()) {
-        throw std::invalid_argument("state_probs cols must match transition_matrix size.");
+        return make_error<void>(ErrorCode::INVALID_ARGUMENT,
+                                "state_probs cols must match transition_matrix size.",
+                                "MarketMSAR");
     }
 
 
@@ -100,6 +108,9 @@ void MarketMSAR::fit(const Eigen::VectorXd& returns,
         intercepts_(s) = intercept;
         residual_variances_(s) = residual_var;
     }
+
+
+    return Result<void>();
 }
 
 
@@ -141,13 +152,17 @@ void MarketMSAR::fit_single_regime(const Eigen::MatrixXd& X,
 }
 
 
-MSARForecastBreakdown MarketMSAR::predict_next_detailed(const Eigen::VectorXd& lag_window,
-                                                        const Eigen::VectorXd& current_probs) const {
+Result<MSARForecastBreakdown> MarketMSAR::predict_next_detailed(const Eigen::VectorXd& lag_window,
+                                                                 const Eigen::VectorXd& current_probs) const {
     if (lag_window.size() != lag_) {
-        throw std::invalid_argument("lag_window size must equal lag.");
+        return make_error<MSARForecastBreakdown>(ErrorCode::INVALID_ARGUMENT,
+                                                 "lag_window size must equal lag.",
+                                                 "MarketMSAR");
     }
     if (current_probs.size() != n_states_) {
-        throw std::invalid_argument("current_probs size must equal n_states.");
+        return make_error<MSARForecastBreakdown>(ErrorCode::INVALID_ARGUMENT,
+                                                 "current_probs size must equal n_states.",
+                                                 "MarketMSAR");
     }
 
 
@@ -170,9 +185,15 @@ MSARForecastBreakdown MarketMSAR::predict_next_detailed(const Eigen::VectorXd& l
 }
 
 
-double MarketMSAR::predict_next(const Eigen::VectorXd& lag_window,
-                                const Eigen::VectorXd& current_probs) const {
-    return predict_next_detailed(lag_window, current_probs).weighted_forecast;
+Result<double> MarketMSAR::predict_next(const Eigen::VectorXd& lag_window,
+                                        const Eigen::VectorXd& current_probs) const {
+    auto result = predict_next_detailed(lag_window, current_probs);
+    if (result.is_error()) {
+        return make_error<double>(result.error()->code(),
+                                  result.error()->what(),
+                                  result.error()->component());
+    }
+    return result.value().weighted_forecast;
 }
 
 
@@ -181,21 +202,27 @@ double MarketMSAR::predict_next(const Eigen::VectorXd& lag_window,
 // -----------------------------------------------------------------------------
 
 
-MSARBacktestResult historical_backtest_market_msar(
+Result<MSARBacktestResult> historical_backtest_market_msar(
     const Eigen::VectorXd& returns,
     int ar_lag,
     std::size_t min_train_size,
     const MarkovSwitchingConfig& ms_config,
-    bool verbose = true
+    bool verbose
 ) {
     if (ar_lag <= 0) {
-        throw std::invalid_argument("ar_lag must be positive.");
+        return make_error<MSARBacktestResult>(ErrorCode::INVALID_ARGUMENT,
+                                              "ar_lag must be positive.",
+                                              "historical_backtest_market_msar");
     }
     if (returns.size() <= static_cast<Eigen::Index>(min_train_size)) {
-        throw std::invalid_argument("Not enough data for historical backtest.");
+        return make_error<MSARBacktestResult>(ErrorCode::INVALID_ARGUMENT,
+                                              "Not enough data for historical backtest.",
+                                              "historical_backtest_market_msar");
     }
     if (min_train_size <= static_cast<std::size_t>(ar_lag)) {
-        throw std::invalid_argument("min_train_size must be > ar_lag.");
+        return make_error<MSARBacktestResult>(ErrorCode::INVALID_ARGUMENT,
+                                              "min_train_size must be > ar_lag.",
+                                              "historical_backtest_market_msar");
     }
 
 
@@ -210,18 +237,34 @@ MSARBacktestResult historical_backtest_market_msar(
 
         MarkovSwitching ms_model(ms_config);
         auto fit_result = ms_model.fit(eigen_to_std_vector(train_returns));
+        if (fit_result.is_error()) {
+            return make_error<MSARBacktestResult>(fit_result.error()->code(),
+                                                  fit_result.error()->what(),
+                                                  "historical_backtest_market_msar");
+        }
         const MarkovSwitchingResult& ms = fit_result.value();
 
 
         MarketMSAR msar(ar_lag);
-        msar.fit(train_returns, ms.smoothed_probabilities, ms.transition_matrix);
+        auto msar_fit = msar.fit(train_returns, ms.smoothed_probabilities, ms.transition_matrix);
+        if (msar_fit.is_error()) {
+            return make_error<MSARBacktestResult>(msar_fit.error()->code(),
+                                                  msar_fit.error()->what(),
+                                                  "historical_backtest_market_msar");
+        }
 
 
         Eigen::VectorXd lag_window = returns.segment(t - ar_lag, ar_lag);
         Eigen::VectorXd current_probs = ms.smoothed_probabilities.row(train_returns.size() - 1).transpose();
 
 
-        double prediction = msar.predict_next(lag_window, current_probs);
+        auto pred_result = msar.predict_next(lag_window, current_probs);
+        if (pred_result.is_error()) {
+            return make_error<MSARBacktestResult>(pred_result.error()->code(),
+                                                  pred_result.error()->what(),
+                                                  "historical_backtest_market_msar");
+        }
+        double prediction = pred_result.value();
         double actual = returns(t);
         double abs_error = std::abs(prediction - actual);
         double sq_error = (prediction - actual) * (prediction - actual);

@@ -2,6 +2,7 @@
 
 
 #include "trade_ngin/statistics/state_estimation/markov_switching.hpp"
+#include "trade_ngin/core/error.hpp"
 #include <Eigen/Dense>
 #include <vector>
 #include <cstddef>
@@ -40,17 +41,17 @@ public:
     explicit MarketMSAR(int lag);
 
 
-    void fit(const Eigen::VectorXd& returns,
-             const Eigen::MatrixXd& state_probs,
-             const Eigen::MatrixXd& transition_matrix);
+    Result<void> fit(const Eigen::VectorXd& returns,
+                      const Eigen::MatrixXd& state_probs,
+                      const Eigen::MatrixXd& transition_matrix);
 
 
-    double predict_next(const Eigen::VectorXd& lag_window,
-                        const Eigen::VectorXd& current_probs) const;
+    Result<double> predict_next(const Eigen::VectorXd& lag_window,
+                               const Eigen::VectorXd& current_probs) const;
 
 
-    MSARForecastBreakdown predict_next_detailed(const Eigen::VectorXd& lag_window,
-                                                const Eigen::VectorXd& current_probs) const;
+    Result<MSARForecastBreakdown> predict_next_detailed(const Eigen::VectorXd& lag_window,
+                                                        const Eigen::VectorXd& current_probs) const;
 
 
     const Eigen::MatrixXd& get_ar_coeffs() const { return ar_coeffs_; }
@@ -79,12 +80,12 @@ private:
 };
 
 
-MSARBacktestResult historical_backtest_market_msar(
+Result<MSARBacktestResult> historical_backtest_market_msar(
     const Eigen::VectorXd& returns,
     int ar_lag,
     std::size_t min_train_size,
     const MarkovSwitchingConfig& ms_config,
-    bool verbose
+    bool verbose = true
 );
 
 
