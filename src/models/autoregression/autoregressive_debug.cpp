@@ -94,13 +94,18 @@ int main() {
         ms_config.max_iterations = 100;
         ms_config.tolerance = 1e-4;
 
-        MSARBacktestResult result = historical_backtest_market_msar(
+        auto backtest_result = historical_backtest_market_msar(
             returns,
             lag,
             min_train_size,
             ms_config,
             false
         );
+        if (backtest_result.is_error()) {
+            std::cerr << "Backtest failed: " << backtest_result.error()->what() << '\n';
+            return 1;
+        }
+        const auto& result = backtest_result.value();
 
         std::cout << "Historical MSAR backtest finished.\n";
         std::cout << "Total forecasts: " << result.points.size() << "\n\n";
