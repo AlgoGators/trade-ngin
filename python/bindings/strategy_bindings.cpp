@@ -1,7 +1,7 @@
 #include "bindings.hpp"
 
 #include <pybind11/pybind11.h>
-#include <pybind11/stl.h>
+#include <pybind11/stl_bind.h>
 
 #include "trade_ngin/strategy/base_strategy.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
@@ -27,12 +27,55 @@ struct PyBaseStrategy : public BaseStrategy {
     // update_position internally after doing some validation and conversion. But for now this is
     // fine since it's just a simple wrapper around the C++ method and we can add more validation in
     // the future if needed.
-    Result<void> update_position(const std::string& symbol, const Position& position) override {
-        PYBIND11_OVERRIDE(Result<void>, BaseStrategy, update_position, symbol, position);
-    };
+    // Result<void> update_position(const std::string& symbol, const Position& position) override {
+    //     PYBIND11_OVERRIDE(Result<void>, BaseStrategy, update_position, symbol, position);
+    // };
+
+    // TODO custom override to tell C++ part that the strategy has been initialized from Python side
+    // TODO pass to python to initialize
+    // "Initialization" that would normally be done in the constructor but we're unable to do
+    // that here so we do it in the initialize method - maybe can use write new constructors later
+    Result<void> initialize() override {
+        py::gil_scoped_acquire gil;
+
+        // Always run base initialization
+        auto base_result = BaseStrategy::initialize();
+        if (base_result.is_error()) {
+            return base_result;
+        }
+        INFO("Base initialization successful for Python Strategy " + id_);
+
+        // Required C++ setup
+        Logger::register_component("Python Strategy");
+
+        metadata_.id = id_;
+        metadata_.name = "Python Strategy";
+        metadata_.description = "Implementation of strategy defined in Python";
+
+        // Optional Python extension
+        if (py::get_override(this, "initialize")) {
+            INFO("Override FOUND");
+        } else {
+            WARN("Override NOT found");
+        }
+
+        if (py::function override = py::get_override(this, "initialize")) {
+            INFO("Running Python override for initialize in Strategy " + id_);
+            auto result = override().cast<Result<void>>();
+            if (result.is_error()) {
+                return result;
+            }
+        }
+
+        INFO("Initialization successful for Python Strategy " + id_);
+
+        return Result<void>();
+    }
 };
 
 void bind_base_strategy(py::module_& m) {
+    using PositionMap = std::unordered_map<std::string, Position>;
+
     py::class_<BaseStrategy, PyBaseStrategy, std::shared_ptr<BaseStrategy>>(m, "BaseStrategy")
         .def(py::init<>())
         .def("initialize_from_context", &BaseStrategy::initialize_from_context, py::arg("id"),
@@ -51,9 +94,7 @@ void bind_base_strategy(py::module_& m) {
         .def("on_execution", &BaseStrategy::on_execution)
         .def_property_readonly(
             "positions",
-            [](const BaseStrategy& self) -> const std::unordered_map<std::string, Position>& {
-                return self.get_positions();
-            },
+            [](const BaseStrategy& self) -> const PositionMap& { return self.get_positions(); },
             py::return_value_policy::reference_internal)
         .def("update_position", &BaseStrategy::update_position, py::arg("symbol"),
              py::arg("position"));
