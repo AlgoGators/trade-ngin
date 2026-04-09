@@ -3,7 +3,7 @@
     AlgoGators Investment Fund — Quantitative Research
 
     Multi-asset BSTS macro regime detector.
-    Reads weekly prices + macro fundamentals from CSV,
+    Loads ETF prices + macro fundamentals from PostgreSQL,
     runs LLT BSTS per series (Kalman + RTS smoother),
     extracts 50-dim posterior feature matrix (3 blocks),
     PCA to 12 components, GMM regime classification.
@@ -11,7 +11,7 @@
     Feature blocks:
       Block 1 — Market momentum  (8 ETFs × 4 features = 32)
                 β_t, σ_β, ∇²μ, innov_vol per ETF
-      Block 2 — Macro levels     (12 FRED series × 1 feature = 12)
+      Block 2 — Macro levels     (12 macro series × 1 feature = 12)
                 smoothed BSTS level μ_t per fundamental series
       Block 3 — Regime polarity  (6 cross-series composites)
                 growth_score, inflation_score, growth_inflation_quad,
@@ -21,21 +21,19 @@
     Compile (CMake inside trade-ngin):
         cmake --build build --config Release --target regime_detector
 
-    Compile standalone:
-        g++ -O2 -std=c++17 bsts_regime_detection_multiasset.cpp \
-            -I /path/to/eigen3 -o regime_detector
-
     Run:
-        ./regime_detector assets/weekly_macro_prices.csv assets/regime_output.csv
+        ./regime_detector output_regimes.csv [summary.csv] [connection_string]
 
-    Input CSV (produced by download_weekly_macro_data.py):
-        date,SPY,EEM,TLT,HYG,GLD,UUP,USO,CPER,
-             cpi_yoy,pce_yoy,breakeven_10y,
-             gdp_qoq,cfnai,indpro_yoy,
-             t10y2y,real_rate_10y,hy_oas,
-             unrate,payrolls_mom,init_claims
+    Data sources (PostgreSQL):
+        ETF prices:  macro_data.bsts_etf_prices (SPY, EEM, TLT, HYG, GLD, UUP, USO, CPER)
+        Macro data:  macro_data.{inflation, growth, yield_curve, credit_spreads, liquidity, market}
 */
 
+#include "trade_ngin/data/postgres_database.hpp"
+#include "trade_ngin/statistics/state_estimation/macro_data_loader.hpp"
+#include "trade_ngin/core/types.hpp"
+
+#include <arrow/api.h>
 #include <Eigen/Dense>
 #include <algorithm>
 #include <cassert>
@@ -51,6 +49,8 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+
+using namespace trade_ngin;
 
 static constexpr double kPi             = 3.14159265358979323846;
 static constexpr double kEps            = 1e-8;
@@ -70,20 +70,20 @@ static const std::vector<std::string> ETF_SERIES = {
     "SPY", "EEM", "TLT", "HYG", "GLD", "UUP", "USO", "CPER"
 };
 
-// FRED macro series — model the raw transformed value directly (not log)
+// Macro series — column names match macro_data.* PostgreSQL tables
 static const std::vector<std::string> MACRO_SERIES = {
-    "cpi_yoy",       // CPI YoY %
-    "pce_yoy",       // PCE YoY %
-    "breakeven_10y", // 10Y inflation breakeven
-    "gdp_qoq",       // GDP QoQ annualised %
-    "cfnai",          // Chicago Fed NAI (>0=above-trend growth)
-    "indpro_yoy",    // Industrial production YoY %
-    "t10y2y",        // 10Y-2Y yield spread
-    "real_rate_10y", // 10Y TIPS real yield
-    "hy_oas",        // HY OAS credit spread
-    "unrate",        // Unemployment rate
-    "payrolls_mom",  // Nonfarm payrolls MoM %
-    "init_claims",   // Initial jobless claims
+    "cpi",                      // macro_data.inflation — CPI level
+    "core_pce",                 // macro_data.inflation — Core PCE level
+    "breakeven_5y",             // macro_data.inflation — 5Y inflation breakeven
+    "gdp",                      // macro_data.growth — GDP level
+    "manufacturing_capacity_util", // macro_data.growth — capacity utilization
+    "industrial_production",    // macro_data.growth — industrial production
+    "yield_spread_10y_2y",      // macro_data.yield_curve — 10Y-2Y spread
+    "tips_10y",                 // macro_data.market — 10Y TIPS real yield
+    "high_yield_spread",        // macro_data.credit_spreads — HY OAS
+    "unemployment_rate",        // macro_data.growth — unemployment rate
+    "nonfarm_payrolls",         // macro_data.growth — nonfarm payrolls
+    "ted_spread",               // macro_data.liquidity — TED spread
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -469,11 +469,11 @@ static Eigen::MatrixXd build_feature_matrix(
     for (int t = 0; t < T; ++t) {
         // Growth score: industrial production slope + PMI deviation from 50 + GDP slope
         const double gs =
-            (mslope("indpro_yoy", t) + mlevel("cfnai",t) + mslope("gdp_qoq",t)) / 3.0;
+            (mslope("industrial_production", t) + mlevel("manufacturing_capacity_util",t) + mslope("gdp",t)) / 3.0;
 
         // Inflation score: average of CPI, PCE, breakeven (all in % units)
         const double is =
-            (mlevel("cpi_yoy",t) + mlevel("pce_yoy",t) + mlevel("breakeven_10y",t)) / 3.0;
+            (mlevel("cpi",t) + mlevel("core_pce",t) + mlevel("breakeven_5y",t)) / 3.0;
 
         // Growth-Inflation quadrant:
         //   positive  → reflationary (growth outpacing inflation)
@@ -481,13 +481,13 @@ static Eigen::MatrixXd build_feature_matrix(
         const double gi = gs - is * 0.5;
 
         // Yield curve: 10Y-2Y spread (positive=normal, negative=inverted)
-        const double yc = mlevel("t10y2y", t);
+        const double yc = mlevel("yield_spread_10y_2y", t);
 
         // Financial stress: HY OAS (high=stress=risk-off)
-        const double fs = mlevel("hy_oas", t);
+        const double fs = mlevel("high_yield_spread", t);
 
         // Labor slack: slope of unemployment (rising=deteriorating=risk-off)
-        const double ls = mslope("unrate", t);
+        const double ls = mslope("unemployment_rate", t);
 
         // Risk-On Score: ETF β-based (SPY=0, EEM=1, TLT=2, GLD=4)
         const double ros_t =
@@ -787,7 +787,7 @@ static std::vector<int> label_regimes(
     };
 
     // Standardise each signal across clusters so no single signal dominates
-    // by virtue of its units (e.g. init_claims is in thousands, gi_quad is ~1)
+    // by virtue of its units (e.g. ted_spread is in thousands, gi_quad is ~1)
     auto cluster_means = [&](const Eigen::VectorXd& v) {
         std::vector<double> m(K);
         for (int k = 0; k < K; ++k) m[k] = cluster_mean(k, v);
@@ -1101,29 +1101,167 @@ static void write_summary_csv(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// DATABASE LOADING
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Load ETF prices + macro data from PostgreSQL into a DataFrame.
+// ETF prices come from macro_data.bsts_etf_prices, macro data from macro_data.* tables.
+static DataFrame load_from_database(PostgresDatabase& db,
+                                     const std::string& start_date = "",
+                                     const std::string& end_date = "") {
+    using namespace trade_ngin::statistics;
+
+    // ---- Load macro panel via MacroDataLoader --------------------------------
+    MacroDataLoader loader(db);
+    auto panel_result = loader.load(start_date, end_date);
+    if (panel_result.is_error()) {
+        throw std::runtime_error("Failed to load macro data: " +
+                                  std::string(panel_result.error()->what()));
+    }
+    auto& panel = panel_result.value();
+    std::cerr << "[db] macro panel: " << panel.T << " dates x "
+              << panel.N << " columns\n";
+
+    // ---- Load ETF prices from macro_data.bsts_etf_prices ----------------------
+    // Table uses composite PK (date, symbol), with adjusted_close for split/dividend correction
+    std::string etf_start = start_date.empty() ? panel.dates.front() : start_date;
+    std::string etf_end   = end_date.empty()   ? panel.dates.back()  : end_date;
+
+    // Build symbol list for SQL IN clause
+    std::string symbol_list;
+    for (size_t i = 0; i < ETF_SERIES.size(); i++) {
+        if (i > 0) symbol_list += ",";
+        symbol_list += "'" + ETF_SERIES[i] + "'";
+    }
+
+    std::string etf_sql =
+        "SELECT date::text, symbol, adjusted_close FROM macro_data.bsts_etf_prices "
+        "WHERE symbol IN (" + symbol_list + ") "
+        "AND date >= '" + etf_start + "' "
+        "AND date <= '" + etf_end + "' "
+        "ORDER BY date, symbol";
+
+    auto etf_query_result = db.execute_query(etf_sql);
+    if (etf_query_result.is_error()) {
+        throw std::runtime_error("Failed to load ETF data: " +
+                                  std::string(etf_query_result.error()->what()));
+    }
+
+    // Build ETF price maps: symbol -> (date -> adjusted_close)
+    std::unordered_map<std::string, std::unordered_map<std::string, double>> etf_prices;
+    for (const auto& sym : ETF_SERIES) {
+        etf_prices[sym] = {};
+    }
+
+    auto etf_table  = etf_query_result.value();
+    auto date_col   = etf_table->GetColumnByName("date");
+    auto symbol_col = etf_table->GetColumnByName("symbol");
+    auto close_col  = etf_table->GetColumnByName("adjusted_close");
+
+    if (date_col && symbol_col && close_col) {
+        for (int c = 0; c < date_col->num_chunks(); c++) {
+            auto date_arr   = std::static_pointer_cast<arrow::StringArray>(date_col->chunk(c));
+            auto symbol_arr = std::static_pointer_cast<arrow::StringArray>(symbol_col->chunk(c));
+            auto close_arr  = std::static_pointer_cast<arrow::DoubleArray>(close_col->chunk(c));
+
+            for (int64_t r = 0; r < date_arr->length(); r++) {
+                std::string d = date_arr->GetString(r);
+                std::string s = symbol_arr->GetString(r);
+                double p      = close_arr->Value(r);
+                if (etf_prices.count(s)) {
+                    etf_prices[s][d] = p;
+                }
+            }
+        }
+    }
+    std::cerr << "[db] ETF data: " << etf_table->num_rows() << " rows\n";
+
+    // ---- Assemble the DataFrame (dates x [ETFs + macro columns]) -------------
+    // Columns: ETF_SERIES... then MACRO_SERIES...
+    std::vector<std::string> columns;
+    for (const auto& s : ETF_SERIES) columns.push_back(s);
+
+    // Map MACRO_SERIES names to macro panel column indices
+    std::unordered_map<std::string, int> macro_col_map;
+    for (int c = 0; c < panel.N; c++) {
+        macro_col_map[panel.column_names[c]] = c;
+    }
+    for (const auto& s : MACRO_SERIES) {
+        columns.push_back(s);
+    }
+
+    const int total_cols = (int)columns.size();
+    const int T = panel.T;
+    Eigen::MatrixXd values(T, total_cols);
+    values.setConstant(std::numeric_limits<double>::quiet_NaN());
+
+    for (int t = 0; t < T; t++) {
+        const std::string& date = panel.dates[t];
+
+        // Fill ETF columns
+        for (int e = 0; e < (int)ETF_SERIES.size(); e++) {
+            auto it = etf_prices[ETF_SERIES[e]].find(date);
+            if (it != etf_prices[ETF_SERIES[e]].end()) {
+                values(t, e) = it->second;
+            }
+        }
+
+        // Fill macro columns
+        for (int m = 0; m < (int)MACRO_SERIES.size(); m++) {
+            auto it = macro_col_map.find(MACRO_SERIES[m]);
+            if (it != macro_col_map.end()) {
+                values(t, (int)ETF_SERIES.size() + m) = panel.data(t, it->second);
+            }
+        }
+    }
+
+    std::cerr << "[db] assembled DataFrame: " << T << " x " << total_cols << "\n";
+
+    return {panel.dates, columns, values};
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // MAIN
 // ─────────────────────────────────────────────────────────────────────────────
 
 int main(int argc, char* argv[]) {
     try {
-        if (argc < 3) {
+        if (argc < 2) {
             std::cerr << "Usage: " << argv[0]
-                      << " input.csv output_regimes.csv [summary.csv]\n";
+                      << " output_regimes.csv [summary.csv] [connection_string]"
+                      << " [start_date] [end_date]\n";
             return 1;
         }
-        const std::string in_path  = argv[1];
-        const std::string out_path = argv[2];
-        const std::string sum_path = (argc >= 4) ? argv[3] : "regime_summary.csv";
+        const std::string out_path = argv[1];
+        const std::string sum_path = (argc >= 3) ? argv[2] : "regime_summary.csv";
 
-        // 1. Load
-        std::cerr << "[data] reading " << in_path << "\n";
-        DataFrame df = read_csv(in_path);
+        // Connection string: arg, env var, or default
+        std::string conn_string;
+        const char* env_conn = std::getenv("MACRO_DB_CONN");
+        if (argc >= 4)      conn_string = argv[3];
+        else if (env_conn)  conn_string = env_conn;
+        else                conn_string = "dbname=new_algo_data";
+
+        const std::string start_date = (argc >= 5) ? argv[4] : "";
+        const std::string end_date   = (argc >= 6) ? argv[5] : "";
+
+        // 1. Connect to database and load data
+        std::cerr << "[db] connecting to: " << conn_string << "\n";
+        PostgresDatabase db(conn_string);
+        auto conn_result = db.connect();
+        if (conn_result.is_error()) {
+            throw std::runtime_error("DB connection failed: " +
+                                      std::string(conn_result.error()->what()));
+        }
+        std::cerr << "[db] connected\n";
+
+        DataFrame df = load_from_database(db, start_date, end_date);
         forward_fill(df.values);
         backward_fill(df.values);
         for (const auto& s : ETF_SERIES)   col_idx(df.columns, s);
         for (const auto& s : MACRO_SERIES) col_idx(df.columns, s);
         const int T = (int)df.values.rows();
-        std::cerr << "[data] " << T << " weekly rows\n";
+        std::cerr << "[data] " << T << " rows loaded from database\n";
 
         // 2. BSTS — ETF series (log-price)
         std::cerr << "[bsts] ETF series...\n";
@@ -1175,7 +1313,7 @@ int main(int argc, char* argv[]) {
 
         // 7. Label regimes using macro composites directly
         // fin_stress from smoothed hy_oas level in Block 2
-        const int hy_col = (int)ETF_SERIES.size()*4 + midx.at("hy_oas");
+        const int hy_col = (int)ETF_SERIES.size()*4 + midx.at("high_yield_spread");
         Eigen::VectorXd fin_stress = features.col(hy_col);
         std::cerr << "[labelling] cluster macro composite profiles:\n";
         std::vector<int> lmap = label_regimes(
