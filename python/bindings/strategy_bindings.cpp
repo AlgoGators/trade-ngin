@@ -14,6 +14,12 @@ struct PyBaseStrategy : public BaseStrategy {
     using BaseStrategy::BaseStrategy;  // Inherit constructors
 
     Result<void> on_data(const std::vector<Bar>& data) override {
+        py::function overload = py::get_overload(this, "on_data");
+        if (!overload) {
+            WARN("No Python override found for on_data in Strategy " + id_ +
+                 ", using base implementation");
+            return BaseStrategy::on_data(data);  // Call base implementation if no override
+        }
         PYBIND11_OVERRIDE(Result<void>, BaseStrategy, on_data, data);
     };
 
@@ -52,20 +58,23 @@ struct PyBaseStrategy : public BaseStrategy {
         metadata_.name = "Python Strategy";
         metadata_.description = "Implementation of strategy defined in Python";
 
-        // Optional Python extension
-        if (py::get_override(this, "initialize")) {
-            INFO("Override FOUND");
-        } else {
-            WARN("Override NOT found");
-        }
+        PYBIND11_OVERRIDE(Result<void>, BaseStrategy, initialize);
 
-        if (py::function override = py::get_override(this, "initialize")) {
-            INFO("Running Python override for initialize in Strategy " + id_);
-            auto result = override().cast<Result<void>>();
-            if (result.is_error()) {
-                return result;
-            }
-        }
+        // Optional Python extension
+        // if (py::get_override(static_cast<const BaseStrategy*>(this), "initialize")) {
+        //     INFO("Override FOUND");
+        // } else {
+        //     WARN("Override NOT found");
+        // }
+        //
+        // if (py::function override =
+        //         py::get_override(static_cast<const BaseStrategy*>(this), "initialize")) {
+        //     INFO("Running Python override for initialize in Strategy " + id_);
+        //     auto result = override().cast<Result<void>>();
+        //     if (result.is_error()) {
+        //         return result;
+        //     }
+        // }
 
         INFO("Initialization successful for Python Strategy " + id_);
 
