@@ -45,6 +45,7 @@ find_package(Arrow REQUIRED)
 # find_package(libpqxx CONFIG REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(NLopt REQUIRED)
+add_subdirectory(extern/pybind11)
 
 # Try to find libpqxx via pkg-config (works with Homebrew)
 find_package(PkgConfig REQUIRED)
@@ -145,7 +146,7 @@ target_link_libraries(trade_ngin
         Arrow::arrow_shared
         CURL::libcurl
         Eigen3::Eigen
-        NLopt::nlopt
+        NLopt::nlopt_cxx
 )
 
 # Windows-specific settings

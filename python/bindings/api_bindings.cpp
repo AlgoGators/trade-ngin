@@ -22,13 +22,12 @@ void bind_backtest_api(py::module_& m) {
                     py::gil_scoped_acquire gil;
 
                     // Construct Python object with no args
-                    py::object py_instance = py_class();
+                    auto instance = py_class().cast<std::shared_ptr<BaseStrategy>>();
 
                     // Inject state
-                    py_instance.attr("initialize_from_context")(strategy_id,
-                                                                ctx.base_strategy_config, ctx.db);
-
-                    return py_instance.cast<std::shared_ptr<BaseStrategy>>();
+                    instance->initialize_from_context(strategy_id, ctx.base_strategy_config,
+                                                      ctx.db);
+                    return instance;
                 });
         });
 }

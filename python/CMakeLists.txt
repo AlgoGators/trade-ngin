@@ -1,6 +1,3 @@
-find_package(pybind11 CONFIG REQUIRED)
-find_package(pybind11_json CONFIG REQUIRED)
-
 # Create the Python module
 pybind11_add_module(trade_ngin_py
     module.cpp
@@ -19,7 +16,6 @@ set_target_properties(trade_ngin_py PROPERTIES
 # Link against the main C++ library
 target_link_libraries(trade_ngin_py PRIVATE
         trade_ngin
-        pybind11_json
 )
 
 # Include the main library's headers

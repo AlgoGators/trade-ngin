@@ -2,8 +2,7 @@
 
 #include <pybind11/chrono.h>
 #include <pybind11/pybind11.h>
-#include <pybind11/stl_bind.h>
-#include <pybind11_json/pybind11_json.hpp>
+#include <pybind11/stl.h>
 
 #include "trade_ngin/backtest/backtest_types.hpp"
 #include "trade_ngin/core/types.hpp"
@@ -35,8 +34,6 @@ public:
 
 }  // namespace pybind11::detail
 
-PYBIND11_MAKE_OPAQUE(std::unordered_map<std::string, Position>);
-
 // Bind types in trade_ngin/core/types.hpp
 void bind_core_types(py::module_& m) {
     py::class_<Bar>(m, "Bar")
@@ -59,9 +56,6 @@ void bind_core_types(py::module_& m) {
         .def_readwrite("last_update", &Position::last_update);
     // TODO pybind chrono type - since Timestamp is system_clock, it converts automatically to
     // Python datetime
-
-    using PositionMap = std::unordered_map<std::string, Position>;
-    py::bind_map<PositionMap>(m, "PositionMap");
 
     py::class_<ExecutionReport>(m, "ExecutionReport")
         .def(py::init<>())
