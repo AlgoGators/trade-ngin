@@ -1,7 +1,7 @@
 #include "bindings.hpp"
 
 #include <pybind11/pybind11.h>
-#include <pybind11/stl_bind.h>
+#include <pybind11/stl.h>
 
 #include "trade_ngin/strategy/base_strategy.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
@@ -18,7 +18,7 @@ struct PyBaseStrategy : public BaseStrategy {
     Result<void> on_data(const std::vector<Bar>& data) override {
         py::gil_scoped_acquire gil;
 
-        py::function override = py::get_override(this, "on_data");
+        py::function override = py::get_override(static_cast<const BaseStrategy*>(this), "on_data");
 
         if (!override) {
             WARN("No Python override found for on_data in Strategy " + id_ +
@@ -72,7 +72,8 @@ struct PyBaseStrategy : public BaseStrategy {
         metadata_.name = "Python Strategy";
         metadata_.description = "Implementation of strategy defined in Python";
 
-        py::function override = py::get_override(this, "initialize");
+        py::function override =
+            py::get_override(static_cast<const BaseStrategy*>(this), "initialize");
         if (!override) {
             WARN("No Python override found for initialize in Strategy " + id_);
             return Result<void>();
@@ -114,6 +115,7 @@ void bind_base_strategy(py::module_& m) {
         .def("initialize", &BaseStrategy::initialize)
         .def("on_data", &BaseStrategy::on_data)
         .def("on_execution", &BaseStrategy::on_execution)
+        .def("on_signal", &BaseStrategy::on_signal)
         .def_property_readonly(
             "positions",
             [](const BaseStrategy& self) -> const std::unordered_map<std::string, Position>& {

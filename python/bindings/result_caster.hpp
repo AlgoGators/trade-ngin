@@ -16,7 +16,10 @@ public:
     PYBIND11_TYPE_CASTER(trade_ngin::Result<T>, _("Result"));
 
     bool load(handle src, bool) {
-        // We don't support loading Result<T> from Python, so just return false to indicate failure
+        if (src.is_none()) {
+            value = trade_ngin::Result<void>();
+            return true;
+        }
         return false;
     }
 
