@@ -58,10 +58,6 @@ Result<void> MeanReversionStrategy::initialize() {
     try {
         for (const auto& [symbol, _] : config_.trading_params) {
             MeanReversionInstrumentData data;
-            data.price_history.reserve(
-                static_cast<size_t>(std::max(mr_config_.lookback_period, mr_config_.vol_lookback) * 2));
-            data.volatility_history.reserve(
-                static_cast<size_t>(mr_config_.vol_lookback * 2));
             instrument_data_[symbol] = data;
 
             Position pos;
@@ -96,12 +92,23 @@ Result<void> MeanReversionStrategy::on_data(const std::vector<Bar>& data) {
         std::unordered_map<std::string, double> signals;
 
         for (const auto& bar : data) {
+            // Skip symbols not in the configured set to prevent phantom map entries
+            if (instrument_data_.find(bar.symbol) == instrument_data_.end()) {
+                continue;
+            }
             auto& inst_data = instrument_data_[bar.symbol];
 
             // Update price history
             inst_data.price_history.push_back(bar.close.as_double());
             inst_data.current_price = bar.close.as_double();
             inst_data.last_update = bar.timestamp;
+
+            // Track rolling ADV for fractional share eligibility
+            inst_data.volume_sample_count++;
+            size_t ema_window = std::min(inst_data.volume_sample_count,
+                                         static_cast<size_t>(mr_config_.vol_lookback));
+            double alpha = 1.0 / static_cast<double>(ema_window);
+            inst_data.avg_daily_volume += alpha * (bar.volume - inst_data.avg_daily_volume);
 
             // FIX (MAJOR #1): Trim price/volatility history to prevent unbounded memory growth
             trim_history(inst_data);
@@ -139,7 +146,17 @@ Result<void> MeanReversionStrategy::on_data(const std::vector<Bar>& data) {
             // Update position quantity in base class
             // DO NOT set average_price here -- on_execution() manages cost basis
             Position pos = positions_[bar.symbol];
-            pos.quantity = Quantity(inst_data.target_position);
+
+            // Defensive guard: reset cost basis on direction flip so on_execution()
+            // treats it as a fresh entry. generate_signal() prevents single-bar flips,
+            // but this protects against future signal logic changes.
+            double old_qty = pos.quantity.as_double();
+            double new_qty = inst_data.target_position;
+            if ((old_qty > 0 && new_qty < 0) || (old_qty < 0 && new_qty > 0)) {
+                pos.average_price = Decimal(0.0);
+            }
+
+            pos.quantity = Quantity(new_qty);
             pos.last_update = bar.timestamp;
             positions_[bar.symbol] = pos;
 
@@ -175,16 +192,16 @@ void MeanReversionStrategy::trim_history(MeanReversionInstrumentData& data) cons
     size_t max_price_size = static_cast<size_t>(
         std::max(mr_config_.lookback_period, mr_config_.vol_lookback) * 2);
     while (data.price_history.size() > max_price_size) {
-        data.price_history.erase(data.price_history.begin());
+        data.price_history.pop_front();
     }
 
     size_t max_vol_size = static_cast<size_t>(mr_config_.vol_lookback * 2);
     while (data.volatility_history.size() > max_vol_size) {
-        data.volatility_history.erase(data.volatility_history.begin());
+        data.volatility_history.pop_front();
     }
 }
 
-double MeanReversionStrategy::calculate_sma(const std::vector<double>& prices, int period) const {
+double MeanReversionStrategy::calculate_sma(const std::deque<double>& prices, int period) const {
     if (prices.empty() || period <= 0 || prices.size() < static_cast<size_t>(period)) {
         return 0.0;
     }
@@ -196,7 +213,7 @@ double MeanReversionStrategy::calculate_sma(const std::vector<double>& prices, i
     return sum / period;
 }
 
-double MeanReversionStrategy::calculate_std_dev(const std::vector<double>& prices, int period, double mean) const {
+double MeanReversionStrategy::calculate_std_dev(const std::deque<double>& prices, int period, double mean) const {
     if (prices.empty() || period <= 0 || prices.size() < static_cast<size_t>(period)) {
         return 0.0;
     }
@@ -233,9 +250,23 @@ double MeanReversionStrategy::calculate_position_size(const std::string& symbol,
     double position_value = target_value * vol_scalar;
     double num_shares = position_value / price;
 
-    // Fractional shares: disabled for stocks below min price threshold
-    // Industry standard: $1.00 (exchange listing maintenance, SEC Rule 612 boundary)
-    if (mr_config_.allow_fractional_shares && price >= mr_config_.fractional_min_price) {
+    // Fractional share eligibility: require sufficient price AND reliable ADV above threshold.
+    // During warmup (< vol_lookback bars), ADV is unreliable — fail closed to whole shares.
+    bool fractional_ok = mr_config_.allow_fractional_shares
+                         && price >= mr_config_.fractional_min_price;
+    if (fractional_ok) {
+        auto inst_it = instrument_data_.find(symbol);
+        if (inst_it != instrument_data_.end()) {
+            bool adv_warmed_up = inst_it->second.volume_sample_count >=
+                                 static_cast<size_t>(mr_config_.vol_lookback);
+            bool adv_above_min = inst_it->second.avg_daily_volume >= mr_config_.fractional_min_adv;
+            fractional_ok = adv_warmed_up && adv_above_min;
+        } else {
+            fractional_ok = false;  // Unknown symbol — fail closed
+        }
+    }
+
+    if (fractional_ok) {
         num_shares = std::round(num_shares * 1000000.0) / 1000000.0;
     } else {
         num_shares = std::floor(num_shares);
@@ -250,7 +281,7 @@ double MeanReversionStrategy::calculate_position_size(const std::string& symbol,
     return num_shares;
 }
 
-double MeanReversionStrategy::calculate_volatility(const std::vector<double>& prices, int lookback) const {
+double MeanReversionStrategy::calculate_volatility(const std::deque<double>& prices, int lookback) const {
     if (prices.size() < 2 || lookback < 2) {
         return 0.01;  // Default 1% volatility
     }

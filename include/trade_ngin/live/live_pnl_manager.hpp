@@ -18,6 +18,7 @@ private:
     // PnL tracking
     std::unordered_map<std::string, double> position_daily_pnl_;
     std::unordered_map<std::string, double> position_realized_pnl_;
+    std::unordered_map<std::string, double> position_unrealized_pnl_;
 
     double cumulative_daily_pnl_ = 0.0;
     double cumulative_total_pnl_ = 0.0;
@@ -109,6 +110,7 @@ public:
     void reset_daily_tracking() {
         position_daily_pnl_.clear();
         position_realized_pnl_.clear();
+        position_unrealized_pnl_.clear();
         cumulative_daily_pnl_ = 0.0;
     }
 

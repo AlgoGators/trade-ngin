@@ -97,8 +97,18 @@ Result<LivePnLManager::FinalizationResult> LivePnLManager::finalize_previous_day
         // Create finalized position with realized PnL
         Position finalized_pos = position;
         finalized_pos.realized_pnl = Decimal(yesterday_position_pnl);
-        finalized_pos.unrealized_pnl = Decimal(0.0);  // Always 0 for futures
-        // finalized_pos.market_price = Decimal(day_t1_close);  // TODO: Add if field exists
+
+        // Compute unrealized PnL from cost basis (average_price).
+        // For futures: average_price resets to close after daily settlement, so this is ~0.
+        // For equities: average_price is the weighted average purchase price (cost basis),
+        // so this gives the correct mark-to-market unrealized PnL.
+        double avg_price = position.average_price.as_double();
+        if (avg_price > 0.0 && quantity != 0.0) {
+            finalized_pos.unrealized_pnl = Decimal(quantity * (day_t1_close - avg_price) * point_value);
+        } else {
+            finalized_pos.unrealized_pnl = Decimal(0.0);
+        }
+
         result.finalized_positions.push_back(finalized_pos);
     }
 
@@ -161,6 +171,12 @@ Result<void> LivePnLManager::calculate_position_pnls(
         position_daily_pnl_[symbol] = daily_pnl;
         cumulative_daily_pnl_ += daily_pnl;
 
+        // Track unrealized PnL from cost basis (average_price)
+        double avg_price = position.average_price.as_double();
+        if (avg_price > 0.0 && quantity != 0.0) {
+            position_unrealized_pnl_[symbol] = quantity * (current_price - avg_price) * point_value;
+        }
+
         DEBUG("Position PnL for " + symbol +
               ": qty=" + std::to_string(quantity) +
               ", prev=" + std::to_string(previous_price) +
@@ -205,7 +221,12 @@ Result<LivePnLManager::PnLSnapshot> LivePnLManager::get_current_snapshot() const
         total_realized += pnl;
     }
     snapshot.realized_pnl = total_realized;
-    snapshot.unrealized_pnl = 0.0;  // Always 0 for futures
+
+    double total_unrealized = 0.0;
+    for (const auto& [symbol, pnl] : position_unrealized_pnl_) {
+        total_unrealized += pnl;
+    }
+    snapshot.unrealized_pnl = total_unrealized;
 
     // Portfolio value needs to be calculated externally
     snapshot.portfolio_value = initial_capital_ + cumulative_total_pnl_;

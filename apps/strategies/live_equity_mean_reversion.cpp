@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <nlohmann/json.hpp>
 #include "trade_ngin/core/config_loader.hpp"
+#include "trade_ngin/core/holiday_checker.hpp"
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/core/time_utils.hpp"
 #include "trade_ngin/data/database_pooling.hpp"
@@ -29,6 +30,15 @@
 #include "trade_ngin/live/csv_exporter.hpp"
 
 using namespace trade_ngin;
+
+// Locale-independent date formatting for SQL queries.
+// Uses std::put_time with %Y-%m-%d, always producing YYYY-MM-DD.
+static std::string format_sql_date(std::chrono::system_clock::time_point tp) {
+    auto time_t_val = std::chrono::system_clock::to_time_t(tp);
+    std::ostringstream oss;
+    oss << std::put_time(std::gmtime(&time_t_val), "%Y-%m-%d");
+    return oss.str();
+}
 
 int main(int argc, char* argv[]) {
     try {
@@ -409,9 +419,56 @@ int main(int argc, char* argv[]) {
         INFO("Retrieving optimized portfolio positions...");
         auto positions = portfolio->get_portfolio_positions();
         
+        // ========================================
+        // NON-TRADING DAY DETECTION
+        // Find the actual previous trading day (skip weekends and holidays)
+        // Mirrors the logic in live_portfolio.cpp for futures
+        // ========================================
+        HolidayChecker holiday_checker("include/trade_ngin/core/holidays.json");
+
+        // Walk backwards from yesterday to find the most recent trading day
+        auto previous_date = now - std::chrono::hours(24);
+        for (int lookback = 0; lookback < 5; ++lookback) {
+            auto check_time_t = std::chrono::system_clock::to_time_t(previous_date);
+            std::tm check_tm = *std::localtime(&check_time_t);
+            int dow = check_tm.tm_wday;  // 0=Sunday, 6=Saturday
+
+            // Format date string for holiday check
+            std::ostringstream date_oss;
+            date_oss << std::put_time(&check_tm, "%Y-%m-%d");
+            std::string date_str_check = date_oss.str();
+
+            bool is_weekend = (dow == 0 || dow == 6);
+            bool is_holiday = holiday_checker.is_holiday(date_str_check);
+
+            if (!is_weekend && !is_holiday) {
+                if (lookback > 0) {
+                    INFO("Previous trading day: " + date_str_check +
+                         " (skipped " + std::to_string(lookback) + " non-trading day(s))");
+                }
+                break;
+            }
+
+            DEBUG("Skipping non-trading day: " + date_str_check +
+                  (is_weekend ? " (weekend)" : " (holiday: " + holiday_checker.get_holiday_name(date_str_check) + ")"));
+            previous_date -= std::chrono::hours(24);
+        }
+
+        // Check if today itself is a non-trading day
+        int today_dow = now_tm->tm_wday;
+        std::ostringstream today_oss;
+        today_oss << std::put_time(now_tm, "%Y-%m-%d");
+        std::string today_date_str = today_oss.str();
+        bool today_is_non_trading = (today_dow == 0 || today_dow == 6 ||
+                                     holiday_checker.is_holiday(today_date_str));
+
+        if (today_is_non_trading && !use_override_date) {
+            INFO("Today (" + today_date_str + ") is a non-trading day - skipping equity processing");
+            return 0;
+        }
+
         // Load previous day positions for PnL calculation
         INFO("Loading previous day positions for PnL calculation...");
-        auto previous_date = now - std::chrono::hours(24);
         auto previous_positions_result = db->load_positions_by_date("LIVE_EQUITY_MEAN_REVERSION", "EQUITY_MEAN_REVERSION", "BASE_PORTFOLIO", previous_date, "trading.positions");
         std::unordered_map<std::string, Position> previous_positions;
         
@@ -542,44 +599,24 @@ int main(int argc, char* argv[]) {
 
         double total_daily_commissions = 0.0;  // Will be calculated from executions
 
-        // Update all current positions to have:
-        // - average_price = Day T-1 close (execution price)
-        // - market_price = Day T-1 close (last known price)
-        // - realized_pnl = 0 (placeholder, will be finalized tomorrow)
-        // - unrealized_pnl = calculated for open equity positions
-
+        // Set initial Day T position fields. average_price and unrealized_pnl will be
+        // corrected after on_execution() runs below (which computes proper cost basis).
         for (auto& [symbol, current_position] : positions) {
-            // Get Day T-1 close price for this symbol
-            double yesterday_close = current_position.average_price.as_double();  // Default
+            double yesterday_close = current_position.average_price.as_double();
             if (previous_day_close_prices.find(symbol) != previous_day_close_prices.end()) {
                 yesterday_close = previous_day_close_prices[symbol];
             }
 
-            // Get original entry price from strategy before overwriting average_price
-            // The strategy tracks the true cost-basis entry price per symbol
-            double original_entry_price = 0.0;
-            auto* inst_data = mr_strategy->get_instrument_data(symbol);
-            if (inst_data && inst_data->entry_price > 0.0) {
-                original_entry_price = inst_data->entry_price;
-            }
+            // Set initial average_price to yesterday's close; on_execution() will
+            // overwrite this with the correct weighted-average cost basis.
+            current_position.average_price = Decimal(yesterday_close);
+            current_position.realized_pnl = Decimal(0.0);
+            current_position.unrealized_pnl = Decimal(0.0);
+            current_position.last_update = now;
 
-            // Set position fields for Day T
-            current_position.average_price = Decimal(yesterday_close);  // Market price at Day T-1 close
-            current_position.realized_pnl = Decimal(0.0);  // PLACEHOLDER - will be finalized tomorrow
-            // For equities, calculate unrealized PnL from original entry price
-            if (current_position.quantity.as_double() != 0.0 && yesterday_close > 0.0 && original_entry_price > 0.0) {
-                double unrealized = (yesterday_close - original_entry_price) * current_position.quantity.as_double();
-                current_position.unrealized_pnl = Decimal(unrealized);
-            } else {
-                current_position.unrealized_pnl = Decimal(0.0);
-            }
-            current_position.last_update = now;  // Today's timestamp
-
-            INFO("Day T position for " + symbol + ": qty=" + std::to_string(current_position.quantity.as_double()) +
-                 " entry_price=" + std::to_string(original_entry_price) +
-                 " market_price=" + std::to_string(yesterday_close) +
-                 " unrealized_pnl=" + std::to_string(current_position.unrealized_pnl.as_double()) +
-                 " realized_pnl=0 (placeholder)");
+            DEBUG("Day T initial position for " + symbol +
+                  ": qty=" + std::to_string(current_position.quantity.as_double()) +
+                  " market_price=" + std::to_string(yesterday_close));
         }
 
         DEBUG("About to start execution generation");
@@ -611,6 +648,53 @@ int main(int argc, char* argv[]) {
             ERROR("ExecutionManager failed: " + std::string(execution_result.error()->what()));
             // No fallback - component is required to work
             throw std::runtime_error("ExecutionManager failed");
+        }
+
+        // Feed executions back to strategy for cost basis tracking.
+        // BaseStrategy::on_execution() maintains weighted average_price and realized_pnl.
+        for (const auto& exec : daily_executions) {
+            auto exec_result = mr_strategy->on_execution(exec);
+            if (exec_result.is_error()) {
+                WARN("Failed to process execution for " + exec.symbol + ": " +
+                     std::string(exec_result.error()->what()));
+            } else {
+                DEBUG("Strategy processed execution for " + exec.symbol +
+                      ": avg_price updated via on_execution()");
+            }
+        }
+
+        // Now update Day T positions with the corrected average_price from on_execution().
+        // The strategy's positions now have correct cost basis from weighted averaging.
+        auto strategy_positions = mr_strategy->get_positions();
+        for (auto& [symbol, current_position] : positions) {
+            auto strat_it = strategy_positions.find(symbol);
+            if (strat_it != strategy_positions.end()) {
+                double cost_basis = strat_it->second.average_price.as_double();
+                if (cost_basis > 0.0) {
+                    current_position.average_price = Decimal(cost_basis);
+                    // Recalculate unrealized PnL with correct cost basis
+                    double current_price = 0.0;
+                    if (previous_day_close_prices.find(symbol) != previous_day_close_prices.end()) {
+                        current_price = previous_day_close_prices[symbol];
+                    }
+                    if (current_price > 0.0 && current_position.quantity.as_double() != 0.0) {
+                        current_position.unrealized_pnl = Decimal(
+                            current_position.quantity.as_double() * (current_price - cost_basis));
+                    }
+                    // Carry realized PnL from strategy
+                    current_position.realized_pnl = strat_it->second.realized_pnl;
+                }
+            }
+        }
+        // Log final Day T position state
+        for (const auto& [symbol, pos] : positions) {
+            if (pos.quantity.as_double() != 0.0) {
+                INFO("Day T position for " + symbol +
+                     ": qty=" + std::to_string(pos.quantity.as_double()) +
+                     " cost_basis=" + std::to_string(pos.average_price.as_double()) +
+                     " unrealized_pnl=" + std::to_string(pos.unrealized_pnl.as_double()) +
+                     " realized_pnl=" + std::to_string(pos.realized_pnl.as_double()));
+            }
         }
 
         // Store executions in database
@@ -1521,9 +1605,9 @@ int main(int argc, char* argv[]) {
             WARN("Exception querying commissions: " + std::string(e.what()));
         }
 
-        // CSV Export is currently only available for trend following strategies
+        // CSV Export is not yet available for mean reversion strategies
         // TODO: Extend CSVExporter to support mean reversion strategies
-        INFO("CSV export skipped - currently only available for trend following strategies");
+        INFO("CSV export skipped - not yet available for mean reversion strategies");
 
         // CSV export of finalized positions skipped (see above)
         // TODO: Extend CSVExporter to support mean reversion strategies
@@ -1556,7 +1640,7 @@ int main(int argc, char* argv[]) {
                 std::chrono::system_clock::now() - now).count() << "ms" << std::endl;
         }
 
-        INFO("Daily trend following position generation completed successfully");
+        INFO("Daily mean reversion position generation completed successfully");
 
         // Send email report with trading results (based on send_email flag)
         if (send_email) {
@@ -1590,8 +1674,8 @@ int main(int argc, char* argv[]) {
                 std::unordered_map<std::string, double> yesterday_entry_prices;  // Day T-2 close
                 std::unordered_map<std::string, double> yesterday_exit_prices;   // Day T-1 close
 
-                // Calculate yesterday's date for email
-                auto yesterday_time_email = now - std::chrono::hours(24);
+                // Use the correct previous trading day (already computed above)
+                auto yesterday_time_email = previous_date;
                 auto yesterday_time_t_email = std::chrono::system_clock::to_time_t(yesterday_time_email);
 
                 // Load finalized positions from database for email

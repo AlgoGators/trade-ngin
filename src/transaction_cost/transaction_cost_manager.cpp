@@ -117,8 +117,7 @@ void TransactionCostManager::update_market_data(
     // Calculate log return and update for volatility
     if (prev_close_price > 0.0 && close_price > 0.0) {
         double log_return = std::log(close_price / prev_close_price);
-        // Note: spread_model_ is mutable for this operation
-        const_cast<SpreadModel&>(spread_model_).update_log_returns(symbol, log_return);
+        spread_model_.update_log_returns(symbol, log_return);
     }
 }
 
@@ -139,8 +138,8 @@ void TransactionCostManager::register_asset_config(const AssetCostConfig& config
 }
 
 void TransactionCostManager::clear_all_data() {
-    const_cast<SpreadModel&>(spread_model_).clear_all();
-    const_cast<ImpactModel&>(impact_model_).clear_all();
+    spread_model_.clear_all();
+    impact_model_.clear_all();
 }
 
 }  // namespace transaction_cost

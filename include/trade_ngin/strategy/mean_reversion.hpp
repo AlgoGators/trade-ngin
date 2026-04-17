@@ -1,6 +1,7 @@
 // include/trade_ngin/strategy/mean_reversion.hpp
 #pragma once
 
+#include <deque>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -25,6 +26,7 @@ struct MeanReversionConfig {
     double stop_loss_pct{0.05};       // Stop loss percentage (5%)
     bool allow_fractional_shares{true};   // Allow fractional share quantities
     double fractional_min_price{1.0};     // Min price for fractional eligibility ($1.00 industry standard)
+    double fractional_min_adv{50000.0};   // Min ADV (shares/day) for fractional eligibility
 };
 
 /**
@@ -32,7 +34,7 @@ struct MeanReversionConfig {
  */
 struct MeanReversionInstrumentData {
     // Price data
-    std::vector<double> price_history;
+    std::deque<double> price_history;
     double current_price = 0.0;
 
     // Mean reversion indicators
@@ -46,7 +48,11 @@ struct MeanReversionInstrumentData {
 
     // Volatility
     double current_volatility = 0.01;
-    std::vector<double> volatility_history;
+    std::deque<double> volatility_history;
+
+    // Volume tracking for ADV-based fractional share eligibility
+    double avg_daily_volume = 0.0;
+    size_t volume_sample_count = 0;
 
     // Timestamp of last update
     Timestamp last_update;
@@ -73,7 +79,7 @@ public:
     std::unordered_map<std::string, std::vector<double>> get_price_history() const override {
         std::unordered_map<std::string, std::vector<double>> history;
         for (const auto& [symbol, data] : instrument_data_) {
-            history[symbol] = data.price_history;
+            history[symbol] = std::vector<double>(data.price_history.begin(), data.price_history.end());
         }
         return history;
     }
@@ -110,11 +116,11 @@ private:
     std::shared_ptr<InstrumentRegistry> registry_;
     std::unordered_map<std::string, MeanReversionInstrumentData> instrument_data_;
 
-    double calculate_sma(const std::vector<double>& prices, int period) const;
-    double calculate_std_dev(const std::vector<double>& prices, int period, double mean) const;
+    double calculate_sma(const std::deque<double>& prices, int period) const;
+    double calculate_std_dev(const std::deque<double>& prices, int period, double mean) const;
     double calculate_z_score(double price, double mean, double std_dev) const;
     double calculate_position_size(const std::string& symbol, double price, double volatility) const;
-    double calculate_volatility(const std::vector<double>& prices, int lookback) const;
+    double calculate_volatility(const std::deque<double>& prices, int lookback) const;
     double generate_signal(const std::string& symbol, const MeanReversionInstrumentData& data) const;
 
     /**
