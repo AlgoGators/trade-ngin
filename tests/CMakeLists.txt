@@ -48,6 +48,8 @@ set(TEST_SOURCES
     statistics/test_convergence_monitoring.cpp
     statistics/test_dynamic_factor_model.cpp
     statistics/test_ms_dfm.cpp
+    statistics/test_macro_regime_pipeline.cpp
+    statistics/test_market_regime_pipeline.cpp
 )
 
 # Create test executable
