@@ -3,6 +3,8 @@
 #include "trade_ngin/core/types.hpp"
 #include "trade_ngin/core/error.hpp"
 #include "trade_ngin/statistics/statistics_common.hpp"
+#include "trade_ngin/statistics/base/state_estimator.hpp"
+#include "trade_ngin/statistics/base/volatility_model.hpp"
 #include <Eigen/Dense>
 #include <vector>
 #include <memory>
@@ -95,7 +97,9 @@ public:
 
 /**
  * @brief Base class for volatility models
+ * Skipped if standalone base/volatility_model.hpp was already included.
  */
+#ifndef TRADE_NGIN_STATISTICS_BASE_VOLATILITY_MODEL_HPP
 class VolatilityModel {
 public:
     virtual ~VolatilityModel() = default;
@@ -130,6 +134,7 @@ public:
      */
     virtual bool is_fitted() const = 0;
 };
+#endif // TRADE_NGIN_STATISTICS_BASE_VOLATILITY_MODEL_HPP
 
 /**
  * @brief Base class for state estimation models

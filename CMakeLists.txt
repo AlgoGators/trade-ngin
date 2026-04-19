@@ -108,6 +108,9 @@ set(TRADE_NGIN_SOURCES
     src/statistics/state_estimation/ms_dfm.cpp
     src/statistics/state_estimation/macro_regime_pipeline.cpp
     src/statistics/state_estimation/bsts_regime_detector.cpp
+    src/models/autoregression/autoregressive.cpp
+    src/statistics/volatility/egarch.cpp
+    src/statistics/utils/statistics_utils.cpp
     src/statistics/clustering/gmm.cpp
     src/statistics/state_estimation/market_data_loader.cpp
     src/statistics/state_estimation/market_regime_pipeline.cpp
@@ -126,6 +129,13 @@ target_link_libraries(trade_ngin
         CURL::libcurl
         Eigen3::Eigen
 )
+
+# nlopt for EGARCH parameter estimation
+find_library(NLOPT_LIB nlopt HINTS /opt/homebrew/lib)
+if(NLOPT_LIB)
+    target_link_libraries(trade_ngin PUBLIC ${NLOPT_LIB})
+    target_include_directories(trade_ngin PUBLIC /opt/homebrew/include)
+endif()
 
 # Windows-specific settings
 if(WIN32)
