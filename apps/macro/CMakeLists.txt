@@ -35,6 +35,24 @@ set_target_properties(macro_msdfm_runner
 )
 
 # ==========================================
+# TRADE_NGIN - MACRO REGIME PIPELINE RUNNER
+# ==========================================
+
+add_executable(macro_regime_pipeline_runner macro_regime_pipeline_runner.cpp)
+
+target_link_libraries(macro_regime_pipeline_runner
+    PRIVATE
+        trade_ngin
+)
+
+set_target_properties(macro_regime_pipeline_runner
+    PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/bin/Debug"
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/bin/Release"
+)
+
+# ==========================================
 # TRADE_NGIN - BSTS REGIME DETECTOR
 # ==========================================
 
@@ -48,6 +66,24 @@ target_link_libraries(bsts_regime_detector
 )
 
 set_target_properties(bsts_regime_detector
+    PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/bin/Debug"
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/bin/Release"
+)
+
+# ==========================================
+# TRADE_NGIN - MARKET REGIME PIPELINE RUNNER
+# ==========================================
+
+add_executable(market_regime_pipeline_runner market_regime_pipeline_runner.cpp)
+
+target_link_libraries(market_regime_pipeline_runner
+    PRIVATE
+        trade_ngin
+)
+
+set_target_properties(market_regime_pipeline_runner
     PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
     RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/bin/Debug"

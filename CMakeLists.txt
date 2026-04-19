@@ -106,6 +106,12 @@ set(TRADE_NGIN_SOURCES
     src/statistics/state_estimation/dynamic_factor_model.cpp
     src/statistics/state_estimation/macro_data_loader.cpp
     src/statistics/state_estimation/ms_dfm.cpp
+    src/statistics/state_estimation/macro_regime_pipeline.cpp
+    src/statistics/state_estimation/bsts_regime_detector.cpp
+    src/statistics/clustering/gmm.cpp
+    src/statistics/state_estimation/market_data_loader.cpp
+    src/statistics/state_estimation/market_regime_pipeline.cpp
+    src/statistics/state_estimation/markov_switching.cpp
 )
 
 # Add library target
