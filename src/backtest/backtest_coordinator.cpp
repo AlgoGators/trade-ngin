@@ -7,6 +7,7 @@
 #include "trade_ngin/core/time_utils.hpp"
 #include "trade_ngin/data/market_data_bus.hpp"
 #include "trade_ngin/storage/backtest_results_manager.hpp"
+#include "trade_ngin/strategy/bpgv_rotation.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
 #include "trade_ngin/strategy/trend_following_fast.hpp"
 
@@ -851,6 +852,14 @@ int BacktestCoordinator::calculate_warmup_days(
         auto trend_following_fast = std::dynamic_pointer_cast<TrendFollowingFastStrategy>(strat);
         if (trend_following_fast) {
             int strat_lookback = trend_following_fast->get_max_required_lookback();
+            max_lookback = std::max(max_lookback, strat_lookback);
+            continue;
+        }
+
+        // Try to cast to BPGVRotationStrategy
+        auto bpgv = std::dynamic_pointer_cast<BPGVRotationStrategy>(strat);
+        if (bpgv) {
+            int strat_lookback = bpgv->get_max_required_lookback();
             max_lookback = std::max(max_lookback, strat_lookback);
             continue;
         }

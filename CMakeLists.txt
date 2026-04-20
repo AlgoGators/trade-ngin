@@ -81,6 +81,8 @@ set(TRADE_NGIN_SOURCES
     src/data/conversion_utils.cpp
     src/data/credential_store.cpp
     src/data/database_pooling.cpp
+    src/data/macro_csv_loader.cpp
+    src/data/csv_equity_loader.cpp
     src/instruments/futures.cpp
     src/instruments/equity.cpp
     src/instruments/option.cpp
@@ -110,6 +112,7 @@ set(TRADE_NGIN_SOURCES
     src/strategy/trend_following_fast.cpp
     src/strategy/mean_reversion.cpp
     src/strategy/regime_detector.cpp
+    src/strategy/bpgv_rotation.cpp
     src/storage/results_manager_base.cpp
     src/storage/backtest_results_manager.cpp
     src/storage/live_results_manager.cpp

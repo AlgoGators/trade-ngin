@@ -1,8 +1,12 @@
 #include "trade_ngin/backtest/backtest_data_loader.hpp"
 #include "trade_ngin/data/conversion_utils.hpp"
+#include "trade_ngin/data/csv_equity_loader.hpp"
 #include "trade_ngin/core/logger.hpp"
 #include <algorithm>
+#include <iterator>
+#include <map>
 #include <set>
+#include <sstream>
 
 namespace trade_ngin {
 namespace backtest {
@@ -31,6 +35,16 @@ Result<std::vector<Bar>> BacktestDataLoader::load_market_data(const DataLoadConf
     // Load market data in batches
     std::vector<Bar> all_bars;
     size_t batch_size = config.batch_size > 0 ? config.batch_size : 5;
+    std::vector<std::string> failed_symbols;
+
+    auto join_symbols = [](const std::vector<std::string>& syms) {
+        std::string joined;
+        for (size_t j = 0; j < syms.size(); ++j) {
+            if (j > 0) joined += ", ";
+            joined += syms[j];
+        }
+        return joined;
+    };
 
     for (size_t i = 0; i < config.symbols.size(); i += batch_size) {
         // Create a batch of symbols
@@ -42,14 +56,28 @@ Result<std::vector<Bar>> BacktestDataLoader::load_market_data(const DataLoadConf
         // Load this batch
         auto batch_result = load_symbol_batch(symbol_batch, config);
         if (batch_result.is_error()) {
-            WARN("Error loading data for symbols batch " + std::to_string(i) + "-" +
-                 std::to_string(end_idx) + ": " + batch_result.error()->what() +
-                 ". Continuing with other batches.");
+            ERROR("Failed to load data for symbols batch " + std::to_string(i) + "-" +
+                  std::to_string(end_idx) + " [" + join_symbols(symbol_batch) + "]: " +
+                  batch_result.error()->what());
+            for (const auto& sym : symbol_batch) failed_symbols.push_back(sym);
             continue;
         }
 
         auto& batch_bars = batch_result.value();
+        INFO("Batch " + std::to_string(i / batch_size) + " [" + join_symbols(symbol_batch) +
+             "]: loaded " + std::to_string(batch_bars.size()) + " bars");
         all_bars.insert(all_bars.end(), batch_bars.begin(), batch_bars.end());
+    }
+
+    // Fail fast on any missing symbol batch. Continuing with partial data produces
+    // misleading results: the strategy thinks it has a 10-symbol universe but is
+    // silently sizing 5 of them to zero.
+    if (!failed_symbols.empty()) {
+        return make_error<std::vector<Bar>>(
+            ErrorCode::MARKET_DATA_ERROR,
+            "Missing market data for symbols: [" + join_symbols(failed_symbols) +
+                "]. Aborting backtest — partial-load results are not trustworthy.",
+            "BacktestDataLoader");
     }
 
     // Check for empty data
@@ -184,35 +212,77 @@ Result<std::vector<Bar>> BacktestDataLoader::load_symbol_batch(
     const std::vector<std::string>& symbols,
     const DataLoadConfig& config) {
     try {
+        // 1. Try the DB first.
+        std::vector<Bar> bars;
         auto result = db_->get_market_data(
             symbols, config.start_date, config.end_date,
             config.asset_class, config.data_freq, config.data_type);
 
-        if (result.is_error()) {
-            return make_error<std::vector<Bar>>(
-                result.error()->code(),
-                result.error()->what(),
-                "BacktestDataLoader");
+        if (result.is_ok()) {
+            auto arrow_table = result.value();
+            if (arrow_table && arrow_table->num_rows() > 0) {
+                auto conversion_result = DataConversionUtils::arrow_table_to_bars(arrow_table);
+                if (conversion_result.is_error()) {
+                    return make_error<std::vector<Bar>>(
+                        conversion_result.error()->code(),
+                        conversion_result.error()->what(),
+                        "BacktestDataLoader");
+                }
+                bars = std::move(conversion_result.value());
+            }
+        }
+        // Don't short-circuit on DB error/empty — fall through to CSV fallback.
+
+        // 2. For EQUITIES only, try a local CSV fallback for any symbols the DB didn't cover.
+        //    This is how we support tickers (yfinance-sourced ETFs) that deliberately aren't
+        //    written to Postgres — the DB stays a single-source-of-truth for Databento rows.
+        if (config.asset_class == AssetClass::EQUITIES) {
+            std::set<std::string> covered;
+            for (const auto& bar : bars) covered.insert(bar.symbol);
+
+            std::map<std::string, size_t> csv_counts;
+            size_t csv_total = 0;
+            for (const auto& sym : symbols) {
+                if (covered.count(sym)) continue;
+
+                auto csv_result = CSVEquityLoader::load(sym, config.start_date, config.end_date);
+                if (csv_result.is_error()) {
+                    // CSV miss is not fatal here — the batch-level check in load_market_data
+                    // will still abort with a clear error if this symbol ends up with zero bars.
+                    continue;
+                }
+                auto& csv_bars = csv_result.value();
+                csv_counts[sym] = csv_bars.size();
+                csv_total += csv_bars.size();
+                bars.insert(bars.end(),
+                            std::make_move_iterator(csv_bars.begin()),
+                            std::make_move_iterator(csv_bars.end()));
+            }
+
+            if (csv_total > 0) {
+                std::ostringstream msg;
+                msg << "CSV fallback loaded " << csv_total << " bars (";
+                bool first = true;
+                for (const auto& [sym, n] : csv_counts) {
+                    if (!first) msg << ", ";
+                    first = false;
+                    msg << sym << ":" << n;
+                }
+                msg << ")";
+                INFO(msg.str());
+            }
         }
 
-        auto arrow_table = result.value();
-        if (arrow_table->num_rows() == 0) {
+        if (bars.empty()) {
+            // Surface the original DB error if we had one, otherwise a generic miss.
+            std::string why = result.is_error()
+                ? std::string(result.error()->what())
+                : std::string("Market data query returned an empty table (DB + CSV fallback)");
             return make_error<std::vector<Bar>>(
-                ErrorCode::DATA_NOT_FOUND,
-                "Market data query returned an empty table",
-                "BacktestDataLoader");
+                ErrorCode::DATA_NOT_FOUND, why, "BacktestDataLoader");
         }
 
-        // Convert Arrow table to Bars
-        auto conversion_result = DataConversionUtils::arrow_table_to_bars(arrow_table);
-        if (conversion_result.is_error()) {
-            return make_error<std::vector<Bar>>(
-                conversion_result.error()->code(),
-                conversion_result.error()->what(),
-                "BacktestDataLoader");
-        }
-
-        return conversion_result;
+        return Result<std::vector<Bar>>(std::move(bars));
 
     } catch (const std::exception& e) {
         return make_error<std::vector<Bar>>(

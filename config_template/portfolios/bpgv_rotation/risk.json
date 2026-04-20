@@ -1,0 +1,9 @@
+{
+  "_description": "Risk configuration for BPGV_ROTATION_PORTFOLIO",
+  "var_limit": 0.10,
+  "jump_risk_limit": 0.08,
+  "max_gross_leverage": 1,
+  "max_net_leverage": 1,
+  "max_drawdown": 0.3,
+  "max_leverage": 1
+}

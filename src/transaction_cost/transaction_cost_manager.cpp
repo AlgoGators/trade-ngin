@@ -2,6 +2,8 @@
 
 #include <cmath>
 
+#include "trade_ngin/instruments/instrument_registry.hpp"
+
 namespace trade_ngin {
 namespace transaction_cost {
 
@@ -48,6 +50,21 @@ TransactionCostResult TransactionCostManager::calculate_costs(
 
     // Get asset configuration
     AssetCostConfig asset_config = asset_configs_.get_config(symbol);
+
+    // If we fell through to the generic futures default (no pre-registered config
+    // AND no asset_type passed), consult InstrumentRegistry to detect equities and
+    // re-resolve with equity defaults. This catches every caller that uses the
+    // 2-arg calculate_costs signature without forcing each call site to plumb
+    // AssetType through. Unknown-symbol futures default carries commission_per_unit
+    // = -1.0 (the global explicit_fee_per_contract path); registered equities and
+    // pre-registered futures both leave commission_per_unit >= 0.
+    if (asset_config.commission_per_unit < 0.0 &&
+        asset_config.asset_type != AssetType::EQUITY) {
+        auto instrument = ::trade_ngin::InstrumentRegistry::instance().get_instrument(symbol);
+        if (instrument && instrument->get_type() == AssetType::EQUITY) {
+            asset_config = asset_configs_.get_config(symbol, AssetType::EQUITY);
+        }
+    }
 
     // 1. Calculate explicit costs (commissions)
     if (asset_config.commission_per_unit >= 0.0) {

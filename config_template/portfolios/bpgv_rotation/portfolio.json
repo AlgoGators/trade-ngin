@@ -1,0 +1,28 @@
+{
+  "_description": "BPGV_ROTATION_PORTFOLIO - Macro regime rotation strategy using building permit growth volatility",
+  "portfolio_id": "BPGV_ROTATION_PORTFOLIO",
+  "initial_capital": 100000,
+  "reserve_capital_pct": 0.05,
+  "strategies": {
+    "BPGV_ROTATION": {
+      "enabled_backtest": true,
+      "enabled_live": false,
+      "default_allocation": 1.0,
+      "type": "BPGVRotationStrategy",
+      "symbols": ["SPY", "QQQ", "XLK", "SMH", "IWM", "XHB", "IYR", "EQR", "TLT", "GLD"],
+      "config": {
+        "macro_csv_path": "data/macro/bpgv_regime.csv",
+        "rebalance_day_of_month": 18,
+        "momentum_lookback_days": 63,
+        "momentum_tilt_scale": 0.40,
+        "homebuilder_tilt_scale": 0.20,
+        "breakout_sma_window": 50,
+        "crash_threshold": -0.07,
+        "crash_lookback_days": 5,
+        "crash_override_calendar_days": 14,
+        "crash_defensive_weight": 0.45,
+        "allow_fractional_shares": true
+      }
+    }
+  }
+}

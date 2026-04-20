@@ -861,13 +861,15 @@ Result<pqxx::result> PostgresDatabase::execute_market_data_query(
 
     std::string full_table_name = build_table_name(asset_class, data_type, freq);
 
-    // Base query with parameterized timestamps
-    // Equity tables use different column names (date/ticker/closeadj) than futures (time/symbol/close)
+    // Base query with parameterized timestamps.
+    // Equity tables use different column names (date/ticker/closeadj) than futures (time/symbol/close).
+    // For EQUITIES we UNION the primary equities table with macro_data.bsts_etf_prices because
+    // major ETFs (SPY/TLT/GLD/EEM/HYG/USO/UUP/CPER) are only seeded in the macro table.
+    // NOT EXISTS on the macro side prefers the equities_data row on any (date, symbol) overlap.
     std::string base_query;
     if (asset_class == AssetClass::EQUITIES) {
-        // Compute adjustment ratio from closeadj/close and apply to OHLC
         base_query =
-            "SELECT date as time, ticker as symbol, "
+            "(SELECT date as time, ticker as symbol, "
             "CASE WHEN close != 0 THEN open * (closeadj / close) ELSE open END as open, "
             "CASE WHEN close != 0 THEN high * (closeadj / close) ELSE high END as high, "
             "CASE WHEN close != 0 THEN low * (closeadj / close) ELSE low END as low, "
@@ -884,12 +886,35 @@ Result<pqxx::result> PostgresDatabase::execute_market_data_query(
     std::string start_ts = format_timestamp(start_date);
     std::string end_ts = format_timestamp(end_date);
 
+    // For EQUITIES: close the primary subquery, then UNION the macro ETF table.
+    // The symbol filter (if present) gets pushed into both sides before the UNION; the
+    // outer ORDER BY runs against the union result.
+    auto finalize_equities_query = [&](const std::string& symbol_filter_primary,
+                                       const std::string& symbol_filter_macro) {
+        return base_query + symbol_filter_primary + ") "
+               "UNION ALL "
+               "(SELECT m.date as time, m.symbol as symbol, "
+               "CASE WHEN m.close != 0 THEN m.open * (m.adjusted_close / m.close) ELSE m.open END as open, "
+               "CASE WHEN m.close != 0 THEN m.high * (m.adjusted_close / m.close) ELSE m.high END as high, "
+               "CASE WHEN m.close != 0 THEN m.low * (m.adjusted_close / m.close) ELSE m.low END as low, "
+               "m.adjusted_close as close, "
+               "m.volume::double precision as volume "
+               "FROM macro_data.bsts_etf_prices m "
+               "WHERE m.date BETWEEN $1 AND $2" + symbol_filter_macro +
+               " AND NOT EXISTS (SELECT 1 FROM " + full_table_name +
+               " e WHERE e.ticker = m.symbol AND e.date = m.date)"
+               ") "
+               "ORDER BY time, symbol";
+    };
+
     if (symbols.empty()) {
         // No symbol filter
-        std::string order_clause = (asset_class == AssetClass::EQUITIES)
-            ? " ORDER BY date, ticker"
-            : " ORDER BY time, symbol";
-        std::string query = base_query + order_clause;
+        std::string query;
+        if (asset_class == AssetClass::EQUITIES) {
+            query = finalize_equities_query("", "");
+        } else {
+            query = base_query + " ORDER BY time, symbol";
+        }
         try {
             return Result<pqxx::result>(txn.exec(query, pqxx::params{start_ts, end_ts}));
         } catch (const std::exception& e) {
@@ -904,14 +929,12 @@ Result<pqxx::result> PostgresDatabase::execute_market_data_query(
                                             symbol_validation.error()->what());
         }
 
-        // Build parameterized query for symbols
-        std::string symbol_filter = (asset_class == AssetClass::EQUITIES)
-            ? " AND ticker = ANY($3)"
-            : " AND symbol = ANY($3)";
-        std::string order_clause = (asset_class == AssetClass::EQUITIES)
-            ? " ORDER BY date, ticker"
-            : " ORDER BY time, symbol";
-        std::string query = base_query + symbol_filter + order_clause;
+        std::string query;
+        if (asset_class == AssetClass::EQUITIES) {
+            query = finalize_equities_query(" AND ticker = ANY($3)", " AND m.symbol = ANY($3)");
+        } else {
+            query = base_query + " AND symbol = ANY($3) ORDER BY time, symbol";
+        }
 
         try {
             return Result<pqxx::result>(txn.exec(query, pqxx::params{start_ts, end_ts, symbols}));
@@ -924,20 +947,6 @@ Result<pqxx::result> PostgresDatabase::execute_market_data_query(
 
 Result<std::shared_ptr<arrow::Table>> PostgresDatabase::convert_to_arrow_table(
     const pqxx::result& result) const {
-    if (result.empty()) {
-        // Return empty table with schema
-        auto schema = arrow::schema(
-            {arrow::field("time", arrow::timestamp(arrow::TimeUnit::SECOND)),
-             arrow::field("symbol", arrow::utf8()), arrow::field("open", arrow::float64()),
-             arrow::field("high", arrow::float64()), arrow::field("low", arrow::float64()),
-             arrow::field("close", arrow::float64()), arrow::field("volume", arrow::float64())});
-
-        std::vector<std::shared_ptr<arrow::Array>> empty_arrays(7);
-        auto empty_table = arrow::Table::Make(schema, empty_arrays);
-
-        return Result<std::shared_ptr<arrow::Table>>(empty_table);
-    }
-
     // Create builders for each column
     arrow::MemoryPool* pool = arrow::default_memory_pool();
 
@@ -1971,17 +1980,25 @@ Result<void> PostgresDatabase::store_backtest_metadata(
 
         std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
 
+        // The run_metadata table has a UNIQUE constraint on (run_id, strategy_id) and
+        // strategy_id is NOT NULL. For portfolio-level aggregate metadata (no specific
+        // strategy), use a sentinel strategy_id so this row doesn't collide with
+        // per-strategy rows written by store_backtest_metadata_with_portfolio.
+        static const std::string kPortfolioAggStrategyId = "__PORTFOLIO_AGG__";
+
         std::string query =
             "INSERT INTO " + table_name +
-            " (run_id, portfolio_id, name, description, start_date, end_date, hyperparameters) "
-            "VALUES ($1, $2, $3, $4, $5, $6, $7) "
-            "ON CONFLICT (run_id) "
+            " (run_id, portfolio_id, strategy_id, name, description, start_date, end_date, "
+            "hyperparameters) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8) "
+            "ON CONFLICT (run_id, strategy_id) "
             "DO UPDATE SET portfolio_id = EXCLUDED.portfolio_id, name = EXCLUDED.name, description "
             "= EXCLUDED.description, "
             "start_date = EXCLUDED.start_date, end_date = EXCLUDED.end_date, "
             "hyperparameters = EXCLUDED.hyperparameters";
 
-        txn.exec(query, pqxx::params{run_id, actual_portfolio_id, name, description,
+        txn.exec(query, pqxx::params{run_id, actual_portfolio_id, kPortfolioAggStrategyId,
+                        name, description,
                         format_timestamp(start_date), format_timestamp(end_date),
                         hyperparameters.dump()});
 

@@ -493,26 +493,73 @@ double BPGVRotationStrategy::compute_portfolio_value() const {
 }
 
 void BPGVRotationStrategy::update_positions_from_weights() {
+    // Validate live prices for symbols with non-trivial weight. Targets themselves
+    // are materialized in get_target_positions(); direct writes to positions_ are
+    // forbidden here — positions_ is owned by on_execution, so writing would
+    // double-count once the portfolio fires the resulting fill back at us.
+    const double sizing_capital = static_cast<double>(config_.capital_allocation);
+    (void)sizing_capital;
+
     for (const auto& [sym, weight] : current_weights_) {
+        if (weight <= 1e-8) continue;
         auto state_it = symbol_state_.find(sym);
         double price = (state_it != symbol_state_.end()) ? state_it->second.current_price : 0.0;
-
-        double target_shares = 0.0;
-        if (price > 1e-8) {
-            double target_value = weight * portfolio_value_;
-            target_shares = target_value / price;
-
-            if (!bpgv_config_.allow_fractional_shares) {
-                target_shares = std::floor(target_shares);
-            }
-        }
-
-        auto pos_it = positions_.find(sym);
-        if (pos_it != positions_.end()) {
-            pos_it->second.quantity = Quantity(target_shares);
-            // DO NOT set average_price here -- on_execution() manages cost basis
+        if (price <= 1e-8) {
+            ERROR("BPGV: cannot size " + sym + " — current_price=" +
+                  std::to_string(price) + ", target_weight=" + std::to_string(weight) +
+                  ". Target will be zero until price data arrives.");
         }
     }
+}
+
+std::unordered_map<std::string, Position> BPGVRotationStrategy::get_target_positions() const {
+    std::unordered_map<std::string, Position> targets;
+
+    // Fixed initial capital for sizing — mirrors MeanReversionStrategy pattern and
+    // avoids the doom loop where cost drag pushes live NAV negative.
+    const double sizing_capital = static_cast<double>(config_.capital_allocation);
+
+    // Build an entry for every symbol in the universe so that dropped symbols show
+    // up as qty=0 and the portfolio exec path can issue explicit close orders.
+    auto all_symbols = bpgv_config_.risk_on_symbols;
+    all_symbols.insert(all_symbols.end(),
+                       bpgv_config_.risk_off_symbols.begin(),
+                       bpgv_config_.risk_off_symbols.end());
+
+    for (const auto& sym : all_symbols) {
+        Position pos;
+        pos.symbol = sym;
+        pos.quantity = 0.0;
+
+        auto w_it = current_weights_.find(sym);
+        if (w_it != current_weights_.end() && w_it->second > 1e-8) {
+            auto state_it = symbol_state_.find(sym);
+            double price = (state_it != symbol_state_.end())
+                               ? state_it->second.current_price
+                               : 0.0;
+            if (price > 1e-8) {
+                double target_shares = (w_it->second * sizing_capital) / price;
+                if (!bpgv_config_.allow_fractional_shares) {
+                    target_shares = std::floor(target_shares);
+                }
+                pos.quantity = Quantity(target_shares);
+            }
+            // Missing price keeps qty=0; better than sizing against a stale price.
+        }
+
+        // Preserve live cost basis / PnL from the fill-driven positions_ map.
+        auto pos_it = positions_.find(sym);
+        if (pos_it != positions_.end()) {
+            pos.average_price = pos_it->second.average_price;
+            pos.realized_pnl = pos_it->second.realized_pnl;
+            pos.unrealized_pnl = pos_it->second.unrealized_pnl;
+            pos.last_update = pos_it->second.last_update;
+        }
+
+        targets[sym] = pos;
+    }
+
+    return targets;
 }
 
 // ============================================================================
