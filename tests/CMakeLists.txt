@@ -24,6 +24,7 @@ set(TEST_SOURCES
     strategy/test_mean_reversion_backtest.cpp
     strategy/test_equity_backtest_db_validation.cpp
     strategy/test_equity_pnl_accounting.cpp
+    strategy/test_bpgv_tier1.cpp
     statistics/test_normalizer.cpp
     statistics/test_pca.cpp
     statistics/test_adf.cpp

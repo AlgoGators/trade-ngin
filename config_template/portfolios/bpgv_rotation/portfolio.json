@@ -61,7 +61,8 @@
           }
         },
         "rebalance": {
-          "_comment": "Remediation Fix 4: widen bands to 250 bps abs / 50% rel.",
+          "_comment": "Tier-2: monthly_only mode available (code-path guarded) but disabled in active config — produced negative targets under the portfolio executor's establishment path. Using wide tolerance bands from remediation.",
+          "mode": "tolerance_band",
           "drift_abs_trigger": 0.025,
           "drift_rel_trigger": 0.50,
           "halfway_rule": true,
@@ -69,7 +70,7 @@
           "enter_fully_on_zero_current": true
         },
         "momentum": {
-          "_comment": "Remediation Fix 2b: tsm_tolerance=0.05 lets names through the TSM gate if their 12m excess return is within -5% of the risk-free rate.",
+          "_comment": "Tier-2 W3 reverted \u2014 worse performance when combined with W2.",
           "tsm_gate_enabled": true,
           "tsm_lookback_days": 252,
           "tsm_risk_free_symbol": "BIL",
@@ -83,7 +84,7 @@
           "xsec_weight_floor": 0.50
         },
         "breakout": {
-          "_comment": "Remediation Fix 2a: index_gate_enabled=false. Per-symbol 200d SMA + ATR graded filter still fires.",
+          "_comment": "Tier-2 W2 reverted \u2014 worse performance when combined with W3.",
           "mode": "graded",
           "sma_window": 200,
           "atr_window": 14,
