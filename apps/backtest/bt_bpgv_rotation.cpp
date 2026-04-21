@@ -201,6 +201,31 @@ int main() {
                 bpgv_config.risk_off_symbols.push_back(sym.get<std::string>());
             }
         }
+        if (bpgv_cfg.contains("cash_symbols")) {
+            bpgv_config.cash_symbols.clear();
+            for (const auto& sym : bpgv_cfg["cash_symbols"]) {
+                bpgv_config.cash_symbols.push_back(sym.get<std::string>());
+            }
+        }
+
+        // Tier-1 remediation (Fix 3): seed warmup_start_date with the backtest
+        // start so initialize() can pre-load ~520 days of history into each
+        // symbol's in-memory deque before the first live bar arrives.
+        bpgv_config.warmup_start_date = start_date;
+
+        // Tier-1 nested configs
+        if (bpgv_cfg.contains("crash_override")) {
+            bpgv_config.crash_override.from_json(bpgv_cfg.at("crash_override"));
+        }
+        if (bpgv_cfg.contains("rebalance")) {
+            bpgv_config.rebalance.from_json(bpgv_cfg.at("rebalance"));
+        }
+        if (bpgv_cfg.contains("momentum")) {
+            bpgv_config.momentum.from_json(bpgv_cfg.at("momentum"));
+        }
+        if (bpgv_cfg.contains("breakout")) {
+            bpgv_config.breakout.from_json(bpgv_cfg.at("breakout"));
+        }
 
         StrategyConfig strategy_config;
         strategy_config.asset_classes = {AssetClass::EQUITIES};

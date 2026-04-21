@@ -9,7 +9,7 @@
       "enabled_live": false,
       "default_allocation": 1.0,
       "type": "BPGVRotationStrategy",
-      "symbols": ["SPY", "QQQ", "XLK", "SMH", "IWM", "XHB", "IYR", "EQR", "TLT", "GLD"],
+      "symbols": ["SPY", "QQQ", "XLK", "SMH", "IWM", "XHB", "IYR", "EQR", "TLT", "GLD", "BIL", "DBMF"],
       "config": {
         "macro_csv_path": "data/macro/bpgv_regime.csv",
         "rebalance_day_of_month": 18,
@@ -21,7 +21,80 @@
         "crash_lookback_days": 5,
         "crash_override_calendar_days": 14,
         "crash_defensive_weight": 0.45,
-        "allow_fractional_shares": true
+        "allow_fractional_shares": true,
+        "risk_on_symbols": ["SPY", "QQQ", "XLK", "SMH", "IWM", "XHB", "IYR", "EQR"],
+        "risk_off_symbols": ["TLT", "GLD"],
+        "_comment_cash": "Remediation Fix 1: BIL and DBMF live in a cash bucket with zero base weight in normal regimes. They only accumulate weight during crash override and serve as TSM risk-free reference.",
+        "cash_symbols": ["BIL", "DBMF"],
+        "crash_override": {
+          "_comment_basket": "Tier-1 Change 1: cash + bonds + gold + managed futures. SPY is NOT in the defensive basket (baseline bug: SPY was 32% and the single largest realized loser).",
+          "defensive_weights": {
+            "BIL": 0.40,
+            "TLT": 0.25,
+            "GLD": 0.20,
+            "DBMF": 0.15
+          },
+          "zero_symbols": ["SPY", "QQQ", "XLK", "SMH", "IWM", "XHB", "IYR", "EQR"],
+          "splice_fallback_symbol": "BIL",
+          "trigger": {
+            "_comment": "Change 3: volatility-scaled trigger. Fires when 5d z-score < -2.0 AND 60d sigma percentile > 40th.",
+            "method": "volatility_scaled",
+            "lookback_days": 60,
+            "k_sigma": 2.0,
+            "vol_gate_percentile": 0.40,
+            "vol_gate_window": 504,
+            "min_history_days": 80
+          },
+          "exit": {
+            "_comment": "Change 4: signal-contingent exit. 5-day min hold, 5-day confirmation window, composite score > 0.55.",
+            "method": "signal_contingent",
+            "min_hold_days": 5,
+            "confirmation_days": 5,
+            "exit_threshold": 0.55,
+            "max_hold_days": null,
+            "trend_symbol": "SPY",
+            "weights": {
+              "trend": 0.50,
+              "vol_norm": 0.25,
+              "recov": 0.25
+            }
+          }
+        },
+        "rebalance": {
+          "_comment": "Remediation Fix 4: widen bands to 250 bps abs / 50% rel.",
+          "drift_abs_trigger": 0.025,
+          "drift_rel_trigger": 0.50,
+          "halfway_rule": true,
+          "exit_fully_on_zero_target": true,
+          "enter_fully_on_zero_current": true
+        },
+        "momentum": {
+          "_comment": "Remediation Fix 2b: tsm_tolerance=0.05 lets names through the TSM gate if their 12m excess return is within -5% of the risk-free rate.",
+          "tsm_gate_enabled": true,
+          "tsm_lookback_days": 252,
+          "tsm_risk_free_symbol": "BIL",
+          "tsm_fail_open_on_short_history": true,
+          "tsm_tolerance": 0.05,
+          "xsec_lookback_days": 126,
+          "xsec_use_vol_scaling": true,
+          "xsec_vol_window_days": 126,
+          "xsec_sigma_floor": 0.05,
+          "xsec_tau": 0.40,
+          "xsec_weight_floor": 0.50
+        },
+        "breakout": {
+          "_comment": "Remediation Fix 2a: index_gate_enabled=false. Per-symbol 200d SMA + ATR graded filter still fires.",
+          "mode": "graded",
+          "sma_window": 200,
+          "atr_window": 14,
+          "atr_k": 2.0,
+          "confirmation_days": 3,
+          "graded_weighting": true,
+          "index_gate_enabled": false,
+          "index_gate_symbol": "SPY",
+          "index_gate_floor": 0.25,
+          "fail_open_on_short_history": true
+        }
       }
     }
   }
