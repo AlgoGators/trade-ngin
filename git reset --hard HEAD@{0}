@@ -1,0 +1,10 @@
+[33m27095e1[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mregime-detection[m[33m)[m HEAD@{0}: commit: Switched autoregressive model to use Eigen library. Added HMM markov switching to weight per regime ar forecasts by regime probability
+[33m3987c51[m HEAD@{1}: commit: Switched autoregressive model to use Eigen library. Added HMM markov switching to weight per regime ar forecasts by regime probability
+[33m7666ece[m HEAD@{2}: rebase (finish): returning to refs/heads/regime-detection
+[33m7666ece[m HEAD@{3}: rebase (pick): Added historical backtest over roughly 5000 days. TODO: build regime forecasts conditional on HMM predicted state distribution
+[33mbb90c7b[m HEAD@{4}: rebase (pick): Added autoregression test on real vol data
+[33m4913c16[m HEAD@{5}: rebase (pick): created model directory in src of trade ngin; implemented autoregressive markov chain
+[33m5cec907[m[33m ([m[1;31morigin/main[m[33m, [m[1;31morigin/HEAD[m[33m, [m[1;32mmain[m[33m)[m HEAD@{6}: rebase (start): checkout main
+[33m542efab[m[33m ([m[1;31morigin/regime-detection[m[33m)[m HEAD@{7}: checkout: moving from main to regime-detection
+[33m5cec907[m[33m ([m[1;31morigin/main[m[33m, [m[1;31morigin/HEAD[m[33m, [m[1;32mmain[m[33m)[m HEAD@{8}: pull --rebase (finish): returning to refs/heads/main
+[33m5cec907[m[33m ([m[1;31morigin/main[m[33m, [m[1;31morigin/HEAD[m[33m, [m[1;32mmain[m[33m)[m HEAD@{9}: pull --rebase (start): checkout 5cec907de46a3fe0d96a2d26bf3bb3a2dd42c388
