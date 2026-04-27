@@ -16,6 +16,13 @@ set(TEST_SOURCES
     risk/test_risk_manager.cpp
     optimization/test_dynamic_optimizer.cpp
     backtesting/test_transaction_cost_analysis.cpp
+    backtesting/test_slippage_model.cpp
+    backtesting/test_backtest_execution_manager.cpp
+    backtesting/test_backtest_price_manager.cpp
+    backtesting/test_backtest_portfolio_constraints.cpp
+    backtesting/test_backtest_pnl_manager.cpp
+    backtesting/test_backtest_metrics_calculator.cpp
+    backtesting/test_backtest_data_loader.cpp
     # backtesting/test_engine.cpp  # Deprecated - BacktestEngine replaced by BacktestCoordinator
     execution/test_execution_engine.cpp
     portfolio/test_portfolio_manager.cpp
