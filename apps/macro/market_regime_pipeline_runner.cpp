@@ -11,7 +11,7 @@
 #include "trade_ngin/statistics/state_estimation/hmm.hpp"
 #include "trade_ngin/statistics/state_estimation/markov_switching.hpp"
 #include "trade_ngin/statistics/clustering/gmm.hpp"
-#include "trade_ngin/statistics/statistics_tools.hpp"
+#include "trade_ngin/statistics/volatility/garch.hpp"
 #include "trade_ngin/statistics/volatility/egarch.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
 #include "trade_ngin/core/types.hpp"
