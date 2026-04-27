@@ -13,6 +13,10 @@ set(TEST_SOURCES
     data/test_credential_store.cpp
     order/test_order_manager.cpp
     order/test_utils.cpp
+    instruments/test_futures.cpp
+    instruments/test_equity.cpp
+    instruments/test_option.cpp
+    instruments/test_instrument_registry.cpp
     risk/test_risk_manager.cpp
     optimization/test_dynamic_optimizer.cpp
     backtesting/test_transaction_cost_analysis.cpp
