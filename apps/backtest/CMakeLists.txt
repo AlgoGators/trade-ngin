@@ -5,7 +5,6 @@
 # Backtest application source files
 set(BT_PORTFOLIO_SOURCES
     bt_portfolio.cpp
-        copper_ip/old_strategy.cpp
 )
 
 set(BT_PORTFOLIO_CONSERVATIVE_SOURCES

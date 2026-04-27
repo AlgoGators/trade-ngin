@@ -153,9 +153,7 @@ set(TRADE_NGIN_SOURCES
     src/statistics/state_estimation/market_data_loader.cpp
     src/statistics/state_estimation/market_regime_pipeline.cpp
     src/statistics/state_estimation/ms_dfm.cpp
-    src/strategy/bsts_regime_detection_multiasset.cpp
     src/models/autoregression/autoregressive.cpp
-    src/models/autoregression/autoregressive_debug.cpp
 )
 
 # Add library target

@@ -1,4 +1,4 @@
-#include "trade_ngin/statistics/state_estimation/msar.hpp"
+#include "msar.hpp"
 #include "trade_ngin/statistics/state_estimation/markov_switching.hpp"
 #include "trade_ngin/core/logger.hpp"
 
