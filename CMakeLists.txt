@@ -121,19 +121,41 @@ set(TRADE_NGIN_SOURCES
     src/live/execution_manager.cpp
     src/live/margin_manager.cpp
     src/live/csv_exporter.cpp
-    src/statistics/statistics_tools.cpp
+    src/statistics/utils/statistics_utils.cpp
+    src/statistics/transformers/normalizer.cpp
+    src/statistics/transformers/pca.cpp
+    src/statistics/tests/adf_test.cpp
+    src/statistics/tests/kpss_test.cpp
+    src/statistics/tests/johansen_test.cpp
+    src/statistics/tests/engle_granger_test.cpp
+    src/statistics/volatility/garch.cpp
+    src/statistics/volatility/egarch.cpp
+    src/statistics/volatility/gjr_garch.cpp
+    src/statistics/volatility/dcc_garch.cpp
+    src/statistics/tests/phillips_perron_test.cpp
+    src/statistics/tests/variance_ratio_test.cpp
+    src/statistics/state_estimation/kalman_filter.cpp
+    src/statistics/state_estimation/hmm.cpp
+    src/statistics/state_estimation/markov_switching.cpp
+    src/statistics/state_estimation/extended_kalman_filter.cpp
+    src/statistics/regression/ols_regression.cpp
+    src/statistics/regression/ridge_regression.cpp
+    src/statistics/regression/lasso_regression.cpp
+    src/statistics/hurst_exponent.cpp
+    src/statistics/preprocessing/outlier_handler.cpp
+    src/statistics/preprocessing/missing_data_handler.cpp
+    # ── regime detection / stats pipeline ──────────────────────────────
+    src/statistics/clustering/gmm.cpp
+    src/statistics/state_estimation/bsts_regime_detector.cpp
     src/statistics/state_estimation/dynamic_factor_model.cpp
     src/statistics/state_estimation/macro_data_loader.cpp
-    src/statistics/state_estimation/ms_dfm.cpp
     src/statistics/state_estimation/macro_regime_pipeline.cpp
-    src/statistics/state_estimation/bsts_regime_detector.cpp
-    src/models/autoregression/autoregressive.cpp
-    src/statistics/volatility/egarch.cpp
-    src/statistics/utils/statistics_utils.cpp
-    src/statistics/clustering/gmm.cpp
     src/statistics/state_estimation/market_data_loader.cpp
     src/statistics/state_estimation/market_regime_pipeline.cpp
-    src/statistics/state_estimation/markov_switching.cpp
+    src/statistics/state_estimation/ms_dfm.cpp
+    src/strategy/bsts_regime_detection_multiasset.cpp
+    src/models/autoregression/autoregressive.cpp
+    src/models/autoregression/autoregressive_debug.cpp
 )
 
 # Add library target
@@ -149,13 +171,6 @@ target_link_libraries(trade_ngin
         Eigen3::Eigen
         NLopt::nlopt
 )
-
-# nlopt for EGARCH parameter estimation
-find_library(NLOPT_LIB nlopt HINTS /opt/homebrew/lib)
-if(NLOPT_LIB)
-    target_link_libraries(trade_ngin PUBLIC ${NLOPT_LIB})
-    target_include_directories(trade_ngin PUBLIC /opt/homebrew/include)
-endif()
 
 # Windows-specific settings
 if(WIN32)
@@ -179,6 +194,3 @@ add_subdirectory(tests)
 
 # Add apps subdirectory
 add_subdirectory(apps)
-add_executable(test_dfm src/statistics/tests/test_dynamic_factor_model.cpp)
-target_link_libraries(test_dfm PRIVATE trade_ngin GTest::gtest_main)
-add_test(NAME test_dfm COMMAND test_dfm)
