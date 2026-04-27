@@ -23,6 +23,8 @@ set(TEST_SOURCES
     backtesting/test_backtest_pnl_manager.cpp
     backtesting/test_backtest_metrics_calculator.cpp
     backtesting/test_backtest_data_loader.cpp
+    backtesting/test_backtest_csv_exporter.cpp
+    backtesting/test_backtest_coordinator.cpp
     # backtesting/test_engine.cpp  # Deprecated - BacktestEngine replaced by BacktestCoordinator
     execution/test_execution_engine.cpp
     portfolio/test_portfolio_manager.cpp
