@@ -125,6 +125,10 @@ TEST(HMMLongSequence, FitAndDecodeT500) {
     config.n_states = 2;
     config.max_iterations = 100;
     config.tolerance = 1e-4;
+    // Default init_random=true seeds the transition matrix from global rand(),
+    // which other tests in the suite advance non-deterministically. Force the
+    // deterministic uniform init so this test is order-independent.
+    config.init_random = false;
 
     HMM hmm(config);
     auto fit_result = hmm.fit(obs);
