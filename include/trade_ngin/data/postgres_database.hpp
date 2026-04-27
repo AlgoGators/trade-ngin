@@ -184,7 +184,7 @@ public:
         const std::string& table_name = "backtest.executions") override;
 
     // Multi-strategy version: store executions with strategy_id
-    Result<void> store_backtest_executions_with_strategy(
+    virtual Result<void> store_backtest_executions_with_strategy(
         const std::vector<ExecutionReport>& executions, const std::string& run_id,
         const std::string& strategy_id, const std::string& portfolio_id = "BASE_PORTFOLIO",
         const std::string& table_name = "backtest.executions");
@@ -223,7 +223,7 @@ public:
 
     // Multi-strategy version: store metadata with portfolio_run_id, strategy_allocation,
     // portfolio_config
-    Result<void> store_backtest_metadata_with_portfolio(
+    virtual Result<void> store_backtest_metadata_with_portfolio(
         const std::string& run_id, const std::string& portfolio_run_id,
         const std::string& strategy_id, double strategy_allocation,
         const nlohmann::json& portfolio_config, const std::string& name,
@@ -346,9 +346,10 @@ public:
      * @param table_name Name of the executions table
      * @return Result indicating success or failure
      */
-    Result<void> delete_stale_executions(const std::vector<std::string>& order_ids,
-                                         const Timestamp& date, const std::string& strategy_name,
-                                         const std::string& table_name = "trading.executions");
+    virtual Result<void> delete_stale_executions(const std::vector<std::string>& order_ids,
+                                                  const Timestamp& date,
+                                                  const std::string& strategy_name,
+                                                  const std::string& table_name = "trading.executions");
 
     /**
      * @brief Store backtest summary results (replaces raw SQL INSERT)
@@ -359,11 +360,11 @@ public:
      * @param table_name Name of the results table
      * @return Result indicating success or failure
      */
-    Result<void> store_backtest_summary(const std::string& run_id, const Timestamp& start_date,
-                                        const Timestamp& end_date,
-                                        const std::unordered_map<std::string, double>& metrics,
-                                        const std::string& portfolio_id = "BASE_PORTFOLIO",
-                                        const std::string& table_name = "backtest.results");
+    virtual Result<void> store_backtest_summary(
+        const std::string& run_id, const Timestamp& start_date, const Timestamp& end_date,
+        const std::unordered_map<std::string, double>& metrics,
+        const std::string& portfolio_id = "BASE_PORTFOLIO",
+        const std::string& table_name = "backtest.results");
 
     /**
      * @brief Store backtest equity curve batch (replaces raw SQL INSERT)
@@ -372,7 +373,7 @@ public:
      * @param table_name Name of the equity curve table
      * @return Result indicating success or failure
      */
-    Result<void> store_backtest_equity_curve_batch(
+    virtual Result<void> store_backtest_equity_curve_batch(
         const std::string& run_id, const std::vector<std::pair<Timestamp, double>>& equity_points,
         const std::string& portfolio_id = "BASE_PORTFOLIO",
         const std::string& table_name = "backtest.equity_curve");
@@ -384,13 +385,13 @@ public:
      * @param table_name Name of the positions table
      * @return Result indicating success or failure
      */
-    Result<void> store_backtest_positions(
+    virtual Result<void> store_backtest_positions(
         const std::vector<Position>& positions, const std::string& run_id,
         const std::string& portfolio_id = "BASE_PORTFOLIO",
         const std::string& table_name = "backtest.final_positions");
 
     // Multi-strategy version: store positions with strategy_id
-    Result<void> store_backtest_positions_with_strategy(
+    virtual Result<void> store_backtest_positions_with_strategy(
         const std::vector<Position>& positions, const std::string& run_id,
         const std::string& strategy_id, const std::string& portfolio_id = "BASE_PORTFOLIO",
         const std::string& table_name = "backtest.final_positions");
@@ -404,10 +405,11 @@ public:
      * @param table_name Name of the live results table
      * @return Result indicating success or failure
      */
-    Result<void> update_live_results(const std::string& strategy_id, const Timestamp& date,
-                                     const std::unordered_map<std::string, double>& updates,
-                                     const std::string& portfolio_id,
-                                     const std::string& table_name = "trading.live_results");
+    virtual Result<void> update_live_results(
+        const std::string& strategy_id, const Timestamp& date,
+        const std::unordered_map<std::string, double>& updates,
+        const std::string& portfolio_id,
+        const std::string& table_name = "trading.live_results");
 
     /**
      * @brief Update live equity curve (replaces raw SQL UPDATE)
@@ -418,9 +420,10 @@ public:
      * @param table_name Name of the equity curve table
      * @return Result indicating success or failure
      */
-    Result<void> update_live_equity_curve(const std::string& strategy_id, const Timestamp& date,
-                                          double equity, const std::string& portfolio_id,
-                                          const std::string& table_name = "trading.equity_curve");
+    virtual Result<void> update_live_equity_curve(
+        const std::string& strategy_id, const Timestamp& date, double equity,
+        const std::string& portfolio_id,
+        const std::string& table_name = "trading.equity_curve");
 
     /**
      * @brief Delete existing live results for a date (replaces raw SQL DELETE)
@@ -430,9 +433,10 @@ public:
      * @param table_name Name of the live results table
      * @return Result indicating success or failure
      */
-    Result<void> delete_live_results(const std::string& strategy_id, const Timestamp& date,
-                                     const std::string& portfolio_id,
-                                     const std::string& table_name = "trading.live_results");
+    virtual Result<void> delete_live_results(
+        const std::string& strategy_id, const Timestamp& date,
+        const std::string& portfolio_id,
+        const std::string& table_name = "trading.live_results");
 
     /**
      * @brief Delete existing equity curve entry for a date (replaces raw SQL DELETE)
@@ -442,9 +446,10 @@ public:
      * @param table_name Name of the equity curve table
      * @return Result indicating success or failure
      */
-    Result<void> delete_live_equity_curve(const std::string& strategy_id, const Timestamp& date,
-                                          const std::string& portfolio_id,
-                                          const std::string& table_name = "trading.equity_curve");
+    virtual Result<void> delete_live_equity_curve(
+        const std::string& strategy_id, const Timestamp& date,
+        const std::string& portfolio_id,
+        const std::string& table_name = "trading.equity_curve");
 
     /**
      * @brief Store complete live results row with all metrics (replaces raw SQL INSERT)
@@ -454,7 +459,7 @@ public:
      * @param table_name Name of the live results table
      * @return Result indicating success or failure
      */
-    Result<void> store_live_results_complete(
+    virtual Result<void> store_live_results_complete(
         const std::string& strategy_id, const Timestamp& date,
         const std::unordered_map<std::string, double>& metrics,
         const std::unordered_map<std::string, int>& int_metrics, const nlohmann::json& config,
@@ -482,7 +487,7 @@ public:
      * @brief Get contract metadata for trading instruments
      * @return Result containing Arrow table with contract metadata
      */
-    Result<std::shared_ptr<arrow::Table>> get_contract_metadata() const;
+    virtual Result<std::shared_ptr<arrow::Table>> get_contract_metadata() const;
 
     /**
      * @brief Convert asset class to string for database queries
