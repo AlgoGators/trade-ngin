@@ -30,6 +30,9 @@ set(TEST_SOURCES
     portfolio/test_portfolio_manager.cpp
     strategy/test_base_strategy.cpp
     strategy/test_trend_following.cpp
+    strategy/test_regime_detector.cpp
+    strategy/test_trend_following_fast.cpp
+    strategy/test_trend_following_slow.cpp
     statistics/test_normalizer.cpp
     statistics/test_pca.cpp
     statistics/test_adf.cpp
