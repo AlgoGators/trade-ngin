@@ -50,6 +50,14 @@ set(TEST_SOURCES
     portfolio/test_portfolio_manager_internals.cpp
     storage/test_backtest_results_manager.cpp
     storage/test_live_results_manager.cpp
+    live/test_live_historical_metrics.cpp
+    live/test_live_price_manager.cpp
+    live/test_execution_manager.cpp
+    live/test_margin_manager.cpp
+    live/test_live_metrics_calculator.cpp
+    live/test_live_pnl_manager.cpp
+    live/test_live_data_loader.cpp
+    live/test_csv_exporter.cpp
     strategy/test_base_strategy.cpp
     strategy/test_trend_following.cpp
     strategy/test_regime_detector.cpp
