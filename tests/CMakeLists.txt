@@ -15,8 +15,11 @@ set(TEST_SOURCES
     data/test_db_utils.cpp
     data/test_postgres_database.cpp
     data/test_database_pooling.cpp
+    data/test_database_pooling_extended.cpp
     data/test_market_data_bus.cpp
     data/test_credential_store.cpp
+    data/test_credential_store_extended.cpp
+    data/test_conversion_utils.cpp
     order/test_order_manager.cpp
     order/test_utils.cpp
     instruments/test_futures.cpp
