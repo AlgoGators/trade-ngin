@@ -34,6 +34,7 @@ set(TEST_SOURCES
     portfolio/test_portfolio_manager.cpp
     portfolio/test_portfolio_aggregation.cpp
     portfolio/test_portfolio_manager_extended.cpp
+    portfolio/test_portfolio_manager_internals.cpp
     storage/test_backtest_results_manager.cpp
     storage/test_live_results_manager.cpp
     strategy/test_base_strategy.cpp
