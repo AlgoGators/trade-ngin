@@ -21,6 +21,7 @@ set(TEST_SOURCES
     risk/test_risk_manager.cpp
     risk/test_risk_manager_extended.cpp
     optimization/test_dynamic_optimizer.cpp
+    optimization/test_dynamic_optimizer_extended.cpp
     backtesting/test_transaction_cost_analysis.cpp
     transaction_cost/test_spread_model.cpp
     transaction_cost/test_impact_model.cpp
