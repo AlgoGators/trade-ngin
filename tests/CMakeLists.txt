@@ -20,6 +20,8 @@ set(TEST_SOURCES
     risk/test_risk_manager.cpp
     optimization/test_dynamic_optimizer.cpp
     backtesting/test_transaction_cost_analysis.cpp
+    transaction_cost/test_spread_model.cpp
+    transaction_cost/test_impact_model.cpp
     backtesting/test_slippage_model.cpp
     backtesting/test_backtest_execution_manager.cpp
     backtesting/test_backtest_price_manager.cpp
