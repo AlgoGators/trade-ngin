@@ -390,14 +390,48 @@ Eigen::MatrixXd BSTSRegimeDetector::build_feature_matrix(
 
     Eigen::VectorXd growth_v(T), inflation_v(T), gi_quad(T), ros(T);
 
-    for (int t = 0; t < T; ++t) {
-        // Growth score: industrial production slope + PMI deviation from 50 + GDP slope
-        const double gs =
-            (mslope("industrial_production", t) + mlevel("manufacturing_capacity_util",t) + mslope("gdp",t)) / 3.0;
+    // M-03: pre-compute series-wide mean/std for each growth_score component
+    // so the variable-scale arithmetic bug is fixed. Cap-util level lives at
+    // ~78 while IP and GDP slopes live at ~0.01; averaging without z-scoring
+    // means cap-util dominates ~99% of the score.
+    //
+    // M-05: use SLOPE for CPI/PCE (rate of change is the inflation signal,
+    // not the level — 2023-2024 inflation falling from 9% to 3% looked
+    // STAGFLATIONARY to the level-based score). Breakeven stays as level
+    // (forward-looking expectation).
+    auto series_stats = [&](auto extractor) -> std::pair<double, double> {
+        double sum = 0.0, sum_sq = 0.0;
+        int count = 0;
+        for (int t = 0; t < T; ++t) {
+            double v = extractor(t);
+            if (std::isfinite(v)) { sum += v; sum_sq += v * v; ++count; }
+        }
+        if (count < 2) return {0.0, 1.0};
+        double mean = sum / count;
+        double var = (sum_sq - count * mean * mean) / (count - 1);
+        return {mean, std::sqrt(std::max(var, 1e-12))};
+    };
 
-        // Inflation score: average of CPI, PCE, breakeven (all in % units)
+    auto [ip_m,  ip_s ] = series_stats([&](int t){ return mslope("industrial_production", t); });
+    auto [cu_m,  cu_s ] = series_stats([&](int t){ return mlevel("manufacturing_capacity_util", t); });
+    auto [gd_m,  gd_s ] = series_stats([&](int t){ return mslope("gdp", t); });
+    auto [cpi_m, cpi_s] = series_stats([&](int t){ return mslope("cpi", t); });          // M-05: slope
+    auto [pce_m, pce_s] = series_stats([&](int t){ return mslope("core_pce", t); });     // M-05: slope
+    auto [bk_m,  bk_s ] = series_stats([&](int t){ return mlevel("breakeven_5y", t); }); // M-05: level (forward-looking)
+
+    for (int t = 0; t < T; ++t) {
+        // M-03: z-score each component before averaging.
+        const double gs =
+            ((mslope("industrial_production", t) - ip_m) / ip_s
+           + (mlevel("manufacturing_capacity_util", t) - cu_m) / cu_s
+           + (mslope("gdp", t) - gd_m) / gd_s) / 3.0;
+
+        // M-05: CPI/PCE slope (YoY-equivalent change); breakeven still level.
+        // Each component z-scored.
         const double is =
-            (mlevel("cpi",t) + mlevel("core_pce",t) + mlevel("breakeven_5y",t)) / 3.0;
+            ((mslope("cpi", t)         - cpi_m) / cpi_s
+           + (mslope("core_pce", t)    - pce_m) / pce_s
+           + (mlevel("breakeven_5y", t) - bk_m)  / bk_s) / 3.0;
 
         // Growth-Inflation quadrant:
         //   positive  -> reflationary (growth outpacing inflation)

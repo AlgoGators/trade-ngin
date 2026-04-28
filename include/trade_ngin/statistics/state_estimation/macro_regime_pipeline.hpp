@@ -190,11 +190,17 @@ struct MacroRegimePipelineConfig : public ConfigBase {
 // Internal trained-parameter structs
 // ============================================================================
 
-// B1: One Gaussian per regime for DFM soft assignment
+// B1: One Gaussian per regime for DFM soft assignment.
+// M-04: 2D over factors [1, 2] = (real_activity, commodity_inflation).
+// Factor 0 (macro_level) is non-discriminative trend (loads ~0.85 on
+// secular-growth series); excluding it from the Gaussian sharpens the
+// soft-classification probabilities. DFM still decomposes K=3 factors
+// (factor 0 still consumed by MS-DFM via emission likelihood); only
+// the Gaussian classifier operates in 2D.
 struct RegimeGaussian {
-    Eigen::Vector3d mean    = Eigen::Vector3d::Zero();
-    Eigen::Matrix3d cov     = Eigen::Matrix3d::Identity();
-    Eigen::Matrix3d cov_inv = Eigen::Matrix3d::Identity();
+    Eigen::Vector2d mean    = Eigen::Vector2d::Zero();
+    Eigen::Matrix2d cov     = Eigen::Matrix2d::Identity();
+    Eigen::Matrix2d cov_inv = Eigen::Matrix2d::Identity();
     double log_det = 0.0;
     int    n_samples = 0;
 };

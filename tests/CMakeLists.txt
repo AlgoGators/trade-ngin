@@ -51,6 +51,7 @@ set(TEST_SOURCES
     statistics/test_macro_regime_pipeline.cpp
     statistics/test_market_regime_pipeline.cpp
     statistics/test_regime_substrate.cpp
+    statistics/test_regime_phase1.cpp
 )
 
 # Create test executable

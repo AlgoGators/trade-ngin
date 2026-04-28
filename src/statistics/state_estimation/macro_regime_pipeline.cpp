@@ -291,23 +291,25 @@ void MacroRegimePipeline::train_dfm_gaussians(const DFMOutput& dfm_output) {
         if (static_cast<int>(indices.size()) < 5) {
             std::cerr << "[B1] Warning: regime " << kRegimeNames[r]
                       << " has " << indices.size() << " samples, using fallback\n";
-            dfm_gaussians_[r].mean = Eigen::Vector3d::Zero();
-            dfm_gaussians_[r].cov = Eigen::Matrix3d::Identity();
-            dfm_gaussians_[r].cov_inv = Eigen::Matrix3d::Identity();
+            dfm_gaussians_[r].mean = Eigen::Vector2d::Zero();
+            dfm_gaussians_[r].cov = Eigen::Matrix2d::Identity();
+            dfm_gaussians_[r].cov_inv = Eigen::Matrix2d::Identity();
             dfm_gaussians_[r].log_det = 0.0;
             continue;
         }
 
+        // M-04: accumulate from factors [1, 2] only — factor 0 (secular
+        // macro_level trend) is non-discriminative for the regime classifier.
         // Mean
-        Eigen::Vector3d mu = Eigen::Vector3d::Zero();
+        Eigen::Vector2d mu = Eigen::Vector2d::Zero();
         for (int idx : indices)
-            mu += F.row(idx).head<3>().transpose();
+            mu += F.row(idx).segment<2>(1).transpose();
         mu /= static_cast<double>(indices.size());
 
         // Covariance
-        Eigen::Matrix3d cov = Eigen::Matrix3d::Zero();
+        Eigen::Matrix2d cov = Eigen::Matrix2d::Zero();
         for (int idx : indices) {
-            Eigen::Vector3d diff = F.row(idx).head<3>().transpose() - mu;
+            Eigen::Vector2d diff = F.row(idx).segment<2>(1).transpose() - mu;
             cov += diff * diff.transpose();
         }
         cov /= static_cast<double>(indices.size() - 1);
@@ -319,7 +321,7 @@ void MacroRegimePipeline::train_dfm_gaussians(const DFMOutput& dfm_output) {
         // so the output is a meaningful probability distribution, not a hard
         // classifier. This is the variance of the Gaussian in each dimension —
         // 0.5 corresponds to ~0.7 std dev of spread around each regime centroid.
-        cov += Eigen::Matrix3d::Identity() * 0.5;
+        cov += Eigen::Matrix2d::Identity() * 0.5;
 
         dfm_gaussians_[r].mean    = mu;
         dfm_gaussians_[r].cov     = cov;
@@ -328,7 +330,7 @@ void MacroRegimePipeline::train_dfm_gaussians(const DFMOutput& dfm_output) {
 
         std::cerr << "[B1] " << kRegimeNames[r]
                   << " n=" << indices.size()
-                  << " mean=[" << mu.transpose() << "]\n";
+                  << " mean(f1,f2)=[" << mu.transpose() << "]\n";
     }
 }
 
@@ -338,13 +340,19 @@ void MacroRegimePipeline::train_dfm_gaussians(const DFMOutput& dfm_output) {
 
 Eigen::Matrix<double, kNumMacroRegimes, 1>
 MacroRegimePipeline::map_dfm(const Eigen::Vector3d& f_t) const {
-    Eigen::Matrix<double, kNumMacroRegimes, 1> log_probs;
+    // M-04: use factors [1, 2] only for the Gaussian classifier.
+    // Factor 0 is non-discriminative trend; including it diluted the
+    // Mahalanobis distance with secular-growth signal that doesn't separate
+    // regimes. The DFM still decomposes 3 factors — they're consumed
+    // elsewhere (MS-DFM emission likelihood, Quadrant scoring).
+    Eigen::Vector2d f_2d = f_t.segment<2>(1);
 
+    Eigen::Matrix<double, kNumMacroRegimes, 1> log_probs;
     for (int r = 0; r < kNumMacroRegimes; ++r) {
         const auto& g = dfm_gaussians_[r];
-        Eigen::Vector3d diff = f_t - g.mean;
+        Eigen::Vector2d diff = f_2d - g.mean;
         double mahal = diff.transpose() * g.cov_inv * diff;
-        log_probs(r) = -0.5 * (3.0 * std::log(2.0 * kPi) + g.log_det + mahal);
+        log_probs(r) = -0.5 * (2.0 * std::log(2.0 * kPi) + g.log_det + mahal);
     }
 
     // Log-sum-exp normalisation
@@ -526,53 +534,43 @@ void MacroRegimePipeline::train_msdfm_fingerprints(
                   << "]\n";
     }
 
-    // Stage 2: cross-state standardisation.
-    // After Stage 1 (per-column z-scoring inside compute_fingerprint), each
-    // native fingerprint is already in z-score space, but its magnitude is
-    // typically ~±0.2 because we average ~thousands of z-scored values per
-    // column and ~5 columns per dimension. The target fingerprints are
-    // designed at ±1.5 magnitude, so without re-scaling all natives cluster
-    // near origin and map to whichever target is closest to origin (SLO_DIS).
+    // M-01: Stage 2 = de-mean only (no cross-state /std rescaling).
     //
-    // We re-standardise each dimension across the J native fingerprints
-    // so the cross-state spread becomes comparable to the target spread.
-    // This is the same J=3 standardization the original code did, but now
-    // applied AFTER Stage 1 fixes the unit-mixing/time-trend artifacts.
+    // The previous code re-standardised each dimension across the J=3 native
+    // fingerprints. With one dominant native state (90% of sample, near zero
+    // on every dim) and two outlier states, the cross-state std was ~0.06-0.09;
+    // dividing by it amplified the dominant state's tiny ~0.005 offsets into
+    // z-scores of ~±1.4. The dominant state's standardised fingerprint then
+    // matched whichever target sat at ±1.5 (EXP_DIS), locking 90% of the
+    // sample into EXPANSION_DISINFLATION regardless of actual macro state.
+    //
+    // The fix: drop the /std step. Native fingerprints are already in
+    // per-column z-score units (from prepare_fingerprint_data); their
+    // raw cross-state spread is the legitimate signal. Targets are rescaled
+    // to ±0.8 below to match this natural spread. (Same fix shape resolves
+    // M-02 since BSTS reuses these target_fingerprints below at line ~712.)
     {
         Eigen::VectorXd ns_mean = Eigen::VectorXd::Zero(kFingerprintDim);
         for (int j = 0; j < J; ++j) ns_mean += msdfm_mapping_.native_fingerprints[j];
         ns_mean /= J;
-
-        Eigen::VectorXd ns_std = Eigen::VectorXd::Ones(kFingerprintDim);
-        if (J >= 2) {
-            for (int d = 0; d < kFingerprintDim; ++d) {
-                double sum_sq = 0;
-                for (int j = 0; j < J; ++j) {
-                    double diff = msdfm_mapping_.native_fingerprints[j](d) - ns_mean(d);
-                    sum_sq += diff * diff;
-                }
-                ns_std(d) = std::sqrt(sum_sq / J + kEps);
-            }
-        }
-        for (int j = 0; j < J; ++j) {
-            for (int d = 0; d < kFingerprintDim; ++d) {
-                msdfm_mapping_.native_fingerprints[j](d) =
-                    (msdfm_mapping_.native_fingerprints[j](d) - ns_mean(d)) / ns_std(d);
-            }
-        }
-        std::cerr << "[B2] cross-state std=[" << ns_std.transpose() << "]\n";
+        for (int j = 0; j < J; ++j)
+            msdfm_mapping_.native_fingerprints[j] -= ns_mean;
+        std::cerr << "[B2] cross-state de-mean only (M-01: dropped /std)\n";
     }
 
-    // Define target fingerprints for 6 ontology states (z-scored)
+    // M-01: target fingerprints rescaled from ±1.5 to ±0.8 to match the
+    // de-meaned native fingerprint spread (typically ~±0.3 per dim after
+    // per-column z-scoring + averaging across many series). The relative
+    // ordering between targets is preserved; only magnitudes shrink.
     //   [growth, inflation, credit_spread, yield_curve, policy_rate]
     //   Positive credit = stress, positive yield = normal curve, positive policy = tight
     msdfm_mapping_.target_fingerprints.resize(kNumMacroRegimes);
-    Eigen::VectorXd t0(kFingerprintDim); t0 <<  1.5, -1.0, -1.0,  1.0, -0.5;  // EXP_DIS
-    Eigen::VectorXd t1(kFingerprintDim); t1 <<  1.5,  1.0, -0.5,  0.0,  0.5;  // EXP_INF
-    Eigen::VectorXd t2(kFingerprintDim); t2 <<  0.0, -1.0,  0.0,  0.0,  0.0;  // SLO_DIS
-    Eigen::VectorXd t3(kFingerprintDim); t3 <<  0.0,  1.0,  0.5, -0.5,  1.0;  // SLO_INF
-    Eigen::VectorXd t4(kFingerprintDim); t4 << -1.5, -1.5,  1.5,  1.5, -1.5;  // REC_DEF
-    Eigen::VectorXd t5(kFingerprintDim); t5 << -1.5,  1.5,  1.5, -0.5,  1.5;  // REC_INF
+    Eigen::VectorXd t0(kFingerprintDim); t0 <<  0.8, -0.5, -0.5,  0.5, -0.3;  // EXP_DIS
+    Eigen::VectorXd t1(kFingerprintDim); t1 <<  0.8,  0.5, -0.3,  0.0,  0.3;  // EXP_INF
+    Eigen::VectorXd t2(kFingerprintDim); t2 <<  0.0, -0.5,  0.0,  0.0,  0.0;  // SLO_DIS
+    Eigen::VectorXd t3(kFingerprintDim); t3 <<  0.0,  0.5,  0.3, -0.3,  0.5;  // SLO_INF
+    Eigen::VectorXd t4(kFingerprintDim); t4 << -0.8, -0.8,  0.8,  0.8, -0.8;  // REC_DEF
+    Eigen::VectorXd t5(kFingerprintDim); t5 << -0.8,  0.8,  0.8, -0.3,  0.8;  // REC_INF
 
     msdfm_mapping_.target_fingerprints[0] = t0;
     msdfm_mapping_.target_fingerprints[1] = t1;
@@ -689,32 +687,18 @@ void MacroRegimePipeline::train_bsts_fingerprints(
         bsts_mapping_.native_fingerprints[k] = fp;
     }
 
-    // Stage 2: cross-cluster standardisation (same rationale as MS-DFM).
+    // M-01/M-02: de-mean only (no cross-cluster /std). Same root cause as
+    // MS-DFM lock-in. Since BSTS reuses MS-DFM's target_fingerprints below,
+    // fixing the std-amplification here resolves the BSTS 0% EXP_DIS too.
     {
         Eigen::VectorXd ns_mean = Eigen::VectorXd::Zero(kFingerprintDim);
         for (int k = 0; k < K; ++k) ns_mean += bsts_mapping_.native_fingerprints[k];
         if (K > 0) ns_mean /= K;
-
-        Eigen::VectorXd ns_std = Eigen::VectorXd::Ones(kFingerprintDim);
-        if (K >= 2) {
-            for (int d = 0; d < kFingerprintDim; ++d) {
-                double sum_sq = 0;
-                for (int k = 0; k < K; ++k) {
-                    double diff = bsts_mapping_.native_fingerprints[k](d) - ns_mean(d);
-                    sum_sq += diff * diff;
-                }
-                ns_std(d) = std::sqrt(sum_sq / K + kEps);
-            }
-        }
-        for (int k = 0; k < K; ++k) {
-            for (int d = 0; d < kFingerprintDim; ++d) {
-                bsts_mapping_.native_fingerprints[k](d) =
-                    (bsts_mapping_.native_fingerprints[k](d) - ns_mean(d)) / ns_std(d);
-            }
-        }
+        for (int k = 0; k < K; ++k)
+            bsts_mapping_.native_fingerprints[k] -= ns_mean;
     }
 
-    // Reuse same target fingerprints as MS-DFM
+    // Reuse same (rescaled) target fingerprints as MS-DFM
     bsts_mapping_.target_fingerprints = msdfm_mapping_.target_fingerprints;
     bsts_mapping_.tau = config_.fingerprint_tau;
 
