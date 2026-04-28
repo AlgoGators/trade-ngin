@@ -176,6 +176,26 @@ Result<MarkovSwitchingResult> MarkovSwitching::fit(const std::vector<double>& da
 
         // M-step: Update parameters
 
+        // K-01: σ collapse prevention — relative floor on state variances.
+        // The previous absolute floor (1e-6) was ineffective on demeaned
+        // daily returns (~0.01 std): a state could collapse to σ ≈ 0.0001
+        // (1% of typical) and still be "above floor", giving a degenerate
+        // narrow Gaussian that hijacks the posterior in practice (e.g.
+        // commodities HMM state 2 had μ=3.4%/day, σ=0.18%/day = essentially
+        // a single-point delta).
+        //
+        // Fix: floor at max(1e-6, 0.01 * global_var). Keeps the absolute
+        // safety net for degenerate input but adds a relative floor at 1%
+        // of global variance — well below any legitimate regime variance,
+        // well above the σ values that triggered EM degeneracy.
+        double global_mean = 0.0;
+        for (double v : data) global_mean += v;
+        global_mean /= static_cast<double>(T);
+        double global_var = 0.0;
+        for (double v : data) global_var += (v - global_mean) * (v - global_mean);
+        global_var /= static_cast<double>(T);
+        const double sigma_sq_floor = std::max(1e-6, 0.01 * global_var);
+
         // Update state means and variances
         for (int k = 0; k < K; ++k) {
             double gamma_sum = 0.0;
@@ -193,7 +213,7 @@ Result<MarkovSwitchingResult> MarkovSwitching::fit(const std::vector<double>& da
                     double diff = data[t] - state_means_(k);
                     var_sum += smoothed(t, k) * diff * diff;
                 }
-                state_variances_(k) = var_sum / gamma_sum + 1e-6;
+                state_variances_(k) = std::max(var_sum / gamma_sum, sigma_sq_floor);
             }
         }
 

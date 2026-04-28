@@ -487,16 +487,28 @@ void MarketRegimePipeline::train_gmm_fingerprints(
                   << " n=" << indices.size() << "\n";
     }
 
-    // Target fingerprints: 5D [r, σ̂, dd_speed, vol_shock, corr_spike] per ontology state
-    // z-scored: positive = high/elevated, negative = low/calm
+    // K-03: target fingerprints retuned to match volume_ratio semantics
+    // (col 3 was previously labelled "vol_shock" but the runner computes
+    // (vol_t - avg_20) / avg_20 = volume RATIO, not vol shock).
+    //
+    // 5D [r, σ̂, dd_speed, volume_ratio, corr_spike] per ontology state:
+    //   volume_ratio: positive = volume above average (typical), zero = average,
+    //                 negative = volume collapse (stress signal).
+    //
+    // Compared to the old vol_shock targets:
+    //   TREND_LOWVOL: was -1.0 (low vol_shock), now 0.0 (normal volume)
+    //   TREND_HIGHVOL: was 0.0, now slightly positive (heavier participation)
+    //   MEANREV_CHOPPY: was -0.5 (low vol_shock), now 0.0 (normal volume)
+    //   STRESS_PRICE: was +1.0 (high vol_shock), now 0.0 (volume can stay normal in selloffs)
+    //   STRESS_LIQUIDITY: was +2.0 (extreme vol_shock), now -1.5 (volume COLLAPSES)
     mapping.target_fingerprints.resize(kNumMarketRegimes);
     Eigen::VectorXd t(D);
-    //                     r     σ̂     dd_spd  vol_shk  corr_spk
-    t <<  0.5, -1.5,  0.0, -1.0, -0.5; mapping.target_fingerprints[0] = t;  // TREND_LOWVOL
-    t <<  0.3,  1.0,  0.0,  0.0,  0.5; mapping.target_fingerprints[1] = t;  // TREND_HIGHVOL
-    t <<  0.0,  0.0,  0.0, -0.5,  0.0; mapping.target_fingerprints[2] = t;  // MEANREV_CHOPPY
-    t << -1.0,  1.5,  1.5,  1.0,  1.5; mapping.target_fingerprints[3] = t;  // STRESS_PRICE
-    t << -0.5,  2.0,  1.0,  2.0,  1.5; mapping.target_fingerprints[4] = t;  // STRESS_LIQUIDITY
+    //                     r     σ̂     dd_spd  vol_ratio  corr_spk
+    t <<  0.5, -1.5,  0.0,  0.0, -0.5; mapping.target_fingerprints[0] = t;  // TREND_LOWVOL
+    t <<  0.3,  1.0,  0.0,  0.3,  0.5; mapping.target_fingerprints[1] = t;  // TREND_HIGHVOL
+    t <<  0.0,  0.0,  0.0,  0.0,  0.0; mapping.target_fingerprints[2] = t;  // MEANREV_CHOPPY
+    t << -1.0,  1.5,  1.5,  0.0,  1.5; mapping.target_fingerprints[3] = t;  // STRESS_PRICE
+    t << -0.5,  2.0,  1.0, -1.5,  1.5; mapping.target_fingerprints[4] = t;  // STRESS_LIQUIDITY
 
     // Standardise + build mapping
     standardise_and_build_mapping(mapping, config_.fingerprint_tau);
@@ -566,7 +578,14 @@ MarketRegimePipeline::smooth(
     int s = static_cast<int>(sleeve);
     auto& state = sleeve_states_[s];
 
-    double lam = config_.lambda;
+    // L-33: warmup — first kWarmupSteps updates use λ=1 (pure raw) so the
+    // pipeline finds its natural starting regime instead of being anchored
+    // to the uniform prev_smoothed init. Mirrors macro pipeline; subsumes
+    // K-09 (the runner's last-5-bars update loop was contaminated because
+    // every iteration started smoothed = uniform).
+    constexpr int kWarmupSteps = 10;
+    double lam = (state.update_count < kWarmupSteps) ? 1.0 : config_.lambda;
+
     Eigen::Matrix<double, kNumMarketRegimes, 1> result;
     for (int r = 0; r < kNumMarketRegimes; ++r)
         result(r) = lam * p_raw(r) + (1.0 - lam) * state.prev_smoothed(r);
@@ -574,6 +593,7 @@ MarketRegimePipeline::smooth(
     double rsum = result.sum();
     if (rsum > kEps) result /= rsum;
     state.prev_smoothed = result;
+    ++state.update_count;
 
     return result;
 }
@@ -666,6 +686,8 @@ Result<void> MarketRegimePipeline::train(
     // L-30: clear last_belief so first update() after retrain doesn't
     // inherit stale most_likely / regime_age_bars from a prior training run.
     sleeve_states_[s].last_belief = MarketBelief{};
+    // L-33: reset warmup counter — first 10 post-retrain updates use λ=1.
+    sleeve_states_[s].update_count = 0;
     sleeve_states_[s].trained = true;
 
     std::cerr << "[MarketRegimePipeline] Training complete for '"

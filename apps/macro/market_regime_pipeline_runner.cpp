@@ -149,7 +149,15 @@ static std::vector<double> build_garch_vol(
 }
 
 // ============================================================================
-// Build GMM 5D features: [r_t, σ̂_t, dd_speed, vol_shock, corr_spike]
+// Build GMM 5D features: [r_t, σ̂_t, dd_speed, volume_ratio, corr_spike]
+// K-03 fix: column 3 was labelled "vol_shock" but the code computed
+// (vol[t]-avg)/avg which is a normalized volume RATIO, not a vol shock
+// (which should be derivative of σ̂). The target fingerprints in
+// market_regime_pipeline.cpp:491-495 were tuned for vol_shock semantics
+// (positive = high vol surge in stress, low elsewhere) but the actual
+// feature was volume_ratio (negative = volume below average = stress).
+// We fix the semantics to match what the code actually computes:
+// volume_ratio. Targets are retuned in market_regime_pipeline.cpp.
 // ============================================================================
 
 static Eigen::MatrixXd build_gmm_features(
@@ -169,6 +177,7 @@ static Eigen::MatrixXd build_gmm_features(
         double dd = peak - cum;
         gf(t, 2) = dd - prev_dd;
         prev_dd = dd;
+        // K-03: col 3 is volume_ratio = (volume_t - avg_20) / avg_20
         if (t >= 20 && !volumes.empty() && t < (int)volumes.size()) {
             double avg = 0;
             for (int i = t-20; i < t; ++i) avg += (i < (int)volumes.size()) ? volumes[i] : 0;

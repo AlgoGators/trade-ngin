@@ -252,6 +252,14 @@ struct SleeveTrainedState {
     Eigen::Matrix<double, kNumMarketRegimes, 1> prev_smoothed;
     MarketBelief last_belief;
 
+    // L-33: per-sleeve update counter for the warmup window.
+    // First N updates use λ=1 (pure raw, bypassing the uniform prev_smoothed
+    // init) so the pipeline can find its natural starting regime before
+    // EWMA smoothing kicks in. Mirrors the macro pipeline's warmup logic
+    // and structurally subsumes K-09 (smoothing init contamination from
+    // the runner's last-5-bars update loop).
+    int update_count = 0;
+
     bool trained = false;
 };
 
