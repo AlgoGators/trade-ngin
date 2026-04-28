@@ -1,4 +1,14 @@
-# Unit Testing — Deferred Refactor Plans
+# Unit Testing — Phase 3 Wrap-up and Deferred Refactor Plans
+
+**[PHASE3_REPORT.md](PHASE3_REPORT.md)** is the wrap-up doc for the `feature/test-coverage-improvements` branch. It covers:
+- Headline coverage numbers (57.2% repo-wide, 74.2% in-scope)
+- How to reproduce the numbers (build + lcov commands per module)
+- Per-file table for all 14 modules with reasons for any sub-80% file
+- 8 production FIXMEs found during testing
+- Forward plan with priorities A (production fixes), B (DB-DI refactor), C (push remaining sub-80% files), D (chart/email refactors)
+- Recommended sequence for maximizing coverage-gain-per-hour
+
+The three files below are the source-level refactor plans referenced from PHASE3_REPORT priority sections D and B.
 
 Three production files were deferred from the unit-test coverage push because they require source-level refactoring (or have a tight external-system coupling) before they can be meaningfully unit-tested. Each file in this directory is a detailed plan for one of them.
 
