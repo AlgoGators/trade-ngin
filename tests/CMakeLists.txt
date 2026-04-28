@@ -50,6 +50,7 @@ set(TEST_SOURCES
     statistics/test_ms_dfm.cpp
     statistics/test_macro_regime_pipeline.cpp
     statistics/test_market_regime_pipeline.cpp
+    statistics/test_regime_substrate.cpp
 )
 
 # Create test executable

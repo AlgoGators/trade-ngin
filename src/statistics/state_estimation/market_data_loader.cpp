@@ -6,6 +6,7 @@
 #include <ctime>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <set>
 #include <sstream>
 #include <unordered_map>
@@ -22,6 +23,11 @@ MarketDataLoader::MarketDataLoader(PostgresDatabase& db)
 
 std::vector<double> MarketDataLoader::compute_log_returns(const std::vector<Bar>& bars)
 {
+    // L-26: emit NaN for missing/non-positive prices instead of silent 0.0.
+    // Zero returns silently bias HMM/MSAR EM toward TREND_LOWVOL during data
+    // outages. Downstream consumers must explicitly handle NaN (skip in EM,
+    // forward-fill, etc.) — the contract is now: a NaN in returns means
+    // "no observation available," not "the asset returned exactly 0%".
     std::vector<double> returns;
     returns.reserve(bars.size() - 1);
     for (size_t i = 1; i < bars.size(); ++i) {
@@ -30,7 +36,7 @@ std::vector<double> MarketDataLoader::compute_log_returns(const std::vector<Bar>
         if (p_prev > 0.0 && p_curr > 0.0) {
             returns.push_back(std::log(p_curr / p_prev));
         } else {
-            returns.push_back(0.0);
+            returns.push_back(std::numeric_limits<double>::quiet_NaN());
         }
     }
     return returns;
@@ -189,7 +195,12 @@ Result<SleevePanel> MarketDataLoader::align_panels(
     sleeve.T = T;
     sleeve.N = N;
     sleeve.dates.assign(common_dates.begin(), common_dates.end());
-    sleeve.composite_returns = Eigen::MatrixXd::Zero(T - 1, N);
+    // L-26: init to NaN, not zero. If alignment leaves any cell unwritten
+    // (e.g., date missing from a panel), the cell stays NaN and downstream
+    // is forced to handle it explicitly rather than silently treating
+    // unaligned dates as zero returns.
+    sleeve.composite_returns = Eigen::MatrixXd::Constant(T - 1, N,
+        std::numeric_limits<double>::quiet_NaN());
 
     for (int s = 0; s < N; ++s) {
         // Build date→index map for this panel
@@ -208,6 +219,7 @@ Result<SleevePanel> MarketDataLoader::align_panels(
             if (prev_close > 0.0 && close > 0.0 && col > 0) {
                 sleeve.composite_returns(col - 1, s) = std::log(close / prev_close);
             }
+            // else: cell stays NaN (per L-26 contract)
             prev_close = close;
             ++col;
         }

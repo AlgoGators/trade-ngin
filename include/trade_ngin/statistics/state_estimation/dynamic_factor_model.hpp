@@ -40,14 +40,38 @@ struct DFMConfig : public ConfigBase {
     // Must be length == num_factors or empty (auto-labels f0, f1, ...).
     std::vector<std::string> factor_labels = {"macro_level", "real_activity", "commodity_inflation"};
 
+    // Factor sign anchors (L-06 fix): PCA eigenvectors have arbitrary sign.
+    // Without anchoring, signs flip across re-fits, silently inverting
+    // the macro pipeline's hardcoded growth_factor_sign / inflation_factor_sign.
+    //
+    // For each factor k, we look up factor_anchor_names[k] in the input series
+    // and assert that lambda(anchor_idx, k) * factor_anchor_signs[k] > 0;
+    // otherwise we flip eigenvector k. This pins the factor orientation to
+    // an economic anchor that doesn't change across re-fits.
+    //
+    // Defaults (matching the established factor narrative in dfm.cpp comments):
+    //   Factor 0 "macro_level"        : "gdp", sign +1   (high level = high GDP)
+    //   Factor 1 "real_activity"      : "manufacturing_capacity_util", sign -1
+    //                                    (high factor = weak activity / cap_util loads negative)
+    //   Factor 2 "commodity_inflation": "wti_crude", sign -1
+    //                                    (high factor = disinflation / oil loads negative)
+    //
+    // Empty vectors or missing column names → skip anchoring for that factor.
+    std::vector<std::string> factor_anchor_names = {
+        "gdp", "manufacturing_capacity_util", "wti_crude"
+    };
+    std::vector<int> factor_anchor_signs = { +1, -1, -1 };
+
     nlohmann::json to_json() const override {
         return {
-            {"num_factors",       num_factors},
-            {"factor_ar_order",   factor_ar_order},
-            {"max_em_iterations", max_em_iterations},
-            {"em_tol",            em_tol},
-            {"standardise_data",  standardise_data},
-            {"factor_labels",     factor_labels}
+            {"num_factors",          num_factors},
+            {"factor_ar_order",      factor_ar_order},
+            {"max_em_iterations",    max_em_iterations},
+            {"em_tol",               em_tol},
+            {"standardise_data",     standardise_data},
+            {"factor_labels",        factor_labels},
+            {"factor_anchor_names",  factor_anchor_names},
+            {"factor_anchor_signs",  factor_anchor_signs}
         };
     }
 
@@ -59,6 +83,10 @@ struct DFMConfig : public ConfigBase {
         if (j.contains("standardise_data"))  standardise_data  = j["standardise_data"];
         if (j.contains("factor_labels"))
             factor_labels = j["factor_labels"].get<std::vector<std::string>>();
+        if (j.contains("factor_anchor_names"))
+            factor_anchor_names = j["factor_anchor_names"].get<std::vector<std::string>>();
+        if (j.contains("factor_anchor_signs"))
+            factor_anchor_signs = j["factor_anchor_signs"].get<std::vector<int>>();
     }
 };
 
@@ -161,6 +189,10 @@ private:
     KalmanResult kalman_filter_smoother(const Eigen::MatrixXd& Y) const;
     void         initialise_parameters(const Eigen::MatrixXd& Y_std);
 
+    // L-06: resolve factor_anchor_names against series_names → indices.
+    // Stored as member; consumed by initialise_parameters to lock factor signs.
+    void         resolve_anchor_indices(const std::vector<std::string>& series_names);
+
     Eigen::MatrixXd standardise(const Eigen::MatrixXd& Y,
                                 Eigen::VectorXd& out_mean,
                                 Eigen::VectorXd& out_std) const;
@@ -185,6 +217,10 @@ private:
     // Online Kalman state (updated by update())
     Eigen::VectorXd x_filt_;
     Eigen::MatrixXd P_filt_;
+
+    // L-06: resolved anchor column indices (index = factor k, value = column
+    // index in input data, or -1 if anchor column not found).
+    std::vector<int> anchor_indices_;
 
     mutable std::mutex mutex_;
 };

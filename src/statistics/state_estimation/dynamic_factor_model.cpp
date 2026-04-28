@@ -72,6 +72,10 @@ Result<DFMOutput> DynamicFactorModel::fit(const Eigen::MatrixXd& data,
         data_std_  = Eigen::VectorXd::Ones(N);
     }
 
+    // ---- L-06: resolve factor sign anchors --------------------------------
+    // Must happen before initialise_parameters so PCA sign-flip can use them.
+    resolve_anchor_indices(names);
+
     // ---- Initialise parameters --------------------------------------------
     initialise_parameters(Y);
 
@@ -442,14 +446,36 @@ void DynamicFactorModel::initialise_parameters(const Eigen::MatrixXd& Y_std)
     const int N = static_cast<int>(Y_std.cols());
     const int K = config_.num_factors;
 
-    // Replace NaN with 0 (column mean after standardisation) for PCA
-    Eigen::MatrixXd Y_clean = Y_std;
-    for (int n = 0; n < N; ++n)
-        for (int t = 0; t < T; ++t)
-            if (!std::isfinite(Y_clean(t, n))) Y_clean(t, n) = 0.0;
-
-    Eigen::MatrixXd C = (Y_clean.transpose() * Y_clean) /
-                        static_cast<double>(T - 1);
+    // L-05: pairwise complete-case covariance. The previous code substituted
+    // NaN→0 then divided by (T-1) regardless of how many cells were observed.
+    // Series with many missing values had their covariance biased toward
+    // zero, distorting the Lambda init via PCA.
+    //
+    // Now: for each pair (i, j), accumulate y_i*y_j only on rows where BOTH
+    // are finite, and divide by (cnt_ij - 1). Diagonal uses cnt_ii (single-
+    // column completeness). This is the standard pairwise estimator.
+    Eigen::MatrixXd C = Eigen::MatrixXd::Zero(N, N);
+    Eigen::MatrixXi cnt = Eigen::MatrixXi::Zero(N, N);
+    for (int t = 0; t < T; ++t) {
+        for (int i = 0; i < N; ++i) {
+            if (!std::isfinite(Y_std(t, i))) continue;
+            for (int j = i; j < N; ++j) {
+                if (!std::isfinite(Y_std(t, j))) continue;
+                C(i, j) += Y_std(t, i) * Y_std(t, j);
+                cnt(i, j) += 1;
+            }
+        }
+    }
+    for (int i = 0; i < N; ++i) {
+        for (int j = i; j < N; ++j) {
+            if (cnt(i, j) > 1) {
+                C(i, j) /= static_cast<double>(cnt(i, j) - 1);
+            } else {
+                C(i, j) = (i == j) ? 1.0 : 0.0;  // unobserved → identity prior
+            }
+            if (i != j) C(j, i) = C(i, j);  // symmetrise
+        }
+    }
 
     Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> solver(C);
     Eigen::MatrixXd evecs = solver.eigenvectors().rowwise().reverse();
@@ -461,9 +487,59 @@ void DynamicFactorModel::initialise_parameters(const Eigen::MatrixXd& Y_std)
         lambda_.col(k) = evecs.col(k) * scale;
     }
 
+    // L-06: PCA eigenvectors have arbitrary sign. Lock factor orientation
+    // to economic anchors so the macro pipeline's hardcoded sign-flips
+    // remain stable across re-fits.
+    for (int k = 0; k < K; ++k) {
+        if (k >= static_cast<int>(anchor_indices_.size())) break;
+        int anchor_idx = anchor_indices_[k];
+        if (anchor_idx < 0 || anchor_idx >= N) continue;  // anchor not resolved
+        int target_sign = (k < static_cast<int>(config_.factor_anchor_signs.size()))
+            ? config_.factor_anchor_signs[k] : +1;
+        if (target_sign == 0) continue;  // disabled
+        double loading = lambda_(anchor_idx, k);
+        if (loading * target_sign < 0) {
+            lambda_.col(k) *= -1;
+            DEBUG("[DFM::init] flipped factor " << k
+                  << " sign to anchor on column " << anchor_idx
+                  << " (loading was " << loading << ", target sign "
+                  << target_sign << ")");
+        }
+    }
+
     A_      = Eigen::MatrixXd::Identity(K, K) * 0.9;
     Q_      = Eigen::MatrixXd::Identity(K, K);
     R_diag_ = Eigen::VectorXd::Constant(N, 0.5);
+}
+
+// L-06: resolve factor_anchor_names against the input series_names vector.
+// Stores indices in anchor_indices_ (length K). Missing anchors → -1.
+void DynamicFactorModel::resolve_anchor_indices(const std::vector<std::string>& series_names) {
+    const int K = config_.num_factors;
+    anchor_indices_.assign(K, -1);
+
+    if (config_.factor_anchor_names.empty()) {
+        return;  // anchoring disabled — no-op
+    }
+
+    for (int k = 0; k < K; ++k) {
+        if (k >= static_cast<int>(config_.factor_anchor_names.size())) break;
+        const std::string& anchor = config_.factor_anchor_names[k];
+        if (anchor.empty()) continue;
+
+        bool found = false;
+        for (int n = 0; n < static_cast<int>(series_names.size()); ++n) {
+            if (series_names[n] == anchor) {
+                anchor_indices_[k] = n;
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            WARN("[DFM::init] factor " << k << " anchor '" << anchor
+                 << "' not found in input series — sign-locking disabled for this factor");
+        }
+    }
 }
 
 // ============================================================================

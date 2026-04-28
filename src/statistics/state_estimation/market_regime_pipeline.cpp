@@ -433,8 +433,12 @@ MarketRegimePipeline::map_garch(
         result(static_cast<int>(MarketRegimeL1::MEANREV_CHOPPY)) -= 0.03;
     }
 
-    // Adjust for liquidity collapse: shift from STRESS_PRICE to STRESS_LIQUIDITY
-    if (market.liquidity_proxy < 0.3) {
+    // Adjust for liquidity collapse: shift from STRESS_PRICE to STRESS_LIQUIDITY.
+    // K-07: gate on isfinite(). NaN means volume data unavailable for this
+    // sleeve/bar (per L-26 contract); silently treating it as "normal" (1.0)
+    // would mute STRESS_LIQUIDITY detection. Skip the adjustment instead —
+    // map_garch keeps its other (non-volume) signals.
+    if (std::isfinite(market.liquidity_proxy) && market.liquidity_proxy < 0.3) {
         double shift = 0.10 * (1.0 - market.liquidity_proxy / 0.3);
         result(static_cast<int>(MarketRegimeL1::STRESS_LIQUIDITY)) += shift;
         result(static_cast<int>(MarketRegimeL1::STRESS_PRICE)) -= shift * 0.5;
@@ -638,10 +642,20 @@ Result<void> MarketRegimePipeline::train(
     train_msar_fingerprints(sleeve, msar_state_means, msar_state_vars, msar_ar_coeffs);
 
     // A3: GARCH feature mapping — rule-based on vol percentiles/flags
-    // Build a dummy feature matrix for GARCH mapping (just needs vol column)
+    // L-34: error if vol series size doesn't match T (was silent zero-fill,
+    // which collapsed vol_percentile and biased GARCH mapping toward
+    // TREND_LOWVOL whenever GARCH was fit on fewer bars than the regime
+    // training window).
+    if (static_cast<int>(garch_vol_series.size()) != T) {
+        return make_error<void>(ErrorCode::INVALID_ARGUMENT,
+            "GARCH vol series size (" + std::to_string(garch_vol_series.size())
+            + ") != regime training T (" + std::to_string(T)
+            + "). Re-fit GARCH on aligned data.",
+            "MarketRegimePipeline");
+    }
     Eigen::MatrixXd garch_feat = Eigen::MatrixXd::Zero(T, 4);
     for (int t = 0; t < T; ++t)
-        garch_feat(t, 1) = (t < (int)garch_vol_series.size()) ? garch_vol_series[t] : 0.0;
+        garch_feat(t, 1) = garch_vol_series[t];
     train_garch_mapping(sleeve, garch_feat, garch_vol_series);
 
     // A4: GMM fingerprint mapping — on [r_t, σ̂_t, dd_speed, vol_shock, corr_spike]
@@ -649,6 +663,9 @@ Result<void> MarketRegimePipeline::train(
 
     // Reset runtime state (only EWMA recurrence state per PDF A7)
     sleeve_states_[s].prev_smoothed.setConstant(1.0 / kNumMarketRegimes);
+    // L-30: clear last_belief so first update() after retrain doesn't
+    // inherit stale most_likely / regime_age_bars from a prior training run.
+    sleeve_states_[s].last_belief = MarketBelief{};
     sleeve_states_[s].trained = true;
 
     std::cerr << "[MarketRegimePipeline] Training complete for '"

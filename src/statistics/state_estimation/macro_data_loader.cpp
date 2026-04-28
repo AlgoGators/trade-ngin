@@ -156,11 +156,18 @@ Result<MacroPanel> MacroDataLoader::load(const std::string& start_date,
                 } else {
                     // Date32 stores days since epoch
                     int32_t days = date_arr->Value(i);
-                    // Convert to YYYY-MM-DD
+                    // L-22: thread-safe gmtime. std::gmtime returns a pointer
+                    // to a static internal buffer — concurrent loaders would
+                    // corrupt each other's date strings.
                     std::time_t epoch_seconds = static_cast<std::time_t>(days) * 86400;
-                    std::tm* tm = std::gmtime(&epoch_seconds);
+                    std::tm tm_local{};
+#ifdef _WIN32
+                    gmtime_s(&tm_local, &epoch_seconds);
+#else
+                    gmtime_r(&epoch_seconds, &tm_local);
+#endif
                     char buf[11];
-                    std::strftime(buf, sizeof(buf), "%Y-%m-%d", tm);
+                    std::strftime(buf, sizeof(buf), "%Y-%m-%d", &tm_local);
                     panel.dates.push_back(buf);
                 }
                 ++row_idx;
@@ -209,8 +216,19 @@ Result<MacroPanel> MacroDataLoader::load(const std::string& start_date,
                     if (!str_arr->IsNull(i)) {
                         std::string val = str_arr->GetString(i);
                         if (!val.empty()) {
+                            // L-23: stod silently truncates non-numeric suffixes
+                            // ("5.2%" → 5.2). Validate full string was consumed.
                             try {
-                                panel.data(row_idx, c) = std::stod(val);
+                                size_t consumed = 0;
+                                double parsed = std::stod(val, &consumed);
+                                if (consumed == val.size()) {
+                                    panel.data(row_idx, c) = parsed;
+                                } else {
+                                    WARN("[MacroDataLoader] partial parse of '"
+                                         << val << "' in column "
+                                         << panel.column_names[c]
+                                         << " — stays NaN");
+                                }
                             } catch (...) {
                                 // unparseable — stays NaN
                             }
@@ -288,8 +306,37 @@ Result<MacroPanel> MacroDataLoader::load(const std::string& start_date,
 Result<std::pair<Eigen::VectorXd, std::vector<std::string>>>
 MacroDataLoader::load_single(const std::string& date) const
 {
-    // Reuse the panel query with a single-date filter
-    auto panel_result = load(date, date);
+    // L-24: query a 90-day window ending at `date` and forward-fill, then
+    // return the row at the requested date. The previous implementation
+    // queried (date, date) which gave back mostly-NaN rows on non-release
+    // days (most days for most macro series — GDP quarterly, NFP monthly).
+    // Live update callers (DFM/MS-DFM/Quadrant) require all-finite or
+    // at least mostly-finite inputs, so the old behavior failed live almost
+    // every day. With a 90-day backward window + forward-fill, the row at
+    // `date` carries the last released value for each series — the
+    // standard macro-pipeline practice and what live deployment needs.
+    auto compute_start = [](const std::string& end) -> std::string {
+        // YYYY-MM-DD format. Subtract 90 days. Naive day arithmetic via
+        // std::tm + mktime — same conventions as the rest of the loader.
+        std::tm tm{};
+        sscanf(end.c_str(), "%d-%d-%d", &tm.tm_year, &tm.tm_mon, &tm.tm_mday);
+        tm.tm_year -= 1900;
+        tm.tm_mon  -= 1;
+        std::time_t t = std::mktime(&tm);
+        if (t == -1) return end;  // parse failed; fall back to single-day
+        t -= 90 * 86400;  // 90 days back
+        std::tm tm_back{};
+#ifdef _WIN32
+        gmtime_s(&tm_back, &t);
+#else
+        gmtime_r(&t, &tm_back);
+#endif
+        char buf[11];
+        std::strftime(buf, sizeof(buf), "%Y-%m-%d", &tm_back);
+        return std::string(buf);
+    };
+
+    auto panel_result = load(compute_start(date), date);
     if (panel_result.is_error()) {
         return make_error<std::pair<Eigen::VectorXd, std::vector<std::string>>>(
             panel_result.error()->code(),
@@ -301,11 +348,21 @@ MacroDataLoader::load_single(const std::string& date) const
     if (panel.T == 0) {
         return make_error<std::pair<Eigen::VectorXd, std::vector<std::string>>>(
             ErrorCode::INVALID_ARGUMENT,
-            "No data for date " + date, "MacroDataLoader");
+            "No data in 90-day window ending " + date, "MacroDataLoader");
     }
 
-    // Return first (and only) row
-    Eigen::VectorXd row = panel.data.row(0).transpose();
+    // load() already runs forward_fill. Find the row whose date matches the
+    // requested date (typically the last row, but explicit match is safer
+    // in case the requested date is a weekend/holiday with no trading row).
+    int target_row = panel.T - 1;  // default: last row
+    for (int t = panel.T - 1; t >= 0; --t) {
+        if (panel.dates[t] <= date) {
+            target_row = t;
+            break;
+        }
+    }
+
+    Eigen::VectorXd row = panel.data.row(target_row).transpose();
     return Result<std::pair<Eigen::VectorXd, std::vector<std::string>>>(
         {std::move(row), std::move(panel.column_names)});
 }

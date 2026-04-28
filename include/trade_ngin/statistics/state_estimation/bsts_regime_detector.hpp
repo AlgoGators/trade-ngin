@@ -150,6 +150,17 @@ public:
     // Regime name lookup
     static const char* regime_name(int label);
 
+    // ── Stateless utility helpers (exposed for testing/diagnostics) ─────
+    // These are pure transformations on data — no state, no dependencies.
+    // Public for the regression test suite (Phase 0 substrate guards).
+    static Eigen::VectorXd gaussian_smooth(const Eigen::VectorXd& x,
+                                           int radius, double sigma);
+    static void forward_fill(Eigen::MatrixXd& X);
+    // backward_fill removed (lookahead bias) — see L-19 in audit doc.
+    // leading_pad_with_first_valid replaces it for the legitimate
+    // state-space init case (leading-NaN-only, not mid-panel).
+    static void leading_pad_with_first_valid(Eigen::MatrixXd& X);
+
 private:
 
     // ── Internal structs (match original BSTS exactly) ───────────────────
@@ -214,7 +225,7 @@ private:
     static double smooth_level(const SeriesPosterior& sp, int t);
     static double smooth_slope(const SeriesPosterior& sp, int t);
     static Eigen::VectorXd rolling_innov_vol(const std::vector<double>& innov, int win);
-    static Eigen::VectorXd gaussian_smooth(const Eigen::VectorXd& x, int radius, double sigma);
+    // gaussian_smooth moved to public section (testing/diagnostics access).
 
     // ── Feature extraction ───────────────────────────────────────────────
 
@@ -269,8 +280,8 @@ private:
                                   const std::string& start_date,
                                   const std::string& end_date) const;
 
-    static void forward_fill(Eigen::MatrixXd& X);
-    static void backward_fill(Eigen::MatrixXd& X);
+    // forward_fill, leading_pad_with_first_valid, gaussian_smooth moved
+    // to public section for testing/diagnostics access.
     static int col_idx(const std::vector<std::string>& cols, const std::string& name);
     static std::vector<double> extract_col(const Eigen::MatrixXd& X, int j);
 

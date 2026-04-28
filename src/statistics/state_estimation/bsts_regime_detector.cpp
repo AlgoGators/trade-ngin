@@ -100,6 +100,11 @@ const char* BSTSRegimeDetector::regime_name(int label) {
 // Data cleaning helpers
 // ============================================================================
 
+// FORWARD-FILL ONLY: legitimate carry-forward of last released value.
+// backward_fill removed 2026-04-28 (lookahead bias — see L-19 in
+// docs/REGIME_PIPELINE_LIBRARY_AUDIT.md). Past timestamps must NEVER be
+// patched with future observations: it contaminates training labels and
+// silently inflates in-sample regime accuracy vs. live performance.
 void BSTSRegimeDetector::forward_fill(Eigen::MatrixXd& X) {
     for (int j = 0; j < X.cols(); ++j) {
         double last = std::numeric_limits<double>::quiet_NaN();
@@ -110,13 +115,26 @@ void BSTSRegimeDetector::forward_fill(Eigen::MatrixXd& X) {
     }
 }
 
-void BSTSRegimeDetector::backward_fill(Eigen::MatrixXd& X) {
+// LEADING-PAD ONLY: pads NaN values BEFORE the first valid observation
+// of each column with that first observation. This is a state-space
+// initialization choice, NOT lookahead bias: at indices [0, first_valid)
+// the series literally has no data, and any state-space model must
+// choose some prior. Using the first observation is the standard
+// "diffuse prior collapsed at first contact" practice. Once the first
+// valid observation has been seen, NaN gaps are forward-filled
+// (legitimate carry-forward), and mid-panel NaN is never patched
+// with future values. Distinct from the removed backward_fill, which
+// applied to ALL NaN positions including mid-panel.
+void BSTSRegimeDetector::leading_pad_with_first_valid(Eigen::MatrixXd& X) {
     for (int j = 0; j < X.cols(); ++j) {
-        double next = std::numeric_limits<double>::quiet_NaN();
-        for (int i = X.rows()-1; i >= 0; --i) {
-            if (std::isfinite(X(i,j))) next = X(i,j);
-            else if (std::isfinite(next)) X(i,j) = next;
+        // Find first valid (finite) observation in this column
+        int first_valid = -1;
+        for (int i = 0; i < X.rows(); ++i) {
+            if (std::isfinite(X(i,j))) { first_valid = i; break; }
         }
+        if (first_valid <= 0) continue;  // no leading NaN OR column entirely NaN
+        const double seed = X(first_valid, j);
+        for (int i = 0; i < first_valid; ++i) X(i,j) = seed;
     }
 }
 
@@ -234,17 +252,16 @@ BSTSRegimeDetector::SeriesPosterior BSTSRegimeDetector::fit_series(
         }
     } else {
         sp.raw_values = raw;
-        // Patch any NaNs via forward/backward fill
+        // Forward-fill NaNs only (carry last released value forward).
+        // Backward-fill removed — see L-19: would leak future observations
+        // into past timestamps for the BSTS state-space model.
         double last = 0.0; bool found = false;
         for (auto& v : sp.raw_values) {
             if (std::isfinite(v)) { last = v; found = true; }
             else if (found) v = last;
         }
-        double next = 0.0; found = false;
-        for (int i = (int)sp.raw_values.size()-1; i >= 0; --i) {
-            if (std::isfinite(sp.raw_values[i])) { next = sp.raw_values[i]; found = true; }
-            else if (found) sp.raw_values[i] = next;
-        }
+        // Leading NaNs (before first observation of this series) remain NaN;
+        // mle_sigma and run_kalman will handle the truncation downstream.
     }
 
     auto [so, sl, ss] = mle_sigma(sp.raw_values);
@@ -277,21 +294,31 @@ Eigen::VectorXd BSTSRegimeDetector::rolling_innov_vol(const std::vector<double>&
     return out;
 }
 
+// CAUSAL Gaussian smoothing — kernel runs over [-2*radius, 0] (trailing only).
+// Original implementation was symmetric [-radius, +radius] which mixed up to
+// `radius` future values into the smoothed feature at time t — silent
+// lookahead bias in every regime feature (see L-20 in audit doc). Default
+// radius=4, sigma=2 now means "trailing 8-day Gaussian smooth" instead of
+// "centered 9-day". Same effective averaging window, no future leakage.
 Eigen::VectorXd BSTSRegimeDetector::gaussian_smooth(const Eigen::VectorXd& x, int radius, double sigma) {
     const int n = (int)x.size();
-    std::vector<double> kernel;
+    if (radius <= 0) return x;
+
+    const int span = 2 * radius;  // kernel covers [-span, 0]
+    std::vector<double> kernel(span + 1);
     double ks = 0;
-    for (int k = -radius; k <= radius; ++k) {
+    for (int k = -span; k <= 0; ++k) {
         double v = std::exp(-(double)(k*k) / (2.0*sigma*sigma));
-        kernel.push_back(v); ks += v;
+        kernel[k + span] = v;
+        ks += v;
     }
     for (auto& v : kernel) v /= ks;
 
     Eigen::VectorXd out(n);
     for (int i = 0; i < n; ++i) {
         double acc = 0;
-        for (int k = -radius; k <= radius; ++k)
-            acc += kernel[k+radius] * x(std::clamp(i+k, 0, n-1));
+        for (int k = -span; k <= 0; ++k)
+            acc += kernel[k + span] * x(std::clamp(i + k, 0, n - 1));
         out(i) = acc;
     }
     return out;
@@ -460,6 +487,16 @@ BSTSRegimeDetector::PCAResult BSTSRegimeDetector::run_pca(const Eigen::MatrixXd&
     Eigen::VectorXd vals(evals.size());
     for (int i = 0; i < (int)evals.size(); ++i) vals(i) = std::max(0.0, evals(idx[i]));
     for (int k = 0; k < n_comp; ++k) vecs.col(k) = evecs.col(idx[k]);
+
+    // L-21: PCA eigenvectors have arbitrary sign. Apply deterministic sign
+    // convention — flip column if its largest-magnitude entry is negative.
+    // Stabilizes cluster centers across re-runs (cluster posteriors are
+    // sign-invariant, but the diagnostic cluster centers we print are not).
+    for (int k = 0; k < n_comp; ++k) {
+        Eigen::Index max_abs_idx;
+        vecs.col(k).cwiseAbs().maxCoeff(&max_abs_idx);
+        if (vecs(max_abs_idx, k) < 0) vecs.col(k) *= -1.0;
+    }
 
     out.components             = vecs;
     out.transformed            = Xs * vecs;
@@ -844,10 +881,12 @@ Result<BSTSOutput> BSTSRegimeDetector::fit(
     // 1. Forward/backward fill the input data
     Eigen::MatrixXd etf_data = etf_prices;
     Eigen::MatrixXd mac_data = macro_data;
+    // Order matters: leading-pad first (state-space init), then forward-fill
+    // for legitimate carry-forward. NEVER backward-fill mid-panel NaN.
+    leading_pad_with_first_valid(etf_data);
+    leading_pad_with_first_valid(mac_data);
     forward_fill(etf_data);
-    backward_fill(etf_data);
     forward_fill(mac_data);
-    backward_fill(mac_data);
 
     // 2. Fit BSTS per series
     std::cerr << "[bsts] ETF series...\n";
@@ -980,8 +1019,8 @@ Result<BSTSOutput> BSTSRegimeDetector::fit_from_db(
 {
     // Load data using the same load_from_database as the original
     DataFrame df = load_from_database(db, start_date, end_date);
+    leading_pad_with_first_valid(df.values);
     forward_fill(df.values);
-    backward_fill(df.values);
 
     // Validate columns exist
     for (const auto& s : config_.etf_series) col_idx(df.columns, s);

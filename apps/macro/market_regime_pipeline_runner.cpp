@@ -23,6 +23,7 @@
 #include <Eigen/Dense>
 #include <iostream>
 #include <iomanip>
+#include <limits>
 #include <memory>
 #include <string>
 #include <vector>
@@ -95,14 +96,21 @@ static Eigen::MatrixXd compute_feature_matrix(
             features(t, 1) = std::sqrt(std::max(0.0, v)) * std::sqrt(252.0);
 
             // col 2: liquidity_proxy (volume ratio)
+            // K-07/L-26: emit NaN when volumes are unavailable instead of
+            // silently defaulting to 1.0 (which would imply "normal liquidity"
+            // and silently mute STRESS_LIQUIDITY detection during data
+            // outages or for sleeves without volume data). Downstream
+            // map_garch checks isfinite() and skips the adjustment if NaN.
             if (!volumes.empty() && t < (int)volumes.size()) {
                 double avg = 0;
                 for (int i = t-window; i < t; ++i)
                     avg += (i < (int)volumes.size()) ? volumes[i] : 0;
                 avg /= window;
-                features(t, 2) = (avg > 1e-10) ? volumes[t]/avg : 1.0;
-            } else features(t, 2) = 1.0;
-        } else features(t, 2) = 1.0;
+                features(t, 2) = (avg > 1e-10)
+                    ? volumes[t]/avg
+                    : std::numeric_limits<double>::quiet_NaN();
+            } else features(t, 2) = std::numeric_limits<double>::quiet_NaN();
+        } else features(t, 2) = std::numeric_limits<double>::quiet_NaN();
         // col 3: correlation_stress — placeholder (set in cross-asset pass)
     }
     return features;
@@ -567,12 +575,20 @@ int main(int argc, char* argv[]) {
         sleeve_data[i].primary = p.symbol;
 
         // Fix #3: Compute rolling cross-asset correlation from multi-symbol data
+        // L-35: when sleeve has <2 usable symbols, emit NaN (was silent 0.0).
+        // Downstream GMM feature col 4 (corr_spike) will see NaN, which the
+        // GMM EM step must handle (skip dim or use partial responsibility).
+        // Zero-fill silently killed the correlation_stress axis for single-
+        // symbol sleeves.
         if (sd.composite_returns.rows() > 0 && sd.composite_returns.cols() >= 2) {
             sleeve_data[i].corr_spike = compute_corr_spike(sd.composite_returns);
             std::cerr << "  " << sleeves[i].name << ": corr_spike computed from "
                       << sd.composite_returns.cols() << " symbols\n";
         } else {
-            sleeve_data[i].corr_spike.assign(p.returns.size(), 0.0);
+            std::cerr << "  WARN " << sleeves[i].name
+                      << ": <2 usable symbols, corr_spike emitted as NaN (L-35).\n";
+            sleeve_data[i].corr_spike.assign(p.returns.size(),
+                std::numeric_limits<double>::quiet_NaN());
         }
     }
 

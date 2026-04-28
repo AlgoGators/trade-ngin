@@ -219,6 +219,9 @@ Result<void> MacroRegimePipeline::train(
     current_regime_ = MacroRegimeL1::EXPANSION_DISINFLATION;
     dwell_counter_ = 0;
     update_count_  = 0;
+    // L-30: clear last_belief_ so first update() after retrain doesn't
+    // inherit stale most_likely / regime_age_bars from a prior training run.
+    last_belief_ = MacroBelief{};
     trained_ = true;
 
     std::cerr << "[MacroRegimePipeline] Training complete. T=" << T << "\n";

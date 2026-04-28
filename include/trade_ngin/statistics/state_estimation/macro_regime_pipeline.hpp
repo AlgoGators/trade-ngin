@@ -51,11 +51,16 @@ struct MacroBelief {
     MacroRegimeL1 most_likely = MacroRegimeL1::EXPANSION_DISINFLATION;
     double confidence = 0.0;
 
-    // Overlays (from dedicated detectors, not main models)
-    bool policy_restrictive    = false;
-    bool credit_tightening     = false;
-    bool inflation_sticky      = false;
+    // Overlay: structural break risk (populated from BSTS structural_break input)
     bool structural_break_risk = false;
+
+    // L-31: policy_restrictive, credit_tightening, inflation_sticky removed
+    // 2026-04-28. The spec (regime_aware_portfolio_engine.md) defines these
+    // as outputs of dedicated overlay detectors that have not yet been built.
+    // Leaving them silently `false` was worse than not having them — downstream
+    // code could accidentally rely on a value that was never populated.
+    // When the overlay detectors are implemented, re-add these fields with
+    // their populating logic.
 
     // Per-model contributions: model_name -> {regime -> prob}
     std::map<std::string, std::map<MacroRegimeL1, double>> model_contributions;

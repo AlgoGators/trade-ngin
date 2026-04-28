@@ -71,6 +71,11 @@ public:
         const std::string& end_date   = "",
         DataFrequency freq = DataFrequency::DAILY) const;
 
+    // Compute log returns from close prices.
+    // L-26: emits NaN (not silent 0.0) for missing/non-positive prices.
+    // Public for testing — pure utility, no class state.
+    static std::vector<double> compute_log_returns(const std::vector<Bar>& bars);
+
 private:
     PostgresDatabase& db_;
 
@@ -78,9 +83,6 @@ private:
     static Result<MarketPanel> arrow_to_panel(
         const std::shared_ptr<arrow::Table>& table,
         const std::string& symbol);
-
-    // Compute log returns from close prices
-    static std::vector<double> compute_log_returns(const std::vector<Bar>& bars);
 
     // Align multiple symbol panels to common dates
     static Result<SleevePanel> align_panels(
