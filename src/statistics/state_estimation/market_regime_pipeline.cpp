@@ -233,11 +233,59 @@ void MarketRegimePipeline::standardise_and_build_mapping(
 void MarketRegimePipeline::train_hmm_fingerprints(
     SleeveId sleeve,
     const std::vector<Eigen::VectorXd>& hmm_means,
-    const std::vector<Eigen::MatrixXd>& hmm_covs)
+    const std::vector<Eigen::MatrixXd>& hmm_covs,
+    const std::vector<double>& liquidity_proxy_series,
+    const Eigen::MatrixXd& hmm_smoothed_probs,
+    const std::vector<double>& ret60_series)
 {
     int s = static_cast<int>(sleeve);
     auto& mapping = sleeve_states_[s].hmm_mapping;
     const int J = (int)hmm_means.size();
+
+    // Helper: compute per-state weighted mean of an arbitrary per-bar
+    // series, weighted by smoothed_probs(t, j). Returns true and fills
+    // means iff we have finite weights for all states AND meaningful
+    // cross-state spread (max−min > min_spread).
+    auto per_state_weighted_mean = [&](
+        const std::vector<double>& series,
+        double min_spread,
+        std::vector<double>& means_out) -> bool
+    {
+        if (series.empty() ||
+            hmm_smoothed_probs.rows() != static_cast<int>(series.size()) ||
+            hmm_smoothed_probs.cols() != J) return false;
+        std::vector<double> sum(J, 0.0), wsum(J, 0.0);
+        for (int t = 0; t < (int)series.size(); ++t) {
+            const double v = series[t];
+            if (!std::isfinite(v)) continue;
+            for (int j = 0; j < J; ++j) {
+                const double w = hmm_smoothed_probs(t, j);
+                sum[j] += w * v;
+                wsum[j] += w;
+            }
+        }
+        means_out.assign(J, 0.0);
+        for (int j = 0; j < J; ++j) {
+            if (wsum[j] < 1e-9) return false;
+            means_out[j] = sum[j] / wsum[j];
+        }
+        const double lo = *std::min_element(means_out.begin(), means_out.end());
+        const double hi = *std::max_element(means_out.begin(), means_out.end());
+        return (hi - lo) > min_spread;
+    };
+
+    // K-05: per-state liquidity. Threshold 0.05 (5% volume-ratio spread).
+    std::vector<double> liq_means;
+    bool use_liq = per_state_weighted_mean(liquidity_proxy_series, 0.05, liq_means);
+
+    // K-05+: per-state rolling 60d return. Threshold 0.02 (2% cumulative
+    // 60d return spread between best/worst states — below this the
+    // dim is uninformative).
+    std::vector<double> ret60_means;
+    bool use_ret60 = per_state_weighted_mean(ret60_series, 0.02, ret60_means);
+
+    // Dimensionality: 2D base + 1 if K-05 + 1 if K-05+
+    const int D = 2 + (use_liq ? 1 : 0) + (use_ret60 ? 1 : 0);
 
     // K-04: HMM fingerprint uses |μ| (drift MAGNITUDE), not signed μ.
     //
@@ -256,26 +304,72 @@ void MarketRegimePipeline::train_hmm_fingerprints(
     for (int j = 0; j < J; ++j) {
         double mu = hmm_means[j](0);
         double sigma = std::sqrt(hmm_covs[j](0, 0));
-        mapping.native_fingerprints[j] = Eigen::VectorXd(2);
-        mapping.native_fingerprints[j] << std::abs(mu), sigma;
+        mapping.native_fingerprints[j] = Eigen::VectorXd(D);
+        mapping.native_fingerprints[j](0) = std::abs(mu);
+        mapping.native_fingerprints[j](1) = sigma;
+        int idx = 2;
+        if (use_liq)   mapping.native_fingerprints[j](idx++) = liq_means[j];
+        if (use_ret60) mapping.native_fingerprints[j](idx++) = ret60_means[j];
         std::cerr << "[A1-" << sleeve_name(sleeve) << "] HMM state " << j
                   << " |μ|=" << std::fixed << std::setprecision(5) << std::abs(mu)
-                  << " (signed μ=" << mu << ") σ=" << sigma << "\n";
+                  << " (signed μ=" << mu << ") σ=" << sigma;
+        if (use_liq)   std::cerr << " liq=" << liq_means[j];
+        if (use_ret60) std::cerr << " ret60=" << ret60_means[j];
+        std::cerr << "\n";
     }
 
-    // Target fingerprints: 2D [|μ|, σ] for each ontology state (z-scored).
-    // K-04 retune: trend dim is now magnitude (always ≥ 0 conceptually).
-    // After de-mean step in standardise_and_build_mapping, the cross-state
-    // spread on |μ| separates TREND_LOWVOL and TREND_HIGHVOL (high |μ|)
-    // from MEANREV_CHOPPY (low |μ|). STRESS_* live high on σ. The σ
-    // dimension is what distinguishes TREND_HIGHVOL from STRESS_PRICE.
+    // K-04 v2 + K-05: target fingerprints. 2D when liquidity unavailable
+    // (use_liq=false), 3D [|μ|, σ, liq] when available.
+    //
+    // K-04 v2 design (2D and 3D both): σ defines stress, |μ| is secondary.
+    //   - TREND_LOWVOL: any |μ|, LOW σ
+    //   - TREND_HIGHVOL: moderate |μ|, mid σ (pulled away from STRESS)
+    //   - MEANREV_CHOPPY: low |μ|, mid σ
+    //   - STRESS_PRICE: moderate |μ|, high σ
+    //   - STRESS_LIQUIDITY: any |μ|, EXTREME σ (in 2D fallback) OR
+    //                       moderate σ + COLLAPSED liq (in 3D)
+    //
+    // K-05 3D extension: STRESS_LIQUIDITY is now defined by LIQUIDITY
+    // COLLAPSE rather than extreme σ. This catches the Treasury-Mar-2020
+    // dysfunction case (moderate σ, but volume thinned 60%+) and the
+    // gilt-Sep-2022 case (volume collapsed in long-end gilts before yields
+    // moved). STRESS_PRICE stays at high σ + normal liq (selloff with
+    // intact market function).
+    // Target fingerprints — geometry depends on which optional dims fired.
+    //
+    // Dimension key:
+    //   dim 0: |μ|     — drift magnitude (z-scored cross-state)
+    //   dim 1: σ       — volatility (z-scored cross-state)
+    //   dim 2: liq     — only present if use_liq (per-state mean volume ratio)
+    //   dim 3: ret60   — only present if use_ret60 (per-state mean rolling 60d return)
+    //
+    // K-04 v2 + K-05 + K-05+ design:
+    //   - σ defines acute stress (crash/panic with high σ)
+    //   - ret60d defines persistent stress (slow bear with negative cumulative return)
+    //   - liq defines liquidity dysfunction (collapsed volume) — but in
+    //     practice HMM-on-returns doesn't separate panic crashes (high
+    //     volume) from dysfunction (low volume), so liq is a weak signal.
+    //   - STRESS_PRICE captures both acute crashes (high σ, neg ret60)
+    //     AND slow bears (mid σ, very neg ret60). Single attractor.
     mapping.target_fingerprints.resize(kNumMarketRegimes);
-    Eigen::VectorXd t(2);
-    t <<  1.5, -1.5; mapping.target_fingerprints[0] = t;  // TREND_LOWVOL:    high |μ|, low vol
-    t <<  1.0,  1.0; mapping.target_fingerprints[1] = t;  // TREND_HIGHVOL:   high |μ|, high vol
-    t <<  0.0,  0.0; mapping.target_fingerprints[2] = t;  // MEANREV_CHOPPY:  low |μ|, mid vol
-    t <<  0.5,  1.5; mapping.target_fingerprints[3] = t;  // STRESS_PRICE:    moderate |μ|, high vol
-    t <<  0.5,  2.0; mapping.target_fingerprints[4] = t;  // STRESS_LIQUIDITY: moderate |μ|, extreme vol
+    auto make_target = [&](double abs_mu, double sigma, double liq, double ret60) {
+        Eigen::VectorXd t(D);
+        t(0) = abs_mu;
+        t(1) = sigma;
+        int idx = 2;
+        if (use_liq)   t(idx++) = liq;
+        if (use_ret60) t(idx++) = ret60;
+        return t;
+    };
+    mapping.target_fingerprints[0] = make_target( 0.0, -1.5,  0.0,  0.5);  // TREND_LOWVOL: low σ + positive 60d return
+    mapping.target_fingerprints[1] = make_target( 0.5,  0.0,  0.0,  0.5);  // TREND_HIGHVOL: moderate |μ|+σ + positive 60d
+    mapping.target_fingerprints[2] = make_target(-0.5,  0.0,  0.0,  0.0);  // MEANREV_CHOPPY: low |μ|, flat 60d
+    mapping.target_fingerprints[3] = make_target( 0.3,  1.0,  0.0, -1.2);  // STRESS_PRICE: elevated σ + NEGATIVE 60d (crash OR slow bear)
+    if (use_liq) {
+        mapping.target_fingerprints[4] = make_target(0.0,  1.0, -2.0, -0.5);  // STRESS_LIQUIDITY: moderate σ + COLLAPSED liq
+    } else {
+        mapping.target_fingerprints[4] = make_target(0.0,  2.5,  0.0, -0.5);  // STRESS_LIQUIDITY: extreme σ (proxy when no liq dim)
+    }
 
     // Standardise + build mapping
     standardise_and_build_mapping(mapping, config_.fingerprint_tau);
@@ -656,7 +750,10 @@ Result<void> MarketRegimePipeline::train(
     const Eigen::MatrixXd& msar_ar_coeffs,
     const std::vector<double>& garch_vol_series,
     const GMMResult& gmm_result,
-    const Eigen::MatrixXd& gmm_feature_matrix)
+    const Eigen::MatrixXd& gmm_feature_matrix,
+    const std::vector<double>& liquidity_proxy_series,
+    const Eigen::MatrixXd& hmm_smoothed_probs,
+    const std::vector<double>& ret60_series)
 {
     int s = static_cast<int>(sleeve);
     const int T = (int)returns.size();
@@ -670,7 +767,11 @@ Result<void> MarketRegimePipeline::train(
               << sleeve_name(sleeve) << "' T=" << T << "\n";
 
     // A1: HMM fingerprint mapping — uses emission parameters (μ_i, σ_i)
-    train_hmm_fingerprints(sleeve, hmm_means, hmm_covs);
+    // K-05 (3D): adds liquidity dim if liquidity_proxy_series + smoothed_probs provided
+    // K-05+ (4D): adds rolling 60d return dim if ret60_series provided
+    train_hmm_fingerprints(sleeve, hmm_means, hmm_covs,
+                           liquidity_proxy_series, hmm_smoothed_probs,
+                           ret60_series);
 
     // A2: MSAR fingerprint mapping — uses regime parameters (μ_i, σ_i, φ_i)
     train_msar_fingerprints(sleeve, msar_state_means, msar_state_vars, msar_ar_coeffs);

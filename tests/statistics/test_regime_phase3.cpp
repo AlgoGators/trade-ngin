@@ -68,6 +68,88 @@ TEST(RegimePhase3, HMMTrendDimUsesAbsoluteMu_K04) {
 }
 
 // ============================================================================
+// K-04 v2: target geometry must put high-vol crash states closer to
+// STRESS_PRICE than to TREND_HIGHVOL. The v1 retune got this wrong:
+// TREND_HIGHVOL at (1.0, 1.0) was closer to z-scored crash states
+// (~1.4, ~1.4) than STRESS_PRICE at (0.5, 1.5). The v2 retune defines
+// stress by σ, with TREND_HIGHVOL pulled away from σ=high.
+//
+// We test the property by replicating the target geometry and asserting
+// distance ordering for a representative "crash state" z-score vector.
+// ============================================================================
+
+TEST(RegimePhase3, HMMTargets_CrashStateMapsToStress_K04v2) {
+    // Targets from market_regime_pipeline.cpp train_hmm_fingerprints (v2):
+    Eigen::Vector2d trend_lowvol(0.0, -1.5);
+    Eigen::Vector2d trend_highvol(0.5,  0.0);
+    Eigen::Vector2d meanrev(-0.5,  0.0);
+    Eigen::Vector2d stress_price(0.5,  1.5);
+    Eigen::Vector2d stress_liq(0.0,  2.5);
+
+    // Representative crash state (high |μ|, high σ) after z-scoring across
+    // 3 native states. e.g. commodities state 0 in the audit data:
+    // |μ|=0.9%/day, σ=10%/day → z-scored to ~(1.45, 1.43).
+    Eigen::Vector2d crash_state(1.45, 1.43);
+
+    auto dist = [](const Eigen::Vector2d& a, const Eigen::Vector2d& b) {
+        return (a - b).norm();
+    };
+
+    double d_trend_lowvol  = dist(crash_state, trend_lowvol);
+    double d_trend_highvol = dist(crash_state, trend_highvol);
+    double d_meanrev       = dist(crash_state, meanrev);
+    double d_stress_price  = dist(crash_state, stress_price);
+    double d_stress_liq    = dist(crash_state, stress_liq);
+
+    // STRESS_PRICE must be CLOSER than TREND_HIGHVOL — that's the v1
+    // regression we're guarding against.
+    EXPECT_LT(d_stress_price, d_trend_highvol)
+        << "K-04 v2: crash state must be closer to STRESS_PRICE ("
+        << d_stress_price << ") than TREND_HIGHVOL ("
+        << d_trend_highvol << "). v1 had TREND_HIGHVOL win at 0.62.";
+
+    // STRESS_PRICE should also be the OVERALL closest target.
+    EXPECT_LT(d_stress_price, d_trend_lowvol);
+    EXPECT_LT(d_stress_price, d_meanrev);
+    EXPECT_LT(d_stress_price, d_stress_liq);
+}
+
+TEST(RegimePhase3, HMMTargets_BullTrendMapsToTrendLowVol_K04v2) {
+    // Targets from market_regime_pipeline.cpp train_hmm_fingerprints (v2)
+    Eigen::Vector2d trend_lowvol(0.0, -1.5);
+    Eigen::Vector2d trend_highvol(0.5,  0.0);
+    Eigen::Vector2d meanrev(-0.5,  0.0);
+    Eigen::Vector2d stress_price(0.5,  1.5);
+    Eigen::Vector2d stress_liq(0.0,  2.5);
+
+    // Representative bull-trend state: small |μ| relative to other states
+    // (because the crash state has higher |μ| magnitude), but low σ.
+    // Equities state 1 in the audit data: |μ|=0.091%, σ=0.65%
+    // After z-scoring across the 3 equity states: ~(-0.45, -0.93).
+    // The DEFINING feature is low σ (z-score below mean).
+    Eigen::Vector2d bull_state(-0.45, -0.93);
+
+    auto dist = [](const Eigen::Vector2d& a, const Eigen::Vector2d& b) {
+        return (a - b).norm();
+    };
+
+    double d_trend_lowvol  = dist(bull_state, trend_lowvol);
+    double d_trend_highvol = dist(bull_state, trend_highvol);
+    double d_meanrev       = dist(bull_state, meanrev);
+    double d_stress_price  = dist(bull_state, stress_price);
+
+    // TREND_LOWVOL should be the closest. The v1 retune broke this
+    // because TREND_LOWVOL demanded |μ|=+1.5 (high magnitude); bull
+    // states with moderate |μ| got pulled toward MEANREV.
+    EXPECT_LT(d_trend_lowvol, d_trend_highvol);
+    EXPECT_LT(d_trend_lowvol, d_meanrev)
+        << "K-04 v2: bull state with low σ must map to TREND_LOWVOL ("
+        << d_trend_lowvol << "), not MEANREV (" << d_meanrev << "). "
+        << "v1 had MEANREV win because TREND_LOWVOL demanded high |μ|.";
+    EXPECT_LT(d_trend_lowvol, d_stress_price);
+}
+
+// ============================================================================
 // L-09: GARCH update() applies same demean as fit().
 // Verify by training on returns with a non-zero mean, then driving
 // update() with raw returns. Pre-fix the live vol would diverge from

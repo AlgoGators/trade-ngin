@@ -299,7 +299,16 @@ public:
         const std::vector<double>& garch_vol_series,   // T conditional vol from GARCH
         // A4: GMM (fitted on [r_t, σ̂_t, dd_speed, vol_shock, corr_spike])
         const GMMResult& gmm_result,
-        const Eigen::MatrixXd& gmm_feature_matrix      // T × 5 GMM feature space
+        const Eigen::MatrixXd& gmm_feature_matrix,     // T × 5 GMM feature space
+        // K-05 (optional): liquidity 3rd dim for HMM fingerprint.
+        //   liquidity_proxy_series: T-length per-bar volume ratio (NaN where unavailable)
+        //   hmm_smoothed_probs:     T × K_hmm smoothed posteriors from MS/HMM EM
+        // K-05+ (optional): drawdown 4th dim — per-bar rolling 60-day cumulative
+        //   return. Captures slow-bear stress (moderate σ + persistent neg 60d).
+        // Pass empty / default-constructed to fall back to lower-D HMM fingerprint.
+        const std::vector<double>& liquidity_proxy_series = {},
+        const Eigen::MatrixXd& hmm_smoothed_probs = Eigen::MatrixXd(),
+        const std::vector<double>& ret60_series = {}
     );
 
     // ── Runtime inference (per sleeve) ──────────────────────────────────────
@@ -325,11 +334,14 @@ public:
     }
 
 private:
-    // ── A1: HMM fingerprint mapping (uses emission μ_i, σ_i) ────────────────
+    // ── A1: HMM fingerprint mapping (μ_i, σ_i, +liq if K-05, +ret60 if K-05+) ──
     void train_hmm_fingerprints(
         SleeveId sleeve,
         const std::vector<Eigen::VectorXd>& hmm_means,
-        const std::vector<Eigen::MatrixXd>& hmm_covs);
+        const std::vector<Eigen::MatrixXd>& hmm_covs,
+        const std::vector<double>& liquidity_proxy_series = {},
+        const Eigen::MatrixXd& hmm_smoothed_probs = Eigen::MatrixXd(),
+        const std::vector<double>& ret60_series = {});
 
     Eigen::Matrix<double, kNumMarketRegimes, 1>
     map_hmm(SleeveId sleeve, const Eigen::VectorXd& p_native) const;

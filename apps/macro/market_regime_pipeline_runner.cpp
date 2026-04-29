@@ -21,6 +21,7 @@
 // Note: msar.hpp includes markov_switching.hpp which is already included above
 
 #include <Eigen/Dense>
+#include <fstream>
 #include <iostream>
 #include <iomanip>
 #include <limits>
@@ -333,7 +334,9 @@ static void process_sleeve(
     const std::vector<double>& returns,
     const std::vector<double>& volumes,
     const std::vector<double>& corr_spike,  // fix #3: pre-computed correlation spike
-    MarketRegimePipeline& pipeline)
+    const std::vector<std::string>& dates,  // length = returns.size()+1; date[t+1] is when return t was realized
+    MarketRegimePipeline& pipeline,
+    std::ofstream* timeline_csv)
 {
     const int T = (int)returns.size();
     if (T < 50) { std::cerr << "  Skipping: T=" << T << " too short\n"; return; }
@@ -483,17 +486,41 @@ static void process_sleeve(
         gmm_model.fit(gmm_features, pipeline.config().gmm_n_clusters));
 
     // ── Train pipeline ─────────────────────────────────────────────────
+    // K-05: liquidity_proxy column (features col 2 — volume ratio, NaN
+    // where unavailable per L-26) + HMM smoothed posteriors → optional
+    // 3rd dim of HMM fingerprint.
+    // K-05+: rolling 60-day cumulative log return per bar → optional 4th
+    // dim. Captures slow-bear stress (moderate σ + persistent neg drift)
+    // that the σ-based attractor alone misses.
+    std::vector<double> liq_series(features.rows());
+    for (int t = 0; t < features.rows(); ++t) liq_series[t] = features(t, 2);
+
+    constexpr int kRet60Window = 60;
+    std::vector<double> ret60_series(returns.size(), 0.0);
+    for (int t = kRet60Window; t < (int)returns.size(); ++t) {
+        double cum = 0.0;
+        for (int i = t - kRet60Window; i < t; ++i) cum += returns[i];
+        ret60_series[t] = cum;  // sum of log-returns over trailing 60 bars
+    }
+
     auto tr = pipeline.train(sleeve_id, returns,
         hmm_means, hmm_covs,
         msar_means, msar_vars, msar_ar,
-        garch_vol, *gmm_result, gmm_features);
+        garch_vol, *gmm_result, gmm_features,
+        liq_series, hmm_result.smoothed_probabilities,
+        ret60_series);
     if (tr.is_error()) { std::cerr << "  Train failed: " << tr.error()->what() << "\n"; return; }
 
-    // ── Update loop (last 5 bars) ──────────────────────────────────────
+    // ── Update loop ────────────────────────────────────────────────────
+    // If timeline_csv is provided, walk EVERY bar from t=60 (warmup window)
+    // to T-1 and emit a CSV line per bar for cross-version validation.
+    // Otherwise, walk only the last 5 bars (legacy behavior).
+    const int loop_start = (timeline_csv != nullptr) ? 60 : std::max(60, T - 5);
+
     std::cout << "\n  REGIME HISTORY (last 5 bars)\n"
               << "  ----------------------------------------\n";
 
-    int start_t = std::max(60, T - 5);
+    int start_t = loop_start;
     for (int t = start_t; t < T - 1; ++t) {
         // A1: True filtered HMM probs (fix #1)
         Eigen::VectorXd hmm_probs(K_hmm);
@@ -536,8 +563,28 @@ static void process_sleeve(
         auto br = pipeline.update(sleeve_id, hmm_probs, msar_probs, gf, mf, gmm_probs);
         if (br.is_error()) { std::cerr << "  Update failed t=" << t << "\n"; break; }
 
-        std::cout << "  t=" << t << " ";
-        print_belief(br.value());
+        // Emit CSV row if timeline mode is on
+        if (timeline_csv != nullptr) {
+            const auto& belief = br.value();
+            const std::string& date = (t + 1 < (int)dates.size()) ? dates[t + 1] : "?";
+            (*timeline_csv) << date << "," << sleeve_name(sleeve_id) << ","
+                            << market_regime_name(belief.most_likely) << ","
+                            << std::fixed << std::setprecision(4)
+                            << belief.confidence;
+            // Per-regime probs for richer analysis
+            for (int r = 0; r < kNumMarketRegimes; ++r) {
+                auto reg = static_cast<MarketRegimeL1>(r);
+                double p = belief.market_probs.count(reg) ? belief.market_probs.at(reg) : 0.0;
+                (*timeline_csv) << "," << p;
+            }
+            (*timeline_csv) << "\n";
+        }
+
+        // Console: only print the last 5 bars
+        if (t >= T - 5) {
+            std::cout << "  t=" << t << " ";
+            print_belief(br.value());
+        }
     }
 }
 
@@ -577,6 +624,7 @@ int main(int argc, char* argv[]) {
         std::vector<double> corr_spike;  // fix #3
         std::string primary;
         Eigen::MatrixXd composite_returns;  // K-08: kept for pooled cross-asset corr
+        std::vector<std::string> dates;     // YYYY-MM-DD per bar (length = returns.size() + 1)
     };
     std::vector<SleeveData> sleeve_data(sleeves.size());
 
@@ -591,6 +639,7 @@ int main(int argc, char* argv[]) {
         sleeve_data[i].returns = p.returns;
         sleeve_data[i].volumes = p.volumes;
         sleeve_data[i].primary = p.symbol;
+        sleeve_data[i].dates   = p.dates;  // for timeline CSV diagnostic
 
         // K-08: pool composite_returns across all sleeves for global cross-
         // asset correlation. Per-sleeve correlation (e.g., MES/MNQ/MYM for
@@ -648,6 +697,25 @@ int main(int argc, char* argv[]) {
     }
 
     // Process each sleeve
+    // Optional regime-timeline CSV output for cross-version validation.
+    // Set TIMELINE_CSV=path to enable; otherwise the existing last-5-bars
+    // console output is unaffected.
+    std::ofstream timeline_csv;
+    std::ofstream* timeline_ptr = nullptr;
+    if (const char* env = std::getenv("TIMELINE_CSV")) {
+        timeline_csv.open(env);
+        if (timeline_csv.is_open()) {
+            timeline_csv << "date,sleeve,regime,confidence,"
+                            "p_TREND_LOWVOL,p_TREND_HIGHVOL,p_MEANREV_CHOPPY,"
+                            "p_STRESS_PRICE,p_STRESS_LIQUIDITY\n";
+            timeline_ptr = &timeline_csv;
+            std::cerr << "[TIMELINE] writing per-bar regime CSV → " << env << "\n";
+        } else {
+            std::cerr << "[TIMELINE] WARN: cannot open " << env
+                      << " for writing — skipping CSV output\n";
+        }
+    }
+
     for (size_t i = 0; i < sleeves.size(); ++i) {
         if (sleeve_data[i].returns.empty()) continue;
         std::cout << "\n========================================================\n"
@@ -655,8 +723,11 @@ int main(int argc, char* argv[]) {
                   << "========================================================\n"
                   << "  Primary: " << sleeve_data[i].primary;
         process_sleeve(sleeves[i].id, sleeve_data[i].returns, sleeve_data[i].volumes,
-                       sleeve_data[i].corr_spike, pipeline);
+                       sleeve_data[i].corr_spike, sleeve_data[i].dates,
+                       pipeline, timeline_ptr);
     }
+
+    if (timeline_csv.is_open()) timeline_csv.close();
 
     std::cout << "\n========================================================\n"
               << " MARKET REGIME PIPELINE COMPLETE\n"
