@@ -6,11 +6,11 @@
 // Usage:
 //   ./macro_regime_pipeline_runner [connection_string] [start_date] [end_date]
 
-#include "trade_ngin/statistics/state_estimation/macro_regime_pipeline.hpp"
-#include "trade_ngin/statistics/state_estimation/bsts_regime_detector.hpp"
-#include "trade_ngin/statistics/state_estimation/dynamic_factor_model.hpp"
-#include "trade_ngin/statistics/state_estimation/ms_dfm.hpp"
-#include "trade_ngin/statistics/state_estimation/macro_data_loader.hpp"
+#include "trade_ngin/regime_detection/macro/macro_regime_pipeline.hpp"
+#include "trade_ngin/regime_detection/macro/bsts_regime_detector.hpp"
+#include "trade_ngin/regime_detection/macro/dynamic_factor_model.hpp"
+#include "trade_ngin/regime_detection/macro/ms_dfm.hpp"
+#include "trade_ngin/regime_detection/macro/macro_data_loader.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
 #include "trade_ngin/core/logger.hpp"
 

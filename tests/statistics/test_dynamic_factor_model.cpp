@@ -1,5 +1,5 @@
 #include <gtest/gtest.h>
-#include "trade_ngin/statistics/state_estimation/dynamic_factor_model.hpp"
+#include "trade_ngin/regime_detection/macro/dynamic_factor_model.hpp"
 #include <Eigen/Dense>
 #include <random>
 #include <cmath>

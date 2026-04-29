@@ -57,7 +57,7 @@ set_target_properties(macro_regime_pipeline_runner
 # ==========================================
 
 add_executable(bsts_regime_detector
-    ${CMAKE_SOURCE_DIR}/src/strategy/bsts_regime_detection_multiasset.cpp
+    ${CMAKE_SOURCE_DIR}/src/regime_detection/bsts_regime_detection_multiasset.cpp
 )
 
 target_link_libraries(bsts_regime_detector

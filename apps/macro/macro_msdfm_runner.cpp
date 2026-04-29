@@ -5,8 +5,8 @@
 // Usage:
 //   ./macro_msdfm_runner [connection_string] [output.csv] [start_date] [end_date]
 
-#include "trade_ngin/statistics/state_estimation/ms_dfm.hpp"
-#include "trade_ngin/statistics/state_estimation/macro_data_loader.hpp"
+#include "trade_ngin/regime_detection/macro/ms_dfm.hpp"
+#include "trade_ngin/regime_detection/macro/macro_data_loader.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
 #include "trade_ngin/core/logger.hpp"
 

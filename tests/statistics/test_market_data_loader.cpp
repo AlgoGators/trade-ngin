@@ -2,7 +2,7 @@
 // for single-symbol sleeves, and gmtime_r thread safety of the date-parsing
 // path.
 
-#include "trade_ngin/statistics/state_estimation/market_data_loader.hpp"
+#include "trade_ngin/regime_detection/market/market_data_loader.hpp"
 
 #include <gtest/gtest.h>
 #include <Eigen/Dense>

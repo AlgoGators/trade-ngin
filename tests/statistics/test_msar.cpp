@@ -1,7 +1,7 @@
 // Tests for MarketMSAR — transition matrix recomputation from smoothed
 // posteriors during fit().
 
-#include "../../src/models/autoregression/msar.hpp"
+#include "trade_ngin/regime_detection/market/msar.hpp"
 
 #include <gtest/gtest.h>
 #include <Eigen/Dense>

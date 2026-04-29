@@ -6,8 +6,8 @@
 // Usage:
 //   ./market_regime_pipeline_runner [connection_string] [start_date] [end_date]
 
-#include "trade_ngin/statistics/state_estimation/market_regime_pipeline.hpp"
-#include "trade_ngin/statistics/state_estimation/market_data_loader.hpp"
+#include "trade_ngin/regime_detection/market/market_regime_pipeline.hpp"
+#include "trade_ngin/regime_detection/market/market_data_loader.hpp"
 #include "trade_ngin/statistics/state_estimation/hmm.hpp"
 #include "trade_ngin/statistics/state_estimation/markov_switching.hpp"
 #include "trade_ngin/statistics/clustering/gmm.hpp"
@@ -18,7 +18,7 @@
 #include "trade_ngin/core/config_loader.hpp"
 
 // MarketMSAR for proper AR(1) estimation
-#include "../../src/models/autoregression/msar.hpp"
+#include "trade_ngin/regime_detection/market/msar.hpp"
 // Note: msar.hpp includes markov_switching.hpp which is already included above
 
 #include <Eigen/Dense>

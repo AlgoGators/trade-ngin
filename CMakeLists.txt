@@ -146,14 +146,14 @@ set(TRADE_NGIN_SOURCES
     src/statistics/preprocessing/missing_data_handler.cpp
     # ── regime detection / stats pipeline ──────────────────────────────
     src/statistics/clustering/gmm.cpp
-    src/statistics/state_estimation/bsts_regime_detector.cpp
-    src/statistics/state_estimation/dynamic_factor_model.cpp
-    src/statistics/state_estimation/macro_data_loader.cpp
-    src/statistics/state_estimation/macro_regime_pipeline.cpp
-    src/statistics/state_estimation/market_data_loader.cpp
-    src/statistics/state_estimation/market_regime_pipeline.cpp
-    src/statistics/state_estimation/ms_dfm.cpp
-    src/models/autoregression/autoregressive.cpp
+    src/regime_detection/macro/bsts_regime_detector.cpp
+    src/regime_detection/macro/dynamic_factor_model.cpp
+    src/regime_detection/macro/macro_data_loader.cpp
+    src/regime_detection/macro/macro_regime_pipeline.cpp
+    src/regime_detection/market/market_data_loader.cpp
+    src/regime_detection/market/market_regime_pipeline.cpp
+    src/regime_detection/macro/ms_dfm.cpp
+    src/regime_detection/market/autoregressive.cpp
 )
 
 # Add library target

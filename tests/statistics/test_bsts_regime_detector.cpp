@@ -1,7 +1,7 @@
 // Tests for BSTSRegimeDetector — gaussian smoothing causality, forward/leading
 // fill semantics, R0-R3 sentinel labels, and PCA sign convention.
 
-#include "trade_ngin/statistics/state_estimation/bsts_regime_detector.hpp"
+#include "trade_ngin/regime_detection/macro/bsts_regime_detector.hpp"
 
 #include <gtest/gtest.h>
 #include <Eigen/Dense>
