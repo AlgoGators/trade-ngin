@@ -4,7 +4,7 @@
 #include "trade_ngin/core/error.hpp"
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/statistics/statistics_common.hpp"
-#include "trade_ngin/statistics/state_estimation/dynamic_factor_model.hpp"
+#include "trade_ngin/regime_detection/macro/dynamic_factor_model.hpp"
 
 #include <Eigen/Dense>
 #include <nlohmann/json.hpp>

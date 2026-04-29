@@ -1,5 +1,5 @@
-#include "trade_ngin/statistics/state_estimation/ms_dfm.hpp"
-#include "trade_ngin/statistics/state_estimation/macro_data_loader.hpp"
+#include "trade_ngin/regime_detection/macro/ms_dfm.hpp"
+#include "trade_ngin/regime_detection/macro/macro_data_loader.hpp"
 #include "trade_ngin/statistics/critical_values.hpp"
 #include "trade_ngin/core/logger.hpp"
 

@@ -1,4 +1,4 @@
-#include "trade_ngin/statistics/state_estimation/market_regime_pipeline.hpp"
+#include "trade_ngin/regime_detection/market/market_regime_pipeline.hpp"
 
 #include <algorithm>
 #include <cassert>

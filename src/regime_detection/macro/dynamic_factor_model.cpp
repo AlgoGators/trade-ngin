@@ -1,5 +1,5 @@
-#include "trade_ngin/statistics/state_estimation/dynamic_factor_model.hpp"
-#include "trade_ngin/statistics/state_estimation/macro_data_loader.hpp"
+#include "trade_ngin/regime_detection/macro/dynamic_factor_model.hpp"
+#include "trade_ngin/regime_detection/macro/macro_data_loader.hpp"
 #include "trade_ngin/statistics/validation.hpp"
 #include "trade_ngin/core/logger.hpp"
 

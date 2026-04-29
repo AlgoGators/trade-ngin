@@ -1,4 +1,4 @@
-#include "trade_ngin/statistics/state_estimation/macro_regime_pipeline.hpp"
+#include "trade_ngin/regime_detection/macro/macro_regime_pipeline.hpp"
 
 #include <algorithm>
 #include <cassert>

@@ -2,10 +2,10 @@
 
 #include "trade_ngin/core/config_base.hpp"
 #include "trade_ngin/core/error.hpp"
-#include "trade_ngin/statistics/state_estimation/dynamic_factor_model.hpp"
-#include "trade_ngin/statistics/state_estimation/ms_dfm.hpp"
-#include "trade_ngin/statistics/state_estimation/macro_data_loader.hpp"
-#include "trade_ngin/statistics/state_estimation/bsts_regime_detector.hpp"
+#include "trade_ngin/regime_detection/macro/dynamic_factor_model.hpp"
+#include "trade_ngin/regime_detection/macro/ms_dfm.hpp"
+#include "trade_ngin/regime_detection/macro/macro_data_loader.hpp"
+#include "trade_ngin/regime_detection/macro/bsts_regime_detector.hpp"
 
 #include <Eigen/Dense>
 #include <nlohmann/json.hpp>

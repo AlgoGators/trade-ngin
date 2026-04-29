@@ -7,7 +7,7 @@
     hardcoded constants become config_ members.
 */
 
-#include "trade_ngin/statistics/state_estimation/bsts_regime_detector.hpp"
+#include "trade_ngin/regime_detection/macro/bsts_regime_detector.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
 
 #include <arrow/api.h>

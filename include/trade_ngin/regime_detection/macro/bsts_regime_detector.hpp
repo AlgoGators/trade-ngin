@@ -3,7 +3,7 @@
 #include "trade_ngin/core/config_base.hpp"
 #include "trade_ngin/core/error.hpp"
 #include "trade_ngin/statistics/statistics_common.hpp"
-#include "trade_ngin/statistics/state_estimation/macro_data_loader.hpp"
+#include "trade_ngin/regime_detection/macro/macro_data_loader.hpp"
 
 #include <Eigen/Dense>
 #include <nlohmann/json.hpp>
