@@ -3,6 +3,7 @@
 #include <Eigen/Dense>
 #include <cmath>
 #include <limits>
+#include <random>
 
 using namespace trade_ngin::statistics;
 
@@ -234,4 +235,84 @@ TEST(ValidationTests, KalmanUpdateNaNRejected) {
     auto result = kf.update(obs);
     EXPECT_TRUE(result.is_error());
     EXPECT_EQ(result.error()->code(), trade_ngin::ErrorCode::INVALID_DATA);
+}
+
+// ============================================================================
+// Joseph form keeps P symmetric and PD over a long update sequence.
+// Simple `(I - K H) P` accumulates roundoff and can drift out of PD,
+// breaking subsequent Cholesky decompositions.
+// ============================================================================
+
+TEST(RegimePhase4, KalmanJosephFormPreservesPDOverManyUpdates_L07) {
+    KalmanFilterConfig cfg;
+    cfg.state_dim = 4;
+    cfg.obs_dim = 2;
+    cfg.process_noise = 1e-5;
+    cfg.measurement_noise = 1e-3;
+    KalmanFilter kf(cfg);
+
+    Eigen::VectorXd x0 = Eigen::VectorXd::Zero(4);
+    ASSERT_FALSE(kf.initialize(x0).is_error());
+
+    // Non-trivial F that mixes states (so K*H interacts non-diagonally).
+    Eigen::MatrixXd F(4, 4);
+    F << 1, 0.1, 0,    0,
+         0, 1,   0.05, 0,
+         0, 0,   1,    0.2,
+         0, 0,   0,    1;
+    Eigen::MatrixXd H(2, 4);
+    H << 1, 0, 1, 0,
+         0, 1, 0, 1;
+    ASSERT_FALSE(kf.set_transition_matrix(F).is_error());
+    ASSERT_FALSE(kf.set_observation_matrix(H).is_error());
+
+    std::mt19937 rng(42);
+    std::normal_distribution<double> noise(0.0, 0.03);
+
+    // 2000 update steps — enough for naive (I-KH)P to drift out of PD
+    // under the same noise regime; Joseph form must hold.
+    for (int t = 0; t < 2000; ++t) {
+        ASSERT_FALSE(kf.predict().is_error());
+        Eigen::Vector2d z(noise(rng), noise(rng));
+        ASSERT_FALSE(kf.update(z).is_error());
+    }
+
+    const Eigen::MatrixXd& P = kf.get_state_covariance();
+
+    // Symmetry: max element-wise asymmetry must be tiny.
+    double asym = (P - P.transpose()).cwiseAbs().maxCoeff();
+    EXPECT_LT(asym, 1e-12)
+        << "Joseph form should keep P symmetric to roundoff. asym=" << asym;
+
+    // Positive definiteness via LLT.
+    Eigen::LLT<Eigen::MatrixXd> llt(P);
+    EXPECT_EQ(llt.info(), Eigen::Success)
+        << "Joseph form should keep P positive-definite after long runs.";
+}
+
+// ============================================================================
+// Near-singular innovation covariance S — KalmanFilter::update
+// must not crash. Pre-fix used JacobiSVD per update (O(n³) cost);
+// post-fix uses LLT diagonal min/max for an order-of-magnitude check.
+// ============================================================================
+
+TEST(RegimePhase4, KalmanIllConditionedSDoesNotCrash_L12) {
+    KalmanFilterConfig cfg;
+    cfg.state_dim = 2;
+    cfg.obs_dim = 2;
+    cfg.process_noise = 1e-6;
+    cfg.measurement_noise = 1e-12;  // tiny → S is near-singular
+    KalmanFilter kf(cfg);
+
+    ASSERT_FALSE(kf.initialize(Eigen::VectorXd::Zero(2)).is_error());
+
+    // Run a handful of updates. The cond-number check should detect
+    // ill-conditioning and warn, but not throw or return an error.
+    for (int t = 0; t < 5; ++t) {
+        ASSERT_FALSE(kf.predict().is_error());
+        Eigen::Vector2d z(0.001, -0.001);
+        auto r = kf.update(z);
+        EXPECT_FALSE(r.is_error())
+            << "ill-conditioned S should warn, not error.";
+    }
 }

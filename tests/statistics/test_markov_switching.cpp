@@ -221,3 +221,45 @@ TEST_F(MarkovSwitchingTest, InitializeManually) {
     ASSERT_TRUE(state.is_ok());
     EXPECT_NEAR(state.value().sum(), 1.0, 1e-6);
 }
+
+// ============================================================================
+// σ collapse prevention. Train MarkovSwitching on a series with one
+// extreme outlier that would normally cause one state to collapse to a
+// near-delta around the outlier. After the fix, no state should have σ
+// below the relative floor (1% of global variance).
+// ============================================================================
+
+TEST(RegimePhase2, MarkovSwitchingNoSigmaCollapse_K01) {
+    // Generate ~500 normal returns + 1 outlier that would have hijacked
+    // a state under the old absolute-only floor.
+    std::mt19937 rng(42);
+    std::normal_distribution<double> nd(0.0, 0.01);  // 1% daily vol
+    std::vector<double> data(500);
+    for (auto& x : data) x = nd(rng);
+    data[200] = 0.10;  // 10% outlier — pre-fix this would collapse a state to σ ≈ 0.001
+
+    MarkovSwitchingConfig cfg;
+    cfg.n_states = 3;
+    cfg.max_iterations = 50;
+    cfg.tolerance = 1e-6;
+
+    MarkovSwitching ms(cfg);
+    auto result = ms.fit(data);
+    ASSERT_TRUE(result.is_ok()) << "fit failed: "
+        << (result.is_error() ? result.error()->what() : "");
+
+    // Compute global variance for the floor check
+    double mean = 0; for (auto v : data) mean += v; mean /= data.size();
+    double global_var = 0;
+    for (auto v : data) global_var += (v - mean) * (v - mean);
+    global_var /= data.size();
+    const double floor = std::max(1e-6, 0.01 * global_var);
+
+    const auto& vars = result.value().state_variances;
+    for (int k = 0; k < cfg.n_states; ++k) {
+        EXPECT_GE(vars(k), floor)
+            << "state " << k << " variance " << vars(k)
+            << " below relative floor " << floor
+            << " (1% of global var " << global_var << ")";
+    }
+}

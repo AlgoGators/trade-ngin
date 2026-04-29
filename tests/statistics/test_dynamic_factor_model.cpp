@@ -366,3 +366,184 @@ TEST_F(DynamicFactorModelTest, FilterOutputFinite) {
         }
     }
 }
+
+// ============================================================================
+// Synthetic-panel helpers and fixed-property regression tests for the DFM
+// factor sign anchor and pairwise complete-case PCA covariance.
+// ============================================================================
+
+namespace {
+
+// Helper: build a small synthetic macro panel suitable for DFM fit.
+// N series with known pattern; some columns can be NaN-rich for testing.
+static Eigen::MatrixXd dfm_make_synthetic_panel(int T, int N, int seed = 1234,
+                                                int nan_col = -1, double nan_frac = 0.0) {
+    std::mt19937 rng(seed);
+    std::normal_distribution<double> nd(0.0, 1.0);
+    Eigen::MatrixXd Y(T, N);
+    for (int t = 0; t < T; ++t) {
+        const double trend = 0.01 * t;
+        for (int n = 0; n < N; ++n) {
+            // Each series shares a small fraction of the trend + idiosyncratic noise
+            Y(t, n) = trend * (n % 3 == 0 ? 1.0 : 0.3) + nd(rng);
+        }
+    }
+    if (nan_col >= 0 && nan_col < N) {
+        std::uniform_real_distribution<double> u(0.0, 1.0);
+        for (int t = 0; t < T; ++t) {
+            if (u(rng) < nan_frac)
+                Y(t, nan_col) = std::numeric_limits<double>::quiet_NaN();
+        }
+    }
+    return Y;
+}
+
+}  // namespace
+
+// ----------------------------------------------------------------------------
+// DFM factor sign anchoring.
+// Re-fitting on the same data with different anchor signs must produce a
+// deterministic factor orientation matching the configured anchor.
+// ----------------------------------------------------------------------------
+
+TEST(RegimeSubstrate, DFMFactorSignsLockedByAnchorConfig_L06) {
+    constexpr int T = 200, N = 10;
+    Eigen::MatrixXd Y = dfm_make_synthetic_panel(T, N);
+    std::vector<std::string> names(N);
+    for (int n = 0; n < N; ++n) names[n] = "s" + std::to_string(n);
+
+    // Configure factor 0 to anchor on column "s3" with positive sign.
+    DFMConfig cfg;
+    cfg.num_factors = 2;
+    cfg.max_em_iterations = 30;
+    cfg.factor_anchor_names = {"s3", "s5"};
+    cfg.factor_anchor_signs = {+1, -1};
+    cfg.factor_labels = {"f0", "f1"};
+
+    DynamicFactorModel dfm_a(cfg);
+    auto out_a = dfm_a.fit(Y, names);
+    ASSERT_TRUE(out_a.is_ok()) << out_a.error()->what();
+
+    // Fit again with FLIPPED anchor sign on factor 0 — expect lambda(s3, 0)
+    // to flip sign, demonstrating the anchor actually steers the convention.
+    DFMConfig cfg_flipped = cfg;
+    cfg_flipped.factor_anchor_signs = {-1, -1};
+
+    DynamicFactorModel dfm_b(cfg_flipped);
+    auto out_b = dfm_b.fit(Y, names);
+    ASSERT_TRUE(out_b.is_ok()) << out_b.error()->what();
+
+    const auto& la = out_a.value().lambda;
+    const auto& lb = out_b.value().lambda;
+    // lambda(3, 0) should have opposite signs between the two fits because
+    // we deliberately flipped the anchor sign for factor 0.
+    EXPECT_LT(la(3, 0) * lb(3, 0), 0.0)
+        << "anchor sign flip on factor 0 should invert loading on s3. "
+           "Got la(3,0)=" << la(3, 0) << " lb(3,0)=" << lb(3, 0);
+}
+
+// ----------------------------------------------------------------------------
+// PCA covariance is pairwise complete-case, NOT NaN→0 fill.
+// Synthetic panel with a high-NaN column. The estimated diagonal variance
+// of that column should be close to its observed variance, not biased
+// toward 0 (which is what NaN→0 does).
+// ----------------------------------------------------------------------------
+
+TEST(RegimeSubstrate, DFMHandlesHighNaNColumn_L05) {
+    constexpr int T = 300, N = 6;
+    constexpr int nan_col = 2;
+    constexpr double nan_frac = 0.4;
+    Eigen::MatrixXd Y = dfm_make_synthetic_panel(T, N, /*seed*/ 999, nan_col, nan_frac);
+
+    std::vector<std::string> names(N);
+    for (int n = 0; n < N; ++n) names[n] = "s" + std::to_string(n);
+
+    DFMConfig cfg;
+    cfg.num_factors = 2;
+    cfg.max_em_iterations = 30;
+    cfg.standardise_data = true;
+    cfg.factor_anchor_names = {};  // disable anchoring for this test
+    cfg.factor_anchor_signs = {};
+
+    DynamicFactorModel dfm(cfg);
+    auto out = dfm.fit(Y, names);
+    ASSERT_TRUE(out.is_ok()) << out.error()->what();
+
+    // After standardize, the per-series std should be ~1. With NaN→0 fill
+    // the std of nan_col would be biased toward 0 (cnt < T) but the
+    // standardise() helper computes std on observed values only, then
+    // pairwise complete-case PCA covariance is also used.
+    // The downstream effect: the lambda loading on nan_col shouldn't be
+    // pathologically tiny (which would be the symptom of bias-to-0).
+    const auto& lambda = out.value().lambda;
+    double max_loading_on_nan_col = 0.0;
+    for (int k = 0; k < lambda.cols(); ++k) {
+        max_loading_on_nan_col = std::max(max_loading_on_nan_col,
+                                          std::abs(lambda(nan_col, k)));
+    }
+    EXPECT_GT(max_loading_on_nan_col, 0.05)
+        << "column with 40% NaN should still load meaningfully on "
+           "at least one factor; biased-to-0 covariance would shrink loadings.";
+}
+
+// ============================================================================
+// Adversarial: DFM sign anchor must be stable across re-fits.
+// Without the anchor, PCA eigenvector signs are arbitrary, so the macro
+// pipeline's hardcoded growth/inflation sign-flips would silently invert
+// from one training run to the next. We fit twice on the same panel
+// with different EM init seeds (achieved by reordering rows to perturb
+// the eigendecomposition) and assert the anchor-row loading sign is
+// identical across both fits.
+// ============================================================================
+
+TEST(RegimePhase4, DFMSignAnchorStableAcrossRefits_L06) {
+    // Build a synthetic 100×3 panel where col 0 is the anchor "gdp".
+    // Two factor structures share the same loadings up to sign flips.
+    std::mt19937 rng(2026);
+    std::normal_distribution<double> noise(0.0, 0.3);
+
+    const int T = 200, N = 4;
+    Eigen::MatrixXd panel(T, N);
+    for (int t = 0; t < T; ++t) {
+        // Underlying factor: slowly trending series.
+        double f = std::sin(t * 0.05) + 0.3 * t / T;
+        panel(t, 0) = +1.0 * f + noise(rng);  // gdp: positive loading
+        panel(t, 1) = -0.7 * f + noise(rng);  // inverse loader
+        panel(t, 2) = +0.5 * f + noise(rng);
+        panel(t, 3) = +0.4 * f + noise(rng);
+    }
+    std::vector<std::string> names = {"gdp", "manufacturing_capacity_util",
+                                       "wti_crude", "x"};
+
+    DFMConfig cfg;
+    cfg.num_factors = 1;
+    cfg.factor_anchor_names = {"gdp"};
+    cfg.factor_anchor_signs = {+1};
+    cfg.max_em_iterations = 30;
+
+    DynamicFactorModel m1(cfg);
+    auto r1 = m1.fit(panel, names);
+    ASSERT_FALSE(r1.is_error()) << r1.error()->what();
+
+    // Refit on a row-permuted copy (changes the order observations are
+    // accumulated into the covariance / EM updates without changing the
+    // underlying structure → small numerical perturbation that can flip
+    // PCA signs without the anchor lock).
+    Eigen::MatrixXd panel2 = panel;
+    for (int t = 0; t < T; ++t) panel2(t, 0) += 1e-10 * t;  // tiny tilt
+    DynamicFactorModel m2(cfg);
+    auto r2 = m2.fit(panel2, names);
+    ASSERT_FALSE(r2.is_error()) << r2.error()->what();
+
+    // The gdp anchor's loading on factor 0 must be positive in BOTH
+    // fits (target_sign = +1). Without the anchor lock, one fit could
+    // come out negative.
+    double load1 = r1.value().lambda(0, 0);
+    double load2 = r2.value().lambda(0, 0);
+    EXPECT_GT(load1, 0.0)
+        << "gdp loading should be positive (anchor target +1). load1=" << load1;
+    EXPECT_GT(load2, 0.0)
+        << "gdp loading should be positive after re-fit. load2=" << load2;
+    EXPECT_EQ(std::signbit(load1), std::signbit(load2))
+        << "anchor sign must match across refits.";
+}

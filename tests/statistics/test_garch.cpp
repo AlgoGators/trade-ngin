@@ -162,3 +162,46 @@ TEST(ValidationTests, NaNRejectedByGARCH) {
     EXPECT_TRUE(result.is_error());
     EXPECT_EQ(result.error()->code(), trade_ngin::ErrorCode::INVALID_DATA);
 }
+
+// ============================================================================
+// GARCH update() applies same demean as fit().
+// Verify by training on returns with a non-zero mean, then driving
+// update() with raw returns. Pre-fix the live vol would diverge from
+// what a fit-on-extended-series would produce; post-fix they match
+// to first order.
+// ============================================================================
+
+TEST(RegimePhase3, GARCHUpdateAppliesDemean_L09) {
+    constexpr int N = 100;
+    std::mt19937 rng(31);
+    std::normal_distribution<double> nd(0.005, 0.01);  // 0.5% mean, 1% vol
+
+    std::vector<double> returns;
+    for (int i = 0; i < N; ++i) returns.push_back(nd(rng));
+
+    GARCH garch_a(GARCHConfig{});
+    auto fit_a = garch_a.fit(returns);
+    ASSERT_TRUE(fit_a.is_ok()) << fit_a.error()->what();
+
+    // Now drive update() with one new return that has the SAME drift as
+    // the training mean. With the fix the residual is ~0; without it the
+    // residual would be ~0.005 (the mean) — different vol step.
+    double next_return = 0.005;  // exactly the training mean
+    auto upd = garch_a.update(next_return);
+    ASSERT_TRUE(upd.is_ok());
+
+    auto vol = garch_a.get_current_volatility();
+    ASSERT_TRUE(vol.is_ok());
+    EXPECT_GT(vol.value(), 0.0)
+        << "vol after update must be finite and positive";
+
+    // Compare with a different update value: a 5σ shock should produce
+    // visibly higher vol than the at-mean update.
+    GARCH garch_b(GARCHConfig{});
+    ASSERT_TRUE(garch_b.fit(returns).is_ok());
+    ASSERT_TRUE(garch_b.update(0.005 + 5 * 0.01).is_ok());  // 5σ shock above mean
+    auto vol_shock = garch_b.get_current_volatility();
+    ASSERT_TRUE(vol_shock.is_ok());
+    EXPECT_GT(vol_shock.value(), vol.value())
+        << "5σ shock above mean must produce higher vol than at-mean update";
+}

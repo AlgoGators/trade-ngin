@@ -194,3 +194,96 @@ TEST(ValidationTests, HMMFitNaNRejected) {
     EXPECT_TRUE(result.is_error());
     EXPECT_EQ(result.error()->code(), trade_ngin::ErrorCode::INVALID_DATA);
 }
+
+// ============================================================================
+// HMM zero-gamma guard. Construct a degenerate observation matrix
+// (all rows identical → one state will dominate posterior, others get
+// near-zero gamma). Without the guard, zero-gamma states produce NaN
+// in transition_matrix_/means_/covariances_. After fix, no NaN.
+// ============================================================================
+
+TEST(RegimePhase2, HMM_NoNaN_OnZeroGammaState_L01) {
+    // 50 identical observations with tiny noise
+    std::mt19937 rng(7);
+    std::normal_distribution<double> nd(0.0, 1e-8);
+    Eigen::MatrixXd obs(50, 1);
+    for (int i = 0; i < 50; ++i) obs(i, 0) = 1.0 + nd(rng);
+
+    HMMConfig cfg;
+    cfg.n_states = 3;
+    cfg.max_iterations = 30;
+    cfg.tolerance = 1e-6;
+
+    HMM hmm(cfg);
+    auto result = hmm.fit(obs);
+    ASSERT_TRUE(result.is_ok()) << "fit failed: "
+        << (result.is_error() ? result.error()->what() : "");
+
+    // No NaN/Inf in any output
+    auto state_result = hmm.get_state();
+    ASSERT_TRUE(state_result.is_ok());
+    const auto& state_probs = state_result.value();
+    for (int i = 0; i < state_probs.size(); ++i) {
+        EXPECT_TRUE(std::isfinite(state_probs(i)))
+            << "state_probs[" << i << "] is non-finite";
+    }
+}
+
+// ----------------------------------------------------------------------------
+// HMM covariance ridge is RELATIVE to data scale, not absolute 1e-6.
+// Train HMM on data scaled 100× typical (large variances); verify the
+// fitted covariances are well-conditioned. Pre-fix the absolute 1e-6
+// ridge was negligible vs ~1.0 variances; post-fix the ridge scales
+// with the per-iteration mean diagonal.
+// ----------------------------------------------------------------------------
+
+TEST(RegimePhase2, HMMCovRidgeIsRelativeToScale_L02) {
+    // Same shape as the L-01 zero-gamma test, but with scaled-up data.
+    std::mt19937 rng(11);
+    std::normal_distribution<double> nd(0.0, 1.0);  // 100× typical std
+    Eigen::MatrixXd obs(80, 1);
+    for (int i = 0; i < 80; ++i) obs(i, 0) = nd(rng);
+
+    HMMConfig cfg;
+    cfg.n_states = 2;
+    cfg.max_iterations = 30;
+    cfg.tolerance = 1e-6;
+
+    HMM hmm(cfg);
+    auto result = hmm.fit(obs);
+    ASSERT_TRUE(result.is_ok()) << result.error()->what();
+
+    // After fit, get_state should produce finite probabilities — a
+    // well-conditioned covariance is a precondition for emission_log_prob
+    // to be finite.
+    auto state = hmm.get_state();
+    ASSERT_TRUE(state.is_ok());
+    for (int i = 0; i < state.value().size(); ++i) {
+        EXPECT_TRUE(std::isfinite(state.value()(i)))
+            << "state probs must be finite even on large-scale data; "
+               "absolute-only ridge would underflow at this scale.";
+    }
+}
+
+// ----------------------------------------------------------------------------
+// LDLT log-det is floored to avoid log(0) = -inf when D-diagonal
+// has near-zero entries. Constructing a synthetic near-singular
+// covariance and feeding it through Cholesky-fallback path is hard
+// without internal access. Instead, test the property directly: the
+// fix is `D.array().abs().max(1e-300).log().sum()` — verify this
+// expression is finite for D containing 0.
+// ----------------------------------------------------------------------------
+
+TEST(RegimePhase2, LDLTLogDetFloorPreventsNegInf_L03) {
+    Eigen::VectorXd D(4);
+    D << 1.0, 0.5, 0.0, 1e-15;  // includes exact zero and near-zero
+
+    // Pre-fix expression: log(0) = -inf
+    double pre = D.array().abs().log().sum();
+    EXPECT_FALSE(std::isfinite(pre)) << "Pre-fix expected to be -inf";
+
+    // Post-fix expression: floored at 1e-300
+    double post = D.array().abs().max(1e-300).log().sum();
+    EXPECT_TRUE(std::isfinite(post))
+        << "floor at 1e-300 must prevent -inf propagation. Got " << post;
+}

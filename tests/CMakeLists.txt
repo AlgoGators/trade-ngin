@@ -50,11 +50,11 @@ set(TEST_SOURCES
     statistics/test_ms_dfm.cpp
     statistics/test_macro_regime_pipeline.cpp
     statistics/test_market_regime_pipeline.cpp
-    statistics/test_regime_substrate.cpp
-    statistics/test_regime_phase1.cpp
-    statistics/test_regime_phase2.cpp
-    statistics/test_regime_phase3.cpp
-    statistics/test_regime_phase4.cpp
+    statistics/test_bsts_regime_detector.cpp
+    statistics/test_gmm.cpp
+    statistics/test_macro_data_loader.cpp
+    statistics/test_market_data_loader.cpp
+    statistics/test_msar.cpp
 )
 
 # Create test executable
