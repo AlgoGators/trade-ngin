@@ -156,7 +156,7 @@ Result<MacroPanel> MacroDataLoader::load(const std::string& start_date,
                 } else {
                     // Date32 stores days since epoch
                     int32_t days = date_arr->Value(i);
-                    // L-22: thread-safe gmtime. std::gmtime returns a pointer
+                    // Thread-safe gmtime. std::gmtime returns a pointer
                     // to a static internal buffer — concurrent loaders would
                     // corrupt each other's date strings.
                     std::time_t epoch_seconds = static_cast<std::time_t>(days) * 86400;
@@ -216,7 +216,7 @@ Result<MacroPanel> MacroDataLoader::load(const std::string& start_date,
                     if (!str_arr->IsNull(i)) {
                         std::string val = str_arr->GetString(i);
                         if (!val.empty()) {
-                            // L-23: stod silently truncates non-numeric suffixes
+                            // stod silently truncates non-numeric suffixes
                             // ("5.2%" → 5.2). Validate full string was consumed.
                             try {
                                 size_t consumed = 0;
@@ -306,15 +306,14 @@ Result<MacroPanel> MacroDataLoader::load(const std::string& start_date,
 Result<std::pair<Eigen::VectorXd, std::vector<std::string>>>
 MacroDataLoader::load_single(const std::string& date) const
 {
-    // L-24: query a 90-day window ending at `date` and forward-fill, then
-    // return the row at the requested date. The previous implementation
-    // queried (date, date) which gave back mostly-NaN rows on non-release
-    // days (most days for most macro series — GDP quarterly, NFP monthly).
-    // Live update callers (DFM/MS-DFM/Quadrant) require all-finite or
-    // at least mostly-finite inputs, so the old behavior failed live almost
-    // every day. With a 90-day backward window + forward-fill, the row at
-    // `date` carries the last released value for each series — the
-    // standard macro-pipeline practice and what live deployment needs.
+    // Query a 90-day window ending at `date` and forward-fill, then
+    // return the row at the requested date. A naive single-day query
+    // (date, date) gives back mostly-NaN rows on non-release days (most
+    // days for most macro series — GDP quarterly, NFP monthly), and live
+    // update callers (DFM/MS-DFM/Quadrant) require mostly-finite inputs.
+    // With a 90-day backward window + forward-fill, the row at `date`
+    // carries the last released value for each series — the standard
+    // macro-pipeline practice and what live deployment needs.
     auto compute_start = [](const std::string& end) -> std::string {
         // YYYY-MM-DD format. Subtract 90 days. Naive day arithmetic via
         // std::tm + mktime — same conventions as the rest of the loader.

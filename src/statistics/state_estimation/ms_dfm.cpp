@@ -351,15 +351,15 @@ void MarkovSwitchingDFM::order_regimes_by_volatility(MSDFMOutput& out)
         out.regime_signatures[perm[j]] = old_sigs[j];
     }
 
-    // L-13: permute regime_labels alongside everything else. Pre-fix, A_,
+    // Permute regime_labels alongside the other state-indexed arrays. A_,
     // Q_, P_, pi0_, filtered/smoothed probs, signatures, and decoded states
-    // were all reordered to match the calm→stress sort, but regime_labels
-    // stayed in input order — so a caller that supplied human labels (e.g.,
-    // ["calm", "transitional", "stress"]) ended up with sorted state index
-    // 0 still labeled "calm" but the underlying state j=0 might now be a
-    // different one. The pipeline doesn't read regime_labels (it indexes
-    // into smoothed_probs), so this is a diagnostic-only fix and cannot
-    // shift any belief output.
+    // are all reordered to match the calm→stress sort; without the same
+    // permutation here, a caller that supplied human labels (e.g.,
+    // ["calm", "transitional", "stress"]) would end up with sorted state
+    // index 0 still labeled "calm" but the underlying state j=0 could be
+    // a different one. The pipeline doesn't read regime_labels (it indexes
+    // into smoothed_probs), so this is a diagnostic-only concern and
+    // cannot shift any belief output.
     if (!out.regime_labels.empty()) {
         auto old_labels = out.regime_labels;
         for (int j = 0; j < J_; ++j) {

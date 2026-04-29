@@ -240,7 +240,7 @@ Result<DFMOutput> DynamicFactorModel::fit(const Eigen::MatrixXd& data,
 // filter()  — forward-only, no lookahead
 // ============================================================================
 
-// L-08: filter() is STATELESS — runs a forward Kalman pass on `data` from
+// filter() is STATELESS — runs a forward Kalman pass on `data` from
 // scratch using the fitted Lambda/A/Q/R, returns the smoothed factors.
 // It does NOT advance or modify the online x_filt_ / P_filt_ state.
 //
@@ -302,7 +302,7 @@ Result<DFMOutput> DynamicFactorModel::filter(const Eigen::MatrixXd& data) const
             if (S_n < 1e-12) continue;
             Eigen::VectorXd Kn = (P * h) / S_n;
             x = x + Kn * (Y(t, n) - h.dot(x));
-            // L-07: Joseph form P = (I-KH) P (I-KH)' + K R K' preserves PD
+            // Joseph form P = (I-KH) P (I-KH)' + K R K' preserves PD
             // under floating-point roundoff. Scalar update so K R K' = Kn Kn' * R_n.
             Eigen::MatrixXd IKH = Eigen::MatrixXd::Identity(K, K) - Kn * h.transpose();
             P = symmetrise(IKH * P * IKH.transpose() + R_diag_(n) * Kn * Kn.transpose());
@@ -371,7 +371,7 @@ Result<Eigen::VectorXd> DynamicFactorModel::update(const Eigen::VectorXd& y_t)
         if (S_n < 1e-12) continue;
         Eigen::VectorXd Kn = (P_filt_ * h) / S_n;
         x_filt_ = x_filt_ + Kn * (y_std(n) - h.dot(x_filt_));
-        // L-07 Joseph form (online update path; long-running deployments
+        // Joseph form (online update path; long-running deployments
         // have many updates so PD preservation matters most here).
         Eigen::MatrixXd IKH = Eigen::MatrixXd::Identity(K, K) - Kn * h.transpose();
         P_filt_ = symmetrise(IKH * P_filt_ * IKH.transpose()
@@ -418,7 +418,7 @@ DynamicFactorModel::kalman_filter_smoother(const Eigen::MatrixXd& Y) const
             double innovation = Y(t, n) - h.dot(x);
             Eigen::VectorXd Kn = (P * h) / S_n;
             x = x + Kn * innovation;
-            // L-07 Joseph form (Kalman filter+smoother E-step path)
+            // Joseph form (Kalman filter+smoother E-step path)
             Eigen::MatrixXd IKH = Eigen::MatrixXd::Identity(K, K) - Kn * h.transpose();
             P = symmetrise(IKH * P * IKH.transpose() + R_diag_(n) * Kn * Kn.transpose());
             log_lik += -0.5 * (std::log(2.0 * M_PI * S_n) +
@@ -468,13 +468,13 @@ void DynamicFactorModel::initialise_parameters(const Eigen::MatrixXd& Y_std)
     const int N = static_cast<int>(Y_std.cols());
     const int K = config_.num_factors;
 
-    // L-05: pairwise complete-case covariance. The previous code substituted
-    // NaN→0 then divided by (T-1) regardless of how many cells were observed.
-    // Series with many missing values had their covariance biased toward
-    // zero, distorting the Lambda init via PCA.
+    // Pairwise complete-case covariance. Substituting NaN→0 then dividing
+    // by (T-1) regardless of how many cells were observed biases the
+    // covariance of series with many missing values toward zero, distorting
+    // the Lambda init via PCA.
     //
-    // Now: for each pair (i, j), accumulate y_i*y_j only on rows where BOTH
-    // are finite, and divide by (cnt_ij - 1). Diagonal uses cnt_ii (single-
+    // For each pair (i, j), accumulate y_i*y_j only on rows where BOTH are
+    // finite, and divide by (cnt_ij - 1). Diagonal uses cnt_ii (single-
     // column completeness). This is the standard pairwise estimator.
     Eigen::MatrixXd C = Eigen::MatrixXd::Zero(N, N);
     Eigen::MatrixXi cnt = Eigen::MatrixXi::Zero(N, N);
@@ -509,7 +509,7 @@ void DynamicFactorModel::initialise_parameters(const Eigen::MatrixXd& Y_std)
         lambda_.col(k) = evecs.col(k) * scale;
     }
 
-    // L-06: PCA eigenvectors have arbitrary sign. Lock factor orientation
+    // PCA eigenvectors have arbitrary sign. Lock factor orientation
     // to economic anchors so the macro pipeline's hardcoded sign-flips
     // remain stable across re-fits.
     for (int k = 0; k < K; ++k) {
@@ -534,7 +534,7 @@ void DynamicFactorModel::initialise_parameters(const Eigen::MatrixXd& Y_std)
     R_diag_ = Eigen::VectorXd::Constant(N, 0.5);
 }
 
-// L-06: resolve factor_anchor_names against the input series_names vector.
+// Resolve factor_anchor_names against the input series_names vector.
 // Stores indices in anchor_indices_ (length K). Missing anchors → -1.
 void DynamicFactorModel::resolve_anchor_indices(const std::vector<std::string>& series_names) {
     const int K = config_.num_factors;

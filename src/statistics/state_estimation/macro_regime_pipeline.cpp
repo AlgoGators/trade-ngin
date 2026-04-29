@@ -219,7 +219,7 @@ Result<void> MacroRegimePipeline::train(
     current_regime_ = MacroRegimeL1::EXPANSION_DISINFLATION;
     dwell_counter_ = 0;
     update_count_  = 0;
-    // L-30: clear last_belief_ so first update() after retrain doesn't
+    // Clear last_belief_ so first update() after retrain doesn't
     // inherit stale most_likely / regime_age_bars from a prior training run.
     last_belief_ = MacroBelief{};
     trained_ = true;
@@ -229,7 +229,7 @@ Result<void> MacroRegimePipeline::train(
 }
 
 // ============================================================================
-// L-32: Quadrant z-score recalibration (public API)
+// Quadrant z-score recalibration (public API)
 // ============================================================================
 
 Result<void> MacroRegimePipeline::recalibrate_quadrant_stats(
@@ -263,7 +263,7 @@ Result<void> MacroRegimePipeline::recalibrate_quadrant_stats(
     growth_std_    = std::sqrt(g_var / gv.size() + kEps);
     inflation_std_ = std::sqrt(i_var / iv.size() + kEps);
 
-    std::cerr << "[L-32 recalibrate] new Quadrant stats: "
+    std::cerr << "[recalibrate_quadrant_stats] new Quadrant stats: "
               << "growth median=" << growth_median_ << " std=" << growth_std_
               << " | inflation median=" << inflation_median_
               << " std=" << inflation_std_ << "\n";
@@ -341,7 +341,7 @@ void MacroRegimePipeline::train_dfm_gaussians(const DFMOutput& dfm_output) {
             continue;
         }
 
-        // M-04: accumulate from factors [1, 2] only — factor 0 (secular
+        // Accumulate from factors [1, 2] only — factor 0 (secular
         // macro_level trend) is non-discriminative for the regime classifier.
         // Mean
         Eigen::Vector2d mu = Eigen::Vector2d::Zero();
@@ -383,7 +383,7 @@ void MacroRegimePipeline::train_dfm_gaussians(const DFMOutput& dfm_output) {
 
 Eigen::Matrix<double, kNumMacroRegimes, 1>
 MacroRegimePipeline::map_dfm(const Eigen::Vector3d& f_t) const {
-    // M-04: use factors [1, 2] only for the Gaussian classifier.
+    // Use factors [1, 2] only for the Gaussian classifier.
     // Factor 0 is non-discriminative trend; including it diluted the
     // Mahalanobis distance with secular-growth signal that doesn't separate
     // regimes. The DFM still decomposes 3 factors — they're consumed
@@ -563,19 +563,15 @@ void MacroRegimePipeline::train_msdfm_fingerprints(
     const int T_panel = panel.T;
     const int T = std::min(T_ms, T_panel);
 
-    // M-07: compute fingerprints as soft-prob-weighted aggregates instead
-    // of hard-argmax bucket means.
-    //
-    // Pre-fix: each timestep contributed to exactly one native state's
-    // fingerprint (whichever state had argmax smoothed prob), creating
-    // a train/runtime asymmetry — `map_msdfm` consumes soft probabilities
-    // at runtime, but the fingerprints themselves were trained on hard
-    // assignments. Around the mode boundaries this discontinuity flips
-    // the mapping for whole bands of similar timesteps.
-    //
-    // Post-fix: every timestep contributes its smoothed_probs(t, j) weight
-    // to native state j's fingerprint. Effective sample size matches what
-    // the runtime sees. Tiny weights (< 1e-6) are skipped for efficiency.
+    // Compute fingerprints as soft-prob-weighted aggregates instead of
+    // hard-argmax bucket means. Hard-argmax assignment creates a
+    // train/runtime asymmetry — `map_msdfm` consumes soft probabilities
+    // at runtime, so training fingerprints on hard assignments causes the
+    // mapping to flip for whole bands of similar timesteps near the mode
+    // boundaries. With soft weights, every timestep contributes its
+    // smoothed_probs(t, j) to native state j's fingerprint and the
+    // effective sample size matches what the runtime sees. Tiny weights
+    // (< 1e-6) are skipped for efficiency.
     msdfm_mapping_.native_fingerprints.resize(J);
     for (int j = 0; j < J; ++j) {
         Eigen::VectorXd weighted_fp = Eigen::VectorXd::Zero(kFingerprintDim);
@@ -596,34 +592,35 @@ void MacroRegimePipeline::train_msdfm_fingerprints(
                   << " fp=[" << weighted_fp.transpose() << "]\n";
     }
 
-    // M-01: Stage 2 = de-mean only (no cross-state /std rescaling).
+    // Stage 2 = de-mean only (no cross-state /std rescaling).
     //
-    // The previous code re-standardised each dimension across the J=3 native
-    // fingerprints. With one dominant native state (90% of sample, near zero
-    // on every dim) and two outlier states, the cross-state std was ~0.06-0.09;
-    // dividing by it amplified the dominant state's tiny ~0.005 offsets into
-    // z-scores of ~±1.4. The dominant state's standardised fingerprint then
-    // matched whichever target sat at ±1.5 (EXP_DIS), locking 90% of the
-    // sample into EXPANSION_DISINFLATION regardless of actual macro state.
+    // Re-standardising each dimension across the J=3 native fingerprints
+    // is wrong here: with one dominant native state (90% of sample, near
+    // zero on every dim) and two outlier states, the cross-state std is
+    // ~0.06-0.09; dividing by it amplifies the dominant state's tiny
+    // ~0.005 offsets into z-scores of ~±1.4. The dominant state's
+    // standardised fingerprint then matches whichever target sits at ±1.5
+    // (EXP_DIS), locking 90% of the sample into EXPANSION_DISINFLATION
+    // regardless of actual macro state.
     //
-    // The fix: drop the /std step. Native fingerprints are already in
-    // per-column z-score units (from prepare_fingerprint_data); their
-    // raw cross-state spread is the legitimate signal. Targets are rescaled
-    // to ±0.8 below to match this natural spread. (Same fix shape resolves
-    // M-02 since BSTS reuses these target_fingerprints below at line ~712.)
+    // Native fingerprints are already in per-column z-score units (from
+    // prepare_fingerprint_data); their raw cross-state spread is the
+    // legitimate signal. Targets are rescaled to ±0.8 below to match this
+    // natural spread. (Same shape resolves the BSTS variant since BSTS
+    // reuses these target_fingerprints below.)
     {
         Eigen::VectorXd ns_mean = Eigen::VectorXd::Zero(kFingerprintDim);
         for (int j = 0; j < J; ++j) ns_mean += msdfm_mapping_.native_fingerprints[j];
         ns_mean /= J;
         for (int j = 0; j < J; ++j)
             msdfm_mapping_.native_fingerprints[j] -= ns_mean;
-        std::cerr << "[B2] cross-state de-mean only (M-01: dropped /std)\n";
+        std::cerr << "[B2] cross-state de-mean only (no /std)\n";
     }
 
-    // M-01: target fingerprints rescaled from ±1.5 to ±0.8 to match the
-    // de-meaned native fingerprint spread (typically ~±0.3 per dim after
-    // per-column z-scoring + averaging across many series). The relative
-    // ordering between targets is preserved; only magnitudes shrink.
+    // Target fingerprints rescaled from ±1.5 to ±0.8 to match the de-meaned
+    // native fingerprint spread (typically ~±0.3 per dim after per-column
+    // z-scoring + averaging across many series). The relative ordering
+    // between targets is preserved; only magnitudes shrink.
     //   [growth, inflation, credit_spread, yield_curve, policy_rate]
     //   Positive credit = stress, positive yield = normal curve, positive policy = tight
     msdfm_mapping_.target_fingerprints.resize(kNumMacroRegimes);
@@ -749,8 +746,8 @@ void MacroRegimePipeline::train_bsts_fingerprints(
         bsts_mapping_.native_fingerprints[k] = fp;
     }
 
-    // M-01/M-02: de-mean only (no cross-cluster /std). Same root cause as
-    // MS-DFM lock-in. Since BSTS reuses MS-DFM's target_fingerprints below,
+    // De-mean only (no cross-cluster /std). Same root cause as the MS-DFM
+    // lock-in handled above; since BSTS reuses MS-DFM's target_fingerprints,
     // fixing the std-amplification here resolves the BSTS 0% EXP_DIS too.
     {
         Eigen::VectorXd ns_mean = Eigen::VectorXd::Zero(kFingerprintDim);
@@ -904,9 +901,9 @@ MacroRegimeL1 MacroRegimePipeline::apply_hysteresis(
     }
 
     // Minimum dwell penalty.
-    // L-28: guard against config_.min_dwell_bars == 0. Without this guard,
+    // Guard against config_.min_dwell_bars == 0. Without this guard,
     // setting min_dwell=0 in JSON would divide by zero → NaN p_smooth →
-    // garbage hysteresis. Now: zero min_dwell skips the dwell penalty
+    // garbage hysteresis. Zero min_dwell skips the dwell penalty
     // (transitions allowed immediately, modulo the asymmetric thresholds).
     if (config_.min_dwell_bars > 0 && dwell_counter_ < config_.min_dwell_bars) {
         double decay = 1.0 - static_cast<double>(dwell_counter_) / config_.min_dwell_bars;
@@ -974,7 +971,7 @@ Result<MacroBelief> MacroRegimePipeline::update(
     const Eigen::Vector4d& bsts_cluster_probs,
     bool structural_break)
 {
-    // L-29: acquire mutex BEFORE reading trained_, otherwise concurrent
+    // Acquire mutex BEFORE reading trained_, otherwise concurrent
     // train()+update() could race — update sees stale `trained_=false`
     // mid-train, OR sees `true` while train() is mid-write to internal state.
     std::lock_guard<std::mutex> lock(mutex_);
@@ -982,7 +979,6 @@ Result<MacroBelief> MacroRegimePipeline::update(
         return make_error<MacroBelief>(ErrorCode::NOT_INITIALIZED,
             "Pipeline not trained", "MacroRegimePipeline");
     }
-    // (L-29 — lock acquired above; original duplicate lock removed.)
 
     // Map each model → 6 probs
     auto p_dfm   = map_dfm(dfm_factors);
@@ -1020,7 +1016,7 @@ Result<MacroBelief> MacroRegimePipeline::update(
         fallback.confidence = 0.0;
         fallback.regime_age_bars = last_belief_.regime_age_bars + 1;
         fallback.timestamp = std::chrono::system_clock::now();
-        // M-09: uniform-belief fallback → entropy=1, top_prob=1/K.
+        // Uniform-belief fallback → entropy=1, top_prob=1/K.
         fallback.entropy = 1.0;
         fallback.top_prob = 1.0 / kNumMacroRegimes;
         last_belief_ = fallback;
@@ -1082,10 +1078,10 @@ Result<MacroBelief> MacroRegimePipeline::update(
     belief.structural_break_risk = structural_break;
     belief.timestamp = std::chrono::system_clock::now();
 
-    // M-09: belief uncertainty diagnostics. top_prob is read off the
-    // smoothed posterior of the dominant state; entropy is normalised
-    // Shannon entropy over p_smooth (0 = certain, 1 = uniform). These
-    // are pure additions — they do not feed back into any pipeline
+    // Belief uncertainty diagnostics. top_prob is read off the smoothed
+    // posterior of the dominant state; entropy is normalised Shannon
+    // entropy over p_smooth (0 = certain, 1 = uniform). These are pure
+    // diagnostic outputs — they do not feed back into any pipeline
     // computation, so existing fields and downstream behaviour are
     // unchanged.
     {

@@ -176,7 +176,7 @@ Result<MarkovSwitchingResult> MarkovSwitching::fit(const std::vector<double>& da
 
         // M-step: Update parameters
 
-        // K-01: σ collapse prevention — relative floor on state variances.
+        // σ collapse prevention — relative floor on state variances.
         // The previous absolute floor (1e-6) was ineffective on demeaned
         // daily returns (~0.01 std): a state could collapse to σ ≈ 0.0001
         // (1% of typical) and still be "above floor", giving a degenerate

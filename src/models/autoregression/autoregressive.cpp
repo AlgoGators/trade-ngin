@@ -63,7 +63,7 @@ Result<void> MarketMSAR::fit(const Eigen::VectorXd& returns,
 
     n_states_ = static_cast<int>(state_probs.cols());
 
-    // K-06: re-estimate transition_matrix_ from the smoothed posteriors
+    // Re-estimate transition_matrix_ from the smoothed posteriors
     // before AR fitting. The pre-fit transition matrix passed in is from
     // MarkovSwitching fit on RAW returns; the AR step then uses these
     // posteriors to estimate AR coeffs in regime-conditional space, but

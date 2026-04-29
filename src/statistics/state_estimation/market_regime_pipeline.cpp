@@ -274,31 +274,31 @@ void MarketRegimePipeline::train_hmm_fingerprints(
         return (hi - lo) > min_spread;
     };
 
-    // K-05: per-state liquidity. Threshold 0.05 (5% volume-ratio spread).
+    // Per-state liquidity. Threshold 0.05 (5% volume-ratio spread).
     std::vector<double> liq_means;
     bool use_liq = per_state_weighted_mean(liquidity_proxy_series, 0.05, liq_means);
 
-    // K-05+: per-state rolling 60d return. Threshold 0.02 (2% cumulative
+    // Per-state rolling 60d return. Threshold 0.02 (2% cumulative
     // 60d return spread between best/worst states — below this the
     // dim is uninformative).
     std::vector<double> ret60_means;
     bool use_ret60 = per_state_weighted_mean(ret60_series, 0.02, ret60_means);
 
-    // Dimensionality: 2D base + 1 if K-05 + 1 if K-05+
+    // Dimensionality: 2D base + 1 if liquidity used + 1 if 60d-return used
     const int D = 2 + (use_liq ? 1 : 0) + (use_ret60 ? 1 : 0);
 
-    // K-04: HMM fingerprint uses |μ| (drift MAGNITUDE), not signed μ.
+    // HMM fingerprint uses |μ| (drift MAGNITUDE), not signed μ.
     //
-    // Pre-fix: signed μ conflated trend-direction with trend-regime —
-    // a strong DOWN-trend (μ = -1.5%) had the same "trend dim" sign as
-    // STRESS_PRICE (μ = -1%, σ = 1.5%), so persistent bear markets got
-    // mislabelled as stress. The economic regime "TREND" applies to
-    // both rising and falling trends; what distinguishes TREND from
-    // STRESS is volatility, not direction.
+    // Signed μ conflates trend-direction with trend-regime — a strong
+    // DOWN-trend (μ = -1.5%) had the same "trend dim" sign as STRESS_PRICE
+    // (μ = -1%, σ = 1.5%), so persistent bear markets got mislabelled as
+    // stress. The economic regime "TREND" applies to both rising and
+    // falling trends; what distinguishes TREND from STRESS is volatility,
+    // not direction.
     //
-    // Post-fix: native fingerprint uses |μ|, target fingerprints rescaled
+    // Native fingerprint uses |μ|, target fingerprints are rescaled
     // accordingly (no negative values on the trend dim — distinguishing
-    // TREND vs STRESS is now done purely via the σ dimension and the
+    // TREND vs STRESS is done purely via the σ dimension and the
     // overall fingerprint shape).
     mapping.native_fingerprints.resize(J);
     for (int j = 0; j < J; ++j) {
@@ -318,10 +318,10 @@ void MarketRegimePipeline::train_hmm_fingerprints(
         std::cerr << "\n";
     }
 
-    // K-04 v2 + K-05: target fingerprints. 2D when liquidity unavailable
-    // (use_liq=false), 3D [|μ|, σ, liq] when available.
+    // Target fingerprints. 2D when liquidity unavailable (use_liq=false),
+    // 3D [|μ|, σ, liq] when available.
     //
-    // K-04 v2 design (2D and 3D both): σ defines stress, |μ| is secondary.
+    // Common geometry (2D and 3D): σ defines stress, |μ| is secondary.
     //   - TREND_LOWVOL: any |μ|, LOW σ
     //   - TREND_HIGHVOL: moderate |μ|, mid σ (pulled away from STRESS)
     //   - MEANREV_CHOPPY: low |μ|, mid σ
@@ -329,8 +329,8 @@ void MarketRegimePipeline::train_hmm_fingerprints(
     //   - STRESS_LIQUIDITY: any |μ|, EXTREME σ (in 2D fallback) OR
     //                       moderate σ + COLLAPSED liq (in 3D)
     //
-    // K-05 3D extension: STRESS_LIQUIDITY is now defined by LIQUIDITY
-    // COLLAPSE rather than extreme σ. This catches the Treasury-Mar-2020
+    // 3D extension: STRESS_LIQUIDITY is defined by LIQUIDITY COLLAPSE
+    // rather than extreme σ. This catches the Treasury-Mar-2020
     // dysfunction case (moderate σ, but volume thinned 60%+) and the
     // gilt-Sep-2022 case (volume collapsed in long-end gilts before yields
     // moved). STRESS_PRICE stays at high σ + normal liq (selloff with
@@ -343,7 +343,7 @@ void MarketRegimePipeline::train_hmm_fingerprints(
     //   dim 2: liq     — only present if use_liq (per-state mean volume ratio)
     //   dim 3: ret60   — only present if use_ret60 (per-state mean rolling 60d return)
     //
-    // K-04 v2 + K-05 + K-05+ design:
+    // Stress-attractor design:
     //   - σ defines acute stress (crash/panic with high σ)
     //   - ret60d defines persistent stress (slow bear with negative cumulative return)
     //   - liq defines liquidity dysfunction (collapsed volume) — but in
@@ -542,10 +542,10 @@ MarketRegimePipeline::map_garch(
     }
 
     // Adjust for liquidity collapse: shift from STRESS_PRICE to STRESS_LIQUIDITY.
-    // K-07: gate on isfinite(). NaN means volume data unavailable for this
-    // sleeve/bar (per L-26 contract); silently treating it as "normal" (1.0)
-    // would mute STRESS_LIQUIDITY detection. Skip the adjustment instead —
-    // map_garch keeps its other (non-volume) signals.
+    // Gate on isfinite(). NaN means volume data unavailable for this
+    // sleeve/bar (per the missing-data contract); silently treating it as
+    // "normal" (1.0) would mute STRESS_LIQUIDITY detection. Skip the
+    // adjustment instead — map_garch keeps its other (non-volume) signals.
     if (std::isfinite(market.liquidity_proxy) && market.liquidity_proxy < 0.3) {
         double shift = 0.10 * (1.0 - market.liquidity_proxy / 0.3);
         result(static_cast<int>(MarketRegimeL1::STRESS_LIQUIDITY)) += shift;
@@ -595,20 +595,20 @@ void MarketRegimePipeline::train_gmm_fingerprints(
                   << " n=" << indices.size() << "\n";
     }
 
-    // K-03: target fingerprints retuned to match volume_ratio semantics
-    // (col 3 was previously labelled "vol_shock" but the runner computes
-    // (vol_t - avg_20) / avg_20 = volume RATIO, not vol shock).
+    // Target fingerprints tuned to volume_ratio semantics.
+    // Col 3 is the runner-computed (vol_t - avg_20) / avg_20 = volume
+    // RATIO, not a vol shock.
     //
     // 5D [r, σ̂, dd_speed, volume_ratio, corr_spike] per ontology state:
     //   volume_ratio: positive = volume above average (typical), zero = average,
     //                 negative = volume collapse (stress signal).
     //
-    // Compared to the old vol_shock targets:
-    //   TREND_LOWVOL: was -1.0 (low vol_shock), now 0.0 (normal volume)
-    //   TREND_HIGHVOL: was 0.0, now slightly positive (heavier participation)
-    //   MEANREV_CHOPPY: was -0.5 (low vol_shock), now 0.0 (normal volume)
-    //   STRESS_PRICE: was +1.0 (high vol_shock), now 0.0 (volume can stay normal in selloffs)
-    //   STRESS_LIQUIDITY: was +2.0 (extreme vol_shock), now -1.5 (volume COLLAPSES)
+    // Geometry:
+    //   TREND_LOWVOL: 0.0 (normal volume)
+    //   TREND_HIGHVOL: slightly positive (heavier participation)
+    //   MEANREV_CHOPPY: 0.0 (normal volume)
+    //   STRESS_PRICE: 0.0 (volume can stay normal in selloffs)
+    //   STRESS_LIQUIDITY: -1.5 (volume COLLAPSES)
     mapping.target_fingerprints.resize(kNumMarketRegimes);
     Eigen::VectorXd t(D);
     //                     r     σ̂     dd_spd  vol_ratio  corr_spk
@@ -686,11 +686,11 @@ MarketRegimePipeline::smooth(
     int s = static_cast<int>(sleeve);
     auto& state = sleeve_states_[s];
 
-    // L-33: warmup — first kWarmupSteps updates use λ=1 (pure raw) so the
+    // Warmup — first kWarmupSteps updates use λ=1 (pure raw) so the
     // pipeline finds its natural starting regime instead of being anchored
-    // to the uniform prev_smoothed init. Mirrors macro pipeline; subsumes
-    // K-09 (the runner's last-5-bars update loop was contaminated because
-    // every iteration started smoothed = uniform).
+    // to the uniform prev_smoothed init. Mirrors the macro pipeline; also
+    // makes the runner's last-5-bars update loop robust (otherwise every
+    // iteration would start from smoothed = uniform).
     constexpr int kWarmupSteps = 10;
     double lam = (state.update_count < kWarmupSteps) ? 1.0 : config_.lambda;
 
@@ -708,7 +708,7 @@ MarketRegimePipeline::smooth(
 
 // ============================================================================
 // Confidence (top1 - top2 margin) + Stability (entropy-based concentration,
-// matches PDF A8's entropy formula H = -Σ π log π)
+// using normalised Shannon entropy H = -Σ π log π)
 // ============================================================================
 
 double MarketRegimePipeline::compute_confidence(
@@ -767,8 +767,8 @@ Result<void> MarketRegimePipeline::train(
               << sleeve_name(sleeve) << "' T=" << T << "\n";
 
     // A1: HMM fingerprint mapping — uses emission parameters (μ_i, σ_i)
-    // K-05 (3D): adds liquidity dim if liquidity_proxy_series + smoothed_probs provided
-    // K-05+ (4D): adds rolling 60d return dim if ret60_series provided
+    // 3D variant: adds liquidity dim if liquidity_proxy_series + smoothed_probs provided
+    // 4D variant: adds rolling 60d return dim if ret60_series provided
     train_hmm_fingerprints(sleeve, hmm_means, hmm_covs,
                            liquidity_proxy_series, hmm_smoothed_probs,
                            ret60_series);
@@ -777,10 +777,10 @@ Result<void> MarketRegimePipeline::train(
     train_msar_fingerprints(sleeve, msar_state_means, msar_state_vars, msar_ar_coeffs);
 
     // A3: GARCH feature mapping — rule-based on vol percentiles/flags
-    // L-34: error if vol series size doesn't match T (was silent zero-fill,
-    // which collapsed vol_percentile and biased GARCH mapping toward
-    // TREND_LOWVOL whenever GARCH was fit on fewer bars than the regime
-    // training window).
+    // Error if vol series size doesn't match T. Silent zero-fill would
+    // collapse vol_percentile and bias GARCH mapping toward TREND_LOWVOL
+    // whenever GARCH was fit on fewer bars than the regime training
+    // window.
     if (static_cast<int>(garch_vol_series.size()) != T) {
         return make_error<void>(ErrorCode::INVALID_ARGUMENT,
             "GARCH vol series size (" + std::to_string(garch_vol_series.size())
@@ -796,12 +796,12 @@ Result<void> MarketRegimePipeline::train(
     // A4: GMM fingerprint mapping — on [r_t, σ̂_t, dd_speed, vol_shock, corr_spike]
     train_gmm_fingerprints(sleeve, gmm_result, gmm_feature_matrix);
 
-    // Reset runtime state (only EWMA recurrence state per PDF A7)
+    // Reset runtime state (only the EWMA recurrence state)
     sleeve_states_[s].prev_smoothed.setConstant(1.0 / kNumMarketRegimes);
-    // L-30: clear last_belief so first update() after retrain doesn't
+    // Clear last_belief so first update() after retrain doesn't
     // inherit stale most_likely / regime_age_bars from a prior training run.
     sleeve_states_[s].last_belief = MarketBelief{};
-    // L-33: reset warmup counter — first 10 post-retrain updates use λ=1.
+    // Reset warmup counter — first 10 post-retrain updates use λ=1.
     sleeve_states_[s].update_count = 0;
     sleeve_states_[s].trained = true;
 
@@ -822,7 +822,7 @@ Result<MarketBelief> MarketRegimePipeline::update(
     const MarketFeatures& market_features,
     const Eigen::VectorXd& gmm_cluster_probs)
 {
-    // L-29: acquire mutex BEFORE reading sleeve_states_[s].trained, otherwise
+    // Acquire mutex BEFORE reading sleeve_states_[s].trained, otherwise
     // concurrent train()+update() can race — update sees stale state mid-train.
     std::lock_guard<std::mutex> lock(mutex_);
     int s = static_cast<int>(sleeve);
@@ -953,9 +953,9 @@ const MarketBelief& MarketRegimePipeline::last_belief(SleeveId sleeve) const {
 }
 
 // ============================================================================
-// K-17 — live-state serialization hooks. Pure additions; the per-bar
-// update path never reads or writes through these methods, so they cannot
-// alter pipeline output for any caller that does not invoke them.
+// Live-state serialization hooks. The per-bar update path never reads or
+// writes through these methods, so they cannot alter pipeline output for
+// any caller that does not invoke them.
 // ============================================================================
 
 Result<SleeveLiveState> MarketRegimePipeline::get_live_state(SleeveId sleeve) const {

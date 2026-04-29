@@ -95,7 +95,7 @@ BSTSRegimeDetector::BSTSRegimeDetector(BSTSConfig config)
 
 const char* BSTSRegimeDetector::regime_name(int label) {
     if (label >= 0 && label < 4) return kBSTSRegimeNames[label];
-    // M-06: -1 is the documented sentinel for clusters that scored ≤ 0
+    // -1 is the documented sentinel for clusters that scored ≤ 0
     // against every signature (no economically meaningful match).
     if (label == -1) return "Unclassified";
     return "UNKNOWN";
@@ -106,7 +106,7 @@ const char* BSTSRegimeDetector::regime_name(int label) {
 // ============================================================================
 
 // FORWARD-FILL ONLY: legitimate carry-forward of last released value.
-// backward_fill removed 2026-04-28 (lookahead bias — see L-19 in
+// backward_fill removed 2026-04-28 (lookahead bias — see
 // docs/REGIME_PIPELINE_LIBRARY_AUDIT.md). Past timestamps must NEVER be
 // patched with future observations: it contaminates training labels and
 // silently inflates in-sample regime accuracy vs. live performance.
@@ -395,14 +395,14 @@ Eigen::MatrixXd BSTSRegimeDetector::build_feature_matrix(
 
     Eigen::VectorXd growth_v(T), inflation_v(T), gi_quad(T), ros(T);
 
-    // M-03: pre-compute series-wide mean/std for each growth_score component
-    // so the variable-scale arithmetic bug is fixed. Cap-util level lives at
-    // ~78 while IP and GDP slopes live at ~0.01; averaging without z-scoring
-    // means cap-util dominates ~99% of the score.
+    // Pre-compute series-wide mean/std for each growth_score component so
+    // components on different scales don't dominate. Cap-util level lives
+    // at ~78 while IP and GDP slopes live at ~0.01; averaging without
+    // z-scoring would let cap-util dominate ~99% of the score.
     //
-    // M-05: use SLOPE for CPI/PCE (rate of change is the inflation signal,
-    // not the level — 2023-2024 inflation falling from 9% to 3% looked
-    // STAGFLATIONARY to the level-based score). Breakeven stays as level
+    // Use SLOPE for CPI/PCE (rate of change is the inflation signal, not
+    // the level — 2023-2024 inflation falling from 9% to 3% looked
+    // STAGFLATIONARY to a level-based score). Breakeven stays as level
     // (forward-looking expectation).
     auto series_stats = [&](auto extractor) -> std::pair<double, double> {
         double sum = 0.0, sum_sq = 0.0;
@@ -420,18 +420,18 @@ Eigen::MatrixXd BSTSRegimeDetector::build_feature_matrix(
     auto [ip_m,  ip_s ] = series_stats([&](int t){ return mslope("industrial_production", t); });
     auto [cu_m,  cu_s ] = series_stats([&](int t){ return mlevel("manufacturing_capacity_util", t); });
     auto [gd_m,  gd_s ] = series_stats([&](int t){ return mslope("gdp", t); });
-    auto [cpi_m, cpi_s] = series_stats([&](int t){ return mslope("cpi", t); });          // M-05: slope
-    auto [pce_m, pce_s] = series_stats([&](int t){ return mslope("core_pce", t); });     // M-05: slope
-    auto [bk_m,  bk_s ] = series_stats([&](int t){ return mlevel("breakeven_5y", t); }); // M-05: level (forward-looking)
+    auto [cpi_m, cpi_s] = series_stats([&](int t){ return mslope("cpi", t); });          // slope
+    auto [pce_m, pce_s] = series_stats([&](int t){ return mslope("core_pce", t); });     // slope
+    auto [bk_m,  bk_s ] = series_stats([&](int t){ return mlevel("breakeven_5y", t); }); // level (forward-looking)
 
     for (int t = 0; t < T; ++t) {
-        // M-03: z-score each component before averaging.
+        // Z-score each component before averaging.
         const double gs =
             ((mslope("industrial_production", t) - ip_m) / ip_s
            + (mlevel("manufacturing_capacity_util", t) - cu_m) / cu_s
            + (mslope("gdp", t) - gd_m) / gd_s) / 3.0;
 
-        // M-05: CPI/PCE slope (YoY-equivalent change); breakeven still level.
+        // CPI/PCE slope (YoY-equivalent change); breakeven still level.
         // Each component z-scored.
         const double is =
             ((mslope("cpi", t)         - cpi_m) / cpi_s
@@ -527,7 +527,7 @@ BSTSRegimeDetector::PCAResult BSTSRegimeDetector::run_pca(const Eigen::MatrixXd&
     for (int i = 0; i < (int)evals.size(); ++i) vals(i) = std::max(0.0, evals(idx[i]));
     for (int k = 0; k < n_comp; ++k) vecs.col(k) = evecs.col(idx[k]);
 
-    // L-21: PCA eigenvectors have arbitrary sign. Apply deterministic sign
+    // PCA eigenvectors have arbitrary sign. Apply deterministic sign
     // convention — flip column if its largest-magnitude entry is negative.
     // Stabilizes cluster centers across re-runs (cluster posteriors are
     // sign-invariant, but the diagnostic cluster centers we print are not).
@@ -765,14 +765,12 @@ std::vector<int> BSTSRegimeDetector::label_regimes(
     std::sort(cells.begin(), cells.end(),
               [](const auto& a, const auto& b){ return std::get<0>(a) > std::get<0>(b); });
 
-    // M-06: greedy one-to-one assignment, but reject score ≤ 0.
-    //
-    // Pre-fix: this loop assigned even on negative scores, producing
-    // economically nonsensical labels (e.g., cluster 2 → "R3 Reflation"
-    // with score -1.886 = anti-reflation). The pipeline's macro regime
-    // output uses cluster posteriors (not these labels), so the fix has
-    // no impact on regime probabilities — but the diagnostic dashboard
-    // reading kBSTSRegimeNames[mapping[k]] becomes honest.
+    // Greedy one-to-one assignment, but reject score ≤ 0. Assigning even
+    // on negative scores produces economically nonsensical labels (e.g.,
+    // cluster 2 → "R3 Reflation" with score -1.886 = anti-reflation). The
+    // pipeline's macro regime output uses cluster posteriors (not these
+    // labels), so this affects only the diagnostic dashboard label —
+    // making kBSTSRegimeNames[mapping[k]] honest rather than misleading.
     std::vector<int> mapping(K, -1);
     std::vector<bool> used_raw(K, false), used_lbl(K, false);
     for (auto& [score, raw, lbl] : cells) {

@@ -110,7 +110,7 @@ Result<void> HMM::fit(const Eigen::MatrixXd& observations) {
         // Update initial probabilities
         initial_probs_ = gamma.row(0).transpose();
 
-        // L-01: guard transition matrix update against zero row_sum.
+        // Guard transition matrix update against zero row_sum.
         // Without the guard, a state that collected zero posterior in this
         // iteration produces NaN/Inf in transition_matrix_, propagating
         // through all subsequent iterations.
@@ -126,9 +126,10 @@ Result<void> HMM::fit(const Eigen::MatrixXd& observations) {
             }
         }
 
-        // L-02: relative covariance ridge — absolute 1e-6 was ineffective for
+        // Relative covariance ridge — absolute 1e-6 was ineffective for
         // demeaned daily returns. Compute a per-iteration mean diagonal scale
-        // and use 1% of it as the floor (same shape as K-01 in MarkovSwitching).
+        // and use 1% of it as the floor (same shape as MarkovSwitching's
+        // σ-collapse floor).
         double mean_diag_scale = 0.0;
         int diag_count = 0;
         for (int k = 0; k < config_.n_states; ++k) {
@@ -151,7 +152,7 @@ Result<void> HMM::fit(const Eigen::MatrixXd& observations) {
         // Update emission parameters (Gaussian means and covariances)
         for (int k = 0; k < config_.n_states; ++k) {
             double gamma_sum = gamma.col(k).sum();
-            // L-01: skip if state has zero posterior (avoid NaN propagation)
+            // Skip if state has zero posterior (avoid NaN propagation)
             if (gamma_sum < 1e-10) {
                 WARN("[HMM::fit] state " << k << " has zero gamma at iter " << iter
                      << " — keeping prior emission params");
@@ -179,7 +180,7 @@ Result<void> HMM::fit(const Eigen::MatrixXd& observations) {
                 WARN("[HMM::fit] near-singular covariance for state " << k << " at iter " << iter);
             }
 
-            // L-02: relative ridge instead of fixed 1e-6
+            // Relative ridge instead of fixed 1e-6
             covariances_[k] += Eigen::MatrixXd::Identity(D, D) * cov_ridge;
         }
     }
@@ -355,7 +356,7 @@ double HMM::log_emission_probability(const Eigen::VectorXd& obs, int state) cons
         Eigen::LDLT<Eigen::MatrixXd> ldlt(covariances_[state]);
         Eigen::VectorXd solved = ldlt.solve(diff);
         double mahal_sq = diff.dot(solved);
-        // L-03: floor LDLT D-diagonal before log to avoid log(0) = -inf
+        // Floor LDLT D-diagonal before log to avoid log(0) = -inf
         // propagation when covariance has near-zero eigenvalues.
         double log_det = ldlt.vectorD().array().abs()
                              .max(1e-300).log().sum();

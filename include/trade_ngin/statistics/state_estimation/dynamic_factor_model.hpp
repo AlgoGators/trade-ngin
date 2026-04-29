@@ -40,7 +40,7 @@ struct DFMConfig : public ConfigBase {
     // Must be length == num_factors or empty (auto-labels f0, f1, ...).
     std::vector<std::string> factor_labels = {"macro_level", "real_activity", "commodity_inflation"};
 
-    // Factor sign anchors (L-06 fix): PCA eigenvectors have arbitrary sign.
+    // Factor sign anchors: PCA eigenvectors have arbitrary sign.
     // Without anchoring, signs flip across re-fits, silently inverting
     // the macro pipeline's hardcoded growth_factor_sign / inflation_factor_sign.
     //
@@ -189,7 +189,7 @@ private:
     KalmanResult kalman_filter_smoother(const Eigen::MatrixXd& Y) const;
     void         initialise_parameters(const Eigen::MatrixXd& Y_std);
 
-    // L-06: resolve factor_anchor_names against series_names → indices.
+    // Resolve factor_anchor_names against series_names → indices.
     // Stored as member; consumed by initialise_parameters to lock factor signs.
     void         resolve_anchor_indices(const std::vector<std::string>& series_names);
 
@@ -218,7 +218,7 @@ private:
     Eigen::VectorXd x_filt_;
     Eigen::MatrixXd P_filt_;
 
-    // L-06: resolved anchor column indices (index = factor k, value = column
+    // Resolved anchor column indices (index = factor k, value = column
     // index in input data, or -1 if anchor column not found).
     std::vector<int> anchor_indices_;
 

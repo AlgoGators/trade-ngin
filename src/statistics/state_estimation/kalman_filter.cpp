@@ -99,11 +99,11 @@ Result<Eigen::VectorXd> KalmanFilter::update(const Eigen::VectorXd& observation)
     // Innovation covariance: S = H * P_k|k-1 * H^T + R
     Eigen::MatrixXd S = H_ * P_ * H_.transpose() + R_;
 
-    // L-12: cheap condition number via LLT factorization diagonal min/max.
-    // Pre-fix used JacobiSVD per update, which is O(n³) and runs every call.
-    // For an LLT factor L, cond(S) ≈ (max(L_diag) / min(L_diag))² so we get
-    // an order-of-magnitude check at near-zero cost; the LLT is computed
-    // anyway for the Kalman gain solve below.
+    // Cheap condition number via LLT factorization diagonal min/max.
+    // JacobiSVD is O(n³) and would run every update; for an LLT factor L,
+    // cond(S) ≈ (max(L_diag) / min(L_diag))² so we get an order-of-magnitude
+    // check at near-zero cost — the LLT is computed anyway for the Kalman
+    // gain solve below.
     {
         Eigen::LLT<Eigen::MatrixXd> llt_check(S);
         if (llt_check.info() == Eigen::Success) {
@@ -132,11 +132,11 @@ Result<Eigen::VectorXd> KalmanFilter::update(const Eigen::VectorXd& observation)
     // Update state: x_k|k = x_k|k-1 + K * y
     x_ = x_ + K * y;
 
-    // L-07: Joseph form covariance update preserves symmetry and PD even
-    // under floating-point roundoff. The simple form `(I - K*H) * P` is
-    // mathematically equivalent but accumulated rounding can drift P out
-    // of symmetric / PD over many updates, breaking subsequent Cholesky
-    // decompositions. Joseph form: P = (I-KH) P (I-KH)' + K R K'.
+    // Joseph form covariance update preserves symmetry and PD under
+    // floating-point roundoff. The simple (I-K*H)*P form is mathematically
+    // equivalent but accumulated rounding can drift P out of PD over many
+    // updates, breaking subsequent Cholesky decompositions.
+    // Joseph form: P = (I-KH) P (I-KH)' + K R K'.
     Eigen::MatrixXd I = Eigen::MatrixXd::Identity(config_.state_dim, config_.state_dim);
     Eigen::MatrixXd IKH = I - K * H_;
     P_ = IKH * P_ * IKH.transpose() + K * R_ * K.transpose();

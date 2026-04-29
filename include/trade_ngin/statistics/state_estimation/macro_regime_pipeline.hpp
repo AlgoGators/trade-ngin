@@ -29,7 +29,7 @@ enum class MacroRegimeL1 : int {
     EXPANSION_INFLATIONARY  = 1,
     SLOWDOWN_DISINFLATION   = 2,
     SLOWDOWN_INFLATIONARY   = 3,
-    // M-08: relabelled from RECESSION_* to INDUSTRIAL_WEAKNESS_* (2026-04-29).
+    // Relabelled from RECESSION_* to INDUSTRIAL_WEAKNESS_* (2026-04-29).
     // The DFM is services-blind (factor 1 captures industrial slack only —
     // cap-util, IP, manufacturing). Calling this "RECESSION" overstated what
     // the model actually identifies. Re-instate RECESSION_* once ISM-services
@@ -59,7 +59,7 @@ struct MacroBelief {
     // Overlay: structural break risk (populated from BSTS structural_break input)
     bool structural_break_risk = false;
 
-    // L-31: policy_restrictive, credit_tightening, inflation_sticky removed
+    // policy_restrictive, credit_tightening, inflation_sticky removed
     // 2026-04-28. The spec (regime_aware_portfolio_engine.md) defines these
     // as outputs of dedicated overlay detectors that have not yet been built.
     // Leaving them silently `false` was worse than not having them — downstream
@@ -73,13 +73,12 @@ struct MacroBelief {
     std::chrono::system_clock::time_point timestamp;
     int regime_age_bars = 0;
 
-    // M-09: belief uncertainty diagnostics. `entropy` is the normalised
+    // Belief uncertainty diagnostics. `entropy` is the normalised
     // Shannon entropy over `macro_probs` (0 = certain, 1 = uniform); useful
     // for gating downstream decisions when the macro call is ambiguous.
     // `top_prob` mirrors the most-likely state's posterior, which makes it
     // cheap to threshold ("don't act unless top_prob > 0.5") without
-    // re-walking the probs map. Existing fields (macro_probs, confidence,
-    // most_likely, ...) are unchanged — these are pure additions.
+    // re-walking the probs map.
     double entropy = 0.0;
     double top_prob = 0.0;
 };
@@ -206,7 +205,7 @@ struct MacroRegimePipelineConfig : public ConfigBase {
 // ============================================================================
 
 // B1: One Gaussian per regime for DFM soft assignment.
-// M-04: 2D over factors [1, 2] = (real_activity, commodity_inflation).
+// 2D over factors [1, 2] = (real_activity, commodity_inflation).
 // Factor 0 (macro_level) is non-discriminative trend (loads ~0.85 on
 // secular-growth series); excluding it from the Gaussian sharpens the
 // soft-classification probabilities. DFM still decomposes K=3 factors
@@ -289,14 +288,13 @@ public:
     }
     const FingerprintMapping& msdfm_mapping() const { return msdfm_mapping_; }
 
-    // L-32: refresh the Quadrant model's z-score basis (growth_median_,
+    // Refresh the Quadrant model's z-score basis (growth_median_,
     // growth_std_, inflation_median_, inflation_std_) from a fresh set of
     // composite scores without re-running full train(). Caller responsibility
     // to call periodically as live data drifts away from the training window.
-    //
-    // Pre-fix: stats were baked at train() time and never updated. Live
-    // operation drifted away from the training distribution over months/
-    // quarters, miscalibrating Quadrant's tanh-blended weights.
+    // Without periodic refresh, stats baked at train() time miscalibrate
+    // Quadrant's tanh-blended weights as live distribution drifts over
+    // months/quarters.
     Result<void> recalibrate_quadrant_stats(
         const Eigen::VectorXd& growth_scores,
         const Eigen::VectorXd& inflation_scores);

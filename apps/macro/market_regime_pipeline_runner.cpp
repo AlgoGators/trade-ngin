@@ -17,7 +17,7 @@
 #include "trade_ngin/core/types.hpp"
 #include "trade_ngin/core/config_loader.hpp"
 
-// MarketMSAR for proper AR(1) estimation (fix #2)
+// MarketMSAR for proper AR(1) estimation
 #include "../../src/models/autoregression/msar.hpp"
 // Note: msar.hpp includes markov_switching.hpp which is already included above
 
@@ -45,9 +45,9 @@ using namespace trade_ngin::statistics;
 // ============================================================================
 
 static void print_belief(const MarketBelief& b) {
-    // K-11: stability is dwell-progress (0=just entered, 1=fully settled).
-    // It was being computed in the pipeline but never displayed; printing
-    // it alongside confidence makes "noisy regime flicker" diagnosable.
+    // Stability is dwell-progress (0=just entered, 1=fully settled).
+    // It is computed in the pipeline; printing it alongside confidence
+    // makes "noisy regime flicker" diagnosable.
     std::cout << "\n  Sleeve: " << sleeve_name(b.sleeve_id)
               << "  |  Regime: " << market_regime_name(b.most_likely)
               << "  |  Confidence: " << std::fixed << std::setprecision(3) << b.confidence
@@ -102,11 +102,11 @@ static Eigen::MatrixXd compute_feature_matrix(
             features(t, 1) = std::sqrt(std::max(0.0, v)) * std::sqrt(252.0);
 
             // col 2: liquidity_proxy (volume ratio)
-            // K-07/L-26: emit NaN when volumes are unavailable instead of
-            // silently defaulting to 1.0 (which would imply "normal liquidity"
-            // and silently mute STRESS_LIQUIDITY detection during data
-            // outages or for sleeves without volume data). Downstream
-            // map_garch checks isfinite() and skips the adjustment if NaN.
+            // Emit NaN when volumes are unavailable instead of silently
+            // defaulting to 1.0 (which would imply "normal liquidity" and
+            // mute STRESS_LIQUIDITY detection during data outages or for
+            // sleeves without volume data). Downstream map_garch checks
+            // isfinite() and skips the adjustment if NaN.
             if (!volumes.empty() && t < (int)volumes.size()) {
                 double avg = 0;
                 for (int i = t-window; i < t; ++i)
@@ -156,14 +156,10 @@ static std::vector<double> build_garch_vol(
 
 // ============================================================================
 // Build GMM 5D features: [r_t, σ̂_t, dd_speed, volume_ratio, corr_spike]
-// K-03 fix: column 3 was labelled "vol_shock" but the code computed
-// (vol[t]-avg)/avg which is a normalized volume RATIO, not a vol shock
-// (which should be derivative of σ̂). The target fingerprints in
-// market_regime_pipeline.cpp:491-495 were tuned for vol_shock semantics
-// (positive = high vol surge in stress, low elsewhere) but the actual
-// feature was volume_ratio (negative = volume below average = stress).
-// We fix the semantics to match what the code actually computes:
-// volume_ratio. Targets are retuned in market_regime_pipeline.cpp.
+// Column 3 is normalised volume RATIO (vol[t]-avg)/avg, NOT a vol shock
+// (which would be a derivative of σ̂). Negative volume_ratio = volume
+// below average = stress signal. Target fingerprints in
+// market_regime_pipeline.cpp are tuned for this volume_ratio semantics.
 // ============================================================================
 
 static Eigen::MatrixXd build_gmm_features(
@@ -183,7 +179,7 @@ static Eigen::MatrixXd build_gmm_features(
         double dd = peak - cum;
         gf(t, 2) = dd - prev_dd;
         prev_dd = dd;
-        // K-03: col 3 is volume_ratio = (volume_t - avg_20) / avg_20
+        // col 3 is volume_ratio = (volume_t - avg_20) / avg_20
         if (t >= 20 && !volumes.empty() && t < (int)volumes.size()) {
             double avg = 0;
             for (int i = t-20; i < t; ++i) avg += (i < (int)volumes.size()) ? volumes[i] : 0;
@@ -195,10 +191,8 @@ static Eigen::MatrixXd build_gmm_features(
     return gf;
 }
 
-// (old build_hmm_filtered_probs removed — replaced by build_filtered_probs above)
-
 // ============================================================================
-// Compute MarketFeatures for timestep t (fix #4 — all fields populated)
+// Compute MarketFeatures for timestep t (all fields populated)
 // ============================================================================
 
 static MarketFeatures compute_market_features(
@@ -213,9 +207,9 @@ static MarketFeatures compute_market_features(
     mf.liquidity_proxy = features(t, 2);
     mf.correlation_spike = features(t, 3);
 
-    // K-14: drawdown / drawdown_speed precomputed in O(T) by caller; lookup
-    // here is O(1). Pre-fix recomputed running peak per bar inside an O(t²)
-    // nested loop, making the full update loop O(T³) on long histories.
+    // Drawdown / drawdown_speed precomputed in O(T) by caller; lookup here
+    // is O(1). Recomputing running peak per bar inside a nested loop would
+    // make the full update loop O(T³) on long histories.
     mf.drawdown = dd_arr[t];
     mf.drawdown_speed = dd_speed_arr[t];
 
@@ -231,7 +225,7 @@ static MarketFeatures compute_market_features(
 }
 
 // ============================================================================
-// Compute rolling cross-asset correlation between symbols (fix #3)
+// Compute rolling cross-asset correlation between symbols
 // Returns a T-length vector of average pairwise correlation z-scores
 // ============================================================================
 
@@ -267,10 +261,10 @@ static std::vector<double> compute_corr_spike(
         rolling_corr[t] = (n_pairs > 0) ? avg_corr / n_pairs : 0.0;
     }
 
-    // K-16: z-score window adapts to T. For production runs (T > 504) this
-    // collapses to the original 252-bar window — bit-identical. Short
-    // backtests (T < 504) get a usable spike signal earlier instead of
-    // returning all zeros for the first year.
+    // Z-score window adapts to T. For production runs (T > 504) this
+    // collapses to a 252-bar window. Short backtests (T < 504) still get
+    // a usable spike signal earlier instead of returning all zeros for
+    // the first year.
     const int z_win = std::min(252, T / 2);
     if (z_win > 0) {
         for (int t = z_win; t < T; ++t) {
@@ -310,7 +304,7 @@ static Eigen::MatrixXd build_filtered_probs(
     for (int t = 0; t < T; ++t) {
         Eigen::VectorXd pred = transition_matrix.transpose() * alpha;
         for (int j = 0; j < K; ++j) {
-            // PDF A2: emission mean includes AR(lag) term for MSAR
+            // MSAR emission mean includes AR(lag) term
             double mu_t = state_means(j);
             if (ar_coeffs) {
                 for (int lag = 0; lag < L && t - lag - 1 >= 0; ++lag)
@@ -337,7 +331,7 @@ static void process_sleeve(
     SleeveId sleeve_id,
     const std::vector<double>& returns,
     const std::vector<double>& volumes,
-    const std::vector<double>& corr_spike,  // fix #3: pre-computed correlation spike
+    const std::vector<double>& corr_spike,  // pre-computed correlation spike
     const std::vector<std::string>& dates,  // length = returns.size()+1; date[t+1] is when return t was realized
     MarketRegimePipeline& pipeline,
     std::ofstream* timeline_csv)
@@ -348,13 +342,13 @@ static void process_sleeve(
 
     Eigen::MatrixXd features = compute_feature_matrix(returns, volumes);
 
-    // Fix #3: Inject cross-asset correlation spike into features column 3
+    // Inject cross-asset correlation spike into features column 3
     for (int t = 0; t < T && t < (int)corr_spike.size(); ++t)
         features(t, 3) = corr_spike[t];
 
     std::vector<double> rvec(returns.begin(), returns.end());
 
-    // ── A1: Fit 3-state MarkovSwitching as HMM (fix #1) ────────────────
+    // ── A1: Fit 3-state MarkovSwitching as HMM ─────────────────────────
     // Using MarkovSwitching instead of standalone HMM because its Hamilton
     // filter is numerically stable on financial returns (no NaN emissions).
     // MarkovSwitching IS an HMM for scalar observations — same math.
@@ -401,7 +395,7 @@ static void process_sleeve(
     if (ms_fit.is_error()) { std::cerr << "  MS fit failed\n"; return; }
     const auto& ms_result = ms_fit.value();
 
-    // Use MarketMSAR for joint AR estimation (fix #2)
+    // Use MarketMSAR for joint AR estimation
     int J_ms = (int)ms_result.state_means.size();
     Eigen::VectorXd msar_means(J_ms), msar_vars(J_ms);
     Eigen::MatrixXd msar_ar = Eigen::MatrixXd::Zero(J_ms, 1);
@@ -439,13 +433,13 @@ static void process_sleeve(
         std::cerr << "  MSAR " << j << ": μ=" << msar_means(j) << " σ=" << std::sqrt(msar_vars(j))
                   << " φ=" << msar_ar(j, 0) << "\n";
 
-    // True MSAR filtered probs: PDF A2 emission N(μ_j + φ_j · r_{t-1}, σ_j²)
+    // True MSAR filtered probs: emission N(μ_j + φ_j · r_{t-1}, σ_j²).
     // Uses MarketMSAR intercepts/variances/AR-coeffs (not plain-MS state means).
-    // K-06: use the transition matrix from MarketMSAR (consistent with the
+    // Use the transition matrix from MarketMSAR (consistent with the
     // smoothed posteriors used for AR fitting), NOT the pre-AR ms_result
-    // matrix. Pre-fix: intercepts/vars/AR came from MarketMSAR but the
-    // transition came from the raw-return MarkovSwitching, creating an
-    // internal inconsistency in the forward pass dynamics.
+    // matrix. Otherwise intercepts/vars/AR come from MarketMSAR but the
+    // transition comes from the raw-return MarkovSwitching, creating an
+    // internal inconsistency in the forward-pass dynamics.
     const Eigen::MatrixXd& msar_transition = msar_fit.is_ok()
         ? msar_model.get_transition_matrix()
         : ms_result.transition_matrix;  // fallback: post-hoc AR path uses MS matrix
@@ -453,7 +447,7 @@ static void process_sleeve(
         returns, msar_means, msar_vars,
         msar_transition, J_ms,
         &msar_ar);
-    std::cerr << "  MSAR forward pass complete (AR(1) emission, PDF-exact)\n";
+    std::cerr << "  MSAR forward pass complete (AR(1) emission)\n";
 
     // ── A3: Fit GARCH + EGARCH — build actual σ_t series ─────────────
     auto garch = std::make_shared<GARCH>(GARCHConfig{});
@@ -463,7 +457,7 @@ static void process_sleeve(
     std::cerr << "  GARCH σ_t: [" << *std::min_element(garch_vol.begin(), garch_vol.end())
               << ", " << *std::max_element(garch_vol.begin(), garch_vol.end()) << "]\n";
 
-    // Fit EGARCH for asymmetry/leverage detection (PDF A3: "asymmetry flags")
+    // Fit EGARCH for asymmetry/leverage detection (asymmetry flags)
     auto egarch = std::make_shared<EGARCH>(EGARCHConfig{});
     bool egarch_ok = false;
     double egarch_gamma = 0.0;
@@ -490,12 +484,12 @@ static void process_sleeve(
         gmm_model.fit(gmm_features, pipeline.config().gmm_n_clusters));
 
     // ── Train pipeline ─────────────────────────────────────────────────
-    // K-05: liquidity_proxy column (features col 2 — volume ratio, NaN
-    // where unavailable per L-26) + HMM smoothed posteriors → optional
-    // 3rd dim of HMM fingerprint.
-    // K-05+: rolling 60-day cumulative log return per bar → optional 4th
-    // dim. Captures slow-bear stress (moderate σ + persistent neg drift)
-    // that the σ-based attractor alone misses.
+    // Liquidity_proxy column (features col 2 — volume ratio, NaN where
+    // unavailable per the missing-data contract) + HMM smoothed posteriors
+    // → optional 3rd dim of HMM fingerprint.
+    // Rolling 60-day cumulative log return per bar → optional 4th dim.
+    // Captures slow-bear stress (moderate σ + persistent neg drift) that
+    // the σ-based attractor alone misses.
     std::vector<double> liq_series(features.rows());
     for (int t = 0; t < features.rows(); ++t) liq_series[t] = features(t, 2);
 
@@ -521,10 +515,10 @@ static void process_sleeve(
     // Otherwise, walk only the last 5 bars (legacy behavior).
     const int loop_start = (timeline_csv != nullptr) ? 60 : std::max(60, T - 5);
 
-    // K-14: precompute drawdown / drawdown_speed once over the full series.
-    // Mirrors the pre-fix arithmetic exactly — same accumulation order for
-    // cum, same prev_peak / (cum - r[t]) factoring for drawdown_speed — so
-    // results are bit-identical with O(T) instead of O(T³) per sleeve.
+    // Precompute drawdown / drawdown_speed once over the full series in
+    // O(T). Same accumulation order for cum and same prev_peak / (cum -
+    // r[t]) factoring for drawdown_speed as the per-bar form — bit-
+    // identical results, just amortised across the run.
     std::vector<double> dd_arr(T, 0.0);
     std::vector<double> dd_speed_arr(T, 0.0);
     {
@@ -548,11 +542,11 @@ static void process_sleeve(
 
     int start_t = loop_start;
     for (int t = start_t; t < T - 1; ++t) {
-        // A1: True filtered HMM probs (fix #1)
+        // A1: True filtered HMM probs
         Eigen::VectorXd hmm_probs(K_hmm);
         for (int j = 0; j < K_hmm; ++j) hmm_probs(j) = hmm_filtered(t, j);
 
-        // A2: MSAR true filtered probs (fix #2)
+        // A2: MSAR true filtered probs
         Eigen::VectorXd msar_probs(J_ms);
         for (int j = 0; j < J_ms; ++j) msar_probs(j) = msar_filtered(t, j);
 
@@ -578,7 +572,7 @@ static void process_sleeve(
         // EGARCH asymmetry flag: leverage effect when γ < -0.01
         gf.asymmetry_flag = egarch_ok && (egarch_gamma < -0.01);
 
-        // A0: All MarketFeatures populated (fix #4)
+        // A0: All MarketFeatures populated
         MarketFeatures mf = compute_market_features(garch_vol, features, dd_arr, dd_speed_arr, t, T);
 
         // A4: GMM probs
@@ -660,13 +654,13 @@ int main(int argc, char* argv[]) {
         {SleeveId::COMMODITIES, "commodities", {"CL.v.0","NG.v.0","GC.v.0","HG.v.0"},    AssetClass::FUTURES},
     };
 
-    // Load all sleeve data + compute corr_spike per sleeve (fix #3)
+    // Load all sleeve data + compute corr_spike per sleeve
     struct SleeveData {
         std::vector<double> returns;
         std::vector<double> volumes;
-        std::vector<double> corr_spike;  // fix #3
+        std::vector<double> corr_spike;
         std::string primary;
-        Eigen::MatrixXd composite_returns;  // K-08: kept for pooled cross-asset corr
+        Eigen::MatrixXd composite_returns;  // kept for pooled cross-asset corr
         std::vector<std::string> dates;     // YYYY-MM-DD per bar (length = returns.size() + 1)
     };
     std::vector<SleeveData> sleeve_data(sleeves.size());
@@ -684,21 +678,21 @@ int main(int argc, char* argv[]) {
         sleeve_data[i].primary = p.symbol;
         sleeve_data[i].dates   = p.dates;  // for timeline CSV diagnostic
 
-        // K-08: pool composite_returns across all sleeves for global cross-
-        // asset correlation. Per-sleeve correlation (e.g., MES/MNQ/MYM for
-        // equities) sits at ~0.95 nearly always — useless as a stress signal.
-        // The economically meaningful signal is when CROSS-asset correlations
-        // (equity vs bond, stock vs commodity) flip during stress events.
-        // We collect all composite_returns here and compute one global
-        // corr_spike series in a second pass below (after this loop), then
-        // assign the same series to every sleeve.
+        // Pool composite_returns across all sleeves for global cross-asset
+        // correlation. Per-sleeve correlation (e.g., MES/MNQ/MYM for
+        // equities) sits at ~0.95 nearly always — useless as a stress
+        // signal. The economically meaningful signal is when CROSS-asset
+        // correlations (equity vs bond, stock vs commodity) flip during
+        // stress events. We collect all composite_returns here and compute
+        // one global corr_spike series in a second pass below (after this
+        // loop), then assign the same series to every sleeve.
         sleeve_data[i].composite_returns = sd.composite_returns;
     }
 
-    // K-08: build the pooled cross-asset returns matrix. Each sleeve
-    // contributes its first symbol (or composite mean) as one column.
-    // The rolling correlation z-score on this pooled matrix becomes the
-    // shared corr_spike signal across sleeves.
+    // Build the pooled cross-asset returns matrix. Each sleeve contributes
+    // its first symbol (or composite mean) as one column. The rolling
+    // correlation z-score on this pooled matrix becomes the shared
+    // corr_spike signal across sleeves.
     int max_T = 0;
     for (const auto& sd : sleeve_data)
         max_T = std::max(max_T, (int)sd.composite_returns.rows());

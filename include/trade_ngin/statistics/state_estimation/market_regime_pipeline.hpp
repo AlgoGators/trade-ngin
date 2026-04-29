@@ -181,8 +181,8 @@ struct MarketRegimePipelineConfig : public ConfigBase {
     // Fingerprint softmax temperature
     double fingerprint_tau = 1.0;
 
-    // Persistence smoothing (PDF A7): p_final = λ·p_raw + (1-λ)·p_final_{t-1}
-    // Single constant λ per PDF — no warmup, no adaptive scaling.
+    // Persistence smoothing: p_final = λ·p_raw + (1-λ)·p_final_{t-1}
+    // Single constant λ — no warmup, no adaptive scaling.
     double lambda = 0.30;
 
     // Feature computation
@@ -248,23 +248,23 @@ struct SleeveTrainedState {
     MarketFingerprintMapping gmm_mapping;
     GMMResult                gmm_model;    // trained GMM for runtime predict_proba
 
-    // Runtime state — only the EWMA recurrence state (PDF A7)
+    // Runtime state — only the EWMA recurrence state
     Eigen::Matrix<double, kNumMarketRegimes, 1> prev_smoothed;
     MarketBelief last_belief;
 
-    // L-33: per-sleeve update counter for the warmup window.
+    // Per-sleeve update counter for the warmup window.
     // First N updates use λ=1 (pure raw, bypassing the uniform prev_smoothed
     // init) so the pipeline can find its natural starting regime before
     // EWMA smoothing kicks in. Mirrors the macro pipeline's warmup logic
-    // and structurally subsumes K-09 (smoothing init contamination from
-    // the runner's last-5-bars update loop).
+    // and makes the runner's last-5-bars update loop robust against
+    // smoothing-init contamination.
     int update_count = 0;
 
     bool trained = false;
 };
 
 // ============================================================================
-// SleeveLiveState — K-17 serialization hook for live deployment.
+// SleeveLiveState — serialization hook for live deployment.
 //
 // Holds *only* the runtime EWMA recurrence state needed to resume a live
 // pipeline across process restarts: the smoothed posterior carried forward
@@ -301,7 +301,7 @@ public:
     // ── Training (per sleeve) ───────────────────────────────────────────────
 
     // Train all model mappings for one sleeve.
-    // Uses model state signatures (not feature averages) per PDF A6.
+    // Uses model state signatures (not feature averages).
     Result<void> train(
         SleeveId sleeve,
         const std::vector<double>& returns,            // T return series
@@ -317,10 +317,10 @@ public:
         // A4: GMM (fitted on [r_t, σ̂_t, dd_speed, vol_shock, corr_spike])
         const GMMResult& gmm_result,
         const Eigen::MatrixXd& gmm_feature_matrix,     // T × 5 GMM feature space
-        // K-05 (optional): liquidity 3rd dim for HMM fingerprint.
+        // Optional liquidity 3rd dim for HMM fingerprint.
         //   liquidity_proxy_series: T-length per-bar volume ratio (NaN where unavailable)
         //   hmm_smoothed_probs:     T × K_hmm smoothed posteriors from MS/HMM EM
-        // K-05+ (optional): drawdown 4th dim — per-bar rolling 60-day cumulative
+        // Optional drawdown 4th dim — per-bar rolling 60-day cumulative
         //   return. Captures slow-bear stress (moderate σ + persistent neg 60d).
         // Pass empty / default-constructed to fall back to lower-D HMM fingerprint.
         const std::vector<double>& liquidity_proxy_series = {},
@@ -350,7 +350,7 @@ public:
         return sleeve_states_[static_cast<int>(sleeve)];
     }
 
-    // ── K-17: live-state serialization (no current-path change) ─────────────
+    // ── Live-state serialization (no current-path change) ──────────────────
     //
     // get_live_state: snapshot the runtime EWMA recurrence state (the bits
     // that change every update()) so a live process can checkpoint between
@@ -365,7 +365,7 @@ public:
     Result<void> restore_live_state(SleeveId sleeve, const SleeveLiveState& state);
 
 private:
-    // ── A1: HMM fingerprint mapping (μ_i, σ_i, +liq if K-05, +ret60 if K-05+) ──
+    // ── A1: HMM fingerprint mapping (μ_i, σ_i, +liq if available, +ret60 if available) ──
     void train_hmm_fingerprints(
         SleeveId sleeve,
         const std::vector<Eigen::VectorXd>& hmm_means,
