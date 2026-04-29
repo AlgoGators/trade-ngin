@@ -23,8 +23,8 @@ static const char* kRegimeNames[kNumMacroRegimes] = {
     "EXPANSION_INFLATIONARY",
     "SLOWDOWN_DISINFLATION",
     "SLOWDOWN_INFLATIONARY",
-    "RECESSION_DEFLATIONARY",
-    "RECESSION_INFLATIONARY"
+    "INDUSTRIAL_WEAKNESS_DEFLATIONARY",
+    "INDUSTRIAL_WEAKNESS_INFLATIONARY"
 };
 
 const char* macro_regime_name(MacroRegimeL1 r) {
@@ -225,6 +225,49 @@ Result<void> MacroRegimePipeline::train(
     trained_ = true;
 
     std::cerr << "[MacroRegimePipeline] Training complete. T=" << T << "\n";
+    return Result<void>();
+}
+
+// ============================================================================
+// L-32: Quadrant z-score recalibration (public API)
+// ============================================================================
+
+Result<void> MacroRegimePipeline::recalibrate_quadrant_stats(
+    const Eigen::VectorXd& growth_scores,
+    const Eigen::VectorXd& inflation_scores)
+{
+    if (growth_scores.size() < 10 || inflation_scores.size() < 10) {
+        return make_error<void>(ErrorCode::INVALID_ARGUMENT,
+            "Need at least 10 score samples to recalibrate Quadrant stats",
+            "MacroRegimePipeline");
+    }
+    if (growth_scores.size() != inflation_scores.size()) {
+        return make_error<void>(ErrorCode::INVALID_ARGUMENT,
+            "growth_scores and inflation_scores must have matching length",
+            "MacroRegimePipeline");
+    }
+
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    std::vector<double> gv(growth_scores.data(),
+                           growth_scores.data() + growth_scores.size());
+    std::vector<double> iv(inflation_scores.data(),
+                           inflation_scores.data() + inflation_scores.size());
+
+    growth_median_    = percentile(gv, 0.50);
+    inflation_median_ = percentile(iv, 0.50);
+
+    double g_var = 0, i_var = 0;
+    for (auto x : gv) g_var += (x - growth_median_) * (x - growth_median_);
+    for (auto x : iv) i_var += (x - inflation_median_) * (x - inflation_median_);
+    growth_std_    = std::sqrt(g_var / gv.size() + kEps);
+    inflation_std_ = std::sqrt(i_var / iv.size() + kEps);
+
+    std::cerr << "[L-32 recalibrate] new Quadrant stats: "
+              << "growth median=" << growth_median_ << " std=" << growth_std_
+              << " | inflation median=" << inflation_median_
+              << " std=" << inflation_std_ << "\n";
+
     return Result<void>();
 }
 

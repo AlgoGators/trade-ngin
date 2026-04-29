@@ -29,8 +29,13 @@ enum class MacroRegimeL1 : int {
     EXPANSION_INFLATIONARY  = 1,
     SLOWDOWN_DISINFLATION   = 2,
     SLOWDOWN_INFLATIONARY   = 3,
-    RECESSION_DEFLATIONARY  = 4,
-    RECESSION_INFLATIONARY  = 5
+    // M-08: relabelled from RECESSION_* to INDUSTRIAL_WEAKNESS_* (2026-04-29).
+    // The DFM is services-blind (factor 1 captures industrial slack only —
+    // cap-util, IP, manufacturing). Calling this "RECESSION" overstated what
+    // the model actually identifies. Re-instate RECESSION_* once ISM-services
+    // or PCE-services is added to the macro panel and DFM is re-fit.
+    INDUSTRIAL_WEAKNESS_DEFLATIONARY  = 4,
+    INDUSTRIAL_WEAKNESS_INFLATIONARY  = 5
 };
 
 static constexpr int kNumMacroRegimes = 6;
@@ -273,6 +278,18 @@ public:
         return dfm_gaussians_;
     }
     const FingerprintMapping& msdfm_mapping() const { return msdfm_mapping_; }
+
+    // L-32: refresh the Quadrant model's z-score basis (growth_median_,
+    // growth_std_, inflation_median_, inflation_std_) from a fresh set of
+    // composite scores without re-running full train(). Caller responsibility
+    // to call periodically as live data drifts away from the training window.
+    //
+    // Pre-fix: stats were baked at train() time and never updated. Live
+    // operation drifted away from the training distribution over months/
+    // quarters, miscalibrating Quadrant's tanh-blended weights.
+    Result<void> recalibrate_quadrant_stats(
+        const Eigen::VectorXd& growth_scores,
+        const Eigen::VectorXd& inflation_scores);
 
 private:
 
