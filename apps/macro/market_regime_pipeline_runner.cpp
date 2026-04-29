@@ -576,6 +576,7 @@ int main(int argc, char* argv[]) {
         std::vector<double> volumes;
         std::vector<double> corr_spike;  // fix #3
         std::string primary;
+        Eigen::MatrixXd composite_returns;  // K-08: kept for pooled cross-asset corr
     };
     std::vector<SleeveData> sleeve_data(sleeves.size());
 
@@ -591,22 +592,59 @@ int main(int argc, char* argv[]) {
         sleeve_data[i].volumes = p.volumes;
         sleeve_data[i].primary = p.symbol;
 
-        // Fix #3: Compute rolling cross-asset correlation from multi-symbol data
-        // L-35: when sleeve has <2 usable symbols, emit NaN (was silent 0.0).
-        // Downstream GMM feature col 4 (corr_spike) will see NaN, which the
-        // GMM EM step must handle (skip dim or use partial responsibility).
-        // Zero-fill silently killed the correlation_stress axis for single-
-        // symbol sleeves.
-        if (sd.composite_returns.rows() > 0 && sd.composite_returns.cols() >= 2) {
-            sleeve_data[i].corr_spike = compute_corr_spike(sd.composite_returns);
-            std::cerr << "  " << sleeves[i].name << ": corr_spike computed from "
-                      << sd.composite_returns.cols() << " symbols\n";
-        } else {
-            std::cerr << "  WARN " << sleeves[i].name
-                      << ": <2 usable symbols, corr_spike emitted as NaN (L-35).\n";
-            sleeve_data[i].corr_spike.assign(p.returns.size(),
-                std::numeric_limits<double>::quiet_NaN());
+        // K-08: pool composite_returns across all sleeves for global cross-
+        // asset correlation. Per-sleeve correlation (e.g., MES/MNQ/MYM for
+        // equities) sits at ~0.95 nearly always — useless as a stress signal.
+        // The economically meaningful signal is when CROSS-asset correlations
+        // (equity vs bond, stock vs commodity) flip during stress events.
+        // We collect all composite_returns here and compute one global
+        // corr_spike series in a second pass below (after this loop), then
+        // assign the same series to every sleeve.
+        sleeve_data[i].composite_returns = sd.composite_returns;
+    }
+
+    // K-08: build the pooled cross-asset returns matrix. Each sleeve
+    // contributes its first symbol (or composite mean) as one column.
+    // The rolling correlation z-score on this pooled matrix becomes the
+    // shared corr_spike signal across sleeves.
+    int max_T = 0;
+    for (const auto& sd : sleeve_data)
+        max_T = std::max(max_T, (int)sd.composite_returns.rows());
+    int n_sleeve_cols = 0;
+    for (const auto& sd : sleeve_data)
+        if (sd.composite_returns.rows() > 0) ++n_sleeve_cols;
+
+    std::vector<double> global_corr_spike(max_T,
+        std::numeric_limits<double>::quiet_NaN());
+    if (n_sleeve_cols >= 2 && max_T > 60) {
+        Eigen::MatrixXd pooled = Eigen::MatrixXd::Constant(
+            max_T, n_sleeve_cols, std::numeric_limits<double>::quiet_NaN());
+        int col = 0;
+        for (const auto& sd : sleeve_data) {
+            if (sd.composite_returns.rows() == 0) continue;
+            // Take the first column of each sleeve's composite_returns
+            // as that sleeve's representative return series.
+            for (int t = 0; t < sd.composite_returns.rows() && t < max_T; ++t)
+                pooled(t, col) = sd.composite_returns(t, 0);
+            ++col;
         }
+        global_corr_spike = compute_corr_spike(pooled);
+        std::cerr << "  K-08: pooled cross-asset corr_spike computed from "
+                  << n_sleeve_cols << " sleeves\n";
+    } else {
+        std::cerr << "  K-08: insufficient sleeves (" << n_sleeve_cols
+                  << ") for pooled correlation; corr_spike stays NaN\n";
+    }
+
+    // Assign the pooled global corr_spike to every sleeve, truncated/padded
+    // to match each sleeve's individual T.
+    for (size_t i = 0; i < sleeves.size(); ++i) {
+        if (sleeve_data[i].returns.empty()) continue;
+        const int T_sleeve = (int)sleeve_data[i].returns.size();
+        sleeve_data[i].corr_spike.assign(T_sleeve,
+            std::numeric_limits<double>::quiet_NaN());
+        for (int t = 0; t < T_sleeve && t < (int)global_corr_spike.size(); ++t)
+            sleeve_data[i].corr_spike[t] = global_corr_spike[t];
     }
 
     // Process each sleeve
