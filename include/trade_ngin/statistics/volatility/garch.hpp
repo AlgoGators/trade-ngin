@@ -32,6 +32,10 @@ private:
     double omega_;      // Constant term
     double alpha_;      // ARCH coefficient
     double beta_;       // GARCH coefficient
+    // L-09: store the training-time mean so update() can demean incoming
+    // returns consistently with fit(). Pre-fix, fit() demeaned but update()
+    // used raw returns, producing inconsistent vol dynamics in live use.
+    double mean_return_{0.0};
     std::vector<double> residuals_;
     std::vector<double> conditional_variances_;
     double current_volatility_{0.0};

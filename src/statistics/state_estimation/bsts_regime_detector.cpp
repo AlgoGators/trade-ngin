@@ -31,7 +31,9 @@ namespace statistics {
 static constexpr double kPi  = 3.14159265358979323846;
 static constexpr double kEps = 1e-8;
 
-// Regime names
+// Regime names. Index -1 is reserved for "Unclassified" (M-06 fix —
+// clusters that have no positive-score match against any signature
+// should not be force-mapped to the closest one).
 static const char* kBSTSRegimeNames[4] = {
     "R0 Risk-On Growth", "R1 Risk-Off/Crash", "R2 Stagflation", "R3 Reflation"
 };
@@ -93,6 +95,9 @@ BSTSRegimeDetector::BSTSRegimeDetector(BSTSConfig config)
 
 const char* BSTSRegimeDetector::regime_name(int label) {
     if (label >= 0 && label < 4) return kBSTSRegimeNames[label];
+    // M-06: -1 is the documented sentinel for clusters that scored ≤ 0
+    // against every signature (no economically meaningful match).
+    if (label == -1) return "Unclassified";
     return "UNKNOWN";
 }
 
@@ -760,26 +765,36 @@ std::vector<int> BSTSRegimeDetector::label_regimes(
     std::sort(cells.begin(), cells.end(),
               [](const auto& a, const auto& b){ return std::get<0>(a) > std::get<0>(b); });
 
-    // Greedy one-to-one assignment: best (score, cluster, label) pairs first
+    // M-06: greedy one-to-one assignment, but reject score ≤ 0.
+    //
+    // Pre-fix: this loop assigned even on negative scores, producing
+    // economically nonsensical labels (e.g., cluster 2 → "R3 Reflation"
+    // with score -1.886 = anti-reflation). The pipeline's macro regime
+    // output uses cluster posteriors (not these labels), so the fix has
+    // no impact on regime probabilities — but the diagnostic dashboard
+    // reading kBSTSRegimeNames[mapping[k]] becomes honest.
     std::vector<int> mapping(K, -1);
     std::vector<bool> used_raw(K, false), used_lbl(K, false);
     for (auto& [score, raw, lbl] : cells) {
-        if (!used_raw[raw] && !used_lbl[lbl]) {
-            mapping[raw] = lbl;
-            used_raw[raw] = used_lbl[lbl] = true;
-            std::cerr << "  assign cluster " << raw
-                      << " -> " << kBSTSRegimeNames[lbl]
-                      << "  (score=" << std::setprecision(3) << score << ")\n";
+        if (used_raw[raw] || used_lbl[lbl]) continue;
+        if (score <= 0.0) {
+            // No positive-score match remains for this (raw, lbl) pair.
+            // Stop greedy assignment here — remaining clusters fall through
+            // to the Unclassified sentinel below.
+            std::cerr << "  cluster " << raw
+                      << " best remaining score = " << std::setprecision(3) << score
+                      << " (≤0); leaving Unclassified per M-06\n";
+            continue;
         }
+        mapping[raw] = lbl;
+        used_raw[raw] = used_lbl[lbl] = true;
+        std::cerr << "  assign cluster " << raw
+                  << " -> " << kBSTSRegimeNames[lbl]
+                  << "  (score=" << std::setprecision(3) << score << ")\n";
     }
-    // Fill any unmatched (shouldn't happen with K=4 balanced clusters)
-    int nxt = 0;
-    for (int k = 0; k < K; ++k) {
-        if (mapping[k] == -1) {
-            while (nxt < K && used_lbl[nxt]) ++nxt;
-            mapping[k] = (nxt < K) ? nxt++ : k;
-        }
-    }
+    // Any cluster still at -1 is genuinely Unclassified; the pipeline's
+    // macro regime output ignores these labels (uses posteriors instead),
+    // so the only effect is on diagnostic output.
     return mapping;
 }
 

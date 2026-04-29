@@ -239,29 +239,43 @@ void MarketRegimePipeline::train_hmm_fingerprints(
     auto& mapping = sleeve_states_[s].hmm_mapping;
     const int J = (int)hmm_means.size();
 
-    // Native fingerprints: 2D [μ_i, σ_i] from HMM emission parameters
-    // μ_i = emission mean (scalar for univariate, first element for multivariate)
-    // σ_i = emission std dev (sqrt of variance/first diagonal element)
+    // K-04: HMM fingerprint uses |μ| (drift MAGNITUDE), not signed μ.
+    //
+    // Pre-fix: signed μ conflated trend-direction with trend-regime —
+    // a strong DOWN-trend (μ = -1.5%) had the same "trend dim" sign as
+    // STRESS_PRICE (μ = -1%, σ = 1.5%), so persistent bear markets got
+    // mislabelled as stress. The economic regime "TREND" applies to
+    // both rising and falling trends; what distinguishes TREND from
+    // STRESS is volatility, not direction.
+    //
+    // Post-fix: native fingerprint uses |μ|, target fingerprints rescaled
+    // accordingly (no negative values on the trend dim — distinguishing
+    // TREND vs STRESS is now done purely via the σ dimension and the
+    // overall fingerprint shape).
     mapping.native_fingerprints.resize(J);
     for (int j = 0; j < J; ++j) {
-        double mu = hmm_means[j](0);  // first (or only) dimension
+        double mu = hmm_means[j](0);
         double sigma = std::sqrt(hmm_covs[j](0, 0));
         mapping.native_fingerprints[j] = Eigen::VectorXd(2);
-        mapping.native_fingerprints[j] << mu, sigma;
+        mapping.native_fingerprints[j] << std::abs(mu), sigma;
         std::cerr << "[A1-" << sleeve_name(sleeve) << "] HMM state " << j
-                  << " μ=" << std::fixed << std::setprecision(5) << mu
-                  << " σ=" << sigma << "\n";
+                  << " |μ|=" << std::fixed << std::setprecision(5) << std::abs(mu)
+                  << " (signed μ=" << mu << ") σ=" << sigma << "\n";
     }
 
-    // Target fingerprints: 2D [μ, σ] for each ontology state (z-scored)
-    // After standardisation, these represent the expected signature shape
+    // Target fingerprints: 2D [|μ|, σ] for each ontology state (z-scored).
+    // K-04 retune: trend dim is now magnitude (always ≥ 0 conceptually).
+    // After de-mean step in standardise_and_build_mapping, the cross-state
+    // spread on |μ| separates TREND_LOWVOL and TREND_HIGHVOL (high |μ|)
+    // from MEANREV_CHOPPY (low |μ|). STRESS_* live high on σ. The σ
+    // dimension is what distinguishes TREND_HIGHVOL from STRESS_PRICE.
     mapping.target_fingerprints.resize(kNumMarketRegimes);
     Eigen::VectorXd t(2);
-    t <<  1.5, -1.5; mapping.target_fingerprints[0] = t;  // TREND_LOWVOL:  positive drift, low vol
-    t <<  0.5,  1.0; mapping.target_fingerprints[1] = t;  // TREND_HIGHVOL: some drift, high vol
-    t <<  0.0,  0.0; mapping.target_fingerprints[2] = t;  // MEANREV_CHOPPY: no drift, mid vol
-    t << -1.0,  1.5; mapping.target_fingerprints[3] = t;  // STRESS_PRICE:  negative drift, high vol
-    t << -0.5,  2.0; mapping.target_fingerprints[4] = t;  // STRESS_LIQUIDITY: negative, extreme vol
+    t <<  1.5, -1.5; mapping.target_fingerprints[0] = t;  // TREND_LOWVOL:    high |μ|, low vol
+    t <<  1.0,  1.0; mapping.target_fingerprints[1] = t;  // TREND_HIGHVOL:   high |μ|, high vol
+    t <<  0.0,  0.0; mapping.target_fingerprints[2] = t;  // MEANREV_CHOPPY:  low |μ|, mid vol
+    t <<  0.5,  1.5; mapping.target_fingerprints[3] = t;  // STRESS_PRICE:    moderate |μ|, high vol
+    t <<  0.5,  2.0; mapping.target_fingerprints[4] = t;  // STRESS_LIQUIDITY: moderate |μ|, extreme vol
 
     // Standardise + build mapping
     standardise_and_build_mapping(mapping, config_.fingerprint_tau);

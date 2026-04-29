@@ -66,10 +66,11 @@ Result<void> EGARCH::fit(const std::vector<double>& returns) {
 
     DEBUG("[EGARCH::fit] entry: n=" << returns.size());
 
-    double mean_return = utils::calculate_mean(returns);
+    // L-09: persist mean_return_ so update() can apply consistent demean
+    mean_return_ = utils::calculate_mean(returns);
     residuals_.resize(returns.size());
     for (size_t i = 0; i < returns.size(); ++i) {
-        residuals_[i] = returns[i] - mean_return;
+        residuals_[i] = returns[i] - mean_return_;
     }
 
     auto result = estimate_parameters(residuals_);
@@ -251,13 +252,16 @@ Result<void> EGARCH::update(double new_return) {
             ErrorCode::NOT_INITIALIZED, "EGARCH model has not been fitted", "EGARCH");
     }
 
+    // L-09: demean consistent with fit() — pre-fix used raw new_return,
+    // making live volatility dynamics drift from training behavior.
+    const double resid = new_return - mean_return_;
     double log_h = log_variances_.back();
-    double z = new_return / std::sqrt(std::exp(log_h));
+    double z = resid / std::sqrt(std::exp(log_h));
     double e_abs_z = std::sqrt(2.0 / M_PI);
 
     double new_log_h = omega_ + alpha_ * (std::abs(z) - e_abs_z) + gamma_ * z + beta_ * log_h;
 
-    residuals_.push_back(new_return);
+    residuals_.push_back(resid);
     log_variances_.push_back(new_log_h);
     current_volatility_ = std::sqrt(std::exp(new_log_h));
 

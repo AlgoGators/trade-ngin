@@ -53,6 +53,7 @@ set(TEST_SOURCES
     statistics/test_regime_substrate.cpp
     statistics/test_regime_phase1.cpp
     statistics/test_regime_phase2.cpp
+    statistics/test_regime_phase3.cpp
 )
 
 # Create test executable

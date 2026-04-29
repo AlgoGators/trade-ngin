@@ -62,7 +62,39 @@ Result<void> MarketMSAR::fit(const Eigen::VectorXd& returns,
 
 
     n_states_ = static_cast<int>(state_probs.cols());
-    transition_matrix_ = transition_matrix;
+
+    // K-06: re-estimate transition_matrix_ from the smoothed posteriors
+    // before AR fitting. The pre-fit transition matrix passed in is from
+    // MarkovSwitching fit on RAW returns; the AR step then uses these
+    // posteriors to estimate AR coeffs in regime-conditional space, but
+    // the stored transition matrix would still reflect the raw-return
+    // dynamics — inconsistent. We recompute using the standard smoothed-
+    // posterior approximation:
+    //   P(i→j) ≈ Σ_t γ(t,i) γ(t+1,j) / Σ_t γ(t,i)
+    // This is an approximation (proper Baum-Welch xi requires forward-
+    // backward), but it guarantees the stored transition is internally
+    // consistent with the state_probs used for AR fitting.
+    {
+        const Eigen::Index Tp = state_probs.rows();
+        Eigen::MatrixXd P_recomputed = Eigen::MatrixXd::Zero(n_states_, n_states_);
+        for (int i = 0; i < n_states_; ++i) {
+            double row_sum = 0.0;
+            for (Eigen::Index t = 0; t < Tp - 1; ++t) {
+                row_sum += state_probs(t, i);
+                for (int j = 0; j < n_states_; ++j) {
+                    P_recomputed(i, j) += state_probs(t, i) * state_probs(t + 1, j);
+                }
+            }
+            if (row_sum > 1e-10) {
+                for (int j = 0; j < n_states_; ++j) P_recomputed(i, j) /= row_sum;
+            } else {
+                // Fallback to passed-in matrix row if posterior is empty for this state
+                for (int j = 0; j < n_states_; ++j) P_recomputed(i, j) = transition_matrix(i, j);
+            }
+        }
+        transition_matrix_ = P_recomputed;
+    }
+
     ar_coeffs_ = Eigen::MatrixXd::Zero(n_states_, lag_);
     intercepts_ = Eigen::VectorXd::Zero(n_states_);
     residual_variances_ = Eigen::VectorXd::Zero(n_states_);

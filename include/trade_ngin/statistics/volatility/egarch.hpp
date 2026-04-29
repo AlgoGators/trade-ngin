@@ -31,6 +31,8 @@ private:
     double alpha_;
     double gamma_;
     double beta_;
+    // L-09: training-time mean for demean-consistent update()
+    double mean_return_{0.0};
     std::vector<double> residuals_;
     std::vector<double> log_variances_;
     double current_volatility_{0.0};

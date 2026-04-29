@@ -31,13 +31,13 @@ Result<void> GARCH::fit(const std::vector<double>& returns) {
     DEBUG("[GARCH::fit] entry: n=" << returns.size()
           << " p=" << config_.p << " q=" << config_.q);
 
-    // Calculate mean return (assume zero for simplicity)
-    double mean_return = utils::calculate_mean(returns);
+    // L-09: persist mean_return_ so update() can apply consistent demean
+    mean_return_ = utils::calculate_mean(returns);
 
     // Demeaned returns (residuals)
     residuals_.resize(returns.size());
     for (size_t i = 0; i < returns.size(); ++i) {
-        residuals_[i] = returns[i] - mean_return;
+        residuals_[i] = returns[i] - mean_return_;
     }
 
     // Estimate parameters
@@ -265,10 +265,12 @@ Result<void> GARCH::update(double new_return) {
         );
     }
 
-    residuals_.push_back(new_return);
+    // L-09: demean incoming return consistent with fit()
+    const double resid = new_return - mean_return_;
+    residuals_.push_back(resid);
 
     double new_var = omega_ +
-                    alpha_ * new_return * new_return +
+                    alpha_ * resid * resid +
                     beta_ * conditional_variances_.back();
 
     conditional_variances_.push_back(new_var);

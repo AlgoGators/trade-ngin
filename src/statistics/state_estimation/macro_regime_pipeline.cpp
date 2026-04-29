@@ -520,18 +520,37 @@ void MacroRegimePipeline::train_msdfm_fingerprints(
     const int T_panel = panel.T;
     const int T = std::min(T_ms, T_panel);
 
-    // Compute fingerprints for each native state
+    // M-07: compute fingerprints as soft-prob-weighted aggregates instead
+    // of hard-argmax bucket means.
+    //
+    // Pre-fix: each timestep contributed to exactly one native state's
+    // fingerprint (whichever state had argmax smoothed prob), creating
+    // a train/runtime asymmetry — `map_msdfm` consumes soft probabilities
+    // at runtime, but the fingerprints themselves were trained on hard
+    // assignments. Around the mode boundaries this discontinuity flips
+    // the mapping for whole bands of similar timesteps.
+    //
+    // Post-fix: every timestep contributes its smoothed_probs(t, j) weight
+    // to native state j's fingerprint. Effective sample size matches what
+    // the runtime sees. Tiny weights (< 1e-6) are skipped for efficiency.
     msdfm_mapping_.native_fingerprints.resize(J);
     for (int j = 0; j < J; ++j) {
-        std::vector<int> indices;
+        Eigen::VectorXd weighted_fp = Eigen::VectorXd::Zero(kFingerprintDim);
+        double total_weight = 0.0;
+        int contributing_steps = 0;
         for (int t = 0; t < T; ++t) {
-            if (msdfm_output.decoded_regimes[t] == j)
-                indices.push_back(t);
+            double w = msdfm_output.smoothed_probs(t, j);
+            if (w < 1e-6) continue;
+            weighted_fp += w * compute_fingerprint(panel, {t});
+            total_weight += w;
+            ++contributing_steps;
         }
-        msdfm_mapping_.native_fingerprints[j] = compute_fingerprint(panel, indices);
-        std::cerr << "[B2] native state " << j << " n=" << indices.size()
-                  << " fp=[" << msdfm_mapping_.native_fingerprints[j].transpose()
-                  << "]\n";
+        if (total_weight > 1e-9) weighted_fp /= total_weight;
+        msdfm_mapping_.native_fingerprints[j] = weighted_fp;
+        std::cerr << "[B2] native state " << j
+                  << " soft-weight=" << total_weight
+                  << " n_contrib=" << contributing_steps
+                  << " fp=[" << weighted_fp.transpose() << "]\n";
     }
 
     // M-01: Stage 2 = de-mean only (no cross-state /std rescaling).

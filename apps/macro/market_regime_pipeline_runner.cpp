@@ -434,9 +434,17 @@ static void process_sleeve(
 
     // True MSAR filtered probs: PDF A2 emission N(μ_j + φ_j · r_{t-1}, σ_j²)
     // Uses MarketMSAR intercepts/variances/AR-coeffs (not plain-MS state means).
+    // K-06: use the transition matrix from MarketMSAR (consistent with the
+    // smoothed posteriors used for AR fitting), NOT the pre-AR ms_result
+    // matrix. Pre-fix: intercepts/vars/AR came from MarketMSAR but the
+    // transition came from the raw-return MarkovSwitching, creating an
+    // internal inconsistency in the forward pass dynamics.
+    const Eigen::MatrixXd& msar_transition = msar_fit.is_ok()
+        ? msar_model.get_transition_matrix()
+        : ms_result.transition_matrix;  // fallback: post-hoc AR path uses MS matrix
     Eigen::MatrixXd msar_filtered = build_filtered_probs(
         returns, msar_means, msar_vars,
-        ms_result.transition_matrix, J_ms,
+        msar_transition, J_ms,
         &msar_ar);
     std::cerr << "  MSAR forward pass complete (AR(1) emission, PDF-exact)\n";
 
