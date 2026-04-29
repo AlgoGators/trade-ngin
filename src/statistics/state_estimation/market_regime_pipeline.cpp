@@ -822,14 +822,15 @@ Result<MarketBelief> MarketRegimePipeline::update(
     const MarketFeatures& market_features,
     const Eigen::VectorXd& gmm_cluster_probs)
 {
+    // L-29: acquire mutex BEFORE reading sleeve_states_[s].trained, otherwise
+    // concurrent train()+update() can race — update sees stale state mid-train.
+    std::lock_guard<std::mutex> lock(mutex_);
     int s = static_cast<int>(sleeve);
     if (!sleeve_states_[s].trained) {
         return make_error<MarketBelief>(ErrorCode::NOT_INITIALIZED,
             "Sleeve not trained: " + std::string(sleeve_name(sleeve)),
             "MarketRegimePipeline");
     }
-
-    std::lock_guard<std::mutex> lock(mutex_);
 
     // Map each model → 5 probs
     auto p_hmm   = map_hmm(sleeve, hmm_state_probs);
@@ -949,6 +950,61 @@ bool MarketRegimePipeline::is_trained(SleeveId sleeve) const {
 
 const MarketBelief& MarketRegimePipeline::last_belief(SleeveId sleeve) const {
     return sleeve_states_[static_cast<int>(sleeve)].last_belief;
+}
+
+// ============================================================================
+// K-17 — live-state serialization hooks. Pure additions; the per-bar
+// update path never reads or writes through these methods, so they cannot
+// alter pipeline output for any caller that does not invoke them.
+// ============================================================================
+
+Result<SleeveLiveState> MarketRegimePipeline::get_live_state(SleeveId sleeve) const {
+    const auto& state = sleeve_states_[static_cast<int>(sleeve)];
+    if (!state.trained) {
+        return make_error<SleeveLiveState>(
+            ErrorCode::NOT_INITIALIZED,
+            "Cannot snapshot live state: sleeve has not been trained",
+            "MarketRegimePipeline::get_live_state");
+    }
+    SleeveLiveState snap;
+    snap.prev_smoothed = state.prev_smoothed;
+    snap.last_belief   = state.last_belief;
+    snap.update_count  = state.update_count;
+    return Result<SleeveLiveState>(snap);
+}
+
+Result<void> MarketRegimePipeline::restore_live_state(
+    SleeveId sleeve, const SleeveLiveState& snap)
+{
+    auto& state = sleeve_states_[static_cast<int>(sleeve)];
+    if (!state.trained) {
+        return make_error<void>(
+            ErrorCode::NOT_INITIALIZED,
+            "Cannot restore live state: sleeve must be trained first",
+            "MarketRegimePipeline::restore_live_state");
+    }
+    if (!snap.prev_smoothed.allFinite()) {
+        return make_error<void>(
+            ErrorCode::INVALID_DATA,
+            "NaN/Inf in restored prev_smoothed",
+            "MarketRegimePipeline::restore_live_state");
+    }
+    if ((snap.prev_smoothed.array() < 0.0).any()) {
+        return make_error<void>(
+            ErrorCode::INVALID_DATA,
+            "Negative probability in restored prev_smoothed",
+            "MarketRegimePipeline::restore_live_state");
+    }
+    if (snap.update_count < 0) {
+        return make_error<void>(
+            ErrorCode::INVALID_DATA,
+            "Negative update_count in restored live state",
+            "MarketRegimePipeline::restore_live_state");
+    }
+    state.prev_smoothed = snap.prev_smoothed;
+    state.last_belief   = snap.last_belief;
+    state.update_count  = snap.update_count;
+    return Result<void>();
 }
 
 } // namespace statistics

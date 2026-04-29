@@ -264,6 +264,23 @@ struct SleeveTrainedState {
 };
 
 // ============================================================================
+// SleeveLiveState — K-17 serialization hook for live deployment.
+//
+// Holds *only* the runtime EWMA recurrence state needed to resume a live
+// pipeline across process restarts: the smoothed posterior carried forward
+// (prev_smoothed), the most recent belief (for hysteresis / regime_age),
+// and the warmup counter. The trained mappings (HMM/MSAR/GARCH/GMM) are
+// rebuilt from a separate train() call — only the per-bar drift state
+// crosses process boundaries.
+// ============================================================================
+
+struct SleeveLiveState {
+    Eigen::Matrix<double, kNumMarketRegimes, 1> prev_smoothed;
+    MarketBelief last_belief;
+    int update_count = 0;
+};
+
+// ============================================================================
 // MarketRegimePipeline
 //
 // Combines 4 models into a single MarketBelief per sleeve:
@@ -332,6 +349,20 @@ public:
     const SleeveTrainedState& sleeve_state(SleeveId sleeve) const {
         return sleeve_states_[static_cast<int>(sleeve)];
     }
+
+    // ── K-17: live-state serialization (no current-path change) ─────────────
+    //
+    // get_live_state: snapshot the runtime EWMA recurrence state (the bits
+    // that change every update()) so a live process can checkpoint between
+    // bars. Returns INVALID_STATE if the sleeve is untrained — there is no
+    // meaningful prev_smoothed to checkpoint before training.
+    //
+    // restore_live_state: replay a prior snapshot after a restart. Caller
+    // must have already train()-ed the sleeve so the static mappings exist;
+    // this overwrites only the runtime drift state. Probabilities in
+    // prev_smoothed are validated as finite and non-negative before write.
+    Result<SleeveLiveState> get_live_state(SleeveId sleeve) const;
+    Result<void> restore_live_state(SleeveId sleeve, const SleeveLiveState& state);
 
 private:
     // ── A1: HMM fingerprint mapping (μ_i, σ_i, +liq if K-05, +ret60 if K-05+) ──

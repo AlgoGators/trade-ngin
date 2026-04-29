@@ -72,6 +72,16 @@ struct MacroBelief {
 
     std::chrono::system_clock::time_point timestamp;
     int regime_age_bars = 0;
+
+    // M-09: belief uncertainty diagnostics. `entropy` is the normalised
+    // Shannon entropy over `macro_probs` (0 = certain, 1 = uniform); useful
+    // for gating downstream decisions when the macro call is ambiguous.
+    // `top_prob` mirrors the most-likely state's posterior, which makes it
+    // cheap to threshold ("don't act unless top_prob > 0.5") without
+    // re-walking the probs map. Existing fields (macro_probs, confidence,
+    // most_likely, ...) are unchanged — these are pure additions.
+    double entropy = 0.0;
+    double top_prob = 0.0;
 };
 
 // ============================================================================

@@ -903,8 +903,12 @@ MacroRegimeL1 MacroRegimePipeline::apply_hysteresis(
         return current_regime_;
     }
 
-    // Minimum dwell penalty
-    if (dwell_counter_ < config_.min_dwell_bars) {
+    // Minimum dwell penalty.
+    // L-28: guard against config_.min_dwell_bars == 0. Without this guard,
+    // setting min_dwell=0 in JSON would divide by zero → NaN p_smooth →
+    // garbage hysteresis. Now: zero min_dwell skips the dwell penalty
+    // (transitions allowed immediately, modulo the asymmetric thresholds).
+    if (config_.min_dwell_bars > 0 && dwell_counter_ < config_.min_dwell_bars) {
         double decay = 1.0 - static_cast<double>(dwell_counter_) / config_.min_dwell_bars;
         double bonus = config_.dwell_penalty * decay;
         p_smooth(current_idx) += bonus;
@@ -970,12 +974,15 @@ Result<MacroBelief> MacroRegimePipeline::update(
     const Eigen::Vector4d& bsts_cluster_probs,
     bool structural_break)
 {
+    // L-29: acquire mutex BEFORE reading trained_, otherwise concurrent
+    // train()+update() could race — update sees stale `trained_=false`
+    // mid-train, OR sees `true` while train() is mid-write to internal state.
+    std::lock_guard<std::mutex> lock(mutex_);
     if (!trained_) {
         return make_error<MacroBelief>(ErrorCode::NOT_INITIALIZED,
             "Pipeline not trained", "MacroRegimePipeline");
     }
-
-    std::lock_guard<std::mutex> lock(mutex_);
+    // (L-29 — lock acquired above; original duplicate lock removed.)
 
     // Map each model → 6 probs
     auto p_dfm   = map_dfm(dfm_factors);
@@ -1013,6 +1020,9 @@ Result<MacroBelief> MacroRegimePipeline::update(
         fallback.confidence = 0.0;
         fallback.regime_age_bars = last_belief_.regime_age_bars + 1;
         fallback.timestamp = std::chrono::system_clock::now();
+        // M-09: uniform-belief fallback → entropy=1, top_prob=1/K.
+        fallback.entropy = 1.0;
+        fallback.top_prob = 1.0 / kNumMacroRegimes;
         last_belief_ = fallback;
         return fallback;
     }
@@ -1071,6 +1081,24 @@ Result<MacroBelief> MacroRegimePipeline::update(
     belief.confidence = confidence;
     belief.structural_break_risk = structural_break;
     belief.timestamp = std::chrono::system_clock::now();
+
+    // M-09: belief uncertainty diagnostics. top_prob is read off the
+    // smoothed posterior of the dominant state; entropy is normalised
+    // Shannon entropy over p_smooth (0 = certain, 1 = uniform). These
+    // are pure additions — they do not feed back into any pipeline
+    // computation, so existing fields and downstream behaviour are
+    // unchanged.
+    {
+        double h = 0.0;
+        for (int r = 0; r < kNumMacroRegimes; ++r) {
+            double p = p_smooth(r);
+            if (p > 1e-12) h -= p * std::log(p);
+        }
+        belief.entropy = (kNumMacroRegimes > 1)
+            ? h / std::log(static_cast<double>(kNumMacroRegimes))
+            : 0.0;
+        belief.top_prob = p_smooth(static_cast<int>(dominant));
+    }
 
     if (dominant == last_belief_.most_likely) {
         belief.regime_age_bars = last_belief_.regime_age_bars + 1;

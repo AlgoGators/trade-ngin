@@ -54,6 +54,7 @@ set(TEST_SOURCES
     statistics/test_regime_phase1.cpp
     statistics/test_regime_phase2.cpp
     statistics/test_regime_phase3.cpp
+    statistics/test_regime_phase4.cpp
 )
 
 # Create test executable

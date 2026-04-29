@@ -15,6 +15,7 @@
 #include "trade_ngin/statistics/volatility/egarch.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
 #include "trade_ngin/core/types.hpp"
+#include "trade_ngin/core/config_loader.hpp"
 
 // MarketMSAR for proper AR(1) estimation (fix #2)
 #include "../../src/models/autoregression/msar.hpp"
@@ -44,9 +45,13 @@ using namespace trade_ngin::statistics;
 // ============================================================================
 
 static void print_belief(const MarketBelief& b) {
+    // K-11: stability is dwell-progress (0=just entered, 1=fully settled).
+    // It was being computed in the pipeline but never displayed; printing
+    // it alongside confidence makes "noisy regime flicker" diagnosable.
     std::cout << "\n  Sleeve: " << sleeve_name(b.sleeve_id)
               << "  |  Regime: " << market_regime_name(b.most_likely)
               << "  |  Confidence: " << std::fixed << std::setprecision(3) << b.confidence
+              << "  |  Stability: " << std::fixed << std::setprecision(3) << b.stability
               << "  |  Age: " << b.regime_age_bars << " bars\n";
 
     std::cout << "  ";
@@ -197,9 +202,10 @@ static Eigen::MatrixXd build_gmm_features(
 // ============================================================================
 
 static MarketFeatures compute_market_features(
-    const std::vector<double>& returns,
     const std::vector<double>& garch_vol,
     const Eigen::MatrixXd& features,
+    const std::vector<double>& dd_arr,
+    const std::vector<double>& dd_speed_arr,
     int t, int T)
 {
     MarketFeatures mf;
@@ -207,19 +213,11 @@ static MarketFeatures compute_market_features(
     mf.liquidity_proxy = features(t, 2);
     mf.correlation_spike = features(t, 3);
 
-    // Drawdown
-    double cum = 0, peak = 0;
-    for (int i = 0; i <= t; ++i) { cum += returns[i]; peak = std::max(peak, cum); }
-    mf.drawdown = peak - cum;
-
-    // Drawdown speed (change in drawdown from previous bar)
-    if (t > 0) {
-        double cum_prev = cum - returns[t];
-        double peak_prev = 0;
-        for (int i = 0; i < t; ++i) { double c = 0; for (int j = 0; j <= i; ++j) c += returns[j]; peak_prev = std::max(peak_prev, c); }
-        double dd_prev = peak_prev - cum_prev;
-        mf.drawdown_speed = mf.drawdown - dd_prev;
-    }
+    // K-14: drawdown / drawdown_speed precomputed in O(T) by caller; lookup
+    // here is O(1). Pre-fix recomputed running peak per bar inside an O(t²)
+    // nested loop, making the full update loop O(T³) on long histories.
+    mf.drawdown = dd_arr[t];
+    mf.drawdown_speed = dd_speed_arr[t];
 
     // Vol-of-vol: rolling std of GARCH σ_t over 60 bars
     if (t >= 60) {
@@ -269,13 +267,19 @@ static std::vector<double> compute_corr_spike(
         rolling_corr[t] = (n_pairs > 0) ? avg_corr / n_pairs : 0.0;
     }
 
-    // Compute z-score of rolling correlation vs 1-year history
-    for (int t = 252; t < T; ++t) {
-        double s = 0, sq = 0;
-        for (int i = t - 252; i < t; ++i) { s += rolling_corr[i]; sq += rolling_corr[i]*rolling_corr[i]; }
-        double m = s / 252.0;
-        double sd = std::sqrt(std::max(1e-10, sq/252.0 - m*m));
-        corr_spike[t] = (rolling_corr[t] - m) / sd;
+    // K-16: z-score window adapts to T. For production runs (T > 504) this
+    // collapses to the original 252-bar window — bit-identical. Short
+    // backtests (T < 504) get a usable spike signal earlier instead of
+    // returning all zeros for the first year.
+    const int z_win = std::min(252, T / 2);
+    if (z_win > 0) {
+        for (int t = z_win; t < T; ++t) {
+            double s = 0, sq = 0;
+            for (int i = t - z_win; i < t; ++i) { s += rolling_corr[i]; sq += rolling_corr[i]*rolling_corr[i]; }
+            double m = s / (double)z_win;
+            double sd = std::sqrt(std::max(1e-10, sq/(double)z_win - m*m));
+            corr_spike[t] = (rolling_corr[t] - m) / sd;
+        }
     }
 
     return corr_spike;
@@ -517,6 +521,28 @@ static void process_sleeve(
     // Otherwise, walk only the last 5 bars (legacy behavior).
     const int loop_start = (timeline_csv != nullptr) ? 60 : std::max(60, T - 5);
 
+    // K-14: precompute drawdown / drawdown_speed once over the full series.
+    // Mirrors the pre-fix arithmetic exactly — same accumulation order for
+    // cum, same prev_peak / (cum - r[t]) factoring for drawdown_speed — so
+    // results are bit-identical with O(T) instead of O(T³) per sleeve.
+    std::vector<double> dd_arr(T, 0.0);
+    std::vector<double> dd_speed_arr(T, 0.0);
+    {
+        double cum = 0.0;
+        double peak = 0.0;
+        for (int i = 0; i < T; ++i) {
+            double prev_peak = peak;
+            cum += returns[i];
+            peak = std::max(peak, cum);
+            double dd = peak - cum;
+            dd_arr[i] = dd;
+            if (i > 0) {
+                double dd_prev = prev_peak - (cum - returns[i]);
+                dd_speed_arr[i] = dd - dd_prev;
+            }
+        }
+    }
+
     std::cout << "\n  REGIME HISTORY (last 5 bars)\n"
               << "  ----------------------------------------\n";
 
@@ -553,7 +579,7 @@ static void process_sleeve(
         gf.asymmetry_flag = egarch_ok && (egarch_gamma < -0.01);
 
         // A0: All MarketFeatures populated (fix #4)
-        MarketFeatures mf = compute_market_features(returns, garch_vol, features, t, T);
+        MarketFeatures mf = compute_market_features(garch_vol, features, dd_arr, dd_speed_arr, t, T);
 
         // A4: GMM probs
         Eigen::VectorXd gi(5);
@@ -599,8 +625,25 @@ int main(int argc, char* argv[]) {
 
     if (conn_str.empty()) {
         const char* env = std::getenv("DATABASE_URL");
-        if (env) conn_str = env;
-        else { std::cerr << "Usage: market_regime_pipeline_runner <conn> [start] [end]\n"; return 1; }
+        if (env) {
+            conn_str = env;
+        } else {
+            // P4-NEW: fall back to config/defaults.json (mirrors what the
+            // strategy and backtest runners do). Explicit argv / env still
+            // wins — this only kicks in when no connection was supplied.
+            // We try ./config first (run from repo root) and ../config
+            // (run from build/) to match bt_transaction_cost_report.
+            auto cfg = ConfigLoader::load("./config", "base");
+            if (cfg.is_error()) cfg = ConfigLoader::load("../config", "base");
+            if (cfg.is_ok()) {
+                conn_str = cfg.value().database.get_connection_string();
+                std::cerr << "[config] loaded DB connection from config/defaults.json\n";
+            } else {
+                std::cerr << "Usage: market_regime_pipeline_runner <conn> [start] [end]\n"
+                          << "  or set DATABASE_URL, or run from a directory with ./config/defaults.json\n";
+                return 1;
+            }
+        }
     }
 
     PostgresDatabase db(conn_str);

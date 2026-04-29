@@ -240,6 +240,20 @@ Result<DFMOutput> DynamicFactorModel::fit(const Eigen::MatrixXd& data,
 // filter()  — forward-only, no lookahead
 // ============================================================================
 
+// L-08: filter() is STATELESS — runs a forward Kalman pass on `data` from
+// scratch using the fitted Lambda/A/Q/R, returns the smoothed factors.
+// It does NOT advance or modify the online x_filt_ / P_filt_ state.
+//
+// Contract:
+//   - fit() sets x_filt_/P_filt_ to the panel-end Kalman state (line 178-179)
+//   - filter(data) reads only the fitted parameters; does not touch x_filt_
+//   - update(y_t) reads AND writes x_filt_/P_filt_ — advances online state
+//
+// Therefore, the call sequence `fit(panel) → filter(test) → update(new_obs)`
+// runs `update()` from the END-OF-FIT state (NOT end-of-test). Callers
+// who want online inference on an extended panel must use `update()`
+// repeatedly; do not interleave `filter()` calls expecting them to advance
+// the online state.
 Result<DFMOutput> DynamicFactorModel::filter(const Eigen::MatrixXd& data) const
 {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -288,7 +302,10 @@ Result<DFMOutput> DynamicFactorModel::filter(const Eigen::MatrixXd& data) const
             if (S_n < 1e-12) continue;
             Eigen::VectorXd Kn = (P * h) / S_n;
             x = x + Kn * (Y(t, n) - h.dot(x));
-            P = symmetrise((Eigen::MatrixXd::Identity(K, K) - Kn * h.transpose()) * P);
+            // L-07: Joseph form P = (I-KH) P (I-KH)' + K R K' preserves PD
+            // under floating-point roundoff. Scalar update so K R K' = Kn Kn' * R_n.
+            Eigen::MatrixXd IKH = Eigen::MatrixXd::Identity(K, K) - Kn * h.transpose();
+            P = symmetrise(IKH * P * IKH.transpose() + R_diag_(n) * Kn * Kn.transpose());
         }
 
         for (int k = 0; k < K; ++k) {
@@ -354,8 +371,11 @@ Result<Eigen::VectorXd> DynamicFactorModel::update(const Eigen::VectorXd& y_t)
         if (S_n < 1e-12) continue;
         Eigen::VectorXd Kn = (P_filt_ * h) / S_n;
         x_filt_ = x_filt_ + Kn * (y_std(n) - h.dot(x_filt_));
-        P_filt_ = symmetrise(
-            (Eigen::MatrixXd::Identity(K, K) - Kn * h.transpose()) * P_filt_);
+        // L-07 Joseph form (online update path; long-running deployments
+        // have many updates so PD preservation matters most here).
+        Eigen::MatrixXd IKH = Eigen::MatrixXd::Identity(K, K) - Kn * h.transpose();
+        P_filt_ = symmetrise(IKH * P_filt_ * IKH.transpose()
+                             + R_diag_(n) * Kn * Kn.transpose());
     }
 
     return Result<Eigen::VectorXd>(x_filt_);
@@ -398,7 +418,9 @@ DynamicFactorModel::kalman_filter_smoother(const Eigen::MatrixXd& Y) const
             double innovation = Y(t, n) - h.dot(x);
             Eigen::VectorXd Kn = (P * h) / S_n;
             x = x + Kn * innovation;
-            P = symmetrise((Eigen::MatrixXd::Identity(K, K) - Kn * h.transpose()) * P);
+            // L-07 Joseph form (Kalman filter+smoother E-step path)
+            Eigen::MatrixXd IKH = Eigen::MatrixXd::Identity(K, K) - Kn * h.transpose();
+            P = symmetrise(IKH * P * IKH.transpose() + R_diag_(n) * Kn * Kn.transpose());
             log_lik += -0.5 * (std::log(2.0 * M_PI * S_n) +
                                (innovation * innovation) / S_n);
         }

@@ -174,7 +174,10 @@ GMMResult GMM::fit(const Eigen::MatrixXd& X, int K, int seed) const
             double p = best.responsibilities(i, j);
             if (p > 1e-10) h -= p * std::log(p);
         }
-        best.entropy(i) = h / std::log((double)K);
+        // L-10: guard against K=1 → log(1)=0 → divide by zero NaN.
+        // For a degenerate single-cluster fit, entropy is by definition 0
+        // (no uncertainty about which cluster the point belongs to).
+        best.entropy(i) = (K > 1) ? h / std::log((double)K) : 0.0;
     }
 
     std::cerr << "  GMM best ll=" << std::fixed << std::setprecision(1) << best_ll << "\n";

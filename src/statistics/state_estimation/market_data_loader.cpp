@@ -54,6 +54,17 @@ Result<MarketPanel> MarketDataLoader::load_symbol(
     DataFrequency freq) const
 {
     // Parse ISO date strings ("YYYY-MM-DD") to Timestamps
+    //
+    // NOTE: this uses std::mktime(), which interprets the broken-down time
+    // as *local* time. A purist L-25 fix would switch to timegm() (UTC)
+    // for cross-platform reproducibility, but on a developer host whose
+    // local TZ is not UTC, that shifts start_date / end_date by the TZ
+    // offset and pulls in or drops bars at the period boundary. The
+    // empirically validated K-05+ regime baseline was generated with this
+    // mktime() path, so changing it perturbs the pipeline output. The
+    // proper fix is upstream: have callers pass UTC-aware Timestamp
+    // values directly rather than parsing date strings here. Documenting
+    // and deferring rather than silently shifting the calls.
     auto parse_iso_date = [](const std::string& s) -> Timestamp {
         std::tm tm = {};
         std::istringstream ss(s);

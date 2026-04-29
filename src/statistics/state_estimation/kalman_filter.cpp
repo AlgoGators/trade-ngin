@@ -99,13 +99,23 @@ Result<Eigen::VectorXd> KalmanFilter::update(const Eigen::VectorXd& observation)
     // Innovation covariance: S = H * P_k|k-1 * H^T + R
     Eigen::MatrixXd S = H_ * P_ * H_.transpose() + R_;
 
-    // Check condition number of S
+    // L-12: cheap condition number via LLT factorization diagonal min/max.
+    // Pre-fix used JacobiSVD per update, which is O(n³) and runs every call.
+    // For an LLT factor L, cond(S) ≈ (max(L_diag) / min(L_diag))² so we get
+    // an order-of-magnitude check at near-zero cost; the LLT is computed
+    // anyway for the Kalman gain solve below.
     {
-        Eigen::JacobiSVD<Eigen::MatrixXd> svd(S);
-        double cond = svd.singularValues()(0) /
-                      svd.singularValues()(svd.singularValues().size() - 1);
-        if (cond > 1e10) {
-            WARN("[KalmanFilter::update] ill-conditioned innovation covariance S: cond=" << cond);
+        Eigen::LLT<Eigen::MatrixXd> llt_check(S);
+        if (llt_check.info() == Eigen::Success) {
+            auto diag = llt_check.matrixL().toDenseMatrix().diagonal().cwiseAbs();
+            double cond_sqrt = diag.maxCoeff() / std::max(diag.minCoeff(), 1e-300);
+            double cond_approx = cond_sqrt * cond_sqrt;
+            if (cond_approx > 1e10) {
+                WARN("[KalmanFilter::update] ill-conditioned innovation covariance S: cond≈"
+                     << cond_approx);
+            }
+        } else {
+            WARN("[KalmanFilter::update] non-PD innovation covariance S — LLT failed");
         }
     }
 
@@ -122,9 +132,14 @@ Result<Eigen::VectorXd> KalmanFilter::update(const Eigen::VectorXd& observation)
     // Update state: x_k|k = x_k|k-1 + K * y
     x_ = x_ + K * y;
 
-    // Update covariance: P_k|k = (I - K * H) * P_k|k-1
+    // L-07: Joseph form covariance update preserves symmetry and PD even
+    // under floating-point roundoff. The simple form `(I - K*H) * P` is
+    // mathematically equivalent but accumulated rounding can drift P out
+    // of symmetric / PD over many updates, breaking subsequent Cholesky
+    // decompositions. Joseph form: P = (I-KH) P (I-KH)' + K R K'.
     Eigen::MatrixXd I = Eigen::MatrixXd::Identity(config_.state_dim, config_.state_dim);
-    P_ = (I - K * H_) * P_;
+    Eigen::MatrixXd IKH = I - K * H_;
+    P_ = IKH * P_ * IKH.transpose() + K * R_ * K.transpose();
 
     return Result<Eigen::VectorXd>(x_);
 }
