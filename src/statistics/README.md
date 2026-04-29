@@ -79,7 +79,14 @@ Helper functions are in `trade_ngin::statistics::utils`.
 | Model | Class | Purpose |
 |-------|-------|---------|
 | **Kalman Filter** | `KalmanFilter` | Linear state estimation |
-| **HMM** | `HMM` | Hidden Markov Model for regime detection |
+| **Extended Kalman Filter** | `ExtendedKalmanFilter` | Non-linear state estimation |
+| **HMM** | `HMM` | Hidden Markov Model |
+| **MarkovSwitching** | `MarkovSwitching` | Multi-regime state-space with regime-conditioned dynamics |
+
+These are general-purpose algorithms. The trade-ngin regime detection
+pipelines that consume them — DFM, MS-DFM, BSTS, macro/market regime
+aggregators — live in `src/regime_detection/`. See
+`src/regime_detection/README.md` for the regime architecture.
 
 ---
 

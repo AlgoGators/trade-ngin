@@ -404,8 +404,11 @@ trade-ngin/
 │   │   └── portfolio_manager.hpp   # Multi-strategy coordination
 │   ├── risk/                       # Risk management
 │   │   └── risk_manager.hpp        # VaR, leverage limits
+│   ├── regime_detection/           # Macro + market regime pipelines
+│   │   ├── macro/                  # DFM, MS-DFM, BSTS, macro pipeline + loader
+│   │   └── market/                 # Market pipeline, market loader, MSAR
 │   ├── statistics/                 # Statistical analysis
-│   │   └── statistics_tools.hpp    # PCA, GARCH, Kalman, HMM
+│   │   └── statistics_tools.hpp    # PCA, GARCH, Kalman, HMM, MarkovSwitching
 │   ├── storage/                    # Results persistence (3 headers)
 │   │   ├── backtest_results_manager.hpp
 │   │   ├── live_results_manager.hpp
@@ -475,6 +478,9 @@ trade-ngin/
 │   │   └── portfolio_manager.cpp
 │   ├── risk/
 │   │   └── risk_manager.cpp             # VaR, leverage, correlation
+│   ├── regime_detection/           # Regime detection pipelines (see src/regime_detection/README.md)
+│   │   ├── macro/                  # bsts, dfm, ms_dfm, macro_data_loader, macro_regime_pipeline
+│   │   └── market/                 # market_regime_pipeline, market_data_loader, autoregressive (MSAR)
 │   ├── statistics/
 │   │   └── statistics_tools.cpp         # All statistical models
 │   ├── storage/                    # Results persistence (3 files)
