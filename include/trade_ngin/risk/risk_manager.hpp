@@ -19,8 +19,16 @@ namespace trade_ngin {
 struct RiskConfig : public ConfigBase {
     // Risk limits
     double var_limit{0.15};          // Value at Risk limit (15%)
-    double jump_risk_limit{0.10};    // Jump risk threshold (10%)
-    double max_correlation{0.7};     // Maximum allowed correlation
+    double jump_risk_limit{0.10};    // Legacy: kept for compat (not used by Carver jump multiplier)
+    double max_correlation{0.7};     // Legacy: pair-wise correlation cap (kept for compat)
+    // Carver's correlation shock multiplier: portfolio risk computed under shocked
+    // (99th-percentile) correlations, scale down if exceeds threshold.
+    // Default 0.65 = 3.25 × risk_target(0.20) per Advanced Futures Trading Strategies p.610.
+    double corr_shock_threshold{0.65};
+    // Carver's jump risk multiplier: portfolio risk computed under shocked
+    // (99th-percentile per-instrument) standard deviations with original correlations.
+    // Default 0.75 = 3.75 × risk_target(0.20) per Advanced Futures Trading Strategies p.608.
+    double jump_shock_threshold{0.75};
     double max_gross_leverage{4.0};  // Maximum gross leverage
     double max_net_leverage{2.0};     // Maximum net leverage
 
@@ -38,6 +46,8 @@ struct RiskConfig : public ConfigBase {
         j["var_limit"] = var_limit;
         j["jump_risk_limit"] = jump_risk_limit;
         j["max_correlation"] = max_correlation;
+        j["corr_shock_threshold"] = corr_shock_threshold;
+        j["jump_shock_threshold"] = jump_shock_threshold;
         j["max_gross_leverage"] = max_gross_leverage;
         j["max_net_leverage"] = max_net_leverage;
         j["confidence_level"] = confidence_level;
@@ -55,6 +65,10 @@ struct RiskConfig : public ConfigBase {
             jump_risk_limit = j.at("jump_risk_limit").get<double>();
         if (j.contains("max_correlation"))
             max_correlation = j.at("max_correlation").get<double>();
+        if (j.contains("corr_shock_threshold"))
+            corr_shock_threshold = j.at("corr_shock_threshold").get<double>();
+        if (j.contains("jump_shock_threshold"))
+            jump_shock_threshold = j.at("jump_shock_threshold").get<double>();
         if (j.contains("max_gross_leverage"))
             max_gross_leverage = j.at("max_gross_leverage").get<double>();
         if (j.contains("max_net_leverage"))
