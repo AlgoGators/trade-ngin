@@ -162,6 +162,10 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
     try {
         std::unordered_map<std::string, std::unordered_map<std::string, Position>> prev_positions;
         std::unordered_map<std::string, Position> prev_portfolio_positions;
+        // Chop-source attribution snapshots: integer position values at each pipeline phase,
+        // used at end of cycle to tag each integer transition with its trigger.
+        std::unordered_map<std::string, std::unordered_map<std::string, double>> attr_strategy_target;
+        std::unordered_map<std::string, std::unordered_map<std::string, double>> attr_post_qp;
         {
             std::lock_guard<std::mutex> lock(mutex_);
 
@@ -194,9 +198,8 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                 }
 
                 try {
-                    // Store current positions
-                    info.current_positions = info.strategy->get_positions();
-
+                    // info.current_positions must persist as the optimizer's prior-cycle output
+                    // (anchor for its cost penalty); do not overwrite with strategy positions here.
                     std::ostringstream oss;
                     for (auto& [sym, pos] : info.current_positions) {
                         oss << sym << ": " << pos.quantity << ", ";
@@ -220,6 +223,11 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                     info.target_positions = info.strategy->get_target_positions();
                     DEBUG("Retrieved " + std::to_string(info.target_positions.size()) +
                           " target positions from strategy " + id);
+
+                    // Chop-source attribution: snapshot strategy's integer target before optimizer runs
+                    for (const auto& [sym, pos] : info.target_positions) {
+                        attr_strategy_target[id][sym] = static_cast<double>(pos.quantity);
+                    }
 
                     // STICKY_DEBUG: Trace average_price after get_target_positions
                     for (const auto& [sym, tpos] : info.target_positions) {
@@ -269,6 +277,15 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                     WARN("Exception during portfolio optimization in iteration " +
                          std::to_string(iteration) + ": " + std::string(e.what()) +
                          ", continuing without optimization");
+                }
+            }
+            // Chop-source attribution: snapshot first optimizer call output (before risk manager)
+            if (iteration == 1) {
+                std::lock_guard<std::mutex> lock(mutex_);
+                for (const auto& [id, info] : strategies_) {
+                    for (const auto& [sym, pos] : info.target_positions) {
+                        attr_post_qp[id][sym] = static_cast<double>(pos.quantity);
+                    }
                 }
             }
 
@@ -362,6 +379,41 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                         ERROR("FINAL CHECK: Fractional contract detected for " + symbol +
                               " after all iterations. Quantity=" + std::to_string(pos.quantity));
                     }
+                }
+            }
+
+            // Chop-source attribution: classify each integer position transition for trades
+            // about to be generated (final integer != prev integer). Tags with which pipeline
+            // layer caused the change (strategy / QP / risk-scale / unclassified).
+            for (auto& [id, info] : strategies_) {
+                auto prev_it = prev_positions.find(id);
+                if (prev_it == prev_positions.end()) continue;
+                for (const auto& [sym, target_pos] : info.target_positions) {
+                    double final_q = std::round(static_cast<double>(target_pos.quantity));
+                    double prev_q = 0.0;
+                    auto pp = prev_it->second.find(sym);
+                    if (pp != prev_it->second.end()) {
+                        prev_q = std::round(static_cast<double>(pp->second.quantity));
+                    }
+                    if (std::abs(final_q - prev_q) < 0.5) continue;  // No trade
+
+                    double strat_q = std::round(attr_strategy_target[id][sym]);
+                    double qp_q = std::round(attr_post_qp[id][sym]);
+                    std::string source;
+                    if (std::abs(strat_q - prev_q) >= 0.5) {
+                        source = "STRATEGY_FLIP";
+                    } else if (std::abs(qp_q - strat_q) >= 0.5) {
+                        source = "QP_FLIP";
+                    } else if (std::abs(final_q - qp_q) >= 0.5) {
+                        source = "RISK_SCALE_FLIP";
+                    } else {
+                        source = "UNCLASSIFIED";
+                    }
+                    INFO("CHOP_SOURCE: symbol=" + sym + " source=" + source +
+                         " prev=" + std::to_string(prev_q) +
+                         " strat=" + std::to_string(strat_q) +
+                         " qp=" + std::to_string(qp_q) +
+                         " final=" + std::to_string(final_q));
                 }
             }
 
