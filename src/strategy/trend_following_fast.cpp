@@ -1325,15 +1325,20 @@ double TrendFollowingFastStrategy::apply_position_buffer(const std::string& symb
         }
     }
 
-    // Carver buffer width with a configurable floor (see TrendFollowingConfig).
+    // Buffer width = max(carver_natural, floor, position_factor × |current|). See main variant
+    // for rationale.
     double raw_buffer_width = 0.1 * config_.capital_allocation * trend_config_.idm *
                               trend_config_.risk_target * weight /
                               (contract_size * price * trend_config_.fx_rate * volatility);
-    double buffer_width = std::max(trend_config_.carver_buffer_floor, raw_buffer_width);
+    double position_term =
+        trend_config_.carver_buffer_position_factor * std::abs(current_position);
+    double buffer_width = std::max(
+        {trend_config_.carver_buffer_floor, raw_buffer_width, position_term});
 
     DEBUG("Buffer width for " + symbol + ": " + std::to_string(buffer_width) +
-          " contracts (raw=" + std::to_string(raw_buffer_width) +
-          ", floor=" + std::to_string(trend_config_.carver_buffer_floor) + ")");
+          " contracts (carver=" + std::to_string(raw_buffer_width) +
+          ", floor=" + std::to_string(trend_config_.carver_buffer_floor) +
+          ", pos_term=" + std::to_string(position_term) + ")");
 
     // Calculate buffer bounds
     double lower_buffer = raw_position - buffer_width;
