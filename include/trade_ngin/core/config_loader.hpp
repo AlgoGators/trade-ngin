@@ -181,6 +181,7 @@ struct StrategyDefaultsConfig {
     double min_strategy_allocation{0.1};
     bool use_optimization{true};
     bool use_risk_management{true};
+    double carver_buffer_floor{0.5};
 
     nlohmann::json to_json() const {
         nlohmann::json j;
@@ -193,6 +194,7 @@ struct StrategyDefaultsConfig {
         j["min_strategy_allocation"] = min_strategy_allocation;
         j["use_optimization"] = use_optimization;
         j["use_risk_management"] = use_risk_management;
+        j["carver_buffer_floor"] = carver_buffer_floor;
         return j;
     }
 
@@ -211,6 +213,8 @@ struct StrategyDefaultsConfig {
             use_optimization = j.at("use_optimization").get<bool>();
         if (j.contains("use_risk_management"))
             use_risk_management = j.at("use_risk_management").get<bool>();
+        if (j.contains("carver_buffer_floor"))
+            carver_buffer_floor = j.at("carver_buffer_floor").get<double>();
     }
 };
 

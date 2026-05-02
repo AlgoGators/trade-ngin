@@ -309,7 +309,11 @@ int main() {
                     trend_config.weight = cfg.value("weight", 0.03);
                     trend_config.risk_target = cfg.value("risk_target", 0.15);  // Conservative default
                     trend_config.idm = cfg.value("idm", 2.5);
+                    trend_config.max_symbol_concentration =
+                        cfg.value("max_symbol_concentration", 0.15);
                     trend_config.use_position_buffering = cfg.value("use_position_buffering", true);
+                    trend_config.carver_buffer_floor = cfg.value(
+                        "carver_buffer_floor", app_config.strategy_defaults.carver_buffer_floor);
                     if (cfg.contains("ema_windows")) {
                         trend_config.ema_windows.clear();
                         for (const auto& window : cfg["ema_windows"]) {
@@ -335,8 +339,12 @@ int main() {
                     trend_config.weight = cfg.value("weight", 0.03);
                     trend_config.risk_target = cfg.value("risk_target", 0.20);  // Conservative default
                     trend_config.idm = cfg.value("idm", 2.5);
+                    trend_config.max_symbol_concentration =
+                        cfg.value("max_symbol_concentration", 0.15);
                     trend_config.use_position_buffering =
                         cfg.value("use_position_buffering", false);
+                    trend_config.carver_buffer_floor = cfg.value(
+                        "carver_buffer_floor", app_config.strategy_defaults.carver_buffer_floor);
                     if (cfg.contains("ema_windows")) {
                         trend_config.ema_windows.clear();
                         for (const auto& window : cfg["ema_windows"]) {
