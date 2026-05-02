@@ -26,6 +26,10 @@ struct TrendFollowingConfig {
     // sub-tick and a no-op for integer positions. 0.5 is the smallest value that can absorb a
     // breach for typical 0-3 contract holdings; set to 0.0 to disable.
     double carver_buffer_floor{0.5};
+    // Position-proportional buffer: buffer_width = max(floor, factor × |raw_position|).
+    // Targets high-magnitude positions (MBT/M2K/MYM) where day-over-day raw can move
+    // > 0.5 contracts, breaching the floor. Set to 0.0 to disable (floor-only).
+    double carver_buffer_position_factor{0.2};
     std::vector<std::pair<int, int>> ema_windows{
         // EMA window pairs for crossovers
         {2, 8}, {4, 16}, {8, 32}, {16, 64}, {32, 128}, {64, 256}};

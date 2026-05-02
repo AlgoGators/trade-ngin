@@ -25,6 +25,7 @@ struct TrendFollowingSlowConfig {
     bool use_position_buffering{true};  // Whether to use position buffers to reduce trading
     // Minimum buffer width in contracts; see TrendFollowingConfig for rationale. Set to 0.0 to disable.
     double carver_buffer_floor{0.5};
+    double carver_buffer_position_factor{0.2};
     std::vector<std::pair<int, int>> ema_windows{
         // EMA window pairs for crossovers (slower/longer lookback periods)
         {4, 16}, {8, 32}, {16, 64}, {32, 128}, {64, 256}, {128, 512}};

@@ -1342,18 +1342,22 @@ double TrendFollowingStrategy::apply_position_buffer(const std::string& symbol, 
         }
     }
 
-    // Carver buffer width with a configurable floor. Raw formula yields 0.02-0.28 contracts
-    // for micros — sub-tick and a no-op for integer positions. Floor (default 0.5) makes the
-    // buffer meaningful for micros while leaving full-size contracts (whose raw value already
-    // exceeds the floor) unaffected. Set carver_buffer_floor to 0.0 to disable.
+    // Buffer width = max(carver_natural, floor, position_factor × |current|). Anchored on
+    // CURRENT position, not raw, to create inertia for held positions: bigger held position →
+    // wider tolerance for raw drift. When current=0, position_term=0 and floor controls entry
+    // threshold (preserves small-natural instruments).
     double raw_buffer_width = 0.1 * config_.capital_allocation * trend_config_.idm *
                               trend_config_.risk_target * weight /
                               (contract_size * price * trend_config_.fx_rate * volatility);
-    double buffer_width = std::max(trend_config_.carver_buffer_floor, raw_buffer_width);
+    double position_term =
+        trend_config_.carver_buffer_position_factor * std::abs(current_position);
+    double buffer_width = std::max(
+        {trend_config_.carver_buffer_floor, raw_buffer_width, position_term});
 
     DEBUG("Buffer width for " + symbol + ": " + std::to_string(buffer_width) +
-          " contracts (raw=" + std::to_string(raw_buffer_width) +
-          ", floor=" + std::to_string(trend_config_.carver_buffer_floor) + ")");
+          " contracts (carver=" + std::to_string(raw_buffer_width) +
+          ", floor=" + std::to_string(trend_config_.carver_buffer_floor) +
+          ", pos_term=" + std::to_string(position_term) + ")");
 
     // Calculate buffer bounds
     double lower_buffer = raw_position - buffer_width;

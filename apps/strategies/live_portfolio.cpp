@@ -412,6 +412,9 @@ int main(int argc, char* argv[]) {
                     trend_config.use_position_buffering = cfg.value("use_position_buffering", true);
                     trend_config.carver_buffer_floor = cfg.value(
                         "carver_buffer_floor", app_config.strategy_defaults.carver_buffer_floor);
+                    trend_config.carver_buffer_position_factor =
+                        cfg.value("carver_buffer_position_factor",
+                                  app_config.strategy_defaults.carver_buffer_position_factor);
                     if (cfg.contains("ema_windows")) {
                         trend_config.ema_windows.clear();
                         for (const auto& window : cfg["ema_windows"]) {
@@ -444,6 +447,9 @@ int main(int argc, char* argv[]) {
                         cfg.value("use_position_buffering", false);
                     trend_config.carver_buffer_floor = cfg.value(
                         "carver_buffer_floor", app_config.strategy_defaults.carver_buffer_floor);
+                    trend_config.carver_buffer_position_factor =
+                        cfg.value("carver_buffer_position_factor",
+                                  app_config.strategy_defaults.carver_buffer_position_factor);
                     if (cfg.contains("ema_windows")) {
                         trend_config.ema_windows.clear();
                         for (const auto& window : cfg["ema_windows"]) {
@@ -474,6 +480,9 @@ int main(int argc, char* argv[]) {
                     trend_config.use_position_buffering = cfg.value("use_position_buffering", true);
                     trend_config.carver_buffer_floor = cfg.value(
                         "carver_buffer_floor", app_config.strategy_defaults.carver_buffer_floor);
+                    trend_config.carver_buffer_position_factor =
+                        cfg.value("carver_buffer_position_factor",
+                                  app_config.strategy_defaults.carver_buffer_position_factor);
                     if (cfg.contains("ema_windows")) {
                         trend_config.ema_windows.clear();
                         for (const auto& window : cfg["ema_windows"]) {
