@@ -201,10 +201,18 @@ int main(int argc, char* argv[]) {
             return 1;
         }
 
-        // Normalize allocations to sum to 1.0
+        // Normalize allocations to sum to 1.0. If the configured allocations
+        // sum to less than 1.0 (e.g. 0.6 + 0.3, expecting 10% idle capital),
+        // this loop silently rescales them to 1.0 — partial deployment is not
+        // supported. Warn so operators can spot a config mistake.
         double total_allocation = 0.0;
         for (const auto& [_, alloc] : strategy_allocations) {
             total_allocation += alloc;
+        }
+        if (total_allocation > 0.0 && std::abs(total_allocation - 1.0) > 1e-6) {
+            WARN("Strategy allocations sum to " + std::to_string(total_allocation) +
+                 " (not 1.0); silently rescaling. Partial-capital deployment is not "
+                 "supported — adjust default_allocation values or accept full deployment.");
         }
         if (total_allocation > 0.0) {
             for (auto& [_, alloc] : strategy_allocations) {
@@ -965,13 +973,25 @@ int main(int argc, char* argv[]) {
                 }
             }
 
-            // Get optimized portfolio positions (integer-rounded after optimization/risk)
-            INFO("Retrieving optimized portfolio positions...");
-            positions = portfolio->get_portfolio_positions();
-
-            // Extract per-strategy positions map (needed for Phase 4 & 5)
+            // Extract per-strategy positions map first; we build the combined
+            // map below by summing across strategies (Σ qᵢ). Using
+            // get_portfolio_positions() here would double-apply allocation
+            // and feed fractional quantities to the daily report, email
+            // tables, and portfolio composition chart.
             INFO("Extracting per-strategy positions from PortfolioManager...");
             strategy_positions_map = portfolio->get_strategy_positions();
+            INFO("Building combined portfolio positions by per-strategy sum...");
+            positions.clear();
+            for (const auto& [_, pos_map] : strategy_positions_map) {
+                for (const auto& [symbol, pos] : pos_map) {
+                    auto it = positions.find(symbol);
+                    if (it == positions.end()) {
+                        positions[symbol] = pos;
+                    } else {
+                        it->second.quantity += pos.quantity;
+                    }
+                }
+            }
             INFO("DEBUG: Retrieved " + std::to_string(strategy_positions_map.size()) +
                  " strategies from PortfolioManager");
         }  // End of if (!skip_strategy_processing) - strategy processing block
@@ -1464,19 +1484,23 @@ int main(int argc, char* argv[]) {
 
         if (margin_result.is_ok()) {
             auto& metrics = margin_result.value();
-            total_posted_margin = metrics.total_posted_margin;
-            maintenance_requirement_today = metrics.maintenance_requirement;
 
-            // Recompute gross_notional and net_notional from per-strategy positions.
-            // The combined positions map nets same-symbol quantities across strategies
-            // BEFORE taking absolute values, which understates gross exposure when
-            // strategies hold opposing positions in the same instrument.
+            // Recompute notional AND margin from per-strategy positions.
+            // The combined positions map fed to calculate_margin_requirements above is
+            // get_portfolio_positions(), which scales each strategy's quantity by its
+            // allocation (Σ qᵢ × allocᵢ). Strategies already size for their capital
+            // slice, so that scaling is double-applied — the combined map under-states
+            // both gross_notional and total_posted_margin by ~Σ allocᵢ². Iterating per
+            // strategy and accumulating against |q| restores the additive invariant:
+            // total_posted_margin = Σ_strategies Σ_symbols |q| × initial_margin.
             gross_notional = 0.0;
             net_notional = 0.0;
+            total_posted_margin = 0.0;
+            maintenance_requirement_today = 0.0;
             int true_active_positions = 0;
-            bool notional_fallback = false;
+            bool recompute_fallback = false;
             for (const auto& [strategy_id, pos_map] : strategy_positions_map) {
-                if (notional_fallback)
+                if (recompute_fallback)
                     break;
                 for (const auto& [symbol, pos] : pos_map) {
                     double qty = pos.quantity.as_double();
@@ -1484,32 +1508,42 @@ int main(int argc, char* argv[]) {
                         continue;
                     true_active_positions++;
 
-                    auto notional_result = margin_manager->calculate_position_notional(
-                        symbol, qty,
-                        previous_day_close_prices.count(symbol)
-                            ? previous_day_close_prices.at(symbol)
-                            : pos.average_price.as_double());
-                    if (notional_result.is_ok()) {
+                    double price = previous_day_close_prices.count(symbol)
+                                       ? previous_day_close_prices.at(symbol)
+                                       : pos.average_price.as_double();
+
+                    auto notional_result =
+                        margin_manager->calculate_position_notional(symbol, qty, price);
+                    auto margin_result_per =
+                        margin_manager->calculate_position_margin(symbol, qty, price);
+
+                    if (notional_result.is_ok() && margin_result_per.is_ok()) {
                         double signed_notional = notional_result.value();
                         gross_notional += std::abs(signed_notional);
                         net_notional += signed_notional;
+                        auto [initial_m, maint_m] = margin_result_per.value();
+                        total_posted_margin += initial_m;
+                        maintenance_requirement_today += maint_m;
                     } else {
-                        WARN("Failed to calculate per-strategy notional for " + symbol +
+                        WARN("Failed per-strategy notional/margin for " + symbol +
                              " in strategy " + strategy_id +
-                             ", falling back to MarginManager combined value");
+                             ", falling back to MarginManager combined values");
                         gross_notional = metrics.gross_notional;
                         net_notional = metrics.net_notional;
-                        notional_fallback = true;
+                        total_posted_margin = metrics.total_posted_margin;
+                        maintenance_requirement_today = metrics.maintenance_requirement;
+                        recompute_fallback = true;
                         break;
                     }
                 }
             }
             active_positions = true_active_positions;
 
-            INFO("Per-strategy notional: gross=$" + std::to_string(gross_notional) + ", net=$" +
-                 std::to_string(net_notional) + " (combined was gross=$" +
-                 std::to_string(metrics.gross_notional) + ", net=$" +
-                 std::to_string(metrics.net_notional) + ")");
+            INFO("Per-strategy recompute: gross=$" + std::to_string(gross_notional) +
+                 ", net=$" + std::to_string(net_notional) +
+                 ", posted_margin=$" + std::to_string(total_posted_margin) +
+                 " (combined was gross=$" + std::to_string(metrics.gross_notional) +
+                 ", posted_margin=$" + std::to_string(metrics.total_posted_margin) + ")");
             INFO("MarginManager calculated: gross_notional=$" + std::to_string(gross_notional) +
                  ", posted_margin=$" + std::to_string(total_posted_margin) +
                  ", active_positions=" + std::to_string(active_positions));
@@ -1533,15 +1567,18 @@ int main(int argc, char* argv[]) {
                 "Computed posted margin is non-positive while positions are active. Check "
                 "instrument metadata.");
         }
-        // Equity-to-Margin Ratio = gross_notional / total_posted_margin
-        // This metric shows how many times the gross notional exposure is covered by posted margin
-        // Higher values indicate more leverage relative to margin requirements
+        // Equity-to-Margin Ratio = portfolio_equity / total_posted_margin.
+        // Higher = safer (more equity per dollar of margin posted). The earlier
+        // formula here used gross_notional in the numerator, which is actually
+        // a leverage-to-margin metric, not equity-to-margin. We use
+        // initial_capital as the equity proxy (current_portfolio_value is not
+        // yet computed at this point in the run; it's the same proxy the
+        // MarginManager already uses for gross_leverage).
         double equity_to_margin_ratio =
-            (total_posted_margin > 0.0) ? (gross_notional / total_posted_margin) : 0.0;
+            (total_posted_margin > 0.0) ? (initial_capital / total_posted_margin) : 0.0;
         if (equity_to_margin_ratio <= 1.0 && active_positions > 0) {
-            WARN(
-                "Equity-to-Margin Ratio (gross_notional / posted_margin) is <= 1.0; verify "
-                "margins.");
+            WARN("Equity-to-Margin Ratio is <= 1.0 (account equity at or below "
+                 "posted margin); verify margins and sizing.");
         }
 
         // ========================================
@@ -2517,8 +2554,13 @@ int main(int argc, char* argv[]) {
         if (margin_cushion < 0.20) {
             WARN("Margin cushion below 20%.");
         }
-        if (equity_to_margin_ratio > 4.0) {
-            WARN("Equity-to-Margin Ratio above 4x.");
+        // Old WARN fired on `e2m_ratio > 4.0` — sensible only under the prior
+        // (buggy) gross_notional/margin formula where high = more leverage.
+        // After the formula fix, high e2m means more equity per dollar of
+        // posted margin (safer), so a ceiling alarm is no longer meaningful.
+        // Replaced with a low-floor alarm to catch true under-collateralization.
+        if (equity_to_margin_ratio > 0.0 && equity_to_margin_ratio < 1.5) {
+            WARN("Equity-to-Margin Ratio below 1.5x (low margin cushion).");
         }
 
         // Get forecasts for all symbols

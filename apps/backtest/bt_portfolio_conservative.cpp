@@ -258,10 +258,18 @@ int main() {
             return 1;
         }
 
-        // Normalize allocations to sum to 1.0
+        // Normalize allocations to sum to 1.0. If configured allocations sum
+        // to <1.0 (e.g. 0.6 + 0.3, expecting 10% idle), this loop silently
+        // rescales — partial deployment is not supported. Warn so operators
+        // can spot a config mistake.
         double total_allocation = 0.0;
         for (const auto& [_, alloc] : strategy_allocations) {
             total_allocation += alloc;
+        }
+        if (total_allocation > 0.0 && std::abs(total_allocation - 1.0) > 1e-6) {
+            WARN("Strategy allocations sum to " + std::to_string(total_allocation) +
+                 " (not 1.0); silently rescaling. Partial-capital deployment is not "
+                 "supported — adjust default_allocation values or accept full deployment.");
         }
         if (total_allocation > 0.0) {
             for (auto& [_, alloc] : strategy_allocations) {

@@ -339,9 +339,23 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
     results.executions = std::move(all_executions);
     results.equity_curve = std::move(equity_curve);
 
-    // Get final portfolio positions
+    // Get final portfolio positions: sum per-strategy quantities (Σ qᵢ).
+    // get_portfolio_positions() applies allocation a second time, producing
+    // fractional contracts for multi-strategy portfolios. Strategies already
+    // size for their capital slice, so the broker holds the simple sum.
     try {
-        auto portfolio_positions = portfolio->get_portfolio_positions();
+        auto strategy_positions = portfolio->get_strategy_positions();
+        std::unordered_map<std::string, Position> portfolio_positions;
+        for (const auto& [_, pos_map] : strategy_positions) {
+            for (const auto& [symbol, pos] : pos_map) {
+                auto it = portfolio_positions.find(symbol);
+                if (it == portfolio_positions.end()) {
+                    portfolio_positions[symbol] = pos;
+                } else {
+                    it->second.quantity += pos.quantity;
+                }
+            }
+        }
         results.positions.reserve(portfolio_positions.size());
         for (const auto& [_, pos] : portfolio_positions) {
             results.positions.push_back(pos);
@@ -676,6 +690,27 @@ Result<void> BacktestCoordinator::process_portfolio_day(
         // Add to equity curve
         equity_curve.emplace_back(timestamp, portfolio_value);
 
+        // Build the portfolio-level positions map by simple per-strategy sum
+        // (Σ qᵢ). get_portfolio_positions() applies allocation a second time,
+        // producing fractional contracts and under-stated risk/notional.
+        // Strategies size for their capital slice already; the broker holds
+        // the simple sum.
+        auto build_portfolio_sum = [&]() {
+            std::unordered_map<std::string, Position> result;
+            auto strategy_positions = portfolio->get_strategy_positions();
+            for (const auto& [_, pos_map] : strategy_positions) {
+                for (const auto& [symbol, pos] : pos_map) {
+                    auto it = result.find(symbol);
+                    if (it == result.end()) {
+                        result[symbol] = pos;
+                    } else {
+                        it->second.quantity += pos.quantity;
+                    }
+                }
+            }
+            return result;
+        };
+
         // CSV export: append daily and finalized positions
         if (csv_exporter_) {
             // Build market_prices map
@@ -684,8 +719,7 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                 market_prices[bar.symbol] = static_cast<double>(bar.close);
             }
 
-            // Get portfolio positions as unordered_map
-            auto portfolio_positions = portfolio->get_portfolio_positions();
+            auto portfolio_positions = build_portfolio_sum();
 
             // Calculate gross and net notional
             double gross_notional = 0.0;
@@ -722,13 +756,11 @@ Result<void> BacktestCoordinator::process_portfolio_day(
         // Get risk metrics if enabled
         if (config_.use_risk_management && risk_manager_) {
             try {
-                auto portfolio_positions = portfolio->get_portfolio_positions();
+                auto portfolio_positions = build_portfolio_sum();
                 if (!portfolio_positions.empty()) {
                     MarketData market_data = risk_manager_->create_market_data(bars);
-                    std::unordered_map<std::string, Position> positions_for_risk(
-                        portfolio_positions.begin(), portfolio_positions.end());
                     auto risk_result =
-                        risk_manager_->process_positions(positions_for_risk, market_data);
+                        risk_manager_->process_positions(portfolio_positions, market_data);
                     if (risk_result.is_ok()) {
                         risk_metrics.push_back(risk_result.value());
                     }
