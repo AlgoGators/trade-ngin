@@ -2607,7 +2607,7 @@ int main(int argc, char* argv[]) {
             auto current_date = now;
 
             // Use the calculated returns from above
-            double volatility = 0.0;
+            [[maybe_unused]] double volatility = 0.0;
 
             // Get volatility from risk evaluation if available
             if (risk_eval.is_ok()) {
