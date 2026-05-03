@@ -19,6 +19,7 @@ set(TEST_SOURCES
     # backtesting/test_engine.cpp  # Deprecated - BacktestEngine replaced by BacktestCoordinator
     execution/test_execution_engine.cpp
     portfolio/test_portfolio_manager.cpp
+    portfolio/test_portfolio_aggregation.cpp
     strategy/test_base_strategy.cpp
     strategy/test_trend_following.cpp
     statistics/test_normalizer.cpp

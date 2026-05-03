@@ -184,7 +184,12 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                 prev_positions[id] = info.current_positions;
             }
 
-            // Store current portfolio positions to detect changes
+            // Snapshot of aggregated portfolio positions, used only for the
+            // backward-compat portfolio-level execution diff below
+            // (recent_executions_, no production consumer). Returns the
+            // under-scaled view (Σ qᵢ × allocᵢ) — fine here because the
+            // matching post_opt computed downstream uses the same scale, so
+            // the diff is internally consistent.
             prev_portfolio_positions = get_positions_internal();
 
             // Process data through each strategy
@@ -433,15 +438,12 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
             }
         }
 
-        // Get optimized positions (should be whole numbers after dynamic optimization)
+        // post_opt feeds the backward-compat portfolio-level executions loop
+        // below (recent_executions_). It returns under-scaled aggregated
+        // quantities (Σ qᵢ × allocᵢ); only used for diff-based execution
+        // synthesis that no production consumer reads. Broker executions are
+        // emitted per-strategy from info.target_positions.
         auto post_opt = get_portfolio_positions();
-        {
-            std::ostringstream oss3;
-            for (const auto& [symbol, pos] : post_opt) {
-                oss3 << symbol << ": " << pos.quantity << ", ";
-            }
-            DEBUG("Post-optimization positions: " + oss3.str());
-        }
 
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -676,7 +678,11 @@ std::vector<double> PortfolioManager::calculate_weights_per_contract(
             auto instrument = registry_->get_instrument(symbol);
             contract_size = instrument->get_multiplier();
 
-            // Get latest price from positions or market data
+            // Look up the symbol's average_price for weight-per-contract
+            // sizing. Reads price only — get_portfolio_positions() scales
+            // quantity by allocation but leaves average_price untouched, so
+            // safe here. Don't replicate this pattern for any field that
+            // depends on quantity.
             const auto& portfolio_positions = get_portfolio_positions();
             auto pos_it = portfolio_positions.find(symbol);
             if (pos_it != portfolio_positions.end()) {
@@ -1190,8 +1196,25 @@ Result<void> PortfolioManager::apply_risk_management(const std::vector<Bar>& dat
 
         MarketData market_data = active_manager->create_market_data(risk_history_);
 
-        // Collect all positions
-        auto portfolio_positions = get_portfolio_positions();
+        // Collect aggregated portfolio positions for risk evaluation.
+        // Use simple per-strategy sum (Σ qᵢ) instead of get_portfolio_positions(),
+        // which scales by allocation a second time. Strategies size for their
+        // capital slice already, so the broker holds Σ qᵢ — that's what risk
+        // checks (VaR, gross leverage, correlation, jump) must operate on.
+        std::unordered_map<std::string, Position> portfolio_positions;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            for (const auto& [_, info] : strategies_) {
+                for (const auto& [symbol, pos] : info.target_positions) {
+                    auto it = portfolio_positions.find(symbol);
+                    if (it == portfolio_positions.end()) {
+                        portfolio_positions[symbol] = pos;
+                    } else {
+                        it->second.quantity += pos.quantity;
+                    }
+                }
+            }
+        }
 
         // Check if we have positions to process
         if (portfolio_positions.empty()) {

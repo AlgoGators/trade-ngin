@@ -137,8 +137,17 @@ public:
     Result<void> update_allocations(const std::unordered_map<std::string, double>& allocations);
 
     /**
-     * @brief Get current portfolio positions
-     * @return Map of symbol to aggregated position
+     * @brief Get current portfolio positions, scaled by each strategy's allocation.
+     *
+     * Returns Σᵢ qᵢ × allocᵢ per symbol. Each strategy is already sized for its
+     * own capital slice (capital_allocation = initial_capital × allocation), so
+     * the broker actually holds Σᵢ qᵢ — applying allocation here under-states
+     * exposure on multi-strategy portfolios and produces fractional contracts.
+     *
+     * Use this only for legacy paths (debug logging, price-only lookups, or
+     * the backward-compatibility portfolio-level execution generator). For
+     * margin, risk, CSV, or anything that must reflect broker reality, sum
+     * `get_strategy_positions()` per symbol instead.
      */
     std::unordered_map<std::string, Position> get_portfolio_positions() const;
 
@@ -328,8 +337,9 @@ private:
         const std::unordered_map<std::string, double>& allocations) const;
 
     /**
-     * @brief Get positions from all strategies
-     * @return Map of symbol to position across all strategies
+     * @brief Get positions from all strategies (internal, mutex-not-held variant
+     *        of get_portfolio_positions). Same allocation-scaling caveat: returns
+     *        Σᵢ qᵢ × allocᵢ, NOT broker truth. See get_portfolio_positions().
      */
     std::unordered_map<std::string, Position> get_positions_internal() const;
 };
