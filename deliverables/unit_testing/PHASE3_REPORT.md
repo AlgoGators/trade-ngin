@@ -1,9 +1,11 @@
 # Phase 3 — Unit Test Coverage Report and Forward Plan
 
-Branch: `feature/test-coverage-improvements`
-Last commit at time of writing: `cef6108` (`tests(live): cover historical_metrics, ...`)
+Branch: `main`
+Last commit at time of writing: `4fb01c4` (`docs(unit_testing): Phase 3 wrap-up report — coverage numbers, per-file status, FIXMEs, forward plan`)
 
 This document captures (1) the state of unit-test coverage at the close of Phase 3, (2) the per-file picture across the repo, (3) the FIXMEs documented during the work, and (4) a concrete forward plan with prioritized refinements.
+
+Numbers were re-baselined after the Phase 3 work landed on `main` alongside concurrent changes (Carver-faithful buffering in `risk_manager` / `trend_following`, multi-strategy aggregation in `portfolio_manager` / `backtest_coordinator`, instrument registry `.v.X` suffix handling). Some src/ files grew without proportional test additions, lowering their per-file rates.
 
 ---
 
@@ -11,28 +13,28 @@ This document captures (1) the state of unit-test coverage at the close of Phase
 
 | Scope | Lines covered | Rate |
 |---|---|---|
-| All `src/` files | 15,912 / 27,802 | **57.2%** |
-| `src/` minus deferred files (chart_generator, email_sender, postgres_database*, live_trading_coordinator, execution_engine) | 15,878 / 21,402 | **74.2%** |
-| Test count (excluding pre-existing ExecutionEngine crashes) | 1,161 passing | — |
+| All `src/` files | 15,953 / 28,008 | **57.0%** |
+| `src/` minus deferred files (chart_generator, email_sender, postgres_database*, live_trading_coordinator, execution_engine) | 15,919 / 21,609 | **73.7%** |
+| Test count (excluding pre-existing ExecutionEngine crashes) | 1,165 passing | — |
 
 Starting baseline at the start of this branch was approximately **20–25% in-scope lines**.
 
-The gap between 57.2% and 74.2% is almost entirely the five files documented as out-of-scope or DB-DI-blocked:
+The gap between 57.0% and 73.7% is almost entirely the five files documented as out-of-scope or DB-DI-blocked:
 
 | File | LOC | Coverage | Why deferred |
 |---|---|---|---|
-| `src/core/email_sender.cpp` | 2,555 | 0.1% | SMTP-coupled, `email_sender_refactor.md` |
+| `src/core/email_sender.cpp` | 2,554 | 0.1% | SMTP-coupled, `email_sender_refactor.md` |
 | `src/data/postgres_database.cpp` | 1,401 | 2.1% | needs pqxx connection injection (Option B) |
 | `src/core/chart_generator.cpp` | 1,229 | 0.1% | rendering-coupled, `chart_generator_refactor.md` |
 | `src/execution/execution_engine.cpp` | 609 | 0.0% | pre-existing test crashes (FIXME-6, FIXME-7) |
 | `src/data/postgres_database_extensions.cpp` | 430 | 0.2% | same DI blocker |
-| **Total deferred** | **6,224** | | |
+| **Total deferred** | **6,223** | | |
 
 ---
 
 ## 2. How to reproduce the coverage numbers
 
-All commands run from `/Users/hemduttrao/tw/unit-tests`. Build directory is `build_coverage` (separate from `build/` which holds Release binaries for the backtest sentinel).
+All commands run from the repo root. Build directory is `build_coverage` (separate from `build/` which holds Release binaries for the backtest sentinel).
 
 ### One-time build setup
 
@@ -129,7 +131,7 @@ open /tmp/cov_html/index.html
 
 ## 3. Per-module per-file table (current state)
 
-Coverage as of `cef6108`. ✅ = ≥80% line. The "why-not-80%" column is the operative thing for the forward plan.
+Coverage as of `4fb01c4`. ✅ = ≥80% line. The "why-not-80%" column is the operative thing for the forward plan.
 
 ### backtest (10 files)
 
@@ -144,7 +146,7 @@ Coverage as of `cef6108`. ✅ = ≥80% line. The "why-not-80%" column is the ope
 | `backtest_metrics_calculator.cpp` | 332 | 93.1% | ✅ |
 | `backtest_portfolio_constraints.cpp` | 177 | 71.8% | iterative buffering paths need realistic vol/cov |
 | `transaction_cost_analysis.cpp` | 241 | 75.5% | branch coverage on attribution paths |
-| `backtest_coordinator.cpp` | 619 | 9.9% | DB init + run loop — DI blocker |
+| `backtest_coordinator.cpp` | 637 | 9.6% | DB init + run loop — DI blocker (LOC grew with multi-strategy aggregation) |
 
 ### core (9 files)
 
@@ -158,7 +160,7 @@ Coverage as of `cef6108`. ✅ = ≥80% line. The "why-not-80%" column is the ope
 | `logger.cpp` | 120 | 83.3% | ✅ |
 | `config_manager.cpp` | 442 | 77.6% | dead helper `validate_numeric_range` + deadlock bug (FIXME-1) blocks empty-path init |
 | `chart_generator.cpp` | 1,229 | 0.1% | **deferred** — rendering-coupled |
-| `email_sender.cpp` | 2,555 | 0.1% | **deferred** — SMTP-coupled |
+| `email_sender.cpp` | 2,554 | 0.1% | **deferred** — SMTP-coupled |
 
 ### data (6 files)
 
@@ -184,7 +186,7 @@ Coverage as of `cef6108`. ✅ = ≥80% line. The "why-not-80%" column is the ope
 | `option.cpp` | 111 | 91.0% | ✅ |
 | `futures.cpp` | 56 | 82.1% | ✅ |
 | `equity.cpp` | 39 | 74.4% | minor — tradability + dividend branches |
-| `instrument_registry.cpp` | 241 | 73.9% | DB-load path is the gap |
+| `instrument_registry.cpp` | 246 | 72.8% | DB-load path is the gap (LOC grew with `.v.X` suffix handling) |
 
 ### live (9 files)
 
@@ -195,7 +197,7 @@ Coverage as of `cef6108`. ✅ = ≥80% line. The "why-not-80%" column is the ope
 | `live_price_manager.cpp` | 104 | 96.2% | ✅ |
 | `live_metrics_calculator.cpp` | 198 | 90.4% | ✅ |
 | `live_pnl_manager.cpp` | 203 | 81.8% | ✅ |
-| `margin_manager.cpp` | 176 | 68.2% | `print_margin_summary` (cout) + DB-loaded instrument paths |
+| `margin_manager.cpp` | 175 | 68.0% | `print_margin_summary` (cout) + DB-loaded instrument paths |
 | `csv_exporter.cpp` | 383 | 18.3% | export methods need ITrendFollowingStrategy* / IDatabase* (DI blocker) |
 | `live_data_loader.cpp` | 623 | 10.1% | every method is a SQL query — DI blocker |
 | `live_trading_coordinator.cpp` | 176 | 0.6% | **explicitly excluded by you** at task start |
@@ -206,8 +208,8 @@ Coverage as of `cef6108`. ✅ = ≥80% line. The "why-not-80%" column is the ope
 |---|---|---|---|
 | `optimization/dynamic_optimizer.cpp` | 224 | 85.3% | ✅ |
 | `order/order_manager.cpp` | 144 | 83.3% | ✅ |
-| `portfolio/portfolio_manager.cpp` | 874 | 67.0% | iterative opt→risk loop, branch coverage 30.6% |
-| `risk/risk_manager.cpp` | 380 | 76.1% | close — VaR calc edge cases |
+| `portfolio/portfolio_manager.cpp` | 911 | 67.9% | iterative opt→risk loop + multi-strategy aggregation paths |
+| `risk/risk_manager.cpp` | 516 | 56.0% | Carver shock formulas + correlation/jump caps added on main; existing tests don't exercise the new paths |
 
 ### statistics (20 files)
 
@@ -233,9 +235,9 @@ Coverage as of `cef6108`. ✅ = ≥80% line. The "why-not-80%" column is the ope
 |---|---|---|---|
 | `regime_detector.cpp` | 286 | 83.2% | ✅ |
 | `base_strategy.cpp` | 321 | 76.0% | close — risk override paths |
-| `trend_following_slow.cpp` | 897 | 67.9% | regime-coupling branches need full regime state |
-| `trend_following.cpp` | 912 | 66.2% | same |
-| `trend_following_fast.cpp` | 906 | 63.7% | same |
+| `trend_following_slow.cpp` | 901 | 68.0% | regime-coupling branches need full regime state |
+| `trend_following.cpp` | 916 | 66.4% | same; Carver buffer position-factor field added on main (covered via `PositionBuffering` + `CarverBufferConstantsArePinned`) |
+| `trend_following_fast.cpp` | 910 | 63.4% | same |
 
 ### transaction_cost (4 files)
 
@@ -351,5 +353,5 @@ If you'd rather minimize change risk: do **A** only, ship as a coverage bump fro
 
 - Refactor plans: `deliverables/unit_testing/{chart_generator,email_sender,postgres_database}_refactor.md`
 - Sentinel + per-phase coverage history: `.baselines/`
-- Per-phase commits: `git log feature/test-coverage-improvements --oneline`
-- Branch tip: `cef6108`
+- Per-phase commits: `git log main --oneline` (Phase 3 commits are now linear on `main` after cherry-pick)
+- Re-baseline tip: `4fb01c4`

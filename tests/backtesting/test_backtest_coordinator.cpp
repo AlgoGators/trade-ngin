@@ -27,8 +27,8 @@ BacktestCoordinatorConfig default_config() {
     return c;
 }
 
-std::shared_ptr<MockStrategy> make_mock_strategy(const std::string& id,
-                                                  std::shared_ptr<MockPostgresDatabase> db) {
+[[maybe_unused]] std::shared_ptr<MockStrategy> make_mock_strategy(
+    const std::string& id, std::shared_ptr<MockPostgresDatabase> db) {
     StrategyConfig sc;
     sc.capital_allocation = 1'000'000.0;
     sc.max_leverage = 2.0;
@@ -39,7 +39,7 @@ std::shared_ptr<MockStrategy> make_mock_strategy(const std::string& id,
     return std::make_shared<MockStrategy>(id, sc, db);
 }
 
-Bar make_bar(const std::string& symbol, double close) {
+[[maybe_unused]] Bar make_bar(const std::string& symbol, double close) {
     Bar bar;
     bar.symbol = symbol;
     bar.timestamp = Timestamp{};
