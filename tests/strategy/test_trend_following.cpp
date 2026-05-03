@@ -252,6 +252,14 @@ protected:
     double last_position_{0.0};
 };
 
+// Pin Carver buffer constants. If anyone tunes these defaults silently, this test fires
+// and forces them to also update PositionBuffering test bounds + buffering docs.
+TEST(TrendFollowingConfigDefaults, CarverBufferConstantsArePinned) {
+    TrendFollowingConfig cfg;
+    EXPECT_DOUBLE_EQ(cfg.carver_buffer_position_factor, 0.2);
+    EXPECT_DOUBLE_EQ(cfg.carver_buffer_floor, 0.5);
+}
+
 // Test initialization and valid configuration
 TEST_F(TrendFollowingTest, ValidConfiguration) {
     EXPECT_EQ(strategy_->get_state(), StrategyState::INITIALIZED);
@@ -538,15 +546,20 @@ TEST_F(TrendFollowingTest, VolatilityCalculation) {
     double es_price = volatile_data.back().close.as_double();
     double nq_price = stable_data.back().close.as_double();
 
-    double es_value = es_size * es_price;
-    double nq_value = nq_size * nq_price;
+    [[maybe_unused]] double es_value = es_size * es_price;
+    [[maybe_unused]] double nq_value = nq_size * nq_price;
 
     // Verify both instruments have non-zero positions
     EXPECT_GT(es_size, 0.0) << "Expected non-zero ES position";
     EXPECT_GT(nq_size, 0.0) << "Expected non-zero NQ position";
 }
 
-// Test position buffering so that small price movements do not trigger significant changes
+// Test position buffering so that small price movements do not trigger significant changes.
+// Carver-faithful buffer width on main is max(carver_buffer_floor, raw_buffer_width,
+// carver_buffer_position_factor × |current_position|). With position_factor=0.2 and a held
+// position of ~|N| contracts, the buffer recalculates against the new |current| each tick,
+// allowing one settling step of up to ~2×factor×|initial| before converging. After settling,
+// per-tick changes must be small (within steady-state buffer width).
 TEST_F(TrendFollowingTest, PositionBuffering) {
     auto test_data = create_test_data("ES", 500, 4000.0);
 
@@ -558,9 +571,21 @@ TEST_F(TrendFollowingTest, PositionBuffering) {
     ASSERT_TRUE(initial_positions.find("ES") != initial_positions.end());
     double initial_position = initial_positions.at("ES").quantity.as_double();
 
+    // Carver buffer half-width = max(floor, raw_buffer_width, position_factor × |current|).
+    // Per-tick movement is bounded by buffer recalibration relative to |prev_position|,
+    // plus slack for raw_buffer_width and floor contributions. First step (raw forecast may
+    // be farther from |initial| while buffering still settling) gets a wider 3× envelope.
+    auto step_bound = [this](double prev, bool first_step) {
+        const double position_term =
+            trend_config_.carver_buffer_position_factor * std::abs(prev);
+        const double slack = 10.0;  // floor + small raw_buffer_width contributions
+        return (first_step ? 3.0 : 1.0) * position_term + slack;
+    };
+
     // Create small update data with minimal price changes
     std::vector<Bar> small_updates;
     Bar latest = test_data.back();
+    double prev_position = initial_position;
 
     for (int i = 0; i < 5; i++) {
         Bar bar = latest;
@@ -578,11 +603,17 @@ TEST_F(TrendFollowingTest, PositionBuffering) {
         // Check position after each update
         const auto& current_positions = strategy_->get_positions();
         ASSERT_TRUE(current_positions.find("ES") != current_positions.end());
+        double cur_position = current_positions.at("ES").quantity.as_double();
 
-        // With buffering enabled, position should remain stable for small changes
-        EXPECT_NEAR(current_positions.at("ES").quantity.as_double(), initial_position, 30.0)
-            << "Position changed too much for small price movement: "
-            << current_positions.at("ES").quantity.as_double() << " vs " << initial_position;
+        // Bound per-tick movement against previous position using recomputed buffer width.
+        // Step 0 gets a wider envelope since raw forecast may be far from a not-yet-settled
+        // |initial|. Subsequent ticks must obey the tighter buffer recalibration bound.
+        const double tolerance = step_bound(prev_position, /*first_step=*/i == 0);
+        EXPECT_NEAR(cur_position, prev_position, tolerance)
+            << "Step " << i << ": position changed too much for small price movement: "
+            << cur_position << " vs prev " << prev_position << " (tolerance " << tolerance
+            << ")";
+        prev_position = cur_position;
     }
 }
 
