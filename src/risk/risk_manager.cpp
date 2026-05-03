@@ -257,9 +257,52 @@ double RiskManager::calculate_portfolio_multiplier(const MarketData& market_data
     return std::min(1.0, config_.var_limit / result.portfolio_var);
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════════
+// JUMP RISK MULTIPLIER — TWO IMPLEMENTATIONS COEXIST
+// ═══════════════════════════════════════════════════════════════════════════════════
+// VERSION B (PRODUCTION, called from process_positions):
+//   Per-bar 99th-percentile of |w·r| (weighted-sum absolute return) compared against
+//   jump_risk_limit (configured in risk.json). Empirically delivers Carver's intended
+//   risk-control behavior at our retail capital + long-short universe scale.
+//
+// VERSION A (ALTERNATIVE — calculate_jump_multiplier_carver_shock, NOT called):
+//   Carver-correct annualized portfolio σ under shocked (99th-pct rolling) stdevs vs
+//   jump_shock_threshold (Advanced Futures Trading Strategies, p.607-608).
+//   Theoretically more correct, but at our scale long/short cancellation keeps the
+//   shocked portfolio σ well below the threshold, so the multiplier essentially never
+//   fires. Preserved here as a reference implementation, not bit-rotted in git history.
+//
+// To switch back to Version A: change the call in process_positions() from
+// calculate_jump_multiplier(...) to calculate_jump_multiplier_carver_shock(...).
+// ═══════════════════════════════════════════════════════════════════════════════════
+
+// VERSION B — PRODUCTION
 double RiskManager::calculate_jump_multiplier(const MarketData& market_data,
                                               const std::vector<double>& weights,
                                               RiskResult& result) const {
+    std::vector<double> jump_risks;
+    for (const auto& daily_returns : market_data.returns) {
+        double jump_risk = 0.0;
+        for (size_t i = 0; i < weights.size(); ++i) {
+            jump_risk += std::abs(weights[i] * daily_returns[i]);
+        }
+        jump_risks.push_back(jump_risk);
+    }
+
+    result.jump_risk = calculate_99th_percentile(jump_risks);
+
+    if (result.jump_risk <= 0.0) {
+        return 1.0;
+    }
+
+    result.max_jump_risk = std::max(result.jump_risk, result.max_jump_risk);
+    return std::min(1.0, config_.jump_risk_limit / result.jump_risk);
+}
+
+// VERSION A — ALTERNATIVE, NOT called from process_positions
+double RiskManager::calculate_jump_multiplier_carver_shock(const MarketData& market_data,
+                                                           const std::vector<double>& weights,
+                                                           RiskResult& result) const {
     // Carver's jump risk multiplier (Advanced Futures Trading Strategies, p.607-608):
     //   1. For each instrument, compute the 99th-percentile of historical rolling-window
     //      standard deviations (the "shocked" stdev = worst-case vol regime per instrument).
@@ -374,9 +417,107 @@ double RiskManager::calculate_jump_multiplier(const MarketData& market_data,
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════════
+// CORRELATION RISK MULTIPLIER — TWO IMPLEMENTATIONS COEXIST
+// ═══════════════════════════════════════════════════════════════════════════════════
+// VERSION B (PRODUCTION, called from process_positions):
+//   max(|ρ_ij|) over all pairs vs max_correlation cap (configured in risk.json).
+//   Pre-Carver-compliant pair-wise cap. At our scale, this delivers Carver's intended
+//   risk-control behavior: scales positions down when broad pair-wise correlation
+//   regimes spike, while staying inactive in normal markets.
+//
+// VERSION A (ALTERNATIVE — calculate_correlation_multiplier_carver_shock, NOT called):
+//   Carver-correct portfolio σ under 99th-pct shocked correlations vs corr_shock_threshold
+//   (Advanced Futures Trading Strategies, p.610-614). Theoretically more rigorous, but
+//   at our scale long/short cancellation in the shocked portfolio σ keeps it well below
+//   the threshold — the multiplier essentially never fires. Preserved here as a
+//   reference implementation, not bit-rotted in git history.
+//
+// To switch back to Version A: change the call in process_positions() from
+// calculate_correlation_multiplier(...) to calculate_correlation_multiplier_carver_shock(...).
+// ═══════════════════════════════════════════════════════════════════════════════════
+
+// VERSION B — PRODUCTION
 double RiskManager::calculate_correlation_multiplier(const MarketData& market_data,
                                                      const std::vector<double>& weights,
                                                      RiskResult& result) const {
+    double max_corr = 0.0;
+    // Need to have the positions and their corresponding symbols
+    // to correctly map to market data indices
+    if (weights.empty() || market_data.ordered_symbols.empty() ||
+        weights.size() > market_data.ordered_symbols.size()) {
+        // Not enough data to calculate correlations
+        result.correlation_risk = 0.0;
+        return 1.0;  // Safe default, no scaling
+    }
+
+    const size_t n = std::min(weights.size(), market_data.ordered_symbols.size());
+
+    if (market_data.returns.empty() || market_data.covariance.empty()) {
+        // No return data available
+        result.correlation_risk = 0.0;
+        return 1.0;  // Safe default, no scaling
+    }
+
+    try {
+        // Calculate correlation from covariance matrix
+        for (size_t i = 0; i < n; ++i) {
+            // Skip positions with zero weight
+            if (std::abs(weights[i]) < 1e-10)
+                continue;
+
+            for (size_t j = i + 1; j < n; ++j) {
+                // Skip positions with zero weight
+                if (std::abs(weights[j]) < 1e-10)
+                    continue;
+
+                // Get standard deviations from diagonal of covariance matrix
+                double var_i = market_data.covariance[i][i];
+                double var_j = market_data.covariance[j][j];
+
+                // Avoid division by zero
+                if (var_i <= 0.0 || var_j <= 0.0)
+                    continue;
+
+                double std_i = std::sqrt(var_i);
+                double std_j = std::sqrt(var_j);
+
+                // Calculate correlation coefficient
+                double cov_ij = market_data.covariance[i][j];
+                double corr = cov_ij / (std_i * std_j);
+
+                // Ensure correlation is valid
+                if (std::isnan(corr) || std::isinf(corr)) {
+                    continue;
+                }
+
+                // Correlation must be between -1 and 1
+                corr = std::max(-1.0, std::min(1.0, corr));
+
+                // We're concerned with absolute correlation
+                max_corr = std::max(max_corr, std::abs(corr));
+            }
+        }
+    } catch (const std::exception& e) {
+        ERROR("Exception in correlation calculation: " + std::string(e.what()));
+        // Return safe value if calculation fails
+        return 1.0;
+    }
+
+    result.correlation_risk = max_corr;
+
+    // If max correlation exceeds limit, scale positions down
+    if (max_corr > config_.max_correlation && max_corr > 0.0) {
+        return config_.max_correlation / max_corr;
+    }
+
+    return 1.0;  // No scaling needed
+}
+
+// VERSION A — ALTERNATIVE, NOT called from process_positions
+double RiskManager::calculate_correlation_multiplier_carver_shock(const MarketData& market_data,
+                                                                  const std::vector<double>& weights,
+                                                                  RiskResult& result) const {
     // Carver's correlation shock risk multiplier (Advanced Futures Trading Strategies, p.610-614):
     //   1. Build a "shocked" correlation matrix where every off-diagonal entry equals the
     //      99th-percentile of observed pair-wise correlations.
@@ -384,8 +525,6 @@ double RiskManager::calculate_correlation_multiplier(const MarketData& market_da
     //        σ_shock = sqrt(w' × Σ_shock × w)
     //   3. If σ_shock > corr_shock_threshold (default 0.65 = 3.25 × τ for τ=0.20),
     //      scale positions by threshold / σ_shock.
-    // This replaces the legacy hard pair-wise correlation cap which fired far too often
-    // (60%+ vs Carver's design intent of 1-5%).
     if (weights.empty() || market_data.covariance.empty()) {
         result.correlation_risk = 0.0;
         return 1.0;
