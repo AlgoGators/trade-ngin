@@ -33,17 +33,21 @@ Result<void> InstrumentRegistry::initialize(std::shared_ptr<PostgresDatabase> db
 std::shared_ptr<Instrument> InstrumentRegistry::get_instrument(const std::string& symbol) const {
     std::lock_guard<std::mutex> lock(mutex_);
 
-    std::string cleaned_symbol;
+    std::string cleaned_symbol = symbol;
+
+    // Strip variant suffix (e.g., "ZC.v.0" -> "ZC", "ES.v.0" -> "ES") before any lookup or remap
+    auto v_pos = cleaned_symbol.find(".v.");
+    if (v_pos != std::string::npos) {
+        cleaned_symbol = cleaned_symbol.substr(0, v_pos);
+    }
 
     // Handle special cases for micro futures
-    if (symbol == "ES") {
+    if (cleaned_symbol == "ES") {
         cleaned_symbol = "MES";
-    } else if (symbol == "YM") {
+    } else if (cleaned_symbol == "YM") {
         cleaned_symbol = "MYM";
-    } else if (symbol == "NQ") {
+    } else if (cleaned_symbol == "NQ") {
         cleaned_symbol = "MNQ";
-    } else {
-        cleaned_symbol = symbol;
     }
 
     auto it = instruments_.find(cleaned_symbol);
@@ -218,17 +222,21 @@ std::vector<std::shared_ptr<Instrument>> InstrumentRegistry::get_instruments_by_
 bool InstrumentRegistry::has_instrument(const std::string& symbol) const {
     std::lock_guard<std::mutex> lock(mutex_);
 
-    std::string cleaned_symbol;
+    std::string cleaned_symbol = symbol;
+
+    // Strip variant suffix (e.g., "ZC.v.0" -> "ZC", "ES.v.0" -> "ES") before any lookup or remap
+    auto v_pos = cleaned_symbol.find(".v.");
+    if (v_pos != std::string::npos) {
+        cleaned_symbol = cleaned_symbol.substr(0, v_pos);
+    }
 
     // Handle special cases for micro futures
-    if (symbol == "ES") {
+    if (cleaned_symbol == "ES") {
         cleaned_symbol = "MES";
-    } else if (symbol == "YM") {
+    } else if (cleaned_symbol == "YM") {
         cleaned_symbol = "MYM";
-    } else if (symbol == "NQ") {
+    } else if (cleaned_symbol == "NQ") {
         cleaned_symbol = "MNQ";
-    } else {
-        cleaned_symbol = symbol;
     }
 
     return instruments_.find(cleaned_symbol) != instruments_.end();
