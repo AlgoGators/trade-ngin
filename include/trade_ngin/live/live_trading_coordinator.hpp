@@ -235,13 +235,8 @@ public:
 
     // ========== Convenience Methods ==========
 
-    /**
-     * @brief Load commissions for a specific date
-     * @param date Date to load commissions for
-     * @return Result with commission data by symbol
-     */
-    Result<std::unordered_map<std::string, double>> load_commissions_by_symbol(
-        const Timestamp& date) const;
+    // Note: load_commissions_by_symbol was deleted - dead code wrapper around the
+    // deleted LiveDataLoader equivalent. See LiveDataLoader header for rationale.
 
     /**
      * @brief Load positions for export

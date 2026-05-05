@@ -138,28 +138,6 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
         logged_total = true;
     }
 
-    // Load previous positions if not already loaded (only once per run)
-    static bool previous_positions_loaded = false;
-    if (!previous_positions_loaded && previous_positions_.empty() && db_) {
-        // Use the data's timestamp (not current time) to handle historical runs correctly
-        // Get the timestamp from the first bar to determine the processing date
-        auto data_time = data.empty() ? std::chrono::system_clock::now() : data[0].timestamp;
-        auto previous_date = data_time - std::chrono::hours(24);
-        auto previous_positions_result =
-            db_->load_positions_by_date(id_, "", "", previous_date, "trading.positions");
-
-        if (previous_positions_result.is_ok()) {
-            const auto& previous_positions = previous_positions_result.value();
-            INFO("Loaded " + std::to_string(previous_positions.size()) +
-                 " previous day positions for PnL calculation");
-            previous_positions_ = previous_positions;
-        } else {
-            INFO("No previous day positions found (first run or no data): " +
-                 std::string(previous_positions_result.error()->what()));
-        }
-        previous_positions_loaded = true;
-    }
-
     // CRITICAL FIX: Update price history BEFORE base class processing
     // This ensures price data is always updated even if leverage checks fail
     // in BaseStrategy::on_data(), preventing stuck prices in final_positions table
@@ -1303,7 +1281,8 @@ double TrendFollowingStrategy::apply_position_buffer(const std::string& symbol, 
     // Get current position with safeguards
     double current_position = 0.0;
     auto pos_it = positions_.find(symbol);
-    if (pos_it != positions_.end()) {
+    bool pos_found = (pos_it != positions_.end());
+    if (pos_found) {
         current_position = static_cast<double>(pos_it->second.quantity);
 
         // Sanity check on current position
@@ -1367,25 +1346,33 @@ double TrendFollowingStrategy::apply_position_buffer(const std::string& symbol, 
     // If current position is within the buffer zone [lower_buffer, upper_buffer],
     // keep the current position (no trade). Otherwise, trade to the buffer boundary.
     double new_position;
+    std::string decision;
     if (current_position < lower_buffer) {
         // Current position is below the buffer zone - trade up to lower boundary
         new_position = std::round(lower_buffer);
-        DEBUG("Position buffering for " + symbol + ": trading from " +
-              std::to_string(current_position) + " to lower buffer " +
-              std::to_string(new_position) + " (raw: " + std::to_string(raw_position) + ")");
+        decision = "TRADE_UP_TO_LOWER";
     } else if (current_position > upper_buffer) {
         // Current position is above the buffer zone - trade down to upper boundary
         new_position = std::round(upper_buffer);
-        DEBUG("Position buffering for " + symbol + ": trading from " +
-              std::to_string(current_position) + " to upper buffer " +
-              std::to_string(new_position) + " (raw: " + std::to_string(raw_position) + ")");
+        decision = "TRADE_DOWN_TO_UPPER";
     } else {
         // Current position is within the buffer zone - no trade needed
         new_position = std::round(current_position);
-        DEBUG("Position buffering for " + symbol + ": keeping current position " +
-              std::to_string(new_position) +
-              " (within buffer, raw: " + std::to_string(raw_position) + ")");
+        decision = "KEEP";
     }
+
+    // TEMP-DEBUG (BUFFER_TRACE): empirical proof of buffer-state-restart bug.
+    // Logs full buffer state per call so we can diagnose churn root cause.
+    INFO("BUFFER_TRACE: sym=" + symbol +
+         " pos_found=" + std::string(pos_found ? "Y" : "N") +
+         " current=" + std::to_string(current_position) +
+         " raw=" + std::to_string(raw_position) +
+         " width=" + std::to_string(buffer_width) +
+         " (carver=" + std::to_string(raw_buffer_width) +
+         " floor=" + std::to_string(trend_config_.carver_buffer_floor) +
+         " posT=" + std::to_string(position_term) + ")" +
+         " bounds=[" + std::to_string(lower_buffer) + "," + std::to_string(upper_buffer) + "]" +
+         " => " + decision + " new_position=" + std::to_string(new_position));
 
     // Final safety check - cap positions to configured limits
     double position_limit = 1000.0;

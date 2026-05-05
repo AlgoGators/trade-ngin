@@ -141,7 +141,27 @@ Result<RiskResult> RiskManager::process_positions(
         result.leverage_multiplier =
             calculate_leverage_multiplier(market_data, weights, position_values, total_value, result);
 
-        // Recompute portfolio_var for reporting using volatility-only weights (WITHOUT multipliers)
+        // ─────────────────────────────────────────────────────────────────────
+        // portfolio_var — REPORTING FORM (this block).
+        //   Inputs : vol_weights = (signed qty × price) / gross of same.
+        //            Contract multiplier is intentionally NOT applied here, so
+        //            this weighting represents per-contract volatility exposure
+        //            rather than dollar-notional exposure.
+        //   Formula: σ = √(vol_weights' · Σ · vol_weights), Σ annualized.
+        //   Used by: email_sender HTML report, stdout "Volatility:" line,
+        //            JSON metrics written to disk, chart_generator inputs,
+        //            and the trading.live_results.portfolio_var DB column.
+        //   Not used for any sizing/gating decision — those use the gating
+        //   form set inside calculate_portfolio_multiplier(); see comment
+        //   there.
+        //
+        // The two forms can diverge when book composition is dominated by
+        // contracts whose price-to-multiplier ratio is very different from
+        // the rest (e.g. MBT, MNQ): vol_weights weighs them by spot price
+        // while gating weights weigh them by dollar notional.
+        // ─────────────────────────────────────────────────────────────────────
+        double gate_sigma = result.portfolio_var;  // captured before the overwrite below
+
         if (!market_data.covariance.empty() && !vol_weights.empty()) {
             double variance = 0.0;
             for (size_t i = 0; i < vol_weights.size(); ++i) {
@@ -150,6 +170,29 @@ Result<RiskResult> RiskManager::process_positions(
                 }
             }
             result.portfolio_var = variance > 0.0 ? std::sqrt(variance) : 0.0;
+        }
+
+        // Surface both forms each cycle so anyone investigating a divergence
+        // between the displayed "Volatility" and the gate's behavior can see
+        // them side-by-side along with the per-instrument weights and σᵢ.
+        INFO("VAR_DEBUG: gate_sigma=" + std::to_string(gate_sigma) +
+             " reported_sigma=" + std::to_string(result.portfolio_var) +
+             " var_limit=" + std::to_string(config_.var_limit) +
+             " portfolio_mult=" + std::to_string(result.portfolio_multiplier));
+        for (size_t i = 0; i < weights.size() && i < vol_weights.size(); ++i) {
+            if (std::abs(weights[i]) > 1e-9 || std::abs(vol_weights[i]) > 1e-9) {
+                double sigma_i = (i < market_data.covariance.size() &&
+                                  market_data.covariance[i][i] > 0.0)
+                                     ? std::sqrt(market_data.covariance[i][i])
+                                     : 0.0;
+                const std::string& sym = i < market_data.ordered_symbols.size()
+                                             ? market_data.ordered_symbols[i]
+                                             : std::string("?");
+                INFO("VAR_DEBUG:   " + sym +
+                     " w_true=" + std::to_string(weights[i]) +
+                     " w_vol=" + std::to_string(vol_weights[i]) +
+                     " sigma_i=" + std::to_string(sigma_i));
+            }
         }
 
         // Overall scale is minimum of all multipliers
@@ -232,7 +275,20 @@ double RiskManager::calculate_portfolio_multiplier(const MarketData& market_data
         }
     }
 
-    // Calculate portfolio variance: w' * Cov * w (single vectorized operation)
+    // ─────────────────────────────────────────────────────────────────────────
+    // portfolio_var — GATING FORM (this block).
+    //   Inputs : weights = (signed qty × price × contract_multiplier) / total
+    //            notional. This is the dollar-notional weighting of the book.
+    //   Formula: σ = √(weights' · Σ · weights), Σ annualized.
+    //   Used by: the var_limit check at the bottom of this function, which
+    //            returns min(1, var_limit / σ) as portfolio_multiplier and
+    //            feeds into recommended_scale (the multiplier applied to all
+    //            order sizes).
+    //   This value is stored in result.portfolio_var here, but is later
+    //   overwritten in process_positions() with the reporting form (which
+    //   uses different weights). The gate has already consumed the gating
+    //   form by the time the overwrite happens.
+    // ─────────────────────────────────────────────────────────────────────────
     double variance = w.transpose() * cov * w;
     result.portfolio_var = std::sqrt(std::max(0.0, variance));
 
