@@ -11,7 +11,7 @@
 
 namespace trade_ngin::api {
 
-Result<backtest::BacktestResults> BacktestRunner::run_backtest() {
+Result<backtest::BacktestResults> BacktestRunner::run_backtest(const std::string& portfolio) {
     try {
         // Reset all singletons to ensure clean state between runs
         StateManager::reset_instance();
@@ -39,8 +39,8 @@ Result<backtest::BacktestResults> BacktestRunner::run_backtest() {
         // ========================================
         // LOAD CONFIGURATION FROM MODULAR CONFIG FILES
         // ========================================
-        INFO("Loading configuration from config/portfolios/base...");
-        auto app_config_result = ConfigLoader::load("./config", "base");
+        INFO("Loading configuration from config/portfolios/" + portfolio + "...");
+        auto app_config_result = ConfigLoader::load("./config", portfolio);
         if (app_config_result.is_error()) {
             ERROR("Failed to load configuration: " +
                   std::string(app_config_result.error()->what()));
@@ -435,6 +435,7 @@ Result<backtest::BacktestResults> BacktestRunner::run_backtest() {
         INFO("Analyzing performance metrics...");
 
         std::cout << "======= Backtest Results =======" << std::endl;
+        std::cout << "Portfolio: " << portfolio << std::endl;
         std::cout << "Total Return: " << (backtest_results.total_return * 100.0) << "%"
                   << std::endl;
         std::cout << "Sharpe Ratio: " << backtest_results.sharpe_ratio << std::endl;
