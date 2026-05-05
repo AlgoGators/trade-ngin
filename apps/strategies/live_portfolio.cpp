@@ -3151,6 +3151,11 @@ int main(int argc, char* argv[]) {
                             static_cast<double>(today_row.winning_days);
                         strategy_metrics["Losing Days"] =
                             static_cast<double>(today_row.losing_days);
+                        // Flat Days = total - winning - losing (Sat/Sun/holidays w/ zero PnL).
+                        // Shown explicitly in email so the total math adds up cleanly.
+                        strategy_metrics["Flat Days"] = static_cast<double>(
+                            std::max(0, today_row.total_days - today_row.winning_days -
+                                            today_row.losing_days));
                         strategy_metrics["Total Days"] = static_cast<double>(today_row.total_days);
                     }
                     // Portfolio VaR is always sourced from the live risk evaluation,
