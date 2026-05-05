@@ -37,6 +37,14 @@ public:
     virtual Result<void> update_position(const std::string& symbol, const Position& position) = 0;
 
     /**
+     * @brief Seed in-memory positions from an external snapshot (typically yesterday's
+     *        EOD positions loaded from DB). Required by live strategies whose buffer
+     *        anchors on positions_ across process restarts; backtest may treat as no-op.
+     */
+    virtual Result<void> seed_positions(
+        const std::unordered_map<std::string, Position>& positions) = 0;
+
+    /**
      * @brief Get target positions for portfolio allocation
      * @note Override in derived classes that calculate positions differently
      *       (e.g., trend-following strategies using instrument_data_)

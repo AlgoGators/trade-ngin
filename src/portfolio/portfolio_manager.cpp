@@ -1015,6 +1015,19 @@ Result<void> PortfolioManager::optimize_positions() {
             current_weights.resize(symbols.size(), 0.0);
             target_weights.resize(symbols.size(), 0.0);
 
+            // PRE_OPTIMIZER_TRACE: log the optimizer's per-strategy current_positions size,
+            // to verify Fix #7 (PortfolioManager seeding) actually took effect. If empty here,
+            // optimizer's coord descent runs from a zero baseline (the source of daily churn).
+            for (const auto& [strat_id, info] : strategies_) {
+                if (!info.use_optimization)
+                    continue;
+                INFO("PRE_OPTIMIZER_TRACE: strat=" + strat_id +
+                     " current_positions_size=" +
+                     std::to_string(info.current_positions.size()) +
+                     " target_positions_size=" +
+                     std::to_string(info.target_positions.size()));
+            }
+
             for (size_t i = 0; i < symbols.size(); ++i) {
                 const std::string& symbol = symbols[i];
 

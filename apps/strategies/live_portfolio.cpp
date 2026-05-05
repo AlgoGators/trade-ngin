@@ -882,6 +882,51 @@ int main(int argc, char* argv[]) {
         // Only run strategy calculations if NOT a non-trading day
         // ========================================
         if (!skip_strategy_processing) {
+            // FIX: Seed strategy's positions_ from yesterday's DB snapshot BEFORE prewarm.
+            // Each live invocation is a fresh process where positions_ defaults to zero.
+            // The Carver position buffer reads positions_ as the comparison anchor; without
+            // seeding it correctly the buffer can't absorb small day-to-day signal jitter
+            // and triggers a phantom trade every day. Backtest doesn't need this because
+            // its state is continuous in-memory across simulated days.
+            {
+                auto seed_previous_date = now - std::chrono::hours(24);
+                std::string seed_strategy_name =
+                    strategy_names.empty() ? std::string() : strategy_names[0];
+                auto seed_result = db->load_positions_by_date(
+                    combined_strategy_id, seed_strategy_name,
+                    coordinator_config.portfolio_id, seed_previous_date, "trading.positions");
+                if (seed_result.is_ok() && !seed_result.value().empty()) {
+                    // Fix #1: seed strategy's positions_ for buffer correctness
+                    auto seeded = tf_strategy->seed_positions(seed_result.value());
+                    if (seeded.is_error()) {
+                        WARN("Failed to seed strategy positions: " +
+                             std::string(seeded.error()->what()));
+                    }
+                    // Fix #7: seed PortfolioManager's info.current_positions for optimizer
+                    // baseline correctness. See live_portfolio_conservative.cpp for rationale.
+                    // PortfolioManager.strategies_ is keyed by the strategy's metadata.id
+                    // (e.g. "TREND_FOLLOWING"), NOT the combined_strategy_id used for DB.
+                    int pm_seeded_count = 0;
+                    for (const auto& [sym, pos] : seed_result.value()) {
+                        auto pm_seed = portfolio->update_strategy_position(
+                            seed_strategy_name, sym, pos);
+                        if (pm_seed.is_error()) {
+                            WARN("Failed to seed PortfolioManager position for " + sym +
+                                 ": " + std::string(pm_seed.error()->what()));
+                        } else {
+                            pm_seeded_count++;
+                        }
+                    }
+                    INFO("Seeded " + std::to_string(pm_seeded_count) +
+                         " positions into PortfolioManager.current_positions for "
+                         "optimizer-baseline correctness (strategy_name=" +
+                         seed_strategy_name + ")");
+                } else {
+                    INFO("No yesterday positions to seed for strategy " +
+                         seed_strategy_name + " (first run or no data)");
+                }
+            }
+
             // Pre-warm strategy state so portfolio can pull price history for optimization/risk
             INFO("Preprocessing data in strategy to populate price history...");
             auto strat_prewarm = tf_strategy->on_data(all_bars);
@@ -2232,11 +2277,8 @@ int main(int argc, char* argv[]) {
                     }
 
                     LiveHistoricalMetricsCalculator hist_calc;
-                    // Convert decimal returns to percentage points for calculator
-                    // (stored as 0.06 = 6%, calculator expects 6.0)
-                    for (auto& r : returns_hist) {
-                        r *= 100.0;
-                    }
+                    // NOTE: returns_hist already in PERCENT units (daily_return SQL has *100.0).
+                    // Removed the *100 here — that was producing 100x volatility / 100x lower sharpe.
                     yesterday_hist_metrics =
                         hist_calc.calculate(returns_hist, pnl_hist, equity_hist,
                                             yesterday_total_return_annualized, total_trades_hist);
@@ -2679,13 +2721,10 @@ int main(int argc, char* argv[]) {
                         total_trades_hist = trades_hist_res.value();
                     }
 
-                    // Append today's data so metrics are up-to-date as of Day T
-                    // Convert decimal returns to percentage points for calculator
-                    // (stored as 0.06 = 6%, calculator expects 6.0)
-                    for (auto& r : returns_hist) {
-                        r *= 100.0;
-                    }
-                    returns_hist.push_back(daily_return * 100.0);
+                    // Append today's data so metrics are up-to-date as of Day T.
+                    // NOTE: returns_hist already in PERCENT units. Removed *100 — was producing
+                    // 100x volatility / 100x lower sharpe. daily_return is also already percent.
+                    returns_hist.push_back(daily_return);
                     pnl_hist.push_back(daily_pnl);
                     equity_hist.push_back(current_portfolio_value);
 
@@ -2781,22 +2820,11 @@ int main(int argc, char* argv[]) {
         // Phase 4: Use CSVExporter for position export
         INFO("Using CSVExporter to save positions to file...");
 
-        // Query daily commissions per symbol using LiveDataLoader
-        std::unordered_map<std::string, double> symbol_commissions;
-        try {
-            auto commission_result =
-                data_loader->load_commissions_by_symbol(coordinator_config.portfolio_id, now);
-            if (commission_result.is_ok()) {
-                symbol_commissions = commission_result.value();
-                INFO("Loaded commissions for " + std::to_string(symbol_commissions.size()) +
-                     " symbols via LiveDataLoader");
-            } else {
-                WARN("Failed to query commissions via LiveDataLoader: " +
-                     std::string(commission_result.error()->what()));
-            }
-        } catch (const std::exception& e) {
-            WARN("Exception querying commissions: " + std::string(e.what()));
-        }
+        // Note: previously called LiveDataLoader::load_commissions_by_symbol here, but it
+        // was dead code (result map was unused; csv_exporter explicitly does
+        // (void)symbol_commissions) and the SQL referenced a column that no longer exists.
+        // All real transaction-cost data flows from cost_manager_->calculate_costs() at
+        // execution time and lives on trading.executions / trading.live_results directly.
 
         // Export current positions with per-strategy breakdown
         std::string today_filename;

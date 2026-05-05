@@ -135,6 +135,16 @@ public:
     Result<void> update_position(const std::string& symbol, const Position& position) override;
 
     /**
+     * @brief Seed the strategy's in-memory positions_ map from an external snapshot
+     *        (e.g., yesterday's EOD positions loaded from DB by the runner). Required
+     *        in live to give the position buffer a correct anchor across process
+     *        restarts; backtest doesn't need it because state is continuous in-memory.
+     *        Replaces all entries in positions_ with the supplied map.
+     */
+    Result<void> seed_positions(
+        const std::unordered_map<std::string, Position>& positions) override;
+
+    /**
      * @brief Update risk limits for the strategy
      * @param limits New risk limits
      * @return Result indicating success or failure
