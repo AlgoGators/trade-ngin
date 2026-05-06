@@ -22,7 +22,7 @@ using StrategyFactory =
 
 class BacktestRunner {
 public:
-    Result<backtest::BacktestResults> run_backtest(const std::string& portfolio);
+    Result<backtest::BacktestResults> run_backtest(std::string portfolio);
 
     Result<void> register_strategy(const std::string& strategy_id, StrategyFactory factory);
 

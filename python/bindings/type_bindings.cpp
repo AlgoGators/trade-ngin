@@ -54,8 +54,6 @@ void bind_core_types(py::module_& m) {
         .def_readwrite("unrealized_pnl", &Position::unrealized_pnl)
         .def_readwrite("realized_pnl", &Position::realized_pnl)
         .def_readwrite("last_update", &Position::last_update);
-    // TODO pybind chrono type - since Timestamp is system_clock, it converts automatically to
-    // Python datetime
 
     py::class_<ExecutionReport>(m, "ExecutionReport")
         .def(py::init<>())
