@@ -14,9 +14,9 @@ CLAUDE.md
 .csv
 .cache/
 # Ignore real configs (credentials) in config/, not config_template/
-config/*email.json*
-config/*portfolio.json*
-config/*risk.json*
+config/portfolios/conservative/email.json
+config/portfolios/conservative/portfolio.json
+config/portfolios/conservative/risk.json
 config/**/*email.json*
 config/**/*portfolio.json*
 config/**/*risk.json*
@@ -35,3 +35,8 @@ daily_positions_*.csv
 .idea/
 
 cmake-build-debug/
+
+config/defaults.json
+config/portfolios/conservative/portfolio.json
+config/portfolios/conservative/risk.json
+email.json
