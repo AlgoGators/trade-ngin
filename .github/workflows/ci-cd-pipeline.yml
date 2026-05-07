@@ -44,7 +44,8 @@ jobs:
           echo "Running clang-tidy static analysis..."
           mkdir -p build
           cd build
-          cmake .. -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+          cmake .. -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            -DNLopt_DIR=/usr/lib/x86_64-linux-gnu/cmake/nlopt
 
           # Run clang-tidy on all source files and output to report
           find ../src -name "*.cpp" | xargs -P$(nproc) -n1 clang-tidy -p . --format-style=file 2>&1 | tee ../clang-tidy-report.txt || true
@@ -246,7 +247,8 @@ jobs:
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
             -DCMAKE_CXX_COMPILER=${{ matrix.build-type == 'Debug' && 'g++' || 'g++' }} \
             -DCMAKE_CXX_FLAGS="${{ matrix.build-type == 'Debug' && '-g -O0 --coverage' || '-O3' }}" \
-            -DCMAKE_EXE_LINKER_FLAGS="${{ matrix.build-type == 'Debug' && '--coverage' || '' }}"
+            -DCMAKE_EXE_LINKER_FLAGS="${{ matrix.build-type == 'Debug' && '--coverage' || '' }}" \
+            -DNLopt_DIR=/usr/lib/x86_64-linux-gnu/cmake/nlopt
 
       - name: Build Project
         run: |
