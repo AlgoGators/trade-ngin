@@ -1,73 +1,66 @@
-# Builder Stage
-FROM ubuntu:latest AS builder
+FROM ubuntu:24.04 AS builder
 
-# Avoid prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install basic tools and dependencies
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    cmake \
-    git \
-    wget \
-    gnupg \
-    lsb-release \
-    libgtest-dev \
-    pkg-config \
-    libpq-dev \
-    cron \
-    && apt-get clean \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        cmake \
+        git \
+        ca-certificates \
+        wget \
+        gnupg \
+        lsb-release \
+        pkg-config \
+        libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Google Test and Google Mock (gmock) from source
-RUN git clone https://github.com/google/googletest.git /tmp/googletest && \
-    cd /tmp/googletest && \
-    mkdir build && cd build && \
-    cmake .. && \
-    make -j$(nproc) && \
-    make install
+# Google Test / Google Mock from source
+RUN git clone --depth 1 https://github.com/google/googletest.git /tmp/googletest && \
+    cmake -S /tmp/googletest -B /tmp/googletest/build && \
+    cmake --build /tmp/googletest/build -j"$(nproc)" --target install && \
+    rm -rf /tmp/googletest
 
-# Add Apache Arrow repository
-RUN wget -O - https://apt.llvm.org/llvm-snapshot.gpg.key | apt-key add - && \
-    wget -O /tmp/apache-arrow-apt-source.deb https://apache.jfrog.io/artifactory/arrow/ubuntu/apache-arrow-apt-source-latest-$(lsb_release -cs).deb && \
-    apt-get update && apt-get install -y /tmp/apache-arrow-apt-source.deb && \
-    apt-get update
+# Apache Arrow apt repository + dev headers
+RUN wget -qO /tmp/apache-arrow-apt-source.deb \
+        "https://apache.jfrog.io/artifactory/arrow/ubuntu/apache-arrow-apt-source-latest-$(lsb_release -cs).deb" && \
+    apt-get install -y --no-install-recommends /tmp/apache-arrow-apt-source.deb && \
+    rm /tmp/apache-arrow-apt-source.deb && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+        libarrow-dev \
+        libarrow-dataset-dev && \
+    rm -rf /var/lib/apt/lists/*
 
-# Install Arrow and other dependencies
-RUN apt-get install -y \
-    libarrow-dev \
-    libarrow-dataset-dev \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+# nlohmann_json — disable its test suite
+RUN git clone --depth 1 https://github.com/nlohmann/json.git /tmp/json && \
+    cmake -S /tmp/json -B /tmp/json/build \
+        -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+        -DJSON_BuildTests=OFF && \
+    cmake --build /tmp/json/build -j"$(nproc)" --target install && \
+    rm -rf /tmp/json
 
-# Install nlohmann_json from source
-RUN cd /tmp && \
-    git clone https://github.com/nlohmann/json.git && \
-    cd json && \
-    mkdir build && \
-    cd build && \
-    cmake .. -DCMAKE_POSITION_INDEPENDENT_CODE=ON && \
-    make -j$(nproc) && \
-    make install
-
-# Install libpqxx from source with PIC
-RUN cd /tmp && \
-    git clone https://github.com/jtv/libpqxx.git && \
-    cd libpqxx && \
-    mkdir build && \
-    cd build && \
-    cmake .. -DSKIP_BUILD_TEST=ON -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DBUILD_SHARED_LIBS=ON && \
-    make -j$(nproc) && \
-    make install && \
+# libpqxx 7.10.4 — pinned.
+RUN git clone --branch 7.10.4 --depth 1 https://github.com/jtv/libpqxx.git /tmp/libpqxx && \
+    cmake -S /tmp/libpqxx -B /tmp/libpqxx/build \
+        -DSKIP_BUILD_TEST=ON \
+        -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+        -DBUILD_SHARED_LIBS=ON && \
+    cmake --build /tmp/libpqxx/build -j"$(nproc)" --target install && \
+    rm -rf /tmp/libpqxx && \
     ldconfig
 
-# Create a directory for the project
-WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libeigen3-dev \
+        libnlopt-dev \
+        libnlopt-cxx-dev \
+        libcurl4-openssl-dev \
+        cron \
+    && rm -rf /var/lib/apt/lists/*
 
-# Copy the source code
+WORKDIR /app
 COPY . .
 
-# Fix the missing includes and adjust function signature in tests
+# Patch missing includes / test signatures
 RUN sed -i '1i\#include <algorithm>' src/core/logger.cpp && \
     sed -i '1i\#include <atomic>' include/trade_ngin/order/order_manager.hpp && \
     sed -i '1i\#include <atomic>' src/order/order_manager.cpp && \
@@ -80,65 +73,41 @@ RUN sed -i '1i\#include <algorithm>' src/core/logger.cpp && \
     sed -i '1i\#include <thread>' tests/backtesting/test_engine.cpp && \
     sed -i 's/void BacktestEngineTest::patch_mock_db_to_return_test_data/void patch_mock_db_to_return_test_data/' tests/backtesting/test_engine.cpp
 
-# Create build directory and build the project
-RUN mkdir -p build
-WORKDIR /app/build
-RUN cmake .. \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_POSITION_INDEPENDENT_CODE=ON && \
-    cmake --build . --config Release
+RUN cmake -S /app -B /app/build \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+        -DNLopt_DIR=/usr/lib/x86_64-linux-gnu/cmake/nlopt && \
+    cmake --build /app/build --config Release -j"$(nproc)"
 
-# Debug: List ALL executables built in the project
-RUN echo "ALL EXECUTABLES:" && \
-    find /app -type f -executable -not -path "*/\.*" | sort
+FROM ubuntu:24.04
 
-# Runtime Stage
-FROM ubuntu:latest
+ENV DEBIAN_FRONTEND=noninteractive \
+    TZ=America/New_York \
+    LD_LIBRARY_PATH=/usr/local/lib:/app/build:/app/lib
 
-# Avoid prompts during package installation
-ENV DEBIAN_FRONTEND=noninteractive
-
-# Install basic runtime tools and dependencies
-RUN apt-get update && apt-get install -y \
-    wget \
-    gnupg \
-    lsb-release \
-    libpq5 \
-    && apt-get clean \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates wget gnupg lsb-release \
+    && wget -qO /tmp/apache-arrow-apt-source.deb \
+        "https://apache.jfrog.io/artifactory/arrow/ubuntu/apache-arrow-apt-source-latest-$(lsb_release -cs).deb" \
+    && apt-get install -y --no-install-recommends /tmp/apache-arrow-apt-source.deb \
+    && rm /tmp/apache-arrow-apt-source.deb \
+    && apt-get update && apt-get install -y --no-install-recommends \
+        libarrow-dev \
+        libarrow-dataset-dev \
+        libpq5 \
+        libnlopt0 \
+        libcurl4t64 \
+        cron \
+        gnuplot-nox \
+        tzdata \
+    && apt-get purge -y --auto-remove gnupg lsb-release \
     && rm -rf /var/lib/apt/lists/*
 
-# Add Apache Arrow repository
-RUN wget -O - https://apt.llvm.org/llvm-snapshot.gpg.key | apt-key add - && \
-    wget -O /tmp/apache-arrow-apt-source.deb https://apache.jfrog.io/artifactory/arrow/ubuntu/apache-arrow-apt-source-latest-$(lsb_release -cs).deb && \
-    apt-get update && apt-get install -y /tmp/apache-arrow-apt-source.deb && \
-    apt-get update
-
-# Install runtime dependencies for Arrow
-RUN apt-get install -y \
-    libarrow-dev \
-    libarrow-dataset-dev \
-    cron \
-    gnuplot \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
-
-# Copy built libraries from builder
 COPY --from=builder /usr/local/lib/ /usr/local/lib/
-COPY --from=builder /usr/local/include/ /usr/local/include/
-
-# Update the library cache
 RUN ldconfig
 
-# Copy the entire app directory (including build artifacts)
 COPY --from=builder /app /app
 
-# Set the library path
-ENV LD_LIBRARY_PATH=/usr/local/lib:/app/build:/app/lib
-
-# Set timezone
-ENV TZ=America/New_York
-
-# Set the working directory
 WORKDIR /app
 
 COPY live_trend.cron /etc/cron.d/live_trend
