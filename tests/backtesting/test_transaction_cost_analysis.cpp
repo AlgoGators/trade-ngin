@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include <chrono>
 #include <memory>
+#include <random>
 #include "../core/test_base.hpp"
 #include "../order/test_utils.hpp"
 #include "trade_ngin/backtest/transaction_cost_analysis.hpp"
@@ -31,6 +32,12 @@ protected:
 
     std::vector<Bar> create_market_data(const std::string& symbol, double base_price,
                                         double volatility = 0.01) {
+        // Deterministic RNG so test outcomes don't depend on libc rand() differences
+        // between platforms (Apple libc vs glibc).
+        std::mt19937 rng(42);
+        std::uniform_real_distribution<double> noise_dist(-1.0, 1.0);
+        std::uniform_int_distribution<int> volume_dist(0, 4999);
+
         std::vector<Bar> bars;
         auto now = std::chrono::system_clock::now();
 
@@ -41,12 +48,12 @@ protected:
             bar.symbol = symbol;
 
             // Add some random walk to prices
-            double noise = (rand() % 200 - 100) * volatility / 100.0;
+            double noise = noise_dist(rng) * volatility;
             bar.open = base_price * (1.0 + noise);
             bar.high = bar.open * 1.001;
             bar.low = bar.open * 0.999;
             bar.close = bar.open * (1.0 + noise / 2.0);
-            bar.volume = 10000 + rand() % 5000;
+            bar.volume = 10000 + volume_dist(rng);
 
             bars.push_back(bar);
         }
@@ -115,6 +122,13 @@ TEST_F(TransactionCostAnalyzerTest, TradeSequenceAnalysis) {
 TEST_F(TransactionCostAnalyzerTest, ImplementationShortfall) {
     // Create market data first to have valid timestamps
     auto market_data = create_market_data("AAPL", 150.0);
+
+    // Pin the bars the assertions depend on so the test is independent of RNG output:
+    //   arrival_price = market_data[15].close must be < executions VWAP (150.3) for
+    //   delay_cost > 0; final_price = market_data.back().close must be > arrival_price
+    //   for opportunity_cost on the unfilled buy portion to be > 0.
+    market_data[15].close = 149.9;
+    market_data.back().close = 151.0;
 
     // Create target position with last_update within market_data's range
     Position target;
