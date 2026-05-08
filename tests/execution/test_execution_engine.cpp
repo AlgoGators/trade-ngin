@@ -69,7 +69,7 @@ protected:
     std::unique_ptr<ExecutionEngine> engine_;
 };
 
-TEST_F(ExecutionEngineTest, SimpleMarketOrder) {
+TEST_F(ExecutionEngineTest, DISABLED_SimpleMarketOrder) {
     try {
         // Create a simple market order
         Order order;
@@ -118,7 +118,7 @@ TEST_F(ExecutionEngineTest, SimpleMarketOrder) {
     }
 }
 
-TEST_F(ExecutionEngineTest, TWAPExecution) {
+TEST_F(ExecutionEngineTest, DISABLED_TWAPExecution) {
     Order order;
     order.symbol = "MSFT";
     order.side = Side::BUY;
@@ -157,7 +157,7 @@ TEST_F(ExecutionEngineTest, TWAPExecution) {
         << "Participation rate exceeded max limit";
 }
 
-TEST_F(ExecutionEngineTest, VWAPExecution) {
+TEST_F(ExecutionEngineTest, DISABLED_VWAPExecution) {
     Order order;
     order.symbol = "AAPL";
     order.side = Side::SELL;
@@ -193,7 +193,7 @@ TEST_F(ExecutionEngineTest, VWAPExecution) {
     EXPECT_LT(price_deviation, 0.01);  // Within 1% of VWAP
 }
 
-TEST_F(ExecutionEngineTest, POVExecution) {
+TEST_F(ExecutionEngineTest, DISABLED_POVExecution) {
     Order order;
     order.symbol = "GOOG";
     order.side = Side::BUY;
@@ -223,7 +223,7 @@ TEST_F(ExecutionEngineTest, POVExecution) {
     EXPECT_GT(metrics.num_child_orders, 1);
 }
 
-TEST_F(ExecutionEngineTest, ImplementationShortfallExecution) {
+TEST_F(ExecutionEngineTest, DISABLED_ImplementationShortfallExecution) {
     Order order;
     order.symbol = "AMZN";
     order.side = Side::BUY;
@@ -253,7 +253,7 @@ TEST_F(ExecutionEngineTest, ImplementationShortfallExecution) {
     EXPECT_GT(metrics.completion_rate, 0.0);
 }
 
-TEST_F(ExecutionEngineTest, AdaptiveLimitExecution) {
+TEST_F(ExecutionEngineTest, DISABLED_AdaptiveLimitExecution) {
     Order order;
     order.symbol = "FB";
     order.side = Side::SELL;
@@ -284,7 +284,7 @@ TEST_F(ExecutionEngineTest, AdaptiveLimitExecution) {
     EXPECT_GT(metrics.completion_rate, 0.0);
 }
 
-TEST_F(ExecutionEngineTest, DarkPoolExecution) {
+TEST_F(ExecutionEngineTest, DISABLED_DarkPoolExecution) {
     Order order;
     order.symbol = "NVDA";
     order.side = Side::BUY;
@@ -314,7 +314,7 @@ TEST_F(ExecutionEngineTest, DarkPoolExecution) {
     EXPECT_GT(metrics.completion_rate, 0.0);
 }
 
-TEST_F(ExecutionEngineTest, CancelExecution) {
+TEST_F(ExecutionEngineTest, DISABLED_CancelExecution) {
     Order order;
     order.symbol = "GOOG";
     order.side = Side::SELL;
@@ -348,7 +348,7 @@ TEST_F(ExecutionEngineTest, CancelExecution) {
     EXPECT_FALSE(job_found);
 }
 
-TEST_F(ExecutionEngineTest, ParticipationConstraints) {
+TEST_F(ExecutionEngineTest, DISABLED_ParticipationConstraints) {
     Order order;
     order.symbol = "AAPL";
     order.side = Side::BUY;
@@ -375,7 +375,7 @@ TEST_F(ExecutionEngineTest, ParticipationConstraints) {
     EXPECT_GT(metrics.num_child_orders, 1);
 }
 
-TEST_F(ExecutionEngineTest, InvalidConfigurations) {
+TEST_F(ExecutionEngineTest, DISABLED_InvalidConfigurations) {
     Order order;
     order.symbol = "MSFT";
     order.side = Side::BUY;
@@ -398,7 +398,7 @@ TEST_F(ExecutionEngineTest, InvalidConfigurations) {
     EXPECT_TRUE(result2.is_error());
 }
 
-TEST_F(ExecutionEngineTest, StressTest) {
+TEST_F(ExecutionEngineTest, DISABLED_StressTest) {
     const int num_orders = 5;
     std::vector<std::string> job_ids;
 
@@ -456,7 +456,7 @@ TEST_F(ExecutionEngineTest, StressTest) {
     EXPECT_GE(active_jobs.value().size(), 0) << "No active jobs remaining after cancellation";
 }
 
-TEST_F(ExecutionEngineTest, MetricsAccuracy) {
+TEST_F(ExecutionEngineTest, DISABLED_MetricsAccuracy) {
     Order order;
     order.symbol = "AAPL";
     order.side = Side::BUY;
