@@ -153,8 +153,9 @@ TEST_F(ConfigManagerTest, NonExistentComponent) {
 }
 
 TEST_F(ConfigManagerTest, InvalidConfigDirectory) {
-    // Create a path that cannot be created (using invalid characters in Windows)
-    std::filesystem::path invalid_path = "/\\?*:|<>\\invalid\\path";
+    // /dev/null is a character device, so create_directories() under it fails
+    // with ENOTDIR on Linux/macOS even when running as root.
+    std::filesystem::path invalid_path = "/dev/null/cannot_create_here";
 
     auto& config_manager = ConfigManager::instance();
     auto result = config_manager.initialize(invalid_path);
