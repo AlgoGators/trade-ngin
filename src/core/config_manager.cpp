@@ -273,7 +273,7 @@ void ConfigManager::initialize_validators() {
 }
 
 Result<void> ConfigManager::initialize(const std::filesystem::path& base_path, Environment env) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
 
     try {
         config_path_ = base_path;
@@ -447,7 +447,7 @@ Result<void> ConfigManager::apply_environment_overrides() {
 }
 
 Result<void> ConfigManager::update_config(ConfigType component_type, const nlohmann::json& config) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
 
     try {
         std::string component = get_component_name(component_type);
@@ -504,7 +504,7 @@ Result<void> ConfigManager::validate_config(ConfigType component_type,
 }
 
 Result<void> ConfigManager::save_configs() {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
 
     try {
         for (const auto& item : config_.items()) {
