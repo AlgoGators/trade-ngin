@@ -246,7 +246,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=${{ matrix.build-type }} \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
             -DCMAKE_CXX_COMPILER=${{ matrix.build-type == 'Debug' && 'g++' || 'g++' }} \
-            -DCMAKE_CXX_FLAGS="${{ matrix.build-type == 'Debug' && '-g -O0 --coverage' || '-O3' }}" \
+            -DCMAKE_CXX_FLAGS="${{ matrix.build-type == 'Debug' && '-g -O0 --coverage -fprofile-update=atomic' || '-O3' }}" \
             -DCMAKE_EXE_LINKER_FLAGS="${{ matrix.build-type == 'Debug' && '--coverage' || '' }}" \
             -DNLopt_DIR=/usr/lib/x86_64-linux-gnu/cmake/nlopt
 
