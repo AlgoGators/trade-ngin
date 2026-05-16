@@ -14,6 +14,7 @@ namespace trade_ngin::api {
 Result<backtest::BacktestResults> BacktestRunner::run_backtest(std::string portfolio_name) {
     try {
         // Reset all singletons to ensure clean state between runs
+        // TODO Move earlier since in Python we do add_strategy calls before run_backtest
         StateManager::reset_instance();
         Logger::reset_for_tests();
 
@@ -95,19 +96,17 @@ Result<backtest::BacktestResults> BacktestRunner::run_backtest(std::string portf
                 "BacktestAPI");
         }
 
-        // Load futures instruments
+        // Load instruments
         auto load_result = registry.load_instruments();
         if (load_result.is_error() || registry.get_all_instruments().empty()) {
-            std::cerr << "Failed to load futures instruments: " << load_result.error()->what()
-                      << std::endl;
-            ERROR("Failed to load futures instruments: " +
-                  std::string(load_result.error()->what()));
+            std::cerr << "Failed to load instruments: " << load_result.error()->what() << std::endl;
+            ERROR("Failed to load instruments: " + std::string(load_result.error()->what()));
             return make_error<backtest::BacktestResults>(
                 ErrorCode::DATABASE_ERROR,
-                "Failed to load futures instruments: " + std::string(load_result.error()->what()),
+                "Failed to load instruments: " + std::string(load_result.error()->what()),
                 "BacktestAPI");
         } else {
-            INFO("Successfully loaded futures instruments from database");
+            INFO("Successfully loaded instruments from database");
         }
 
         // After loading instruments
@@ -137,6 +136,7 @@ Result<backtest::BacktestResults> BacktestRunner::run_backtest(std::string portf
         // Set end date to today
         config.strategy_config.end_date = now;
 
+        // TODO make asset class configurable
         config.strategy_config.asset_class = trade_ngin::AssetClass::FUTURES;
         config.strategy_config.data_freq = trade_ngin::DataFrequency::DAILY;
         config.store_trade_details = app_config.backtest.store_trade_details;
