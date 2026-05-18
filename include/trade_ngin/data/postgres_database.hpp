@@ -485,6 +485,38 @@ public:
     Result<std::shared_ptr<arrow::Table>> get_contract_metadata() const;
 
     /**
+     * @brief Corporate action row from equities_data.corporate_action.
+     *
+     * The `value` field is parsed from the source table's text column:
+     *   - SPLIT / ADR_SPLIT: split factor (e.g. 4.0 for a 4-for-1)
+     *   - DIVIDEND: cash amount per share in trading currency
+     */
+    struct CorpActionRow {
+        std::string ticker;
+        std::string date_str;  // YYYY-MM-DD
+        std::string action;    // "split" | "dividend" | "adrratiosplit"
+        double value;
+    };
+
+    /**
+     * @brief Read corporate actions for a ticker list between two dates.
+     *
+     * Reads from equities_data.corporate_action (existing schema; no DDL).
+     * Filters to splits and dividends only -- spinoffs/mergers/ticker
+     * changes need basis-cost reallocation logic out of scope for Phase 4.
+     *
+     * @param tickers      Symbols to query (typically the live portfolio's
+     *                     equity universe).
+     * @param start_date   Inclusive YYYY-MM-DD.
+     * @param end_date     Inclusive YYYY-MM-DD.
+     * @return Sorted by (date, ticker, action); empty result is not an error.
+     */
+    Result<std::vector<CorpActionRow>> get_corporate_actions(
+        const std::vector<std::string>& tickers,
+        const std::string& start_date,
+        const std::string& end_date);
+
+    /**
      * @brief Convert asset class to string for database queries
      * @param asset_class Asset class to convert
      * @return String representation for database queries

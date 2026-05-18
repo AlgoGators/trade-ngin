@@ -1,6 +1,9 @@
+#include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <map>
 #include <sstream>
 #include <chrono>
 #include <ctime>
@@ -16,6 +19,8 @@
 #include "trade_ngin/data/conversion_utils.hpp"
 #include "trade_ngin/instruments/instrument_registry.hpp"
 #include "trade_ngin/instruments/equity.hpp"
+#include "trade_ngin/live/corporate_actions_applier.hpp"
+#include "trade_ngin/live/corporate_actions_audit_log.hpp"
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
 #include "trade_ngin/strategy/mean_reversion.hpp"
 #include "trade_ngin/core/email_sender.hpp"
@@ -30,6 +35,20 @@
 #include "trade_ngin/live/csv_exporter.hpp"
 
 using namespace trade_ngin;
+
+// Resolve the on-disk dedup state directory for the live equity app.
+// Honors TRADE_NGIN_STATE_DIR (treated as the parent directory) when set;
+// otherwise roots an absolute path at the current working directory. Always
+// returns an absolute path so cron-triggered runs from a different CWD cannot
+// silently relocate state and reset dedup (ultrareview bug_013). The directory
+// itself is created on first save() by CorporateActionsAuditLog.
+static std::string resolve_corp_actions_state_dir(const std::string& strategy_id) {
+    namespace fs = std::filesystem;
+    if (const char* env = std::getenv("TRADE_NGIN_STATE_DIR")) {
+        return (fs::path(env) / strategy_id).string();
+    }
+    return (fs::current_path() / "state" / strategy_id).string();
+}
 
 // Locale-independent date formatting for SQL queries.
 // Uses std::put_time with %Y-%m-%d, always producing YYYY-MM-DD.
@@ -162,6 +181,13 @@ int main(int argc, char* argv[]) {
             WARN("Could not load instruments from DB (may not have futures metadata): " +
                  std::string(load_result.error()->what()));
         }
+
+        // Resolve the corp-actions state directory once (absolute path) so all
+        // three call sites (daily corp-action apply, metrics build, email body)
+        // see the same on-disk store regardless of CWD.
+        const std::string ca_state_dir =
+            resolve_corp_actions_state_dir("LIVE_EQUITY_MEAN_REVERSION");
+        INFO("Corp-actions state directory: " + ca_state_dir);
 
         // Get current date for daily processing (or use override date)
         auto now = use_override_date ? target_date : std::chrono::system_clock::now();
@@ -520,6 +546,187 @@ int main(int argc, char* argv[]) {
         INFO("Retrieved prices from PriceManager: " +
              std::to_string(previous_day_close_prices.size()) + " Day T-1, " +
              std::to_string(two_days_ago_close_prices.size()) + " Day T-2");
+
+        // ========================================
+        // PHASE 4: APPLY CORPORATE ACTIONS
+        // Read events from equities_data.corporate_action between yesterday's
+        // run window and today, dedup against state file, adjust position
+        // quantities + cost basis, persist corrected positions BEFORE the
+        // strategy generates today's targets. Closes audit §1.12, §1.15.
+        // ========================================
+        if (!previous_positions.empty()) {
+            // 14-day lookback covers weekend / holiday gaps; the audit log
+            // dedups any event seen on a prior run.
+            auto today_t = std::chrono::system_clock::to_time_t(now);
+            auto window_start_t = today_t - 14 * 24 * 60 * 60;
+            std::tm today_tm = *std::localtime(&today_t);
+            std::tm start_tm = *std::localtime(&window_start_t);
+            char today_buf[11], start_buf[11];
+            std::strftime(today_buf, sizeof(today_buf), "%Y-%m-%d", &today_tm);
+            std::strftime(start_buf, sizeof(start_buf), "%Y-%m-%d", &start_tm);
+
+            auto ca_result = db->get_corporate_actions(
+                symbols, std::string(start_buf), std::string(today_buf));
+            if (ca_result.is_error()) {
+                WARN("Failed to fetch corporate actions: " +
+                     std::string(ca_result.error()->what()) +
+                     " -- continuing without corp-action adjustments");
+            } else {
+                const auto& rows = ca_result.value();
+                INFO("Fetched " + std::to_string(rows.size()) +
+                     " corp-action rows in window [" + start_buf + ", " + today_buf + "]");
+
+                CorporateActionsAuditLog audit_log(ca_state_dir);
+                audit_log.load();
+
+                // Historical close lookup keyed by (symbol, YYYY-MM-DD) so
+                // the dividend rescale denominator uses close at THIS event's
+                // ex_date - 1, not today's T-1 close (ultrareview bug_002).
+                // Built once from the same `all_bars` we already loaded.
+                std::unordered_map<std::string, std::map<std::string, double>>
+                    close_by_symbol_date;
+                for (const auto& bar : all_bars) {
+                    auto bt = std::chrono::system_clock::to_time_t(bar.timestamp);
+                    std::tm btm = *std::localtime(&bt);
+                    char dbuf[11];
+                    std::strftime(dbuf, sizeof(dbuf), "%Y-%m-%d", &btm);
+                    close_by_symbol_date[bar.symbol][std::string(dbuf)] =
+                        bar.close.as_double();
+                }
+                // Last close strictly BEFORE ex_date (walks back over
+                // weekends/holidays via the map's ordering). 0.0 if no bar.
+                auto close_before = [&](const std::string& symbol,
+                                        const std::string& ex_date) -> double {
+                    auto sym_it = close_by_symbol_date.find(symbol);
+                    if (sym_it == close_by_symbol_date.end()) return 0.0;
+                    const auto& by_date = sym_it->second;
+                    auto it = by_date.lower_bound(ex_date);
+                    if (it == by_date.begin()) return 0.0;
+                    --it;
+                    return it->second;
+                };
+
+                // Per-unique-ex_date positions cache for qty_at_ex_date
+                // lookup (ultrareview bug_021). Queries positions at
+                // ex_date - 1 (eligibility cutoff for cash dividends).
+                std::unordered_map<std::string, std::unordered_map<std::string, Position>>
+                    positions_at_date_cache;
+                auto qty_at_ex_date = [&](const std::string& symbol,
+                                          const std::string& ex_date) -> double {
+                    auto cached = positions_at_date_cache.find(ex_date);
+                    if (cached == positions_at_date_cache.end()) {
+                        std::tm tm{};
+                        std::istringstream ss(ex_date);
+                        ss >> std::get_time(&tm, "%Y-%m-%d");
+                        if (ss.fail()) return 0.0;
+                        auto tt = std::mktime(&tm) - 24 * 60 * 60;  // ex_date - 1 day
+                        auto tp = std::chrono::system_clock::from_time_t(tt);
+                        auto r = db->load_positions_by_date(
+                            "LIVE_EQUITY_MEAN_REVERSION", "EQUITY_MEAN_REVERSION",
+                            "BASE_PORTFOLIO", tp, "trading.positions");
+                        auto& slot = positions_at_date_cache[ex_date];
+                        if (r.is_ok()) slot = r.value();
+                        cached = positions_at_date_cache.find(ex_date);
+                    }
+                    auto p = cached->second.find(symbol);
+                    if (p == cached->second.end()) return 0.0;
+                    return p->second.quantity.as_double();
+                };
+
+                std::vector<CorpActionEvent> events;
+                events.reserve(rows.size());
+                // Intra-batch dedup (ultrareview bug_037): if the same
+                // (ticker, ex_date, action) tuple appears twice in this fetch
+                // (data-quality dupe), the persisted audit-log check above
+                // wouldn't see the duplicate within the same batch yet -- we
+                // must guard locally so we don't double-apply within one run.
+                std::set<std::tuple<std::string, std::string, CorpActionType>> seen_in_batch;
+                for (const auto& row : rows) {
+                    CorpActionType type = CorporateActionsApplier::type_from_action_string(row.action);
+                    if (type == CorpActionType::UNKNOWN) continue;
+                    if (audit_log.is_applied(row.ticker, row.date_str, type)) continue;
+                    if (previous_positions.find(row.ticker) == previous_positions.end()) continue;
+                    if (!seen_in_batch.emplace(row.ticker, row.date_str, type).second) continue;
+
+                    CorpActionEvent ev;
+                    ev.symbol = row.ticker;
+                    ev.ex_date = row.date_str;
+                    ev.type = type;
+                    ev.value = row.value;
+                    if (type == CorpActionType::DIVIDEND) {
+                        // bug_002: use close at THIS event's ex_date - 1.
+                        // Fall back to today's T-1 with a warning if not in
+                        // the loaded bar window (rare; the strategy's
+                        // historical_days window should cover the 14-day
+                        // catch-up easily).
+                        double c = close_before(row.ticker, row.date_str);
+                        if (c <= 0.0) {
+                            auto p_it = previous_day_close_prices.find(row.ticker);
+                            c = (p_it != previous_day_close_prices.end()) ? p_it->second : 0.0;
+                            if (c > 0.0) {
+                                WARN("No historical close for " + row.ticker +
+                                     " before ex_date " + row.date_str +
+                                     " -- using today's T-1 close as a fallback");
+                            }
+                        }
+                        ev.close_t_minus_1 = c;
+                        // bug_021: prefer qty at ex_date - 1; fall back to
+                        // current qty if the historical positions row is
+                        // missing (e.g. first-week catch-up runs).
+                        ev.qty_at_ex_date = qty_at_ex_date(row.ticker, row.date_str);
+                    }
+                    events.push_back(std::move(ev));
+                }
+
+                if (!events.empty()) {
+                    auto adjustments = CorporateActionsApplier::apply(previous_positions, events);
+                    for (const auto& adj : adjustments) {
+                        INFO("Applied " + std::string(CorporateActionsApplier::type_to_string(adj.type)) +
+                             " for " + adj.symbol + " (ex_date " + adj.event_date +
+                             "): qty " + std::to_string(adj.quantity_before) + " -> " +
+                             std::to_string(adj.quantity_after) +
+                             ", avg_price " + std::to_string(adj.avg_price_before) + " -> " +
+                             std::to_string(adj.avg_price_after) +
+                             ", ratio " + std::to_string(adj.ratio_change));
+                        audit_log.record(adj);
+                    }
+
+                    // Persist corrected positions back so future runs (and
+                    // tomorrow's load_positions_by_date) pick up the adjusted state.
+                    // Stamp last_update = now (ultrareview bug_007): the date-keyed
+                    // load filters on last_update, so without re-stamping the rows
+                    // we'd write at yesterday's effective date and tomorrow's
+                    // load_positions_by_date(today) would silently skip them.
+                    std::vector<Position> positions_to_store;
+                    positions_to_store.reserve(previous_positions.size());
+                    for (const auto& [sym, pos] : previous_positions) {
+                        Position p = pos;
+                        p.last_update = now;
+                        positions_to_store.push_back(std::move(p));
+                    }
+                    // Persist DB first, THEN save the dedup state file
+                    // (ultrareview merged_bug_001): if DB write fails, the state
+                    // file must NOT claim "applied" -- otherwise the next run
+                    // skips the event and positions drift permanently.
+                    auto store_result = db->store_positions(
+                        positions_to_store,
+                        "LIVE_EQUITY_MEAN_REVERSION", "EQUITY_MEAN_REVERSION",
+                        "BASE_PORTFOLIO", "trading.positions");
+                    if (store_result.is_error()) {
+                        ERROR("Failed to persist corp-action-adjusted positions: " +
+                              std::string(store_result.error()->what()));
+                        return 1;
+                    }
+                    if (!audit_log.save()) {
+                        ERROR("Failed to persist corp-actions audit log -- "
+                              "next run may double-apply events");
+                        return 1;
+                    }
+                    INFO("Persisted " + std::to_string(adjustments.size()) +
+                         " corp-action adjustments to trading.positions");
+                }
+            }
+        }
 
         // Verify we have prices for all required symbols
         std::set<std::string> all_symbols;
@@ -1565,6 +1772,17 @@ int main(int argc, char* argv[]) {
             // Use the LiveResultsManager
             INFO("Setting metrics in LiveResultsManager...");
 
+            // Phase 4.5: cumulative dividend income, sourced from the
+            // Phase 4 corp-action state file. Informational ONLY -- NOT
+            // added to total_pnl (closeadj already captures dividend
+            // total-return via Phase 4's avg_price frame-alignment fix).
+            double total_dividend_income = 0.0;
+            {
+                CorporateActionsAuditLog div_log(ca_state_dir);
+                div_log.load();
+                total_dividend_income = div_log.total_cumulative_dividend_income();
+            }
+
             // Prepare metrics maps
             std::unordered_map<std::string, double> double_metrics = {
                 {"total_cumulative_return", total_cumulative_return_pct},
@@ -1592,7 +1810,8 @@ int main(int argc, char* argv[]) {
                 {"daily_unrealized_pnl", daily_unrealized_pnl},
                 {"daily_commissions", total_daily_commissions},
                 {"margin_posted", total_posted_margin},
-                {"cash_available", current_portfolio_value - total_posted_margin}
+                {"cash_available", current_portfolio_value - total_posted_margin},
+                {"total_dividend_income", total_dividend_income}
             };
 
             std::unordered_map<std::string, int> int_metrics = {
@@ -1753,9 +1972,13 @@ int main(int argc, char* argv[]) {
                     }
                     INFO("Loaded " + std::to_string(yesterday_positions_finalized.size()) + " finalized positions for email");
 
-                    // Load yesterday's daily metrics from database for accurate display
+                    // Load yesterday's daily metrics from database for accurate display.
+                    // Phase 4.5: total_dividend_income (informational; cumulative for the
+                    // strategy as of that date) added to the SELECT and surfaced in the
+                    // email body alongside Daily Total PnL.
                     std::string yesterday_metrics_query =
-                        "SELECT daily_return, daily_unrealized_pnl, daily_realized_pnl, daily_pnl, daily_commissions "
+                        "SELECT daily_return, daily_unrealized_pnl, daily_realized_pnl, daily_pnl, "
+                        "daily_commissions, total_dividend_income "
                         "FROM trading.live_results "
                         "WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND date = '" + yesterday_date_for_email + "' "
                         "ORDER BY date DESC LIMIT 1";
@@ -1772,6 +1995,7 @@ int main(int argc, char* argv[]) {
                         auto daily_realized_arr = std::static_pointer_cast<arrow::StringArray>(metrics_table->column(2)->chunk(0));
                         auto daily_total_arr = std::static_pointer_cast<arrow::StringArray>(metrics_table->column(3)->chunk(0));
                         auto daily_commissions_arr = std::static_pointer_cast<arrow::StringArray>(metrics_table->column(4)->chunk(0));
+                        auto dividend_income_arr = std::static_pointer_cast<arrow::StringArray>(metrics_table->column(5)->chunk(0));
 
                         if (!daily_return_arr->IsNull(0)) {
                             yesterday_daily_metrics_final["Daily Return"] = std::stod(daily_return_arr->GetString(0));
@@ -1793,6 +2017,13 @@ int main(int argc, char* argv[]) {
                         if (!daily_commissions_arr->IsNull(0)) {
                             yesterday_daily_metrics_final["Daily Commissions"] = std::stod(daily_commissions_arr->GetString(0));
                             INFO("Daily Commissions: " + daily_commissions_arr->GetString(0));
+                        }
+                        if (!dividend_income_arr->IsNull(0)) {
+                            // Phase 4.5: informational only -- NOT in any PnL total.
+                            yesterday_daily_metrics_final["Dividend Income (cumulative)"] =
+                                std::stod(dividend_income_arr->GetString(0));
+                            INFO("Total Dividend Income (cumulative): " +
+                                 dividend_income_arr->GetString(0));
                         }
 
                         INFO("Successfully loaded yesterday's daily metrics from live_results");
@@ -1833,6 +2064,15 @@ int main(int argc, char* argv[]) {
                 }
                 strategy_metrics["Total Commissions"] = total_commissions_cumulative;
                 strategy_metrics["Current Portfolio Value"] = current_portfolio_value;
+
+                // Phase 4.5: cumulative dividend income from the corp-action
+                // state file (informational ONLY; not in any PnL total).
+                {
+                    CorporateActionsAuditLog div_log_email(ca_state_dir);
+                    div_log_email.load();
+                    strategy_metrics["Dividend Income (cumulative, informational)"] =
+                        div_log_email.total_cumulative_dividend_income();
+                }
 
                 // Leverage Metrics - Calculate values from position analysis
                 double gross_leverage_calc = (current_portfolio_value != 0.0) ? (gross_notional / current_portfolio_value) : 0.0;

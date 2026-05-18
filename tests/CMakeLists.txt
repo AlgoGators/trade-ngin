@@ -21,6 +21,13 @@ set(TEST_SOURCES
     transaction_cost/test_adv_classifier_wireup.cpp
     transaction_cost/test_unknown_equity_costs_dispatch.cpp
     transaction_cost/test_equity_borrow_fees.cpp
+    live/test_corp_actions_applier.cpp
+    live/test_corp_actions_audit_log.cpp
+    live/test_corp_actions_long_hold_total_return.cpp
+    live/test_audit_log_cumulative_dividend.cpp
+    live/test_live_metrics_includes_dividend_income.cpp
+    live/test_corp_actions_ultrareview_fixes.cpp
+    backtest/test_pnl_accounting_branch.cpp
     # backtesting/test_engine.cpp  # Deprecated - BacktestEngine replaced by BacktestCoordinator
     execution/test_execution_engine.cpp
     portfolio/test_portfolio_manager.cpp

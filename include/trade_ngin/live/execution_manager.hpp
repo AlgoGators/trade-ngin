@@ -12,13 +12,23 @@
 namespace trade_ngin {
 
 /**
- * ExecutionManager - Handles execution generation for live trading
+ * ExecutionManager - Offline execution synthesizer for the live trading flow.
  *
- * This class encapsulates the logic for:
- * - Generating execution reports from position changes
- * - Calculating commissions and transaction costs via TransactionCostManager
+ * Despite "live" in the path, this class is NOT a real broker adapter.
+ * It generates synthetic ExecutionReports from position deltas
+ * (target - current) priced at T-1 close, and computes commissions /
+ * transaction costs via TransactionCostManager. There is no order routing,
+ * no broker network call, no partial-fill handling.
  *
- * Extracted from live_trend.cpp lines 717-833 as part of Phase 3 refactoring
+ * This is paper-trading by design per the 2026-05-03 audit §7. A real
+ * broker adapter (and the broker-reconciliation work in audit §1.13) lands
+ * in a separate phase if and when live brokerage integration ships.
+ *
+ * For historical simulation, see backtest::BacktestExecutionManager.
+ *
+ * History: extracted from live_trend.cpp lines 717-833 during the Phase 3
+ * refactor. The "live" prefix is preserved for path stability; this
+ * docstring is the authoritative description of the role.
  */
 class ExecutionManager {
 private:

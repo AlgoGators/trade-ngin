@@ -7,8 +7,10 @@
 #include "trade_ngin/core/time_utils.hpp"
 #include "trade_ngin/data/market_data_bus.hpp"
 #include "trade_ngin/storage/backtest_results_manager.hpp"
+#include "trade_ngin/strategy/base_strategy.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
 #include "trade_ngin/strategy/trend_following_fast.hpp"
+#include "trade_ngin/strategy/types.hpp"
 
 namespace trade_ngin {
 namespace backtest {
@@ -636,6 +638,18 @@ Result<void> BacktestCoordinator::process_portfolio_day(
         // Calculate PnL for each strategy using its individual quantities
         auto strategy_positions = portfolio->get_strategy_positions();
 
+        // Phase 4 §1.14: build per-strategy PnL accounting method lookup so
+        // we can branch on REALIZED_ONLY (futures: daily MTM IS realized) vs
+        // MIXED/UNREALIZED_ONLY (equities: realized_pnl only on actual close,
+        // written by on_execution -- coordinator must NOT stamp realized_pnl
+        // here for equities).
+        std::unordered_map<std::string, PnLAccountingMethod> pnl_method_by_strategy;
+        for (const auto& s : portfolio->get_strategies()) {
+            if (auto bs = std::dynamic_pointer_cast<BaseStrategy>(s)) {
+                pnl_method_by_strategy[bs->get_metadata().id] = bs->get_pnl_accounting().method;
+            }
+        }
+
         for (const auto& [strategy_id, positions_map] : strategy_positions) {
             for (const auto& [symbol, pos] : positions_map) {
                 double qty = static_cast<double>(pos.quantity);
@@ -666,7 +680,20 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                 if (pnl_result.valid) {
                     // Update this strategy's position with calculated PnL
                     Position updated_pos = pos;
-                    updated_pos.realized_pnl = Decimal(pnl_result.daily_pnl);
+                    // Phase 4 §1.14: only stamp realized_pnl with daily MTM
+                    // when the strategy uses REALIZED_ONLY accounting
+                    // (futures). For equities (MIXED / UNREALIZED_ONLY),
+                    // leave realized_pnl untouched -- on_execution writes
+                    // realized when positions actually close. total_portfolio_pnl
+                    // below still aggregates daily_pnl independently so equity
+                    // curve totals are unchanged.
+                    auto pnl_method_it = pnl_method_by_strategy.find(strategy_id);
+                    PnLAccountingMethod method = (pnl_method_it != pnl_method_by_strategy.end())
+                                                     ? pnl_method_it->second
+                                                     : PnLAccountingMethod::REALIZED_ONLY;
+                    if (method == PnLAccountingMethod::REALIZED_ONLY) {
+                        updated_pos.realized_pnl = Decimal(pnl_result.daily_pnl);
+                    }
                     // For equities: unrealized = (current_price - cost_basis) * qty
                     // For futures: unrealized = 0 (mark-to-market settles daily)
                     double avg_price = static_cast<double>(pos.average_price);
