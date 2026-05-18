@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdlib>
+#include <filesystem>
 #include <string>
 #include <unordered_map>
 #include <optional>
@@ -29,6 +31,46 @@ struct HolidayInfo {
  */
 class HolidayChecker {
 public:
+    /**
+     * @brief Resolve the holidays.json path with a fallback chain.
+     *
+     * Phase 6 §6a -- cron-triggered apps used to fail silently when their
+     * CWD didn't match the dev-time `include/trade_ngin/core/` layout,
+     * leaving HolidayChecker with an empty map and every `is_holiday`
+     * returning false. This helper tries (in order):
+     *
+     *   1. `TRADE_NGIN_HOLIDAYS_JSON` env var (returned as-is even if it
+     *      doesn't exist, so a misconfigured path surfaces via the
+     *      load-error log instead of silently falling through).
+     *   2. `./include/trade_ngin/core/holidays.json` (dev / source layout).
+     *   3. `./holidays.json` (deploy bundle next to the binary).
+     *   4. `/etc/trade_ngin/holidays.json` (system-wide fallback).
+     *
+     * If none of the file paths exist, returns option (2) so the
+     * `HolidayChecker::load_holidays` ERROR log names the most likely
+     * expected location.
+     */
+    static std::string resolve_holidays_path() {
+        namespace fs = std::filesystem;
+        if (const char* env = std::getenv("TRADE_NGIN_HOLIDAYS_JSON")) {
+            // Env var wins. We return it verbatim so a misconfigured env
+            // value surfaces as a clear load-error, not a silent fallback.
+            return std::string(env);
+        }
+        const std::string candidates[] = {
+            "include/trade_ngin/core/holidays.json",
+            "holidays.json",
+            "/etc/trade_ngin/holidays.json",
+        };
+        for (const auto& path : candidates) {
+            std::error_code ec;
+            if (fs::exists(path, ec)) {
+                return path;
+            }
+        }
+        return candidates[0];  // dev-layout default for the ERROR log
+    }
+
     /**
      * @brief Constructor - loads holidays from JSON file
      * @param json_path Path to holidays.json file

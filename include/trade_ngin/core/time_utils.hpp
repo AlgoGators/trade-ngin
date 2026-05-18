@@ -80,6 +80,24 @@ inline std::string format_utc_date(std::chrono::system_clock::time_point tp) {
 }
 
 /**
+ * @brief Format a time_point as a UTC `YYYY-MM-DD HH:MM:SS` timestamp string.
+ *
+ * Phase 6 §6c -- companion to format_utc_date for sites that need a full
+ * timestamp (e.g. SQL INSERT values with second resolution). Same
+ * thread-safety guarantees: routes through safe_gmtime.
+ */
+inline std::string format_utc_datetime(std::chrono::system_clock::time_point tp) {
+    auto t = std::chrono::system_clock::to_time_t(tp);
+    std::tm tm{};
+    if (!safe_gmtime(&t, &tm)) {
+        return std::string("1970-01-01 00:00:00");
+    }
+    char buf[20];
+    std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tm);
+    return std::string(buf);
+}
+
+/**
  * @brief Get current time as a string with specified format
  *
  * @param format Format string compatible with strftime

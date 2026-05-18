@@ -287,6 +287,17 @@ double MeanReversionStrategy::calculate_position_size(const std::string& symbol,
         }
     }
 
+    // Phase 6 §1.18 contract: this rounded value is what the strategy
+    // returns. Downstream, PortfolioManager re-runs an iterative integer
+    // reconciliation pass (`portfolio_manager.cpp:244-348`) and the
+    // TransactionCostManager bills costs on the FINAL post-reconciliation
+    // `trade_size` (`portfolio_manager.cpp:501`), so there is no
+    // pre-round / post-round cost mismatch at execution time. The audit's
+    // §1.18 concern was that the strategy's INTERNAL cost estimate could
+    // diverge from the actual order; for this strategy the internal
+    // estimate is intentionally absent — sizing is volatility-targeted,
+    // not cost-aware. If a future cost-aware sizing pass is added, it must
+    // run AFTER this rounding step.
     if (fractional_ok) {
         num_shares = std::round(num_shares * 1000000.0) / 1000000.0;
     } else {
