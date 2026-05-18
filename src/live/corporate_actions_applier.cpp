@@ -103,7 +103,16 @@ std::vector<PositionAdjustment> CorporateActionsApplier::apply(
                 if (avg_before > 0.0) {
                     pos.average_price = Decimal(avg_after);
                 }
-                adj.quantity_after = qty_before;  // unchanged
+                // For the audit log's cash-flow figure, the basis is the
+                // qty held on ex_date - 1 (ultrareview bug_021). When the
+                // caller supplied that, record it; otherwise fall back to
+                // the live position qty (same as before).
+                const double basis_qty =
+                    (ev.qty_at_ex_date > 0.0 && std::isfinite(ev.qty_at_ex_date))
+                        ? ev.qty_at_ex_date
+                        : qty_before;
+                adj.quantity_before = basis_qty;
+                adj.quantity_after = basis_qty;  // unchanged
                 adj.avg_price_after = avg_after;
                 adj.ratio_change = ratio;
                 break;

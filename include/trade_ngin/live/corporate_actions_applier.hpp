@@ -30,7 +30,15 @@ struct CorpActionEvent {
     std::string ex_date;          // YYYY-MM-DD
     CorpActionType type{CorpActionType::UNKNOWN};
     double value{0.0};            // split factor OR dividend $/share
-    double close_t_minus_1{0.0};  // required for DIVIDEND only
+    double close_t_minus_1{0.0};  // required for DIVIDEND only; close at ex_date-1
+    // Quantity held at end of business on ex_date - 1 (the eligibility cutoff
+    // for cash dividends). Optional: when > 0, the applier records this on
+    // PositionAdjustment.quantity_before/after for DIVIDEND events instead of
+    // today's live qty, so the audit log's cash-flow figure reflects the
+    // ex-date holding even when running a catch-up apply days later
+    // (ultrareview bug_021). Has NO effect on the actual position quantity
+    // (dividends never change qty), nor on splits.
+    double qty_at_ex_date{0.0};
 };
 
 /**

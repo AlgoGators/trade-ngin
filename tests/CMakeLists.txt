@@ -26,6 +26,7 @@ set(TEST_SOURCES
     live/test_corp_actions_long_hold_total_return.cpp
     live/test_audit_log_cumulative_dividend.cpp
     live/test_live_metrics_includes_dividend_income.cpp
+    live/test_corp_actions_ultrareview_fixes.cpp
     backtest/test_pnl_accounting_branch.cpp
     # backtesting/test_engine.cpp  # Deprecated - BacktestEngine replaced by BacktestCoordinator
     execution/test_execution_engine.cpp

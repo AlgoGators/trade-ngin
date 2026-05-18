@@ -134,13 +134,37 @@ bool CorporateActionsAuditLog::save() const {
         out["dividend_events"].push_back(std::move(entry));
     }
 
+    // Atomic write (ultrareview bug_003): writing directly to `path` leaves a
+    // corrupt half-file if the process is killed mid-write, which makes the
+    // next load() fail and silently zeroes the dedup state. Write to a temp
+    // sibling, flush, then rename -- rename is atomic on the same filesystem,
+    // so a reader either sees the old file or the new file but never a
+    // partial one.
     const std::string path = file_path();
-    std::ofstream f(path);
-    if (!f.is_open()) {
-        ERROR("CorporateActionsAuditLog: cannot open " + path + " for writing");
+    const std::string tmp_path = path + ".tmp";
+    {
+        std::ofstream f(tmp_path, std::ios::out | std::ios::trunc);
+        if (!f.is_open()) {
+            ERROR("CorporateActionsAuditLog: cannot open " + tmp_path + " for writing");
+            return false;
+        }
+        f << out.dump(2);
+        f.flush();
+        if (!f.good()) {
+            ERROR("CorporateActionsAuditLog: write to " + tmp_path + " failed");
+            std::error_code ec;
+            std::filesystem::remove(tmp_path, ec);
+            return false;
+        }
+    }
+    std::error_code ec;
+    std::filesystem::rename(tmp_path, path, ec);
+    if (ec) {
+        ERROR("CorporateActionsAuditLog: atomic rename " + tmp_path + " -> " +
+              path + " failed: " + ec.message());
+        std::filesystem::remove(tmp_path, ec);
         return false;
     }
-    f << out.dump(2);
     return true;
 }
 
