@@ -689,6 +689,22 @@ Result<void> BacktestCoordinator::process_portfolio_day(
         // Update previous closes for next iteration
         pnl_manager_->update_previous_closes(current_close_prices);
 
+        // Phase 2 §3.2: accrue overnight borrow fees on open short equity
+        // positions. Adds to today's transaction costs so the equity curve
+        // reflects the cost of holding shorts overnight. No-op when no shorts
+        // are open (the common case in long-only backtests).
+        if (execution_manager_ && registry_) {
+            auto portfolio_positions_for_borrow = portfolio->get_portfolio_positions();
+            auto borrow_fees = execution_manager_->get_transaction_cost_manager()
+                .calculate_overnight_borrow_fees(
+                    portfolio_positions_for_borrow,
+                    current_close_prices,
+                    *registry_);
+            for (const auto& [sym, fee] : borrow_fees) {
+                total_transaction_costs += fee;
+            }
+        }
+
         // Calculate portfolio value: previous value + daily PnL - transaction costs
         double portfolio_value =
             equity_curve.empty() ? initial_capital : equity_curve.back().second;

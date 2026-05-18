@@ -80,6 +80,23 @@ double EquityInstrument::calculate_commission(double quantity) const {
     return std::abs(quantity) * spec_.commission_per_share;
 }
 
+double EquityInstrument::get_margin_requirement(double price, double quantity) const {
+    // Closes audit §1.3: real Reg T-aware margin math, replacing the
+    // structurally broken margin_requirement{0.5} treated as $/share.
+    const double notional = std::abs(quantity) * price;
+    if (spec_.account_mode == EquityAccountMode::CASH) {
+        // Cash account: full position value tied up; no margin extension.
+        return notional;
+    }
+    // REG_T:
+    if (quantity >= 0.0) {
+        // Long: 50% initial margin under Reg T.
+        return notional * 0.50;
+    }
+    // Short: 100% proceeds collateral + 50% maintenance margin = 150% notional.
+    return notional * 1.50;
+}
+
 std::optional<DividendInfo> EquityInstrument::get_next_dividend(const Timestamp& from) const {
     auto it = std::find_if(spec_.dividends.begin(), spec_.dividends.end(),
                            [&from](const DividendInfo& div) { return div.ex_date > from; });

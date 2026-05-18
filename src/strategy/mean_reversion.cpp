@@ -138,6 +138,18 @@ Result<void> MeanReversionStrategy::on_data(const std::vector<Bar>& data) {
             if (std::abs(signal) > 0.01) {
                 double position_size = calculate_position_size(bar.symbol, bar.close.as_double(), inst_data.current_volatility);
                 double new_target = signal * position_size;
+                // Phase 2 short-selling gate (audit §3.2). If the instrument
+                // is an equity that isn't REG_T with short_selling_allowed,
+                // clamp the short to zero -- cash accounts can't short.
+                if (new_target < 0.0 && registry_) {
+                    auto equity = registry_->get_equity_instrument(bar.symbol);
+                    if (equity && !equity->is_short_allowed()) {
+                        WARN("Shorting disallowed for " + bar.symbol +
+                             " (account_mode=CASH or short_selling_allowed=false). "
+                             "Clamping short target " + std::to_string(new_target) + " to 0.");
+                        new_target = 0.0;
+                    }
+                }
                 inst_data.target_position = new_target;
             } else {
                 inst_data.target_position = 0.0;

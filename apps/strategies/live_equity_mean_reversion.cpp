@@ -202,6 +202,23 @@ int main(int argc, char* argv[]) {
             return 1;
         }
 
+        // Phase 2 leverage guardrail (audit §3.3): CASH-mode equities cannot
+        // be in a portfolio with max_gross_leverage > 1.0 -- cash accounts
+        // can't borrow, so a leverage cap above 1.0 is structurally invalid.
+        if (app_config.risk_config.max_gross_leverage > 1.0) {
+            for (const auto& symbol : symbols) {
+                auto inst = registry.get_equity_instrument(symbol);
+                if (inst && inst->get_account_mode() == EquityAccountMode::CASH) {
+                    ERROR("Refusing to start: CASH-mode equity " + symbol +
+                          " in portfolio with max_gross_leverage=" +
+                          std::to_string(app_config.risk_config.max_gross_leverage) +
+                          " > 1.0. Set REG_T account_mode (and is_short_allowed "
+                          "if needed) or reduce max_gross_leverage to 1.0.");
+                    return 1;
+                }
+            }
+        }
+
         std::cout << "Symbols: ";
         for (const auto& symbol : symbols) {
             std::cout << symbol << " ";
