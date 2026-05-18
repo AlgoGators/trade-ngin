@@ -11,6 +11,11 @@
 #include "trade_ngin/transaction_cost/spread_model.hpp"
 
 namespace trade_ngin {
+
+// Forward decl: borrow-fee path uses InstrumentRegistry to look up the
+// EquityInstrument per symbol. Full header included in the .cpp.
+class InstrumentRegistry;
+
 namespace transaction_cost {
 
 /**
@@ -137,6 +142,12 @@ public:
     double get_volatility_multiplier(const std::string& symbol) const;
 
     /**
+     * @brief Get annualized volatility for a symbol (used by borrow-fee model).
+     * Returns 0.25 (25%) fallback if no observations are available.
+     */
+    double get_annual_volatility(const std::string& symbol) const;
+
+    /**
      * @brief Get asset configuration for a symbol
      */
     AssetCostConfig get_asset_config(const std::string& symbol) const;
@@ -168,6 +179,33 @@ public:
         const std::vector<std::string>& symbols,
         const std::unordered_map<std::string, std::vector<Bar>>& bars_by_symbol,
         int adv_lookback_days = 20);
+
+    /**
+     * @brief Compute overnight borrow fees for short equity positions.
+     *
+     * For each short equity position, derives an annual borrow rate using
+     * multi-factor scoring per audit §3.2:
+     *   - Dollar volume (ADV × price) as a proxy for liquidity / lendable supply
+     *   - Price level (<$5 high risk; no medium tier currently implemented)
+     *   - is_easy_to_borrow flag (false forces HTB tier)
+     * Then scales by a volatility multiplier (clamp(annual_vol / 0.25, 1.0, 3.0)).
+     * Per-symbol `borrow_rate_override` on EquitySpec bypasses the formula.
+     *
+     * Daily fee = effective_annual_rate * |short_position_value| / 365.
+     *
+     * Caller (backtest daily loop or live EOD finalizer) sums the returned
+     * map and adds to total_transaction_costs for the day. Returns empty map
+     * if no shorts present. Long positions and non-equity positions are
+     * skipped.
+     *
+     * Market cap data isn't available in the system today; the dollar-volume
+     * fallback degrades precision but preserves directional correctness per
+     * audit §3.2.
+     */
+    std::unordered_map<std::string, double> calculate_overnight_borrow_fees(
+        const std::unordered_map<std::string, Position>& positions,
+        const std::unordered_map<std::string, double>& current_prices,
+        const InstrumentRegistry& registry) const;
 
     /**
      * @brief Clear all market data (for new backtest run)

@@ -25,6 +25,18 @@ struct DividendInfo {
 };
 
 /**
+ * @brief Account model for equity margin and shorting.
+ *
+ * CASH: full position notional is posted as margin (cash deployed). No
+ * shorting. Standard retail cash-account behavior.
+ *
+ * REG_T: Reg T margin. Long positions post 50% of notional; shorts post
+ * 150% (100% proceeds + 50% maintenance margin). Shorting allowed only if
+ * EquitySpec::short_selling_allowed is also true.
+ */
+enum class EquityAccountMode { CASH, REG_T };
+
+/**
  * @brief Stock specification
  */
 struct EquitySpec {
@@ -35,11 +47,31 @@ struct EquitySpec {
     double commission_per_share{0.0};          // Commission per share
     bool is_etf{false};                        // Whether the instrument is an ETF
     bool is_marginable{true};                  // Whether the stock can be margined
-    double margin_requirement{0.5};            // Initial margin requirement (typically 50%)
     std::string sector;                        // Industry sector
     std::string industry;                      // Specific industry
     std::string trading_hours{"09:30-16:00"};  // NYSE and NASDAQ regular session hours
     std::vector<DividendInfo> dividends;       // Upcoming dividends
+
+    // Account model. Default CASH preserves safe long-only behavior; opt in
+    // to REG_T per-symbol for leveraged/short capability.
+    EquityAccountMode account_mode{EquityAccountMode::CASH};
+
+    // Shorting gate. Only meaningful when account_mode == REG_T; with CASH
+    // mode, shorts are rejected by the strategy clamp regardless of this flag.
+    bool short_selling_allowed{false};
+
+    // Borrow fee configuration.
+    // borrow_rate_override: if >= 0, use this annual rate instead of the
+    //   formula in TransactionCostManager::calculate_overnight_borrow_fees.
+    //   Use to inject broker-provided rates from a live locate API.
+    // is_easy_to_borrow: when false, force HTB tier regardless of ADV/price
+    //   signals (e.g., recent IPOs with low float despite high ADV).
+    // (Per-trade flat locate fee deliberately omitted: the cost-path code
+    // does not yet model short-open events distinctly, so a field with no
+    // consumer would silently swallow any value the user configured.
+    // Add when the short-open cost path lands.)
+    double borrow_rate_override{-1.0};
+    bool is_easy_to_borrow{true};
 };
 
 /**
@@ -81,9 +113,16 @@ public:
     }  // $1 per point for stocks
 
     bool is_tradeable() const override;
+
+    // Legacy no-arg margin: 0.0 sentinel. Equity margin is account-mode and
+    // position-dependent; callers must use the price/quantity overload below.
+    // Returning 0 (rather than a stale 0.5) ensures any unmigrated caller
+    // surfaces an obvious bug instead of silently using nonsense margin.
     double get_margin_requirement() const override {
-        return spec_.margin_requirement;
+        return 0.0;
     }
+    double get_margin_requirement(double price, double quantity) const override;
+
     std::string get_trading_hours() const override {
         return spec_.trading_hours;
     }
@@ -111,6 +150,31 @@ public:
      */
     bool is_marginable() const {
         return spec_.is_marginable;
+    }
+
+    /**
+     * @brief Get the account mode (CASH or REG_T).
+     */
+    EquityAccountMode get_account_mode() const {
+        return spec_.account_mode;
+    }
+
+    /**
+     * @brief Whether shorting is permitted for this instrument.
+     *
+     * True only when account_mode is REG_T AND short_selling_allowed is set.
+     * Strategies must clamp short signals to zero when this returns false.
+     */
+    bool is_short_allowed() const {
+        return spec_.account_mode == EquityAccountMode::REG_T &&
+               spec_.short_selling_allowed;
+    }
+
+    /**
+     * @brief Access the underlying spec (for borrow-fee config etc.).
+     */
+    const EquitySpec& get_spec() const {
+        return spec_;
     }
 
     /**

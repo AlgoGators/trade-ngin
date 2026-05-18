@@ -90,7 +90,6 @@ Result<std::pair<double, double>> MarginManager::calculate_position_margin(
     double quantity,
     double market_price) {
 
-    (void)market_price;
     // Get instrument from registry
     auto instrument_result = get_instrument_safe(symbol);
     if (instrument_result.is_error()) {
@@ -102,8 +101,10 @@ Result<std::pair<double, double>> MarginManager::calculate_position_margin(
 
     auto instrument = instrument_result.value();
 
-    // Extract margin requirements
-    auto [initial_margin, maintenance_margin] = extract_margin_requirements(instrument, quantity);
+    // Extract margin requirements. market_price is now threaded through so
+    // equity margin can be computed correctly via the price/qty overload.
+    auto [initial_margin, maintenance_margin] = extract_margin_requirements(
+        instrument, quantity, market_price);
 
     return Result<std::pair<double, double>>(std::make_pair(initial_margin, maintenance_margin));
 }
@@ -280,32 +281,40 @@ Result<std::shared_ptr<Instrument>> MarginManager::get_instrument_safe(const std
 
 std::pair<double, double> MarginManager::extract_margin_requirements(
     const std::shared_ptr<Instrument>& instrument,
-    double quantity) const {
+    double quantity,
+    double market_price) const {
 
     double contracts_abs = std::abs(quantity);
 
-    // Get initial margin
-    double initial_margin_per_contract = instrument->get_margin_requirement();
-    if (initial_margin_per_contract <= 0) {
-        ERROR("Invalid initial margin " + std::to_string(initial_margin_per_contract) +
-              " for " + instrument->get_symbol());
+    // Equities: use the price/quantity overload to get account-mode-aware
+    // dollar margin (CASH = full notional, REG_T long = 50%, short = 150%).
+    // Futures: the base class default forwards to the no-arg version, so
+    // get_margin_requirement(price, qty) returns the same fixed dollar
+    // amount per contract that the legacy path used.
+    double total_initial_margin = instrument->get_margin_requirement(
+        market_price, quantity);
+    if (total_initial_margin <= 0) {
+        ERROR("Invalid initial margin " + std::to_string(total_initial_margin) +
+              " for " + instrument->get_symbol() +
+              " (price=" + std::to_string(market_price) +
+              ", qty=" + std::to_string(quantity) + ")");
         throw std::runtime_error("Invalid initial margin for: " + instrument->get_symbol());
     }
-    double total_initial_margin = contracts_abs * initial_margin_per_contract;
 
-    // Try to get maintenance margin if available (for futures)
-    double maintenance_margin_per_contract = initial_margin_per_contract;
+    // Maintenance margin: futures expose a distinct value; equities and
+    // others fall back to using initial margin as the maintenance figure.
+    double total_maintenance_margin = total_initial_margin;
     if (auto futures_ptr = std::dynamic_pointer_cast<FuturesInstrument>(instrument)) {
-        maintenance_margin_per_contract = futures_ptr->get_maintenance_margin();
+        double maintenance_margin_per_contract = futures_ptr->get_maintenance_margin();
         if (maintenance_margin_per_contract <= 0) {
             ERROR("Invalid maintenance margin " +
                   std::to_string(maintenance_margin_per_contract) +
                   " for " + instrument->get_symbol());
-            // Fall back to initial margin
-            maintenance_margin_per_contract = initial_margin_per_contract;
+            // Fall back to initial margin per contract.
+            maintenance_margin_per_contract = futures_ptr->get_margin_requirement();
         }
+        total_maintenance_margin = contracts_abs * maintenance_margin_per_contract;
     }
-    double total_maintenance_margin = contracts_abs * maintenance_margin_per_contract;
 
     return std::make_pair(total_initial_margin, total_maintenance_margin);
 }

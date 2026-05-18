@@ -689,6 +689,47 @@ Result<void> BacktestCoordinator::process_portfolio_day(
         // Update previous closes for next iteration
         pnl_manager_->update_previous_closes(current_close_prices);
 
+        // Phase 2 §3.2: accrue overnight borrow fees on open short equity
+        // positions. Per-strategy attribution: iterate strategy_positions,
+        // compute each strategy's borrow fee on its own shorts, both add to
+        // today's transaction costs (equity curve) AND emit a synthetic
+        // zero-quantity ExecutionReport so the DB / CSV / metrics audit
+        // trail stays in sync with the equity-curve drop.
+        // No-op when no shorts are open (the common case for long-only).
+        if (execution_manager_ && registry_) {
+            auto& tcm = execution_manager_->get_transaction_cost_manager();
+            auto strategy_positions_for_borrow = portfolio->get_strategy_positions();
+            for (const auto& [strategy_id, strat_positions] : strategy_positions_for_borrow) {
+                auto strat_borrow_fees = tcm.calculate_overnight_borrow_fees(
+                    strat_positions, current_close_prices, *registry_);
+                for (const auto& [sym, fee] : strat_borrow_fees) {
+                    if (fee <= 0.0) continue;
+                    total_transaction_costs += fee;
+
+                    // Synthesize a zero-quantity exec so per-strategy and
+                    // per-symbol metrics (profit_factor, win_rate, symbol
+                    // PnL) include the borrow drag instead of silently
+                    // excluding it.
+                    ExecutionReport borrow_exec;
+                    borrow_exec.exec_id = "BORROW_" + strategy_id + "_" + sym;
+                    borrow_exec.order_id = borrow_exec.exec_id;
+                    borrow_exec.symbol = sym;
+                    borrow_exec.side = Side::SELL;
+                    borrow_exec.filled_quantity = Quantity(0.0);
+                    auto price_it = current_close_prices.find(sym);
+                    borrow_exec.fill_price = Price(
+                        price_it != current_close_prices.end() ? price_it->second : 0.0);
+                    borrow_exec.fill_time = timestamp;
+                    borrow_exec.commissions_fees = Decimal(fee);
+                    borrow_exec.implicit_price_impact = Decimal(0.0);
+                    borrow_exec.slippage_market_impact = Decimal(0.0);
+                    borrow_exec.total_transaction_costs = Decimal(fee);
+                    borrow_exec.is_partial = false;
+                    portfolio->append_synthetic_execution(strategy_id, borrow_exec);
+                }
+            }
+        }
+
         // Calculate portfolio value: previous value + daily PnL - transaction costs
         double portfolio_value =
             equity_curve.empty() ? initial_capital : equity_curve.back().second;

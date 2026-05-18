@@ -4,6 +4,8 @@
 #include <cmath>
 
 #include "trade_ngin/core/logger.hpp"
+#include "trade_ngin/instruments/equity.hpp"
+#include "trade_ngin/instruments/instrument_registry.hpp"
 
 namespace trade_ngin {
 namespace transaction_cost {
@@ -137,6 +139,10 @@ double TransactionCostManager::get_volatility_multiplier(const std::string& symb
     return spread_model_.get_volatility_multiplier(symbol);
 }
 
+double TransactionCostManager::get_annual_volatility(const std::string& symbol) const {
+    return spread_model_.get_annual_volatility(symbol);
+}
+
 AssetCostConfig TransactionCostManager::get_asset_config(const std::string& symbol) const {
     return asset_configs_.get_config(symbol);
 }
@@ -194,6 +200,102 @@ int TransactionCostManager::register_equity_costs_from_bars(
 void TransactionCostManager::clear_all_data() {
     spread_model_.clear_all();
     impact_model_.clear_all();
+}
+
+namespace {
+
+// Audit §3.2 risk scoring: count high-risk flags and map to annual base
+// borrow rate. Dollar-volume substitutes for market cap (audit fallback).
+double base_rate_from_flags(int flag_count) {
+    if (flag_count <= 0) return 0.0025;   //  25 bps -- ETB / liquid stocks
+    if (flag_count == 1) return 0.0050;   //  50 bps -- one tilt away from clean
+    if (flag_count == 2) return 0.0150;   // 150 bps -- borderline HTB
+    return 0.0500;                        // 500 bps -- HTB+ proxy
+}
+
+}  // namespace
+
+std::unordered_map<std::string, double>
+TransactionCostManager::calculate_overnight_borrow_fees(
+    const std::unordered_map<std::string, Position>& positions,
+    const std::unordered_map<std::string, double>& current_prices,
+    const InstrumentRegistry& registry) const {
+
+    std::unordered_map<std::string, double> fees;
+
+    for (const auto& [symbol, position] : positions) {
+        const double qty = position.quantity.as_double();
+        if (qty >= 0.0) {
+            continue;  // Only shorts accrue borrow fees.
+        }
+
+        auto equity = registry.get_equity_instrument(symbol);
+        if (!equity) {
+            // Non-equity (e.g., short futures) doesn't pay equity borrow fees.
+            continue;
+        }
+
+        // Resolve current price.
+        double price = 0.0;
+        auto price_it = current_prices.find(symbol);
+        if (price_it != current_prices.end()) {
+            price = price_it->second;
+        } else {
+            price = position.average_price.as_double();
+            WARN("calculate_overnight_borrow_fees: no current price for " +
+                 symbol + ", using avg_price " + std::to_string(price));
+        }
+        if (price <= 0.0) {
+            WARN("calculate_overnight_borrow_fees: non-positive price for " +
+                 symbol + ", skipping");
+            continue;
+        }
+
+        const double short_position_value = std::abs(qty) * price;
+        const auto& spec = equity->get_spec();
+        double annual_rate;
+
+        if (spec.borrow_rate_override >= 0.0) {
+            // Broker-provided rate or test override; formula bypassed.
+            annual_rate = spec.borrow_rate_override;
+        } else {
+            // Multi-factor scoring per audit §3.2.
+            int flag_count = 0;
+
+            // Dollar-volume signal: ADV × price. <$5M/day flags as high risk.
+            const double adv = impact_model_.get_adv(symbol);
+            const double dollar_volume = adv * price;
+            if (dollar_volume > 0.0 && dollar_volume < 5'000'000.0) {
+                ++flag_count;
+            }
+
+            // Price-level signal: penny / micro-cap risk.
+            if (price < 5.0) {
+                ++flag_count;
+            }
+
+            // HTB override: explicit is_easy_to_borrow=false forces high tier.
+            if (!spec.is_easy_to_borrow) {
+                ++flag_count;
+            }
+
+            const double base = base_rate_from_flags(flag_count);
+
+            // Volatility multiplier: clamp(annual_vol / 0.25, 1.0, 3.0).
+            const double annual_vol = spread_model_.get_annual_volatility(symbol);
+            double vol_mult = annual_vol / 0.25;
+            if (vol_mult < 1.0) vol_mult = 1.0;
+            if (vol_mult > 3.0) vol_mult = 3.0;
+
+            annual_rate = base * vol_mult;
+        }
+
+        // Daily fee charged per overnight position held.
+        const double daily_fee = annual_rate * short_position_value / 365.0;
+        fees[symbol] = daily_fee;
+    }
+
+    return fees;
 }
 
 }  // namespace transaction_cost

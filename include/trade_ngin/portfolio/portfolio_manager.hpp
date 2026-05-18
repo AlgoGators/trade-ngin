@@ -166,6 +166,19 @@ public:
     void clear_execution_history();
 
     /**
+     * @brief Append a synthetic ExecutionReport to a strategy's history.
+     *
+     * Used by carry-cost accrual (e.g., overnight borrow fees) to keep the
+     * per-execution audit trail in sync with the daily equity-curve cost
+     * roll-up. The exec is appended as-is; callers are responsible for
+     * setting symbol, filled_quantity (typically 0 for synthetic carry),
+     * timestamps, and cost fields. Idempotent at the per-call level; not
+     * deduped across calls.
+     */
+    void append_synthetic_execution(const std::string& strategy_id,
+                                    const ExecutionReport& exec);
+
+    /**
      * @brief Clear all executions including strategy-level (used during warmup)
      */
     void clear_all_executions();
