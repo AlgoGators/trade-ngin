@@ -16,6 +16,8 @@
 #include "trade_ngin/data/conversion_utils.hpp"
 #include "trade_ngin/instruments/instrument_registry.hpp"
 #include "trade_ngin/instruments/equity.hpp"
+#include "trade_ngin/live/corporate_actions_applier.hpp"
+#include "trade_ngin/live/corporate_actions_audit_log.hpp"
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
 #include "trade_ngin/strategy/mean_reversion.hpp"
 #include "trade_ngin/core/email_sender.hpp"
@@ -520,6 +522,97 @@ int main(int argc, char* argv[]) {
         INFO("Retrieved prices from PriceManager: " +
              std::to_string(previous_day_close_prices.size()) + " Day T-1, " +
              std::to_string(two_days_ago_close_prices.size()) + " Day T-2");
+
+        // ========================================
+        // PHASE 4: APPLY CORPORATE ACTIONS
+        // Read events from equities_data.corporate_action between yesterday's
+        // run window and today, dedup against state file, adjust position
+        // quantities + cost basis, persist corrected positions BEFORE the
+        // strategy generates today's targets. Closes audit §1.12, §1.15.
+        // ========================================
+        if (!previous_positions.empty()) {
+            // 14-day lookback covers weekend / holiday gaps; the audit log
+            // dedups any event seen on a prior run.
+            auto today_t = std::chrono::system_clock::to_time_t(now);
+            auto window_start_t = today_t - 14 * 24 * 60 * 60;
+            std::tm today_tm = *std::localtime(&today_t);
+            std::tm start_tm = *std::localtime(&window_start_t);
+            char today_buf[11], start_buf[11];
+            std::strftime(today_buf, sizeof(today_buf), "%Y-%m-%d", &today_tm);
+            std::strftime(start_buf, sizeof(start_buf), "%Y-%m-%d", &start_tm);
+
+            auto ca_result = db->get_corporate_actions(
+                symbols, std::string(start_buf), std::string(today_buf));
+            if (ca_result.is_error()) {
+                WARN("Failed to fetch corporate actions: " +
+                     std::string(ca_result.error()->what()) +
+                     " -- continuing without corp-action adjustments");
+            } else {
+                const auto& rows = ca_result.value();
+                INFO("Fetched " + std::to_string(rows.size()) +
+                     " corp-action rows in window [" + start_buf + ", " + today_buf + "]");
+
+                CorporateActionsAuditLog audit_log(
+                    "state/LIVE_EQUITY_MEAN_REVERSION");
+                audit_log.load();
+
+                std::vector<CorpActionEvent> events;
+                events.reserve(rows.size());
+                for (const auto& row : rows) {
+                    CorpActionType type = CorporateActionsApplier::type_from_action_string(row.action);
+                    if (type == CorpActionType::UNKNOWN) continue;
+                    if (audit_log.is_applied(row.ticker, row.date_str, type)) continue;
+                    if (previous_positions.find(row.ticker) == previous_positions.end()) continue;
+
+                    CorpActionEvent ev;
+                    ev.symbol = row.ticker;
+                    ev.ex_date = row.date_str;
+                    ev.type = type;
+                    ev.value = row.value;
+                    if (type == CorpActionType::DIVIDEND) {
+                        auto p_it = previous_day_close_prices.find(row.ticker);
+                        ev.close_t_minus_1 = (p_it != previous_day_close_prices.end())
+                                                 ? p_it->second
+                                                 : 0.0;
+                    }
+                    events.push_back(std::move(ev));
+                }
+
+                if (!events.empty()) {
+                    auto adjustments = CorporateActionsApplier::apply(previous_positions, events);
+                    for (const auto& adj : adjustments) {
+                        INFO("Applied " + std::string(CorporateActionsApplier::type_to_string(adj.type)) +
+                             " for " + adj.symbol + " (ex_date " + adj.event_date +
+                             "): qty " + std::to_string(adj.quantity_before) + " -> " +
+                             std::to_string(adj.quantity_after) +
+                             ", avg_price " + std::to_string(adj.avg_price_before) + " -> " +
+                             std::to_string(adj.avg_price_after) +
+                             ", ratio " + std::to_string(adj.ratio_change));
+                        audit_log.record(adj);
+                    }
+                    audit_log.save();
+
+                    // Persist corrected positions back so future runs (and
+                    // tomorrow's load_positions_by_date) pick up the adjusted state.
+                    std::vector<Position> positions_to_store;
+                    positions_to_store.reserve(previous_positions.size());
+                    for (const auto& [sym, pos] : previous_positions) {
+                        positions_to_store.push_back(pos);
+                    }
+                    auto store_result = db->store_positions(
+                        positions_to_store,
+                        "LIVE_EQUITY_MEAN_REVERSION", "EQUITY_MEAN_REVERSION",
+                        "BASE_PORTFOLIO", "trading.positions");
+                    if (store_result.is_error()) {
+                        ERROR("Failed to persist corp-action-adjusted positions: " +
+                              std::string(store_result.error()->what()));
+                        return 1;
+                    }
+                    INFO("Persisted " + std::to_string(adjustments.size()) +
+                         " corp-action adjustments to trading.positions");
+                }
+            }
+        }
 
         // Verify we have prices for all required symbols
         std::set<std::string> all_symbols;
@@ -1565,6 +1658,17 @@ int main(int argc, char* argv[]) {
             // Use the LiveResultsManager
             INFO("Setting metrics in LiveResultsManager...");
 
+            // Phase 4.5: cumulative dividend income, sourced from the
+            // Phase 4 corp-action state file. Informational ONLY -- NOT
+            // added to total_pnl (closeadj already captures dividend
+            // total-return via Phase 4's avg_price frame-alignment fix).
+            double total_dividend_income = 0.0;
+            {
+                CorporateActionsAuditLog div_log("state/LIVE_EQUITY_MEAN_REVERSION");
+                div_log.load();
+                total_dividend_income = div_log.total_cumulative_dividend_income();
+            }
+
             // Prepare metrics maps
             std::unordered_map<std::string, double> double_metrics = {
                 {"total_cumulative_return", total_cumulative_return_pct},
@@ -1592,7 +1696,8 @@ int main(int argc, char* argv[]) {
                 {"daily_unrealized_pnl", daily_unrealized_pnl},
                 {"daily_commissions", total_daily_commissions},
                 {"margin_posted", total_posted_margin},
-                {"cash_available", current_portfolio_value - total_posted_margin}
+                {"cash_available", current_portfolio_value - total_posted_margin},
+                {"total_dividend_income", total_dividend_income}
             };
 
             std::unordered_map<std::string, int> int_metrics = {
@@ -1753,9 +1858,13 @@ int main(int argc, char* argv[]) {
                     }
                     INFO("Loaded " + std::to_string(yesterday_positions_finalized.size()) + " finalized positions for email");
 
-                    // Load yesterday's daily metrics from database for accurate display
+                    // Load yesterday's daily metrics from database for accurate display.
+                    // Phase 4.5: total_dividend_income (informational; cumulative for the
+                    // strategy as of that date) added to the SELECT and surfaced in the
+                    // email body alongside Daily Total PnL.
                     std::string yesterday_metrics_query =
-                        "SELECT daily_return, daily_unrealized_pnl, daily_realized_pnl, daily_pnl, daily_commissions "
+                        "SELECT daily_return, daily_unrealized_pnl, daily_realized_pnl, daily_pnl, "
+                        "daily_commissions, total_dividend_income "
                         "FROM trading.live_results "
                         "WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND date = '" + yesterday_date_for_email + "' "
                         "ORDER BY date DESC LIMIT 1";
@@ -1772,6 +1881,7 @@ int main(int argc, char* argv[]) {
                         auto daily_realized_arr = std::static_pointer_cast<arrow::StringArray>(metrics_table->column(2)->chunk(0));
                         auto daily_total_arr = std::static_pointer_cast<arrow::StringArray>(metrics_table->column(3)->chunk(0));
                         auto daily_commissions_arr = std::static_pointer_cast<arrow::StringArray>(metrics_table->column(4)->chunk(0));
+                        auto dividend_income_arr = std::static_pointer_cast<arrow::StringArray>(metrics_table->column(5)->chunk(0));
 
                         if (!daily_return_arr->IsNull(0)) {
                             yesterday_daily_metrics_final["Daily Return"] = std::stod(daily_return_arr->GetString(0));
@@ -1793,6 +1903,13 @@ int main(int argc, char* argv[]) {
                         if (!daily_commissions_arr->IsNull(0)) {
                             yesterday_daily_metrics_final["Daily Commissions"] = std::stod(daily_commissions_arr->GetString(0));
                             INFO("Daily Commissions: " + daily_commissions_arr->GetString(0));
+                        }
+                        if (!dividend_income_arr->IsNull(0)) {
+                            // Phase 4.5: informational only -- NOT in any PnL total.
+                            yesterday_daily_metrics_final["Dividend Income (cumulative)"] =
+                                std::stod(dividend_income_arr->GetString(0));
+                            INFO("Total Dividend Income (cumulative): " +
+                                 dividend_income_arr->GetString(0));
                         }
 
                         INFO("Successfully loaded yesterday's daily metrics from live_results");
@@ -1833,6 +1950,15 @@ int main(int argc, char* argv[]) {
                 }
                 strategy_metrics["Total Commissions"] = total_commissions_cumulative;
                 strategy_metrics["Current Portfolio Value"] = current_portfolio_value;
+
+                // Phase 4.5: cumulative dividend income from the corp-action
+                // state file (informational ONLY; not in any PnL total).
+                {
+                    CorporateActionsAuditLog div_log_email("state/LIVE_EQUITY_MEAN_REVERSION");
+                    div_log_email.load();
+                    strategy_metrics["Dividend Income (cumulative, informational)"] =
+                        div_log_email.total_cumulative_dividend_income();
+                }
 
                 // Leverage Metrics - Calculate values from position analysis
                 double gross_leverage_calc = (current_portfolio_value != 0.0) ? (gross_notional / current_portfolio_value) : 0.0;

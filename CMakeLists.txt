@@ -122,6 +122,8 @@ set(TRADE_NGIN_SOURCES
     src/live/execution_manager.cpp
     src/live/margin_manager.cpp
     src/live/csv_exporter.cpp
+    src/live/corporate_actions_applier.cpp
+    src/live/corporate_actions_audit_log.cpp
     src/statistics/utils/statistics_utils.cpp
     src/statistics/transformers/normalizer.cpp
     src/statistics/transformers/pca.cpp

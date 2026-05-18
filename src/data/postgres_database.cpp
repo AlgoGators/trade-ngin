@@ -2381,4 +2381,71 @@ Result<std::shared_ptr<arrow::Table>> PostgresDatabase::convert_generic_to_arrow
     }
 }
 
+Result<std::vector<PostgresDatabase::CorpActionRow>>
+PostgresDatabase::get_corporate_actions(
+    const std::vector<std::string>& tickers,
+    const std::string& start_date,
+    const std::string& end_date) {
+
+    auto validation = validate_connection();
+    if (validation.is_error()) {
+        return make_error<std::vector<CorpActionRow>>(
+            validation.error()->code(), validation.error()->what());
+    }
+    if (tickers.empty()) {
+        return Result<std::vector<CorpActionRow>>(std::vector<CorpActionRow>{});
+    }
+
+    try {
+        pqxx::work txn(*connection_);
+
+        // Build the IN list with txn.quote for safety. equities_data.corporate_action
+        // stores dates as text; cast to date for the BETWEEN comparison.
+        std::string in_list;
+        for (size_t i = 0; i < tickers.size(); ++i) {
+            if (i > 0) in_list += ",";
+            in_list += txn.quote(tickers[i]);
+        }
+
+        const std::string query =
+            "SELECT date, action, ticker, value "
+            "FROM equities_data.corporate_action "
+            "WHERE ticker IN (" + in_list + ") "
+            "  AND action IN ('split','dividend','adrratiosplit') "
+            "  AND date::date BETWEEN " + txn.quote(start_date) +
+            "::date AND " + txn.quote(end_date) + "::date "
+            "ORDER BY date, ticker, action";
+
+        auto result = txn.exec(query);
+        std::vector<CorpActionRow> rows;
+        rows.reserve(result.size());
+
+        for (const auto& row : result) {
+            CorpActionRow ca;
+            ca.date_str = row["date"].c_str();
+            ca.action = row["action"].c_str();
+            ca.ticker = row["ticker"].c_str();
+            // value is stored as text in the source schema; parse defensively.
+            const std::string val_str = row["value"].is_null() ? "" : row["value"].c_str();
+            try {
+                ca.value = val_str.empty() ? 0.0 : std::stod(val_str);
+            } catch (const std::exception&) {
+                WARN("get_corporate_actions: unparseable value '" + val_str +
+                     "' for " + ca.ticker + " on " + ca.date_str + " -- skipping");
+                continue;
+            }
+            rows.push_back(std::move(ca));
+        }
+
+        txn.commit();
+        return Result<std::vector<CorpActionRow>>(std::move(rows));
+
+    } catch (const std::exception& e) {
+        return make_error<std::vector<CorpActionRow>>(
+            ErrorCode::DATABASE_ERROR,
+            "Failed to fetch corporate actions: " + std::string(e.what()),
+            "PostgresDatabase");
+    }
+}
+
 }  // namespace trade_ngin
