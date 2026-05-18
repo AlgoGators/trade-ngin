@@ -1,6 +1,9 @@
 #include "trade_ngin/transaction_cost/transaction_cost_manager.hpp"
 
+#include <algorithm>
 #include <cmath>
+
+#include "trade_ngin/core/logger.hpp"
 
 namespace trade_ngin {
 namespace transaction_cost {
@@ -14,7 +17,8 @@ TransactionCostManager::TransactionCostManager(const Config& config)
 TransactionCostResult TransactionCostManager::calculate_costs(
     const std::string& symbol,
     double quantity,
-    double reference_price) const {
+    double reference_price,
+    AssetType asset_type) const {
 
     // Get internally tracked ADV and volatility multiplier
     double adv = impact_model_.get_adv(symbol);
@@ -31,7 +35,7 @@ TransactionCostResult TransactionCostManager::calculate_costs(
         vol_mult = 1.0;  // Neutral volatility
     }
 
-    return calculate_costs(symbol, quantity, reference_price, adv, vol_mult);
+    return calculate_costs(symbol, quantity, reference_price, adv, vol_mult, asset_type);
 }
 
 TransactionCostResult TransactionCostManager::calculate_costs(
@@ -39,15 +43,19 @@ TransactionCostResult TransactionCostManager::calculate_costs(
     double quantity,
     double reference_price,
     double adv,
-    double volatility_multiplier) const {
+    double volatility_multiplier,
+    AssetType asset_type) const {
 
     TransactionCostResult result;
 
     // Ensure quantity is absolute
     double abs_qty = std::abs(quantity);
 
-    // Get asset configuration
-    AssetCostConfig asset_config = asset_configs_.get_config(symbol);
+    // Get asset configuration. asset_type is consulted only when the symbol
+    // has no registered config -- it routes the fallback to the equity
+    // default ($0.005/share, $1 min) instead of the futures default
+    // ($1.50/share, point_value=100). Closes audit §1.1 dispatch dead-end.
+    AssetCostConfig asset_config = asset_configs_.get_config(symbol, asset_type);
 
     // 1. Calculate explicit costs (commissions)
     if (asset_config.commission_per_unit >= 0.0) {
@@ -135,6 +143,52 @@ AssetCostConfig TransactionCostManager::get_asset_config(const std::string& symb
 
 void TransactionCostManager::register_asset_config(const AssetCostConfig& config) {
     asset_configs_.register_config(config);
+}
+
+int TransactionCostManager::register_equity_costs_from_bars(
+    const std::vector<std::string>& symbols,
+    const std::unordered_map<std::string, std::vector<Bar>>& bars_by_symbol,
+    int adv_lookback_days) {
+
+    if (adv_lookback_days < 1) {
+        adv_lookback_days = 1;
+    }
+
+    int registered = 0;
+    for (const auto& symbol : symbols) {
+        auto it = bars_by_symbol.find(symbol);
+        if (it == bars_by_symbol.end() || it->second.empty()) {
+            WARN("register_equity_costs_from_bars: no bars for " + symbol +
+                 " -- skipping (will use equity default if traded)");
+            continue;
+        }
+
+        const auto& bars = it->second;
+        const size_t n = std::min(static_cast<size_t>(adv_lookback_days), bars.size());
+        const size_t start_idx = bars.size() - n;
+
+        double volume_sum = 0.0;
+        for (size_t i = start_idx; i < bars.size(); ++i) {
+            volume_sum += bars[i].volume;
+        }
+        const double adv = volume_sum / static_cast<double>(n);
+
+        if (adv <= 0.0) {
+            WARN("register_equity_costs_from_bars: zero ADV for " + symbol +
+                 " over " + std::to_string(n) + " bars -- skipping");
+            continue;
+        }
+
+        const double price = bars.back().close.as_double();
+        AssetCostConfig config = AssetCostConfigRegistry::get_tiered_equity_config(price, adv);
+        config.symbol = symbol;
+        asset_configs_.register_config(config);
+        ++registered;
+    }
+
+    INFO("Registered " + std::to_string(registered) + " equity cost configs (tiered by ADV, " +
+         std::to_string(adv_lookback_days) + "-day lookback)");
+    return registered;
 }
 
 void TransactionCostManager::clear_all_data() {

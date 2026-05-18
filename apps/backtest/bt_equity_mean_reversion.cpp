@@ -6,6 +6,7 @@
 #include "trade_ngin/core/config_loader.hpp"
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/core/time_utils.hpp"
+#include "trade_ngin/data/conversion_utils.hpp"
 #include "trade_ngin/data/database_pooling.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
 #include "trade_ngin/core/holiday_checker.hpp"
@@ -125,8 +126,11 @@ int main() {
             return 1;
         }
 
-        // Register equity instruments in the registry
-        auto equity_reg_result = registry.load_equity_instruments(symbols);
+        // Register equity instruments in the registry. Pass the exchange JSON
+        // path so per-symbol exchanges are correctly populated (NASDAQ/NYSE/etc)
+        // instead of every symbol silently defaulting to NYSE. Closes audit §1.2.
+        auto equity_reg_result = registry.load_equity_instruments(
+            symbols, "data/equity_exchanges.json");
         if (equity_reg_result.is_error()) {
             ERROR("Failed to register equity instruments: " +
                   std::string(equity_reg_result.error()->what()));
@@ -256,6 +260,40 @@ int main() {
             ERROR("Failed to add strategy to portfolio: " +
                   std::string(add_result.error()->what()));
             return 1;
+        }
+
+        // Register tier-appropriate equity cost configs before the backtest
+        // runs. Uses a 30-day warmup window starting at start_date so cost
+        // calibration reflects what would have been known at backtest start.
+        // Closes audit §1.1: previously unconfigured equities fell through to
+        // futures defaults ($1.50/share commission, point_value=100).
+        {
+            auto warmup_end = start_date + std::chrono::hours(24 * 30);
+            auto warmup_result = db->get_market_data(
+                symbols, start_date, warmup_end,
+                AssetClass::EQUITIES, DataFrequency::DAILY, "ohlcv");
+            if (warmup_result.is_ok()) {
+                auto warmup_bars_result =
+                    trade_ngin::DataConversionUtils::arrow_table_to_bars(warmup_result.value());
+                if (warmup_bars_result.is_ok()) {
+                    const auto& warmup_bars = warmup_bars_result.value();
+                    std::unordered_map<std::string, std::vector<trade_ngin::Bar>> bars_by_symbol;
+                    for (const auto& bar : warmup_bars) {
+                        bars_by_symbol[bar.symbol].push_back(bar);
+                    }
+                    coordinator->get_execution_manager()
+                        ->get_transaction_cost_manager()
+                        .register_equity_costs_from_bars(symbols, bars_by_symbol);
+                } else {
+                    WARN("Failed to convert warmup bars: " +
+                         std::string(warmup_bars_result.error()->what()) +
+                         " -- equity cost configs may use unconfigured-symbol fallback");
+                }
+            } else {
+                WARN("Failed to load equity cost warmup data: " +
+                     std::string(warmup_result.error()->what()) +
+                     " -- equity cost configs may use unconfigured-symbol fallback");
+            }
         }
 
         INFO("Running equity mean reversion backtest...");

@@ -186,8 +186,10 @@ int main() {
         for (const auto& s : symbols) std::cout << s << " ";
         std::cout << std::endl;
 
-        // Register equity instruments
-        auto equity_reg_result = registry.load_equity_instruments(symbols);
+        // Register equity instruments. Pass the exchange JSON path so per-symbol
+        // exchanges populate correctly instead of defaulting to NYSE. Audit §1.2.
+        auto equity_reg_result = registry.load_equity_instruments(
+            symbols, "data/equity_exchanges.json");
         if (equity_reg_result.is_error()) {
             ERROR("Failed to register equity instruments: " +
                   std::string(equity_reg_result.error()->what()));
