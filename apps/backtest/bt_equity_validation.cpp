@@ -643,14 +643,17 @@ int main() {
                         log_returns.push_back(std::log(price_history[j] / price_history[j-1]));
                     }
                 }
-                if (!log_returns.empty()) {
+                // Sample std dev (n-1) to match MeanReversionStrategy::calculate_volatility.
+                // Previously used population (n) -- ~2.5% drift on 20-day windows caused
+                // spurious validation failures. Audit §1.19.
+                if (log_returns.size() >= 2) {
                     double ret_mean = std::accumulate(log_returns.begin(), log_returns.end(), 0.0) / log_returns.size();
                     double ret_sq = 0;
                     for (double r : log_returns) {
                         double diff = r - ret_mean;
                         ret_sq += diff * diff;
                     }
-                    manual_vol = std::sqrt(ret_sq / log_returns.size()) * std::sqrt(252.0);
+                    manual_vol = std::sqrt(ret_sq / (log_returns.size() - 1)) * std::sqrt(252.0);
                 } else {
                     manual_vol = 0.01;
                 }

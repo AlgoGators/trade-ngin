@@ -4,6 +4,10 @@
 #include <unordered_map>
 #include <optional>
 #include <fstream>
+#include <chrono>
+#include <ctime>
+#include <iomanip>
+#include <sstream>
 #include <nlohmann/json.hpp>
 #include "logger.hpp"
 
@@ -77,6 +81,38 @@ public:
      */
     bool reload() {
         return load_holidays();
+    }
+
+    /**
+     * @brief Find the most recent trading day strictly before `start`.
+     *
+     * Walks back day-by-day skipping weekends and holidays. Bound of 14
+     * covers worst-case US closure stacks (Christmas + week-of-holidays +
+     * weekends, or 9/11-style multi-day exchange closures).
+     *
+     * @param start Reference timestamp; the search begins at `start - 24h`.
+     * @param max_lookback_days Maximum days to walk back before giving up.
+     * @return time_point of the previous trading day, or std::nullopt if the
+     *         bound was exhausted (caller should fail closed, not fall back).
+     */
+    std::optional<std::chrono::system_clock::time_point>
+    find_previous_trading_day(std::chrono::system_clock::time_point start,
+                              int max_lookback_days = 14) const {
+        auto candidate = start - std::chrono::hours(24);
+        for (int i = 0; i < max_lookback_days; ++i) {
+            auto t = std::chrono::system_clock::to_time_t(candidate);
+            std::tm tm = *std::localtime(&t);
+            bool is_weekend = (tm.tm_wday == 0 || tm.tm_wday == 6);
+
+            std::ostringstream ds;
+            ds << std::put_time(&tm, "%Y-%m-%d");
+
+            if (!is_weekend && !is_holiday(ds.str())) {
+                return candidate;
+            }
+            candidate -= std::chrono::hours(24);
+        }
+        return std::nullopt;
     }
 
 private:

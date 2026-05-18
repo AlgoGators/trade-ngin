@@ -30,11 +30,12 @@ protected:
         TestBase::SetUp();
         StateManager::reset_instance();
 
-        // Skip if DB tests not enabled
-        const char* db_tests = std::getenv("TRADE_NGIN_DB_TESTS");
-        if (!db_tests || std::string(db_tests) != "1") {
-            GTEST_SKIP() << "Database integration tests disabled. "
-                         << "Set TRADE_NGIN_DB_TESTS=1 to enable.";
+        // DB integration tests run by default. Set SKIP_DB_TESTS=1 to skip
+        // (e.g. in environments without a usable DB). Flipped from the old
+        // opt-in gate so CI surfaces failures instead of silently skipping.
+        const char* skip = std::getenv("SKIP_DB_TESTS");
+        if (skip && std::string(skip) == "1") {
+            GTEST_SKIP() << "Database integration tests skipped via SKIP_DB_TESTS=1.";
         }
 
         db_ = std::make_shared<MockPostgresDatabase>("mock://testdb");
@@ -386,12 +387,13 @@ TEST_F(EquityBacktestDBValidation, UsesUnrealizedPnLAccounting) {
         strategy->on_data({bar});
     }
 
-    // Get PnL accounting - verify UNREALIZED_ONLY is set
+    // Equity mean reversion uses MIXED accounting: realized PnL accrues on
+    // position close (with weighted-average cost basis), unrealized accrues
+    // while held. Test/code drift caught by audit §1.7 -- this previously
+    // expected UNREALIZED_ONLY.
     const auto& pnl = strategy->get_pnl_accounting();
-    // With UNREALIZED_ONLY, the accounting method should track unrealized PnL
-    // and realized PnL should remain at 0 while positions are open
-    EXPECT_EQ(pnl.method, PnLAccountingMethod::UNREALIZED_ONLY)
-        << "Equity strategy should use UNREALIZED_ONLY PnL accounting";
+    EXPECT_EQ(pnl.method, PnLAccountingMethod::MIXED)
+        << "Equity strategy should use MIXED PnL accounting";
 }
 
 // ============================================================================

@@ -8,6 +8,7 @@
 #include "trade_ngin/core/time_utils.hpp"
 #include "trade_ngin/data/database_pooling.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
+#include "trade_ngin/core/holiday_checker.hpp"
 #include "trade_ngin/instruments/equity.hpp"
 #include "trade_ngin/instruments/instrument_registry.hpp"
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
@@ -50,6 +51,12 @@ int main() {
         }
         auto app_config = app_config_result.value();
         INFO("Configuration loaded for portfolio: " + app_config.portfolio_id);
+
+        // Wire the shared HolidayChecker into EquityInstrument's static slot so
+        // any market-hours queries on equity instruments consult the calendar.
+        auto holiday_checker_ptr = std::make_shared<HolidayChecker>(
+            "include/trade_ngin/core/holidays.json");
+        EquityInstrument::set_holiday_checker(holiday_checker_ptr);
 
         // ========================================
         // SETUP DATABASE CONNECTION

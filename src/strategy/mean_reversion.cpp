@@ -170,11 +170,20 @@ Result<void> MeanReversionStrategy::on_data(const std::vector<Bar>& data) {
 
         // Update unrealized PnL for all positions based on current prices
         // (BaseStrategy::on_data does this but we override it, so compute here)
+        //
+        // average_price is set by on_execution() AFTER this on_data() completes,
+        // so a fresh entry has quantity != 0 and average_price == 0. Computing
+        // (bar.close - 0) * quantity would inflate unrealized_pnl to the full
+        // notional. Skip until cost basis is established.
         for (const auto& bar : data) {
             auto pos_it = positions_.find(bar.symbol);
             if (pos_it != positions_.end()) {
-                pos_it->second.unrealized_pnl =
-                    (bar.close - pos_it->second.average_price) * pos_it->second.quantity;
+                if (pos_it->second.average_price > Decimal(0.0)) {
+                    pos_it->second.unrealized_pnl =
+                        (bar.close - pos_it->second.average_price) * pos_it->second.quantity;
+                } else {
+                    pos_it->second.unrealized_pnl = Decimal(0.0);
+                }
             }
         }
 
@@ -298,7 +307,10 @@ double MeanReversionStrategy::calculate_volatility(const std::deque<double>& pri
         }
     }
 
-    if (returns.empty()) {
+    // Need at least 2 returns for sample std dev (n-1 denominator).
+    // With 1 return we'd divide by 0 and produce NaN, which then poisons
+    // vol-scaled position sizing downstream.
+    if (returns.size() < 2) {
         return 0.01;
     }
 
@@ -311,8 +323,11 @@ double MeanReversionStrategy::calculate_volatility(const std::deque<double>& pri
     // Sample std dev (n-1) for risk/volatility estimation (position sizing)
     double std_dev = std::sqrt(sum_squared_diff / (returns.size() - 1));
 
-    // Annualize (assuming daily data, 252 trading days)
-    return std_dev * std::sqrt(252.0);
+    double annualized = std_dev * std::sqrt(252.0);
+    if (!std::isfinite(annualized)) {
+        return 0.01;
+    }
+    return annualized;
 }
 
 double MeanReversionStrategy::generate_signal(const std::string& symbol, const MeanReversionInstrumentData& data) const {
