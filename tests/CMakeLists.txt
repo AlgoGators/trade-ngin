@@ -6,11 +6,13 @@ set(TEST_SOURCES
     core/test_config_manager.cpp
     core/test_config_version.cpp
     core/test_config_base.cpp
+    core/test_holiday_lookback_extended_closure.cpp
     data/test_db_utils.cpp
     data/test_postgres_database.cpp
     data/test_database_pooling.cpp
     data/test_market_data_bus.cpp
     data/test_credential_store.cpp
+    data/test_bar_close_uses_adjusted.cpp
     order/test_order_manager.cpp
     order/test_utils.cpp
     risk/test_risk_manager.cpp
@@ -19,11 +21,14 @@ set(TEST_SOURCES
     # backtesting/test_engine.cpp  # Deprecated - BacktestEngine replaced by BacktestCoordinator
     execution/test_execution_engine.cpp
     portfolio/test_portfolio_manager.cpp
+    instruments/test_equity_instrument_holiday_check_wired.cpp
     strategy/test_base_strategy.cpp
     strategy/test_trend_following.cpp
     strategy/test_mean_reversion_backtest.cpp
     strategy/test_equity_backtest_db_validation.cpp
     strategy/test_equity_pnl_accounting.cpp
+    strategy/test_volatility_size_1_nan_guard.cpp
+    strategy/test_stale_unrealized_pnl_zero_avg_price.cpp
     statistics/test_normalizer.cpp
     statistics/test_pca.cpp
     statistics/test_adf.cpp

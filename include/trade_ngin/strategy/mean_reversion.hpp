@@ -127,6 +127,13 @@ private:
      * @brief Trim price/volatility history to prevent unbounded memory growth
      */
     void trim_history(MeanReversionInstrumentData& data) const;
+
+#ifdef TESTING
+public:
+    double calculate_volatility_for_test(const std::deque<double>& prices, int lookback) const {
+        return calculate_volatility(prices, lookback);
+    }
+#endif
 };
 
 }  // namespace trade_ngin

@@ -221,7 +221,10 @@ Result<void> InstrumentRegistry::load_equity_instruments(
         spec.exchange = (ex_it != exchange_map.end()) ? ex_it->second : "NYSE";
         spec.currency = "USD";
         spec.tick_size = 0.01;
-        spec.commission_per_share = 0.0;
+        // Match IBKR Pro default (also used by AssetCostConfigRegistry::get_equity_default_config).
+        // Production cost path is TransactionCostManager; this default keeps the
+        // instrument-level commission accessor consistent for callers that query it.
+        spec.commission_per_share = 0.005;
 
         register_instrument(symbol, std::make_shared<EquityInstrument>(symbol, std::move(spec)));
         registered++;
@@ -362,7 +365,9 @@ std::shared_ptr<Instrument> InstrumentRegistry::create_instrument_from_db(
 
         double min_tick = get_double("Minimum Price Fluctuation");
         std::string tick_size = get_string("Tick Size");
-        double commission = 0.0;  // Not in the metadata, set a default
+        // Asset-type-aware default. Futures spec doesn't carry commission; equities
+        // get IBKR Pro $0.005/share to match get_equity_default_config().
+        double commission = (asset_type == AssetType::EQUITY) ? 0.005 : 0.0;
 
         // Create instrument based on asset type
         switch (asset_type) {

@@ -115,6 +115,13 @@ int main(int argc, char* argv[]) {
         auto app_config = app_config_result.value();
         INFO("Configuration loaded successfully for portfolio: " + app_config.portfolio_id);
 
+        // Wire the shared HolidayChecker into EquityInstrument's static slot so
+        // that EquityInstrument::is_market_open() actually consults the calendar.
+        // Same checker is reused below for the previous-trading-day lookup.
+        auto holiday_checker_ptr = std::make_shared<HolidayChecker>(
+            "include/trade_ngin/core/holidays.json");
+        EquityInstrument::set_holiday_checker(holiday_checker_ptr);
+
         // Setup database connection pool
         INFO("Initializing database connection pool...");
         std::string conn_string = app_config.database.get_connection_string();
@@ -424,35 +431,19 @@ int main(int argc, char* argv[]) {
         // Find the actual previous trading day (skip weekends and holidays)
         // Mirrors the logic in live_portfolio.cpp for futures
         // ========================================
-        HolidayChecker holiday_checker("include/trade_ngin/core/holidays.json");
+        const HolidayChecker& holiday_checker = *holiday_checker_ptr;
 
-        // Walk backwards from yesterday to find the most recent trading day
-        auto previous_date = now - std::chrono::hours(24);
-        for (int lookback = 0; lookback < 5; ++lookback) {
-            auto check_time_t = std::chrono::system_clock::to_time_t(previous_date);
-            std::tm check_tm = *std::localtime(&check_time_t);
-            int dow = check_tm.tm_wday;  // 0=Sunday, 6=Saturday
-
-            // Format date string for holiday check
-            std::ostringstream date_oss;
-            date_oss << std::put_time(&check_tm, "%Y-%m-%d");
-            std::string date_str_check = date_oss.str();
-
-            bool is_weekend = (dow == 0 || dow == 6);
-            bool is_holiday = holiday_checker.is_holiday(date_str_check);
-
-            if (!is_weekend && !is_holiday) {
-                if (lookback > 0) {
-                    INFO("Previous trading day: " + date_str_check +
-                         " (skipped " + std::to_string(lookback) + " non-trading day(s))");
-                }
-                break;
-            }
-
-            DEBUG("Skipping non-trading day: " + date_str_check +
-                  (is_weekend ? " (weekend)" : " (holiday: " + holiday_checker.get_holiday_name(date_str_check) + ")"));
-            previous_date -= std::chrono::hours(24);
+        // Find the most recent trading day strictly before `now`. Walks back
+        // up to 14 days to cover worst-case US closure stacks (Christmas-week
+        // holidays + weekends, or 9/11-style multi-day exchange closures).
+        // Fails closed if exhausted rather than silently using a stale date.
+        auto prev_day_opt = holiday_checker.find_previous_trading_day(now);
+        if (!prev_day_opt.has_value()) {
+            ERROR("Failed to find a previous trading day within lookback bound. "
+                  "Holiday calendar may be misconfigured or stale. Aborting.");
+            return 1;
         }
+        auto previous_date = *prev_day_opt;
 
         // Check if today itself is a non-trading day
         int today_dow = now_tm->tm_wday;
