@@ -1,5 +1,24 @@
 // include/trade_ngin/live/live_data_loader.hpp
-// Data loading component for live trading - encapsulates all SELECT queries
+// Data loading component for live trading - encapsulates all SELECT queries.
+//
+// Timezone contract (Phase 5 §5c):
+//   All `Timestamp` parameters and all `YYYY-MM-DD` keys produced by this
+//   module are UTC. Provider date columns (e.g. `equities_data.corporate_action.date`)
+//   are interpreted as calendar dates with no timezone shift -- they are
+//   text/date values whose semantics are determined by the ingest pipeline,
+//   not by this loader. If a strategy needs market-local semantics, convert
+//   at the strategy boundary, not here.
+//
+//   Date-string keys MUST be produced via `trade_ngin::core::format_utc_date`;
+//   direct `std::gmtime` / `std::put_time` use is forbidden (non-thread-safe
+//   and locale-dependent).
+//
+// Decoding contract (Phase 5 §1.17a + §5d):
+//   Numeric columns from `convert_generic_to_arrow` are stored as utf8.
+//   Implementations use `DataConversionUtils::safe_get_*` which dispatches
+//   on the actual Arrow type, falls back to `std::stod`/`std::stoll` for
+//   string storage (logging WARN on parse failures), and returns a typed
+//   `Result` on null/type-mismatch -- never a silent 0.0.
 
 #pragma once
 

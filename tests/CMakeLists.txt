@@ -8,6 +8,9 @@ set(TEST_SOURCES
     core/test_config_base.cpp
     core/test_holiday_lookback_extended_closure.cpp
     data/test_db_utils.cpp
+    data/test_conversion_utils_safe_get.cpp
+    data/test_utc_date_contract.cpp
+    data/test_postgres_param_safety.cpp
     data/test_postgres_database.cpp
     data/test_database_pooling.cpp
     data/test_market_data_bus.cpp

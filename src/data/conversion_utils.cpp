@@ -1,8 +1,39 @@
 // src/data/conversion_utils.cpp
 #include "trade_ngin/data/conversion_utils.hpp"
+
+#include <cstdint>
+#include <stdexcept>
+#include <string>
+
 #include <arrow/type_traits.h>
 
+#include "trade_ngin/core/logger.hpp"
+
 namespace trade_ngin {
+
+namespace {
+
+// Resolve a logical row index into a ChunkedArray to (chunk pointer,
+// offset within that chunk). Returns nullptr on out-of-range so the
+// caller can produce a typed error Result.
+const arrow::Array* resolve_chunk(const std::shared_ptr<arrow::ChunkedArray>& col,
+                                  int64_t logical_row, int64_t& out_offset) {
+    if (!col) return nullptr;
+    int64_t remaining = logical_row;
+    for (int i = 0; i < col->num_chunks(); ++i) {
+        const auto& chunk = col->chunk(i);
+        const int64_t len = chunk->length();
+        if (remaining < len) {
+            out_offset = remaining;
+            return chunk.get();
+        }
+        remaining -= len;
+    }
+    return nullptr;
+}
+
+}  // namespace
+
 
 Result<std::vector<Bar>> DataConversionUtils::arrow_table_to_bars(
     const std::shared_ptr<arrow::Table>& table) {
@@ -172,6 +203,205 @@ Result<std::string> DataConversionUtils::extract_string(const std::shared_ptr<ar
     } catch (const std::exception& e) {
         return make_error<std::string>(ErrorCode::CONVERSION_ERROR,
                                        std::string("Error extracting string: ") + e.what(),
+                                       "DataConversionUtils");
+    }
+}
+
+// ----------------------------------------------------------------------------
+// safe_get_* (Phase 5 §1.17a + §5d) -- type-aware chunked accessors. See the
+// header for the dispatch contract.
+// ----------------------------------------------------------------------------
+
+Result<double> DataConversionUtils::safe_get_double(
+    const std::shared_ptr<arrow::ChunkedArray>& col, int64_t row,
+    const std::string& column_name) {
+    if (!col) {
+        return make_error<double>(ErrorCode::INVALID_ARGUMENT,
+                                  "safe_get_double: null column (" + column_name + ")",
+                                  "DataConversionUtils");
+    }
+    int64_t off = 0;
+    const arrow::Array* chunk = resolve_chunk(col, row, off);
+    if (!chunk) {
+        return make_error<double>(ErrorCode::INVALID_ARGUMENT,
+                                  "safe_get_double: row " + std::to_string(row) +
+                                      " out of range in column " + column_name,
+                                  "DataConversionUtils");
+    }
+    if (chunk->IsNull(off)) {
+        return make_error<double>(ErrorCode::INVALID_DATA,
+                                  "safe_get_double: null at row " + std::to_string(row) +
+                                      " in column " + column_name,
+                                  "DataConversionUtils");
+    }
+    try {
+        switch (chunk->type_id()) {
+            case arrow::Type::DOUBLE:
+                return Result<double>(
+                    static_cast<const arrow::DoubleArray*>(chunk)->Value(off));
+            case arrow::Type::FLOAT:
+                return Result<double>(static_cast<double>(
+                    static_cast<const arrow::FloatArray*>(chunk)->Value(off)));
+            case arrow::Type::INT64:
+                return Result<double>(static_cast<double>(
+                    static_cast<const arrow::Int64Array*>(chunk)->Value(off)));
+            case arrow::Type::INT32:
+                return Result<double>(static_cast<double>(
+                    static_cast<const arrow::Int32Array*>(chunk)->Value(off)));
+            case arrow::Type::STRING:
+            case arrow::Type::LARGE_STRING: {
+                std::string s;
+                if (chunk->type_id() == arrow::Type::STRING) {
+                    s = static_cast<const arrow::StringArray*>(chunk)->GetString(off);
+                } else {
+                    s = static_cast<const arrow::LargeStringArray*>(chunk)->GetString(off);
+                }
+                try {
+                    return Result<double>(std::stod(s));
+                } catch (const std::exception& e) {
+                    WARN("safe_get_double: bad value '" + s + "' in column " + column_name +
+                         " at row " + std::to_string(row) + " (" + e.what() + ")");
+                    return make_error<double>(ErrorCode::CONVERSION_ERROR,
+                                              "safe_get_double parse failure", "DataConversionUtils");
+                }
+            }
+            default: {
+                const std::string actual = chunk->type()->ToString();
+                ERROR("safe_get_double: unsupported Arrow type '" + actual + "' in column " +
+                      column_name + " at row " + std::to_string(row));
+                return make_error<double>(ErrorCode::CONVERSION_ERROR,
+                                          "safe_get_double unsupported type",
+                                          "DataConversionUtils");
+            }
+        }
+    } catch (const std::exception& e) {
+        return make_error<double>(ErrorCode::CONVERSION_ERROR,
+                                  std::string("safe_get_double exception: ") + e.what(),
+                                  "DataConversionUtils");
+    }
+}
+
+Result<int64_t> DataConversionUtils::safe_get_int64(
+    const std::shared_ptr<arrow::ChunkedArray>& col, int64_t row,
+    const std::string& column_name) {
+    if (!col) {
+        return make_error<int64_t>(ErrorCode::INVALID_ARGUMENT,
+                                   "safe_get_int64: null column (" + column_name + ")",
+                                   "DataConversionUtils");
+    }
+    int64_t off = 0;
+    const arrow::Array* chunk = resolve_chunk(col, row, off);
+    if (!chunk) {
+        return make_error<int64_t>(ErrorCode::INVALID_ARGUMENT,
+                                   "safe_get_int64: row " + std::to_string(row) +
+                                       " out of range in column " + column_name,
+                                   "DataConversionUtils");
+    }
+    if (chunk->IsNull(off)) {
+        return make_error<int64_t>(ErrorCode::INVALID_DATA,
+                                   "safe_get_int64: null at row " + std::to_string(row) +
+                                       " in column " + column_name,
+                                   "DataConversionUtils");
+    }
+    try {
+        switch (chunk->type_id()) {
+            case arrow::Type::INT64:
+                return Result<int64_t>(
+                    static_cast<const arrow::Int64Array*>(chunk)->Value(off));
+            case arrow::Type::INT32:
+                return Result<int64_t>(static_cast<int64_t>(
+                    static_cast<const arrow::Int32Array*>(chunk)->Value(off)));
+            case arrow::Type::DOUBLE: {
+                const double d = static_cast<const arrow::DoubleArray*>(chunk)->Value(off);
+                WARN("safe_get_int64: truncating double " + std::to_string(d) + " in column " +
+                     column_name + " at row " + std::to_string(row));
+                return Result<int64_t>(static_cast<int64_t>(d));
+            }
+            case arrow::Type::STRING:
+            case arrow::Type::LARGE_STRING: {
+                std::string s;
+                if (chunk->type_id() == arrow::Type::STRING) {
+                    s = static_cast<const arrow::StringArray*>(chunk)->GetString(off);
+                } else {
+                    s = static_cast<const arrow::LargeStringArray*>(chunk)->GetString(off);
+                }
+                try {
+                    return Result<int64_t>(static_cast<int64_t>(std::stoll(s)));
+                } catch (const std::exception& e) {
+                    WARN("safe_get_int64: bad value '" + s + "' in column " + column_name +
+                         " at row " + std::to_string(row) + " (" + e.what() + ")");
+                    return make_error<int64_t>(ErrorCode::CONVERSION_ERROR,
+                                               "safe_get_int64 parse failure",
+                                               "DataConversionUtils");
+                }
+            }
+            default: {
+                const std::string actual = chunk->type()->ToString();
+                ERROR("safe_get_int64: unsupported Arrow type '" + actual + "' in column " +
+                      column_name + " at row " + std::to_string(row));
+                return make_error<int64_t>(ErrorCode::CONVERSION_ERROR,
+                                           "safe_get_int64 unsupported type",
+                                           "DataConversionUtils");
+            }
+        }
+    } catch (const std::exception& e) {
+        return make_error<int64_t>(ErrorCode::CONVERSION_ERROR,
+                                   std::string("safe_get_int64 exception: ") + e.what(),
+                                   "DataConversionUtils");
+    }
+}
+
+Result<std::string> DataConversionUtils::safe_get_string(
+    const std::shared_ptr<arrow::ChunkedArray>& col, int64_t row,
+    const std::string& column_name) {
+    if (!col) {
+        return make_error<std::string>(ErrorCode::INVALID_ARGUMENT,
+                                       "safe_get_string: null column (" + column_name + ")",
+                                       "DataConversionUtils");
+    }
+    int64_t off = 0;
+    const arrow::Array* chunk = resolve_chunk(col, row, off);
+    if (!chunk) {
+        return make_error<std::string>(ErrorCode::INVALID_ARGUMENT,
+                                       "safe_get_string: row " + std::to_string(row) +
+                                           " out of range in column " + column_name,
+                                       "DataConversionUtils");
+    }
+    if (chunk->IsNull(off)) {
+        return make_error<std::string>(ErrorCode::INVALID_DATA,
+                                       "safe_get_string: null at row " + std::to_string(row) +
+                                           " in column " + column_name,
+                                       "DataConversionUtils");
+    }
+    try {
+        switch (chunk->type_id()) {
+            case arrow::Type::STRING:
+                return Result<std::string>(
+                    static_cast<const arrow::StringArray*>(chunk)->GetString(off));
+            case arrow::Type::LARGE_STRING:
+                return Result<std::string>(
+                    static_cast<const arrow::LargeStringArray*>(chunk)->GetString(off));
+            case arrow::Type::DOUBLE:
+                return Result<std::string>(std::to_string(
+                    static_cast<const arrow::DoubleArray*>(chunk)->Value(off)));
+            case arrow::Type::INT64:
+                return Result<std::string>(std::to_string(
+                    static_cast<const arrow::Int64Array*>(chunk)->Value(off)));
+            case arrow::Type::INT32:
+                return Result<std::string>(std::to_string(
+                    static_cast<const arrow::Int32Array*>(chunk)->Value(off)));
+            default: {
+                const std::string actual = chunk->type()->ToString();
+                ERROR("safe_get_string: unsupported Arrow type '" + actual + "' in column " +
+                      column_name + " at row " + std::to_string(row));
+                return make_error<std::string>(ErrorCode::CONVERSION_ERROR,
+                                               "safe_get_string unsupported type",
+                                               "DataConversionUtils");
+            }
+        }
+    } catch (const std::exception& e) {
+        return make_error<std::string>(ErrorCode::CONVERSION_ERROR,
+                                       std::string("safe_get_string exception: ") + e.what(),
                                        "DataConversionUtils");
     }
 }
