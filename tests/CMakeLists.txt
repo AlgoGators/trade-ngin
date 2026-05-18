@@ -28,6 +28,7 @@ set(TEST_SOURCES
     instruments/test_exchange_json_wireup.cpp
     instruments/test_equity_margin_cash_regt.cpp
     instruments/test_equity_leverage_guardrail.cpp
+    instruments/test_futures_margin_overload.cpp
     strategy/test_base_strategy.cpp
     strategy/test_trend_following.cpp
     strategy/test_mean_reversion_backtest.cpp

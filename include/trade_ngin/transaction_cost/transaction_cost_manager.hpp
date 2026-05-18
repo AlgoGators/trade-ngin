@@ -186,7 +186,7 @@ public:
      * For each short equity position, derives an annual borrow rate using
      * multi-factor scoring per audit §3.2:
      *   - Dollar volume (ADV × price) as a proxy for liquidity / lendable supply
-     *   - Price level (<$5 high risk, <$10 medium risk)
+     *   - Price level (<$5 high risk; no medium tier currently implemented)
      *   - is_easy_to_borrow flag (false forces HTB tier)
      * Then scales by a volatility multiplier (clamp(annual_vol / 0.25, 1.0, 3.0)).
      * Per-symbol `borrow_rate_override` on EquitySpec bypasses the formula.

@@ -1332,6 +1332,12 @@ PortfolioManager::get_strategy_executions() const {
     return strategy_executions_;
 }
 
+void PortfolioManager::append_synthetic_execution(const std::string& strategy_id,
+                                                  const ExecutionReport& exec) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    strategy_executions_[strategy_id].push_back(exec);
+}
+
 void PortfolioManager::clear_execution_history() {
     std::lock_guard<std::mutex> lock(mutex_);
     // Only clear portfolio-level executions (recent_executions_)

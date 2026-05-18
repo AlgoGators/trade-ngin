@@ -66,11 +66,12 @@ struct EquitySpec {
     //   Use to inject broker-provided rates from a live locate API.
     // is_easy_to_borrow: when false, force HTB tier regardless of ADV/price
     //   signals (e.g., recent IPOs with low float despite high ADV).
-    // short_locate_fee_per_trade: flat dollar fee charged once per short
-    //   open (some brokers).
+    // (Per-trade flat locate fee deliberately omitted: the cost-path code
+    // does not yet model short-open events distinctly, so a field with no
+    // consumer would silently swallow any value the user configured.
+    // Add when the short-open cost path lands.)
     double borrow_rate_override{-1.0};
     bool is_easy_to_borrow{true};
-    double short_locate_fee_per_trade{0.0};
 };
 
 /**

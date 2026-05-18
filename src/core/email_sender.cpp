@@ -1068,14 +1068,22 @@ std::string EmailSender::format_positions_table(
                     throw std::runtime_error("Invalid multiplier for: " + lookup_sym);
                 }
 
-                double contracts_abs = std::abs(position.quantity.as_double());
-                double initial_margin_per_contract = instrument->get_margin_requirement();
-                if (initial_margin_per_contract <= 0) {
+                // Use the price/quantity overload so equities get
+                // account-mode-aware margin (CASH = full notional, REG_T = 50%
+                // long / 150% short) and futures get total dollars (now
+                // multiplied internally by FuturesInstrument's new override).
+                const double signed_qty = position.quantity.as_double();
+                const double price_for_margin = position.average_price.as_double();
+                double total_initial_margin =
+                    instrument->get_margin_requirement(price_for_margin, signed_qty);
+                if (total_initial_margin <= 0) {
                     ERROR("CRITICAL: Invalid margin requirement " +
-                          std::to_string(initial_margin_per_contract) + " for " + lookup_sym);
+                          std::to_string(total_initial_margin) + " for " + lookup_sym +
+                          " (price=" + std::to_string(price_for_margin) +
+                          ", qty=" + std::to_string(signed_qty) + ")");
                     throw std::runtime_error("Invalid margin requirement for: " + lookup_sym);
                 }
-                total_margin_posted += contracts_abs * initial_margin_per_contract;
+                total_margin_posted += total_initial_margin;
 
             } catch (const std::exception& e) {
                 ERROR("CRITICAL: Failed to get instrument data for " + position.symbol + ": " +
@@ -3095,14 +3103,20 @@ std::string EmailSender::format_single_strategy_table(
                     throw std::runtime_error("Invalid multiplier for: " + lookup_sym);
                 }
 
-                double contracts_abs = std::abs(position.quantity.as_double());
-                double initial_margin_per_contract = instrument->get_margin_requirement();
-                if (initial_margin_per_contract <= 0) {
+                // Price/qty overload: returns total dollars for both equities
+                // (account-mode-aware notional fraction) and futures (|qty| ×
+                // per-contract margin, after the FuturesInstrument override).
+                const double signed_qty = position.quantity.as_double();
+                const double price_for_margin = position.average_price.as_double();
+                margin_for_position =
+                    instrument->get_margin_requirement(price_for_margin, signed_qty);
+                if (margin_for_position <= 0) {
                     ERROR("CRITICAL: Invalid margin requirement " +
-                          std::to_string(initial_margin_per_contract) + " for " + lookup_sym);
+                          std::to_string(margin_for_position) + " for " + lookup_sym +
+                          " (price=" + std::to_string(price_for_margin) +
+                          ", qty=" + std::to_string(signed_qty) + ")");
                     throw std::runtime_error("Invalid margin requirement for: " + lookup_sym);
                 }
-                margin_for_position = contracts_abs * initial_margin_per_contract;
                 total_margin_posted += margin_for_position;
 
             } catch (const std::exception& e) {
@@ -3243,9 +3257,13 @@ std::string EmailSender::format_strategy_positions_tables(
                                           position.average_price.as_double() * contract_multiplier;
                         portfolio_total_notional += std::abs(notional);
 
-                        double contracts_abs = std::abs(position.quantity.as_double());
-                        double initial_margin = instrument->get_margin_requirement();
-                        portfolio_total_margin += contracts_abs * initial_margin;
+                        // Use the price/qty overload (returns total dollars).
+                        // Required for equities to get account-mode-aware
+                        // margin instead of the legacy 0.0 sentinel.
+                        const double signed_qty = position.quantity.as_double();
+                        const double price_for_margin = position.average_price.as_double();
+                        portfolio_total_margin +=
+                            instrument->get_margin_requirement(price_for_margin, signed_qty);
                     }
                 } catch (...) {
                     // Already logged in format_single_strategy_table
