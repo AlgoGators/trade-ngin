@@ -192,8 +192,10 @@ int main(int argc, char* argv[]) {
         }
         auto symbols = symbols_result.value();
 
-        // Register equity instruments
-        auto equity_reg_result = registry.load_equity_instruments(symbols);
+        // Register equity instruments. Pass the exchange JSON path so per-symbol
+        // exchanges populate correctly instead of defaulting to NYSE. Audit §1.2.
+        auto equity_reg_result = registry.load_equity_instruments(
+            symbols, "data/equity_exchanges.json");
         if (equity_reg_result.is_error()) {
             ERROR("Failed to register equity instruments: " +
                   std::string(equity_reg_result.error()->what()));
@@ -398,9 +400,22 @@ int main(int argc, char* argv[]) {
         if (all_bars.empty()) {
             ERROR("No historical data loaded. Cannot calculate positions.");
             ERROR("This may be due to missing market data for the requested date.");
-            ERROR("Please check if market data exists for " + std::to_string(std::chrono::system_clock::to_time_t(now)) + 
+            ERROR("Please check if market data exists for " + std::to_string(std::chrono::system_clock::to_time_t(now)) +
                   " and the 300 days prior.");
             return 1;
+        }
+
+        // Register tier-appropriate equity cost configs using actual recent
+        // ADV per symbol from the bars we just loaded. Closes audit §1.1:
+        // before this, unconfigured equities fell through to the futures
+        // default ($1.50/share commission, point_value=100).
+        {
+            std::unordered_map<std::string, std::vector<trade_ngin::Bar>> bars_by_symbol;
+            for (const auto& bar : all_bars) {
+                bars_by_symbol[bar.symbol].push_back(bar);
+            }
+            execution_manager->get_transaction_cost_manager()
+                .register_equity_costs_from_bars(symbols, bars_by_symbol);
         }
 
         // Pre-warm strategy state so portfolio can pull price history for optimization/risk

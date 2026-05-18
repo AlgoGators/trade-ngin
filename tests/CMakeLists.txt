@@ -18,10 +18,13 @@ set(TEST_SOURCES
     risk/test_risk_manager.cpp
     optimization/test_dynamic_optimizer.cpp
     backtesting/test_transaction_cost_analysis.cpp
+    transaction_cost/test_adv_classifier_wireup.cpp
+    transaction_cost/test_unknown_equity_costs_dispatch.cpp
     # backtesting/test_engine.cpp  # Deprecated - BacktestEngine replaced by BacktestCoordinator
     execution/test_execution_engine.cpp
     portfolio/test_portfolio_manager.cpp
     instruments/test_equity_instrument_holiday_check_wired.cpp
+    instruments/test_exchange_json_wireup.cpp
     strategy/test_base_strategy.cpp
     strategy/test_trend_following.cpp
     strategy/test_mean_reversion_backtest.cpp

@@ -2,8 +2,10 @@
 
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
+#include "trade_ngin/core/types.hpp"
 #include "trade_ngin/transaction_cost/asset_cost_config.hpp"
 #include "trade_ngin/transaction_cost/impact_model.hpp"
 #include "trade_ngin/transaction_cost/spread_model.hpp"
@@ -80,7 +82,8 @@ public:
     TransactionCostResult calculate_costs(
         const std::string& symbol,
         double quantity,
-        double reference_price) const;
+        double reference_price,
+        AssetType asset_type = AssetType::NONE) const;
 
     /**
      * @brief Calculate costs with explicit ADV and volatility multiplier
@@ -92,6 +95,11 @@ public:
      * @param reference_price Fill price
      * @param adv Average daily volume
      * @param volatility_multiplier Volatility regime multiplier (0.8-1.5)
+     * @param asset_type Optional asset class for dispatch fallback when the
+     *        symbol has no registered cost config. EQUITY callers should pass
+     *        AssetType::EQUITY so unregistered symbols get equity defaults
+     *        ($0.005/share, $1 min) instead of the futures fallback
+     *        ($1.50/share, point_value=100).
      * @return Detailed cost breakdown
      */
     TransactionCostResult calculate_costs(
@@ -99,7 +107,8 @@ public:
         double quantity,
         double reference_price,
         double adv,
-        double volatility_multiplier) const;
+        double volatility_multiplier,
+        AssetType asset_type = AssetType::NONE) const;
 
     /**
      * @brief Update market data for a symbol (call daily)
@@ -136,6 +145,29 @@ public:
      * @brief Register custom asset configuration
      */
     void register_asset_config(const AssetCostConfig& config);
+
+    /**
+     * @brief Register tier-appropriate equity cost configs from recent bars.
+     *
+     * For each symbol in `symbols`, computes 20-day (configurable) ADV from
+     * the most recent bars in `bars_by_symbol` and registers the matching
+     * tier returned by AssetCostConfigRegistry::get_tiered_equity_config.
+     *
+     * Symbols with no bars, fewer than 1 bar, or zero average volume are
+     * skipped with a WARN log; the registered config is taken from the
+     * tiered equity classifier in asset_cost_config.cpp (mega / large /
+     * mid / small / penny). Closes audit §1.1: today, unconfigured
+     * equities fall through to the futures default ($1.50/share).
+     *
+     * @param symbols Equity symbols to register
+     * @param bars_by_symbol Recent bars per symbol (most recent at back())
+     * @param adv_lookback_days Number of trailing bars to average for ADV
+     * @return Count of symbols successfully registered
+     */
+    int register_equity_costs_from_bars(
+        const std::vector<std::string>& symbols,
+        const std::unordered_map<std::string, std::vector<Bar>>& bars_by_symbol,
+        int adv_lookback_days = 20);
 
     /**
      * @brief Clear all market data (for new backtest run)
