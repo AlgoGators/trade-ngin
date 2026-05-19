@@ -12,6 +12,7 @@
 #include <sstream>
 #include <nlohmann/json.hpp>
 #include "logger.hpp"
+#include "time_utils.hpp"
 
 namespace trade_ngin {
 
@@ -140,16 +141,23 @@ public:
     std::optional<std::chrono::system_clock::time_point>
     find_previous_trading_day(std::chrono::system_clock::time_point start,
                               int max_lookback_days = 14) const {
+        // Ultrareview follow-up (Phase 6 §6b carry-over): use the thread-safe
+        // safe_localtime wrapper instead of std::localtime. Local-time
+        // semantics are preserved to stay consistent with
+        // EquityInstrument::is_market_open which also uses safe_localtime.
         auto candidate = start - std::chrono::hours(24);
         for (int i = 0; i < max_lookback_days; ++i) {
             auto t = std::chrono::system_clock::to_time_t(candidate);
-            std::tm tm = *std::localtime(&t);
+            std::tm tm{};
+            if (!trade_ngin::core::safe_localtime(&t, &tm)) {
+                return std::nullopt;
+            }
             bool is_weekend = (tm.tm_wday == 0 || tm.tm_wday == 6);
 
-            std::ostringstream ds;
-            ds << std::put_time(&tm, "%Y-%m-%d");
+            char ds_buf[11];
+            std::strftime(ds_buf, sizeof(ds_buf), "%Y-%m-%d", &tm);
 
-            if (!is_weekend && !is_holiday(ds.str())) {
+            if (!is_weekend && !is_holiday(std::string(ds_buf))) {
                 return candidate;
             }
             candidate -= std::chrono::hours(24);

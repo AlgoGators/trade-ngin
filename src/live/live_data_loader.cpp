@@ -380,11 +380,20 @@ Result<PreviousDayData> LiveDataLoader::load_previous_day_data(const std::string
     data.daily_pnl = dp_r.value();
     data.daily_transaction_costs = com_r.value();
 
-    auto date_array = std::static_pointer_cast<arrow::TimestampArray>(table->column(4)->chunk(0));
-
-    // Convert timestamp
-    int64_t timestamp_us = date_array->Value(0);
-    auto duration = std::chrono::microseconds(timestamp_us);
+    // Ultrareview follow-up: timestamp column is `arrow::TimestampArray` in
+    // the canonical schema, but `convert_generic_to_arrow` may surface it as
+    // utf8 / int64 depending on the source. Route through safe_get_int64 so
+    // both shapes work and a type mismatch logs a clear WARN instead of
+    // crashing the cast.
+    auto ts_r = DataConversionUtils::safe_get_int64(table->column(4), 0, "date");
+    if (ts_r.is_error()) {
+        return make_error<PreviousDayData>(
+            ErrorCode::CONVERSION_ERROR,
+            "load_previous_day_data: bad timestamp column (" +
+                std::string(ts_r.error()->what()) + ")",
+            "LiveDataLoader");
+    }
+    auto duration = std::chrono::microseconds(ts_r.value());
     data.date = std::chrono::system_clock::time_point(duration);
 
     data.exists = true;
@@ -434,10 +443,14 @@ Result<bool> LiveDataLoader::has_live_results(const std::string& strategy_id,
         return Result<bool>(false);
     }
 
-    auto array = std::static_pointer_cast<arrow::Int64Array>(table->column(0)->chunk(0));
-    int64_t count = array->Value(0);
-
-    return Result<bool>(count > 0);
+    // Ultrareview follow-up: Phase 5 retrofit covered DoubleArray but missed
+    // Int64Array sites. safe_get_int64 dispatches on actual type.
+    auto cnt_r = DataConversionUtils::safe_get_int64(table->column(0), 0, "count");
+    if (cnt_r.is_error()) {
+        return make_error<bool>(cnt_r.error()->code(), cnt_r.error()->what(),
+                                "LiveDataLoader");
+    }
+    return Result<bool>(cnt_r.value() > 0);
 }
 
 Result<int> LiveDataLoader::get_live_results_count(const std::string& strategy_id,
@@ -471,10 +484,13 @@ Result<int> LiveDataLoader::get_live_results_count(const std::string& strategy_i
         return Result<int>(0);
     }
 
-    auto array = std::static_pointer_cast<arrow::Int64Array>(table->column(0)->chunk(0));
-    int count = static_cast<int>(array->Value(0));
-
-    return Result<int>(count);
+    // Ultrareview follow-up: safe_get_int64 covers utf8-stored count.
+    auto cnt_r = DataConversionUtils::safe_get_int64(table->column(0), 0, "count");
+    if (cnt_r.is_error()) {
+        return make_error<int>(cnt_r.error()->code(), cnt_r.error()->what(),
+                               "LiveDataLoader");
+    }
+    return Result<int>(static_cast<int>(cnt_r.value()));
 }
 
 // ========== Historical Series Methods ==========
@@ -714,10 +730,17 @@ Result<int> LiveDataLoader::load_total_trades_count(const std::string& strategy_
         return Result<int>(0);
     }
 
-    auto array = std::static_pointer_cast<arrow::Int64Array>(table->column(0)->chunk(0));
-    int count = array->IsNull(0) ? 0 : static_cast<int>(array->Value(0));
-
-    return Result<int>(count);
+    // Ultrareview follow-up: safe_get_int64 with null-as-zero fallback
+    // (preserves the legacy "no trades = 0 count" semantic).
+    auto cnt_r = DataConversionUtils::safe_get_int64(table->column(0), 0, "trades_count");
+    if (cnt_r.is_error()) {
+        if (cnt_r.error()->code() == ErrorCode::INVALID_DATA) {
+            return Result<int>(0);  // null cell -> 0 trades
+        }
+        return make_error<int>(cnt_r.error()->code(), cnt_r.error()->what(),
+                               "LiveDataLoader");
+    }
+    return Result<int>(static_cast<int>(cnt_r.value()));
 }
 
 // ========== Position Methods ==========
