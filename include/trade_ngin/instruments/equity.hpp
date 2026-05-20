@@ -206,15 +206,32 @@ public:
     std::optional<DividendInfo> get_next_dividend(const Timestamp& from) const;
 
     /**
-     * @brief Set a shared holiday checker for all equity instruments
-     * @param checker Shared pointer to HolidayChecker instance
+     * @brief Set a shared holiday checker for all equity instruments.
+     *
+     * Phase 6 §6b: the underlying storage is `std::atomic<std::shared_ptr<>>`
+     * so `set_holiday_checker` may safely race with concurrent
+     * `is_market_open` reads (latent thread-safety concern from the audit).
+     * In practice this is called once at app startup; the atomic just
+     * removes the data-race UB.
      */
     static void set_holiday_checker(std::shared_ptr<HolidayChecker> checker);
+
+    /**
+     * @brief Read the current holiday checker (atomic snapshot).
+     * @return shared_ptr that may be null if none has been registered.
+     */
+    static std::shared_ptr<HolidayChecker> get_holiday_checker();
 
 private:
     std::string symbol_;
     EquitySpec spec_;
 
+    // Phase 6 §6b: the plain `static std::shared_ptr<HolidayChecker>` is
+    // UB to write concurrently with reads (even when contents never change
+    // post-init). All access in set_holiday_checker / get_holiday_checker
+    // routes through `std::atomic_load` / `std::atomic_store` on this
+    // shared_ptr (the pre-C++20 free-function form; C++20's atomic<shared_ptr>
+    // specialization is not yet available on all toolchains we ship to).
     static std::shared_ptr<HolidayChecker> holiday_checker_;
 };
 

@@ -50,14 +50,9 @@ static std::string resolve_corp_actions_state_dir(const std::string& strategy_id
     return (fs::current_path() / "state" / strategy_id).string();
 }
 
-// Locale-independent date formatting for SQL queries.
-// Uses std::put_time with %Y-%m-%d, always producing YYYY-MM-DD.
-static std::string format_sql_date(std::chrono::system_clock::time_point tp) {
-    auto time_t_val = std::chrono::system_clock::to_time_t(tp);
-    std::ostringstream oss;
-    oss << std::put_time(std::gmtime(&time_t_val), "%Y-%m-%d");
-    return oss.str();
-}
+// Phase 6 §6c: removed unused format_sql_date helper (Phase 5 introduced
+// trade_ngin::core::format_utc_date as the only approved primitive for
+// UTC date-string keys).
 
 int main(int argc, char* argv[]) {
     try {
@@ -137,8 +132,11 @@ int main(int argc, char* argv[]) {
         // Wire the shared HolidayChecker into EquityInstrument's static slot so
         // that EquityInstrument::is_market_open() actually consults the calendar.
         // Same checker is reused below for the previous-trading-day lookup.
+        // Phase 6 §6a: path resolved via HolidayChecker::resolve_holidays_path
+        // (honors TRADE_NGIN_HOLIDAYS_JSON env var; falls back through the
+        // dev/deploy/system-wide chain).
         auto holiday_checker_ptr = std::make_shared<HolidayChecker>(
-            "include/trade_ngin/core/holidays.json");
+            HolidayChecker::resolve_holidays_path());
         EquityInstrument::set_holiday_checker(holiday_checker_ptr);
 
         // Setup database connection pool
@@ -1220,13 +1218,12 @@ int main(int argc, char* argv[]) {
             int yesterday_active_positions = 0;
             double yesterday_margin_posted = 0.0;
 
-            std::stringstream yesterday_date_ss;
-            auto yesterday_time_t = std::chrono::system_clock::to_time_t(previous_date);
-            yesterday_date_ss << std::put_time(std::gmtime(&yesterday_time_t), "%Y-%m-%d");
+            // Phase 6 §6c: UTC date string via format_utc_date.
+            const std::string yesterday_date_str = core::format_utc_date(previous_date);
 
             // Use LiveDataLoader to get yesterday's metrics
             try {
-                INFO("Using LiveDataLoader to query yesterday's metrics for date: " + yesterday_date_ss.str());
+                INFO("Using LiveDataLoader to query yesterday's metrics for date: " + yesterday_date_str);
                 auto live_results = data_loader->load_live_results("LIVE_EQUITY_MEAN_REVERSION", "BASE_PORTFOLIO", previous_date);
 
                 if (live_results.is_ok()) {
@@ -1311,7 +1308,7 @@ int main(int argc, char* argv[]) {
             try {
                 // Call PostgreSQL function to calculate trading days
                 auto trading_days_result = db->execute_query(
-                    "SELECT trading.get_trading_days('LIVE_EQUITY_MEAN_REVERSION', DATE '" + yesterday_date_ss.str() + "')");
+                    "SELECT trading.get_trading_days('LIVE_EQUITY_MEAN_REVERSION', DATE '" + yesterday_date_str + "')");
                 
                 if (trading_days_result.is_ok()) {
                     auto table = trading_days_result.value();
@@ -1320,7 +1317,7 @@ int main(int argc, char* argv[]) {
                         auto arr = std::static_pointer_cast<arrow::StringArray>(table->column(0)->chunk(0));
                         if (arr && arr->length() > 0 && !arr->IsNull(0)) {
                             trading_days_count = std::max<int>(1, std::stoi(arr->GetString(0)));
-                            INFO("Trading days for yesterday (" + yesterday_date_ss.str() + "): " + std::to_string(trading_days_count));
+                            INFO("Trading days for yesterday (" + yesterday_date_str + "): " + std::to_string(trading_days_count));
                         }
                     }
                 } else {
@@ -1378,7 +1375,7 @@ int main(int argc, char* argv[]) {
                 "         COALESCE(total_pnl, 0.0) as total_pnl, "
                 "         COALESCE(total_realized_pnl, 0.0) as total_realized_pnl_prev "
                 "  FROM trading.live_results "
-                "  WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND DATE(date) < '" + yesterday_date_ss.str() + "' "
+                "  WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND DATE(date) < '" + yesterday_date_str + "' "
                 "  ORDER BY date DESC LIMIT 1"
                 ") "
                 "UPDATE trading.live_results SET "
@@ -1395,10 +1392,10 @@ int main(int argc, char* argv[]) {
                 "portfolio_leverage = CASE WHEN portfolio_leverage IS NULL OR portfolio_leverage = 0 THEN " + std::to_string(yesterday_portfolio_leverage) + " ELSE portfolio_leverage END, "
                 "equity_to_margin_ratio = CASE WHEN equity_to_margin_ratio IS NULL OR equity_to_margin_ratio = 0 THEN " + std::to_string(yesterday_equity_to_margin_ratio) + " ELSE equity_to_margin_ratio END, "
                 "cash_available = COALESCE((SELECT portfolio FROM day_before), " + std::to_string(initial_capital) + ") + (" + std::to_string(yesterday_total_pnl) + " - COALESCE(daily_commissions, 0.0)) - COALESCE(margin_posted, 0.0) "
-                "WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND DATE(date) = '" + yesterday_date_ss.str() + "'";
+                "WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND DATE(date) = '" + yesterday_date_str + "'";
 
             INFO("Executing UPDATE query for Day T-1 live_results...");
-            INFO("UPDATE will set current_portfolio_value for date: " + yesterday_date_ss.str());
+            INFO("UPDATE will set current_portfolio_value for date: " + yesterday_date_str);
 
             auto update_result = db->execute_direct_query(update_query);
             if (update_result.is_error()) {
@@ -1418,9 +1415,9 @@ int main(int argc, char* argv[]) {
             // Query the current portfolio value from updated live_results
             std::string get_equity_query =
                 "SELECT current_portfolio_value FROM trading.live_results "
-                "WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND DATE(date) = '" + yesterday_date_ss.str() + "'";
+                "WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND DATE(date) = '" + yesterday_date_str + "'";
 
-            INFO("Querying for portfolio value with date: " + yesterday_date_ss.str());
+            INFO("Querying for portfolio value with date: " + yesterday_date_str);
 
             auto equity_result = db->execute_query(get_equity_query);
             if (equity_result.is_error()) {
@@ -1434,7 +1431,7 @@ int main(int argc, char* argv[]) {
 
                     // Check for NULL value before reading
                     if (array->IsNull(0)) {
-                        ERROR("Cannot update Day T-1 equity_curve: current_portfolio_value is NULL for date " + yesterday_date_ss.str());
+                        ERROR("Cannot update Day T-1 equity_curve: current_portfolio_value is NULL for date " + yesterday_date_str);
                     } else {
                         double portfolio_value = array->Value(0);
                         INFO("Raw value read from database: " + std::to_string(portfolio_value));
@@ -1442,7 +1439,7 @@ int main(int argc, char* argv[]) {
                         // Validate the value before using it
                         if (portfolio_value <= 0.0 || std::isnan(portfolio_value) || std::isinf(portfolio_value) || portfolio_value < 1000.0) {
                             ERROR("Invalid portfolio value for Day T-1 equity update: " + std::to_string(portfolio_value) +
-                                  " (date: " + yesterday_date_ss.str() + "). Skipping equity_curve update.");
+                                  " (date: " + yesterday_date_str + "). Skipping equity_curve update.");
                             ERROR("  Validation failed: <= 0.0? " + std::string(portfolio_value <= 0.0 ? "YES" : "NO") +
                                   ", isnan? " + std::string(std::isnan(portfolio_value) ? "YES" : "NO") +
                                   ", isinf? " + std::string(std::isinf(portfolio_value) ? "YES" : "NO") +
@@ -1465,7 +1462,7 @@ int main(int argc, char* argv[]) {
                         }
                     }
                 } else {
-                    WARN("No live_results found for date " + yesterday_date_ss.str() + ", skipping equity_curve update");
+                    WARN("No live_results found for date " + yesterday_date_str + ", skipping equity_curve update");
                 }
             }
 
@@ -1475,7 +1472,7 @@ int main(int argc, char* argv[]) {
                     "SELECT daily_return, daily_pnl, daily_realized_pnl, daily_unrealized_pnl, "
                     "portfolio_leverage, equity_to_margin_ratio "
                     "FROM trading.live_results "
-                    "WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND DATE(date) = '" + yesterday_date_ss.str() + "'";
+                    "WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND DATE(date) = '" + yesterday_date_str + "'";
 
                 INFO("Loading yesterday's metrics from database with query: " + metrics_query);
                 auto metrics_result = db->execute_query(metrics_query);
@@ -1592,14 +1589,12 @@ int main(int argc, char* argv[]) {
         // Get n = number of trading days using PostgreSQL function (robust against row duplication)
         int trading_days_count = 1; // Default to 1 to avoid division by zero on first day
         try {
-            // Format today's date for SQL query
-            auto now_time_t_for_query = std::chrono::system_clock::to_time_t(now);
-            std::stringstream now_date_ss;
-            now_date_ss << std::put_time(std::gmtime(&now_time_t_for_query), "%Y-%m-%d");
-            
+            // Phase 6 §6c: UTC date string via format_utc_date.
+            const std::string now_date_str = core::format_utc_date(now);
+
             // Call PostgreSQL function to calculate trading days
             auto trading_days_result = db->execute_query(
-                "SELECT trading.get_trading_days('LIVE_EQUITY_MEAN_REVERSION', DATE '" + now_date_ss.str() + "')");
+                "SELECT trading.get_trading_days('LIVE_EQUITY_MEAN_REVERSION', DATE '" + now_date_str + "')");
             
             if (trading_days_result.is_ok()) {
                 auto table = trading_days_result.value();
@@ -1608,7 +1603,7 @@ int main(int argc, char* argv[]) {
                     auto arr = std::static_pointer_cast<arrow::StringArray>(table->column(0)->chunk(0));
                     if (arr && arr->length() > 0 && !arr->IsNull(0)) {
                         trading_days_count = std::max<int>(1, std::stoi(arr->GetString(0)));
-                        INFO("Trading days for today (" + now_date_ss.str() + "): " + std::to_string(trading_days_count));
+                        INFO("Trading days for today (" + now_date_str + "): " + std::to_string(trading_days_count));
                     }
                 }
             } else {
@@ -1742,11 +1737,11 @@ int main(int argc, char* argv[]) {
             config_json["net_notional"] = net_notional;
             config_json["portfolio_leverage"] = gross_notional / initial_capital;
             
-            // Create SQL insert for live_results table with correct schema
-            std::stringstream date_ss;
-            auto time_t = std::chrono::system_clock::to_time_t(current_date);
-            date_ss << std::put_time(std::gmtime(&time_t), "%Y-%m-%d %H:%M:%S");
-            
+            // Phase 6 §6c: removed unused date_ss timestamp string (dead
+            // code -- the live_results insert is now driven by the
+            // store_live_results_complete dynamic-column API rather than
+            // a hand-rolled SQL string).
+
             // Use calculated metrics from position analysis
             double portfolio_var = 0.0;
             double gross_leverage = 0.0;
@@ -1916,15 +1911,9 @@ int main(int argc, char* argv[]) {
                 std::unordered_map<std::string, double> yesterday_entry_prices;  // Day T-2 close
                 std::unordered_map<std::string, double> yesterday_exit_prices;   // Day T-1 close
 
-                // Use the correct previous trading day (already computed above)
-                auto yesterday_time_email = previous_date;
-                auto yesterday_time_t_email = std::chrono::system_clock::to_time_t(yesterday_time_email);
-
-                // Load finalized positions from database for email
-                std::string yesterday_date_for_email;
-                std::ostringstream yss_email;
-                yss_email << std::put_time(std::gmtime(&yesterday_time_t_email), "%Y-%m-%d");
-                yesterday_date_for_email = yss_email.str();
+                // Phase 6 §6c: UTC date string via format_utc_date.
+                const std::string yesterday_date_for_email =
+                    core::format_utc_date(previous_date);
 
                 INFO("Loading yesterday's finalized positions for email: " + yesterday_date_for_email);
 

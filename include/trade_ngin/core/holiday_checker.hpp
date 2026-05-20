@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdlib>
+#include <filesystem>
 #include <string>
 #include <unordered_map>
 #include <optional>
@@ -10,6 +12,7 @@
 #include <sstream>
 #include <nlohmann/json.hpp>
 #include "logger.hpp"
+#include "time_utils.hpp"
 
 namespace trade_ngin {
 
@@ -29,6 +32,46 @@ struct HolidayInfo {
  */
 class HolidayChecker {
 public:
+    /**
+     * @brief Resolve the holidays.json path with a fallback chain.
+     *
+     * Phase 6 §6a -- cron-triggered apps used to fail silently when their
+     * CWD didn't match the dev-time `include/trade_ngin/core/` layout,
+     * leaving HolidayChecker with an empty map and every `is_holiday`
+     * returning false. This helper tries (in order):
+     *
+     *   1. `TRADE_NGIN_HOLIDAYS_JSON` env var (returned as-is even if it
+     *      doesn't exist, so a misconfigured path surfaces via the
+     *      load-error log instead of silently falling through).
+     *   2. `./include/trade_ngin/core/holidays.json` (dev / source layout).
+     *   3. `./holidays.json` (deploy bundle next to the binary).
+     *   4. `/etc/trade_ngin/holidays.json` (system-wide fallback).
+     *
+     * If none of the file paths exist, returns option (2) so the
+     * `HolidayChecker::load_holidays` ERROR log names the most likely
+     * expected location.
+     */
+    static std::string resolve_holidays_path() {
+        namespace fs = std::filesystem;
+        if (const char* env = std::getenv("TRADE_NGIN_HOLIDAYS_JSON")) {
+            // Env var wins. We return it verbatim so a misconfigured env
+            // value surfaces as a clear load-error, not a silent fallback.
+            return std::string(env);
+        }
+        const std::string candidates[] = {
+            "include/trade_ngin/core/holidays.json",
+            "holidays.json",
+            "/etc/trade_ngin/holidays.json",
+        };
+        for (const auto& path : candidates) {
+            std::error_code ec;
+            if (fs::exists(path, ec)) {
+                return path;
+            }
+        }
+        return candidates[0];  // dev-layout default for the ERROR log
+    }
+
     /**
      * @brief Constructor - loads holidays from JSON file
      * @param json_path Path to holidays.json file
@@ -98,16 +141,23 @@ public:
     std::optional<std::chrono::system_clock::time_point>
     find_previous_trading_day(std::chrono::system_clock::time_point start,
                               int max_lookback_days = 14) const {
+        // Ultrareview follow-up (Phase 6 §6b carry-over): use the thread-safe
+        // safe_localtime wrapper instead of std::localtime. Local-time
+        // semantics are preserved to stay consistent with
+        // EquityInstrument::is_market_open which also uses safe_localtime.
         auto candidate = start - std::chrono::hours(24);
         for (int i = 0; i < max_lookback_days; ++i) {
             auto t = std::chrono::system_clock::to_time_t(candidate);
-            std::tm tm = *std::localtime(&t);
+            std::tm tm{};
+            if (!trade_ngin::core::safe_localtime(&t, &tm)) {
+                return std::nullopt;
+            }
             bool is_weekend = (tm.tm_wday == 0 || tm.tm_wday == 6);
 
-            std::ostringstream ds;
-            ds << std::put_time(&tm, "%Y-%m-%d");
+            char ds_buf[11];
+            std::strftime(ds_buf, sizeof(ds_buf), "%Y-%m-%d", &tm);
 
-            if (!is_weekend && !is_holiday(ds.str())) {
+            if (!is_weekend && !is_holiday(std::string(ds_buf))) {
                 return candidate;
             }
             candidate -= std::chrono::hours(24);

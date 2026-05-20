@@ -55,8 +55,9 @@ int main() {
 
         // Wire the shared HolidayChecker into EquityInstrument's static slot so
         // any market-hours queries on equity instruments consult the calendar.
+        // Phase 6 §6a: path resolved via HolidayChecker::resolve_holidays_path.
         auto holiday_checker_ptr = std::make_shared<HolidayChecker>(
-            "include/trade_ngin/core/holidays.json");
+            HolidayChecker::resolve_holidays_path());
         EquityInstrument::set_holiday_checker(holiday_checker_ptr);
 
         // ========================================

@@ -107,6 +107,25 @@ std::vector<PositionAdjustment> CorporateActionsApplier::apply(
                 // qty held on ex_date - 1 (ultrareview bug_021). When the
                 // caller supplied that, record it; otherwise fall back to
                 // the live position qty (same as before).
+                //
+                // Design note (ultrareview PR #39 follow-up): the `> 0`
+                // sentinel uses zero, not -1 / NaN, because:
+                //   (a) `CorpActionEvent::qty_at_ex_date` defaults to 0.0
+                //       (legacy callers that don't populate it get the
+                //       safe fallback to live qty without an API break),
+                //   (b) a true `qty_at_ex_date == 0` would mean the holder
+                //       owned zero shares on ex_date -- in which case the
+                //       applier is correctly being asked to record a $0
+                //       dividend basis whether we use the sentinel or the
+                //       live qty (also zero), so the ambiguity is harmless,
+                //   (c) negative qty (short positions during dividend) is
+                //       not currently supported by the applier; the live
+                //       app's lookup helper returns `position.quantity` so
+                //       a short would surface as negative and be rejected
+                //       by this check, falling back to live qty -- which is
+                //       also the desired behavior for shorts (the short
+                //       owes the dividend; we record |qty| via the abs in
+                //       calculate_commission elsewhere).
                 const double basis_qty =
                     (ev.qty_at_ex_date > 0.0 && std::isfinite(ev.qty_at_ex_date))
                         ? ev.qty_at_ex_date

@@ -5,6 +5,7 @@
 #include <sstream>
 #include <unordered_set>
 #include "trade_ngin/core/logger.hpp"
+#include "trade_ngin/data/conversion_utils.hpp"
 #include "trade_ngin/data/database_interface.hpp"
 #include "trade_ngin/instruments/instrument_registry.hpp"
 #include "trade_ngin/strategy/base_strategy.hpp"
@@ -273,16 +274,25 @@ Result<std::string> CSVExporter::export_finalized_positions(
         WARN("CSVExporter: Using fallback positions (database loading temporarily disabled)");
 
         if (false && db != nullptr) {
-            // Process database results
-            auto symbol_arr = std::static_pointer_cast<arrow::StringArray>(table->column(0));
-            auto quantity_arr = std::static_pointer_cast<arrow::StringArray>(table->column(1));
-            auto realized_pnl_arr = std::static_pointer_cast<arrow::StringArray>(table->column(3));
+            // Phase 6 §1.17a: type-aware access -- table here is a
+            // RecordBatch (not a Table), so safe_get_* (ChunkedArray API)
+            // can't be applied directly. Wrap each column in a single-chunk
+            // ChunkedArray to reuse the helper's dispatch + WARN logic.
+            auto wrap = [](const std::shared_ptr<arrow::Array>& arr) {
+                return std::make_shared<arrow::ChunkedArray>(arr);
+            };
+            auto symbol_col       = wrap(table->column(0));
+            auto quantity_col     = wrap(table->column(1));
+            auto realized_pnl_col = wrap(table->column(3));
 
             for (int64_t i = 0; i < table->num_rows(); ++i) {
-                if (!symbol_arr->IsNull(i) && !quantity_arr->IsNull(i)) {
-                    std::string symbol = symbol_arr->GetString(i);
-                    double quantity = std::stod(quantity_arr->GetString(i));
-                    double realized_pnl = std::stod(realized_pnl_arr->GetString(i));
+                auto sym_r = DataConversionUtils::safe_get_string(symbol_col, i, "symbol");
+                auto qty_r = DataConversionUtils::safe_get_double(quantity_col, i, "quantity");
+                auto rp_r  = DataConversionUtils::safe_get_double(realized_pnl_col, i, "realized_pnl");
+                if (sym_r.is_ok() && qty_r.is_ok() && rp_r.is_ok()) {
+                    std::string symbol = sym_r.value();
+                    double quantity = qty_r.value();
+                    double realized_pnl = rp_r.value();
 
                     // Skip zero positions
                     if (std::abs(quantity) < 0.0001)

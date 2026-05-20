@@ -38,13 +38,13 @@ size_t read_callback(char* buffer, size_t size, size_t nitems, void* userdata) {
 EmailSender::EmailSender(std::shared_ptr<CredentialStore> credentials)
     : credentials_(std::move(credentials)),
       initialized_(false),
-      holiday_checker_("include/trade_ngin/core/holidays.json") {}
+      holiday_checker_(HolidayChecker::resolve_holidays_path()) {}
 
 EmailSender::EmailSender(const EmailSenderConfig& config)
     : credentials_(nullptr),
       config_(config),
       initialized_(false),
-      holiday_checker_("include/trade_ngin/core/holidays.json") {}
+      holiday_checker_(HolidayChecker::resolve_holidays_path()) {}
 
 Result<void> EmailSender::initialize() {
     if (credentials_) {

@@ -1,8 +1,24 @@
 // src/instruments/equity.cpp
+//
+// Phase 6 audit-status (Phase 6 §1.10 verification):
+//   - set_holiday_checker IS called in production (live_equity_mean_reversion.cpp,
+//     bt_equity_mean_reversion.cpp) and is consulted by is_market_open below.
+//   - calculate_commission returns qty * spec_.commission_per_share where the
+//     spec is populated by instrument_registry.cpp:227 (default $0.005/share)
+//     or :398 (ADV-tier classifier). Audit's "always returns 0" finding is
+//     stale.
+//   - get_margin_requirement(price, qty) implements the Phase 2 §1.3 Reg T
+//     math (CASH: 100% notional; REG_T long: 50%; REG_T short: 150%).
+//   See tests/instruments/test_equity_audit_status.cpp for regression guards.
+
 #include "trade_ngin/instruments/equity.hpp"
 #include <algorithm>
 #include <cmath>
+#include <memory>
+#include <mutex>
 #include <regex>
+#include <unordered_set>
+#include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/core/time_utils.hpp"
 
 namespace trade_ngin {
@@ -10,8 +26,41 @@ namespace trade_ngin {
 std::shared_ptr<HolidayChecker> EquityInstrument::holiday_checker_ = nullptr;
 
 void EquityInstrument::set_holiday_checker(std::shared_ptr<HolidayChecker> checker) {
-    holiday_checker_ = std::move(checker);
+    // atomic_store handles the racing-with-reads case (Phase 6 §6b).
+    std::atomic_store(&holiday_checker_, std::move(checker));
 }
+
+std::shared_ptr<HolidayChecker> EquityInstrument::get_holiday_checker() {
+    return std::atomic_load(&holiday_checker_);
+}
+
+namespace {
+
+// Phase 6 §6b: exchange-aware is_market_open dispatch.
+//
+// Today we ship one calendar (US equities). Other exchanges (LSE, TSE, HKEX,
+// etc.) are latent -- their holiday calendars aren't part of this PR. To
+// avoid silently using NYSE rules for a non-US listing (which the audit
+// flagged), we fail-open WITH a WARN that fires once per unique exchange so
+// the operator sees the gap without log spam.
+bool is_us_equities_exchange(const std::string& exchange) {
+    return exchange.empty() ||  // unspecified defaults to US
+           exchange == "NYSE" || exchange == "NASDAQ" ||
+           exchange == "ARCA" || exchange == "AMEX" || exchange == "BATS";
+}
+
+void warn_unknown_exchange_once(const std::string& exchange) {
+    static std::mutex m;
+    static std::unordered_set<std::string> seen;
+    std::lock_guard<std::mutex> lock(m);
+    if (seen.insert(exchange).second) {
+        WARN("EquityInstrument::is_market_open: no holiday calendar for "
+             "exchange '" + exchange + "' -- failing OPEN (allowing trade). "
+             "Add a calendar to the HolidayChecker if this is a real venue.");
+    }
+}
+
+}  // namespace
 
 EquityInstrument::EquityInstrument(std::string symbol, EquitySpec spec)
     : symbol_(std::move(symbol)), spec_(std::move(spec)) {}
@@ -24,6 +73,14 @@ bool EquityInstrument::is_tradeable() const {
 
 bool EquityInstrument::is_market_open(const Timestamp& timestamp) const {
     try {
+        // Phase 6 §6b: exchange-aware dispatch. Today we only ship a US
+        // calendar; non-US exchanges fail OPEN with a one-time WARN so the
+        // operator notices the gap rather than getting silent NYSE rules.
+        if (!is_us_equities_exchange(spec_.exchange)) {
+            warn_unknown_exchange_once(spec_.exchange);
+            return true;  // fail-open for unknown exchange
+        }
+
         // Convert timestamp to local time
         std::time_t time = std::chrono::system_clock::to_time_t(timestamp);
         std::tm local_time_buffer;
@@ -34,11 +91,11 @@ bool EquityInstrument::is_market_open(const Timestamp& timestamp) const {
             return false;
         }
 
-        // Check for market holidays
-        if (holiday_checker_) {
+        // Check for market holidays (atomic snapshot of the registered checker).
+        if (auto checker = std::atomic_load(&holiday_checker_)) {
             char date_buf[11];
             std::strftime(date_buf, sizeof(date_buf), "%Y-%m-%d", local_time);
-            if (holiday_checker_->is_holiday(std::string(date_buf))) {
+            if (checker->is_holiday(std::string(date_buf))) {
                 return false;
             }
         }
