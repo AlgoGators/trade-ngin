@@ -432,8 +432,9 @@ Result<void> PostgresDatabase::store_backtest_positions_with_strategy(
                      txn.quote(pos.symbol) + ", " +
                      std::to_string(static_cast<double>(pos.quantity)) + ", " +
                      std::to_string(static_cast<double>(pos.average_price)) + ", " +
-                     std::to_string(static_cast<double>(pos.realized_pnl)) + ", " +
-                     std::to_string(static_cast<double>(pos.unrealized_pnl)) + ", " + "'" +
+                     // Column order is (unrealized_pnl, realized_pnl) -- emit values to match.
+                     std::to_string(static_cast<double>(pos.unrealized_pnl)) + ", " +
+                     std::to_string(static_cast<double>(pos.realized_pnl)) + ", " + "'" +
                      last_update_str + "', " +      // last_update
                      "'" + last_update_str + "'" +  // updated_at (same as last_update)
                      ")";

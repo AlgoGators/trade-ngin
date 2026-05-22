@@ -34,6 +34,13 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/bin/Release")
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/bin/Debug")
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/bin/Release")
 
+# RPATH: executables and libtrade_ngin.dylib share an output directory, so
+# resolve @rpath next to the loading binary. Without this, the build picks up
+# whatever rpath leaks from the environment (e.g. an active conda env's lib
+# dir) and binaries fail to find libtrade_ngin.dylib at launch.
+set(CMAKE_BUILD_RPATH "@loader_path")
+set(CMAKE_BUILD_WITH_INSTALL_RPATH OFF)
+
 # Find packages
 #set(GTest_DIR "C:/vcpkg/installed/x64-windows/share/gtest")
 find_package(GTest CONFIG REQUIRED)
