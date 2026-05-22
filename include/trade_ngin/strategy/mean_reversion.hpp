@@ -76,6 +76,11 @@ public:
     Result<void> on_data(const std::vector<Bar>& data) override;
     Result<void> initialize() override;
 
+    // Surfaces target positions from instrument_data_.target_position. positions_
+    // is left to BaseStrategy::on_execution() as the actual-holdings record, so
+    // on_data() must not write it (doing so made on_execution double-apply fills).
+    std::unordered_map<std::string, Position> get_target_positions() const override;
+
     std::unordered_map<std::string, std::vector<double>> get_price_history() const override {
         std::unordered_map<std::string, std::vector<double>> history;
         for (const auto& [symbol, data] : instrument_data_) {

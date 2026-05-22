@@ -160,7 +160,6 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
     std::vector<std::string> processed_strategies;
 
     try {
-        std::unordered_map<std::string, std::unordered_map<std::string, Position>> prev_positions;
         std::unordered_map<std::string, Position> prev_portfolio_positions;
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -174,11 +173,6 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
 
             // Update historical returns for all symbols
             update_historical_returns(data);
-
-            // Store current positions for each strategy to detect changes
-            for (const auto& [id, info] : strategies_) {
-                prev_positions[id] = info.current_positions;
-            }
 
             // Store current portfolio positions to detect changes
             prev_portfolio_positions = get_positions_internal();
@@ -425,45 +419,34 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                         ", target_positions size: " + std::to_string(info.target_positions.size()) +
                         ", existing executions: " + std::to_string(exec_counter));
 
-                    // Get previous positions for this strategy
-                    const auto& prev_strategy_positions = prev_positions[strategy_id];
-                    INFO("Previous positions for strategy " + strategy_id +
-                         " size: " + std::to_string(prev_strategy_positions.size()));
-
-                    // OPTION 3 ENHANCEMENT: Detect first post-warmup day by checking if no
-                    // executions have been generated yet (exec_counter == 0). On the first
-                    // post-warmup day, generate "establishment executions" for all non-zero
-                    // positions, even if they match previous positions. This ensures executions
-                    // show how we got to the positions, not just changes. With Option 3, positions
-                    // accumulate during warmup but executions are cleared, so exec_counter == 0
-                    // indicates first post-warmup day.
-                    bool is_first_post_warmup_day = (exec_counter == 0);
-                    bool should_generate_establishment_execs = is_first_post_warmup_day;
+                    // Per-strategy filled-position ledger: the net position this
+                    // manager has actually traded into, accumulated from the
+                    // executions it generates. Sizing the next order as
+                    // (target - filled) is self-correcting -- a position that ever
+                    // desyncs from its target (e.g. a target the warmup left
+                    // unexecuted) gets traded back rather than stranded. Deliberately
+                    // NOT sourced from strategy get_positions(): that is not a
+                    // reliable actual-holdings record across strategy types
+                    // (trend-following never maintains its positions_ map).
+                    auto& strategy_filled = filled_positions_[strategy_id];
+                    INFO("Filled-position ledger for strategy " + strategy_id +
+                         " size: " + std::to_string(strategy_filled.size()));
 
                     // Generate executions based on individual strategy position changes
                     for (const auto& [symbol, new_pos] : info.target_positions) {
                         double current_qty = 0.0;
-                        auto prev_pos_it = prev_strategy_positions.find(symbol);
-                        if (prev_pos_it != prev_strategy_positions.end()) {
-                            current_qty = static_cast<double>(prev_pos_it->second.quantity);
+                        auto filled_it = strategy_filled.find(symbol);
+                        if (filled_it != strategy_filled.end()) {
+                            current_qty = filled_it->second;
                         }
 
                         double new_qty = static_cast<double>(new_pos.quantity);
+                        double trade_size = new_qty - current_qty;
 
-                        // Generate execution if:
-                        // 1. Position changed (normal case), OR
-                        // 2. This is first post-warmup day and position is non-zero (establishment
-                        // execution)
-                        bool position_changed = (std::abs(new_qty - current_qty) > 1e-6);
-                        bool is_establishment_exec =
-                            should_generate_establishment_execs && (std::abs(new_qty) > 1e-6);
-
-                        if (position_changed || is_establishment_exec) {
-                            // Calculate trade size
-                            // For establishment executions, use the full new_qty (we're
-                            // establishing the position) For normal changes, use the difference
-                            double trade_size =
-                                is_establishment_exec ? new_qty : (new_qty - current_qty);
+                        // Trade whenever the target differs from what has actually
+                        // been filled. Establishing a position from flat is simply
+                        // current_qty == 0 and needs no special case.
+                        if (std::abs(trade_size) > 1e-6) {
                             Side side = trade_size > 0 ? Side::BUY : Side::SELL;
 
                             // Find latest price for symbol
@@ -511,10 +494,11 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                             // Add to strategy-specific executions
                             strategy_execs.push_back(exec);
                             exec_counter++;
-                            std::string exec_type = is_establishment_exec ? " [ESTABLISHMENT]" : "";
+                            // Ledger now reflects the position we just traded into.
+                            strategy_filled[symbol] = new_qty;
                             INFO("Generated execution for strategy " + strategy_id + ": " + symbol +
                                  " " + (side == Side::BUY ? "BUY" : "SELL") +
-                                 " qty=" + std::to_string(exec.filled_quantity) + exec_type);
+                                 " qty=" + std::to_string(exec.filled_quantity));
                         }
                     }
                     INFO("Total executions generated for strategy " + strategy_id + ": " +
@@ -1353,6 +1337,8 @@ void PortfolioManager::clear_all_executions() {
     // Used during warmup to ensure no executions from warmup period persist
     recent_executions_.clear();
     strategy_executions_.clear();
+    // Keep the filled-position ledger in lockstep with strategy_executions_.
+    filled_positions_.clear();
 }
 
 void PortfolioManager::update_cost_manager_market_data(const std::string& symbol, double volume,

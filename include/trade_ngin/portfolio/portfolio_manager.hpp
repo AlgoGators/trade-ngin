@@ -266,6 +266,10 @@ private:
     std::unordered_map<std::string, StrategyInfo> strategies_;
     std::vector<ExecutionReport> recent_executions_;  // Portfolio-level (aggregated)
     std::unordered_map<std::string, std::vector<ExecutionReport>> strategy_executions_;  // Per-strategy executions
+    // Per-strategy filled position (symbol -> net qty) accumulated from the
+    // executions this manager generates; baseline for sizing the next order as
+    // (target - filled). Strategy-agnostic -- does not read strategy positions_.
+    std::unordered_map<std::string, std::unordered_map<std::string, double>> filled_positions_;
     
     // Track previous day close prices for PnL Lag Model (prevents lookahead bias)
     std::unordered_map<std::string, double> previous_day_close_prices_;

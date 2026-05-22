@@ -155,22 +155,13 @@ Result<void> MeanReversionStrategy::on_data(const std::vector<Bar>& data) {
                 inst_data.target_position = 0.0;
             }
 
-            // Update position quantity in base class
-            // DO NOT set average_price here -- on_execution() manages cost basis
-            Position pos = positions_[bar.symbol];
-
-            // Defensive guard: reset cost basis on direction flip so on_execution()
-            // treats it as a fresh entry. generate_signal() prevents single-bar flips,
-            // but this protects against future signal logic changes.
-            double old_qty = pos.quantity.as_double();
-            double new_qty = inst_data.target_position;
-            if ((old_qty > 0 && new_qty < 0) || (old_qty < 0 && new_qty > 0)) {
-                pos.average_price = Decimal(0.0);
-            }
-
-            pos.quantity = Quantity(new_qty);
-            pos.last_update = bar.timestamp;
-            positions_[bar.symbol] = pos;
+            // The target position lives in inst_data.target_position and is
+            // surfaced to the portfolio via get_target_positions(). on_data() must
+            // NOT write positions_ -- that map reflects ACTUAL holdings and is
+            // maintained solely by BaseStrategy::on_execution(). Writing the target
+            // here made on_execution() treat the already-moved quantity as the
+            // pre-trade holding and double-apply each fill, collapsing average_price
+            // toward zero and inflating realized_pnl.
 
             DEBUG("Symbol: " + bar.symbol +
                   " | Price: " + std::to_string(bar.close) +
@@ -207,6 +198,32 @@ Result<void> MeanReversionStrategy::on_data(const std::vector<Bar>& data) {
                                 "Failed to process market data: " + std::string(e.what()),
                                 "MeanReversionStrategy");
     }
+}
+
+std::unordered_map<std::string, Position> MeanReversionStrategy::get_target_positions() const {
+    std::unordered_map<std::string, Position> target_positions;
+
+    // Build target positions from instrument_data_.target_position. positions_ is
+    // deliberately NOT read here -- it holds actual fill-maintained holdings, and
+    // on_execution() is the sole writer of quantity / average_price / realized_pnl.
+    for (const auto& [symbol, inst_data] : instrument_data_) {
+        Position pos;
+        pos.symbol = symbol;
+        pos.quantity = Quantity(inst_data.target_position);
+        pos.average_price = Decimal(inst_data.current_price);
+
+        // Carry forward fill-derived PnL from the actual-holdings record.
+        auto pos_it = positions_.find(symbol);
+        if (pos_it != positions_.end()) {
+            pos.realized_pnl = pos_it->second.realized_pnl;
+            pos.unrealized_pnl = pos_it->second.unrealized_pnl;
+        }
+
+        pos.last_update = inst_data.last_update;
+        target_positions[symbol] = pos;
+    }
+
+    return target_positions;
 }
 
 void MeanReversionStrategy::trim_history(MeanReversionInstrumentData& data) const {
