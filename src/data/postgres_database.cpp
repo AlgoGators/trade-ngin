@@ -247,11 +247,8 @@ Result<void> PostgresDatabase::store_executions(const std::vector<ExecutionRepor
             }
             std::cout << "DEBUG: Execution validation passed" << std::endl;
 
-            // Extract date from fill_time for date column
-            auto fill_time_t = std::chrono::system_clock::to_time_t(exec.fill_time);
-            std::stringstream date_ss;
-            date_ss << std::put_time(std::gmtime(&fill_time_t), "%Y-%m-%d");
-            std::string exec_date = date_ss.str();
+            // Phase 5 §5c: UTC date-string contract via format_utc_date.
+            const std::string exec_date = trade_ngin::core::format_utc_date(exec.fill_time);
 
             // Updated INSERT to include all 4 cost breakdown fields
             std::string query = "INSERT INTO " + table_name +
@@ -330,6 +327,13 @@ Result<void> PostgresDatabase::store_positions(const std::vector<Position>& posi
         if (table_validation.is_error()) {
             return table_validation;
         }
+        // Phase 5 §5b: defense-in-depth -- validate ALL string identifiers
+        // that flow into SQL via concatenation (positions VALUES tuple is
+        // built with single-quoted concat below; we rely on the allowlist
+        // here to ensure the values can't contain an unescaped quote).
+        if (auto sv = validate_strategy_id(strategy_id); sv.is_error()) return sv;
+        if (auto sn = validate_strategy_id(strategy_name); sn.is_error()) return sn;
+        if (auto pv = validate_strategy_id(portfolio_id); pv.is_error()) return pv;
 
         // Begin transaction
         txn.exec("BEGIN");
@@ -342,17 +346,20 @@ Result<void> PostgresDatabase::store_positions(const std::vector<Position>& posi
             // Get the date from the first position being inserted (all positions should be from the
             // same date)
             if (!positions.empty()) {
-                auto time_t = std::chrono::system_clock::to_time_t(positions[0].last_update);
-                std::stringstream ss;
-                ss << std::put_time(std::gmtime(&time_t), "%Y-%m-%d");
-                std::string position_date = ss.str();
+                // Phase 5 §5c: UTC date-string contract.
+                const std::string position_date =
+                    trade_ngin::core::format_utc_date(positions[0].last_update);
 
-                std::string delete_query = "DELETE FROM " + table_name + " WHERE strategy_id = '" +
-                                           strategy_id + "' AND strategy_name = '" + strategy_name +
-                                           "' AND portfolio_id = '" + portfolio_id +
-                                           "' AND DATE(last_update) = '" + position_date + "'";
+                // Phase 5 §5b: parameterized -- identifiers (table_name)
+                // are still concatenated but pre-validated above; all four
+                // values are $-bound.
+                const std::string delete_query =
+                    "DELETE FROM " + table_name +
+                    " WHERE strategy_id = $1 AND strategy_name = $2"
+                    " AND portfolio_id = $3 AND DATE(last_update) = $4";
                 DEBUG("Deleting existing positions with query: " + delete_query);
-                txn.exec(delete_query);
+                txn.exec(delete_query,
+                         pqxx::params{strategy_id, strategy_name, portfolio_id, position_date});
             }
         } catch (const std::exception& e) {
             // If strategy_id/strategy_name columns don't exist, clear all positions for the
@@ -363,14 +370,14 @@ Result<void> PostgresDatabase::store_positions(const std::vector<Position>& posi
                 std::string(e.what()));
 
             if (!positions.empty()) {
-                auto time_t = std::chrono::system_clock::to_time_t(positions[0].last_update);
-                std::stringstream ss;
-                ss << std::put_time(std::gmtime(&time_t), "%Y-%m-%d");
-                std::string position_date = ss.str();
+                // Phase 5 §5c: UTC date-string contract.
+                const std::string position_date =
+                    trade_ngin::core::format_utc_date(positions[0].last_update);
 
-                std::string delete_query = "DELETE FROM " + table_name +
-                                           " WHERE DATE(last_update) = '" + position_date + "'";
-                txn.exec(delete_query);
+                // Phase 5 §5b: parameterized date binding.
+                const std::string delete_query =
+                    "DELETE FROM " + table_name + " WHERE DATE(last_update) = $1";
+                txn.exec(delete_query, pqxx::params{position_date});
             }
         }
 
@@ -398,11 +405,9 @@ Result<void> PostgresDatabase::store_positions(const std::vector<Position>& posi
             std::stringstream ss;
             ss << std::setprecision(17);  // Double precision
 
-            // Extract date from timestamp
-            auto time_t = std::chrono::system_clock::to_time_t(pos.last_update);
-            std::stringstream date_ss;
-            date_ss << std::put_time(std::gmtime(&time_t), "%Y-%m-%d");
-            std::string position_date = date_ss.str();
+            // Phase 5 §5c: UTC date-string contract.
+            const std::string position_date =
+                trade_ngin::core::format_utc_date(pos.last_update);
 
             ss << "('" << pos.symbol << "', " << static_cast<double>(pos.quantity) << ", "
                << static_cast<double>(pos.average_price) << ", "
@@ -440,11 +445,9 @@ Result<void> PostgresDatabase::store_positions(const std::vector<Position>& posi
                     std::stringstream ss;
                     ss << std::setprecision(17);
 
-                    // Extract date from timestamp
-                    auto time_t = std::chrono::system_clock::to_time_t(pos.last_update);
-                    std::stringstream date_ss;
-                    date_ss << std::put_time(std::gmtime(&time_t), "%Y-%m-%d");
-                    std::string position_date = date_ss.str();
+                    // Phase 5 §5c: UTC date-string contract.
+                    const std::string position_date =
+                        trade_ngin::core::format_utc_date(pos.last_update);
 
                     ss << "('" << pos.symbol << "', " << static_cast<double>(pos.quantity) << ", "
                        << static_cast<double>(pos.average_price) << ", "
@@ -1654,6 +1657,34 @@ Result<void> PostgresDatabase::validate_strategy_id(const std::string& strategy_
     return Result<void>();
 }
 
+Result<void> PostgresDatabase::validate_identifier(const std::string& identifier) const {
+    // Phase 5 §5b: strict allowlist for SQL identifiers that MUST be
+    // string-concatenated into a query (Postgres can't $-bind identifiers).
+    // Reject empty, oversize, or anything outside `[A-Za-z_][A-Za-z0-9_.]*`.
+    // The `.` is allowed so qualified names like `schema.table` parse, but
+    // semicolons, quotes, whitespace, and any non-ASCII are forbidden.
+    if (identifier.empty() || identifier.size() > 64) {
+        return make_error<void>(ErrorCode::INVALID_ARGUMENT,
+                                "Invalid identifier: must be 1-64 characters",
+                                "PostgresDatabase");
+    }
+    const char first = identifier.front();
+    if (!std::isalpha(static_cast<unsigned char>(first)) && first != '_') {
+        return make_error<void>(ErrorCode::INVALID_ARGUMENT,
+                                "Invalid identifier: must start with letter or underscore",
+                                "PostgresDatabase");
+    }
+    for (char c : identifier) {
+        const unsigned char uc = static_cast<unsigned char>(c);
+        if (!std::isalnum(uc) && c != '_' && c != '.') {
+            return make_error<void>(ErrorCode::INVALID_ARGUMENT,
+                                    "Invalid identifier: contains invalid character",
+                                    "PostgresDatabase");
+        }
+    }
+    return Result<void>();
+}
+
 Result<void> PostgresDatabase::validate_execution_report(const ExecutionReport& exec) const {
     // Validate symbol
     auto symbol_validation = validate_symbol(exec.symbol);
@@ -2395,6 +2426,73 @@ Result<std::shared_ptr<arrow::Table>> PostgresDatabase::convert_generic_to_arrow
         return make_error<std::shared_ptr<arrow::Table>>(
             ErrorCode::CONVERSION_ERROR,
             "Exception during generic Arrow table conversion: " + std::string(e.what()));
+    }
+}
+
+Result<std::vector<PostgresDatabase::CorpActionRow>>
+PostgresDatabase::get_corporate_actions(
+    const std::vector<std::string>& tickers,
+    const std::string& start_date,
+    const std::string& end_date) {
+
+    auto validation = validate_connection();
+    if (validation.is_error()) {
+        return make_error<std::vector<CorpActionRow>>(
+            validation.error()->code(), validation.error()->what());
+    }
+    if (tickers.empty()) {
+        return Result<std::vector<CorpActionRow>>(std::vector<CorpActionRow>{});
+    }
+
+    try {
+        pqxx::work txn(*connection_);
+
+        // Build the IN list with txn.quote for safety. equities_data.corporate_action
+        // stores dates as text; cast to date for the BETWEEN comparison.
+        std::string in_list;
+        for (size_t i = 0; i < tickers.size(); ++i) {
+            if (i > 0) in_list += ",";
+            in_list += txn.quote(tickers[i]);
+        }
+
+        const std::string query =
+            "SELECT date, action, ticker, value "
+            "FROM equities_data.corporate_action "
+            "WHERE ticker IN (" + in_list + ") "
+            "  AND action IN ('split','dividend','adrratiosplit') "
+            "  AND date::date BETWEEN " + txn.quote(start_date) +
+            "::date AND " + txn.quote(end_date) + "::date "
+            "ORDER BY date, ticker, action";
+
+        auto result = txn.exec(query);
+        std::vector<CorpActionRow> rows;
+        rows.reserve(result.size());
+
+        for (const auto& row : result) {
+            CorpActionRow ca;
+            ca.date_str = row["date"].c_str();
+            ca.action = row["action"].c_str();
+            ca.ticker = row["ticker"].c_str();
+            // value is stored as text in the source schema; parse defensively.
+            const std::string val_str = row["value"].is_null() ? "" : row["value"].c_str();
+            try {
+                ca.value = val_str.empty() ? 0.0 : std::stod(val_str);
+            } catch (const std::exception&) {
+                WARN("get_corporate_actions: unparseable value '" + val_str +
+                     "' for " + ca.ticker + " on " + ca.date_str + " -- skipping");
+                continue;
+            }
+            rows.push_back(std::move(ca));
+        }
+
+        txn.commit();
+        return Result<std::vector<CorpActionRow>>(std::move(rows));
+
+    } catch (const std::exception& e) {
+        return make_error<std::vector<CorpActionRow>>(
+            ErrorCode::DATABASE_ERROR,
+            "Failed to fetch corporate actions: " + std::string(e.what()),
+            "PostgresDatabase");
     }
 }
 

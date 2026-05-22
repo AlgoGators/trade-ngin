@@ -277,7 +277,14 @@ enum class AssetType { FUTURE, EQUITY, OPTION, FOREX, CRYPTO, NONE };
 
 /**
  * @brief Market data bar structure
- * Represents OHLCV data for any timeframe
+ * Represents OHLCV data for any timeframe.
+ *
+ * Equity convention: for AssetType::EQUITY symbols, the loader at
+ * postgres_database.cpp (the equity SELECT) maps `closeadj` into the `close`
+ * field and proportionally rescales `open`/`high`/`low` by the `closeadj/close`
+ * ratio. So for equities the OHLC stored here is split- AND dividend-adjusted
+ * (a continuous total-return price series), not the raw exchange price.
+ * Futures bars carry raw OHLC.
  */
 struct Bar {
     Timestamp timestamp;

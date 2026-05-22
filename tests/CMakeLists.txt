@@ -6,25 +6,50 @@ set(TEST_SOURCES
     core/test_config_manager.cpp
     core/test_config_version.cpp
     core/test_config_base.cpp
+    core/test_holiday_lookback_extended_closure.cpp
     data/test_db_utils.cpp
+    data/test_conversion_utils_safe_get.cpp
+    data/test_utc_date_contract.cpp
+    data/test_postgres_param_safety.cpp
+    core/test_holiday_path_resolution.cpp
+    instruments/test_equity_audit_status.cpp
+    instruments/test_equity_market_hours_exchange.cpp
     data/test_postgres_database.cpp
     data/test_database_pooling.cpp
     data/test_market_data_bus.cpp
     data/test_credential_store.cpp
+    data/test_bar_close_uses_adjusted.cpp
     order/test_order_manager.cpp
     order/test_utils.cpp
     risk/test_risk_manager.cpp
     optimization/test_dynamic_optimizer.cpp
     backtesting/test_transaction_cost_analysis.cpp
+    transaction_cost/test_adv_classifier_wireup.cpp
+    transaction_cost/test_unknown_equity_costs_dispatch.cpp
+    transaction_cost/test_equity_borrow_fees.cpp
+    live/test_corp_actions_applier.cpp
+    live/test_corp_actions_audit_log.cpp
+    live/test_corp_actions_long_hold_total_return.cpp
+    live/test_audit_log_cumulative_dividend.cpp
+    live/test_live_metrics_includes_dividend_income.cpp
+    live/test_corp_actions_ultrareview_fixes.cpp
+    backtest/test_pnl_accounting_branch.cpp
     # backtesting/test_engine.cpp  # Deprecated - BacktestEngine replaced by BacktestCoordinator
     execution/test_execution_engine.cpp
     portfolio/test_portfolio_manager.cpp
+    instruments/test_equity_instrument_holiday_check_wired.cpp
+    instruments/test_exchange_json_wireup.cpp
+    instruments/test_equity_margin_cash_regt.cpp
+    instruments/test_equity_leverage_guardrail.cpp
+    instruments/test_futures_margin_overload.cpp
     strategy/test_base_strategy.cpp
     strategy/test_trend_following.cpp
     strategy/test_mean_reversion_backtest.cpp
     strategy/test_equity_backtest_db_validation.cpp
     strategy/test_equity_pnl_accounting.cpp
     strategy/test_bpgv_tier1.cpp
+    strategy/test_volatility_size_1_nan_guard.cpp
+    strategy/test_stale_unrealized_pnl_zero_avg_price.cpp
     statistics/test_normalizer.cpp
     statistics/test_pca.cpp
     statistics/test_adf.cpp

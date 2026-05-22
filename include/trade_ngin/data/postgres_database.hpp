@@ -1,4 +1,21 @@
 // include/trade_ngin/data/postgres_database.hpp
+//
+// Timezone contract (Phase 5 §5c):
+//   All `Timestamp` parameters and all `YYYY-MM-DD` keys produced by this
+//   module are UTC. Provider date columns are interpreted as calendar dates
+//   with no timezone shift -- their semantics are determined by the ingest
+//   pipeline, not by this DB layer. If a strategy needs market-local
+//   semantics, convert at the strategy boundary, not here.
+//
+//   Date-string keys MUST be produced via `trade_ngin::core::format_utc_date`
+//   (a wrapper around `safe_gmtime + strftime`); direct `std::gmtime` use
+//   is forbidden in this file (non-thread-safe and locale-dependent).
+//
+// SQL contract (Phase 5 §5b):
+//   Value interpolation MUST go through `pqxx::params` / `exec_params`.
+//   Identifier interpolation (table/column names) MUST go through
+//   `validate_identifier` (private helper in postgres_database.cpp) before
+//   string concatenation -- never inject untrusted input as a SQL identifier.
 
 #pragma once
 
@@ -485,6 +502,38 @@ public:
     Result<std::shared_ptr<arrow::Table>> get_contract_metadata() const;
 
     /**
+     * @brief Corporate action row from equities_data.corporate_action.
+     *
+     * The `value` field is parsed from the source table's text column:
+     *   - SPLIT / ADR_SPLIT: split factor (e.g. 4.0 for a 4-for-1)
+     *   - DIVIDEND: cash amount per share in trading currency
+     */
+    struct CorpActionRow {
+        std::string ticker;
+        std::string date_str;  // YYYY-MM-DD
+        std::string action;    // "split" | "dividend" | "adrratiosplit"
+        double value;
+    };
+
+    /**
+     * @brief Read corporate actions for a ticker list between two dates.
+     *
+     * Reads from equities_data.corporate_action (existing schema; no DDL).
+     * Filters to splits and dividends only -- spinoffs/mergers/ticker
+     * changes need basis-cost reallocation logic out of scope for Phase 4.
+     *
+     * @param tickers      Symbols to query (typically the live portfolio's
+     *                     equity universe).
+     * @param start_date   Inclusive YYYY-MM-DD.
+     * @param end_date     Inclusive YYYY-MM-DD.
+     * @return Sorted by (date, ticker, action); empty result is not an error.
+     */
+    Result<std::vector<CorpActionRow>> get_corporate_actions(
+        const std::vector<std::string>& tickers,
+        const std::string& start_date,
+        const std::string& end_date);
+
+    /**
      * @brief Convert asset class to string for database queries
      * @param asset_class Asset class to convert
      * @return String representation for database queries
@@ -513,6 +562,23 @@ public:
      * @return Result indicating success or failure
      */
     Result<void> validate_table_name(const std::string& table_name) const;
+
+    /**
+     * @brief Validate strategy ID for SQL injection prevention.
+     *        Allowlist: alphanumeric + `_-`, 1-50 chars. Public for
+     *        testability (Phase 5 §5b -- the SQL-injection chokepoint
+     *        deserves a regression test).
+     */
+    Result<void> validate_strategy_id(const std::string& strategy_id) const;
+
+    /**
+     * @brief Validate a generic SQL identifier (table name fragment, column
+     *        name) against a strict allowlist: `[A-Za-z_][A-Za-z0-9_.]*`.
+     *        Phase 5 §5b -- use this when an identifier MUST be string-
+     *        concatenated into a query (Postgres does not allow $-binding
+     *        identifiers). For values, prefer `pqxx::params` / `exec_params`.
+     */
+    Result<void> validate_identifier(const std::string& identifier) const;
 
 private:
     std::string connection_string_;
@@ -582,13 +648,6 @@ private:
      * @return Result indicating success or failure
      */
     Result<void> validate_symbols(const std::vector<std::string>& symbols) const;
-
-    /**
-     * @brief Validate strategy ID for SQL injection prevention
-     * @param strategy_id Strategy ID to validate
-     * @return Result indicating success or failure
-     */
-    Result<void> validate_strategy_id(const std::string& strategy_id) const;
 
     /**
      * @brief Validate execution report data

@@ -5,6 +5,7 @@
 #include <nlohmann/json.hpp>
 #include <unordered_set>
 #include "trade_ngin/core/logger.hpp"
+#include "trade_ngin/data/conversion_utils.hpp"
 
 namespace trade_ngin {
 
@@ -122,25 +123,16 @@ Result<void> InstrumentRegistry::load_instruments() {
 
         // Check first row data for each column
         if (table->num_rows() > 0) {
+            // Phase 6 §1.17a: debug logger via type-aware safe_get_string
+            // (handles double/int/string columns uniformly; logs WARN on
+             // null instead of silently showing "NULL").
             INFO("First row values:");
             for (int i = 0; i < table->num_columns(); i++) {
                 auto field = table->schema()->field(i);
                 auto column = table->column(i);
                 if (column->num_chunks() > 0) {
-                    auto chunk = column->chunk(0);
-                    std::string value = "NULL";
-                    if (field->type()->id() == arrow::Type::DOUBLE) {
-                        auto array = std::static_pointer_cast<arrow::DoubleArray>(chunk);
-                        if (!array->IsNull(0)) {
-                            value = std::to_string(array->Value(0));
-                        }
-                    } else if (field->type()->id() == arrow::Type::STRING) {
-                        auto array = std::static_pointer_cast<arrow::StringArray>(chunk);
-                        if (!array->IsNull(0)) {
-                            value = array->GetString(0);
-                        }
-                    }
-                    INFO("    " + field->name() + ": " + value);
+                    auto r = DataConversionUtils::safe_get_string(column, 0, field->name());
+                    INFO("    " + field->name() + ": " + (r.is_ok() ? r.value() : std::string("NULL")));
                 }
             }
         }
@@ -221,7 +213,10 @@ Result<void> InstrumentRegistry::load_equity_instruments(
         spec.exchange = (ex_it != exchange_map.end()) ? ex_it->second : "NYSE";
         spec.currency = "USD";
         spec.tick_size = 0.01;
-        spec.commission_per_share = 0.0;
+        // Match IBKR Pro default (also used by AssetCostConfigRegistry::get_equity_default_config).
+        // Production cost path is TransactionCostManager; this default keeps the
+        // instrument-level commission accessor consistent for callers that query it.
+        spec.commission_per_share = 0.005;
 
         register_instrument(symbol, std::make_shared<EquityInstrument>(symbol, std::move(spec)));
         registered++;
@@ -308,30 +303,21 @@ std::shared_ptr<Instrument> InstrumentRegistry::create_instrument_from_db(
     INFO("Creating instrument from database row: " + std::to_string(row));
 
     try {
-        // Helper to get string from table
+        // Phase 6 §1.17a: per-row helpers route through safe_get_*
+        // (handles utf8-stored numerics and surfaces parse errors as WARNs
+        // instead of returning a silent 0.0 / empty string).
         auto get_string = [&table, row](const std::string& col_name) -> std::string {
             auto col = table->GetColumnByName(col_name);
-            if (!col || col->num_chunks() == 0)
-                return "";
-
-            auto string_array = std::static_pointer_cast<arrow::StringArray>(col->chunk(0));
-            if (string_array->IsNull(row))
-                return "";
-
-            return string_array->GetString(row);
+            if (!col) return "";
+            auto r = DataConversionUtils::safe_get_string(col, row, col_name);
+            return r.is_ok() ? r.value() : "";
         };
 
-        // Helper to get double from table
         auto get_double = [&table, row](const std::string& col_name) -> double {
             auto col = table->GetColumnByName(col_name);
-            if (!col || col->num_chunks() == 0)
-                return 0.0;
-
-            auto double_array = std::static_pointer_cast<arrow::DoubleArray>(col->chunk(0));
-            if (double_array->IsNull(row))
-                return 0.0;
-
-            return double_array->Value(row);
+            if (!col) return 0.0;
+            auto r = DataConversionUtils::safe_get_double(col, row, col_name);
+            return r.is_ok() ? r.value() : 0.0;
         };
 
         // Extract common fields
@@ -362,7 +348,9 @@ std::shared_ptr<Instrument> InstrumentRegistry::create_instrument_from_db(
 
         double min_tick = get_double("Minimum Price Fluctuation");
         std::string tick_size = get_string("Tick Size");
-        double commission = 0.0;  // Not in the metadata, set a default
+        // Asset-type-aware default. Futures spec doesn't carry commission; equities
+        // get IBKR Pro $0.005/share to match get_equity_default_config().
+        double commission = (asset_type == AssetType::EQUITY) ? 0.005 : 0.0;
 
         // Create instrument based on asset type
         switch (asset_type) {

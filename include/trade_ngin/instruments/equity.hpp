@@ -25,6 +25,18 @@ struct DividendInfo {
 };
 
 /**
+ * @brief Account model for equity margin and shorting.
+ *
+ * CASH: full position notional is posted as margin (cash deployed). No
+ * shorting. Standard retail cash-account behavior.
+ *
+ * REG_T: Reg T margin. Long positions post 50% of notional; shorts post
+ * 150% (100% proceeds + 50% maintenance margin). Shorting allowed only if
+ * EquitySpec::short_selling_allowed is also true.
+ */
+enum class EquityAccountMode { CASH, REG_T };
+
+/**
  * @brief Stock specification
  */
 struct EquitySpec {
@@ -35,11 +47,31 @@ struct EquitySpec {
     double commission_per_share{0.0};          // Commission per share
     bool is_etf{false};                        // Whether the instrument is an ETF
     bool is_marginable{true};                  // Whether the stock can be margined
-    double margin_requirement{0.5};            // Initial margin requirement (typically 50%)
     std::string sector;                        // Industry sector
     std::string industry;                      // Specific industry
     std::string trading_hours{"09:30-16:00"};  // NYSE and NASDAQ regular session hours
     std::vector<DividendInfo> dividends;       // Upcoming dividends
+
+    // Account model. Default CASH preserves safe long-only behavior; opt in
+    // to REG_T per-symbol for leveraged/short capability.
+    EquityAccountMode account_mode{EquityAccountMode::CASH};
+
+    // Shorting gate. Only meaningful when account_mode == REG_T; with CASH
+    // mode, shorts are rejected by the strategy clamp regardless of this flag.
+    bool short_selling_allowed{false};
+
+    // Borrow fee configuration.
+    // borrow_rate_override: if >= 0, use this annual rate instead of the
+    //   formula in TransactionCostManager::calculate_overnight_borrow_fees.
+    //   Use to inject broker-provided rates from a live locate API.
+    // is_easy_to_borrow: when false, force HTB tier regardless of ADV/price
+    //   signals (e.g., recent IPOs with low float despite high ADV).
+    // (Per-trade flat locate fee deliberately omitted: the cost-path code
+    // does not yet model short-open events distinctly, so a field with no
+    // consumer would silently swallow any value the user configured.
+    // Add when the short-open cost path lands.)
+    double borrow_rate_override{-1.0};
+    bool is_easy_to_borrow{true};
 };
 
 /**
@@ -81,9 +113,16 @@ public:
     }  // $1 per point for stocks
 
     bool is_tradeable() const override;
+
+    // Legacy no-arg margin: 0.0 sentinel. Equity margin is account-mode and
+    // position-dependent; callers must use the price/quantity overload below.
+    // Returning 0 (rather than a stale 0.5) ensures any unmigrated caller
+    // surfaces an obvious bug instead of silently using nonsense margin.
     double get_margin_requirement() const override {
-        return spec_.margin_requirement;
+        return 0.0;
     }
+    double get_margin_requirement(double price, double quantity) const override;
+
     std::string get_trading_hours() const override {
         return spec_.trading_hours;
     }
@@ -111,6 +150,31 @@ public:
      */
     bool is_marginable() const {
         return spec_.is_marginable;
+    }
+
+    /**
+     * @brief Get the account mode (CASH or REG_T).
+     */
+    EquityAccountMode get_account_mode() const {
+        return spec_.account_mode;
+    }
+
+    /**
+     * @brief Whether shorting is permitted for this instrument.
+     *
+     * True only when account_mode is REG_T AND short_selling_allowed is set.
+     * Strategies must clamp short signals to zero when this returns false.
+     */
+    bool is_short_allowed() const {
+        return spec_.account_mode == EquityAccountMode::REG_T &&
+               spec_.short_selling_allowed;
+    }
+
+    /**
+     * @brief Access the underlying spec (for borrow-fee config etc.).
+     */
+    const EquitySpec& get_spec() const {
+        return spec_;
     }
 
     /**
@@ -142,15 +206,32 @@ public:
     std::optional<DividendInfo> get_next_dividend(const Timestamp& from) const;
 
     /**
-     * @brief Set a shared holiday checker for all equity instruments
-     * @param checker Shared pointer to HolidayChecker instance
+     * @brief Set a shared holiday checker for all equity instruments.
+     *
+     * Phase 6 §6b: the underlying storage is `std::atomic<std::shared_ptr<>>`
+     * so `set_holiday_checker` may safely race with concurrent
+     * `is_market_open` reads (latent thread-safety concern from the audit).
+     * In practice this is called once at app startup; the atomic just
+     * removes the data-race UB.
      */
     static void set_holiday_checker(std::shared_ptr<HolidayChecker> checker);
+
+    /**
+     * @brief Read the current holiday checker (atomic snapshot).
+     * @return shared_ptr that may be null if none has been registered.
+     */
+    static std::shared_ptr<HolidayChecker> get_holiday_checker();
 
 private:
     std::string symbol_;
     EquitySpec spec_;
 
+    // Phase 6 §6b: the plain `static std::shared_ptr<HolidayChecker>` is
+    // UB to write concurrently with reads (even when contents never change
+    // post-init). All access in set_holiday_checker / get_holiday_checker
+    // routes through `std::atomic_load` / `std::atomic_store` on this
+    // shared_ptr (the pre-C++20 free-function form; C++20's atomic<shared_ptr>
+    // specialization is not yet available on all toolchains we ship to).
     static std::shared_ptr<HolidayChecker> holiday_checker_;
 };
 

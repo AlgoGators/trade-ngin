@@ -7,9 +7,11 @@
 #include "trade_ngin/core/time_utils.hpp"
 #include "trade_ngin/data/market_data_bus.hpp"
 #include "trade_ngin/storage/backtest_results_manager.hpp"
+#include "trade_ngin/strategy/base_strategy.hpp"
 #include "trade_ngin/strategy/bpgv_rotation.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
 #include "trade_ngin/strategy/trend_following_fast.hpp"
+#include "trade_ngin/strategy/types.hpp"
 
 namespace trade_ngin {
 namespace backtest {
@@ -637,6 +639,18 @@ Result<void> BacktestCoordinator::process_portfolio_day(
         // Calculate PnL for each strategy using its individual quantities
         auto strategy_positions = portfolio->get_strategy_positions();
 
+        // Phase 4 §1.14: build per-strategy PnL accounting method lookup so
+        // we can branch on REALIZED_ONLY (futures: daily MTM IS realized) vs
+        // MIXED/UNREALIZED_ONLY (equities: realized_pnl only on actual close,
+        // written by on_execution -- coordinator must NOT stamp realized_pnl
+        // here for equities).
+        std::unordered_map<std::string, PnLAccountingMethod> pnl_method_by_strategy;
+        for (const auto& s : portfolio->get_strategies()) {
+            if (auto bs = std::dynamic_pointer_cast<BaseStrategy>(s)) {
+                pnl_method_by_strategy[bs->get_metadata().id] = bs->get_pnl_accounting().method;
+            }
+        }
+
         for (const auto& [strategy_id, positions_map] : strategy_positions) {
             for (const auto& [symbol, pos] : positions_map) {
                 double qty = static_cast<double>(pos.quantity);
@@ -667,7 +681,20 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                 if (pnl_result.valid) {
                     // Update this strategy's position with calculated PnL
                     Position updated_pos = pos;
-                    updated_pos.realized_pnl = Decimal(pnl_result.daily_pnl);
+                    // Phase 4 §1.14: only stamp realized_pnl with daily MTM
+                    // when the strategy uses REALIZED_ONLY accounting
+                    // (futures). For equities (MIXED / UNREALIZED_ONLY),
+                    // leave realized_pnl untouched -- on_execution writes
+                    // realized when positions actually close. total_portfolio_pnl
+                    // below still aggregates daily_pnl independently so equity
+                    // curve totals are unchanged.
+                    auto pnl_method_it = pnl_method_by_strategy.find(strategy_id);
+                    PnLAccountingMethod method = (pnl_method_it != pnl_method_by_strategy.end())
+                                                     ? pnl_method_it->second
+                                                     : PnLAccountingMethod::REALIZED_ONLY;
+                    if (method == PnLAccountingMethod::REALIZED_ONLY) {
+                        updated_pos.realized_pnl = Decimal(pnl_result.daily_pnl);
+                    }
                     // For equities: unrealized = (current_price - cost_basis) * qty
                     // For futures: unrealized = 0 (mark-to-market settles daily)
                     double avg_price = static_cast<double>(pos.average_price);
@@ -689,6 +716,47 @@ Result<void> BacktestCoordinator::process_portfolio_day(
 
         // Update previous closes for next iteration
         pnl_manager_->update_previous_closes(current_close_prices);
+
+        // Phase 2 §3.2: accrue overnight borrow fees on open short equity
+        // positions. Per-strategy attribution: iterate strategy_positions,
+        // compute each strategy's borrow fee on its own shorts, both add to
+        // today's transaction costs (equity curve) AND emit a synthetic
+        // zero-quantity ExecutionReport so the DB / CSV / metrics audit
+        // trail stays in sync with the equity-curve drop.
+        // No-op when no shorts are open (the common case for long-only).
+        if (execution_manager_ && registry_) {
+            auto& tcm = execution_manager_->get_transaction_cost_manager();
+            auto strategy_positions_for_borrow = portfolio->get_strategy_positions();
+            for (const auto& [strategy_id, strat_positions] : strategy_positions_for_borrow) {
+                auto strat_borrow_fees = tcm.calculate_overnight_borrow_fees(
+                    strat_positions, current_close_prices, *registry_);
+                for (const auto& [sym, fee] : strat_borrow_fees) {
+                    if (fee <= 0.0) continue;
+                    total_transaction_costs += fee;
+
+                    // Synthesize a zero-quantity exec so per-strategy and
+                    // per-symbol metrics (profit_factor, win_rate, symbol
+                    // PnL) include the borrow drag instead of silently
+                    // excluding it.
+                    ExecutionReport borrow_exec;
+                    borrow_exec.exec_id = "BORROW_" + strategy_id + "_" + sym;
+                    borrow_exec.order_id = borrow_exec.exec_id;
+                    borrow_exec.symbol = sym;
+                    borrow_exec.side = Side::SELL;
+                    borrow_exec.filled_quantity = Quantity(0.0);
+                    auto price_it = current_close_prices.find(sym);
+                    borrow_exec.fill_price = Price(
+                        price_it != current_close_prices.end() ? price_it->second : 0.0);
+                    borrow_exec.fill_time = timestamp;
+                    borrow_exec.commissions_fees = Decimal(fee);
+                    borrow_exec.implicit_price_impact = Decimal(0.0);
+                    borrow_exec.slippage_market_impact = Decimal(0.0);
+                    borrow_exec.total_transaction_costs = Decimal(fee);
+                    borrow_exec.is_partial = false;
+                    portfolio->append_synthetic_execution(strategy_id, borrow_exec);
+                }
+            }
+        }
 
         // Calculate portfolio value: previous value + daily PnL - transaction costs
         double portfolio_value =

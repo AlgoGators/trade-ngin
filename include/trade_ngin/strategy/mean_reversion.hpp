@@ -76,6 +76,11 @@ public:
     Result<void> on_data(const std::vector<Bar>& data) override;
     Result<void> initialize() override;
 
+    // Surfaces target positions from instrument_data_.target_position. positions_
+    // is left to BaseStrategy::on_execution() as the actual-holdings record, so
+    // on_data() must not write it (doing so made on_execution double-apply fills).
+    std::unordered_map<std::string, Position> get_target_positions() const override;
+
     std::unordered_map<std::string, std::vector<double>> get_price_history() const override {
         std::unordered_map<std::string, std::vector<double>> history;
         for (const auto& [symbol, data] : instrument_data_) {
@@ -127,6 +132,13 @@ private:
      * @brief Trim price/volatility history to prevent unbounded memory growth
      */
     void trim_history(MeanReversionInstrumentData& data) const;
+
+#ifdef TESTING
+public:
+    double calculate_volatility_for_test(const std::deque<double>& prices, int lookback) const {
+        return calculate_volatility(prices, lookback);
+    }
+#endif
 };
 
 }  // namespace trade_ngin

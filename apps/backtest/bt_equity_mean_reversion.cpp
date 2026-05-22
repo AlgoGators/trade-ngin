@@ -6,8 +6,10 @@
 #include "trade_ngin/core/config_loader.hpp"
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/core/time_utils.hpp"
+#include "trade_ngin/data/conversion_utils.hpp"
 #include "trade_ngin/data/database_pooling.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
+#include "trade_ngin/core/holiday_checker.hpp"
 #include "trade_ngin/instruments/equity.hpp"
 #include "trade_ngin/instruments/instrument_registry.hpp"
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
@@ -50,6 +52,13 @@ int main() {
         }
         auto app_config = app_config_result.value();
         INFO("Configuration loaded for portfolio: " + app_config.portfolio_id);
+
+        // Wire the shared HolidayChecker into EquityInstrument's static slot so
+        // any market-hours queries on equity instruments consult the calendar.
+        // Phase 6 §6a: path resolved via HolidayChecker::resolve_holidays_path.
+        auto holiday_checker_ptr = std::make_shared<HolidayChecker>(
+            HolidayChecker::resolve_holidays_path());
+        EquityInstrument::set_holiday_checker(holiday_checker_ptr);
 
         // ========================================
         // SETUP DATABASE CONNECTION
@@ -118,12 +127,33 @@ int main() {
             return 1;
         }
 
-        // Register equity instruments in the registry
-        auto equity_reg_result = registry.load_equity_instruments(symbols);
+        // Register equity instruments in the registry. Pass the exchange JSON
+        // path so per-symbol exchanges are correctly populated (NASDAQ/NYSE/etc)
+        // instead of every symbol silently defaulting to NYSE. Closes audit §1.2.
+        auto equity_reg_result = registry.load_equity_instruments(
+            symbols, "data/equity_exchanges.json");
         if (equity_reg_result.is_error()) {
             ERROR("Failed to register equity instruments: " +
                   std::string(equity_reg_result.error()->what()));
             return 1;
+        }
+
+        // Phase 2 leverage guardrail (audit §3.3): CASH-mode equities cannot
+        // be in a portfolio with max_gross_leverage > 1.0 -- cash accounts
+        // can't borrow, so a leverage cap above 1.0 is structurally invalid.
+        // Fail fast at startup rather than silently producing nonsense margin.
+        if (app_config.risk_config.max_gross_leverage > 1.0) {
+            for (const auto& symbol : symbols) {
+                auto inst = registry.get_equity_instrument(symbol);
+                if (inst && inst->get_account_mode() == EquityAccountMode::CASH) {
+                    ERROR("Refusing to start: CASH-mode equity " + symbol +
+                          " in portfolio with max_gross_leverage=" +
+                          std::to_string(app_config.risk_config.max_gross_leverage) +
+                          " > 1.0. Set REG_T account_mode (and is_short_allowed "
+                          "if needed) or reduce max_gross_leverage to 1.0.");
+                    return 1;
+                }
+            }
         }
 
         // Print symbols
@@ -249,6 +279,40 @@ int main() {
             ERROR("Failed to add strategy to portfolio: " +
                   std::string(add_result.error()->what()));
             return 1;
+        }
+
+        // Register tier-appropriate equity cost configs before the backtest
+        // runs. Uses a 30-day warmup window starting at start_date so cost
+        // calibration reflects what would have been known at backtest start.
+        // Closes audit §1.1: previously unconfigured equities fell through to
+        // futures defaults ($1.50/share commission, point_value=100).
+        {
+            auto warmup_end = start_date + std::chrono::hours(24 * 30);
+            auto warmup_result = db->get_market_data(
+                symbols, start_date, warmup_end,
+                AssetClass::EQUITIES, DataFrequency::DAILY, "ohlcv");
+            if (warmup_result.is_ok()) {
+                auto warmup_bars_result =
+                    trade_ngin::DataConversionUtils::arrow_table_to_bars(warmup_result.value());
+                if (warmup_bars_result.is_ok()) {
+                    const auto& warmup_bars = warmup_bars_result.value();
+                    std::unordered_map<std::string, std::vector<trade_ngin::Bar>> bars_by_symbol;
+                    for (const auto& bar : warmup_bars) {
+                        bars_by_symbol[bar.symbol].push_back(bar);
+                    }
+                    coordinator->get_execution_manager()
+                        ->get_transaction_cost_manager()
+                        .register_equity_costs_from_bars(symbols, bars_by_symbol);
+                } else {
+                    WARN("Failed to convert warmup bars: " +
+                         std::string(warmup_bars_result.error()->what()) +
+                         " -- equity cost configs may use unconfigured-symbol fallback");
+                }
+            } else {
+                WARN("Failed to load equity cost warmup data: " +
+                     std::string(warmup_result.error()->what()) +
+                     " -- equity cost configs may use unconfigured-symbol fallback");
+            }
         }
 
         INFO("Running equity mean reversion backtest...");

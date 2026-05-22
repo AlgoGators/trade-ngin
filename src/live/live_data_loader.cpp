@@ -1,14 +1,46 @@
 // src/live/live_data_loader.cpp
 // Implementation of data loading component for live trading
+//
+// Phase 5 §1.17a + §5c + §5d: numeric columns are decoded via
+// DataConversionUtils::safe_get_* (which handles the convert_generic_to_arrow
+// utf8 storage convention transparently); date-string keys are produced via
+// trade_ngin::core::format_utc_date. Direct static_pointer_cast<DoubleArray>
+// + chunk(0) and direct std::gmtime use are forbidden in this file.
 
 #include "trade_ngin/live/live_data_loader.hpp"
 #include <arrow/api.h>
 #include <iomanip>
 #include <sstream>
 #include "trade_ngin/core/logger.hpp"
+#include "trade_ngin/core/time_utils.hpp"
 #include "trade_ngin/core/types.hpp"  // For Position struct
+#include "trade_ngin/data/conversion_utils.hpp"
 
 namespace trade_ngin {
+
+namespace {
+
+// Read a double cell preserving the historical loader semantic of "SQL NULL
+// is treated as 0.0" (many queries here aggregate values that legitimately
+// have no row; the caller's struct has a separate `exists` flag for "no
+// data" -- nulls in the cell are NOT a corruption signal).
+//
+// Phase 5 §1.17a: type-mismatch errors (CONVERSION_ERROR) and out-of-range
+// errors (INVALID_ARGUMENT) are still propagated -- those are the silent
+// 0.0 footguns the audit flagged. Only INVALID_DATA from safe_get_*
+// (specifically "null cell") gets demoted to 0.0.
+Result<double> read_double_or_zero_on_null(
+    const std::shared_ptr<arrow::ChunkedArray>& col, int64_t row,
+    const std::string& col_name) {
+    auto r = DataConversionUtils::safe_get_double(col, row, col_name);
+    if (r.is_ok()) return r;
+    if (r.error()->code() == ErrorCode::INVALID_DATA) {
+        return Result<double>(0.0);
+    }
+    return r;
+}
+
+}  // namespace
 
 LiveDataLoader::LiveDataLoader(std::shared_ptr<PostgresDatabase> db, const std::string& schema)
     : db_(std::move(db)), schema_(schema) {
@@ -49,9 +81,9 @@ Result<double> LiveDataLoader::load_previous_portfolio_value(const std::string& 
     }
 
     // Convert date to string for SQL query
-    auto time_t = std::chrono::system_clock::to_time_t(date);
-    std::stringstream date_ss;
-    date_ss << std::put_time(std::gmtime(&time_t), "%Y-%m-%d");
+    // Phase 5 §5c: UTC date-string contract -- format_utc_date is the only
+    // approved primitive for date keys; std::gmtime is not thread-safe.
+    const std::string date_str = core::format_utc_date(date);
 
     std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
 
@@ -67,7 +99,7 @@ Result<double> LiveDataLoader::load_previous_portfolio_value(const std::string& 
         actual_portfolio_id +
         "' "
         "AND DATE(date) < '" +
-        date_ss.str() +
+        date_str +
         "' "
         "ORDER BY date DESC LIMIT 1";
 
@@ -87,8 +119,13 @@ Result<double> LiveDataLoader::load_previous_portfolio_value(const std::string& 
         return Result<double>(0.0);  // Return 0 if no previous data
     }
 
-    auto array = std::static_pointer_cast<arrow::DoubleArray>(table->column(0)->chunk(0));
-    double value = array->Value(0);
+    auto val_r = DataConversionUtils::safe_get_double(
+        table->column(0), 0, "current_portfolio_value");
+    if (val_r.is_error()) {
+        return make_error<double>(val_r.error()->code(), val_r.error()->what(),
+                                  "LiveDataLoader");
+    }
+    const double value = val_r.value();
 
     INFO("Loaded previous portfolio value: $" + std::to_string(value));
     return Result<double>(value);
@@ -103,9 +140,9 @@ Result<double> LiveDataLoader::load_portfolio_value(const std::string& strategy_
                                   "LiveDataLoader");
     }
 
-    auto time_t = std::chrono::system_clock::to_time_t(date);
-    std::stringstream date_ss;
-    date_ss << std::put_time(std::gmtime(&time_t), "%Y-%m-%d");
+    // Phase 5 §5c: UTC date-string contract -- format_utc_date is the only
+    // approved primitive for date keys; std::gmtime is not thread-safe.
+    const std::string date_str = core::format_utc_date(date);
 
     std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
 
@@ -121,7 +158,7 @@ Result<double> LiveDataLoader::load_portfolio_value(const std::string& strategy_
         actual_portfolio_id +
         "' "
         "AND DATE(date) = '" +
-        date_ss.str() + "'";
+        date_str + "'";
 
     DEBUG("Loading portfolio value: " + query);
 
@@ -136,14 +173,17 @@ Result<double> LiveDataLoader::load_portfolio_value(const std::string& strategy_
     auto table = result.value();
     if (!table || table->num_rows() == 0) {
         return make_error<double>(ErrorCode::INVALID_ARGUMENT,
-                                  "No portfolio value found for date " + date_ss.str(),
+                                  "No portfolio value found for date " + date_str,
                                   "LiveDataLoader");
     }
 
-    auto array = std::static_pointer_cast<arrow::DoubleArray>(table->column(0)->chunk(0));
-    double value = array->Value(0);
-
-    return Result<double>(value);
+    auto val_r = DataConversionUtils::safe_get_double(
+        table->column(0), 0, "current_portfolio_value");
+    if (val_r.is_error()) {
+        return make_error<double>(val_r.error()->code(), val_r.error()->what(),
+                                  "LiveDataLoader");
+    }
+    return Result<double>(val_r.value());
 }
 
 // ========== Live Results Methods ==========
@@ -157,9 +197,9 @@ Result<LiveResultsRow> LiveDataLoader::load_live_results(const std::string& stra
                                           "LiveDataLoader");
     }
 
-    auto time_t = std::chrono::system_clock::to_time_t(date);
-    std::stringstream date_ss;
-    date_ss << std::put_time(std::gmtime(&time_t), "%Y-%m-%d");
+    // Phase 5 §5c: UTC date-string contract -- format_utc_date is the only
+    // approved primitive for date keys; std::gmtime is not thread-safe.
+    const std::string date_str = core::format_utc_date(date);
 
     std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
 
@@ -184,7 +224,7 @@ Result<LiveResultsRow> LiveDataLoader::load_live_results(const std::string& stra
         actual_portfolio_id +
         "' "
         "AND DATE(date) = '" +
-        date_ss.str() + "'";
+        date_str + "'";
 
     DEBUG("Loading live results: " + query);
 
@@ -199,7 +239,7 @@ Result<LiveResultsRow> LiveDataLoader::load_live_results(const std::string& stra
     auto table = result.value();
     if (!table || table->num_rows() == 0) {
         return make_error<LiveResultsRow>(ErrorCode::INVALID_ARGUMENT,
-                                          "No live results found for date " + date_ss.str(),
+                                          "No live results found for date " + date_str,
                                           "LiveDataLoader");
     }
 
@@ -207,44 +247,30 @@ Result<LiveResultsRow> LiveDataLoader::load_live_results(const std::string& stra
     row.strategy_id = strategy_id;
     row.date = date;
 
-    // Extract all fields from the result
-    // NOTE: convert_generic_to_arrow() builds ALL columns as arrow::utf8() (strings),
-    // so we must read via StringArray and convert to numeric types.
+    // Extract all fields from the result.
     //
-    // TODO(ARROW-STRING-BUG): The same static_pointer_cast<DoubleArray> / <Int64Array> bug
-    // exists in the following functions — they return 0 silently when the actual Arrow type
-    // is StringArray. Fix these when they cause visible issues:
-    //   - load_total_equity() line ~90
-    //   - load_total_trades_count() lines ~143, ~414
-    //   - load_previous_day_data() lines ~313-318
-    //   - has_live_results() line ~377
-    //   - load_equity_curve_history() line ~599
-    //   - load_portfolio_positions() lines ~714-720
-    //   - load_yesterday_metrics() line ~790
-    //   - load_portfolio_value() line ~846
-    //   - load_leverage_metrics() lines ~903-907
-    //   - load_yesterday_daily_metrics() lines ~977-983
+    // Phase 5 §1.17a + §5d: numeric columns are decoded via
+    // DataConversionUtils::safe_get_* which dispatches on the actual Arrow
+    // type (DOUBLE / INT64 / STRING fallback) and logs WARN on parse
+    // failures instead of returning a silent 0.0. The sequential `col++`
+    // pattern below is preserved so the column ordering of the SELECT keeps
+    // driving the row fields directly.
     int col = 0;
     auto get_double = [&table, &col]() -> double {
-        auto array = std::static_pointer_cast<arrow::StringArray>(table->column(col++)->chunk(0));
-        if (array->IsNull(0))
-            return 0.0;
-        try {
-            return std::stod(array->GetString(0));
-        } catch (const std::exception&) {
-            return 0.0;
-        }
+        const int this_col = col++;
+        auto r = read_double_or_zero_on_null(
+            table->column(this_col), 0, "col[" + std::to_string(this_col) + "]");
+        return r.is_ok() ? r.value() : 0.0;
     };
 
     auto get_int = [&table, &col]() -> int {
-        auto array = std::static_pointer_cast<arrow::StringArray>(table->column(col++)->chunk(0));
-        if (array->IsNull(0))
-            return 0;
-        try {
-            return std::stoi(array->GetString(0));
-        } catch (const std::exception&) {
-            return 0;
-        }
+        const int this_col = col++;
+        auto r = DataConversionUtils::safe_get_int64(
+            table->column(this_col), 0, "col[" + std::to_string(this_col) + "]");
+        if (r.is_ok()) return static_cast<int>(r.value());
+        // null cell -> 0 (legacy semantic for this loader); type mismatch
+        // already logged WARN inside safe_get_int64.
+        return 0;
     };
 
     row.daily_pnl = get_double();
@@ -280,7 +306,7 @@ Result<LiveResultsRow> LiveDataLoader::load_live_results(const std::string& stra
     row.losing_days = get_int();
     row.total_days = get_int();
 
-    INFO("Loaded live results for " + date_ss.str() + ": PnL=$" + std::to_string(row.daily_pnl) +
+    INFO("Loaded live results for " + date_str + ": PnL=$" + std::to_string(row.daily_pnl) +
          ", Portfolio=$" + std::to_string(row.current_portfolio_value));
 
     return Result<LiveResultsRow>(row);
@@ -295,9 +321,9 @@ Result<PreviousDayData> LiveDataLoader::load_previous_day_data(const std::string
                                            "LiveDataLoader");
     }
 
-    auto time_t = std::chrono::system_clock::to_time_t(date);
-    std::stringstream date_ss;
-    date_ss << std::put_time(std::gmtime(&time_t), "%Y-%m-%d");
+    // Phase 5 §5c: UTC date-string contract -- format_utc_date is the only
+    // approved primitive for date keys; std::gmtime is not thread-safe.
+    const std::string date_str = core::format_utc_date(date);
 
     std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
 
@@ -314,7 +340,7 @@ Result<PreviousDayData> LiveDataLoader::load_previous_day_data(const std::string
         actual_portfolio_id +
         "' "
         "AND DATE(date) < '" +
-        date_ss.str() +
+        date_str +
         "' "
         "ORDER BY date DESC LIMIT 1";
 
@@ -337,22 +363,37 @@ Result<PreviousDayData> LiveDataLoader::load_previous_day_data(const std::string
         return Result<PreviousDayData>(data);
     }
 
-    // Extract fields
-    auto portfolio_array = std::static_pointer_cast<arrow::DoubleArray>(table->column(0)->chunk(0));
-    auto total_pnl_array = std::static_pointer_cast<arrow::DoubleArray>(table->column(1)->chunk(0));
-    auto daily_pnl_array = std::static_pointer_cast<arrow::DoubleArray>(table->column(2)->chunk(0));
-    auto commissions_array =
-        std::static_pointer_cast<arrow::DoubleArray>(table->column(3)->chunk(0));
-    auto date_array = std::static_pointer_cast<arrow::TimestampArray>(table->column(4)->chunk(0));
+    // Extract fields (Phase 5 §1.17a -- via safe_get_double, null-as-zero
+    // semantics preserved; type mismatches now propagate as errors).
+    auto pv_r  = read_double_or_zero_on_null(table->column(0), 0, "portfolio_value");
+    auto tp_r  = read_double_or_zero_on_null(table->column(1), 0, "total_pnl");
+    auto dp_r  = read_double_or_zero_on_null(table->column(2), 0, "daily_pnl");
+    auto com_r = read_double_or_zero_on_null(table->column(3), 0, "daily_transaction_costs");
+    if (pv_r.is_error() || tp_r.is_error() || dp_r.is_error() || com_r.is_error()) {
+        return make_error<PreviousDayData>(
+            ErrorCode::CONVERSION_ERROR,
+            "load_previous_day_data: column type mismatch",
+            "LiveDataLoader");
+    }
+    data.portfolio_value = pv_r.value();
+    data.total_pnl = tp_r.value();
+    data.daily_pnl = dp_r.value();
+    data.daily_transaction_costs = com_r.value();
 
-    data.portfolio_value = portfolio_array->IsNull(0) ? 0.0 : portfolio_array->Value(0);
-    data.total_pnl = total_pnl_array->IsNull(0) ? 0.0 : total_pnl_array->Value(0);
-    data.daily_pnl = daily_pnl_array->IsNull(0) ? 0.0 : daily_pnl_array->Value(0);
-    data.daily_transaction_costs = commissions_array->IsNull(0) ? 0.0 : commissions_array->Value(0);
-
-    // Convert timestamp
-    int64_t timestamp_us = date_array->Value(0);
-    auto duration = std::chrono::microseconds(timestamp_us);
+    // Ultrareview follow-up: timestamp column is `arrow::TimestampArray` in
+    // the canonical schema, but `convert_generic_to_arrow` may surface it as
+    // utf8 / int64 depending on the source. Route through safe_get_int64 so
+    // both shapes work and a type mismatch logs a clear WARN instead of
+    // crashing the cast.
+    auto ts_r = DataConversionUtils::safe_get_int64(table->column(4), 0, "date");
+    if (ts_r.is_error()) {
+        return make_error<PreviousDayData>(
+            ErrorCode::CONVERSION_ERROR,
+            "load_previous_day_data: bad timestamp column (" +
+                std::string(ts_r.error()->what()) + ")",
+            "LiveDataLoader");
+    }
+    auto duration = std::chrono::microseconds(ts_r.value());
     data.date = std::chrono::system_clock::time_point(duration);
 
     data.exists = true;
@@ -372,9 +413,9 @@ Result<bool> LiveDataLoader::has_live_results(const std::string& strategy_id,
                                 "LiveDataLoader");
     }
 
-    auto time_t = std::chrono::system_clock::to_time_t(date);
-    std::stringstream date_ss;
-    date_ss << std::put_time(std::gmtime(&time_t), "%Y-%m-%d");
+    // Phase 5 §5c: UTC date-string contract -- format_utc_date is the only
+    // approved primitive for date keys; std::gmtime is not thread-safe.
+    const std::string date_str = core::format_utc_date(date);
 
     std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
 
@@ -387,7 +428,7 @@ Result<bool> LiveDataLoader::has_live_results(const std::string& strategy_id,
                         actual_portfolio_id +
                         "' "
                         "AND DATE(date) = '" +
-                        date_ss.str() + "'";
+                        date_str + "'";
 
     auto result = db_->execute_query(query);
     if (result.is_error()) {
@@ -402,10 +443,14 @@ Result<bool> LiveDataLoader::has_live_results(const std::string& strategy_id,
         return Result<bool>(false);
     }
 
-    auto array = std::static_pointer_cast<arrow::Int64Array>(table->column(0)->chunk(0));
-    int64_t count = array->Value(0);
-
-    return Result<bool>(count > 0);
+    // Ultrareview follow-up: Phase 5 retrofit covered DoubleArray but missed
+    // Int64Array sites. safe_get_int64 dispatches on actual type.
+    auto cnt_r = DataConversionUtils::safe_get_int64(table->column(0), 0, "count");
+    if (cnt_r.is_error()) {
+        return make_error<bool>(cnt_r.error()->code(), cnt_r.error()->what(),
+                                "LiveDataLoader");
+    }
+    return Result<bool>(cnt_r.value() > 0);
 }
 
 Result<int> LiveDataLoader::get_live_results_count(const std::string& strategy_id,
@@ -439,10 +484,13 @@ Result<int> LiveDataLoader::get_live_results_count(const std::string& strategy_i
         return Result<int>(0);
     }
 
-    auto array = std::static_pointer_cast<arrow::Int64Array>(table->column(0)->chunk(0));
-    int count = static_cast<int>(array->Value(0));
-
-    return Result<int>(count);
+    // Ultrareview follow-up: safe_get_int64 covers utf8-stored count.
+    auto cnt_r = DataConversionUtils::safe_get_int64(table->column(0), 0, "count");
+    if (cnt_r.is_error()) {
+        return make_error<int>(cnt_r.error()->code(), cnt_r.error()->what(),
+                               "LiveDataLoader");
+    }
+    return Result<int>(static_cast<int>(cnt_r.value()));
 }
 
 // ========== Historical Series Methods ==========
@@ -455,9 +503,8 @@ Result<std::vector<double>> LiveDataLoader::load_daily_returns_history(
                                                validation.error()->what(), "LiveDataLoader");
     }
 
-    auto time_t = std::chrono::system_clock::to_time_t(as_of_date);
-    std::stringstream date_ss;
-    date_ss << std::put_time(std::gmtime(&time_t), "%Y-%m-%d");
+    // Phase 5 §5c: UTC date-string contract -- see format_utc_date docs.
+    const std::string date_str = core::format_utc_date(as_of_date);
 
     std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
 
@@ -473,7 +520,7 @@ Result<std::vector<double>> LiveDataLoader::load_daily_returns_history(
         actual_portfolio_id +
         "' "
         "AND DATE(date) <= '" +
-        date_ss.str() +
+        date_str +
         "' "
         "ORDER BY date ASC";
 
@@ -521,9 +568,8 @@ Result<std::vector<double>> LiveDataLoader::load_daily_pnl_history(const std::st
                                                validation.error()->what(), "LiveDataLoader");
     }
 
-    auto time_t = std::chrono::system_clock::to_time_t(as_of_date);
-    std::stringstream date_ss;
-    date_ss << std::put_time(std::gmtime(&time_t), "%Y-%m-%d");
+    // Phase 5 §5c: UTC date-string contract -- see format_utc_date docs.
+    const std::string date_str = core::format_utc_date(as_of_date);
 
     std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
 
@@ -539,7 +585,7 @@ Result<std::vector<double>> LiveDataLoader::load_daily_pnl_history(const std::st
         actual_portfolio_id +
         "' "
         "AND DATE(date) <= '" +
-        date_ss.str() +
+        date_str +
         "' "
         "ORDER BY date ASC";
 
@@ -586,9 +632,8 @@ Result<std::vector<double>> LiveDataLoader::load_equity_curve_history(
                                                validation.error()->what(), "LiveDataLoader");
     }
 
-    auto time_t = std::chrono::system_clock::to_time_t(as_of_date);
-    std::stringstream date_ss;
-    date_ss << std::put_time(std::gmtime(&time_t), "%Y-%m-%d");
+    // Phase 5 §5c: UTC date-string contract -- see format_utc_date docs.
+    const std::string date_str = core::format_utc_date(as_of_date);
 
     std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
 
@@ -604,7 +649,7 @@ Result<std::vector<double>> LiveDataLoader::load_equity_curve_history(
         actual_portfolio_id +
         "' "
         "AND DATE(timestamp) <= '" +
-        date_ss.str() +
+        date_str +
         "' "
         "ORDER BY timestamp ASC";
 
@@ -651,9 +696,8 @@ Result<int> LiveDataLoader::load_total_trades_count(const std::string& strategy_
                                "LiveDataLoader");
     }
 
-    auto time_t = std::chrono::system_clock::to_time_t(as_of_date);
-    std::stringstream date_ss;
-    date_ss << std::put_time(std::gmtime(&time_t), "%Y-%m-%d");
+    // Phase 5 §5c: UTC date-string contract -- see format_utc_date docs.
+    const std::string date_str = core::format_utc_date(as_of_date);
 
     std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
 
@@ -669,7 +713,7 @@ Result<int> LiveDataLoader::load_total_trades_count(const std::string& strategy_
         actual_portfolio_id +
         "' "
         "AND DATE(execution_time) <= '" +
-        date_ss.str() + "'";
+        date_str + "'";
 
     DEBUG("Loading total trades count: " + query);
 
@@ -686,10 +730,17 @@ Result<int> LiveDataLoader::load_total_trades_count(const std::string& strategy_
         return Result<int>(0);
     }
 
-    auto array = std::static_pointer_cast<arrow::Int64Array>(table->column(0)->chunk(0));
-    int count = array->IsNull(0) ? 0 : static_cast<int>(array->Value(0));
-
-    return Result<int>(count);
+    // Ultrareview follow-up: safe_get_int64 with null-as-zero fallback
+    // (preserves the legacy "no trades = 0 count" semantic).
+    auto cnt_r = DataConversionUtils::safe_get_int64(table->column(0), 0, "trades_count");
+    if (cnt_r.is_error()) {
+        if (cnt_r.error()->code() == ErrorCode::INVALID_DATA) {
+            return Result<int>(0);  // null cell -> 0 trades
+        }
+        return make_error<int>(cnt_r.error()->code(), cnt_r.error()->what(),
+                               "LiveDataLoader");
+    }
+    return Result<int>(static_cast<int>(cnt_r.value()));
 }
 
 // ========== Position Methods ==========
@@ -703,9 +754,9 @@ Result<std::vector<Position>> LiveDataLoader::load_positions(const std::string& 
                                                  validation.error()->what(), "LiveDataLoader");
     }
 
-    auto time_t = std::chrono::system_clock::to_time_t(date);
-    std::stringstream date_ss;
-    date_ss << std::put_time(std::gmtime(&time_t), "%Y-%m-%d");
+    // Phase 5 §5c: UTC date-string contract -- format_utc_date is the only
+    // approved primitive for date keys; std::gmtime is not thread-safe.
+    const std::string date_str = core::format_utc_date(date);
 
     std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
 
@@ -722,7 +773,7 @@ Result<std::vector<Position>> LiveDataLoader::load_positions(const std::string& 
         actual_portfolio_id +
         "' "
         "AND DATE(last_update) = '" +
-        date_ss.str() +
+        date_str +
         "' "
         "ORDER BY symbol";
 
@@ -739,34 +790,42 @@ Result<std::vector<Position>> LiveDataLoader::load_positions(const std::string& 
     std::vector<Position> positions;
 
     if (!table || table->num_rows() == 0) {
-        INFO("No positions found for " + date_ss.str());
+        INFO("No positions found for " + date_str);
         return Result<std::vector<Position>>(positions);
     }
 
-    // Extract positions from result
+    // Cache column references once (Phase 5 §1.17a -- safe_get_double walks
+    // chunks internally, so no chunk(0) assumption).
+    auto symbol_col     = table->column(0);
+    auto qty_col        = table->column(1);
+    auto price_col      = table->column(2);
+    auto realized_col   = table->column(3);
+    auto unrealized_col = table->column(4);
+
     for (int64_t i = 0; i < table->num_rows(); ++i) {
         Position pos;
 
-        auto symbol_array =
-            std::static_pointer_cast<arrow::StringArray>(table->column(0)->chunk(0));
-        auto qty_array = std::static_pointer_cast<arrow::DoubleArray>(table->column(1)->chunk(0));
-        auto price_array = std::static_pointer_cast<arrow::DoubleArray>(table->column(2)->chunk(0));
-        auto realized_array =
-            std::static_pointer_cast<arrow::DoubleArray>(table->column(3)->chunk(0));
-        auto unrealized_array =
-            std::static_pointer_cast<arrow::DoubleArray>(table->column(4)->chunk(0));
-
-        pos.symbol = symbol_array->GetString(i);
-        pos.quantity = Decimal(qty_array->Value(i));
-        pos.average_price = Decimal(price_array->Value(i));
-        pos.realized_pnl = Decimal(realized_array->IsNull(i) ? 0.0 : realized_array->Value(i));
-        pos.unrealized_pnl =
-            Decimal(unrealized_array->IsNull(i) ? 0.0 : unrealized_array->Value(i));
+        auto sym_r = DataConversionUtils::safe_get_string(symbol_col, i, "symbol");
+        auto qty_r = DataConversionUtils::safe_get_double(qty_col, i, "quantity");
+        auto px_r  = DataConversionUtils::safe_get_double(price_col, i, "average_price");
+        auto rp_r  = read_double_or_zero_on_null(realized_col, i, "daily_realized_pnl");
+        auto up_r  = read_double_or_zero_on_null(unrealized_col, i, "daily_unrealized_pnl");
+        if (sym_r.is_error() || qty_r.is_error() || px_r.is_error() ||
+            rp_r.is_error() || up_r.is_error()) {
+            WARN("load_positions: skipping row " + std::to_string(i) +
+                 " due to column read error");
+            continue;
+        }
+        pos.symbol = sym_r.value();
+        pos.quantity = Decimal(qty_r.value());
+        pos.average_price = Decimal(px_r.value());
+        pos.realized_pnl = Decimal(rp_r.value());
+        pos.unrealized_pnl = Decimal(up_r.value());
 
         positions.push_back(pos);
     }
 
-    INFO("Loaded " + std::to_string(positions.size()) + " positions for " + date_ss.str());
+    INFO("Loaded " + std::to_string(positions.size()) + " positions for " + date_str);
     return Result<std::vector<Position>>(positions);
 }
 
@@ -787,9 +846,9 @@ Result<std::unordered_map<std::string, double>> LiveDataLoader::load_commissions
             ErrorCode::DATABASE_ERROR, validation.error()->what(), "LiveDataLoader");
     }
 
-    auto time_t = std::chrono::system_clock::to_time_t(date);
-    std::stringstream date_ss;
-    date_ss << std::put_time(std::gmtime(&time_t), "%Y-%m-%d");
+    // Phase 5 §5c: UTC date-string contract -- format_utc_date is the only
+    // approved primitive for date keys; std::gmtime is not thread-safe.
+    const std::string date_str = core::format_utc_date(date);
 
     std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
 
@@ -799,7 +858,7 @@ Result<std::unordered_map<std::string, double>> LiveDataLoader::load_commissions
         schema_ +
         ".executions "
         "WHERE portfolio_id = '" +
-        actual_portfolio_id + "' AND DATE(execution_time) = '" + date_ss.str() +
+        actual_portfolio_id + "' AND DATE(execution_time) = '" + date_str +
         "' "
         "GROUP BY symbol";
 
@@ -816,19 +875,20 @@ Result<std::unordered_map<std::string, double>> LiveDataLoader::load_commissions
     auto table = result.value();
 
     if (!table || table->num_rows() == 0) {
-        INFO("No commissions found for " + date_ss.str());
+        INFO("No commissions found for " + date_str);
         return Result<std::unordered_map<std::string, double>>(commissions);
     }
 
+    auto symbol_col = table->column(0);
+    auto commission_col = table->column(1);
     for (int64_t i = 0; i < table->num_rows(); ++i) {
-        auto symbol_array =
-            std::static_pointer_cast<arrow::StringArray>(table->column(0)->chunk(0));
-        auto commission_array =
-            std::static_pointer_cast<arrow::DoubleArray>(table->column(1)->chunk(0));
-
-        std::string symbol = symbol_array->GetString(i);
-        double commission = commission_array->Value(i);
-        commissions[symbol] = commission;
+        auto sym_r = DataConversionUtils::safe_get_string(symbol_col, i, "symbol");
+        auto com_r = DataConversionUtils::safe_get_double(commission_col, i, "total_commission");
+        if (sym_r.is_error() || com_r.is_error()) {
+            WARN("load_commissions_by_symbol: skipping row " + std::to_string(i));
+            continue;
+        }
+        commissions[sym_r.value()] = com_r.value();
     }
 
     INFO("Loaded commissions for " + std::to_string(commissions.size()) + " symbols");
@@ -844,9 +904,9 @@ Result<double> LiveDataLoader::load_daily_transaction_costs(const std::string& s
                                   "LiveDataLoader");
     }
 
-    auto time_t = std::chrono::system_clock::to_time_t(date);
-    std::stringstream date_ss;
-    date_ss << std::put_time(std::gmtime(&time_t), "%Y-%m-%d");
+    // Phase 5 §5c: UTC date-string contract -- format_utc_date is the only
+    // approved primitive for date keys; std::gmtime is not thread-safe.
+    const std::string date_str = core::format_utc_date(date);
 
     std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
 
@@ -862,7 +922,7 @@ Result<double> LiveDataLoader::load_daily_transaction_costs(const std::string& s
         actual_portfolio_id +
         "' "
         "AND DATE(date) = '" +
-        date_ss.str() + "'";
+        date_str + "'";
 
     DEBUG("Loading daily transaction costs: " + query);
 
@@ -876,14 +936,16 @@ Result<double> LiveDataLoader::load_daily_transaction_costs(const std::string& s
 
     auto table = result.value();
     if (!table || table->num_rows() == 0) {
-        INFO("No transaction cost data found for " + date_ss.str());
+        INFO("No transaction cost data found for " + date_str);
         return Result<double>(0.0);
     }
 
-    auto array = std::static_pointer_cast<arrow::DoubleArray>(table->column(0)->chunk(0));
-    double transaction_costs = array->IsNull(0) ? 0.0 : array->Value(0);
-
-    return Result<double>(transaction_costs);
+    auto tc_r = read_double_or_zero_on_null(table->column(0), 0, "transaction_costs");
+    if (tc_r.is_error()) {
+        return make_error<double>(tc_r.error()->code(), tc_r.error()->what(),
+                                  "LiveDataLoader");
+    }
+    return Result<double>(tc_r.value());
 }
 
 // ========== Margin and Risk Methods ==========
@@ -897,9 +959,9 @@ Result<MarginMetrics> LiveDataLoader::load_margin_metrics(const std::string& str
                                          "LiveDataLoader");
     }
 
-    auto time_t = std::chrono::system_clock::to_time_t(date);
-    std::stringstream date_ss;
-    date_ss << std::put_time(std::gmtime(&time_t), "%Y-%m-%d");
+    // Phase 5 §5c: UTC date-string contract -- format_utc_date is the only
+    // approved primitive for date keys; std::gmtime is not thread-safe.
+    const std::string date_str = core::format_utc_date(date);
 
     std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
 
@@ -916,7 +978,7 @@ Result<MarginMetrics> LiveDataLoader::load_margin_metrics(const std::string& str
         actual_portfolio_id +
         "' "
         "AND DATE(date) = '" +
-        date_ss.str() + "'";
+        date_str + "'";
 
     DEBUG("Loading margin metrics: " + query);
 
@@ -933,21 +995,24 @@ Result<MarginMetrics> LiveDataLoader::load_margin_metrics(const std::string& str
 
     if (!table || table->num_rows() == 0) {
         metrics.valid = false;
-        INFO("No margin metrics found for " + date_ss.str());
+        INFO("No margin metrics found for " + date_str);
         return Result<MarginMetrics>(metrics);
     }
 
-    auto leverage_array = std::static_pointer_cast<arrow::DoubleArray>(table->column(0)->chunk(0));
-    auto equity_ratio_array =
-        std::static_pointer_cast<arrow::DoubleArray>(table->column(1)->chunk(0));
-    auto notional_array = std::static_pointer_cast<arrow::DoubleArray>(table->column(2)->chunk(0));
-    auto margin_array = std::static_pointer_cast<arrow::DoubleArray>(table->column(3)->chunk(0));
-
-    metrics.gross_leverage = leverage_array->IsNull(0) ? 0.0 : leverage_array->Value(0);
-    metrics.equity_to_margin_ratio =
-        equity_ratio_array->IsNull(0) ? 0.0 : equity_ratio_array->Value(0);
-    metrics.gross_notional = notional_array->IsNull(0) ? 0.0 : notional_array->Value(0);
-    metrics.margin_posted = margin_array->IsNull(0) ? 0.0 : margin_array->Value(0);
+    auto lev_r  = read_double_or_zero_on_null(table->column(0), 0, "gross_leverage");
+    auto er_r   = read_double_or_zero_on_null(table->column(1), 0, "equity_to_margin_ratio");
+    auto not_r  = read_double_or_zero_on_null(table->column(2), 0, "gross_notional");
+    auto mar_r  = read_double_or_zero_on_null(table->column(3), 0, "margin_posted");
+    if (lev_r.is_error() || er_r.is_error() || not_r.is_error() || mar_r.is_error()) {
+        return make_error<MarginMetrics>(
+            ErrorCode::CONVERSION_ERROR,
+            "load_margin_metrics: column type mismatch",
+            "LiveDataLoader");
+    }
+    metrics.gross_leverage = lev_r.value();
+    metrics.equity_to_margin_ratio = er_r.value();
+    metrics.gross_notional = not_r.value();
+    metrics.margin_posted = mar_r.value();
 
     // Calculate margin cushion
     if (metrics.margin_posted > 0) {
@@ -972,9 +1037,9 @@ Result<std::unordered_map<std::string, double>> LiveDataLoader::load_daily_metri
             ErrorCode::DATABASE_ERROR, validation.error()->what(), "LiveDataLoader");
     }
 
-    auto time_t = std::chrono::system_clock::to_time_t(date);
-    std::stringstream date_ss;
-    date_ss << std::put_time(std::gmtime(&time_t), "%Y-%m-%d");
+    // Phase 5 §5c: UTC date-string contract -- format_utc_date is the only
+    // approved primitive for date keys; std::gmtime is not thread-safe.
+    const std::string date_str = core::format_utc_date(date);
 
     std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
 
@@ -991,7 +1056,7 @@ Result<std::unordered_map<std::string, double>> LiveDataLoader::load_daily_metri
         actual_portfolio_id +
         "' "
         "AND DATE(date) = '" +
-        date_ss.str() + "'";
+        date_str + "'";
 
     DEBUG("Loading daily metrics for email: " + query);
 
@@ -1007,25 +1072,26 @@ Result<std::unordered_map<std::string, double>> LiveDataLoader::load_daily_metri
     auto table = result.value();
 
     if (!table || table->num_rows() == 0) {
-        INFO("No daily metrics found for " + date_ss.str());
+        INFO("No daily metrics found for " + date_str);
         return Result<std::unordered_map<std::string, double>>(metrics);
     }
 
-    auto daily_return = std::static_pointer_cast<arrow::DoubleArray>(table->column(0)->chunk(0));
-    auto daily_unrealized =
-        std::static_pointer_cast<arrow::DoubleArray>(table->column(1)->chunk(0));
-    auto daily_realized = std::static_pointer_cast<arrow::DoubleArray>(table->column(2)->chunk(0));
-    auto daily_total = std::static_pointer_cast<arrow::DoubleArray>(table->column(3)->chunk(0));
-    auto daily_transaction_costs =
-        std::static_pointer_cast<arrow::DoubleArray>(table->column(4)->chunk(0));
-
-    metrics["Daily Return"] = daily_return->IsNull(0) ? 0.0 : daily_return->Value(0);
-    metrics["Daily Unrealized PnL"] =
-        daily_unrealized->IsNull(0) ? 0.0 : daily_unrealized->Value(0);
-    metrics["Daily Realized PnL"] = daily_realized->IsNull(0) ? 0.0 : daily_realized->Value(0);
-    metrics["Daily Total PnL"] = daily_total->IsNull(0) ? 0.0 : daily_total->Value(0);
-    metrics["Daily Transaction Costs"] =
-        daily_transaction_costs->IsNull(0) ? 0.0 : daily_transaction_costs->Value(0);
+    auto dr_r  = read_double_or_zero_on_null(table->column(0), 0, "daily_return");
+    auto du_r  = read_double_or_zero_on_null(table->column(1), 0, "daily_unrealized_pnl");
+    auto drl_r = read_double_or_zero_on_null(table->column(2), 0, "daily_realized_pnl");
+    auto dt_r  = read_double_or_zero_on_null(table->column(3), 0, "daily_pnl");
+    auto dtc_r = read_double_or_zero_on_null(table->column(4), 0, "daily_transaction_costs");
+    if (dr_r.is_error() || du_r.is_error() || drl_r.is_error() ||
+        dt_r.is_error() || dtc_r.is_error()) {
+        return make_error<std::unordered_map<std::string, double>>(
+            ErrorCode::CONVERSION_ERROR,
+            "load_daily_metrics_for_email: column type mismatch", "LiveDataLoader");
+    }
+    metrics["Daily Return"] = dr_r.value();
+    metrics["Daily Unrealized PnL"] = du_r.value();
+    metrics["Daily Realized PnL"] = drl_r.value();
+    metrics["Daily Total PnL"] = dt_r.value();
+    metrics["Daily Transaction Costs"] = dtc_r.value();
 
     INFO("Loaded email metrics: Return=" + std::to_string(metrics["Daily Return"]) + "%");
 

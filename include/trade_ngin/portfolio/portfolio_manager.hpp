@@ -166,6 +166,19 @@ public:
     void clear_execution_history();
 
     /**
+     * @brief Append a synthetic ExecutionReport to a strategy's history.
+     *
+     * Used by carry-cost accrual (e.g., overnight borrow fees) to keep the
+     * per-execution audit trail in sync with the daily equity-curve cost
+     * roll-up. The exec is appended as-is; callers are responsible for
+     * setting symbol, filled_quantity (typically 0 for synthetic carry),
+     * timestamps, and cost fields. Idempotent at the per-call level; not
+     * deduped across calls.
+     */
+    void append_synthetic_execution(const std::string& strategy_id,
+                                    const ExecutionReport& exec);
+
+    /**
      * @brief Clear all executions including strategy-level (used during warmup)
      */
     void clear_all_executions();
@@ -253,6 +266,10 @@ private:
     std::unordered_map<std::string, StrategyInfo> strategies_;
     std::vector<ExecutionReport> recent_executions_;  // Portfolio-level (aggregated)
     std::unordered_map<std::string, std::vector<ExecutionReport>> strategy_executions_;  // Per-strategy executions
+    // Per-strategy filled position (symbol -> net qty) accumulated from the
+    // executions this manager generates; baseline for sizing the next order as
+    // (target - filled). Strategy-agnostic -- does not read strategy positions_.
+    std::unordered_map<std::string, std::unordered_map<std::string, double>> filled_positions_;
     
     // Track previous day close prices for PnL Lag Model (prevents lookahead bias)
     std::unordered_map<std::string, double> previous_day_close_prices_;

@@ -138,27 +138,30 @@ Result<void> MeanReversionStrategy::on_data(const std::vector<Bar>& data) {
             if (std::abs(signal) > 0.01) {
                 double position_size = calculate_position_size(bar.symbol, bar.close.as_double(), inst_data.current_volatility);
                 double new_target = signal * position_size;
+                // Phase 2 short-selling gate (audit §3.2). If the instrument
+                // is an equity that isn't REG_T with short_selling_allowed,
+                // clamp the short to zero -- cash accounts can't short.
+                if (new_target < 0.0 && registry_) {
+                    auto equity = registry_->get_equity_instrument(bar.symbol);
+                    if (equity && !equity->is_short_allowed()) {
+                        WARN("Shorting disallowed for " + bar.symbol +
+                             " (account_mode=CASH or short_selling_allowed=false). "
+                             "Clamping short target " + std::to_string(new_target) + " to 0.");
+                        new_target = 0.0;
+                    }
+                }
                 inst_data.target_position = new_target;
             } else {
                 inst_data.target_position = 0.0;
             }
 
-            // Update position quantity in base class
-            // DO NOT set average_price here -- on_execution() manages cost basis
-            Position pos = positions_[bar.symbol];
-
-            // Defensive guard: reset cost basis on direction flip so on_execution()
-            // treats it as a fresh entry. generate_signal() prevents single-bar flips,
-            // but this protects against future signal logic changes.
-            double old_qty = pos.quantity.as_double();
-            double new_qty = inst_data.target_position;
-            if ((old_qty > 0 && new_qty < 0) || (old_qty < 0 && new_qty > 0)) {
-                pos.average_price = Decimal(0.0);
-            }
-
-            pos.quantity = Quantity(new_qty);
-            pos.last_update = bar.timestamp;
-            positions_[bar.symbol] = pos;
+            // The target position lives in inst_data.target_position and is
+            // surfaced to the portfolio via get_target_positions(). on_data() must
+            // NOT write positions_ -- that map reflects ACTUAL holdings and is
+            // maintained solely by BaseStrategy::on_execution(). Writing the target
+            // here made on_execution() treat the already-moved quantity as the
+            // pre-trade holding and double-apply each fill, collapsing average_price
+            // toward zero and inflating realized_pnl.
 
             DEBUG("Symbol: " + bar.symbol +
                   " | Price: " + std::to_string(bar.close) +
@@ -170,11 +173,20 @@ Result<void> MeanReversionStrategy::on_data(const std::vector<Bar>& data) {
 
         // Update unrealized PnL for all positions based on current prices
         // (BaseStrategy::on_data does this but we override it, so compute here)
+        //
+        // average_price is set by on_execution() AFTER this on_data() completes,
+        // so a fresh entry has quantity != 0 and average_price == 0. Computing
+        // (bar.close - 0) * quantity would inflate unrealized_pnl to the full
+        // notional. Skip until cost basis is established.
         for (const auto& bar : data) {
             auto pos_it = positions_.find(bar.symbol);
             if (pos_it != positions_.end()) {
-                pos_it->second.unrealized_pnl =
-                    (bar.close - pos_it->second.average_price) * pos_it->second.quantity;
+                if (pos_it->second.average_price > Decimal(0.0)) {
+                    pos_it->second.unrealized_pnl =
+                        (bar.close - pos_it->second.average_price) * pos_it->second.quantity;
+                } else {
+                    pos_it->second.unrealized_pnl = Decimal(0.0);
+                }
             }
         }
 
@@ -186,6 +198,32 @@ Result<void> MeanReversionStrategy::on_data(const std::vector<Bar>& data) {
                                 "Failed to process market data: " + std::string(e.what()),
                                 "MeanReversionStrategy");
     }
+}
+
+std::unordered_map<std::string, Position> MeanReversionStrategy::get_target_positions() const {
+    std::unordered_map<std::string, Position> target_positions;
+
+    // Build target positions from instrument_data_.target_position. positions_ is
+    // deliberately NOT read here -- it holds actual fill-maintained holdings, and
+    // on_execution() is the sole writer of quantity / average_price / realized_pnl.
+    for (const auto& [symbol, inst_data] : instrument_data_) {
+        Position pos;
+        pos.symbol = symbol;
+        pos.quantity = Quantity(inst_data.target_position);
+        pos.average_price = Decimal(inst_data.current_price);
+
+        // Carry forward fill-derived PnL from the actual-holdings record.
+        auto pos_it = positions_.find(symbol);
+        if (pos_it != positions_.end()) {
+            pos.realized_pnl = pos_it->second.realized_pnl;
+            pos.unrealized_pnl = pos_it->second.unrealized_pnl;
+        }
+
+        pos.last_update = inst_data.last_update;
+        target_positions[symbol] = pos;
+    }
+
+    return target_positions;
 }
 
 void MeanReversionStrategy::trim_history(MeanReversionInstrumentData& data) const {
@@ -266,6 +304,17 @@ double MeanReversionStrategy::calculate_position_size(const std::string& symbol,
         }
     }
 
+    // Phase 6 §1.18 contract: this rounded value is what the strategy
+    // returns. Downstream, PortfolioManager re-runs an iterative integer
+    // reconciliation pass (`portfolio_manager.cpp:244-348`) and the
+    // TransactionCostManager bills costs on the FINAL post-reconciliation
+    // `trade_size` (`portfolio_manager.cpp:501`), so there is no
+    // pre-round / post-round cost mismatch at execution time. The audit's
+    // §1.18 concern was that the strategy's INTERNAL cost estimate could
+    // diverge from the actual order; for this strategy the internal
+    // estimate is intentionally absent — sizing is volatility-targeted,
+    // not cost-aware. If a future cost-aware sizing pass is added, it must
+    // run AFTER this rounding step.
     if (fractional_ok) {
         num_shares = std::round(num_shares * 1000000.0) / 1000000.0;
     } else {
@@ -298,7 +347,10 @@ double MeanReversionStrategy::calculate_volatility(const std::deque<double>& pri
         }
     }
 
-    if (returns.empty()) {
+    // Need at least 2 returns for sample std dev (n-1 denominator).
+    // With 1 return we'd divide by 0 and produce NaN, which then poisons
+    // vol-scaled position sizing downstream.
+    if (returns.size() < 2) {
         return 0.01;
     }
 
@@ -311,8 +363,11 @@ double MeanReversionStrategy::calculate_volatility(const std::deque<double>& pri
     // Sample std dev (n-1) for risk/volatility estimation (position sizing)
     double std_dev = std::sqrt(sum_squared_diff / (returns.size() - 1));
 
-    // Annualize (assuming daily data, 252 trading days)
-    return std_dev * std::sqrt(252.0);
+    double annualized = std_dev * std::sqrt(252.0);
+    if (!std::isfinite(annualized)) {
+        return 0.01;
+    }
+    return annualized;
 }
 
 double MeanReversionStrategy::generate_signal(const std::string& symbol, const MeanReversionInstrumentData& data) const {
