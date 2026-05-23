@@ -72,15 +72,46 @@ Result<std::vector<MonthlyMacroRecord>> MacroCSVLoader::load(const std::string& 
             if (!std::getline(ss, token, ',')) throw std::runtime_error("missing permit_growth");
             rec.permit_growth = std::stod(token);
 
-            // strong_risk_on
-            if (!std::getline(ss, token, ',') && !std::getline(ss, token)) {
+            // strong_risk_on — last REQUIRED field. The remaining columns
+            // (bpg_sfh, bpgv_sfh, bpgv_garch, ...) are optional; pre-T1.1
+            // CSVs end at this point and parse cleanly with defaults.
+            if (!std::getline(ss, token, ',')) {
                 throw std::runtime_error("missing strong_risk_on");
             }
-            // Handle potential trailing whitespace/newline
+            // Strip CR/LF/space — handles both LF and CRLF line endings,
+            // and the case where strong_risk_on is the final column.
             while (!token.empty() && (token.back() == '\r' || token.back() == '\n' || token.back() == ' ')) {
                 token.pop_back();
             }
             rec.strong_risk_on = (std::stoi(token) != 0);
+
+            // ---- Optional T1.1+T1.3 columns (appended after strong_risk_on) ----
+            // If absent (legacy CSV), each field stays at its struct default.
+            // If present, parse in order: bpg_sfh, bpgv_sfh, bpgv_garch,
+            // bpgv_garch_percentile, garch_converged, garch_alpha, garch_beta.
+            auto try_get_double = [&ss](double& out) -> bool {
+                std::string t;
+                if (!std::getline(ss, t, ',')) return false;
+                while (!t.empty() && (t.back() == '\r' || t.back() == '\n' || t.back() == ' ')) t.pop_back();
+                if (t.empty()) return false;
+                try { out = std::stod(t); return true; }
+                catch (...) { return false; }
+            };
+            auto try_get_bool = [&ss](bool& out) -> bool {
+                std::string t;
+                if (!std::getline(ss, t, ',')) return false;
+                while (!t.empty() && (t.back() == '\r' || t.back() == '\n' || t.back() == ' ')) t.pop_back();
+                if (t.empty()) return false;
+                try { out = (std::stoi(t) != 0); return true; }
+                catch (...) { return false; }
+            };
+            try_get_double(rec.bpg_sfh);
+            try_get_double(rec.bpgv_sfh);
+            try_get_double(rec.bpgv_garch);
+            try_get_double(rec.bpgv_garch_percentile);
+            try_get_bool(rec.garch_converged);
+            try_get_double(rec.garch_alpha);
+            try_get_double(rec.garch_beta);
 
             records.push_back(rec);
 

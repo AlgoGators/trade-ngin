@@ -2,3 +2,8 @@ numpy>=1.24
 pandas>=2.0
 scipy>=1.11
 psycopg2-binary>=2.9
+# arch >= 8.0 — GARCH(1,1) QMLE for the σ^BPG signal computed in
+# scripts/generate_bpgv_macro.py. See reports/a1_data_sufficiency_for_garch.md
+# for the data-sufficiency rationale (Hwang & Valls Pereira 2006 ≥500 obs;
+# FRED PERMIT1 gives ~796 monthly obs from 1960-01, well above threshold).
+arch>=7.0

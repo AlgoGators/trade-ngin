@@ -291,6 +291,46 @@ TEST_F(BreakoutConfigTest, BinaryLegacyMode) {
     EXPECT_EQ(cfg.sma_window, 200);
 }
 
+// ===========================================================================
+// R4 — MarketStressConfig
+// ===========================================================================
+
+class MarketStressConfigTest : public TestBase {};
+
+TEST_F(MarketStressConfigTest, DefaultsAreConservativeAndDisabled) {
+    MarketStressConfig cfg;
+    EXPECT_FALSE(cfg.enabled);
+    EXPECT_EQ(cfg.stress_symbol, "SPY");
+    EXPECT_EQ(cfg.drawdown_lookback_days, 21);
+    EXPECT_DOUBLE_EQ(cfg.drawdown_trigger, -0.08);
+    EXPECT_EQ(cfg.sma_window, 200);
+    EXPECT_DOUBLE_EQ(cfg.risk_on_scale, 0.50);
+    EXPECT_EQ(cfg.min_history_days, 220);
+}
+
+TEST_F(MarketStressConfigTest, FullParse) {
+    nlohmann::json j = {
+        {"enabled", true},
+        {"stress_symbol", "QQQ"},
+        {"drawdown_lookback_days", 42},
+        {"drawdown_trigger", -0.12},
+        {"sma_window", 150},
+        {"risk_on_scale", 0.35},
+        {"min_history_days", 180}
+    };
+
+    MarketStressConfig cfg;
+    cfg.from_json(j);
+
+    EXPECT_TRUE(cfg.enabled);
+    EXPECT_EQ(cfg.stress_symbol, "QQQ");
+    EXPECT_EQ(cfg.drawdown_lookback_days, 42);
+    EXPECT_DOUBLE_EQ(cfg.drawdown_trigger, -0.12);
+    EXPECT_EQ(cfg.sma_window, 150);
+    EXPECT_DOUBLE_EQ(cfg.risk_on_scale, 0.35);
+    EXPECT_EQ(cfg.min_history_days, 180);
+}
+
 // Test the Wilder ATR helper on a hand-computed reference series. Expose via
 // a local reimplementation matching the production impl so the test doesn't
 // depend on a friend declaration — this documents the expected math.
@@ -398,6 +438,19 @@ TEST_F(BPGVTier1ValidationTest, DefensiveWeightsNotSummingToOneFails) {
     ASSERT_TRUE(result.is_error());
     std::string err = result.error()->what();
     EXPECT_NE(err.find("sum to 1.0"), std::string::npos);
+}
+
+TEST_F(BPGVTier1ValidationTest, InvalidMarketStressScaleFails) {
+    auto bpgv_cfg = make_valid_bpgv_config();
+    bpgv_cfg.market_stress.enabled = true;
+    bpgv_cfg.market_stress.risk_on_scale = 1.50;
+    auto strat_cfg = make_valid_strategy_config();
+    auto strategy = std::make_unique<BPGVRotationStrategy>(
+        "TEST_BPGV_BAD_MARKET_STRESS", strat_cfg, bpgv_cfg, db_);
+    auto result = strategy->initialize();
+    ASSERT_TRUE(result.is_error());
+    std::string err = result.error()->what();
+    EXPECT_NE(err.find("market_stress.risk_on_scale"), std::string::npos);
 }
 
 TEST_F(BPGVTier1ValidationTest, PromptBasketPassesValidation) {

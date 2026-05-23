@@ -245,6 +245,9 @@ int main() {
         if (bpgv_cfg.contains("defensive_sleeve")) {
             bpgv_config.defensive_sleeve.from_json(bpgv_cfg.at("defensive_sleeve"));
         }
+        if (bpgv_cfg.contains("market_stress")) {
+            bpgv_config.market_stress.from_json(bpgv_cfg.at("market_stress"));
+        }
 
         StrategyConfig strategy_config;
         strategy_config.asset_classes = {AssetClass::EQUITIES};

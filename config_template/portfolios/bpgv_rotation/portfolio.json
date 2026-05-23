@@ -97,15 +97,34 @@
           "index_gate_floor": 0.25,
           "fail_open_on_short_history": true
         },
-        "_comment_vol_target": "A1 deep-analysis follow-on (May 2026). Portfolio-level realized-vol scalar applied after normalize_weights; sum(weights) \u2264 1.0 by design, residual stays as cash. Frictionless Python replay (tools/analysis/a1_candidate_screen.py::c3_vol_target) at 10% target produced Sharpe 0.918 (vs A1 0.815), fit 0.877 / hold 0.959, 2022 cal return \u221219.9% vs A1 \u221226.8%, max DD \u221224.3% vs A1 \u221232.5%. Moreira-Muir 2017, Harvey et al. 2018.",
+        "_comment_market_stress": "R4 broad-market stress throttle (May 2026). The BPGV paper signal predicts volatility/regime pressure, not fast directional crashes. Latest R3a drawdown autopsy showed 2020 max DD came from carrying high risk-on exposure after SPY had already broken. This daily overlay is intentionally non-optimized: if SPY is down at least 8% over 21 trading days and below its 200-day SMA, halve only the risk-on sleeve and leave the residual as cash. The monthly BPGV allocation is preserved as the base and the overlay is reversible/idempotent.",
+        "market_stress": {
+          "enabled": true,
+          "stress_symbol": "SPY",
+          "drawdown_lookback_days": 21,
+          "drawdown_trigger": -0.08,
+          "sma_window": 200,
+          "risk_on_scale": 0.50,
+          "min_history_days": 220
+        },
+        "_comment_vol_target": "A1 deep-analysis follow-on (May 2026). Portfolio-level realized-vol scalar applied after normalize_weights; sum(weights) \u2264 1.0 by design, residual stays as cash. Static-target mode = Moreira-Muir 2017, Harvey et al. 2018. T1.2 dynamic-target mode (enable_dynamic_target=true) reads bpgv_garch_percentile from the macro CSV (Cortes & LaPoint 2025) and interpolates target between target_annualized_min (high \u03c3^GARCH) and target_annualized_max (low \u03c3^GARCH). Promotion of dynamic mode requires the Python IC validation in reports/a1_garch_signal_ic.csv to pass on the hold half.",
+        "_comment_dynamic_target_promotion": "Option C from reports/a1_garch_ic_verdict.md (2026-05-23). σ^GARCH passed 7/12 hold-half IC cells (best of any signal tested), strongest on TLT 12m (IC -0.69) and GLD 12m (IC -0.80). Paper's vol-prediction claim significant on full sample (IC +0.27 vs forward realized SPY vol). Hold-half SPY direction CIs contain zero (power-limited at n=85 monthly obs) — flagged but promoted on user decision. Backtest run-id pinned in commit message for traceability vs the static-target baseline.",
+        "_comment_r3a_garch_natural_vol": "R3a (May 2026). use_garch_natural_vol=true makes apply_portfolio_vol_target use sigma_natural = bpgv_garch * sqrt(12) * multiplier as the un-scaled sigma input -- decouples sigma estimation from the strategy's own scalar history entirely. Fixes the R1 secondary-feedback bug (reports/a1_r1_r2_review.md sec.2: R1's compute_unscaled_return_stdev was upward-biased when scalars varied across the sigma window, trapping mean scalar at 0.21 and floor binding 43%% of days). Calibration: Python sanity check (May 2026) confirmed multiplier=1.0 gives median sigma_natural_proxy 11.69%% vs A1's empirical 13.08%% (within 11%%), expected mean scalar 0.77, floor binding only 6.7%% of days. Promotion gate: this run must pass HLZ Bonferroni N=30 AND LW vs EW SPY/TLT/GLD AND 2022 >= -32%% AND |fit_sharpe - hold_sharpe| <= 0.10.",
         "vol_target": {
           "enabled": true,
           "target_annualized": 0.10,
           "window_days": 60,
           "scalar_floor": 0.20,
-          "min_history_days": 60
+          "min_history_days": 60,
+          "enable_dynamic_target": true,
+          "target_annualized_min": 0.06,
+          "target_annualized_max": 0.12,
+          "pctile_high": 75.0,
+          "pctile_low": 25.0,
+          "use_garch_natural_vol": true,
+          "garch_natural_vol_multiplier": 1.0
         },
-        "_comment_defensive_sleeve": "A1 deep-analysis follow-on (May 2026). Addresses the 2022 hedge failure documented in reports/a1_drawdown_autopsy.md \u2014 TLT lost \u221219.6% and GLD \u22128.0% during Aug-Oct 2022 while held at \u224845% each (TLT alone was the single largest dollar loser of the entire run, \u2212$38,903). Mechanism: inverse-vol re-allocate within {TLT, GLD}, then if \u03c3_joint > pair_vol_target, scale the pair down and route the slack to BIL.",
+        "_comment_defensive_sleeve": "A1 deep-analysis follow-on (May 2026). Addresses the 2022 hedge failure documented in reports/a1_drawdown_autopsy.md \u2014 TLT lost \u221219.6% and GLD \u22128.0% during Aug-Oct 2022 while held at \u224845% each (TLT alone was the single largest dollar loser of the entire run, \u2212$38,903). Mechanism: inverse-vol re-allocate within {TLT, GLD}, then if \u03c3_joint > pair_vol_target, scale the pair down and route the slack to BIL. R2 (May 2026): pair_vol_target itself is \u03c3^GARCH-percentile-aware \u2014 tightens to pair_vol_target_high_sigma when \u03c3^GARCH percentile \u2265 75 (hold-half IC test passed 4/4 GLD horizons and 3/4 TLT horizons; see reports/a1_garch_signal_ic.csv).",
         "defensive_sleeve": {
           "vol_aware_enabled": true,
           "pair_vol_target_annualized": 0.10,
@@ -113,7 +132,12 @@
           "use_inverse_vol_pair": true,
           "splice_symbol": "BIL",
           "max_splice_fraction": 0.80,
-          "min_history_days": 60
+          "min_history_days": 60,
+          "garch_aware_enabled": true,
+          "pair_vol_target_high_sigma": 0.06,
+          "pair_vol_target_low_sigma": 0.12,
+          "garch_pctile_high": 75.0,
+          "garch_pctile_low": 25.0
         }
       }
     }

@@ -116,6 +116,22 @@ void VolTargetConfig::from_json(const nlohmann::json& j) {
     if (j.contains("scalar_floor")) scalar_floor = j.at("scalar_floor").get<double>();
     if (j.contains("min_history_days"))
         min_history_days = j.at("min_history_days").get<int>();
+    // T1.2 dynamic-target fields
+    if (j.contains("enable_dynamic_target"))
+        enable_dynamic_target = j.at("enable_dynamic_target").get<bool>();
+    if (j.contains("target_annualized_min"))
+        target_annualized_min = j.at("target_annualized_min").get<double>();
+    if (j.contains("target_annualized_max"))
+        target_annualized_max = j.at("target_annualized_max").get<double>();
+    if (j.contains("pctile_high"))
+        pctile_high = j.at("pctile_high").get<double>();
+    if (j.contains("pctile_low"))
+        pctile_low = j.at("pctile_low").get<double>();
+    // R3a σ^GARCH-as-natural-vol fields
+    if (j.contains("use_garch_natural_vol"))
+        use_garch_natural_vol = j.at("use_garch_natural_vol").get<bool>();
+    if (j.contains("garch_natural_vol_multiplier"))
+        garch_natural_vol_multiplier = j.at("garch_natural_vol_multiplier").get<double>();
 }
 
 void DefensiveSleeveConfig::from_json(const nlohmann::json& j) {
@@ -131,6 +147,31 @@ void DefensiveSleeveConfig::from_json(const nlohmann::json& j) {
         splice_symbol = j.at("splice_symbol").get<std::string>();
     if (j.contains("max_splice_fraction"))
         max_splice_fraction = j.at("max_splice_fraction").get<double>();
+    if (j.contains("min_history_days"))
+        min_history_days = j.at("min_history_days").get<int>();
+    // R2 σ^GARCH-aware fields
+    if (j.contains("garch_aware_enabled"))
+        garch_aware_enabled = j.at("garch_aware_enabled").get<bool>();
+    if (j.contains("pair_vol_target_high_sigma"))
+        pair_vol_target_high_sigma = j.at("pair_vol_target_high_sigma").get<double>();
+    if (j.contains("pair_vol_target_low_sigma"))
+        pair_vol_target_low_sigma = j.at("pair_vol_target_low_sigma").get<double>();
+    if (j.contains("garch_pctile_high"))
+        garch_pctile_high = j.at("garch_pctile_high").get<double>();
+    if (j.contains("garch_pctile_low"))
+        garch_pctile_low = j.at("garch_pctile_low").get<double>();
+}
+
+void MarketStressConfig::from_json(const nlohmann::json& j) {
+    if (j.contains("enabled")) enabled = j.at("enabled").get<bool>();
+    if (j.contains("stress_symbol"))
+        stress_symbol = j.at("stress_symbol").get<std::string>();
+    if (j.contains("drawdown_lookback_days"))
+        drawdown_lookback_days = j.at("drawdown_lookback_days").get<int>();
+    if (j.contains("drawdown_trigger"))
+        drawdown_trigger = j.at("drawdown_trigger").get<double>();
+    if (j.contains("sma_window")) sma_window = j.at("sma_window").get<int>();
+    if (j.contains("risk_on_scale")) risk_on_scale = j.at("risk_on_scale").get<double>();
     if (j.contains("min_history_days"))
         min_history_days = j.at("min_history_days").get<int>();
 }
@@ -212,6 +253,25 @@ Result<void> BPGVRotationStrategy::validate_config() const {
             ErrorCode::INVALID_ARGUMENT,
             "crash_override.defensive_weights must sum to 1.0 (got " + std::to_string(sum) + ")",
             "BPGVRotationStrategy");
+    }
+
+    if (bpgv_config_.market_stress.enabled) {
+        const auto& cfg = bpgv_config_.market_stress;
+        if (cfg.drawdown_lookback_days <= 0 || cfg.sma_window <= 1 || cfg.min_history_days <= 1) {
+            return make_error<void>(ErrorCode::INVALID_ARGUMENT,
+                                    "market_stress lookbacks must be positive",
+                                    "BPGVRotationStrategy");
+        }
+        if (cfg.drawdown_trigger >= 0.0) {
+            return make_error<void>(ErrorCode::INVALID_ARGUMENT,
+                                    "market_stress.drawdown_trigger must be negative",
+                                    "BPGVRotationStrategy");
+        }
+        if (cfg.risk_on_scale < 0.0 || cfg.risk_on_scale > 1.0) {
+            return make_error<void>(ErrorCode::INVALID_ARGUMENT,
+                                    "market_stress.risk_on_scale must be in [0, 1]",
+                                    "BPGVRotationStrategy");
+        }
     }
 
     return Result<void>();
@@ -367,6 +427,9 @@ Result<void> BPGVRotationStrategy::on_data(const std::vector<Bar>& data) {
             portfolio_value_ = pv;
         }
         portfolio_value_history_.push_back(portfolio_value_);
+        // R1: track the scalar in effect each day so vol can be computed on
+        // un-scaled returns later. Parallel array to portfolio_value_history_.
+        scalar_history_.push_back(current_scalar_);
         {
             size_t needed = static_cast<size_t>(bpgv_config_.crash_lookback_days + 10);
             if (bpgv_config_.crash_override.trigger.method == "volatility_scaled") {
@@ -386,12 +449,16 @@ Result<void> BPGVRotationStrategy::on_data(const std::vector<Bar>& data) {
             while (portfolio_value_history_.size() > needed) {
                 portfolio_value_history_.pop_front();
             }
+            while (scalar_history_.size() > needed) {
+                scalar_history_.pop_front();
+            }
         }
 
         // 3. Extract date from bars
         auto date = extract_date(data.front().timestamp);
 
         // 4. Crash override management
+        bool crash_override_was_active = crash_override_active_;
         if (crash_override_active_) {
             const auto& ecfg = bpgv_config_.crash_override.exit;
 
@@ -429,11 +496,20 @@ Result<void> BPGVRotationStrategy::on_data(const std::vector<Bar>& data) {
         }
 
         // 5. Monthly rebalance check (only if no crash override)
+        bool did_rebalance = false;
         if (!crash_override_active_ && should_rebalance(date.year, date.month, date.day)) {
             execute_rebalance(date.year, date.month);
+            did_rebalance = true;
         }
 
-        // 6. Update position timestamps (DO NOT set average_price -- on_execution manages cost basis)
+        // 6. Daily broad-market stress overlay. This reapplies from the last
+        // unthrottled rebalance weights, so the haircut is reversible and does
+        // not compound while stress remains active.
+        if (!crash_override_active_ && (!crash_override_was_active || did_rebalance)) {
+            refresh_market_stress_overlay();
+        }
+
+        // 7. Update position timestamps (DO NOT set average_price -- on_execution manages cost basis)
         for (const auto& bar : data) {
             auto pos_it = positions_.find(bar.symbol);
             if (pos_it != positions_.end()) {
@@ -510,6 +586,43 @@ void BPGVRotationStrategy::execute_rebalance(int year, int month) {
              std::to_string(record->year) + "-" + std::to_string(record->month));
     }
 
+    // T1.2: derive the effective portfolio-vol target from the macro record's
+    // σ^GARCH percentile BEFORE the weight pipeline runs. The target is then
+    // applied by apply_portfolio_vol_target at the end. When dynamic mode is
+    // off, or bpgv_garch is missing (legacy CSV / pre-emission warmup), this
+    // falls back to vol_target.target_annualized exactly like before.
+    {
+        const auto& vt = bpgv_config_.vol_target;
+        double eff = vt.target_annualized;
+        if (vt.enable_dynamic_target && record->bpgv_garch > 0.0) {
+            double pct = record->bpgv_garch_percentile;
+            if (pct >= vt.pctile_high) {
+                eff = vt.target_annualized_min;
+            } else if (pct <= vt.pctile_low) {
+                eff = vt.target_annualized_max;
+            } else {
+                double t = (pct - vt.pctile_low) / (vt.pctile_high - vt.pctile_low);
+                eff = vt.target_annualized_max +
+                      t * (vt.target_annualized_min - vt.target_annualized_max);
+            }
+        }
+        current_vol_target_ = eff;
+
+        // R3a: σ^GARCH-derived natural-vol proxy, annualized. apply_portfolio_vol_target
+        // consumes this directly (bypassing compute_daily_return_stdev) when
+        // vol_target.use_garch_natural_vol is true. We refresh it here on every
+        // rebalance regardless of the flag — cheap, and it gives us a tracking
+        // log even when the GARCH path is off. When bpgv_garch is missing or
+        // ≤ 0, current_garch_sigma_natural_ is set to 0.0 → apply_portfolio_vol_target
+        // falls back to the empirical-σ path.
+        if (record->bpgv_garch > 0.0) {
+            current_garch_sigma_natural_ =
+                record->bpgv_garch * std::sqrt(12.0) * vt.garch_natural_vol_multiplier;
+        } else {
+            current_garch_sigma_natural_ = 0.0;
+        }
+    }
+
     // Weight calculation pipeline.
     //
     // Step ordering rationale:
@@ -525,14 +638,18 @@ void BPGVRotationStrategy::execute_rebalance(int year, int month) {
     //   4. normalize — rescale all positive weights to sum to 1.0.
     //   5. portfolio vol target (C3) — daily realized-vol-driven gross-leverage
     //      scalar applied AFTER normalize so the residual (1 - scalar) stays
-    //      uninvested. sum(weights) ≤ 1.0 by design.
+    //      uninvested. sum(weights) ≤ 1.0 by design. The target may have been
+    //      adjusted by σ^GARCH above (T1.2) — apply_portfolio_vol_target reads
+    //      current_vol_target_, which carries that adjustment.
     auto weights = calculate_base_weights(*record);
-    apply_defensive_sleeve_vol_awareness(weights);
+    apply_defensive_sleeve_vol_awareness(weights, *record);
     apply_momentum_tilt(weights);
     apply_homebuilder_tilt(weights, *record);
     apply_breakout_filter(weights);
     normalize_weights(weights);
     apply_portfolio_vol_target(weights);
+    pre_market_stress_weights_ = weights;
+    market_stress_active_ = apply_market_stress_throttle(weights);
 
     current_weights_ = weights;
     update_positions_from_weights();
@@ -916,10 +1033,35 @@ void BPGVRotationStrategy::normalize_weights(
 // ≤ 1.0 by design; the portfolio executor treats the rest as cash.
 
 void BPGVRotationStrategy::apply_defensive_sleeve_vol_awareness(
-    std::unordered_map<std::string, double>& weights) const {
+    std::unordered_map<std::string, double>& weights,
+    const MonthlyMacroRecord& rec) const {
 
     const auto& cfg = bpgv_config_.defensive_sleeve;
     if (!cfg.vol_aware_enabled) return;
+
+    // R2: compute the effective pair_vol_target. When garch_aware_enabled and
+    // the macro record has a valid σ^GARCH percentile (>0), interpolate
+    // between high_sigma (when σ^GARCH is HIGH → tighten the defensive bucket,
+    // route more to BIL splice) and low_sigma (when LOW → let the pair run).
+    // The IC evidence supporting this wiring is in reports/a1_garch_signal_ic.csv:
+    // σ^GARCH passed 4/4 GLD horizons and 3/4 TLT horizons on the hold half,
+    // strongest evidence of any signal in the deep-analysis cycle. Falls back
+    // to the static pair_vol_target_annualized when garch is missing or the
+    // flag is off — preserves byte-identical behavior in that case.
+    double effective_pair_target = cfg.pair_vol_target_annualized;
+    if (cfg.garch_aware_enabled && rec.bpgv_garch > 0.0) {
+        double pct = rec.bpgv_garch_percentile;
+        if (pct >= cfg.garch_pctile_high) {
+            effective_pair_target = cfg.pair_vol_target_high_sigma;
+        } else if (pct <= cfg.garch_pctile_low) {
+            effective_pair_target = cfg.pair_vol_target_low_sigma;
+        } else {
+            double t = (pct - cfg.garch_pctile_low)
+                       / (cfg.garch_pctile_high - cfg.garch_pctile_low);
+            effective_pair_target = cfg.pair_vol_target_low_sigma
+                + t * (cfg.pair_vol_target_high_sigma - cfg.pair_vol_target_low_sigma);
+        }
+    }
 
     // Sum the risk-off bucket as it stands today. If it's empty or trivially
     // small the splice is a no-op.
@@ -1004,8 +1146,9 @@ void BPGVRotationStrategy::apply_defensive_sleeve_vol_awareness(
     double sigma_joint = std::sqrt(var) * std::sqrt(252.0);
     if (sigma_joint < 1e-6) return;
 
-    // Step 3: splice to BIL if σ_joint > target.
-    double pair_scale = std::min(1.0, cfg.pair_vol_target_annualized / sigma_joint);
+    // Step 3: splice to BIL if σ_joint > effective_pair_target (R2 — target
+    // may be σ^GARCH-aware; see top of function).
+    double pair_scale = std::min(1.0, effective_pair_target / sigma_joint);
     pair_scale = std::max(1.0 - cfg.max_splice_fraction, pair_scale);
 
     double splice_amount = bucket_total * (1.0 - pair_scale);
@@ -1021,9 +1164,11 @@ void BPGVRotationStrategy::apply_defensive_sleeve_vol_awareness(
     weights[cfg.splice_symbol] += splice_amount;
 
     DEBUG("defensive_sleeve_vol_awareness: σ_joint=" +
-          std::to_string(sigma_joint) + " target=" +
-          std::to_string(cfg.pair_vol_target_annualized) + " pair_scale=" +
-          std::to_string(pair_scale) + " splice→" + cfg.splice_symbol +
+          std::to_string(sigma_joint) + " effective_pair_target=" +
+          std::to_string(effective_pair_target) +
+          " (garch_aware=" + std::to_string(cfg.garch_aware_enabled) +
+          ", bpgv_garch_pct=" + std::to_string(rec.bpgv_garch_percentile) +
+          ") pair_scale=" + std::to_string(pair_scale) + " splice→" + cfg.splice_symbol +
           " bucket=" + std::to_string(bucket_total) +
           " splice=" + std::to_string(splice_amount));
 }
@@ -1034,16 +1179,53 @@ void BPGVRotationStrategy::apply_portfolio_vol_target(
     const auto& cfg = bpgv_config_.vol_target;
     if (!cfg.enabled) return;
 
-    // Need enough portfolio_value_history_ to compute a stable σ estimate.
-    int n = static_cast<int>(portfolio_value_history_.size());
-    if (n < cfg.min_history_days + 1) return;
-    if (n < cfg.window_days + 1) return;
+    // ──────────────────────────────────────────────────────────────────────
+    // σ_annual source selection
+    //
+    // R3a (May 2026):
+    //   use_garch_natural_vol = true → consume current_garch_sigma_natural_
+    //     directly. This decouples σ estimation from the strategy's own
+    //     scalar history entirely, which kills the R1 secondary-feedback
+    //     bug documented in reports/a1_r1_r2_review.md §2. The number is
+    //     bpgv_garch (forecast monthly σ) × √12 × multiplier, refreshed
+    //     each rebalance in execute_rebalance from the macro CSV.
+    //
+    //   use_garch_natural_vol = false → original C9 empirical path:
+    //     measure σ on the scaled portfolio_value_history_ (this introduces
+    //     the primary feedback loop documented in
+    //     reports/a1_dynamic_voltarget_review.md §5, but R1's "fix"
+    //     introduced a worse one — see review).
+    //
+    // The deprecated R1 call to compute_unscaled_return_stdev is removed.
+    // The function itself is retained for traceability but no longer
+    // referenced from this path.
+    // ──────────────────────────────────────────────────────────────────────
 
-    double sigma_daily = compute_daily_return_stdev(cfg.window_days);
-    if (sigma_daily < 1e-8) return;
-    double sigma_annual = sigma_daily * std::sqrt(252.0);
+    double sigma_annual = 0.0;
+    bool garch_path_taken = false;
 
-    double scalar = cfg.target_annualized / sigma_annual;
+    if (cfg.use_garch_natural_vol && current_garch_sigma_natural_ > 0.0) {
+        sigma_annual = current_garch_sigma_natural_;
+        garch_path_taken = true;
+    } else {
+        // Empirical path: need enough portfolio_value_history_ for a stable
+        // σ estimate. Below threshold, fail-open (skip vol-targeting).
+        int n = static_cast<int>(portfolio_value_history_.size());
+        if (n < cfg.min_history_days + 1) return;
+        if (n < cfg.window_days + 1) return;
+        double sigma_daily = compute_daily_return_stdev(cfg.window_days);
+        if (sigma_daily < 1e-8) return;
+        sigma_annual = sigma_daily * std::sqrt(252.0);
+    }
+
+    // T1.2: use the dynamic target derived from σ^GARCH (set by execute_rebalance)
+    // if dynamic mode is enabled and a fresh value exists. Otherwise fall back
+    // to the static config value — preserves byte-identical behavior when
+    // enable_dynamic_target is false.
+    double effective_target = (cfg.enable_dynamic_target && current_vol_target_ > 0.0)
+        ? current_vol_target_ : cfg.target_annualized;
+
+    double scalar = effective_target / sigma_annual;
     scalar = std::min(1.0, scalar);
     scalar = std::max(cfg.scalar_floor, scalar);
 
@@ -1053,9 +1235,99 @@ void BPGVRotationStrategy::apply_portfolio_vol_target(
         w *= scalar;
     }
 
-    DEBUG("portfolio_vol_target: σ_annual=" + std::to_string(sigma_annual) +
-          " target=" + std::to_string(cfg.target_annualized) +
-          " scalar=" + std::to_string(scalar));
+    // Persist this scalar — still useful as telemetry (and for the legacy
+    // on_data push to scalar_history_, which is now unused by σ estimation
+    // but kept for the next maintainer's diagnostic option).
+    current_scalar_ = scalar;
+
+    DEBUG(std::string("portfolio_vol_target [") +
+          (garch_path_taken ? "R3a σ^GARCH" : "empirical scaled σ") +
+          "]: σ_annual=" + std::to_string(sigma_annual) +
+          " target=" + std::to_string(effective_target) +
+          " (dynamic=" + std::to_string(cfg.enable_dynamic_target) +
+          ") scalar=" + std::to_string(scalar));
+}
+
+bool BPGVRotationStrategy::is_market_stress_active() const {
+    const auto& cfg = bpgv_config_.market_stress;
+    if (!cfg.enabled) return false;
+
+    auto it = symbol_state_.find(cfg.stress_symbol);
+    if (it == symbol_state_.end()) return false;
+
+    const auto& prices = it->second.price_history;
+    const int needed = std::max({cfg.min_history_days,
+                                 cfg.sma_window,
+                                 cfg.drawdown_lookback_days + 1});
+    if (static_cast<int>(prices.size()) < needed) return false;
+
+    double trailing = calculate_trailing_return(prices, cfg.drawdown_lookback_days);
+    double sma = calculate_sma(prices, cfg.sma_window);
+    double spot = prices.back();
+
+    return trailing <= cfg.drawdown_trigger && spot < sma;
+}
+
+bool BPGVRotationStrategy::apply_market_stress_throttle(
+    std::unordered_map<std::string, double>& weights) const {
+
+    if (!is_market_stress_active()) return false;
+
+    const auto& cfg = bpgv_config_.market_stress;
+    for (const auto& sym : bpgv_config_.risk_on_symbols) {
+        auto it = weights.find(sym);
+        if (it != weights.end()) {
+            it->second *= cfg.risk_on_scale;
+        }
+    }
+
+    DEBUG("market_stress_throttle active: " + cfg.stress_symbol +
+          " trailing_" + std::to_string(cfg.drawdown_lookback_days) +
+          "d <= " + std::to_string(cfg.drawdown_trigger) +
+          " and below SMA" + std::to_string(cfg.sma_window) +
+          "; risk_on_scale=" + std::to_string(cfg.risk_on_scale));
+
+    return true;
+}
+
+void BPGVRotationStrategy::refresh_market_stress_overlay() {
+    if (!bpgv_config_.market_stress.enabled || pre_market_stress_weights_.empty()) return;
+
+    auto adjusted = pre_market_stress_weights_;
+    bool active = apply_market_stress_throttle(adjusted);
+
+    bool changed = (active != market_stress_active_);
+    auto all_symbols = bpgv_config_.risk_on_symbols;
+    all_symbols.insert(all_symbols.end(),
+                       bpgv_config_.risk_off_symbols.begin(),
+                       bpgv_config_.risk_off_symbols.end());
+    all_symbols.insert(all_symbols.end(),
+                       bpgv_config_.cash_symbols.begin(),
+                       bpgv_config_.cash_symbols.end());
+
+    for (const auto& sym : all_symbols) {
+        double old_w = 0.0;
+        auto old_it = current_weights_.find(sym);
+        if (old_it != current_weights_.end()) old_w = old_it->second;
+
+        double new_w = 0.0;
+        auto new_it = adjusted.find(sym);
+        if (new_it != adjusted.end()) new_w = new_it->second;
+
+        if (std::abs(old_w - new_w) > 1e-8) {
+            changed = true;
+            break;
+        }
+    }
+
+    if (!changed) return;
+
+    current_weights_ = adjusted;
+    market_stress_active_ = active;
+    update_positions_from_weights();
+
+    INFO(std::string("BPGV market stress throttle ") +
+         (active ? "active" : "released"));
 }
 
 // ============================================================================
@@ -1076,6 +1348,62 @@ double BPGVRotationStrategy::compute_daily_return_stdev(int window) const {
         if (prev < 1e-8) { rets.push_back(0.0); continue; }
         rets.push_back((cur - prev) / prev);
     }
+    double mean = 0.0;
+    for (double r : rets) mean += r;
+    mean /= static_cast<double>(rets.size());
+    double var = 0.0;
+    for (double r : rets) var += (r - mean) * (r - mean);
+    var /= static_cast<double>(rets.size() - 1);
+    return std::sqrt(var);
+}
+
+double BPGVRotationStrategy::compute_unscaled_return_stdev(int window) const {
+    // R1: stdev of UN-SCALED daily returns over the last `window` days.
+    //
+    // The reasoning: apply_portfolio_vol_target measures σ to derive a daily
+    // gross-leverage scalar `s_t = clip(target / σ, floor, 1)`. If σ is
+    // measured on the already-scaled book's returns, σ is itself proportional
+    // to s_t, and the feedback equilibrium settles at s = sqrt(target/σ_true)
+    // — well below the un-scaled target (see reports/a1_dynamic_voltarget_review.md
+    // §5). To break the loop we want σ_true (the un-scaled book's vol). Since
+    // we know the scalar applied each day, the un-scaled return on day t is
+    // `r_scaled_t / s_{t-1}` (the scalar in effect when the holding was set).
+    //
+    // Falls back to scaled stdev when scalar_history_ is shorter than the
+    // window (early-backtest warmup, before vol-targeting starts firing).
+    int n = static_cast<int>(portfolio_value_history_.size());
+    if (n < window + 1) return 0.0;
+    int n_sc = static_cast<int>(scalar_history_.size());
+    if (n_sc < window + 1) {
+        // Fail safe: use scaled stdev. We're early in the backtest; current_scalar_
+        // is still close to 1.0 and the loop hasn't compounded yet.
+        return compute_daily_return_stdev(window);
+    }
+
+    std::vector<double> rets;
+    rets.reserve(window);
+    for (int i = n - window; i < n; ++i) {
+        double prev = portfolio_value_history_[i - 1];
+        double cur = portfolio_value_history_[i];
+        if (prev < 1e-8) { rets.push_back(0.0); continue; }
+        double scaled_ret = (cur - prev) / prev;
+        // The return on day i was earned by positions sized with the scalar in
+        // effect on day i-1 (when the rebalance / drift target was set). Use
+        // scalar_history_[i-1] as the divisor — this is the s_{t-1} in the
+        // un-scaling formula.
+        int sc_idx = i - 1;
+        if (sc_idx < 0 || sc_idx >= n_sc) { rets.push_back(0.0); continue; }
+        double s = scalar_history_[sc_idx];
+        if (s < 1e-3) {
+            // Pathological: floor was hit and weights effectively zero. The
+            // un-scaled return cannot be recovered — skip the day. This is
+            // rare and only affects warm-up oddities.
+            continue;
+        }
+        rets.push_back(scaled_ret / s);
+    }
+
+    if (rets.size() < 2) return 0.0;
     double mean = 0.0;
     for (double r : rets) mean += r;
     mean /= static_cast<double>(rets.size());

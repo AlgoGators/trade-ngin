@@ -190,7 +190,7 @@ struct BreakoutConfig {
  */
 struct VolTargetConfig {
     bool enabled{false};
-    double target_annualized{0.10};   // 10% portfolio vol target
+    double target_annualized{0.10};   // Static 10% portfolio vol target (used when enable_dynamic_target=false)
     int window_days{60};               // realized vol estimation window
     // Never scale below this fraction; avoids pathological full de-grossing
     // when the realized-vol estimate is unstable.
@@ -198,6 +198,46 @@ struct VolTargetConfig {
     // Need this much portfolio_value_history before scaling kicks in;
     // below the threshold, scalar = 1.0 (fail-open).
     int min_history_days{60};
+
+    // T1.2: dynamic target driven by σ^GARCH percentile (Cortes & LaPoint
+    // 2025 — high σ^BPG predicts high future return vol, so the C3 target
+    // should respond to it). When enable_dynamic_target=true and the macro
+    // record's bpgv_garch is valid, effective_target interpolates:
+    //   percentile >= pctile_high  → target_annualized_min
+    //   percentile <= pctile_low   → target_annualized_max
+    //   in-between                  → linear interpolation
+    // When the GARCH signal is missing (legacy CSV or pre-emission warmup),
+    // falls back to the static target_annualized above.
+    bool enable_dynamic_target{false};
+    double target_annualized_min{0.06};   // tightest target (when σ^GARCH is HIGH)
+    double target_annualized_max{0.12};   // loosest target (when σ^GARCH is LOW)
+    double pctile_high{75.0};
+    double pctile_low{25.0};
+
+    // R3a (May 2026): use σ^GARCH as a paper-supported PROXY for the un-scaled
+    // portfolio vol, instead of measuring it from the strategy's own return
+    // series. The R1 fix (which measured σ on un-scaled returns) introduced a
+    // secondary feedback loop that pinned the book at the 20% scalar floor —
+    // see reports/a1_r1_r2_review.md §2 for the diagnosis. R3a decouples σ
+    // estimation from the strategy's actions entirely by using the GARCH
+    // forecast from the macro CSV.
+    //
+    // Formula:  σ_natural_annual = bpgv_garch × √12 × garch_natural_vol_multiplier
+    //
+    // Calibration (multiplier=1.0): backtest median bpgv_garch ≈ 3.38% monthly
+    //   → σ_natural_proxy ≈ 11.69% annualized
+    // vs A1's empirical un-scaled σ ≈ 13.08% — within 11% of correct.
+    //
+    // Expected mean scalar at this calibration with dynamic target [6%, 12%]:
+    //   ≈ 0.77 (mean gross exposure ≈ 77%, floor binding only 6.7% of days).
+    // Compare to R1+R2's broken state: mean scalar 0.21, floor binding 43%.
+    //
+    // When use_garch_natural_vol=false (default), apply_portfolio_vol_target
+    // uses the original scaled-σ path (compute_daily_return_stdev) — the C9
+    // working approach.
+    bool use_garch_natural_vol{false};
+    double garch_natural_vol_multiplier{1.0};
+
     void from_json(const nlohmann::json& j);
 };
 
@@ -230,6 +270,44 @@ struct DefensiveSleeveConfig {
     // tiny defensive sleeves when σ_joint is huge.
     double max_splice_fraction{0.80};
     int min_history_days{60};
+
+    // R2 (deep-analysis follow-on): σ^GARCH-aware pair_vol_target. The hold-
+    // half IC test (reports/a1_garch_signal_ic.csv) showed σ^GARCH passes the
+    // gate STRONGLY on TLT (12m IC −0.69) and GLD (12m IC −0.80, CI excludes
+    // zero) — these were the strongest predictive cells in the entire deep-
+    // analysis cycle. When garch_aware_enabled=true and the macro record's
+    // bpgv_garch_percentile is available, interpolate the pair_vol_target
+    // between high_sigma (tight, used when σ^GARCH percentile ≥ pctile_high)
+    // and low_sigma (loose, used when ≤ pctile_low). When garch is missing
+    // or this flag is off, falls back to the static pair_vol_target_annualized.
+    bool garch_aware_enabled{false};
+    double pair_vol_target_high_sigma{0.06};  // target when σ^GARCH is HIGH (defensive bucket tighter → more BIL splice)
+    double pair_vol_target_low_sigma{0.12};   // target when σ^GARCH is LOW (let the defensive pair run)
+    double garch_pctile_high{75.0};
+    double garch_pctile_low{25.0};
+    void from_json(const nlohmann::json& j);
+};
+
+/**
+ * @brief Daily broad-market stress throttle for the risk-on sleeve.
+ *
+ * The BPGV paper signal is a volatility/regime input, not a fast directional
+ * crash detector. The May-2026 drawdown autopsy showed the worst loss came
+ * from keeping a high risk-on sleeve through a broad-market break. This overlay
+ * is intentionally simple and external to BPGV: when SPY is both down sharply
+ * over the last month and below its 200-day average, haircut only the risk-on
+ * sleeve and leave the residual as cash. The last monthly rebalance weights are
+ * retained unthrottled so this daily overlay is reversible and idempotent.
+ */
+struct MarketStressConfig {
+    bool enabled{false};
+    std::string stress_symbol{"SPY"};
+    int drawdown_lookback_days{21};
+    double drawdown_trigger{-0.08};
+    int sma_window{200};
+    double risk_on_scale{0.50};
+    int min_history_days{220};
+
     void from_json(const nlohmann::json& j);
 };
 
@@ -313,6 +391,7 @@ struct BPGVRotationConfig {
     //     vol exceeds target (addresses the 2022 hedge collapse).
     VolTargetConfig vol_target;
     DefensiveSleeveConfig defensive_sleeve;
+    MarketStressConfig market_stress;
 
     // Position sizing
     bool allow_fractional_shares{true};
@@ -406,12 +485,44 @@ private:
 
     // Portfolio-level allocation state
     std::unordered_map<std::string, double> current_weights_;
+    std::unordered_map<std::string, double> pre_market_stress_weights_;
     double portfolio_value_{0.0};
 
     // Live portfolio NAV (cash + positions) used as the position-sizing base,
     // pushed in by the backtest coordinator via set_portfolio_equity(). 0 means
     // "unset" — get_target_positions() then falls back to config_.capital_allocation.
     double sizing_equity_{0.0};
+
+    // T1.2: dynamic vol target derived from the macro record's σ^GARCH
+    // percentile each rebalance. Initialised to vol_target.target_annualized
+    // so legacy (static) mode behaves byte-identically when enable_dynamic_target
+    // is false. Updated by execute_rebalance() before apply_portfolio_vol_target().
+    double current_vol_target_{0.10};
+
+    // R3a: σ^GARCH-derived natural-vol proxy, annualized. Refreshed each
+    // rebalance from the macro record:
+    //   current_garch_sigma_natural_ = bpgv_garch × √12 × multiplier
+    // When vol_target.use_garch_natural_vol is true, apply_portfolio_vol_target
+    // consumes this as the σ_annual input to the scalar formula — entirely
+    // bypassing the strategy's own return-series stdev. 0.0 means "unset"
+    // (macro record missing bpgv_garch or warmup), in which case the function
+    // falls back to the empirical compute_daily_return_stdev path.
+    mutable double current_garch_sigma_natural_{0.0};
+
+    // R1 (May 2026 deep-analysis follow-on): track the daily scalar applied
+    // by apply_portfolio_vol_target so σ can be measured on the *un-scaled*
+    // return series. Without this, σ is measured on the already-scaled
+    // portfolio_value_history_, creating a feedback loop that traps the book
+    // at ~1/3 of intended gross exposure (see reports/a1_dynamic_voltarget_review.md
+    // §5). scalar_history_ is parallel to portfolio_value_history_ — index i
+    // holds the scalar that was applied on day portfolio_value_history_[i].
+    // Updated each bar in on_data (push current_scalar_), and current_scalar_
+    // is refreshed by apply_portfolio_vol_target on rebalance days. mutable
+    // because apply_portfolio_vol_target is a const member (it consumes the
+    // weights map by reference but doesn't mutate the strategy's primary
+    // state — current_scalar_ is a derived telemetry field).
+    mutable std::deque<double> scalar_history_;
+    mutable double current_scalar_{1.0};
 
     // Rebalancing tracking
     int last_rebalance_year_{0};
@@ -427,6 +538,11 @@ private:
     // `exit_threshold`. Reset to 0 on any failing day and on override activation.
     int consecutive_good_exit_days_{0};
 
+    // Daily risk-on stress overlay state. The active flag is telemetry and
+    // log-throttling only; the actual weights are recomputed idempotently from
+    // pre_market_stress_weights_ on each bar.
+    bool market_stress_active_{false};
+
     // Risk-on and risk-off extreme allocation tables (from Python V3)
     static const std::unordered_map<std::string, double> RISK_ON_EXTREME;
     static const std::unordered_map<std::string, double> RISK_OFF_EXTREME;
@@ -440,7 +556,8 @@ private:
     std::unordered_map<std::string, double> calculate_base_weights(
         const MonthlyMacroRecord& rec) const;
     void apply_defensive_sleeve_vol_awareness(
-        std::unordered_map<std::string, double>& weights) const;
+        std::unordered_map<std::string, double>& weights,
+        const MonthlyMacroRecord& rec) const;
     void apply_momentum_tilt(std::unordered_map<std::string, double>& weights) const;
     void apply_homebuilder_tilt(std::unordered_map<std::string, double>& weights,
                                 const MonthlyMacroRecord& rec) const;
@@ -448,6 +565,10 @@ private:
     void normalize_weights(std::unordered_map<std::string, double>& weights) const;
     void apply_portfolio_vol_target(
         std::unordered_map<std::string, double>& weights) const;
+    bool apply_market_stress_throttle(
+        std::unordered_map<std::string, double>& weights) const;
+    bool is_market_stress_active() const;
+    void refresh_market_stress_overlay();
 
     // --- Crash detection ---
     bool detect_crash() const;
@@ -466,6 +587,12 @@ private:
     double compute_daily_return_stdev(int window) const;
     double compute_daily_return_mean(int window) const;
     double compute_sigma_percentile(int sigma_window, int percentile_window) const;
+
+    // R1: σ on the un-scaled return series — divide each day's realized
+    // return by the scalar that was in effect that day, then compute stdev
+    // over the trailing `window`. Falls back to the scaled stdev when
+    // scalar_history_ is shorter than window (early backtest warmup).
+    double compute_unscaled_return_stdev(int window) const;
 
     // Change 4 helpers: signal-contingent exit score components.
     double compute_exit_score(const std::deque<double>& trend_px) const;
