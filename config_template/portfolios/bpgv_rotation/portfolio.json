@@ -12,12 +12,13 @@
       "symbols": ["SPY", "QQQ", "XLK", "SMH", "IWM", "XHB", "IYR", "EQR", "TLT", "GLD", "BIL", "DBMF"],
       "config": {
         "macro_csv_path": "data/macro/bpgv_regime.csv",
-        "rebalance_day_of_month": 18,
+        "rebalance_day_of_month": 22,
         "momentum_lookback_days": 63,
         "momentum_tilt_scale": 0.40,
         "homebuilder_tilt_scale": 0.20,
         "breakout_sma_window": 50,
-        "crash_threshold": -0.07,
+        "_comment_crash_disabled": "A1 build: the crash override is RETIRED — the alpha-attribution analysis (docs/bpgv_alpha_attribution_analysis.md) showed it destroyed ~130pp of return over 2011-2026. crash_threshold=-0.99 plus crash_override.trigger.method=fixed_drawdown makes the trigger unreachable; the crash_override block is kept inert for code-path compatibility.",
+        "crash_threshold": -0.99,
         "crash_lookback_days": 5,
         "crash_override_calendar_days": 14,
         "crash_defensive_weight": 0.45,
@@ -37,11 +38,11 @@
           "zero_symbols": ["SPY", "QQQ", "XLK", "SMH", "IWM", "XHB", "IYR", "EQR"],
           "splice_fallback_symbol": "BIL",
           "trigger": {
-            "_comment": "Change 3: volatility-scaled trigger. Fires when 5d z-score < -2.0 AND 60d sigma percentile > 40th.",
-            "method": "volatility_scaled",
+            "_comment": "A1 build: method=fixed_drawdown + crash_threshold=-0.99 (above) makes the crash override unreachable — retired per the alpha-attribution analysis. The volatility_scaled params below are kept for reference only.",
+            "method": "fixed_drawdown",
             "lookback_days": 60,
-            "k_sigma": 2.0,
-            "vol_gate_percentile": 0.40,
+            "k_sigma": 2.5,
+            "vol_gate_percentile": 0.55,
             "vol_gate_window": 504,
             "min_history_days": 80
           },
@@ -95,6 +96,24 @@
           "index_gate_symbol": "SPY",
           "index_gate_floor": 0.25,
           "fail_open_on_short_history": true
+        },
+        "_comment_vol_target": "A1 deep-analysis follow-on (May 2026). Portfolio-level realized-vol scalar applied after normalize_weights; sum(weights) \u2264 1.0 by design, residual stays as cash. Frictionless Python replay (tools/analysis/a1_candidate_screen.py::c3_vol_target) at 10% target produced Sharpe 0.918 (vs A1 0.815), fit 0.877 / hold 0.959, 2022 cal return \u221219.9% vs A1 \u221226.8%, max DD \u221224.3% vs A1 \u221232.5%. Moreira-Muir 2017, Harvey et al. 2018.",
+        "vol_target": {
+          "enabled": true,
+          "target_annualized": 0.10,
+          "window_days": 60,
+          "scalar_floor": 0.20,
+          "min_history_days": 60
+        },
+        "_comment_defensive_sleeve": "A1 deep-analysis follow-on (May 2026). Addresses the 2022 hedge failure documented in reports/a1_drawdown_autopsy.md \u2014 TLT lost \u221219.6% and GLD \u22128.0% during Aug-Oct 2022 while held at \u224845% each (TLT alone was the single largest dollar loser of the entire run, \u2212$38,903). Mechanism: inverse-vol re-allocate within {TLT, GLD}, then if \u03c3_joint > pair_vol_target, scale the pair down and route the slack to BIL.",
+        "defensive_sleeve": {
+          "vol_aware_enabled": true,
+          "pair_vol_target_annualized": 0.10,
+          "vol_window_days": 60,
+          "use_inverse_vol_pair": true,
+          "splice_symbol": "BIL",
+          "max_splice_fraction": 0.80,
+          "min_history_days": 60
         }
       }
     }

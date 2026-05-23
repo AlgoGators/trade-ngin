@@ -245,6 +245,17 @@ public:
         }
     }
 
+    /**
+     * @brief Update the active RiskManager's capital base to live portfolio NAV.
+     *
+     * The RiskManager's leverage cap divides notional by its capital base; in a
+     * compounding backtest that base must track live equity, else a fully-
+     * invested book is scaled down once NAV grows past the initial allocation.
+     * Routes to whichever risk manager is active (external takes precedence).
+     * No-op if neither exists or live_capital is non-positive.
+     */
+    void update_risk_capital(double live_capital);
+
 private:
     PortfolioConfig config_;
     std::string id_;

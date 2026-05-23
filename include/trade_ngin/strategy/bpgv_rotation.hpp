@@ -169,6 +169,71 @@ struct BreakoutConfig {
 };
 
 /**
+ * @brief Portfolio-level realized-vol targeting.
+ *
+ * Applied after `normalize_weights()` as a daily gross-leverage scalar
+ * `s = clip(target / sigma_annualized, scalar_floor, 1.0)` on all symbol
+ * weights. When the strategy's realized portfolio vol is elevated, the book
+ * de-grosses toward cash; sum(weights) intentionally falls below 1.0 and the
+ * residual stays uninvested.
+ *
+ * References:
+ *   Moreira-Muir 2017 "Volatility-Managed Portfolios" (JoF),
+ *   Harvey-Hoyle-Korgaonkar-Rattray-Sargaison-Hemert 2018 "Impact of
+ *   Volatility Targeting".
+ *
+ * The Phase-4 frictionless replay (`tools/analysis/a1_candidate_screen.py::
+ * c3_vol_target`) at 10% annual target produced Sharpe 0.918 (vs A1 0.815),
+ * fit 0.877 / hold 0.959, 2022 cal return −19.9% vs A1 −26.8%, max DD
+ * −24.3% vs A1 −32.5%. This struct holds the parameters for the C++ port of
+ * that overlay.
+ */
+struct VolTargetConfig {
+    bool enabled{false};
+    double target_annualized{0.10};   // 10% portfolio vol target
+    int window_days{60};               // realized vol estimation window
+    // Never scale below this fraction; avoids pathological full de-grossing
+    // when the realized-vol estimate is unstable.
+    double scalar_floor{0.20};
+    // Need this much portfolio_value_history before scaling kicks in;
+    // below the threshold, scalar = 1.0 (fail-open).
+    int min_history_days{60};
+    void from_json(const nlohmann::json& j);
+};
+
+/**
+ * @brief Vol-aware defensive sleeve composition.
+ *
+ * Addresses the 2022 hedge failure documented in
+ * `reports/a1_drawdown_autopsy.md` (TLT lost 19.6% and GLD lost 8.0% during
+ * Aug-Oct 2022 while held at ~45% each). The mechanism:
+ *
+ *   1. Within the risk-off bucket {TLT, GLD}, replace equal-ish weights with
+ *      inverse-vol weights: w_TLT = (1/σ_TLT) / (1/σ_TLT + 1/σ_GLD).
+ *   2. Synthesize the pair's daily return series and compute its 60d
+ *      realized vol σ_joint.
+ *   3. If σ_joint > pair_vol_target, scale the risk-off bucket total by
+ *      min(1, target/σ_joint) and route the slack to `splice_symbol` (BIL).
+ *
+ * Step 1 redistributes within the pair when one leg's vol spikes (e.g. TLT
+ * during a Fed-hike shock). Step 3 cuts total defensive duration exposure
+ * when BOTH legs are elevated (the 2022 failure mode).
+ */
+struct DefensiveSleeveConfig {
+    bool vol_aware_enabled{false};
+    double pair_vol_target_annualized{0.10};
+    int vol_window_days{60};
+    bool use_inverse_vol_pair{true};
+    std::string splice_symbol{"BIL"};
+    // Cap the splice fraction so we never route more than this share of the
+    // risk-off bucket to the splice symbol — guards against pathologically
+    // tiny defensive sleeves when σ_joint is huge.
+    double max_splice_fraction{0.80};
+    int min_history_days{60};
+    void from_json(const nlohmann::json& j);
+};
+
+/**
  * @brief Configuration for the BPGV macro regime rotation strategy.
  */
 struct BPGVRotationConfig {
@@ -240,6 +305,15 @@ struct BPGVRotationConfig {
     MomentumConfig momentum;             // Change 5
     BreakoutConfig breakout;             // Change 6
 
+    // A1-deep-analysis follow-on (May 2026):
+    //   - VolTargetConfig (C3): portfolio-level daily vol-target scalar applied
+    //     after normalize_weights; sum(weights) ≤ 1.0 by design, residual is cash.
+    //   - DefensiveSleeveConfig: inverse-vol re-allocation within {TLT, GLD}
+    //     plus σ_joint-driven splice to BIL when the defensive pair's realized
+    //     vol exceeds target (addresses the 2022 hedge collapse).
+    VolTargetConfig vol_target;
+    DefensiveSleeveConfig defensive_sleeve;
+
     // Position sizing
     bool allow_fractional_shares{true};
 };
@@ -279,6 +353,17 @@ public:
     std::unordered_map<std::string, std::vector<double>> get_price_history() const override;
 
     int get_crash_override_count() const { return crash_override_count_; }
+
+    /// Set the live portfolio equity (cash + open positions) used as the
+    /// position-sizing base. The backtest coordinator pushes the running NAV in
+    /// each bar BEFORE on_data / get_target_positions, so the book sizes against
+    /// compounding equity instead of a frozen initial allocation. When this is
+    /// never called (sizing_equity_ stays 0) sizing falls back to
+    /// config_.capital_allocation, so unit tests and any non-coordinator caller
+    /// keep their previous behavior.
+    void set_portfolio_equity(double equity) {
+        if (equity > 0.0) sizing_equity_ = equity;
+    }
 
     int get_max_required_lookback() const {
         // Tier-1 introduced longer lookbacks: 252-day TSM gate, 200-day SMA,
@@ -323,6 +408,11 @@ private:
     std::unordered_map<std::string, double> current_weights_;
     double portfolio_value_{0.0};
 
+    // Live portfolio NAV (cash + positions) used as the position-sizing base,
+    // pushed in by the backtest coordinator via set_portfolio_equity(). 0 means
+    // "unset" — get_target_positions() then falls back to config_.capital_allocation.
+    double sizing_equity_{0.0};
+
     // Rebalancing tracking
     int last_rebalance_year_{0};
     int last_rebalance_month_{0};
@@ -349,11 +439,15 @@ private:
     // --- Weight calculation pipeline ---
     std::unordered_map<std::string, double> calculate_base_weights(
         const MonthlyMacroRecord& rec) const;
+    void apply_defensive_sleeve_vol_awareness(
+        std::unordered_map<std::string, double>& weights) const;
     void apply_momentum_tilt(std::unordered_map<std::string, double>& weights) const;
     void apply_homebuilder_tilt(std::unordered_map<std::string, double>& weights,
                                 const MonthlyMacroRecord& rec) const;
     void apply_breakout_filter(std::unordered_map<std::string, double>& weights) const;
     void normalize_weights(std::unordered_map<std::string, double>& weights) const;
+    void apply_portfolio_vol_target(
+        std::unordered_map<std::string, double>& weights) const;
 
     // --- Crash detection ---
     bool detect_crash() const;

@@ -138,6 +138,18 @@ public:
     }
 
     /**
+     * @brief Update the capital base used as the leverage denominator.
+     *
+     * Gross/net leverage are computed as notional / config_.capital. In a
+     * compounding backtest this base must track live NAV each bar, otherwise a
+     * fully-invested book reads as >1x leverage once NAV grows past the initial
+     * allocation and gets scaled down. Non-positive values are ignored.
+     */
+    void set_capital(Decimal capital) {
+        if (static_cast<double>(capital) > 0.0) config_.capital = capital;
+    }
+
+    /**
      * @brief Create market data object from bar data
      * @param data Bar data to convert
      * @return MarketData object

@@ -188,6 +188,16 @@ int main() {
         bpgv_config.crash_defensive_weight = bpgv_cfg.value("crash_defensive_weight", 0.45);
         bpgv_config.allow_fractional_shares = bpgv_cfg.value("allow_fractional_shares", true);
 
+        // Regime-layer knobs — wired so the macro-regime layer can be ablated
+        // from config (e.g. base_risk_off_range=0 -> static base weights). Default
+        // to the struct defaults so an unchanged config reproduces prior behavior.
+        bpgv_config.base_risk_off_min = bpgv_cfg.value("base_risk_off_min", 0.05);
+        bpgv_config.base_risk_off_range = bpgv_cfg.value("base_risk_off_range", 0.40);
+        bpgv_config.strong_risk_on_equity_boost =
+            bpgv_cfg.value("strong_risk_on_equity_boost", 0.12);
+        bpgv_config.strong_risk_on_bond_reduction =
+            bpgv_cfg.value("strong_risk_on_bond_reduction", 0.20);
+
         // Load custom symbol lists if provided
         if (bpgv_cfg.contains("risk_on_symbols")) {
             bpgv_config.risk_on_symbols.clear();
@@ -225,6 +235,15 @@ int main() {
         }
         if (bpgv_cfg.contains("breakout")) {
             bpgv_config.breakout.from_json(bpgv_cfg.at("breakout"));
+        }
+        // A1 deep-analysis follow-on (May 2026): portfolio vol target +
+        // defensive-sleeve vol-awareness. Both off by default in code so legacy
+        // configs that don't have the blocks stay byte-identical to A1.
+        if (bpgv_cfg.contains("vol_target")) {
+            bpgv_config.vol_target.from_json(bpgv_cfg.at("vol_target"));
+        }
+        if (bpgv_cfg.contains("defensive_sleeve")) {
+            bpgv_config.defensive_sleeve.from_json(bpgv_cfg.at("defensive_sleeve"));
         }
 
         StrategyConfig strategy_config;

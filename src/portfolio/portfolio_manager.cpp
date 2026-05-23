@@ -1096,6 +1096,16 @@ Result<void> PortfolioManager::optimize_positions() {
     }
 }
 
+void PortfolioManager::update_risk_capital(double live_capital) {
+    if (live_capital <= 0.0) return;
+    // Mirror apply_risk_management's manager selection: external takes precedence.
+    RiskManager* active_manager =
+        external_risk_manager_ ? external_risk_manager_.get() : risk_manager_.get();
+    if (active_manager) {
+        active_manager->set_capital(Decimal(live_capital));
+    }
+}
+
 Result<void> PortfolioManager::apply_risk_management(const std::vector<Bar>& data) {
     Logger::register_component("RiskManager");
     // Use external risk manager if available, otherwise use internal manager

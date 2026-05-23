@@ -108,6 +108,33 @@ void MomentumConfig::from_json(const nlohmann::json& j) {
         xsec_weight_floor = j.at("xsec_weight_floor").get<double>();
 }
 
+void VolTargetConfig::from_json(const nlohmann::json& j) {
+    if (j.contains("enabled")) enabled = j.at("enabled").get<bool>();
+    if (j.contains("target_annualized"))
+        target_annualized = j.at("target_annualized").get<double>();
+    if (j.contains("window_days")) window_days = j.at("window_days").get<int>();
+    if (j.contains("scalar_floor")) scalar_floor = j.at("scalar_floor").get<double>();
+    if (j.contains("min_history_days"))
+        min_history_days = j.at("min_history_days").get<int>();
+}
+
+void DefensiveSleeveConfig::from_json(const nlohmann::json& j) {
+    if (j.contains("vol_aware_enabled"))
+        vol_aware_enabled = j.at("vol_aware_enabled").get<bool>();
+    if (j.contains("pair_vol_target_annualized"))
+        pair_vol_target_annualized = j.at("pair_vol_target_annualized").get<double>();
+    if (j.contains("vol_window_days"))
+        vol_window_days = j.at("vol_window_days").get<int>();
+    if (j.contains("use_inverse_vol_pair"))
+        use_inverse_vol_pair = j.at("use_inverse_vol_pair").get<bool>();
+    if (j.contains("splice_symbol"))
+        splice_symbol = j.at("splice_symbol").get<std::string>();
+    if (j.contains("max_splice_fraction"))
+        max_splice_fraction = j.at("max_splice_fraction").get<double>();
+    if (j.contains("min_history_days"))
+        min_history_days = j.at("min_history_days").get<int>();
+}
+
 void BreakoutConfig::from_json(const nlohmann::json& j) {
     if (j.contains("mode")) mode = j.at("mode").get<std::string>();
     if (j.contains("sma_window")) sma_window = j.at("sma_window").get<int>();
@@ -347,6 +374,15 @@ Result<void> BPGVRotationStrategy::on_data(const std::vector<Bar>& data) {
                                                bpgv_config_.crash_override.trigger.vol_gate_window + 10));
             }
             needed = std::max(needed, static_cast<size_t>(70));  // Change 4: recov window + slack
+            // A1 deep-analysis follow-on: ensure enough history for the C3
+            // portfolio vol-target window plus a small slack for the +1-day
+            // return computation. Defensive-sleeve uses per-symbol vol from
+            // symbol_state_.price_history (sized to MAX_PRICE_HISTORY) so it
+            // does not affect this trim.
+            if (bpgv_config_.vol_target.enabled) {
+                needed = std::max(needed, static_cast<size_t>(
+                                               bpgv_config_.vol_target.window_days + 10));
+            }
             while (portfolio_value_history_.size() > needed) {
                 portfolio_value_history_.pop_front();
             }
@@ -474,12 +510,29 @@ void BPGVRotationStrategy::execute_rebalance(int year, int month) {
              std::to_string(record->year) + "-" + std::to_string(record->month));
     }
 
-    // Weight calculation pipeline
+    // Weight calculation pipeline.
+    //
+    // Step ordering rationale:
+    //   1. base — regime interpolation + strong_risk_on tilt sets the gross
+    //      risk-on / risk-off split.
+    //   2. defensive-sleeve vol-awareness — operates ONLY on the risk-off
+    //      bucket {TLT, GLD}. Inverse-vol re-allocates within the pair, then
+    //      σ_joint splices to BIL when the pair is vol-elevated. Runs before
+    //      momentum / homebuilder / breakout because those layers don't touch
+    //      the risk-off bucket; doing it first keeps the cash-splice visible
+    //      to downstream normalization.
+    //   3. momentum / homebuilder / breakout — overlays on the risk-on bucket.
+    //   4. normalize — rescale all positive weights to sum to 1.0.
+    //   5. portfolio vol target (C3) — daily realized-vol-driven gross-leverage
+    //      scalar applied AFTER normalize so the residual (1 - scalar) stays
+    //      uninvested. sum(weights) ≤ 1.0 by design.
     auto weights = calculate_base_weights(*record);
+    apply_defensive_sleeve_vol_awareness(weights);
     apply_momentum_tilt(weights);
     apply_homebuilder_tilt(weights, *record);
     apply_breakout_filter(weights);
     normalize_weights(weights);
+    apply_portfolio_vol_target(weights);
 
     current_weights_ = weights;
     update_positions_from_weights();
@@ -845,6 +898,167 @@ void BPGVRotationStrategy::normalize_weights(
 }
 
 // ============================================================================
+// A1 deep-analysis follow-on overlays (May 2026)
+// ============================================================================
+//
+// Both overlays were motivated by the per-DD autopsy and per-layer IC analysis
+// in reports/a1_*.md / reports/a1_drawdown_autopsy.md. The Python frictionless
+// replay in tools/analysis/a1_candidate_screen.py is the bit-level reference:
+// any divergence between the C++ live path and that script's c3_vol_target /
+// c4_inverse_vol_within_sleeve output indicates a bug here, not there.
+//
+// Defensive-sleeve vol-awareness — fired BEFORE momentum/breakout because
+// those overlays don't touch the risk-off bucket, so doing the splice early
+// keeps the BIL contribution visible to downstream normalization.
+//
+// Portfolio vol target — fired AFTER normalize_weights so the (1 − scalar)
+// residual stays uninvested instead of being re-normalized away. sum(weights)
+// ≤ 1.0 by design; the portfolio executor treats the rest as cash.
+
+void BPGVRotationStrategy::apply_defensive_sleeve_vol_awareness(
+    std::unordered_map<std::string, double>& weights) const {
+
+    const auto& cfg = bpgv_config_.defensive_sleeve;
+    if (!cfg.vol_aware_enabled) return;
+
+    // Sum the risk-off bucket as it stands today. If it's empty or trivially
+    // small the splice is a no-op.
+    double bucket_total = 0.0;
+    for (const auto& sym : bpgv_config_.risk_off_symbols) {
+        auto it = weights.find(sym);
+        if (it != weights.end()) bucket_total += std::max(0.0, it->second);
+    }
+    if (bucket_total < 1e-8) return;
+
+    // Per-symbol annualized vol from price_history. compute_symbol_vol returns
+    // 0 when history is short; if EITHER leg is short we fail-open (no fix).
+    std::unordered_map<std::string, double> sigma;
+    std::unordered_map<std::string, double> inv_sigma;
+    double inv_sigma_total = 0.0;
+    bool short_history = false;
+
+    for (const auto& sym : bpgv_config_.risk_off_symbols) {
+        auto it = symbol_state_.find(sym);
+        if (it == symbol_state_.end() ||
+            static_cast<int>(it->second.price_history.size()) <
+                cfg.min_history_days + 1) {
+            short_history = true;
+            break;
+        }
+        double s = compute_symbol_vol(it->second.price_history, cfg.vol_window_days);
+        if (s < 1e-6) {
+            short_history = true;
+            break;
+        }
+        sigma[sym] = s;
+        inv_sigma[sym] = 1.0 / s;
+        inv_sigma_total += inv_sigma[sym];
+    }
+    if (short_history || inv_sigma_total < 1e-12) return;
+
+    // Step 1: inverse-vol pair weights (re-distribute within the bucket).
+    std::unordered_map<std::string, double> pair_weight;
+    if (cfg.use_inverse_vol_pair) {
+        for (const auto& sym : bpgv_config_.risk_off_symbols) {
+            pair_weight[sym] = inv_sigma[sym] / inv_sigma_total;
+        }
+    } else {
+        double n = static_cast<double>(bpgv_config_.risk_off_symbols.size());
+        for (const auto& sym : bpgv_config_.risk_off_symbols) {
+            pair_weight[sym] = 1.0 / n;
+        }
+    }
+
+    // Step 2: synthesize the pair's daily return series and compute σ_joint.
+    // This catches BOTH co-elevation (the 2022 failure mode) and correlation
+    // — using realized joint vol rather than assuming independence.
+    int window = cfg.vol_window_days;
+    int min_len = INT_MAX;
+    for (const auto& sym : bpgv_config_.risk_off_symbols) {
+        auto it = symbol_state_.find(sym);
+        min_len = std::min(min_len,
+                           static_cast<int>(it->second.price_history.size()));
+    }
+    if (min_len < window + 1) return;
+
+    std::vector<double> pair_returns;
+    pair_returns.reserve(window);
+    for (int i = min_len - window; i < min_len; ++i) {
+        double r = 0.0;
+        for (const auto& sym : bpgv_config_.risk_off_symbols) {
+            const auto& ph = symbol_state_.at(sym).price_history;
+            double prev = ph[i - 1];
+            double cur = ph[i];
+            if (prev < 1e-8) continue;
+            r += pair_weight[sym] * ((cur - prev) / prev);
+        }
+        pair_returns.push_back(r);
+    }
+    if (pair_returns.size() < 2) return;
+    double mean = 0.0;
+    for (double r : pair_returns) mean += r;
+    mean /= pair_returns.size();
+    double var = 0.0;
+    for (double r : pair_returns) var += (r - mean) * (r - mean);
+    var /= (pair_returns.size() - 1);
+    double sigma_joint = std::sqrt(var) * std::sqrt(252.0);
+    if (sigma_joint < 1e-6) return;
+
+    // Step 3: splice to BIL if σ_joint > target.
+    double pair_scale = std::min(1.0, cfg.pair_vol_target_annualized / sigma_joint);
+    pair_scale = std::max(1.0 - cfg.max_splice_fraction, pair_scale);
+
+    double splice_amount = bucket_total * (1.0 - pair_scale);
+
+    // Re-allocate the risk-off bucket: each name = bucket_total × pair_scale × pair_weight[sym]
+    for (const auto& sym : bpgv_config_.risk_off_symbols) {
+        weights[sym] = bucket_total * pair_scale * pair_weight[sym];
+    }
+    // Splice goes to the configured splice symbol (default BIL) on top of any
+    // existing weight there. The splice symbol is allowed to be in cash_symbols
+    // (which normally has zero base weight) — the splice creates non-zero cash
+    // sleeve allocation, which the existing pipeline carries through normalize.
+    weights[cfg.splice_symbol] += splice_amount;
+
+    DEBUG("defensive_sleeve_vol_awareness: σ_joint=" +
+          std::to_string(sigma_joint) + " target=" +
+          std::to_string(cfg.pair_vol_target_annualized) + " pair_scale=" +
+          std::to_string(pair_scale) + " splice→" + cfg.splice_symbol +
+          " bucket=" + std::to_string(bucket_total) +
+          " splice=" + std::to_string(splice_amount));
+}
+
+void BPGVRotationStrategy::apply_portfolio_vol_target(
+    std::unordered_map<std::string, double>& weights) const {
+
+    const auto& cfg = bpgv_config_.vol_target;
+    if (!cfg.enabled) return;
+
+    // Need enough portfolio_value_history_ to compute a stable σ estimate.
+    int n = static_cast<int>(portfolio_value_history_.size());
+    if (n < cfg.min_history_days + 1) return;
+    if (n < cfg.window_days + 1) return;
+
+    double sigma_daily = compute_daily_return_stdev(cfg.window_days);
+    if (sigma_daily < 1e-8) return;
+    double sigma_annual = sigma_daily * std::sqrt(252.0);
+
+    double scalar = cfg.target_annualized / sigma_annual;
+    scalar = std::min(1.0, scalar);
+    scalar = std::max(cfg.scalar_floor, scalar);
+
+    // Apply to all symbol weights. sum(weights) <= 1.0 by design; the residual
+    // is the implicit cash position the portfolio executor doesn't trade.
+    for (auto& [sym, w] : weights) {
+        w *= scalar;
+    }
+
+    DEBUG("portfolio_vol_target: σ_annual=" + std::to_string(sigma_annual) +
+          " target=" + std::to_string(cfg.target_annualized) +
+          " scalar=" + std::to_string(scalar));
+}
+
+// ============================================================================
 // Crash detection and override
 // ============================================================================
 
@@ -1182,9 +1396,6 @@ void BPGVRotationStrategy::update_positions_from_weights() {
     // are materialized in get_target_positions(); direct writes to positions_ are
     // forbidden here — positions_ is owned by on_execution, so writing would
     // double-count once the portfolio fires the resulting fill back at us.
-    const double sizing_capital = static_cast<double>(config_.capital_allocation);
-    (void)sizing_capital;
-
     for (const auto& [sym, weight] : current_weights_) {
         if (weight <= 1e-8) continue;
         auto state_it = symbol_state_.find(sym);
@@ -1200,9 +1411,17 @@ void BPGVRotationStrategy::update_positions_from_weights() {
 std::unordered_map<std::string, Position> BPGVRotationStrategy::get_target_positions() const {
     std::unordered_map<std::string, Position> targets;
 
-    // Fixed initial capital for sizing — mirrors MeanReversionStrategy pattern and
-    // avoids the doom loop where cost drag pushes live NAV negative.
-    const double sizing_capital = static_cast<double>(config_.capital_allocation);
+    // Size against LIVE portfolio equity (cash + positions) so the book compounds
+    // and stays ~fully invested as NAV grows, instead of being pinned to a frozen
+    // initial allocation (the old behavior swept every dollar of profit into idle
+    // cash). sizing_equity_ is pushed in by the backtest coordinator each bar;
+    // before the first push — or on any path that never wires it (unit tests, the
+    // live trading path) — we fall back to the configured allocation. This
+    // long-only rotation cannot lever or short, so NAV is bounded below by 0 and
+    // the "cost-drag doom loop" the frozen base guarded against cannot occur.
+    const double sizing_capital =
+        (sizing_equity_ > 1e-8) ? sizing_equity_
+                                : static_cast<double>(config_.capital_allocation);
 
     // Build an entry for every symbol in the universe so that dropped symbols show
     // up as qty=0 and the portfolio exec path can issue explicit close orders.
@@ -1296,6 +1515,31 @@ std::unordered_map<std::string, Position> BPGVRotationStrategy::get_target_posit
         }
 
         targets[sym] = pos;
+    }
+
+    // --- Verification instrumentation (capital-sizing fix) ---
+    // One line per bar; grep "BPGV_SIZING" in the backtest log to confirm the
+    // deployed book now tracks live NAV instead of the frozen capital_allocation
+    // base. Before the fix: base is a constant and invested_frac decays toward 0.
+    {
+        double target_book_notional = 0.0;
+        for (const auto& [sym, p] : targets) {
+            auto s_it = symbol_state_.find(sym);
+            double px = (s_it != symbol_state_.end()) ? s_it->second.current_price : 0.0;
+            target_book_notional += std::abs(p.quantity.as_double() * px);
+        }
+        const double held_notional = compute_portfolio_value();
+        const double nav = (sizing_equity_ > 1e-8)
+                               ? sizing_equity_
+                               : static_cast<double>(config_.capital_allocation);
+        const double cash = nav - held_notional;
+        const double invested_frac = (nav > 1e-8) ? (held_notional / nav) : 0.0;
+        INFO("BPGV_SIZING base=" + std::to_string(sizing_capital) +
+             " nav=" + std::to_string(nav) +
+             " held_notional=" + std::to_string(held_notional) +
+             " cash=" + std::to_string(cash) +
+             " target_book_notional=" + std::to_string(target_book_notional) +
+             " invested_frac=" + std::to_string(invested_frac));
     }
 
     return targets;

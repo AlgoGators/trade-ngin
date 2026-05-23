@@ -30,8 +30,11 @@ def load_prices(symbol: str) -> pd.Series:
         raise FileNotFoundError(f"No bars file for {symbol} at {path}")
     df = pd.read_csv(path, parse_dates=["date"])
     df = df.set_index("date").sort_index()
-    # Look for common column names.
-    for col in ("close", "adj_close", "adjusted_close", "Close"):
+    # Prefer the dividend-adjusted (total-return) close: the C++ backtest trades
+    # adj_close (csv_equity_loader.cpp applies the adj_close/close ratio), so the
+    # benchmarks must be total-return too or the comparison is biased ~1.5%/yr in
+    # the strategy's favor. Raw `close` is only a last-resort fallback.
+    for col in ("adj_close", "adjusted_close", "close", "Close"):
         if col in df.columns:
             return df[col].astype(float).rename(symbol)
     raise KeyError(f"No close column in {path}; have {df.columns.tolist()}")

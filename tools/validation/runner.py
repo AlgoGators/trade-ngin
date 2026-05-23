@@ -73,8 +73,12 @@ def load_equity_from_postgres(run_id: str) -> pd.Series:
     conn.close()
     if df.empty:
         raise RuntimeError(f"No equity curve rows for run_id={run_id}")
-    df["date"] = pd.to_datetime(df["date"])
+    # Normalize to calendar date: equity_curve timestamps carry a time-of-day
+    # (e.g. 10:00) that won't exact-match the date-indexed benchmark series, and
+    # older runs store >1 row/day. Collapse to one value per calendar day.
+    df["date"] = pd.to_datetime(df["date"]).dt.normalize()
     df = df.set_index("date").sort_index()
+    df = df[~df.index.duplicated(keep="last")]
     return df["equity"].astype(float)
 
 

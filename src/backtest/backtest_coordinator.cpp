@@ -326,6 +326,33 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
         day_index++;
     }
 
+    // M2: the data loader can group more than one bar-set per calendar day, so
+    // the loop above can emit multiple equity-curve points per day. Collapse to
+    // one (last) point per calendar day before metrics + storage, so the stored
+    // Sharpe / vol are not distorted by interleaved zero-return rows.
+    if (!equity_curve.empty()) {
+        auto day_key = [](const Timestamp& ts) {
+            auto tt = std::chrono::system_clock::to_time_t(ts);
+            std::tm tm{};
+            core::safe_gmtime(&tt, &tm);
+            return (tm.tm_year + 1900) * 10000 + (tm.tm_mon + 1) * 100 + tm.tm_mday;
+        };
+        std::vector<std::pair<Timestamp, double>> deduped;
+        deduped.reserve(equity_curve.size());
+        for (const auto& pt : equity_curve) {
+            if (!deduped.empty() && day_key(deduped.back().first) == day_key(pt.first)) {
+                deduped.back() = pt;  // keep the last point for this calendar day
+            } else {
+                deduped.push_back(pt);
+            }
+        }
+        if (deduped.size() != equity_curve.size()) {
+            INFO("Equity curve collapsed " + std::to_string(equity_curve.size()) +
+                 " -> " + std::to_string(deduped.size()) + " points (one per calendar day)");
+        }
+        equity_curve = std::move(deduped);
+    }
+
     // Sort executions by timestamp
     std::sort(all_executions.begin(), all_executions.end(),
               [](const ExecutionReport& a, const ExecutionReport& b) {
@@ -532,6 +559,24 @@ Result<void> BacktestCoordinator::process_portfolio_day(
         // Process market data through portfolio manager
         // Use previous day's bars for signal generation
         const auto& bars_for_signals = had_previous_bars ? portfolio_previous_bars_ : bars;
+
+        // Feed running portfolio NAV (end of the prior bar) into equity-sized
+        // strategies so they size positions against compounding equity instead of
+        // a frozen initial allocation. One bar stale — negligible for the
+        // monthly-rebalanced BPGV strategy. The cast is a no-op for other types.
+        double running_nav =
+            equity_curve.empty() ? initial_capital : equity_curve.back().second;
+        for (auto& strategy_ptr : portfolio->get_strategies()) {
+            if (auto bpgv = std::dynamic_pointer_cast<BPGVRotationStrategy>(strategy_ptr)) {
+                bpgv->set_portfolio_equity(running_nav);
+            }
+        }
+
+        // Feed the same running NAV into the portfolio's RiskManager so its
+        // leverage denominator tracks compounding equity. Without this, once NAV
+        // grows past the initial capital the gross-leverage cap scales a normal
+        // fully-invested book back down toward the initial allocation.
+        portfolio->update_risk_capital(running_nav);
 
         auto data_result = portfolio->process_market_data(bars_for_signals, is_warmup, timestamp);
         if (data_result.is_error()) {
