@@ -3,6 +3,9 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
+#include <unordered_map>
+#include <vector>
+
 #include "trade_ngin/strategy/base_strategy.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
 #include "trade_ngin/strategy/trend_following_fast.hpp"
@@ -95,6 +98,32 @@ struct PyBaseStrategy : public BaseStrategy {
                                     "BaseStrategy");
         }
     }
+
+    std::unordered_map<std::string, std::vector<double>> get_price_history() const override {
+        py::gil_scoped_acquire gil;
+
+        py::function override =
+            py::get_override(static_cast<const BaseStrategy*>(this), "get_price_history");
+        if (!override) {
+            WARN("No Python override found for get_price_history in Strategy " + id_ +
+                 ", using base implementation");
+            return BaseStrategy::get_price_history();
+        }
+
+        try {
+            py::object result = override();
+
+            if (result.is_none()) {
+                INFO("Python get_price_history override returned None, treating as empty history");
+                return std::unordered_map<std::string, std::vector<double>>();
+            }
+
+            return result.cast<std::unordered_map<std::string, std::vector<double>>>();
+        } catch (const py::error_already_set& e) {
+            ERROR("Python get_price_history override failed: " + std::string(e.what()));
+            return std::unordered_map<std::string, std::vector<double>>();
+        }
+    }
 };
 
 void bind_base_strategy(py::module_& m) {
@@ -116,6 +145,7 @@ void bind_base_strategy(py::module_& m) {
         .def("on_data", &BaseStrategy::on_data)
         .def("on_execution", &BaseStrategy::on_execution)
         .def("on_signal", &BaseStrategy::on_signal)
+        .def("get_price_history", &BaseStrategy::get_price_history)
         .def_property_readonly(
             "positions",
             [](const BaseStrategy& self) -> const std::unordered_map<std::string, Position>& {
