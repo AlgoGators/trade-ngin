@@ -283,6 +283,12 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
     for (const auto& [timestamp, bars] : grouped_bars) {
         bool is_warmup = (day_index < calculated_warmup_days);
 
+        INFO("Processing day " + std::to_string(day_index + 1) + "/" +
+             std::to_string(grouped_bars.size()) + " - " + std::format("{:%Y-%m-%d}", timestamp) +
+             " - " + std::to_string(bars.size()) + " bars" +
+             // std::to_string(std::chrono::system_clock::to_time_t(timestamp)) + " - " +
+             (is_warmup ? " (warmup)" : ""));
+
         try {
             auto process_result =
                 process_portfolio_day(timestamp, bars, portfolio, all_executions, equity_curve,
