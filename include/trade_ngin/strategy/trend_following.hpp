@@ -17,7 +17,7 @@ namespace trade_ngin {
  */
 struct TrendFollowingConfig {
     double weight{0.03};                    // Weight for position sizing
-    double risk_target{0.2};                // Target annualized risk level
+    double risk_target{0.25};               // Target annualized risk level
     double fx_rate{1.0};                    // FX conversion rate
     double idm{2.4};                        // Instrument diversification multiplier
     double max_symbol_concentration{0.25};  // Max % of gross exposure per symbol (15% default)
