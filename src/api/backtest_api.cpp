@@ -47,7 +47,10 @@ Result<backtest::BacktestResults> BacktestRunner::run_backtest(std::string portf
                   std::string(app_config_result.error()->what()));
             std::cerr << "Failed to load configuration: " << app_config_result.error()->what()
                       << std::endl;
-            return 1;
+            return make_error<backtest::BacktestResults>(
+                app_config_result.error()->code(),
+                "Failed to load configuration: " + std::string(app_config_result.error()->what()),
+                "BacktestAPI");
         }
         auto app_config = app_config_result.value();
         INFO("Configuration loaded successfully for portfolio: " + app_config.portfolio_id);
@@ -77,7 +80,9 @@ Result<backtest::BacktestResults> BacktestRunner::run_backtest(std::string portf
 
         if (!db || !db->is_connected()) {
             std::cerr << "Failed to acquire database connection from pool" << std::endl;
-            return 1;
+            return make_error<backtest::BacktestResults>(
+                ErrorCode::DATABASE_ERROR, "Failed to acquire database connection from pool",
+                "BacktestAPI");
         }
         INFO("Successfully acquired database connection from pool");
 
@@ -146,14 +151,14 @@ Result<backtest::BacktestResults> BacktestRunner::run_backtest(std::string portf
         auto symbols = symbols_result.value();
 
         if (symbols_result.is_ok()) {
-            for (const auto& symbol : symbols) {
-                if (symbol.find(".c.0") != std::string::npos ||
-                    symbol.find("MES.c.0") != std::string::npos ||
-                    symbol.find("ES.v.0") != std::string::npos) {
-                    symbols.erase(std::remove(symbols.begin(), symbols.end(), symbol),
-                                  symbols.end());
-                }
-            }
+            // Remove continuous contract variants (.c.0) and full-size ES
+            // Using remove_if to avoid undefined behavior from erase-during-iteration
+            symbols.erase(std::remove_if(symbols.begin(), symbols.end(),
+                                         [](const std::string& s) {
+                                             return s.find(".c.0") != std::string::npos ||
+                                                    s == "ES.v.0";
+                                         }),
+                          symbols.end());
             config.strategy_config.symbols = symbols;
         } else {
             ERROR("Failed to get symbols: " + std::string(symbols_result.error()->what()));
@@ -161,11 +166,9 @@ Result<backtest::BacktestResults> BacktestRunner::run_backtest(std::string portf
                                      symbols_result.error()->to_string());
         }
 
-        std::cout << "Symbols: ";
         for (const auto& symbol : config.strategy_config.symbols) {
-            std::cout << symbol << " ";
+            INFO("Loaded symbol: " + symbol);
         }
-        std::cout << std::endl;
 
         // ========================================
         // APPLY CONFIG VALUES TO BACKTEST CONFIG
