@@ -302,8 +302,6 @@ Result<backtest::BacktestResults> BacktestRunner::run_backtest(std::string portf
         // Create and initialize each strategy
         for (const auto& strategy_id : strategy_names) {
             const auto& strategy_def = strategy_configs_map[strategy_id];
-            // TODO do we even need this anyways? What's the point of this versus just using
-            // strategy_id
             std::string strategy_type = strategy_def.value("type", "");
 
             double allocation = strategy_allocations[strategy_id];
