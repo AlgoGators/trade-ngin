@@ -884,9 +884,8 @@ int main() {
             double variance = sq_sum / returns.size() - mean_return * mean_return;
             double manual_vol = std::sqrt(variance) * std::sqrt(252.0);
 
-            // Sharpe ratio (matching calculate_sharpe_ratio)
-            double ann_factor = 252.0 / static_cast<double>(actual_trading_days);
-            double ann_return = mean_return * ann_factor;
+            // Sharpe ratio (matching calculate_sharpe_ratio: annualize daily mean return by *252)
+            double ann_return = mean_return * 252.0;
             double manual_sharpe = (manual_vol > 0.0) ? ann_return / manual_vol : 0.0;
 
             // Sortino ratio (matching calculate_downside_volatility + calculate_sortino_ratio)
@@ -916,9 +915,9 @@ int main() {
                 manual_max_dd = std::max(manual_max_dd, dd);
             }
 
-            // Calmar ratio
-            double manual_calmar = (manual_max_dd > 0) ? manual_total_return / manual_max_dd
-                                                        : ((manual_total_return >= 0) ? 999.0 : 0.0);
+            // Calmar ratio (matching calculate_calmar_ratio: annualized return / max drawdown)
+            double manual_calmar = (manual_max_dd > 0) ? ann_return / manual_max_dd
+                                                        : ((ann_return >= 0) ? 999.0 : 0.0);
 
             // Print comparison
             std::cout << "\n" << std::setw(20) << "Metric" << " | "
