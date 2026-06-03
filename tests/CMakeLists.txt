@@ -33,6 +33,7 @@ set(TEST_SOURCES
     live/test_audit_log_cumulative_dividend.cpp
     live/test_live_metrics_includes_dividend_income.cpp
     live/test_corp_actions_ultrareview_fixes.cpp
+    live/test_daily_pnl_identity.cpp
     backtest/test_pnl_accounting_branch.cpp
     # backtesting/test_engine.cpp  # Deprecated - BacktestEngine replaced by BacktestCoordinator
     execution/test_execution_engine.cpp
@@ -47,6 +48,7 @@ set(TEST_SOURCES
     strategy/test_mean_reversion_backtest.cpp
     strategy/test_equity_backtest_db_validation.cpp
     strategy/test_equity_pnl_accounting.cpp
+    strategy/test_live_bt_signal_consistency.cpp
     strategy/test_volatility_size_1_nan_guard.cpp
     strategy/test_stale_unrealized_pnl_zero_avg_price.cpp
     statistics/test_normalizer.cpp

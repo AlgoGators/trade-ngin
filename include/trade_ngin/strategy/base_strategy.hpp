@@ -160,6 +160,17 @@ public:
     const PnLAccounting& get_pnl_accounting() const;
 
     /**
+     * @brief Get the most recent per-symbol signals computed by on_data().
+     *
+     * Exposes the protected last_signals_ map for diagnostics and for the
+     * live-vs-backtest signal-parity test (review T-OR.5).
+     * @return Map of symbol -> latest signal value
+     */
+    const std::unordered_map<std::string, double>& get_last_signals() const {
+        return last_signals_;
+    }
+
+    /**
      * @brief Set the PnL accounting method for this strategy
      * @param method The accounting method to use
      */
