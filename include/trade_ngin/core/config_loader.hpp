@@ -158,16 +158,23 @@ struct BacktestSpecificConfig {
  */
 struct LiveSpecificConfig {
     int historical_days{300};
+    // Max age (calendar days) of the latest OHLCV bar before a live run is treated
+    // as running on stale data. WARNs in historical-replay mode, ERRORs in true-live
+    // mode (review T2.9). Default absorbs a weekend plus a holiday.
+    int data_staleness_tolerance_days{4};
 
     nlohmann::json to_json() const {
         nlohmann::json j;
         j["historical_days"] = historical_days;
+        j["data_staleness_tolerance_days"] = data_staleness_tolerance_days;
         return j;
     }
 
     void from_json(const nlohmann::json& j) {
         if (j.contains("historical_days"))
             historical_days = j.at("historical_days").get<int>();
+        if (j.contains("data_staleness_tolerance_days"))
+            data_staleness_tolerance_days = j.at("data_staleness_tolerance_days").get<int>();
     }
 };
 

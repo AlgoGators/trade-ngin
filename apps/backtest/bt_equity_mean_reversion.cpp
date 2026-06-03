@@ -1,6 +1,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <unordered_set>
 #include <nlohmann/json.hpp>
 #include "trade_ngin/backtest/backtest_coordinator.hpp"
 #include "trade_ngin/core/config_loader.hpp"
@@ -14,6 +15,7 @@
 #include "trade_ngin/instruments/instrument_registry.hpp"
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
 #include "trade_ngin/strategy/mean_reversion.hpp"
+#include "trade_ngin/strategy/equity_strategy_builder.hpp"
 
 using namespace trade_ngin;
 using namespace trade_ngin::backtest;
@@ -102,15 +104,33 @@ int main() {
         }
 
         // ========================================
-        // LOAD EQUITY SYMBOLS FROM CONFIG
+        // COLLECT ENABLED STRATEGIES + LOAD SYMBOLS FROM CONFIG
         // ========================================
+        // Iterate strategies_config (validates types, ERRORs on an unknown type
+        // instead of silently skipping it -- review §F10) rather than hardcoding
+        // the MEAN_REVERSION key.
+        auto strat_entries_result = trade_ngin::apps::collect_enabled_equity_strategies(
+            app_config.strategies_config, "enabled_backtest");
+        if (strat_entries_result.is_error()) {
+            ERROR(std::string(strat_entries_result.error()->what()));
+            return 1;
+        }
+        const auto& strat_entries = strat_entries_result.value();
+
+        // Symbols = union (config order, deduped) across all enabled strategies.
         std::vector<std::string> symbols;
-        const auto& mr_strategy_def = app_config.strategies_config["MEAN_REVERSION"];
-        if (mr_strategy_def.contains("symbols")) {
-            for (const auto& sym : mr_strategy_def["symbols"]) {
-                symbols.push_back(sym.get<std::string>());
+        {
+            std::unordered_set<std::string> seen;
+            for (const auto& entry : strat_entries) {
+                if (!entry.def.contains("symbols")) continue;
+                for (const auto& sym : entry.def["symbols"]) {
+                    std::string s = sym.get<std::string>();
+                    if (seen.insert(s).second) symbols.push_back(s);
+                }
             }
-            INFO("Loaded " + std::to_string(symbols.size()) + " symbols from config");
+            if (!symbols.empty()) {
+                INFO("Loaded " + std::to_string(symbols.size()) + " symbols from config");
+            }
         }
         if (symbols.empty()) {
             WARN("No symbols in strategy config, falling back to database scan (slow)");
@@ -203,63 +223,62 @@ int main() {
         }
 
         // ========================================
-        // CREATE MEAN REVERSION STRATEGY
+        // CREATE EQUITY STRATEGIES
         // ========================================
-        // Load mean reversion config from strategy definition
-        if (!app_config.strategies_config.contains("MEAN_REVERSION")) {
-            ERROR("MEAN_REVERSION strategy not found in config");
-            return 1;
-        }
-        const auto& strategy_def = app_config.strategies_config["MEAN_REVERSION"];
-        if (!strategy_def.contains("config")) {
-            ERROR("MEAN_REVERSION strategy missing 'config' section");
-            return 1;
-        }
-        const auto& mr_cfg = strategy_def["config"];
+        // Normalize allocations across enabled strategies to sum to 1.0 (matches
+        // the bt_portfolio convention). With a single enabled strategy this is 1.0.
+        double total_allocation = 0.0;
+        for (const auto& entry : strat_entries) total_allocation += entry.allocation;
+        if (total_allocation <= 0.0) total_allocation = 1.0;
 
-        MeanReversionConfig mr_config;
-        mr_config.lookback_period = mr_cfg.value("lookback_period", 20);
-        mr_config.entry_threshold = mr_cfg.value("entry_threshold", 2.0);
-        mr_config.exit_threshold = mr_cfg.value("exit_threshold", 0.5);
-        mr_config.risk_target = mr_cfg.value("risk_target", 0.15);
-        mr_config.position_size = mr_cfg.value("position_size", 0.1);
-        mr_config.vol_lookback = mr_cfg.value("vol_lookback", 20);
-        mr_config.use_stop_loss = mr_cfg.value("use_stop_loss", true);
-        mr_config.stop_loss_pct = mr_cfg.value("stop_loss_pct", 0.05);
-        mr_config.allow_fractional_shares = mr_cfg.value("allow_fractional_shares", true);
-
-        StrategyConfig strategy_config;
-        strategy_config.asset_classes = {AssetClass::EQUITIES};
-        strategy_config.frequencies = {DataFrequency::DAILY};
-        strategy_config.capital_allocation = initial_capital;
-        strategy_config.max_drawdown = app_config.max_drawdown;
-        strategy_config.max_leverage = app_config.max_leverage;
-
+        // Per-strategy StrategyConfig template (symbols, limits). capital_allocation
+        // is set per strategy below from the normalized weight.
+        StrategyConfig base_strategy_config;
+        base_strategy_config.asset_classes = {AssetClass::EQUITIES};
+        base_strategy_config.frequencies = {DataFrequency::DAILY};
+        base_strategy_config.max_drawdown = app_config.max_drawdown;
+        base_strategy_config.max_leverage = app_config.max_leverage;
         for (const auto& symbol : symbols) {
-            strategy_config.trading_params[symbol] = {};
-            strategy_config.position_limits[symbol] = app_config.execution.position_limit_backtest;
+            base_strategy_config.trading_params[symbol] = {};
+            base_strategy_config.position_limits[symbol] = app_config.execution.position_limit_backtest;
         }
 
         auto registry_ptr = std::shared_ptr<InstrumentRegistry>(&registry, [](InstrumentRegistry*) {});
 
-        auto strategy = std::make_shared<MeanReversionStrategy>(
-            "MEAN_REVERSION", strategy_config, mr_config, db, registry_ptr);
+        // Build each enabled strategy. Dispatch on type (collect_enabled_equity_strategies
+        // already validated that the type is recognized).
+        std::vector<std::pair<std::shared_ptr<StrategyInterface>, double>> strategies;
+        for (const auto& entry : strat_entries) {
+            double weight = entry.allocation / total_allocation;
+            StrategyConfig sc = base_strategy_config;
+            sc.capital_allocation = initial_capital * weight;
 
-        auto strat_init_result = strategy->initialize();
-        if (strat_init_result.is_error()) {
-            ERROR("Failed to initialize mean reversion strategy: " +
-                  std::string(strat_init_result.error()->what()));
-            return 1;
+            std::shared_ptr<StrategyInterface> strategy;
+            if (entry.type == "MeanReversionStrategy") {
+                auto mr_config = trade_ngin::apps::build_mean_reversion_config(entry.def["config"]);
+                strategy = std::make_shared<MeanReversionStrategy>(
+                    entry.id, sc, mr_config, db, registry_ptr);
+            } else {
+                ERROR("Unsupported equity strategy type: " + entry.type + " for " + entry.id);
+                return 1;
+            }
+
+            auto strat_init_result = strategy->initialize();
+            if (strat_init_result.is_error()) {
+                ERROR("Failed to initialize strategy " + entry.id + ": " +
+                      std::string(strat_init_result.error()->what()));
+                return 1;
+            }
+            auto strat_start_result = strategy->start();
+            if (strat_start_result.is_error()) {
+                ERROR("Failed to start strategy " + entry.id + ": " +
+                      std::string(strat_start_result.error()->what()));
+                return 1;
+            }
+            strategies.emplace_back(std::move(strategy), weight);
+            INFO("Equity strategy '" + entry.id + "' initialized and started (allocation " +
+                 std::to_string(weight * 100.0) + "%)");
         }
-
-        auto strat_start_result = strategy->start();
-        if (strat_start_result.is_error()) {
-            ERROR("Failed to start mean reversion strategy: " +
-                  std::string(strat_start_result.error()->what()));
-            return 1;
-        }
-
-        INFO("Mean reversion strategy initialized and started");
 
         // ========================================
         // CREATE PORTFOLIO AND RUN BACKTEST
@@ -273,12 +292,14 @@ int main() {
 
         auto portfolio = std::make_shared<PortfolioManager>(portfolio_config);
 
-        auto add_result = portfolio->add_strategy(strategy, 1.0, false,
-                                                   portfolio_config.use_risk_management);
-        if (add_result.is_error()) {
-            ERROR("Failed to add strategy to portfolio: " +
-                  std::string(add_result.error()->what()));
-            return 1;
+        for (const auto& [strategy, weight] : strategies) {
+            auto add_result = portfolio->add_strategy(strategy, weight, false,
+                                                       portfolio_config.use_risk_management);
+            if (add_result.is_error()) {
+                ERROR("Failed to add strategy to portfolio: " +
+                      std::string(add_result.error()->what()));
+                return 1;
+            }
         }
 
         // Register tier-appropriate equity cost configs before the backtest
@@ -351,21 +372,28 @@ int main() {
         // Save results
         INFO("Saving backtest results to database...");
         try {
-            std::vector<std::string> strategy_names = {"MEAN_REVERSION"};
-            std::unordered_map<std::string, double> strategy_allocations = {
-                {"MEAN_REVERSION", 1.0}};
+            std::vector<std::string> strategy_names;
+            std::unordered_map<std::string, double> strategy_allocations;
+            for (const auto& entry : strat_entries) {
+                strategy_names.push_back(entry.id);
+                strategy_allocations[entry.id] = entry.allocation / total_allocation;
+            }
 
             nlohmann::json config_json;
             config_json["strategy_type"] = "MeanReversionStrategy";
             config_json["asset_class"] = "EQUITIES";
-            config_json["mean_reversion"] = {
-                {"lookback_period", mr_config.lookback_period},
-                {"entry_threshold", mr_config.entry_threshold},
-                {"exit_threshold", mr_config.exit_threshold},
-                {"risk_target", mr_config.risk_target},
-                {"position_size", mr_config.position_size},
-                {"vol_lookback", mr_config.vol_lookback},
-                {"allow_fractional_shares", mr_config.allow_fractional_shares}};
+            {
+                auto mr = trade_ngin::apps::build_mean_reversion_config(
+                    strat_entries.front().def["config"]);
+                config_json["mean_reversion"] = {
+                    {"lookback_period", mr.lookback_period},
+                    {"entry_threshold", mr.entry_threshold},
+                    {"exit_threshold", mr.exit_threshold},
+                    {"risk_target", mr.risk_target},
+                    {"position_size", mr.position_size},
+                    {"vol_lookback", mr.vol_lookback},
+                    {"allow_fractional_shares", mr.allow_fractional_shares}};
+            }
 
             auto save_result = coordinator->save_portfolio_results_to_db(
                 backtest_results, strategy_names, strategy_allocations, portfolio, config_json);

@@ -23,6 +23,7 @@
 #include "trade_ngin/live/corporate_actions_audit_log.hpp"
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
 #include "trade_ngin/strategy/mean_reversion.hpp"
+#include "trade_ngin/strategy/equity_strategy_builder.hpp"
 #include "trade_ngin/core/email_sender.hpp"
 #include "trade_ngin/storage/live_results_manager.hpp"
 #include "trade_ngin/live/live_data_loader.hpp"
@@ -208,13 +209,48 @@ int main(int argc, char* argv[]) {
         double commission_rate = app_config.execution.commission_rate;
         double slippage_model = app_config.execution.slippage_bps;
 
-        // Load equity symbols from database
-        auto symbols_result = db->get_symbols(trade_ngin::AssetClass::EQUITIES);
-        if (symbols_result.is_error()) {
-            ERROR("Failed to get symbols: " + std::string(symbols_result.error()->what()));
+        // Collect enabled strategies (validates types, ERRORs on an unknown type
+        // instead of silently skipping it -- review §F10).
+        auto strat_entries_result = trade_ngin::apps::collect_enabled_equity_strategies(
+            app_config.strategies_config, "enabled_live");
+        if (strat_entries_result.is_error()) {
+            ERROR(std::string(strat_entries_result.error()->what()));
             return 1;
         }
-        auto symbols = symbols_result.value();
+        const auto& strat_entries = strat_entries_result.value();
+        // The live runner's storage layer is keyed to a single strategy id today
+        // (LIVE_EQUITY_MEAN_REVERSION, used at ~20 storage/query sites), so require
+        // exactly one enabled strategy rather than silently running only the first.
+        if (strat_entries.size() != 1) {
+            ERROR("Live equity runner supports exactly one enabled strategy today; found " +
+                  std::to_string(strat_entries.size()));
+            return 1;
+        }
+        const auto& strat_entry = strat_entries.front();
+
+        // Load symbols config-first (from the strategy def); fall back to a full DB
+        // scan only if none are configured. Previously this unconditionally loaded
+        // the entire equity universe and tripped the 1000-symbol cap (review §L1/T2.1).
+        std::vector<std::string> symbols;
+        if (strat_entry.def.contains("symbols")) {
+            for (const auto& sym : strat_entry.def["symbols"]) {
+                symbols.push_back(sym.get<std::string>());
+            }
+            INFO("Loaded " + std::to_string(symbols.size()) + " symbols from config");
+        }
+        if (symbols.empty()) {
+            WARN("No symbols in strategy config, falling back to database scan (slow)");
+            auto symbols_result = db->get_symbols(trade_ngin::AssetClass::EQUITIES);
+            if (symbols_result.is_error()) {
+                ERROR("Failed to get symbols: " + std::string(symbols_result.error()->what()));
+                return 1;
+            }
+            symbols = symbols_result.value();
+        }
+        if (symbols.empty()) {
+            ERROR("No equity symbols found");
+            return 1;
+        }
 
         // Register equity instruments. Pass the exchange JSON path so per-symbol
         // exchanges populate correctly instead of defaulting to NYSE. Audit §1.2.
@@ -283,17 +319,11 @@ int main(int argc, char* argv[]) {
         portfolio_config.opt_config = opt_config;
         portfolio_config.risk_config = risk_config;
 
-        // Load mean reversion strategy config from config file
-        if (!app_config.strategies_config.contains("MEAN_REVERSION")) {
-            ERROR("MEAN_REVERSION strategy not found in config");
-            return 1;
-        }
-        const auto& strategy_def = app_config.strategies_config["MEAN_REVERSION"];
-        if (!strategy_def.contains("config")) {
-            ERROR("MEAN_REVERSION strategy missing 'config' section");
-            return 1;
-        }
-        const auto& mr_cfg = strategy_def["config"];
+        // Strategy config was resolved above by collect_enabled_equity_strategies
+        // (guaranteed to contain a "config" block). The strategy is still
+        // constructed with the id "LIVE_EQUITY_MEAN_REVERSION" below to match the
+        // live storage keys -- not strat_entry.id.
+        const auto& mr_cfg = strat_entry.def["config"];
 
         // Create mean reversion strategy configuration
         trade_ngin::StrategyConfig mr_config;
@@ -308,17 +338,10 @@ int main(int argc, char* argv[]) {
             mr_config.costs[symbol] = commission_rate;
         }
 
-        // Configure mean reversion parameters from config
-        trade_ngin::MeanReversionConfig mean_rev_config;
-        mean_rev_config.lookback_period = mr_cfg.value("lookback_period", 20);
-        mean_rev_config.entry_threshold = mr_cfg.value("entry_threshold", 2.0);
-        mean_rev_config.exit_threshold = mr_cfg.value("exit_threshold", 0.5);
-        mean_rev_config.risk_target = mr_cfg.value("risk_target", 0.15);
-        mean_rev_config.position_size = mr_cfg.value("position_size", 0.1);
-        mean_rev_config.vol_lookback = mr_cfg.value("vol_lookback", 20);
-        mean_rev_config.use_stop_loss = mr_cfg.value("use_stop_loss", true);
-        mean_rev_config.stop_loss_pct = mr_cfg.value("stop_loss_pct", 0.05);
-        mean_rev_config.allow_fractional_shares = mr_cfg.value("allow_fractional_shares", true);
+        // Configure mean reversion parameters from config via the shared builder so
+        // live and backtest construct the strategy identically (review T-OR.5).
+        trade_ngin::MeanReversionConfig mean_rev_config =
+            trade_ngin::apps::build_mean_reversion_config(mr_cfg);
 
         // Create and initialize the strategies
         // Before MeanReversionStrategy
@@ -423,6 +446,35 @@ int main(int argc, char* argv[]) {
         
         auto all_bars = conversion_result.value();
         INFO("Loaded " + std::to_string(all_bars.size()) + " total bars");
+
+        // Data-freshness guard (review T2.9): the newest bar actually loaded for our
+        // symbols tells us how current the feed is. If it lags end_date by more than
+        // the configured tolerance, the run is on stale data -- WARN in historical-
+        // replay mode, ERROR (refuse) in true-live mode. (Computed from the loaded
+        // bars rather than a separate query: symbol-scoped and no extra round-trip.)
+        if (!all_bars.empty()) {
+            auto latest_bar = all_bars.front().timestamp;
+            for (const auto& bar : all_bars) {
+                if (bar.timestamp > latest_bar) latest_bar = bar.timestamp;
+            }
+            int tolerance_days = app_config.live.data_staleness_tolerance_days;
+            auto staleness = end_date - latest_bar;
+            long staleness_days =
+                std::chrono::duration_cast<std::chrono::hours>(staleness).count() / 24;
+            if (staleness > std::chrono::hours(24 * tolerance_days)) {
+                std::string msg =
+                    "Equity data is stale: newest loaded bar is " + std::to_string(staleness_days) +
+                    " days older than end_date (tolerance " + std::to_string(tolerance_days) +
+                    " days).";
+                if (use_override_date) {
+                    WARN(msg + " Proceeding in historical-replay mode.");
+                } else {
+                    ERROR(msg + " Refusing to run live on stale data. Refresh the OHLCV "
+                                "feed or raise live.data_staleness_tolerance_days.");
+                    return 1;
+                }
+            }
+        }
 
         // Update price manager with bars to extract T-1 and T-2 prices
         if (price_manager) {
