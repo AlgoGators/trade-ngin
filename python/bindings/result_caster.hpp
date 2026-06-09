@@ -40,10 +40,13 @@ public:
     bool load(handle src, bool) {
         // We don't support loading Result<void> from Python, so just return false to indicate
         // failure
+        (void)src;  // Suppress unused parameter warning
         return false;
     }
 
     static handle cast(trade_ngin::Result<void> src, return_value_policy policy, handle parent) {
+        (void)policy;  // Suppress unused parameter warning
+        (void)parent;  // Suppress unused parameter warning
         if (!src.is_ok()) {
             throw std::runtime_error(*(src.error()));
         }
