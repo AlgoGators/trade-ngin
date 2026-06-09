@@ -27,6 +27,8 @@ public:
     }
 
     static handle cast(const trade_ngin::Decimal& src, return_value_policy policy, handle parent) {
+        (void)policy;  // Suppress unused parameter warning
+        (void)parent;  // Suppress unused parameter warning
         py::object DecimalClass = py::module_::import("decimal").attr("Decimal");
         return DecimalClass(src.to_string()).release();
     }
