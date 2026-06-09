@@ -13,7 +13,8 @@ using namespace trade_ngin::api;
 void bind_backtest_api(py::module_& m) {
     py::class_<BacktestRunner>(m, "BacktestRunner")
         .def(py::init<>())
-        .def("run_backtest", &BacktestRunner::run_backtest, py::arg("portfolio"))
+        .def("initialize", &BacktestRunner::initialize, py::arg("portfolio_name"))
+        .def("run_backtest", &BacktestRunner::run_backtest)
         .def(
             "register_strategy",
             [](BacktestRunner& self, const std::string& strategy_id, py::object py_class) {

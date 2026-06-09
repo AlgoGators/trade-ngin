@@ -11,21 +11,27 @@
 
 namespace trade_ngin::api {
 
-Result<backtest::BacktestResults> BacktestRunner::run_backtest(std::string portfolio_name) {
+void BacktestRunner::initialize(std::string portfolio_name) {
+    portfolio_name_ = std::move(portfolio_name);
+
+    // TODO move database and other initialization here?
+
+    // Initialize logging
+    Logger::reset_for_tests();
+    auto& logger = Logger::instance();
+    LoggerConfig logger_config;
+    logger_config.min_level = LogLevel::DEBUG;
+    logger_config.destination = LogDestination::BOTH;
+    logger_config.log_directory = "logs";
+    logger_config.filename_prefix = "bt_portfolio_" + portfolio_name;
+    logger.initialize(logger_config);
+}
+
+Result<backtest::BacktestResults> BacktestRunner::run_backtest() {
     try {
         // Reset all singletons to ensure clean state between runs
-        // TODO Move earlier since in Python we do add_strategy calls before run_backtest
         StateManager::reset_instance();
-        Logger::reset_for_tests();
-
-        // Initialize logger
         auto& logger = Logger::instance();
-        LoggerConfig logger_config;
-        logger_config.min_level = LogLevel::DEBUG;
-        logger_config.destination = LogDestination::BOTH;
-        logger_config.log_directory = "logs";
-        logger_config.filename_prefix = "bt_portfolio_" + portfolio_name;
-        logger.initialize(logger_config);
 
         std::atomic_thread_fence(std::memory_order_seq_cst);
 
@@ -40,8 +46,8 @@ Result<backtest::BacktestResults> BacktestRunner::run_backtest(std::string portf
         // ========================================
         // LOAD CONFIGURATION FROM MODULAR CONFIG FILES
         // ========================================
-        INFO("Loading configuration from config/portfolios/" + portfolio_name + "...");
-        auto app_config_result = ConfigLoader::load("./config", portfolio_name);
+        INFO("Loading configuration from config/portfolios/" + portfolio_name_ + "...");
+        auto app_config_result = ConfigLoader::load("./config", portfolio_name_);
         if (app_config_result.is_error()) {
             ERROR("Failed to load configuration: " +
                   std::string(app_config_result.error()->what()));
@@ -430,7 +436,7 @@ Result<backtest::BacktestResults> BacktestRunner::run_backtest(std::string portf
         INFO("Analyzing performance metrics...");
 
         std::cout << "======= Backtest Results =======" << std::endl;
-        std::cout << "Portfolio: " << portfolio_name << std::endl;
+        std::cout << "Portfolio: " << portfolio_name_ << std::endl;
         std::cout << "Total Return: " << (backtest_results.total_return * 100.0) << "%"
                   << std::endl;
         std::cout << "Sharpe Ratio: " << backtest_results.sharpe_ratio << std::endl;

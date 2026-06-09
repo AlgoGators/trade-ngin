@@ -22,12 +22,15 @@ using StrategyFactory =
 
 class BacktestRunner {
 public:
-    Result<backtest::BacktestResults> run_backtest(std::string portfolio);
+    void initialize(std::string portfolio_name);
+
+    Result<backtest::BacktestResults> run_backtest();
 
     Result<void> register_strategy(const std::string& strategy_id, StrategyFactory factory);
 
 private:
     std::unordered_map<std::string, StrategyFactory> registered_strategies_;
+    std::string portfolio_name_;
 };
 
 }  // namespace api
