@@ -1,4 +1,5 @@
 #include "bindings.hpp"
+#include "pystrategy.hpp"
 
 #include <pybind11/pybind11.h>
 
@@ -15,11 +16,10 @@ void bind_backtest_api(py::module_& m) {
         .def("run_backtest", &BacktestRunner::run_backtest, py::arg("portfolio"))
         .def(
             "register_strategy",
-            [](BacktestRunner& self, const std::string& strategy_id, py::object py_class,
-               py::dict py_dict) {
+            [](BacktestRunner& self, const std::string& strategy_id, py::object py_class) {
                 self.register_strategy(
                     strategy_id,
-                    [py_class, py_dict, strategy_id](
+                    [py_class, strategy_id](
                         const StrategyContext& ctx,
                         const nlohmann::json& strategy_defaults) -> std::shared_ptr<BaseStrategy> {
                         py::gil_scoped_acquire gil;
@@ -30,12 +30,12 @@ void bind_backtest_api(py::module_& m) {
                         py::object py_instance = py_class();
                         // Inject state
                         py_instance.attr("initialize_from_context")(
-                            strategy_id, ctx.base_strategy_config, ctx.db);
-                        // TODO registry?
+                            strategy_id, ctx.base_strategy_config, ctx.db, ctx.registry);
 
                         // Extract raw C++ pointer while the Python wrapper is
                         // still alive.
-                        BaseStrategy* raw = py_instance.cast<BaseStrategy*>();
+                        PyStrategy* raw = py_instance.cast<PyStrategy*>();
+                        BaseStrategy* base = static_cast<BaseStrategy*>(raw);
 
                         // Keep the Python wrapper alive for the entire lifetime
                         // of the returned shared_ptr. py::get_override works by
@@ -52,16 +52,17 @@ void bind_backtest_api(py::module_& m) {
                                 py::gil_scoped_acquire destroy_gil;
                                 delete obj;
                             });
-                        return std::shared_ptr<BaseStrategy>(py_owner, raw);
+                        return std::shared_ptr<BaseStrategy>(py_owner, base);
                     });
             },
-            py::arg("strategy_id"), py::arg("strategy"), py::arg("strategy_config"))
+            py::arg("strategy_id"), py::arg("strategy"))
         .def("register_trend_following_strategy",  // Ideally we wouldn't need to do this separately
                                                    // but this is the quickest and best solution
                                                    // right now IMO
              [](BacktestRunner& self) {
                  self.register_strategy(
-                     "TREND_FOLLOWING",
+                     "TREND_FOLLOWING",  // TODO Eventually allow multiple registrations with
+                                         // different configs and names
                      [](const StrategyContext& ctx,
                         const nlohmann::json& strategy_def) -> std::shared_ptr<BaseStrategy> {
                          TrendFollowingConfig trend_config;

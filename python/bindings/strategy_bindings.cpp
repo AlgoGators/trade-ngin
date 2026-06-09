@@ -1,5 +1,7 @@
 #include "bindings.hpp"
 
+#include "pystrategy.hpp"
+
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
@@ -11,42 +13,20 @@
 namespace py = pybind11;
 using namespace trade_ngin;
 
-// TODO allow conversion from Result<void> somewhere so we don't need manual control of override for
-// each function
-struct PyBaseStrategy : public BaseStrategy {
-    using BaseStrategy::BaseStrategy;  // Inherit constructors
+// TODO find some way so we don't need to repeat all this code
+struct PyBaseStrategy : public PyStrategy {
+    using PyStrategy::PyStrategy;  // Inherit constructors
 
     Result<void> on_data(const std::vector<Bar>& data) override {
-        py::gil_scoped_acquire gil;
-
-        py::function override = py::get_override(static_cast<const BaseStrategy*>(this), "on_data");
-
-        if (!override) {
-            WARN("No Python override found for on_data in Strategy " + id_ +
-                 ", using base implementation");
-            return BaseStrategy::on_data(data);
-        }
-
-        try {
-            py::object result = override(data);
-
-            if (result.is_none()) {
-                INFO("Python on_data override returned None, treating as success");
-                return Result<void>();
+        auto positions = generate_positions_from_data(data);
+        for (const auto& pos : positions) {
+            Result<void> result = update_position(pos.symbol, pos);
+            if (result.is_error()) {
+                return result;  // Return failure if any position update fails
             }
-
-            return result.cast<Result<void>>();
-        } catch (const py::error_already_set& e) {
-            return make_error<void>(ErrorCode::NOT_INITIALIZED,
-                                    std::string("Python on_data override failed: ") + e.what(),
-                                    "BaseStrategy");
         }
+        return Result<void>();  // Return success if all position updates succeed
     }
-
-    // Optional override for custom logging and logic over internal PnL logic
-    Result<void> on_execution(const ExecutionReport& report) override {
-        PYBIND11_OVERRIDE(Result<void>, BaseStrategy, on_execution, report);
-    };
 
     // TODO custom override to tell C++ part that the strategy has been initialized from Python side
     // "Initialization" that would normally be done in the constructor but we're unable to do
@@ -74,7 +54,7 @@ struct PyBaseStrategy : public BaseStrategy {
         metadata_.description = "Implementation of strategy defined in Python";
 
         py::function override =
-            py::get_override(static_cast<const BaseStrategy*>(this), "initialize");
+            py::get_override(static_cast<const PyStrategy*>(this), "initialize");
         if (!override) {
             WARN("No Python override found for initialize in Strategy " + id_);
             return Result<void>();
@@ -101,7 +81,7 @@ struct PyBaseStrategy : public BaseStrategy {
         py::gil_scoped_acquire gil;
 
         py::function override =
-            py::get_override(static_cast<const BaseStrategy*>(this), "get_price_history");
+            py::get_override(static_cast<const PyStrategy*>(this), "get_price_history");
         if (!override) {
             WARN("No Python override found for get_price_history in Strategy " + id_ +
                  ", using base implementation");
@@ -122,31 +102,64 @@ struct PyBaseStrategy : public BaseStrategy {
             return std::unordered_map<std::string, std::vector<double>>();
         }
     }
+
+    std::vector<Position> generate_positions_from_data(
+        const std::vector<Bar>& data) const override {
+        py::gil_scoped_acquire gil;
+
+        py::function override =
+            py::get_override(static_cast<const PyStrategy*>(this), "generate_positions_from_data");
+        if (!override) {
+            WARN("No Python override found for generate_positions_from_data in Strategy " + id_ +
+                 ", returning empty position list");
+            return std::vector<Position>();
+        }
+
+        try {
+            py::object result = override(data);
+
+            if (result.is_none()) {
+                INFO(
+                    "Python generate_positions_from_data override returned None, treating as no "
+                    "positions");
+                return std::vector<Position>();
+            }
+
+            return result.cast<std::vector<Position>>();
+        } catch (const py::error_already_set& e) {
+            ERROR("Python generate_positions_from_data override failed: " + std::string(e.what()));
+            return std::vector<Position>();
+        }
+    }
 };
 
 void bind_base_strategy(py::module_& m) {
-    py::class_<BaseStrategy, PyBaseStrategy, std::shared_ptr<BaseStrategy>>(m, "BaseStrategy")
+    py::class_<PyStrategy, PyBaseStrategy, std::shared_ptr<PyStrategy>>(m, "BaseStrategy")
         .def(py::init<>())
-        .def("initialize_from_context", &BaseStrategy::initialize_from_context, py::arg("id"),
-             py::arg("config"),
-             py::arg("db"))  // Internal initializer for Python subclasses to set up the
-                             // strategy from the context passed in by the backtest runner
+        .def("initialize_from_context", &PyStrategy::initialize_from_context, py::arg("id"),
+             py::arg("config"), py::arg("db"),
+             py::arg("registry"))  // Internal initializer for Python subclasses to set up the
+                                   // strategy from the context passed in by the backtest runner
         .def_property_readonly(
             "config",
-            [](BaseStrategy& self) -> const StrategyConfig& {
+            [](PyStrategy& self) -> const StrategyConfig& {
                 return self.get_config();
             })  // Necessarily expose config from C++ side instead of Python side since we're
                 // getting the configs from the config files. Also, currently read only which
                 // should be sufficient, but potentially might want to add some setters in the
                 // future if we want to allow dynamic config updates from Python side.
-        .def("initialize", &BaseStrategy::initialize)
-        .def("on_data", &BaseStrategy::on_data)
-        .def("on_execution", &BaseStrategy::on_execution)
-        .def("on_signal", &BaseStrategy::on_signal)
-        .def("get_price_history", &BaseStrategy::get_price_history)
+        .def_property_readonly(
+            "registry",
+            [](PyStrategy& self) -> std::shared_ptr<InstrumentRegistry> { return self.registry_; },
+            py::return_value_policy::
+                reference_internal)  // Expose registry to allow Python strategies to register
+                                     // custom components like indicators or data sources
+        .def("initialize", &PyStrategy::initialize)
+        .def("on_signal", &PyStrategy::on_signal)
+        .def("get_price_history", &PyStrategy::get_price_history)
         .def_property_readonly(
             "positions",
-            [](const BaseStrategy& self) -> const std::unordered_map<std::string, Position>& {
+            [](const PyStrategy& self) -> const std::unordered_map<std::string, Position>& {
                 return self.get_positions();
             },
             py::return_value_policy::reference_internal)

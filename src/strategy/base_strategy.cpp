@@ -124,15 +124,6 @@ Result<void> BaseStrategy::initialize() {
     }
 }
 
-void BaseStrategy::initialize_from_context(const std::string& id, const StrategyConfig& config,
-                                           std::shared_ptr<PostgresDatabase> db) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    id_ = id;
-    config_ = config;
-    db_ = db;
-    state_ = StrategyState::INITIALIZED;
-}
-
 Result<void> BaseStrategy::start() {
     if (!is_initialized_) {
         std::cerr << "Strategy must be initialized before starting" << std::endl;
@@ -370,8 +361,7 @@ Result<void> BaseStrategy::seed_positions(
     const std::unordered_map<std::string, Position>& positions) {
     std::lock_guard<std::mutex> lock(mutex_);
     positions_ = positions;
-    INFO("Seeded " + std::to_string(positions.size()) +
-         " positions into strategy " + id_ +
+    INFO("Seeded " + std::to_string(positions.size()) + " positions into strategy " + id_ +
          " (anchors position buffer across process restart)");
     return Result<void>();
 }
