@@ -7,7 +7,6 @@
 #include <vector>
 
 #include "trade_ngin/strategy/base_strategy.hpp"
-#include "trade_ngin/strategy/trend_following.hpp"
 
 namespace py = pybind11;
 using namespace trade_ngin;
@@ -151,74 +150,7 @@ void bind_base_strategy(py::module_& m) {
                 return self.get_positions();
             },
             py::return_value_policy::reference_internal)
-        .def("update_position", &BaseStrategy::update_position, py::arg("symbol"),
-             py::arg("position"));
-    // TODO probably not the best idea to expose this directly - the ideal interface would be to
-    // expose a method that takes in everything you need for a position update and then calls
-    // update_position internally after doing some validation and conversion. But for now this
-    // is fine since it's just a simple wrapper around the C++ method and we can add more
-    // validation in the future if needed.
-    // TODO We can expose more that we need as we go on
-}
-
-void bind_trend_following_config(py::module_& m) {
-    py::class_<TrendFollowingConfig>(m, "TrendFollowingConfig")
-        .def(py::init<>())
-        .def_readwrite("weight", &TrendFollowingConfig::weight)
-        .def_readwrite("risk_target", &TrendFollowingConfig::risk_target)
-        .def_readwrite("fx_rate", &TrendFollowingConfig::fx_rate)
-        .def_readwrite("idm", &TrendFollowingConfig::idm)
-        .def_readwrite("max_symbol_concentration", &TrendFollowingConfig::max_symbol_concentration)
-        .def_readwrite("use_position_buffering", &TrendFollowingConfig::use_position_buffering)
-        .def_readwrite("ema_windows", &TrendFollowingConfig::ema_windows)
-        .def_readwrite("vol_lookback_short", &TrendFollowingConfig::vol_lookback_short)
-        .def_readwrite("vol_lookback_long", &TrendFollowingConfig::vol_lookback_long)
-        .def_readwrite("fdm", &TrendFollowingConfig::fdm)
-        .def("to_dict", [](const TrendFollowingConfig& cfg) {
-            py::dict d;
-            d["weight"] = cfg.weight;
-            d["risk_target"] = cfg.risk_target;
-            d["fx_rate"] = cfg.fx_rate;
-            d["idm"] = cfg.idm;
-            d["max_symbol_concentration"] = cfg.max_symbol_concentration;
-            d["use_position_buffering"] = cfg.use_position_buffering;
-            d["ema_windows"] = cfg.ema_windows;
-            d["vol_lookback_short"] = cfg.vol_lookback_short;
-            d["vol_lookback_long"] = cfg.vol_lookback_long;
-            d["fdm"] = cfg.fdm;
-            return d;
-        });
-}
-
-// There's a bit of a problem with binding what we already have because we're going from C++ to
-// Python back to C++ back to Python back to C++...
-// It's fine though
-void bind_trend_following_strategy(py::module_& m) {
-    py::class_<TrendFollowingStrategy, BaseStrategy, std::shared_ptr<TrendFollowingStrategy>>(
-        m, "TrendFollowingStrategy")
-        .def(
-            "__init__",
-            [](TrendFollowingStrategy& self, const std::string& id,
-               const StrategyConfig& base_config, py::dict trend_config,
-               std::shared_ptr<PostgresDatabase> db, std::shared_ptr<InstrumentRegistry> registry) {
-                // Convert py::dict -> TrendFollowingConfig
-                TrendFollowingConfig cfg;
-                cfg.weight = trend_config["weight"].cast<double>();
-                cfg.risk_target = trend_config["risk_target"].cast<double>();
-                cfg.fx_rate = trend_config["fx_rate"].cast<double>();
-                cfg.idm = trend_config["idm"].cast<double>();
-                cfg.max_symbol_concentration =
-                    trend_config["max_symbol_concentration"].cast<double>();
-                cfg.use_position_buffering = trend_config["use_position_buffering"].cast<bool>();
-                cfg.ema_windows =
-                    trend_config["ema_windows"].cast<std::vector<std::pair<int, int>>>();
-                cfg.vol_lookback_short = trend_config["vol_lookback_short"].cast<int>();
-                cfg.vol_lookback_long = trend_config["vol_lookback_long"].cast<int>();
-                cfg.fdm = trend_config["fdm"].cast<std::vector<std::pair<int, double>>>();
-
-                // Placement new to call the real constructor - highkey wizard magic
-                new (&self) TrendFollowingStrategy(id, base_config, cfg, db, registry);
-            },
-            py::arg("id"), py::arg("config"), py::arg("trend_config"), py::arg("db"),
-            py::arg("registry") = nullptr);
+        .def("update_position", &PyStrategy::update_position, py::arg("symbol"),
+             py::arg("position"))
+        .def("generate_positions_from_data", &PyStrategy::generate_positions_from_data);
 }
