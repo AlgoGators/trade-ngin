@@ -12,6 +12,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         lsb-release \
         pkg-config \
         libpq-dev \
+        python3-dev \
+        python3-full \
     && rm -rf /var/lib/apt/lists/*
 
 # Google Test / Google Mock from source

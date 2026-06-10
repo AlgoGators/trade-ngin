@@ -4,8 +4,9 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "trade-ngin"
-version = "0.1.0"
+version = "0.1.1"
 requires-python = ">=3.10"
 
 [tool.scikit-build]
+cmake.version = ">=3.15"
 cmake.build-type = "Release"

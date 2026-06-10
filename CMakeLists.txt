@@ -46,38 +46,33 @@ else()
     set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/${CMAKE_BUILD_TYPE}")
 endif()
 
+# Options
+option(BUILD_TESTING "Build tests" OFF)
+
 # Find packages
-#set(GTest_DIR "C:/vcpkg/installed/x64-windows/share/gtest")
-find_package(GTest CONFIG REQUIRED)
-#set(nlohmann_json_DIR "C:/vcpkg/installed/x64-windows/share/nlohmann_json")
+if(BUILD_TESTING)
+    find_package(GTest CONFIG REQUIRED)
+endif()
 find_package(nlohmann_json CONFIG REQUIRED)
-#set(Arrow_DIR "C:/vcpkg/installed/x64-windows/share/arrow")
-find_package(Arrow REQUIRED)
-#set(libpqxx_DIR "C:/vcpkg/installed/x64-windows/share/libpqxx")
-# find_package(libpqxx CONFIG REQUIRED)
-find_package(Eigen3 REQUIRED)
-find_package(NLopt REQUIRED)
-add_subdirectory(extern/pybind11)
-
-# Try to find libpqxx via pkg-config (works with Homebrew)
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(PQXX REQUIRED libpqxx)
-
-# Find curl for email functionality
+find_package(Arrow CONFIG REQUIRED)
+find_package(libpqxx CONFIG REQUIRED)
+find_package(Eigen3 CONFIG REQUIRED)
+find_package(NLopt CONFIG REQUIRED)
 find_package(CURL REQUIRED)
-
-add_library(libpqxx::pqxx UNKNOWN IMPORTED)
-set_target_properties(libpqxx::pqxx PROPERTIES
-    IMPORTED_LOCATION "${PQXX_LINK_LIBRARIES}"
-    INTERFACE_INCLUDE_DIRECTORIES "${PQXX_INCLUDE_DIRS}"
-    INTERFACE_LINK_LIBRARIES "${PQXX_LIBRARIES}"
-)
-
-link_directories(${PQXX_LIBRARY_DIRS})
-
+add_subdirectory(extern/pybind11)
 
 # Include code coverage module if enabled
 include(cmake/CodeCoverage.cmake)
+
+if(TARGET Arrow::arrow_static)
+    set(ARROW_TARGET Arrow::arrow_static)
+elseif(TARGET Arrow::arrow_shared)
+    set(ARROW_TARGET Arrow::arrow_shared)
+elseif(TARGET Arrow::arrow)
+    set(ARROW_TARGET Arrow::arrow)
+else()
+    message(FATAL_ERROR "No Arrow target found")
+endif()
 
 # Add source files for the library
 set(TRADE_NGIN_SOURCES
@@ -150,20 +145,28 @@ set(TRADE_NGIN_SOURCES
 )
 
 # Add library target
-add_library(trade_ngin SHARED ${TRADE_NGIN_SOURCES})
-install(TARGETS trade_ngin
-    LIBRARY DESTINATION .
-)
-set_target_properties(trade_ngin PROPERTIES
-    INSTALL_RPATH "$ORIGIN"
-)
-
-# Add test-specific compile definitions when building tests
-if(BUILD_TESTING)
-    target_compile_definitions(trade_ngin PRIVATE USE_DIRECT_DB_CONNECTION)
+if(WIN32)
+    add_library(trade_ngin STATIC ${TRADE_NGIN_SOURCES})
+else()
+    add_library(trade_ngin SHARED ${TRADE_NGIN_SOURCES})
 endif()
 
- # Add test-specific compile definitions when building tests
+install(TARGETS trade_ngin
+    LIBRARY DESTINATION .
+    RUNTIME DESTINATION .
+    ARCHIVE DESTINATION lib
+)
+if(APPLE)
+    set_target_properties(trade_ngin PROPERTIES
+        INSTALL_RPATH "@loader_path"
+    )
+elseif(NOT WIN32)
+    set_target_properties(trade_ngin PROPERTIES
+        INSTALL_RPATH "$ORIGIN"
+    )
+endif()
+
+# Add test-specific compile definitions when building tests
 if(BUILD_TESTING)
     target_compile_definitions(trade_ngin PRIVATE USE_DIRECT_DB_CONNECTION)
 endif()
@@ -172,19 +175,12 @@ endif()
 target_link_libraries(trade_ngin
     PUBLIC
         nlohmann_json::nlohmann_json
-        libpqxx::pqxx
-        Arrow::arrow_shared
+        ${ARROW_TARGET}
         CURL::libcurl
         Eigen3::Eigen
-        NLopt::nlopt_cxx
+        NLopt::nlopt
+        libpqxx::pqxx
 )
-
-# Windows-specific settings
-if(WIN32)
-    set_target_properties(trade_ngin PROPERTIES
-        WINDOWS_EXPORT_ALL_SYMBOLS ON
-    )
-endif()
 
 # Set up include directories for the library
 target_include_directories(trade_ngin
@@ -198,11 +194,10 @@ if(ENABLE_COVERAGE)
     add_coverage_target(trade_ngin)
 endif()
 
-# Enable testing
-enable_testing()
-
-# Add tests subdirectory
-add_subdirectory(tests)
+if(BUILD_TESTING)
+    add_subdirectory(tests)
+    enable_testing()
+endif()
 
 # Add apps subdirectory
 add_subdirectory(apps)

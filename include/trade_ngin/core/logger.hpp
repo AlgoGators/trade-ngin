@@ -208,9 +208,7 @@ public:
         return initialized_.load(std::memory_order_acquire);
     }
 
-    static void register_component(const std::string& component) {
-        current_component_ = component;
-    }
+    static void register_component(const std::string& component);
 
 private:
     Logger() = default;

@@ -19,49 +19,103 @@ jobs:
         include:
           - os: linux-intel
             runs-on: ubuntu-latest
-          - os: linux-arm
-            runs-on: ubuntu-24.04-arm
+            triplet: x64-linux
+
+          # - os: linux-arm
+          #   runs-on: ubuntu-24.04-arm
+          #   triplet: arm64-linux
+
           - os: windows-intel
             runs-on: windows-latest
-          - os: windows-arm
-            runs-on: windows-11-arm
+            triplet: x64-windows-static-md
+
+          # - os: windows-arm
+          #   runs-on: windows-11-arm
+          #   triplet: arm64-windows
+
           - os: macos-intel
-            # macos-15-intel is the last x86_64 runner
-            runs-on: macos-15-intel
+            runs-on: macos-15-intel # macos-15-intel is the last x86_64 runner
+            triplet: x64-osx
+
           - os: macos-arm
-            # macos-14+ (including latest) are ARM64 runners
-            runs-on: macos-latest
-          - os: android-intel
-            runs-on: ubuntu-latest
-            platform: android
-          - os: android-arm
-            # GitHub Actions doesn’t currently support the Android emulator on any ARM
-            # runner. So we build on a non-ARM runner, which will skip the tests.
-            runs-on: ubuntu-latest
-            platform: android
-            archs: arm64_v8a
-          - os: ios
-            runs-on: macos-latest
-            platform: ios
-          - os: pyodide
-            runs-on: ubuntu-latest
-            platform: pyodide
+            runs-on: macos-latest # macos-14+ (including latest) are ARM64 runners
+            triplet: arm64-osx
 
     steps:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
+          submodules: recursive
+
+      - name: Cache vcpkg binaries
+        uses: actions/cache@v4
+        with:
+          path: |
+            /tmp/vcpkg-cache
+            C:\\vcpkg-cache
+          key: vcpkg-${{ runner.os }}-${{ matrix.triplet }}-${{ hashFiles('vcpkg.json') }}
 
       - name: Build wheels
         uses: pypa/cibuildwheel@v4.0.0
         env:
           CIBW_PLATFORM: ${{ matrix.platform || 'auto' }}
           CIBW_ARCHS: ${{ matrix.archs || 'auto' }}
-        # Can also be configured directly, using `with:`
-        # with:
-        #   package-dir: .
-        #   output-dir: wheelhouse
-        #   config-file: "{package}/pyproject.toml"
+          CIBW_BUILD_VERBOSITY: 3
+          CIBW_SKIP: "*-win32 *musllinux*"
+
+          CIBW_ENVIRONMENT_LINUX: >
+            VCPKG_ROOT=/tmp/vcpkg
+            VCPKG_BINARY_SOURCES=files,/tmp/vcpkg-cache,readwrite
+            VCPKG_TRIPLET=${{ matrix.triplet }}
+            VCPKG_BUILD_TYPE=release
+            CMAKE_ARGS="-DCMAKE_TOOLCHAIN_FILE=/tmp/vcpkg/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }}"
+
+          CIBW_ENVIRONMENT_MACOS: >
+            MACOSX_DEPLOYMENT_TARGET=13.3
+            CMAKE_OSX_DEPLOYMENT_TARGET=13.3
+            CXXFLAGS=-mmacosx-version-min=13.3
+            CFLAGS=-mmacosx-version-min=13.3
+            VCPKG_ROOT=/tmp/vcpkg
+            VCPKG_BINARY_SOURCES=files,/tmp/vcpkg-cache,readwrite
+            VCPKG_TRIPLET=${{ matrix.triplet }}
+            VCPKG_BUILD_TYPE=release
+            CMAKE_ARGS="-DCMAKE_TOOLCHAIN_FILE=/tmp/vcpkg/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }}"
+
+          CIBW_ENVIRONMENT_WINDOWS: >
+            VCPKG_ROOT=C:\\vcpkg
+            VCPKG_BINARY_SOURCES=files,C:\\vcpkg-cache,readwrite
+            VCPKG_TRIPLET=${{ matrix.triplet }}
+            VCPKG_BUILD_TYPE=release
+            CMAKE_ARGS="-DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }}"
+
+          CIBW_BEFORE_ALL_MACOS: |
+            brew install bison
+            export PATH=$(brew --prefix bison)/bin:$PATH
+            git clone https://github.com/microsoft/vcpkg /tmp/vcpkg
+            /tmp/vcpkg/bootstrap-vcpkg.sh
+            /tmp/vcpkg/vcpkg install --triplet ${VCPKG_TRIPLET}
+            find /tmp/vcpkg-cache | head -100
+
+          CIBW_BEFORE_ALL_LINUX: |
+            yum install -y cmake git curl zip unzip tar perl-IPC-Cmd perl-CPAN perl-ExtUtils-MakeMaker glibc-devel flex autoconf libtool automake pkg-config openssl-devel
+            curl -LO https://ftp.gnu.org/gnu/bison/bison-3.8.2.tar.gz
+            tar xf bison-3.8.2.tar.gz
+            cd bison-3.8.2
+            ./configure
+            make -j$(nproc)
+            make install
+            git clone https://github.com/microsoft/vcpkg /tmp/vcpkg
+            /tmp/vcpkg/bootstrap-vcpkg.sh
+            /tmp/vcpkg/vcpkg install --triplet ${VCPKG_TRIPLET}
+
+          CIBW_BEFORE_ALL_WINDOWS: |
+            if not exist C:\\vcpkg (
+              git clone https://github.com/microsoft/vcpkg C:\\vcpkg
+            )
+            C:\\vcpkg\bootstrap-vcpkg.bat
+            C:\\vcpkg\vcpkg install --triplet %VCPKG_TRIPLET%
+
+          CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: ""
 
       - uses: actions/upload-artifact@v4
         with:
@@ -84,15 +138,15 @@ jobs:
           name: cibw-sdist
           path: dist/*.tar.gz
 
-  upload_pypi:
+  upload_test_pypi:
     needs: [build_wheels, build_sdist]
+    # if: github.event_name == 'release' && github.event.action == 'published'
     runs-on: ubuntu-latest
-    environment: pypi
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/trade-ngin
     permissions:
       id-token: write
-    if: github.event_name == 'release' && github.event.action == 'published'
-    # or, alternatively, upload to PyPI on every tag starting with 'v' (remove on: release above to use this)
-    # if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     steps:
       - uses: actions/download-artifact@v5
         with:
@@ -102,6 +156,24 @@ jobs:
           merge-multiple: true
 
       - uses: pypa/gh-action-pypi-publish@release/v1
-        # To test uploads to TestPyPI, uncomment the following:
         with:
           repository-url: https://test.pypi.org/legacy/
+
+  upload_pypi:
+    needs: [build_wheels, build_sdist, upload_test_pypi]
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/trade-ngin
+    permissions:
+      id-token: write
+    if: github.event_name == 'release' && github.event.action == 'published'
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          # unpacks all CIBW artifacts into dist/
+          pattern: cibw-*
+          path: dist
+          merge-multiple: true
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
