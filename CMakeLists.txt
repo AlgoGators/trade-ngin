@@ -163,6 +163,11 @@ if(BUILD_TESTING)
     target_compile_definitions(trade_ngin PRIVATE USE_DIRECT_DB_CONNECTION)
 endif()
 
+ # Add test-specific compile definitions when building tests
+if(BUILD_TESTING)
+    target_compile_definitions(trade_ngin PRIVATE USE_DIRECT_DB_CONNECTION)
+endif()
+
 # Link against dependencies
 target_link_libraries(trade_ngin
     PUBLIC
