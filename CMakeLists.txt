@@ -1,6 +1,9 @@
 cmake_minimum_required(VERSION 3.17)
 project(trade_ngin VERSION 1.0.0 LANGUAGES CXX)
 
+# Important for Python bindings
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
 # Fix macOS SDK path to prevent recurring SDK errors
 if(APPLE)
     execute_process(
@@ -148,6 +151,12 @@ set(TRADE_NGIN_SOURCES
 
 # Add library target
 add_library(trade_ngin SHARED ${TRADE_NGIN_SOURCES})
+install(TARGETS trade_ngin
+    LIBRARY DESTINATION .
+)
+set_target_properties(trade_ngin PROPERTIES
+    INSTALL_RPATH "$ORIGIN"
+)
 
 # Add test-specific compile definitions when building tests
 if(BUILD_TESTING)

@@ -2,7 +2,7 @@
 
 #include "bindings/bindings.hpp"
 
-PYBIND11_MODULE(trade_ngin, m) {
+PYBIND11_MODULE(tradengin, m) {
     m.doc() = "Python bindings for trade_ngin";
 
     bind_core_types(m);

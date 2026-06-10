@@ -10,17 +10,16 @@ pybind11_add_module(trade_ngin_py
 
 # Set the output name of the Python module
 set_target_properties(trade_ngin_py PROPERTIES
-    OUTPUT_NAME trade_ngin
+    OUTPUT_NAME tradengin
+    INSTALL_RPATH "$ORIGIN"
 )
 
 # Link against the main C++ library
 target_link_libraries(trade_ngin_py PRIVATE
         trade_ngin
 )
-
-# Include the main library's headers
-target_include_directories(trade_ngin_py PRIVATE
-        ${CMAKE_SOURCE_DIR}/include
+install(TARGETS trade_ngin_py
+    LIBRARY DESTINATION .
 )
 
 # Set C++ standard

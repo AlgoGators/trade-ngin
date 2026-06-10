@@ -1,0 +1,11 @@
+[build-system]
+requires = ["scikit-build-core", "pybind11"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "trade-ngin"
+version = "0.1.0"
+requires-python = ">=3.10"
+
+[tool.scikit-build]
+cmake.build-type = "Release"
