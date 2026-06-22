@@ -1,5 +1,5 @@
-cmake_minimum_required(VERSION 3.17)
-project(trade_ngin VERSION 1.0.0 LANGUAGES CXX)
+cmake_minimum_required(VERSION 3.28)
+project(trade_ngin VERSION 0.1.1 LANGUAGES CXX)
 
 # Important for Python bindings
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)

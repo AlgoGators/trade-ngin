@@ -140,7 +140,7 @@ jobs:
 
   upload_test_pypi:
     needs: [build_wheels, build_sdist]
-    # if: github.event_name == 'release' && github.event.action == 'published'
+    if: github.event_name == 'release' && github.event.action == 'published'
     runs-on: ubuntu-latest
     environment:
       name: testpypi

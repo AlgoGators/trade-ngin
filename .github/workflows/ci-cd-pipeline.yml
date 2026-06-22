@@ -252,20 +252,11 @@ jobs:
           submodules: recursive
       - name: Configure CMake with Coverage
         run: |
-          mkdir -p build
-          cd build
-          cmake .. \
-            -DCMAKE_BUILD_TYPE=${{ matrix.build-type }} \
-            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
-            -DCMAKE_CXX_COMPILER=${{ matrix.build-type == 'Debug' && 'g++' || 'g++' }} \
-            -DCMAKE_CXX_FLAGS="${{ matrix.build-type == 'Debug' && '-g -O0 --coverage -fprofile-update=atomic' || '-O3' }}" \
-            -DCMAKE_EXE_LINKER_FLAGS="${{ matrix.build-type == 'Debug' && '--coverage' || '' }}" \
-            -DNLopt_DIR=/usr/lib/x86_64-linux-gnu/cmake/nlopt
+          cmake --preset coverage
 
       - name: Build Project
         run: |
-          cd build
-          make -j$(nproc)
+          cmake --build --preset coverage
 
       - name: Run Valgrind Memory Check
         if: matrix.build-type == 'Debug'
@@ -278,7 +269,7 @@ jobs:
       - name: Run Tests
         run: |
           cd build
-          ctest --output-on-failure --verbose
+          ctest --preset coverage
 
       - name: Generate Coverage Report
         if: matrix.build-type == 'Debug'
@@ -459,19 +450,20 @@ jobs:
             BRANCH="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME:-${GITHUB_REF#refs/heads/}}}"
             BRANCH=${BRANCH:-unknown}
           BRANCH_SAFE=$(echo "$BRANCH" | tr '[:upper:]' '[:lower:]' | tr '/@: ' '-')
-            
+
             DATE=$(date +%Y%m%d)
             TIME=$(date +%H%M%S)
             TAG="${BRANCH_SAFE}-${DATE}-${TIME}"
-            
+
             docker build -t "${REPO}:${TAG}" .
             docker push "${REPO}:${TAG}"
-          
+
           # Tag as latest if prod push
             if [ "${{ github.event_name }}" == "push" ] && [ "${{ github.ref_name }}" == "prod" ]; then
               docker tag "${REPO}:${TAG}" "${REPO}:latest"
               docker push "${REPO}:latest"
             fi
+
   deploy-to-ec2:
     name: 'Deploy to EC2'
     if: github.ref_name == 'prod' && github.event_name == 'push'
@@ -492,4 +484,3 @@ jobs:
             docker rm trade-ngin || true
             cd /home/ubuntu/docker-compose/trade-ngin
             docker compose up -d
-            
