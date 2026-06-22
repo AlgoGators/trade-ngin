@@ -261,14 +261,12 @@ jobs:
       - name: Run Valgrind Memory Check
         if: matrix.build-type == 'Debug'
         run: |
-          cd build
           # Run tests with Valgrind
           valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes \
-            --error-exitcode=1 ctest --output-on-failure --verbose
+            --error-exitcode=1 ctest --preset coverage
 
       - name: Run Tests
         run: |
-          cd build
           ctest --preset coverage
 
       - name: Generate Coverage Report

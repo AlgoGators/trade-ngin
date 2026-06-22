@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.28)
+cmake_minimum_required(VERSION 3.25)
 project(trade_ngin VERSION 0.1.1 LANGUAGES CXX)
 
 # Important for Python bindings
