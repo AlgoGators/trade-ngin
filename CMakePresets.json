@@ -43,7 +43,8 @@
       "binaryDir": "${sourceDir}/build/coverage",
       "cacheVariables": {
         "CMAKE_CXX_FLAGS_DEBUG": "-g -O0 --coverage -fprofile-update=atomic",
-        "CMAKE_EXE_LINKER_FLAGS_DEBUG": "--coverage"
+        "CMAKE_EXE_LINKER_FLAGS_DEBUG": "--coverage",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
       }
     }
   ],
