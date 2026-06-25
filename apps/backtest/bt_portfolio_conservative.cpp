@@ -46,7 +46,7 @@ int main() {
         // LOAD CONFIGURATION FROM MODULAR CONFIG FILES
         // ========================================
         INFO("Loading configuration from config/portfolios/conservative...");
-        auto app_config_result = ConfigLoader::load("./config", "conservative");
+        auto app_config_result = ConfigLoader::load("config", "conservative");
         if (app_config_result.is_error()) {
             ERROR("Failed to load configuration: " +
                   std::string(app_config_result.error()->what()));

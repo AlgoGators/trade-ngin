@@ -46,9 +46,10 @@ int main() {
         // LOAD CONFIGURATION FROM MODULAR CONFIG FILES
         // ========================================
         INFO("Loading configuration from config/portfolios/base...");
-        auto app_config_result = ConfigLoader::load("./config", "base");
+        auto app_config_result = ConfigLoader::load("config", "base");
         if (app_config_result.is_error()) {
-            ERROR("Failed to load configuration: " + std::string(app_config_result.error()->what()));
+            ERROR("Failed to load configuration: " +
+                  std::string(app_config_result.error()->what()));
             std::cerr << "Failed to load configuration: " << app_config_result.error()->what()
                       << std::endl;
             return 1;
@@ -143,13 +144,12 @@ int main() {
         if (symbols_result.is_ok()) {
             // Remove continuous contract variants (.c.0) and full-size ES
             // Using remove_if to avoid undefined behavior from erase-during-iteration
-            symbols.erase(
-                std::remove_if(symbols.begin(), symbols.end(),
-                    [](const std::string& s) {
-                        return s.find(".c.0") != std::string::npos ||
-                               s == "ES.v.0";
-                    }),
-                symbols.end());
+            symbols.erase(std::remove_if(symbols.begin(), symbols.end(),
+                                         [](const std::string& s) {
+                                             return s.find(".c.0") != std::string::npos ||
+                                                    s == "ES.v.0";
+                                         }),
+                          symbols.end());
             config.strategy_config.symbols = symbols;
         } else {
             ERROR("Failed to get symbols: " + std::string(symbols_result.error()->what()));
@@ -167,7 +167,8 @@ int main() {
         // APPLY CONFIG VALUES TO BACKTEST CONFIG
         // ========================================
         config.portfolio_config.initial_capital = app_config.initial_capital;
-        config.portfolio_config.use_risk_management = app_config.strategy_defaults.use_risk_management;
+        config.portfolio_config.use_risk_management =
+            app_config.strategy_defaults.use_risk_management;
         config.portfolio_config.use_optimization = app_config.strategy_defaults.use_optimization;
         config.strategy_config.initial_capital = config.portfolio_config.initial_capital;
 
@@ -219,8 +220,10 @@ int main() {
         portfolio_config.total_capital = config.portfolio_config.initial_capital;
         portfolio_config.reserve_capital =
             config.portfolio_config.initial_capital * app_config.reserve_capital_pct;
-        portfolio_config.max_strategy_allocation = app_config.strategy_defaults.max_strategy_allocation;
-        portfolio_config.min_strategy_allocation = app_config.strategy_defaults.min_strategy_allocation;
+        portfolio_config.max_strategy_allocation =
+            app_config.strategy_defaults.max_strategy_allocation;
+        portfolio_config.min_strategy_allocation =
+            app_config.strategy_defaults.min_strategy_allocation;
         portfolio_config.use_optimization = app_config.strategy_defaults.use_optimization;
         portfolio_config.use_risk_management = app_config.strategy_defaults.use_risk_management;
         portfolio_config.opt_config = config.portfolio_config.opt_config;
@@ -291,7 +294,8 @@ int main() {
 
         // Add position limits from config
         for (const auto& symbol : config.strategy_config.symbols) {
-            base_strategy_config.position_limits[symbol] = app_config.execution.position_limit_backtest;
+            base_strategy_config.position_limits[symbol] =
+                app_config.execution.position_limit_backtest;
         }
 
         // Create and initialize each strategy
@@ -315,7 +319,8 @@ int main() {
                     trend_config.weight = cfg.value("weight", 0.03);
                     trend_config.risk_target = cfg.value("risk_target", 0.2);
                     trend_config.idm = cfg.value("idm", 2.5);
-                    trend_config.max_symbol_concentration = cfg.value("max_symbol_concentration", 0.15);
+                    trend_config.max_symbol_concentration =
+                        cfg.value("max_symbol_concentration", 0.15);
                     trend_config.use_position_buffering = cfg.value("use_position_buffering", true);
                     trend_config.carver_buffer_floor = cfg.value(
                         "carver_buffer_floor", app_config.strategy_defaults.carver_buffer_floor);
@@ -347,7 +352,8 @@ int main() {
                     trend_config.weight = cfg.value("weight", 0.03);
                     trend_config.risk_target = cfg.value("risk_target", 0.25);
                     trend_config.idm = cfg.value("idm", 2.5);
-                    trend_config.max_symbol_concentration = cfg.value("max_symbol_concentration", 0.15);
+                    trend_config.max_symbol_concentration =
+                        cfg.value("max_symbol_concentration", 0.15);
                     trend_config.use_position_buffering =
                         cfg.value("use_position_buffering", false);
                     trend_config.carver_buffer_floor = cfg.value(

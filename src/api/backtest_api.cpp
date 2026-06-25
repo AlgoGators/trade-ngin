@@ -47,7 +47,7 @@ Result<backtest::BacktestResults> BacktestRunner::run_backtest() {
         // LOAD CONFIGURATION FROM MODULAR CONFIG FILES
         // ========================================
         INFO("Loading configuration from config/portfolios/" + portfolio_name_ + "...");
-        auto app_config_result = ConfigLoader::load("./config", portfolio_name_);
+        auto app_config_result = ConfigLoader::load("config", portfolio_name_);
         if (app_config_result.is_error()) {
             ERROR("Failed to load configuration: " +
                   std::string(app_config_result.error()->what()));
