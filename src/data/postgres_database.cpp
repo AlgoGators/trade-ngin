@@ -3,6 +3,9 @@
 #include "trade_ngin/data/postgres_database.hpp"
 #include <iomanip>
 #include <sstream>
+#include <string>
+#include <string_view>
+#include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/core/state_manager.hpp"
 #include "trade_ngin/core/time_utils.hpp"
 
@@ -852,8 +855,9 @@ Result<pqxx::result> PostgresDatabase::execute_market_data_query(
         try {
             return Result<pqxx::result>(txn.exec(query, pqxx::params{start_ts, end_ts}));
         } catch (const std::exception& e) {
-            return make_error<pqxx::result>(ErrorCode::DATABASE_ERROR,
-                                            "Query execution failed: " + std::string(e.what()));
+            return make_error<pqxx::result>(
+                ErrorCode::DATABASE_ERROR,
+                "Query execution failed without symbols: " + std::string(e.what()));
         }
     } else {
         // With symbol filter - validate symbols first
@@ -864,13 +868,28 @@ Result<pqxx::result> PostgresDatabase::execute_market_data_query(
         }
 
         // Build parameterized query for symbols
-        std::string query = base_query + " AND symbol = ANY($3) ORDER BY time, symbol";
+        std::string query = base_query + " AND symbol IN (";
+
+        pqxx::params p;
+        p.append(start_ts);
+        p.append(end_ts);
+
+        for (size_t i = 0; i < symbols.size(); ++i) {
+            if (i > 0)
+                query += ",";
+
+            query += "$" + std::to_string(i + 3);
+            p.append(symbols[i]);
+        }
+
+        query += ") ORDER BY time, symbol";
 
         try {
-            return Result<pqxx::result>(txn.exec(query, pqxx::params{start_ts, end_ts, symbols}));
+            return Result<pqxx::result>(txn.exec(query, std::move(p)));
         } catch (const std::exception& e) {
-            return make_error<pqxx::result>(ErrorCode::DATABASE_ERROR,
-                                            "Query execution failed: " + std::string(e.what()));
+            return make_error<pqxx::result>(
+                ErrorCode::DATABASE_ERROR,
+                "Query execution failed with symbols: " + std::string(e.what()));
         }
     }
 }
