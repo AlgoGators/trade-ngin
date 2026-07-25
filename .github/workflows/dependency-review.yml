@@ -1,0 +1,24 @@
+name: Dependency Review
+
+# Blocks a PR at review time if it introduces a known-vulnerable or
+# license-incompatible dependency (covers the Dockerfile base image and Actions;
+# most C++ library deps are handled by the CI image/install scripts and are not
+# in GitHub's dependency graph). Only evaluates the PR's own diff, so it is safe
+# to make blocking from day one.
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  dependency-review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+          comment-summary-in-pr: always
