@@ -1,0 +1,14 @@
+# Code owners for AlgoGators/trade-ngin
+#
+# Policy: every PR into main needs TWO approvals, and at least one must come
+# from a repo admin listed below.
+#
+# GitHub has no native "one approval must be from an admin" setting. This file
+# is how that rule is expressed: branch protection requires 2 approvals AND
+# "require review from Code Owners", so one of the two must be someone here.
+#
+# Keep this list in sync with who actually holds the Admin role on the repo.
+# (A GitHub org team would reduce review-request noise vs. listing individuals --
+# worth switching to if one is created for admins.)
+
+* @colerottenberg @dominickdupuy @patrickbott @ry2009 @jrile018 @raohemdutt @roshan-h-shah @pranavb05
