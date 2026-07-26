@@ -2,12 +2,16 @@
 # TRADE_NGIN - STRATEGIES CMAKE CONFIGURATION
 # ============================================
 
+# The daily pipeline is shared: each executable is a thin main() selecting a
+# portfolio, with live_portfolio_runner.cpp holding the implementation both use.
 set(LIVE_PORTFOLIO_SOURCES
     live_portfolio.cpp
+    live_portfolio_runner.cpp
 )
 
 set(LIVE_PORTFOLIO_CONSERVATIVE_SOURCES
     live_portfolio_conservative.cpp
+    live_portfolio_runner.cpp
 )
 
 # Create live portfolio executable (runs multiple strategies)
@@ -41,3 +45,6 @@ set_target_properties(live_portfolio_conservative
     RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/bin/Debug"
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/bin/Release"
 )
+# live_portfolio_runner.cpp includes "live_portfolio_runner.hpp" by plain name.
+target_include_directories(live_portfolio PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(live_portfolio_conservative PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
