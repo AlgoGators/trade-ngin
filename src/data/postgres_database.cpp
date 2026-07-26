@@ -5,6 +5,7 @@
 #include <sstream>
 #include "trade_ngin/core/state_manager.hpp"
 #include "trade_ngin/core/time_utils.hpp"
+#include "trade_ngin/data/market_data_utils.hpp"
 
 namespace {
 std::string join(const std::vector<std::string>& elements, const std::string& delimiter) {
@@ -852,6 +853,8 @@ std::string PostgresDatabase::asset_class_to_string(AssetClass asset_class) cons
             return "COMMODITY";
         case AssetClass::CRYPTO:
             return "CRYPTO";
+        case AssetClass::OPTIONS:
+            return "OPTION";
         default:
             return "";
     }
@@ -870,35 +873,24 @@ Result<pqxx::result> PostgresDatabase::execute_market_data_query(
 
     std::string full_table_name = build_table_name(asset_class, data_type, freq);
 
+    // Select columns based on asset class. Equities use adjusted columns aliased to
+    // plain names; all other classes use unadjusted columns directly.
+    std::string columns = market_data_utils::get_market_data_columns(asset_class);
+
     // Base query with parameterized timestamps
-    // Equity tables use different column names (date/ticker/closeadj) than futures (time/symbol/close)
-    std::string base_query;
-    if (asset_class == AssetClass::EQUITIES) {
-        // Compute adjustment ratio from closeadj/close and apply to OHLC
-        base_query =
-            "SELECT date as time, ticker as symbol, "
-            "CASE WHEN close != 0 THEN open * (closeadj / close) ELSE open END as open, "
-            "CASE WHEN close != 0 THEN high * (closeadj / close) ELSE high END as high, "
-            "CASE WHEN close != 0 THEN low * (closeadj / close) ELSE low END as low, "
-            "closeadj as close, volume "
-            "FROM " + full_table_name + " "
-            "WHERE date BETWEEN $1 AND $2";
-    } else {
-        base_query =
-            "SELECT time, symbol, open, high, low, close, volume "
-            "FROM " + full_table_name + " "
-            "WHERE time BETWEEN $1 AND $2";
-    }
+    std::string base_query =
+        "SELECT " + columns +
+        " FROM " +
+        full_table_name +
+        " "
+        "WHERE time BETWEEN $1 AND $2";
 
     std::string start_ts = format_timestamp(start_date);
     std::string end_ts = format_timestamp(end_date);
 
     if (symbols.empty()) {
         // No symbol filter
-        std::string order_clause = (asset_class == AssetClass::EQUITIES)
-            ? " ORDER BY date, ticker"
-            : " ORDER BY time, symbol";
-        std::string query = base_query + order_clause;
+        std::string query = base_query + " ORDER BY time, symbol";
         try {
             return Result<pqxx::result>(txn.exec(query, pqxx::params{start_ts, end_ts}));
         } catch (const std::exception& e) {
@@ -914,13 +906,7 @@ Result<pqxx::result> PostgresDatabase::execute_market_data_query(
         }
 
         // Build parameterized query for symbols
-        std::string symbol_filter = (asset_class == AssetClass::EQUITIES)
-            ? " AND ticker = ANY($3)"
-            : " AND symbol = ANY($3)";
-        std::string order_clause = (asset_class == AssetClass::EQUITIES)
-            ? " ORDER BY date, ticker"
-            : " ORDER BY time, symbol";
-        std::string query = base_query + symbol_filter + order_clause;
+        std::string query = base_query + " AND symbol = ANY($3) ORDER BY time, symbol";
 
         try {
             return Result<pqxx::result>(txn.exec(query, pqxx::params{start_ts, end_ts, symbols}));
