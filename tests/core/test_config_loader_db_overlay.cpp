@@ -106,7 +106,7 @@ protected:
 
 // TEST 1: File-only load still produces the same AppConfig (no behavior change when no DB).
 TEST_F(ConfigLoaderDBOverlayTest, FileOnlyLoadUnchanged) {
-    auto result = ConfigLoader::load(base_ / "config", "test", nullptr);
+    auto result = ConfigLoader::load(base_, "test", nullptr);
     ASSERT_FALSE(result.is_error()) << "File-only load failed: " << result.error()->what();
 
     AppConfig config = result.value();
@@ -124,7 +124,8 @@ TEST_F(ConfigLoaderDBOverlayTest, ValidateRejectsDatabaseHost) {
 
     auto result = ConfigLoader::validate_override_no_credentials(bad_override);
     EXPECT_TRUE(result.is_error()) << "Should reject database.host";
-    EXPECT_THAT(result.error()->what(), testing::HasSubstr("database"));
+    std::string err_msg = result.error()->what();
+    EXPECT_TRUE(err_msg.find("database") != std::string::npos) << "Error should mention database";
 }
 
 // TEST 3: Validate override rejects database.password.
@@ -135,7 +136,8 @@ TEST_F(ConfigLoaderDBOverlayTest, ValidateRejectsDatabasePassword) {
 
     auto result = ConfigLoader::validate_override_no_credentials(bad_override);
     EXPECT_TRUE(result.is_error()) << "Should reject database.password";
-    EXPECT_THAT(result.error()->what(), testing::HasSubstr("database"));
+    std::string err_msg = result.error()->what();
+    EXPECT_TRUE(err_msg.find("database") != std::string::npos) << "Error should mention database";
 }
 
 // TEST 4: Validate override rejects email.password.
@@ -146,7 +148,8 @@ TEST_F(ConfigLoaderDBOverlayTest, ValidateRejectsEmailPassword) {
 
     auto result = ConfigLoader::validate_override_no_credentials(bad_override);
     EXPECT_TRUE(result.is_error()) << "Should reject email.password";
-    EXPECT_THAT(result.error()->what(), testing::HasSubstr("email.password"));
+    std::string err_msg = result.error()->what();
+    EXPECT_TRUE(err_msg.find("email.password") != std::string::npos) << "Error should mention email.password";
 }
 
 // TEST 5: Validate override accepts non-protected fields.
@@ -161,7 +164,7 @@ TEST_F(ConfigLoaderDBOverlayTest, ValidateAcceptsNonProtectedFields) {
 
 // TEST 6: strip_credentials_for_manifest removes database section.
 TEST_F(ConfigLoaderDBOverlayTest, StripCredentialsRemovesDatabase) {
-    auto file_result = ConfigLoader::load(base_ / "config", "test", nullptr);
+    auto file_result = ConfigLoader::load(base_, "test", nullptr);
     ASSERT_FALSE(file_result.is_error());
     AppConfig config = file_result.value();
 
@@ -172,7 +175,7 @@ TEST_F(ConfigLoaderDBOverlayTest, StripCredentialsRemovesDatabase) {
 
 // TEST 7: strip_credentials_for_manifest removes email.password.
 TEST_F(ConfigLoaderDBOverlayTest, StripCredentialsRemovesEmailPassword) {
-    auto file_result = ConfigLoader::load(base_ / "config", "test", nullptr);
+    auto file_result = ConfigLoader::load(base_, "test", nullptr);
     ASSERT_FALSE(file_result.is_error());
     AppConfig config = file_result.value();
 
@@ -186,7 +189,7 @@ TEST_F(ConfigLoaderDBOverlayTest, StripCredentialsRemovesEmailPassword) {
 
 // TEST 8: strip_credentials_for_manifest preserves other email fields.
 TEST_F(ConfigLoaderDBOverlayTest, StripCredentialsPreservesEmailOtherFields) {
-    auto file_result = ConfigLoader::load(base_ / "config", "test", nullptr);
+    auto file_result = ConfigLoader::load(base_, "test", nullptr);
     ASSERT_FALSE(file_result.is_error());
     AppConfig config = file_result.value();
 
@@ -216,6 +219,6 @@ TEST_F(ConfigLoaderDBOverlayTest, MergeJsonDeepMergesNested) {
 
 // TEST 10: Configuration loads without database (nullptr).
 TEST_F(ConfigLoaderDBOverlayTest, LoadWithNullDatabasePointer) {
-    auto result = ConfigLoader::load(base_ / "config", "test", nullptr);
+    auto result = ConfigLoader::load(base_, "test", nullptr);
     EXPECT_FALSE(result.is_error()) << "Load failed with nullptr db: " << result.error()->what();
 }
