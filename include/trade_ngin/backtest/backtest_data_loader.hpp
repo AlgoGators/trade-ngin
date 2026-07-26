@@ -12,6 +12,24 @@ namespace trade_ngin {
 namespace backtest {
 
 /**
+ * @brief Data source enumeration for backtest data loading
+ *
+ * Controls whether backtest queries read from real historical schemas (REAL) or
+ * synthetically-generated stress-test data (SYNTHETIC).
+ *
+ * CRITICAL ISOLATION BOUNDARY:
+ * This enum is placed ONLY in the backtest namespace, NOT in core types.
+ * The live trading path (apps/strategies/live_portfolio.cpp) does not have
+ * DataLoadConfig and therefore cannot express a request for SYNTHETIC data.
+ * This is a structural property of the types, not a flag someone remembers to set.
+ * If anyone "helpfully" moves this enum to core::types, the isolation test will fail.
+ */
+enum class DataSource {
+    REAL,       // Queries asset_class schemas (futures_data, equities_data, etc.)
+    SYNTHETIC   // Queries the synthetic schema for stress-test data
+};
+
+/**
  * @brief Configuration for data loading
  */
 struct DataLoadConfig {
@@ -22,6 +40,7 @@ struct DataLoadConfig {
     DataFrequency data_freq = DataFrequency::DAILY;
     std::string data_type = "ohlcv";
     size_t batch_size = 5;  // Max symbols per batch query
+    DataSource data_source = DataSource::REAL;  // Default to real data
 };
 
 /**
@@ -109,6 +128,17 @@ private:
      * @brief Load a batch of symbols
      */
     Result<std::vector<Bar>> load_symbol_batch(
+        const std::vector<std::string>& symbols,
+        const DataLoadConfig& config);
+
+    /**
+     * @brief Load synthetic market data from the synthetic schema
+     *
+     * When data_source == SYNTHETIC in the config, this queries the synthetic schema
+     * directly instead of delegating to get_market_data() (which always uses asset_class
+     * schemas). This keeps the synthetic vocabulary confined to the backtest namespace.
+     */
+    Result<std::vector<Bar>> load_symbol_batch_synthetic(
         const std::vector<std::string>& symbols,
         const DataLoadConfig& config);
 

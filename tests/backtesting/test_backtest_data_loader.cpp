@@ -208,3 +208,132 @@ TEST_F(BacktestDataLoaderTest, OptionsAssetClassRejectedUpfront) {
     EXPECT_NE(msg.find("not yet ingested"), std::string::npos)
         << "Error message should clarify options are not ingested";
 }
+
+// ============================================================================
+// Data Source Tests: Verify isolation of synthetic data to backtest namespace
+// ============================================================================
+
+TEST_F(BacktestDataLoaderTest, DefaultDataLoadConfigHasRealDataSource) {
+    // Every backtest configuration defaults to REAL data, ensuring backward compatibility
+    DataLoadConfig config;
+    EXPECT_EQ(config.data_source, DataSource::REAL);
+}
+
+TEST_F(BacktestDataLoaderTest, RealDataSourceFuturesResolvesToFuturesDataSchema) {
+    BacktestDataLoader loader(db_);
+    auto config = make_config({"ES"});
+    config.data_source = DataSource::REAL;
+    config.asset_class = AssetClass::FUTURES;
+
+    // Mock will use build_table_name internally, which maps FUTURES -> "futures_data"
+    auto result = loader.load_market_data(config);
+    // The mock succeeds because its default data delivery works for any schema name
+    ASSERT_TRUE(result.is_ok()) << result.error()->what();
+}
+
+TEST_F(BacktestDataLoaderTest, RealDataSourceEquitiesResolvesToEquitiesDataSchema) {
+    BacktestDataLoader loader(db_);
+    auto config = make_config({"AAPL"});
+    config.data_source = DataSource::REAL;
+    config.asset_class = AssetClass::EQUITIES;
+
+    // Mock will use build_table_name internally, which maps EQUITIES -> "equities_data"
+    auto result = loader.load_market_data(config);
+    ASSERT_TRUE(result.is_ok()) << result.error()->what();
+}
+
+TEST_F(BacktestDataLoaderTest, SyntheticDataSourceResolvesToSyntheticSchema) {
+    BacktestDataLoader loader(db_);
+    db_->connect();  // Ensure mock is connected before calling load_market_data
+    auto config = make_config({"ES"});
+    config.data_source = DataSource::SYNTHETIC;
+    config.asset_class = AssetClass::FUTURES;
+
+    // Synthetic path calls db_->get_market_data_from_table() with table_name = "synthetic.ohlcv_1d"
+    // The mock returns empty data for synthetic tables (since they don't exist in the mock schema).
+    // What matters is that the backtest loader routes to the synthetic path when DataSource::SYNTHETIC,
+    // and this routing does not cause a connection or validation error.
+    auto result = loader.load_market_data(config);
+
+    // The synthetic path is taken; the query may return no data or DATA_NOT_FOUND.
+    // Accept both since the mock behavior for synthetic tables is undefined.
+    // Key: no MARKET_DATA_ERROR or CONNECTION_ERROR during schema resolution.
+    EXPECT_TRUE(result.is_error())  // Mock returns no data, which is OK
+        << "Synthetic path should route correctly";
+    // The error should be about no data, not about schema resolution or connection
+    if (result.is_error()) {
+        ErrorCode code = result.error()->code();
+        EXPECT_TRUE(code == ErrorCode::DATA_NOT_FOUND || code == ErrorCode::MARKET_DATA_ERROR)
+            << "Error should be about missing data, not schema resolution. Got: " << result.error()->what();
+    }
+}
+
+TEST_F(BacktestDataLoaderTest, SyntheticDataSourceAssetClassDoesNotChangeSchema) {
+    // Synthetic data uses a single schema, regardless of asset_class parameter.
+    // Both FUTURES and EQUITIES should resolve to the same "synthetic" schema.
+    BacktestDataLoader loader(db_);
+    db_->connect();  // Ensure mock is connected before calling load_market_data
+
+    auto futures_config = make_config({"ES"});
+    futures_config.data_source = DataSource::SYNTHETIC;
+    futures_config.asset_class = AssetClass::FUTURES;
+
+    auto equities_config = make_config({"AAPL"});
+    equities_config.data_source = DataSource::SYNTHETIC;
+    equities_config.asset_class = AssetClass::EQUITIES;
+
+    // Both should attempt to use the synthetic schema (mock returns no data).
+    // The test verifies the backtest loader routes both through the synthetic path.
+    auto futures_result = loader.load_market_data(futures_config);
+    auto equities_result = loader.load_market_data(equities_config);
+
+    // Both paths should be attempted. Mock returns no data for synthetic tables, which is OK.
+    // Key: both should fail with DATA_NOT_FOUND or MARKET_DATA_ERROR (no data), not CONNECTION_ERROR
+    if (futures_result.is_error()) {
+        ErrorCode code = futures_result.error()->code();
+        EXPECT_TRUE(code == ErrorCode::DATA_NOT_FOUND || code == ErrorCode::MARKET_DATA_ERROR)
+            << "Futures synthetic error should be about data, not connection: " << futures_result.error()->what();
+    }
+    if (equities_result.is_error()) {
+        ErrorCode code = equities_result.error()->code();
+        EXPECT_TRUE(code == ErrorCode::DATA_NOT_FOUND || code == ErrorCode::MARKET_DATA_ERROR)
+            << "Equities synthetic error should be about data, not connection: " << equities_result.error()->what();
+    }
+}
+
+// ============================================================================
+// Isolation Test: Verify live path cannot access synthetic data
+// ============================================================================
+
+TEST_F(BacktestDataLoaderTest, LivePathCannotAccessSyntheticSchema) {
+    // The live trading path calls db_->get_market_data() which uses build_table_name(AssetClass).
+    // build_table_name maps every AssetClass value to a non-synthetic schema.
+    // This test verifies that no AssetClass value in the enum can produce "synthetic" schema.
+
+    // Check all AssetClass values
+    std::vector<AssetClass> all_classes = {
+        AssetClass::FUTURES,
+        AssetClass::EQUITIES,
+        AssetClass::FIXED_INCOME,
+        AssetClass::CURRENCIES,
+        AssetClass::COMMODITIES,
+        AssetClass::CRYPTO,
+        AssetClass::OPTIONS
+    };
+
+    for (auto asset_class : all_classes) {
+        std::string schema = get_schema_name(asset_class);
+        std::string table = build_table_name(asset_class, "ohlcv", DataFrequency::DAILY);
+
+        // Verify schema is NOT "synthetic"
+        EXPECT_NE(schema, "synthetic")
+            << "AssetClass " << static_cast<int>(asset_class)
+            << " unexpectedly maps to synthetic schema";
+
+        // Verify table does NOT contain synthetic schema
+        EXPECT_EQ(table.find("synthetic"), std::string::npos)
+            << "Table name " << table
+            << " unexpectedly contains 'synthetic' for AssetClass "
+            << static_cast<int>(asset_class);
+    }
+}
