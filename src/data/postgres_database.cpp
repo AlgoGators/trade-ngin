@@ -306,11 +306,30 @@ Result<void> PostgresDatabase::validate_connection() const {
     return Result<void>();
 }
 
+bool PostgresDatabase::column_exists(pqxx::work& txn, const std::string& qualified_table,
+                                     const std::string& column) const {
+    auto dot = qualified_table.find('.');
+    std::string schema = (dot == std::string::npos) ? "public" : qualified_table.substr(0, dot);
+    std::string table = (dot == std::string::npos) ? qualified_table
+                                                   : qualified_table.substr(dot + 1);
+    try {
+        auto result = txn.exec("SELECT 1 FROM information_schema.columns "
+                               "WHERE table_schema = $1 AND table_name = $2 AND column_name = $3",
+                               pqxx::params{schema, table, column});
+        return !result.empty();
+    } catch (const std::exception& e) {
+        WARN("Could not determine whether " + qualified_table + "." + column +
+             " exists, assuming it does not: " + std::string(e.what()));
+        return false;
+    }
+}
+
 Result<void> PostgresDatabase::store_positions(const std::vector<Position>& positions,
                                                const std::string& strategy_id,
                                                const std::string& strategy_name,
                                                const std::string& portfolio_id,
-                                               const std::string& table_name) {
+                                               const std::string& table_name,
+                                               const std::string& portfolio_type) {
     auto validation = validate_connection();
     if (validation.is_error())
         return validation;
@@ -327,6 +346,21 @@ Result<void> PostgresDatabase::store_positions(const std::vector<Position>& posi
         // Begin transaction
         txn.exec("BEGIN");
 
+        // Has the dual-portfolio migration been applied? Detecting this at runtime means this
+        // code is correct against both an upgraded and a not-yet-upgraded database, so rolling
+        // out the binary and running the migration can happen in either order.
+        const bool has_portfolio_type = column_exists(txn, table_name, "portfolio_type");
+        if (!has_portfolio_type && portfolio_type != "system") {
+            // Refuse rather than silently writing the qt stream into the system stream --
+            // that would corrupt the very comparison this feature exists to enable.
+            return make_error<void>(
+                ErrorCode::DATABASE_ERROR,
+                "portfolio_type='" + portfolio_type + "' requested but " + table_name +
+                    " has no portfolio_type column. Apply migrations/001_add_portfolio_type.sql "
+                    "before writing a non-system stream.",
+                "PostgresDatabase");
+        }
+
         // Clear existing positions for this strategy (by strategy_id AND strategy_name)
         // and the date of the positions being inserted.
         // CRITICAL: Must filter by BOTH strategy_id and strategy_name, otherwise positions from
@@ -340,14 +374,25 @@ Result<void> PostgresDatabase::store_positions(const std::vector<Position>& posi
                 ss << std::put_time(std::gmtime(&time_t), "%Y-%m-%d");
                 std::string position_date = ss.str();
 
+                // EQUALLY CRITICAL: scope the delete to this stream. Without the portfolio_type
+                // predicate, rewriting the system stream would delete that day's qt positions --
+                // silently destroying QT's decisions every time the engine ran.
                 std::string delete_query = "DELETE FROM " + table_name +
                                            " WHERE strategy_id = $1 AND strategy_name = $2"
                                            " AND portfolio_id = $3 AND DATE(last_update) = $4";
+                if (has_portfolio_type) {
+                    delete_query += " AND portfolio_type = $5";
+                }
                 DEBUG("Deleting existing positions for strategy_id=" + strategy_id +
                       " strategy_name=" + strategy_name + " portfolio_id=" + portfolio_id +
-                      " date=" + position_date);
-                txn.exec(delete_query,
-                         pqxx::params{strategy_id, strategy_name, portfolio_id, position_date});
+                      " date=" + position_date + " portfolio_type=" + portfolio_type);
+                if (has_portfolio_type) {
+                    txn.exec(delete_query, pqxx::params{strategy_id, strategy_name, portfolio_id,
+                                                        position_date, portfolio_type});
+                } else {
+                    txn.exec(delete_query,
+                             pqxx::params{strategy_id, strategy_name, portfolio_id, position_date});
+                }
             }
         } catch (const std::exception& e) {
             // If strategy_id/strategy_name columns don't exist, clear all positions for the
@@ -401,16 +446,26 @@ Result<void> PostgresDatabase::store_positions(const std::vector<Position>& posi
                     "INSERT INTO " + table_name +
                     " (symbol, quantity, average_price, daily_unrealized_pnl, "
                     "daily_realized_pnl, last_update, updated_at, strategy_id, "
-                    "strategy_name, date, portfolio_id) VALUES "
-                    "($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)";
+                    "strategy_name, date, portfolio_id" +
+                    std::string(has_portfolio_type ? ", portfolio_type" : "") +
+                    ") VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11" +
+                    std::string(has_portfolio_type ? ", $12" : "") + ")";
                 for (const auto& [position_date, pos] : rows) {
-                    txn.exec(query, pqxx::params{pos->symbol, static_cast<double>(pos->quantity),
-                                                 static_cast<double>(pos->average_price),
-                                                 static_cast<double>(pos->unrealized_pnl),
-                                                 static_cast<double>(pos->realized_pnl),
-                                                 format_timestamp(pos->last_update),
-                                                 format_timestamp(pos->last_update), strategy_id,
-                                                 strategy_name, position_date, portfolio_id});
+                    pqxx::params p{pos->symbol,
+                                   static_cast<double>(pos->quantity),
+                                   static_cast<double>(pos->average_price),
+                                   static_cast<double>(pos->unrealized_pnl),
+                                   static_cast<double>(pos->realized_pnl),
+                                   format_timestamp(pos->last_update),
+                                   format_timestamp(pos->last_update),
+                                   strategy_id,
+                                   strategy_name,
+                                   position_date,
+                                   portfolio_id};
+                    if (has_portfolio_type) {
+                        p.append(portfolio_type);
+                    }
+                    txn.exec(query, p);
                 }
             } catch (const std::exception& e) {
                 // If strategy_id column doesn't exist, retry the whole batch without it.
@@ -611,7 +666,8 @@ Result<std::unordered_map<std::string, double>> PostgresDatabase::get_latest_pri
 
 Result<std::unordered_map<std::string, Position>> PostgresDatabase::load_positions_by_date(
     const std::string& strategy_id, const std::string& strategy_name,
-    const std::string& portfolio_id, const Timestamp& date, const std::string& table_name) {
+    const std::string& portfolio_id, const Timestamp& date, const std::string& table_name,
+    const std::string& portfolio_type) {
     auto validation = validate_connection();
     if (validation.is_error()) {
         return make_error<std::unordered_map<std::string, Position>>(validation.error()->code(),
@@ -620,6 +676,12 @@ Result<std::unordered_map<std::string, Position>> PostgresDatabase::load_positio
 
     try {
         pqxx::work txn(*connection_);
+
+        // Detected at runtime so this works against both an upgraded and a
+        // not-yet-upgraded database -- see store_positions for the rationale.
+        const bool has_portfolio_type = column_exists(txn, table_name, "portfolio_type");
+        const std::string stream_filter =
+            has_portfolio_type ? " AND portfolio_type = $STREAM" : "";
 
         std::string date_str = format_timestamp(date);
         pqxx::result result;
@@ -639,12 +701,21 @@ Result<std::unordered_map<std::string, Position>> PostgresDatabase::load_positio
                 " "
                 "WHERE strategy_id = $1 AND strategy_name = $2 AND portfolio_id = $3 AND "
                 "DATE(last_update) = DATE($4)";
+            {
+                std::string f = stream_filter;
+                auto pos = f.find("$STREAM");
+                if (pos != std::string::npos) f.replace(pos, 7, "$5");
+                query += f;
+            }
 
             DEBUG("Querying positions for strategy_id: " + strategy_id + ", strategy_name: " +
                   strategy_name + ", portfolio_id: " + actual_portfolio_id + ", date: " + date_str);
             DEBUG("Full query: " + query);
-            result =
-                txn.exec(query, pqxx::params{strategy_id, strategy_name, actual_portfolio_id, date_str});
+            {
+                pqxx::params p{strategy_id, strategy_name, actual_portfolio_id, date_str};
+                if (has_portfolio_type) p.append(portfolio_type);
+                result = txn.exec(query, p);
+            }
         } else {
             // If strategy_name is empty, filter by strategy_id and portfolio_id (for aggregate
             // loading)
@@ -655,11 +726,22 @@ Result<std::unordered_map<std::string, Position>> PostgresDatabase::load_positio
                 table_name +
                 " "
                 "WHERE strategy_id = $1 AND portfolio_id = $2 AND DATE(last_update) = DATE($3)";
+            {
+                std::string f = stream_filter;
+                auto pos = f.find("$STREAM");
+                if (pos != std::string::npos) f.replace(pos, 7, "$4");
+                query += f;
+            }
 
             DEBUG("Querying positions for strategy_id: " + strategy_id +
-                  ", portfolio_id: " + actual_portfolio_id + ", date: " + date_str);
+                  ", portfolio_id: " + actual_portfolio_id + ", date: " + date_str +
+                  ", portfolio_type: " + portfolio_type);
             DEBUG("Full query: " + query);
-            result = txn.exec(query, pqxx::params{strategy_id, actual_portfolio_id, date_str});
+            {
+                pqxx::params p{strategy_id, actual_portfolio_id, date_str};
+                if (has_portfolio_type) p.append(portfolio_type);
+                result = txn.exec(query, p);
+            }
         }
         txn.commit();
 

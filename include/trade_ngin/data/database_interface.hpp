@@ -74,13 +74,19 @@ public:
      * @param strategy_name Individual strategy name (e.g., TREND_FOLLOWING)
      * @param portfolio_id Portfolio identifier (e.g., BASE_PORTFOLIO, CONSERVATIVE_PORTFOLIO)
      * @param table_name Name of the table to insert into
+     * @param portfolio_type Which stream this belongs to: "system" for the engine's own
+     *        signal-driven output, "qt" for the human-adjusted portfolio that is actually
+     *        executed. Orthogonal to portfolio_id -- BASE_PORTFOLIO and CONSERVATIVE_PORTFOLIO
+     *        each have both streams. Defaults to "system" so existing callers are unchanged.
+     *        Ignored (with a warning) if the dual-portfolio migration has not been applied.
      * @return Result indicating success or failure
      */
     virtual Result<void> store_positions(const std::vector<Position>& positions,
                                          const std::string& strategy_id,
                                          const std::string& strategy_name,
                                          const std::string& portfolio_id,
-                                         const std::string& table_name = "trading.positions") = 0;
+                                         const std::string& table_name = "trading.positions",
+                                         const std::string& portfolio_type = "system") = 0;
 
     /**
      * @brief Get latest market prices for symbols
@@ -103,12 +109,16 @@ public:
      * @param portfolio_id Portfolio identifier (e.g., BASE_PORTFOLIO, CONSERVATIVE_PORTFOLIO)
      * @param date Date to load positions for
      * @param table_name Name of the positions table
+     * @param portfolio_type Which stream to read: "system" or "qt". Defaults to "system" so
+     *        existing callers are unchanged. Ignored (with a warning) if the dual-portfolio
+     *        migration has not been applied.
      * @return Result containing map of symbol to position
      */
     virtual Result<std::unordered_map<std::string, Position>> load_positions_by_date(
         const std::string& strategy_id, const std::string& strategy_name,
         const std::string& portfolio_id, const Timestamp& date,
-        const std::string& table_name = "trading.positions") = 0;
+        const std::string& table_name = "trading.positions",
+        const std::string& portfolio_type = "system") = 0;
 
     /**
      * @brief Store strategy signals
