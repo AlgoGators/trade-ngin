@@ -92,6 +92,7 @@ set(TRADE_NGIN_SOURCES
     src/data/conversion_utils.cpp
     src/data/credential_store.cpp
     src/data/database_pooling.cpp
+    src/data/market_data_utils.cpp
     src/instruments/futures.cpp
     src/instruments/equity.cpp
     src/instruments/option.cpp
