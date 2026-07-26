@@ -7,6 +7,36 @@
 namespace trade_ngin {
 namespace backtest {
 
+/**
+ * @brief Resolve table name based on data source
+ *
+ * Selects the appropriate schema and constructs the full table name:
+ * - REAL: delegates to global build_table_name() to use asset-class schemas
+ * - SYNTHETIC: returns table in synthetic schema (asset class does not change the schema)
+ *
+ * This function stays in the backtest namespace and is NOT exported to the live path.
+ * The live path never calls build_table_name_with_source; it calls get_market_data with
+ * AssetClass only, which has no way to express SYNTHETIC.
+ *
+ * @param asset_class Asset class (only used for REAL; ignored for SYNTHETIC)
+ * @param data_type Base table name (e.g., "ohlcv")
+ * @param freq Data frequency
+ * @param source Data source (REAL or SYNTHETIC)
+ * @return Full table name (e.g., "synthetic.ohlcv_1d" or "futures_data.ohlcv_1d")
+ */
+static std::string build_table_name_with_source(
+    AssetClass asset_class,
+    const std::string& data_type,
+    DataFrequency freq,
+    DataSource source) {
+    if (source == DataSource::SYNTHETIC) {
+        // All asset classes use the same synthetic schema; asset_class parameter is ignored
+        return "synthetic." + data_type + "_" + get_table_suffix(freq);
+    }
+    // REAL: delegate to global function that uses asset_class to pick the schema
+    return build_table_name(asset_class, data_type, freq);
+}
+
 BacktestDataLoader::BacktestDataLoader(std::shared_ptr<PostgresDatabase> db)
     : db_(std::move(db)) {}
 
@@ -195,6 +225,13 @@ std::unordered_map<std::string, double> BacktestDataLoader::get_price_statistics
 Result<std::vector<Bar>> BacktestDataLoader::load_symbol_batch(
     const std::vector<std::string>& symbols,
     const DataLoadConfig& config) {
+    // Route to synthetic path if requested. This ensures SYNTHETIC data stays confined
+    // to the backtest namespace and is never accessible to the live trading path.
+    if (config.data_source == DataSource::SYNTHETIC) {
+        return load_symbol_batch_synthetic(symbols, config);
+    }
+
+    // REAL data: use the standard database path
     try {
         auto result = db_->get_market_data(
             symbols, config.start_date, config.end_date,
@@ -230,6 +267,54 @@ Result<std::vector<Bar>> BacktestDataLoader::load_symbol_batch(
         return make_error<std::vector<Bar>>(
             ErrorCode::UNKNOWN_ERROR,
             std::string("Exception loading market data: ") + e.what(),
+            "BacktestDataLoader");
+    }
+}
+
+Result<std::vector<Bar>> BacktestDataLoader::load_symbol_batch_synthetic(
+    const std::vector<std::string>& symbols,
+    const DataLoadConfig& config) {
+    try {
+        // Construct the table name pointing to the synthetic schema
+        std::string table_name = build_table_name_with_source(
+            config.asset_class, config.data_type, config.data_freq, DataSource::SYNTHETIC);
+
+        // Call the low-level method that accepts an explicit table name.
+        // This keeps the synthetic schema confined to the backtest namespace.
+        auto result = db_->get_market_data_from_table(
+            symbols, config.start_date, config.end_date,
+            table_name, config.asset_class, config.data_freq);
+
+        if (result.is_error()) {
+            return make_error<std::vector<Bar>>(
+                result.error()->code(),
+                result.error()->what(),
+                "BacktestDataLoader");
+        }
+
+        auto arrow_table = result.value();
+        if (arrow_table->num_rows() == 0) {
+            return make_error<std::vector<Bar>>(
+                ErrorCode::DATA_NOT_FOUND,
+                "Synthetic market data query returned an empty table",
+                "BacktestDataLoader");
+        }
+
+        // Convert Arrow table to Bars
+        auto conversion_result = DataConversionUtils::arrow_table_to_bars(arrow_table);
+        if (conversion_result.is_error()) {
+            return make_error<std::vector<Bar>>(
+                conversion_result.error()->code(),
+                conversion_result.error()->what(),
+                "BacktestDataLoader");
+        }
+
+        return conversion_result;
+
+    } catch (const std::exception& e) {
+        return make_error<std::vector<Bar>>(
+            ErrorCode::UNKNOWN_ERROR,
+            std::string("Exception loading synthetic market data: ") + e.what(),
             "BacktestDataLoader");
     }
 }

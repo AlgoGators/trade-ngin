@@ -166,6 +166,158 @@ Result<std::shared_ptr<arrow::Table>> PostgresDatabase::get_market_data(
     }
 }
 
+Result<std::shared_ptr<arrow::Table>> PostgresDatabase::get_market_data_from_table(
+    const std::vector<std::string>& symbols, const Timestamp& start_date,
+    const Timestamp& end_date, const std::string& table_name, AssetClass asset_class,
+    DataFrequency freq) {
+    if (start_date > end_date) {
+        return make_error<std::shared_ptr<arrow::Table>>(ErrorCode::INVALID_ARGUMENT,
+                                                         "Start date must be before end date");
+    }
+
+    auto validation = validate_connection();
+    if (validation.is_error()) {
+        return make_error<std::shared_ptr<arrow::Table>>(validation.error()->code(),
+                                                         validation.error()->what());
+    }
+
+    try {
+        pqxx::work txn(*connection_);
+
+        // Validate table name to prevent injection. The table_name parameter is expected
+        // to be constructed by trusted backtest code (e.g., "synthetic.ohlcv_1d").
+        // We still validate the components where possible, but since we don't have the
+        // individual components (data_type, freq), we do a basic format check.
+        if (table_name.empty() || table_name.find("..") != std::string::npos ||
+            table_name.find(";") != std::string::npos || table_name.find("'") != std::string::npos ||
+            table_name.find("\"") != std::string::npos) {
+            return make_error<std::shared_ptr<arrow::Table>>(
+                ErrorCode::INVALID_ARGUMENT,
+                "Invalid table name format: " + table_name);
+        }
+
+        // Select columns based on asset class. Equities use adjusted columns aliased to
+        // plain names; all other classes use unadjusted columns directly.
+        // Synthetic data is generated with adj_* columns equal to raw for equities, so this
+        // mapping is correct for synthetic equities as well.
+        std::string columns = market_data_utils::get_market_data_columns(asset_class);
+
+        // Base query with parameterized timestamps
+        std::string base_query =
+            "SELECT " + columns +
+            " FROM " +
+            table_name +
+            " "
+            "WHERE time BETWEEN $1 AND $2";
+
+        std::string start_ts = format_timestamp(start_date);
+        std::string end_ts = format_timestamp(end_date);
+
+        if (symbols.empty()) {
+            // No symbol filter
+            std::string query = base_query + " ORDER BY time, symbol";
+            try {
+                auto result = txn.exec(query, pqxx::params{start_ts, end_ts});
+                txn.commit();
+
+                // Convert to Arrow table
+                auto table_result = convert_to_arrow_table(result);
+                if (table_result.is_error()) {
+                    return table_result;
+                }
+
+                // Publish market data events
+                for (const auto& row : result) {
+                    MarketDataEvent event;
+                    event.type = MarketDataEventType::BAR;
+                    event.symbol = row["symbol"].as<std::string>();
+
+                    // Parse timestamp
+                    std::string time_str = row["time"].as<std::string>();
+                    std::tm time_info = {};
+                    std::istringstream ss(time_str);
+                    ss >> std::get_time(&time_info, "%Y-%m-%d %H:%M:%S");
+                    time_t time_val = std::mktime(&time_info);
+                    trade_ngin::core::safe_gmtime(&time_val, &time_info);
+                    event.timestamp = std::chrono::system_clock::from_time_t(std::mktime(&time_info));
+
+                    // Add numeric fields
+                    event.numeric_fields["open"] = row["open"].as<double>();
+                    event.numeric_fields["high"] = row["high"].as<double>();
+                    event.numeric_fields["low"] = row["low"].as<double>();
+                    event.numeric_fields["close"] = row["close"].as<double>();
+                    event.numeric_fields["volume"] = row["volume"].as<double>();
+
+                    MarketDataBus::instance().publish(event);
+                }
+
+                return table_result;
+
+            } catch (const std::exception& e) {
+                return make_error<std::shared_ptr<arrow::Table>>(ErrorCode::DATABASE_ERROR,
+                                                                "Query execution failed: " + std::string(e.what()));
+            }
+        } else {
+            // With symbol filter - validate symbols first
+            auto symbol_validation = validate_symbols(symbols);
+            if (symbol_validation.is_error()) {
+                return make_error<std::shared_ptr<arrow::Table>>(symbol_validation.error()->code(),
+                                                                symbol_validation.error()->what());
+            }
+
+            // Build parameterized query for symbols
+            std::string query = base_query + " AND symbol = ANY($3) ORDER BY time, symbol";
+
+            try {
+                auto result = txn.exec(query, pqxx::params{start_ts, end_ts, symbols});
+                txn.commit();
+
+                // Convert to Arrow table
+                auto table_result = convert_to_arrow_table(result);
+                if (table_result.is_error()) {
+                    return table_result;
+                }
+
+                // Publish market data events
+                for (const auto& row : result) {
+                    MarketDataEvent event;
+                    event.type = MarketDataEventType::BAR;
+                    event.symbol = row["symbol"].as<std::string>();
+
+                    // Parse timestamp
+                    std::string time_str = row["time"].as<std::string>();
+                    std::tm time_info = {};
+                    std::istringstream ss(time_str);
+                    ss >> std::get_time(&time_info, "%Y-%m-%d %H:%M:%S");
+                    time_t time_val = std::mktime(&time_info);
+                    trade_ngin::core::safe_gmtime(&time_val, &time_info);
+                    event.timestamp = std::chrono::system_clock::from_time_t(std::mktime(&time_info));
+
+                    // Add numeric fields
+                    event.numeric_fields["open"] = row["open"].as<double>();
+                    event.numeric_fields["high"] = row["high"].as<double>();
+                    event.numeric_fields["low"] = row["low"].as<double>();
+                    event.numeric_fields["close"] = row["close"].as<double>();
+                    event.numeric_fields["volume"] = row["volume"].as<double>();
+
+                    MarketDataBus::instance().publish(event);
+                }
+
+                return table_result;
+
+            } catch (const std::exception& e) {
+                return make_error<std::shared_ptr<arrow::Table>>(
+                    ErrorCode::DATABASE_ERROR, "Query execution failed: " + std::string(e.what()));
+            }
+        }
+
+    } catch (const std::exception& e) {
+        return make_error<std::shared_ptr<arrow::Table>>(
+            ErrorCode::DATABASE_ERROR, "Failed to fetch market data: " + std::string(e.what()),
+            "PostgresDatabase");
+    }
+}
+
 Result<void> PostgresDatabase::store_executions(const std::vector<ExecutionReport>& executions,
                                                 const std::string& strategy_id,
                                                 const std::string& strategy_name,
