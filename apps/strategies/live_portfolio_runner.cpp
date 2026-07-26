@@ -54,6 +54,9 @@ using namespace trade_ngin;
 // Migration 002 backfills qt for all prior history, so this is populated from
 // the first run onward.
 static constexpr const char* QT_STREAM = "qt";
+// The untouched counterfactual: compounds only off its own prior positions, so it
+// never sees a QT edit. Requires migration 003.
+static constexpr const char* BENCHMARK_STREAM = "benchmark";
 
 int trade_ngin::run_live_portfolio(const LivePortfolioConfig& portfolio_cfg, int argc, char* argv[]) {
     try {
@@ -409,169 +412,183 @@ int trade_ngin::run_live_portfolio(const LivePortfolioConfig& portfolio_cfg, int
             std::shared_ptr<InstrumentRegistry>(&registry, [](InstrumentRegistry*) {});
 
         // Vector to hold all strategy instances
-        std::vector<std::shared_ptr<trade_ngin::StrategyInterface>> strategies;
+        // (strategies is produced by build_strategy_set below)
 
         INFO("Creating " + std::to_string(strategy_names.size()) + " strategies from config");
 
         // Factory loop: create each strategy based on type
-        for (const auto& strategy_name : strategy_names) {
-            const auto& strategy_def = strategy_configs[strategy_name];
-            std::string strategy_type = strategy_def.value("type", "TrendFollowingStrategy");
-            double allocation = strategy_allocations[strategy_name];
+        // Building the strategy set is a lambda so it can be invoked twice: once for
+        // the operational chain, once for the untouched benchmark. The benchmark MUST
+        // get its own instances -- positions_ holds the Carver buffer anchor, so a
+        // shared set would let the real book leak into the counterfactual.
+        auto build_strategy_set =
+            [&]() -> std::vector<std::shared_ptr<trade_ngin::StrategyInterface>> {
+            std::vector<std::shared_ptr<trade_ngin::StrategyInterface>> strategies;
+            for (const auto& strategy_name : strategy_names) {
+                const auto& strategy_def = strategy_configs[strategy_name];
+                std::string strategy_type = strategy_def.value("type", "TrendFollowingStrategy");
+                double allocation = strategy_allocations[strategy_name];
 
-            // Calculate capital allocation for this strategy
-            trade_ngin::StrategyConfig strategy_config = base_strategy_config;
-            strategy_config.capital_allocation = initial_capital * allocation;
+                // Calculate capital allocation for this strategy
+                trade_ngin::StrategyConfig strategy_config = base_strategy_config;
+                strategy_config.capital_allocation = initial_capital * allocation;
 
-            INFO("Creating strategy: " + strategy_name + " (type: " + strategy_type +
-                 ", allocation: " + std::to_string(allocation * 100.0) + "%)");
+                INFO("Creating strategy: " + strategy_name + " (type: " + strategy_type +
+                     ", allocation: " + std::to_string(allocation * 100.0) + "%)");
 
-            std::shared_ptr<trade_ngin::StrategyInterface> strategy;
+                std::shared_ptr<trade_ngin::StrategyInterface> strategy;
 
-            if (strategy_type == "TrendFollowingStrategy") {
-                // Create TrendFollowingStrategy (normal speed)
-                trade_ngin::TrendFollowingConfig trend_config;
-                if (strategy_def.contains("config")) {
-                    const auto& cfg = strategy_def["config"];
-                    trend_config.weight = cfg.value("weight", 0.03);
-                    trend_config.risk_target = cfg.value("risk_target", 0.2);
-                    trend_config.idm = cfg.value("idm", 2.5);
-                    trend_config.max_symbol_concentration =
-                        cfg.value("max_symbol_concentration", 0.15);
-                    trend_config.use_position_buffering = cfg.value("use_position_buffering", true);
-                    trend_config.carver_buffer_floor = cfg.value(
-                        "carver_buffer_floor", app_config.strategy_defaults.carver_buffer_floor);
-                    trend_config.carver_buffer_position_factor =
-                        cfg.value("carver_buffer_position_factor",
-                                  app_config.strategy_defaults.carver_buffer_position_factor);
-                    if (cfg.contains("ema_windows")) {
-                        trend_config.ema_windows.clear();
-                        for (const auto& window : cfg["ema_windows"]) {
-                            trend_config.ema_windows.push_back(
-                                {window[0].get<int>(), window[1].get<int>()});
-                        }
-                    }
-                    trend_config.vol_lookback_short = cfg.value("vol_lookback_short", 32);
-                    trend_config.vol_lookback_long = cfg.value("vol_lookback_long", 252);
-                }
-                // Set default FDM if not loaded
-                if (trend_config.fdm.empty()) {
-                    trend_config.fdm = app_config.strategy_defaults.fdm;
-                }
-
-                strategy = std::make_shared<trade_ngin::TrendFollowingStrategy>(
-                    strategy_name, strategy_config, trend_config, db, registry_ptr);
-
-            } else if (strategy_type == "TrendFollowingFastStrategy") {
-                // Create TrendFollowingFastStrategy
-                trade_ngin::TrendFollowingFastConfig trend_config;
-                if (strategy_def.contains("config")) {
-                    const auto& cfg = strategy_def["config"];
-                    trend_config.weight = cfg.value("weight", 0.03);
-                    trend_config.risk_target = cfg.value("risk_target", 0.25);
-                    trend_config.idm = cfg.value("idm", 2.5);
-                    trend_config.max_symbol_concentration =
-                        cfg.value("max_symbol_concentration", 0.15);
-                    trend_config.use_position_buffering =
-                        cfg.value("use_position_buffering", false);
-                    trend_config.carver_buffer_floor = cfg.value(
-                        "carver_buffer_floor", app_config.strategy_defaults.carver_buffer_floor);
-                    trend_config.carver_buffer_position_factor =
-                        cfg.value("carver_buffer_position_factor",
-                                  app_config.strategy_defaults.carver_buffer_position_factor);
-                    if (cfg.contains("ema_windows")) {
-                        trend_config.ema_windows.clear();
-                        for (const auto& window : cfg["ema_windows"]) {
-                            trend_config.ema_windows.push_back(
-                                {window[0].get<int>(), window[1].get<int>()});
-                        }
-                    }
-                    trend_config.vol_lookback_short = cfg.value("vol_lookback_short", 16);
-                    trend_config.vol_lookback_long = cfg.value("vol_lookback_long", 252);
-                }
-                if (trend_config.fdm.empty()) {
-                    trend_config.fdm = app_config.strategy_defaults.fdm;
-                }
-
-                strategy = std::make_shared<trade_ngin::TrendFollowingFastStrategy>(
-                    strategy_name, strategy_config, trend_config, db, registry_ptr);
-
-            } else if (strategy_type == "TrendFollowingSlowStrategy") {
-                // Create TrendFollowingSlowStrategy (legacy support)
-                trade_ngin::TrendFollowingSlowConfig trend_config;
-                if (strategy_def.contains("config")) {
-                    const auto& cfg = strategy_def["config"];
-                    trend_config.weight = cfg.value("weight", 0.03);
-                    trend_config.risk_target = cfg.value("risk_target", 0.15);
-                    trend_config.idm = cfg.value("idm", 2.5);
-                    trend_config.max_symbol_concentration =
-                        cfg.value("max_symbol_concentration", 0.15);
-                    trend_config.use_position_buffering = cfg.value("use_position_buffering", true);
-                    trend_config.carver_buffer_floor = cfg.value(
-                        "carver_buffer_floor", app_config.strategy_defaults.carver_buffer_floor);
-                    trend_config.carver_buffer_position_factor =
-                        cfg.value("carver_buffer_position_factor",
-                                  app_config.strategy_defaults.carver_buffer_position_factor);
-                    if (cfg.contains("ema_windows")) {
-                        trend_config.ema_windows.clear();
-                        for (const auto& window : cfg["ema_windows"]) {
-                            trend_config.ema_windows.push_back(
-                                {window[0].get<int>(), window[1].get<int>()});
-                        }
-                    }
-                    trend_config.vol_lookback_short = cfg.value("vol_lookback_short", 64);
-                    trend_config.vol_lookback_long = cfg.value("vol_lookback_long", 252);
-                } else {
-                    // Use hardcoded defaults for slow strategy
-                    trend_config.weight = 0.03;
-                    trend_config.risk_target = 0.15;
-                    // Only the base portfolio pinned this in the fallback branch; the
-                    // conservative one left the struct default in place. Preserved as a
-                    // config value so neither portfolio's behaviour changes.
-                    if (portfolio_cfg.slow_max_symbol_concentration.has_value()) {
+                if (strategy_type == "TrendFollowingStrategy") {
+                    // Create TrendFollowingStrategy (normal speed)
+                    trade_ngin::TrendFollowingConfig trend_config;
+                    if (strategy_def.contains("config")) {
+                        const auto& cfg = strategy_def["config"];
+                        trend_config.weight = cfg.value("weight", 0.03);
+                        trend_config.risk_target = cfg.value("risk_target", 0.2);
+                        trend_config.idm = cfg.value("idm", 2.5);
                         trend_config.max_symbol_concentration =
-                            *portfolio_cfg.slow_max_symbol_concentration;
+                            cfg.value("max_symbol_concentration", 0.15);
+                        trend_config.use_position_buffering = cfg.value("use_position_buffering", true);
+                        trend_config.carver_buffer_floor = cfg.value(
+                            "carver_buffer_floor", app_config.strategy_defaults.carver_buffer_floor);
+                        trend_config.carver_buffer_position_factor =
+                            cfg.value("carver_buffer_position_factor",
+                                      app_config.strategy_defaults.carver_buffer_position_factor);
+                        if (cfg.contains("ema_windows")) {
+                            trend_config.ema_windows.clear();
+                            for (const auto& window : cfg["ema_windows"]) {
+                                trend_config.ema_windows.push_back(
+                                    {window[0].get<int>(), window[1].get<int>()});
+                            }
+                        }
+                        trend_config.vol_lookback_short = cfg.value("vol_lookback_short", 32);
+                        trend_config.vol_lookback_long = cfg.value("vol_lookback_long", 252);
                     }
-                    trend_config.idm = 2.5;
-                    trend_config.use_position_buffering = true;
-                    trend_config.ema_windows = {{4, 16},   {8, 32},   {16, 64},
-                                                {32, 128}, {64, 256}, {128, 512}};
-                    trend_config.vol_lookback_short = 64;
-                    trend_config.vol_lookback_long = 252;
+                    // Set default FDM if not loaded
+                    if (trend_config.fdm.empty()) {
+                        trend_config.fdm = app_config.strategy_defaults.fdm;
+                    }
+
+                    strategy = std::make_shared<trade_ngin::TrendFollowingStrategy>(
+                        strategy_name, strategy_config, trend_config, db, registry_ptr);
+
+                } else if (strategy_type == "TrendFollowingFastStrategy") {
+                    // Create TrendFollowingFastStrategy
+                    trade_ngin::TrendFollowingFastConfig trend_config;
+                    if (strategy_def.contains("config")) {
+                        const auto& cfg = strategy_def["config"];
+                        trend_config.weight = cfg.value("weight", 0.03);
+                        trend_config.risk_target = cfg.value("risk_target", 0.25);
+                        trend_config.idm = cfg.value("idm", 2.5);
+                        trend_config.max_symbol_concentration =
+                            cfg.value("max_symbol_concentration", 0.15);
+                        trend_config.use_position_buffering =
+                            cfg.value("use_position_buffering", false);
+                        trend_config.carver_buffer_floor = cfg.value(
+                            "carver_buffer_floor", app_config.strategy_defaults.carver_buffer_floor);
+                        trend_config.carver_buffer_position_factor =
+                            cfg.value("carver_buffer_position_factor",
+                                      app_config.strategy_defaults.carver_buffer_position_factor);
+                        if (cfg.contains("ema_windows")) {
+                            trend_config.ema_windows.clear();
+                            for (const auto& window : cfg["ema_windows"]) {
+                                trend_config.ema_windows.push_back(
+                                    {window[0].get<int>(), window[1].get<int>()});
+                            }
+                        }
+                        trend_config.vol_lookback_short = cfg.value("vol_lookback_short", 16);
+                        trend_config.vol_lookback_long = cfg.value("vol_lookback_long", 252);
+                    }
+                    if (trend_config.fdm.empty()) {
+                        trend_config.fdm = app_config.strategy_defaults.fdm;
+                    }
+
+                    strategy = std::make_shared<trade_ngin::TrendFollowingFastStrategy>(
+                        strategy_name, strategy_config, trend_config, db, registry_ptr);
+
+                } else if (strategy_type == "TrendFollowingSlowStrategy") {
+                    // Create TrendFollowingSlowStrategy (legacy support)
+                    trade_ngin::TrendFollowingSlowConfig trend_config;
+                    if (strategy_def.contains("config")) {
+                        const auto& cfg = strategy_def["config"];
+                        trend_config.weight = cfg.value("weight", 0.03);
+                        trend_config.risk_target = cfg.value("risk_target", 0.15);
+                        trend_config.idm = cfg.value("idm", 2.5);
+                        trend_config.max_symbol_concentration =
+                            cfg.value("max_symbol_concentration", 0.15);
+                        trend_config.use_position_buffering = cfg.value("use_position_buffering", true);
+                        trend_config.carver_buffer_floor = cfg.value(
+                            "carver_buffer_floor", app_config.strategy_defaults.carver_buffer_floor);
+                        trend_config.carver_buffer_position_factor =
+                            cfg.value("carver_buffer_position_factor",
+                                      app_config.strategy_defaults.carver_buffer_position_factor);
+                        if (cfg.contains("ema_windows")) {
+                            trend_config.ema_windows.clear();
+                            for (const auto& window : cfg["ema_windows"]) {
+                                trend_config.ema_windows.push_back(
+                                    {window[0].get<int>(), window[1].get<int>()});
+                            }
+                        }
+                        trend_config.vol_lookback_short = cfg.value("vol_lookback_short", 64);
+                        trend_config.vol_lookback_long = cfg.value("vol_lookback_long", 252);
+                    } else {
+                        // Use hardcoded defaults for slow strategy
+                        trend_config.weight = 0.03;
+                        trend_config.risk_target = 0.15;
+                        // Only the base portfolio pinned this in the fallback branch; the
+                        // conservative one left the struct default in place. Preserved as a
+                        // config value so neither portfolio's behaviour changes.
+                        if (portfolio_cfg.slow_max_symbol_concentration.has_value()) {
+                            trend_config.max_symbol_concentration =
+                                *portfolio_cfg.slow_max_symbol_concentration;
+                        }
+                        trend_config.idm = 2.5;
+                        trend_config.use_position_buffering = true;
+                        trend_config.ema_windows = {{4, 16},   {8, 32},   {16, 64},
+                                                    {32, 128}, {64, 256}, {128, 512}};
+                        trend_config.vol_lookback_short = 64;
+                        trend_config.vol_lookback_long = 252;
+                    }
+                    if (trend_config.fdm.empty()) {
+                        trend_config.fdm = app_config.strategy_defaults.fdm;
+                    }
+
+                    strategy = std::make_shared<trade_ngin::TrendFollowingSlowStrategy>(
+                        strategy_name, strategy_config, trend_config, db, registry_ptr);
+
+                } else {
+                    ERROR("Unknown strategy type: " + strategy_type +
+                          " for strategy: " + strategy_name);
+                    throw std::runtime_error("Unknown strategy type: " + strategy_type +
+                                             " for strategy: " + strategy_name);
                 }
-                if (trend_config.fdm.empty()) {
-                    trend_config.fdm = app_config.strategy_defaults.fdm;
+
+                // Initialize strategy
+                auto init_result = strategy->initialize();
+                if (init_result.is_error()) {
+                    ERROR("Failed to initialize strategy " + strategy_name + ": " +
+                          init_result.error()->what());
+                    throw std::runtime_error("Failed to initialize strategy " + strategy_name +
+                                             ": " + std::string(init_result.error()->what()));
                 }
+                INFO("Strategy " + strategy_name + " initialization successful");
 
-                strategy = std::make_shared<trade_ngin::TrendFollowingSlowStrategy>(
-                    strategy_name, strategy_config, trend_config, db, registry_ptr);
+                // Start strategy
+                auto start_result = strategy->start();
+                if (start_result.is_error()) {
+                    ERROR("Failed to start strategy " + strategy_name + ": " +
+                          start_result.error()->what());
+                    throw std::runtime_error("Failed to start strategy " + strategy_name + ": " +
+                                             std::string(start_result.error()->what()));
+                }
+                INFO("Strategy " + strategy_name + " started successfully");
 
-            } else {
-                ERROR("Unknown strategy type: " + strategy_type +
-                      " for strategy: " + strategy_name);
-                return 1;
+                strategies.push_back(strategy);
             }
+            return strategies;
+        };
 
-            // Initialize strategy
-            auto init_result = strategy->initialize();
-            if (init_result.is_error()) {
-                ERROR("Failed to initialize strategy " + strategy_name + ": " +
-                      init_result.error()->what());
-                return 1;
-            }
-            INFO("Strategy " + strategy_name + " initialization successful");
-
-            // Start strategy
-            auto start_result = strategy->start();
-            if (start_result.is_error()) {
-                ERROR("Failed to start strategy " + strategy_name + ": " +
-                      start_result.error()->what());
-                return 1;
-            }
-            INFO("Strategy " + strategy_name + " started successfully");
-
-            strategies.push_back(strategy);
-        }
+        auto strategies = build_strategy_set();
 
         INFO("Successfully created " + std::to_string(strategies.size()) + " strategies");
 
@@ -1809,6 +1826,117 @@ int trade_ngin::run_live_portfolio(const LivePortfolioConfig& portfolio_cfg, int
 
         INFO("PHASE 4: Total positions saved across all strategies: " +
              std::to_string(total_positions_saved));
+
+        // ========================================
+        // BENCHMARK PASS: the untouched counterfactual portfolio
+        // ========================================
+        // Answers "has QT added value over time?", which neither other stream can.
+        //
+        // qt        = what we actually held (QT edits it)
+        // system    = what the algorithm said TODAY given the real book -- scores each
+        //             individual decision, but drifts along with QT because position
+        //             buffering anchors on yesterday's actual position
+        // benchmark = what the algorithm would have compounded to having never seen a
+        //             single QT edit -- the only genuinely independent comparison
+        //
+        // Everything here is deliberately isolated from the operational chain: its own
+        // strategy instances, its own PortfolioManager, and priors read from its own
+        // stream. It reuses the already-fetched bars rather than re-querying.
+        //
+        // A benchmark failure is never fatal. The real book is already stored by this
+        // point, and a missing day of counterfactual is a reporting gap, not a trading
+        // problem.
+        try {
+            INFO("BENCHMARK: computing untouched counterfactual portfolio");
+
+            auto bench_strategies = build_strategy_set();
+
+            // Distinct component id: PortfolioManager registers with the global
+            // StateManager, which REJECTS duplicate ids, and its constructor throws on
+            // that failure. The default id would abort the run here.
+            auto bench_portfolio = std::make_shared<trade_ngin::PortfolioManager>(
+                portfolio_config, "PORTFOLIO_MANAGER_BENCHMARK", registry_ptr);
+
+            for (size_t i = 0; i < bench_strategies.size(); ++i) {
+                const std::string& strat_name = strategy_names[i];
+                auto add_result = bench_portfolio->add_strategy(
+                    bench_strategies[i], strategy_allocations[strat_name],
+                    portfolio_config.use_optimization, portfolio_config.use_risk_management);
+                if (add_result.is_error()) {
+                    WARN("BENCHMARK: failed to add strategy " + strat_name + ": " +
+                         std::string(add_result.error()->what()));
+                }
+            }
+
+            // Seed from the BENCHMARK's own prior positions -- never qt. This is the
+            // whole point: the counterfactual must compound on itself.
+            {
+                auto bench_prev_date = now - std::chrono::hours(24);
+                std::string bench_seed_name =
+                    strategy_names.empty() ? std::string() : strategy_names[0];
+                auto bench_seed = db->load_positions_by_date(
+                    combined_strategy_id, bench_seed_name, coordinator_config.portfolio_id,
+                    bench_prev_date, "trading.positions", BENCHMARK_STREAM);
+                if (bench_seed.is_ok() && !bench_seed.value().empty()) {
+                    auto bench_tf_seeded = bench_strategies.empty()
+                                               ? Result<void>()
+                                               : bench_strategies[0]->seed_positions(
+                                                     bench_seed.value());
+                    if (bench_tf_seeded.is_error()) {
+                        WARN("BENCHMARK: failed to seed strategy positions: " +
+                             std::string(bench_tf_seeded.error()->what()));
+                    }
+                    int bench_seeded = 0;
+                    for (const auto& [sym, pos] : bench_seed.value()) {
+                        if (bench_portfolio->update_strategy_position(bench_seed_name, sym, pos)
+                                .is_ok()) {
+                            bench_seeded++;
+                        }
+                    }
+                    INFO("BENCHMARK: seeded " + std::to_string(bench_seeded) +
+                         " prior position(s) from its own stream");
+                } else {
+                    INFO("BENCHMARK: no prior benchmark positions; starting flat "
+                         "(expected on the first run after migration 003)");
+                }
+            }
+
+            // Same bars as the operational chain -- only the starting positions differ.
+            auto bench_process = bench_portfolio->process_market_data(all_bars);
+            if (bench_process.is_error()) {
+                WARN("BENCHMARK: process_market_data failed: " +
+                     std::string(bench_process.error()->what()));
+            } else {
+                auto bench_positions_map = bench_portfolio->get_strategy_positions();
+                int bench_stored = 0;
+                for (const auto& [strat_name, pos_map] : bench_positions_map) {
+                    std::vector<trade_ngin::Position> bench_vec;
+                    bench_vec.reserve(pos_map.size());
+                    for (const auto& [sym, pos] : pos_map) {
+                        if (pos.quantity.as_double() != 0.0) {
+                            bench_vec.push_back(pos);
+                        }
+                    }
+                    if (bench_vec.empty()) {
+                        continue;
+                    }
+                    auto bench_save = db->store_positions(
+                        bench_vec, combined_strategy_id, strat_name,
+                        coordinator_config.portfolio_id, "trading.positions", BENCHMARK_STREAM);
+                    if (bench_save.is_error()) {
+                        WARN("BENCHMARK: failed to store positions for " + strat_name + ": " +
+                             std::string(bench_save.error()->what()));
+                    } else {
+                        bench_stored += static_cast<int>(bench_vec.size());
+                    }
+                }
+                INFO("BENCHMARK: stored " + std::to_string(bench_stored) +
+                     " counterfactual position(s)");
+            }
+        } catch (const std::exception& e) {
+            WARN("BENCHMARK pass failed (non-fatal, real book already stored): " +
+                 std::string(e.what()));
+        }
 
         // Compute portfolio-level snapshot metrics using RiskManager on today's state
         INFO("Retrieving strategy metrics...");
