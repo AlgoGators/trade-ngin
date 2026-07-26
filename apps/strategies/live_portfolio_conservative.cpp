@@ -1744,6 +1744,36 @@ int main(int argc, char* argv[]) {
                     INFO("Successfully stored " + std::to_string(strategy_positions_vec.size()) +
                          " positions for strategy: " + strategy_name);
                     total_positions_saved += strategy_positions_vec.size();
+
+                    // F1 dual portfolio: give QT a starting point to edit.
+                    //
+                    // Copies today's system positions into the qt stream, but ONLY if
+                    // no qt rows exist for this day yet -- so re-running the engine can
+                    // never overwrite a decision QT has already made. That guarantee
+                    // lives in the SQL (a single INSERT ... SELECT ... WHERE NOT EXISTS),
+                    // not in this call site, so it holds even under concurrent runs.
+                    //
+                    // No-op if migration 001 has not been applied.
+                    std::string seed_date_str;
+                    {
+                        auto seed_tt = std::chrono::system_clock::to_time_t(
+                            strategy_positions_vec.front().last_update);
+                        std::tm seed_tm{};
+                        trade_ngin::core::safe_gmtime(&seed_tt, &seed_tm);
+                        std::stringstream seed_ss;
+                        seed_ss << std::put_time(&seed_tm, "%Y-%m-%d");
+                        seed_date_str = seed_ss.str();
+                    }
+
+                    auto seed_result = db->seed_qt_positions_from_system(
+                        combined_strategy_id, strategy_name, portfolio_id, seed_date_str,
+                        "trading.positions");
+                    if (seed_result.is_error()) {
+                        // Non-fatal: the system stream is already safely stored, and the
+                        // qt stream can be seeded on the next run.
+                        WARN("Could not seed qt positions for " + strategy_name + ": " +
+                             std::string(seed_result.error()->what()));
+                    }
                 }
             } else {
                 INFO("No non-zero positions to store for strategy: " + strategy_name);

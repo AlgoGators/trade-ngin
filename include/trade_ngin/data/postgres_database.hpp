@@ -321,7 +321,26 @@ public:
     Result<void> store_trading_equity_curve(
         const std::string& strategy_id, const Timestamp& timestamp, double equity,
         const std::string& portfolio_id,
-        const std::string& table_name = "trading.equity_curve") override;
+        const std::string& table_name = "trading.equity_curve",
+        const std::string& portfolio_type = "system") override;
+
+    /**
+     * @brief Seed the 'qt' position stream from the 'system' stream for one day.
+     *
+     * Copies that day's system positions into the qt stream so QT has something
+     * to edit. IDEMPOTENT AND NON-DESTRUCTIVE: if ANY qt row already exists for
+     * this portfolio/strategy/date, nothing is written. QT's edits must survive
+     * a re-run of the engine -- overwriting them would defeat the entire point
+     * of tracking the two streams separately.
+     *
+     * No-op (with a warning) if the dual-portfolio migration has not been applied.
+     *
+     * @return Result containing the number of rows seeded (0 if already seeded)
+     */
+    Result<int> seed_qt_positions_from_system(
+        const std::string& strategy_id, const std::string& strategy_name,
+        const std::string& portfolio_id, const std::string& date,
+        const std::string& table_name = "trading.positions");
 
     /**
      * @brief Store multiple live trading equity curve points

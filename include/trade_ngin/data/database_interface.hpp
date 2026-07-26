@@ -296,7 +296,8 @@ public:
     virtual Result<void> store_trading_equity_curve(
         const std::string& strategy_id, const Timestamp& timestamp, double equity,
         const std::string& portfolio_id,
-        const std::string& table_name = "trading.equity_curve") = 0;
+        const std::string& table_name = "trading.equity_curve",
+        const std::string& portfolio_type = "system") = 0;
 
     /**
      * @brief Store multiple live trading equity curve points

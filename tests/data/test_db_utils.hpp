@@ -268,9 +268,10 @@ public:
     Result<void> store_trading_equity_curve(const std::string& strategy_id,
                                             const Timestamp& timestamp, double equity,
                                             const std::string& portfolio_id,
-                                            const std::string& table_name) override {
+                                            const std::string& table_name,
+                                            const std::string& portfolio_type = "system") override {
         (void)strategy_id; (void)timestamp; (void)equity;
-        (void)portfolio_id; (void)table_name;
+        (void)portfolio_id; (void)table_name; (void)portfolio_type;
         return record_call("store_trading_equity_curve");
     }
 

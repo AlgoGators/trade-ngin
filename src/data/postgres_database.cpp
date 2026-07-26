@@ -2225,10 +2225,78 @@ Result<std::tuple<double, double, double>> PostgresDatabase::get_previous_live_a
     }
 }
 
+Result<int> PostgresDatabase::seed_qt_positions_from_system(const std::string& strategy_id,
+                                                           const std::string& strategy_name,
+                                                           const std::string& portfolio_id,
+                                                           const std::string& date,
+                                                           const std::string& table_name) {
+    auto validation = validate_connection();
+    if (validation.is_error()) {
+        return make_error<int>(validation.error()->code(), validation.error()->what());
+    }
+
+    try {
+        pqxx::work txn(*connection_);
+
+        auto table_validation = validate_table_name(table_name);
+        if (table_validation.is_error()) {
+            return make_error<int>(table_validation.error()->code(),
+                                   table_validation.error()->what());
+        }
+
+        if (!column_exists(txn, table_name, "portfolio_type")) {
+            WARN("Cannot seed qt positions: " + table_name +
+                 " has no portfolio_type column (migration 001 not applied). Skipping.");
+            return Result<int>(0);
+        }
+
+        // One statement, so the check and the insert cannot race: the NOT EXISTS
+        // is evaluated as part of the same INSERT ... SELECT. If ANY qt row is
+        // already present for this key and date, zero rows are inserted and the
+        // edits QT has made are left completely untouched. That property is the
+        // whole point -- the engine re-running must never clobber a human
+        // decision.
+        std::string query =
+            "INSERT INTO " + table_name +
+            " (symbol, quantity, average_price, daily_unrealized_pnl, daily_realized_pnl, "
+            " last_update, updated_at, strategy_id, strategy_name, date, portfolio_id, "
+            " portfolio_type) "
+            "SELECT symbol, quantity, average_price, daily_unrealized_pnl, daily_realized_pnl, "
+            "       last_update, updated_at, strategy_id, strategy_name, date, portfolio_id, "
+            "       'qt' "
+            "FROM " + table_name +
+            " WHERE strategy_id = $1 AND strategy_name = $2 AND portfolio_id = $3 "
+            "  AND date = $4 AND portfolio_type = 'system' "
+            "  AND NOT EXISTS ("
+            "      SELECT 1 FROM " + table_name +
+            "      WHERE strategy_id = $1 AND strategy_name = $2 AND portfolio_id = $3 "
+            "        AND date = $4 AND portfolio_type = 'qt')";
+
+        auto result = txn.exec(query, pqxx::params{strategy_id, strategy_name, portfolio_id, date});
+        txn.commit();
+
+        const int seeded = static_cast<int>(result.affected_rows());
+        if (seeded > 0) {
+            INFO("Seeded " + std::to_string(seeded) + " qt position(s) from system for " +
+                 strategy_name + " on " + date);
+        } else {
+            INFO("qt stream already present for " + strategy_name + " on " + date +
+                 " -- leaving existing QT edits untouched");
+        }
+        return Result<int>(seeded);
+
+    } catch (const std::exception& e) {
+        return make_error<int>(ErrorCode::DATABASE_ERROR,
+                               "Failed to seed qt positions: " + std::string(e.what()),
+                               "PostgresDatabase");
+    }
+}
+
 Result<void> PostgresDatabase::store_trading_equity_curve(const std::string& strategy_id,
                                                           const Timestamp& timestamp, double equity,
                                                           const std::string& portfolio_id,
-                                                          const std::string& table_name) {
+                                                          const std::string& table_name,
+                                                          const std::string& portfolio_type) {
     auto validation = validate_connection();
     if (validation.is_error())
         return validation;
@@ -2242,13 +2310,40 @@ Result<void> PostgresDatabase::store_trading_equity_curve(const std::string& str
             return table_validation;
         }
 
-        std::string query = "INSERT INTO " + table_name +
-                            " (strategy_id, timestamp, equity, portfolio_id) "
-                            "VALUES ($1, $2, $3, $4) "
-                            "ON CONFLICT (portfolio_id, strategy_id, timestamp) "
-                            "DO UPDATE SET equity = EXCLUDED.equity";
+        // The ON CONFLICT target must name the columns of an ACTUAL unique
+        // constraint. Migration 001 rebuilds trading_equity_curve_unique to
+        // include portfolio_type, so naming the old three columns after that
+        // migration fails outright with "no unique or exclusion constraint
+        // matching the ON CONFLICT specification". Detecting the column at
+        // runtime keeps this correct on both sides of the migration.
+        const bool has_portfolio_type = column_exists(txn, table_name, "portfolio_type");
+        if (!has_portfolio_type && portfolio_type != "system") {
+            return make_error<void>(
+                ErrorCode::DATABASE_ERROR,
+                "portfolio_type=" + portfolio_type + " requested but " + table_name +
+                    " has no portfolio_type column. Apply migrations/001_add_portfolio_type.sql "
+                    "before writing a non-system stream.",
+                "PostgresDatabase");
+        }
 
-        txn.exec(query, pqxx::params{strategy_id, format_timestamp(timestamp), equity, portfolio_id});
+        std::string query;
+        if (has_portfolio_type) {
+            query = "INSERT INTO " + table_name +
+                    " (strategy_id, timestamp, equity, portfolio_id, portfolio_type) "
+                    "VALUES ($1, $2, $3, $4, $5) "
+                    "ON CONFLICT (portfolio_id, strategy_id, timestamp, portfolio_type) "
+                    "DO UPDATE SET equity = EXCLUDED.equity";
+            txn.exec(query, pqxx::params{strategy_id, format_timestamp(timestamp), equity,
+                                         portfolio_id, portfolio_type});
+        } else {
+            query = "INSERT INTO " + table_name +
+                    " (strategy_id, timestamp, equity, portfolio_id) "
+                    "VALUES ($1, $2, $3, $4) "
+                    "ON CONFLICT (portfolio_id, strategy_id, timestamp) "
+                    "DO UPDATE SET equity = EXCLUDED.equity";
+            txn.exec(query,
+                     pqxx::params{strategy_id, format_timestamp(timestamp), equity, portfolio_id});
+        }
 
         txn.commit();
         return Result<void>();
