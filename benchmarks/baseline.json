@@ -1,0 +1,44 @@
+[
+  {
+    "iterations": 100,
+    "median_ns": 3596,
+    "name": "BarConversion_10_symbols",
+    "p95_ns": 3649
+  },
+  {
+    "iterations": 100,
+    "median_ns": 1089,
+    "name": "Optimizer_10_symbols",
+    "p95_ns": 1104
+  },
+  {
+    "iterations": 100,
+    "median_ns": 7370,
+    "name": "Optimizer_50_symbols",
+    "p95_ns": 12001
+  },
+  {
+    "iterations": 100,
+    "median_ns": 54084,
+    "name": "RiskMgr_PortfolioVar_10",
+    "p95_ns": 176873
+  },
+  {
+    "iterations": 100,
+    "median_ns": 223927,
+    "name": "RiskMgr_PortfolioVar_50",
+    "p95_ns": 471431
+  },
+  {
+    "iterations": 100,
+    "median_ns": 757,
+    "name": "Statistics_ADF_test_10",
+    "p95_ns": 997
+  },
+  {
+    "iterations": 100,
+    "median_ns": 2419,
+    "name": "Statistics_Normalizer_10",
+    "p95_ns": 2502
+  }
+]
