@@ -506,6 +506,8 @@ inline std::string get_schema_name(AssetClass asset_class) {
             return "commodities_data";
         case AssetClass::CRYPTO:
             return "crypto_data";
+        case AssetClass::OPTIONS:
+            return "options_data";
         default:
             return "unknown_data";
     }

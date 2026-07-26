@@ -5,6 +5,7 @@
 #include <sstream>
 #include "trade_ngin/core/state_manager.hpp"
 #include "trade_ngin/core/time_utils.hpp"
+#include "trade_ngin/data/market_data_utils.hpp"
 
 namespace {
 std::string join(const std::vector<std::string>& elements, const std::string& delimiter) {
@@ -815,6 +816,8 @@ std::string PostgresDatabase::asset_class_to_string(AssetClass asset_class) cons
             return "COMMODITY";
         case AssetClass::CRYPTO:
             return "CRYPTO";
+        case AssetClass::OPTIONS:
+            return "OPTION";
         default:
             return "";
     }
@@ -833,10 +836,14 @@ Result<pqxx::result> PostgresDatabase::execute_market_data_query(
 
     std::string full_table_name = build_table_name(asset_class, data_type, freq);
 
+    // Select columns based on asset class. Equities use adjusted columns aliased to
+    // plain names; all other classes use unadjusted columns directly.
+    std::string columns = market_data_utils::get_market_data_columns(asset_class);
+
     // Base query with parameterized timestamps
     std::string base_query =
-        "SELECT time, symbol, open, high, low, close, volume "
-        "FROM " +
+        "SELECT " + columns +
+        " FROM " +
         full_table_name +
         " "
         "WHERE time BETWEEN $1 AND $2";
