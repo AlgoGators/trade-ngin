@@ -110,9 +110,18 @@ COPY --from=builder /app /app
 
 WORKDIR /app
 
-COPY live_trend.cron /etc/cron.d/live_trend
-RUN chmod 0644 /etc/cron.d/live_trend && \
-    crontab /etc/cron.d/live_trend && \
-    touch /var/log/cron.log
+COPY live_portfolio.cron /etc/cron.d/live_portfolio
+RUN chmod 0644 /etc/cron.d/live_portfolio && \
+    crontab /etc/cron.d/live_portfolio && \
+    chmod 0755 /app/scripts/run_live_portfolio.sh /app/scripts/docker-entrypoint.sh
 
-CMD ["cron", "-f"]
+# The container's only job is running cron. If the cron daemon dies, the container
+# can sit there looking alive while nothing is scheduled -- externally
+# indistinguishable from the three-month silence this change addresses.
+# Pair with `restart: unless-stopped` in the compose file on the host.
+HEALTHCHECK --interval=5m --timeout=10s --start-period=30s --retries=3 \
+    CMD pgrep -x cron > /dev/null || exit 1
+
+# The entrypoint snapshots the container environment for cron (cron does not
+# inherit it) and then execs cron in the foreground.
+ENTRYPOINT ["/app/scripts/docker-entrypoint.sh"]
