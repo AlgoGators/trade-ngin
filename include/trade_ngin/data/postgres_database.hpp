@@ -505,6 +505,38 @@ public:
         const std::string& table_name = "trading.live_run_metadata");
 
     /**
+     * @brief Store risk limits that the engine enforces for AlgoLens validation
+     *
+     * Called once per trading session after risk limits are finalized. Creates one row in
+     * trading.risk_limits with the envelope that will be enforced for this run.
+     * AlgoLens queries this table (ORDER BY published_at DESC LIMIT 1) to validate manual
+     * position edits before committing them.
+     *
+     * Failure to publish does NOT stop the trading run (logs a warning and continues).
+     * AlgoLens treats a missing envelope as "not evaluated" rather than "pass", so a failed
+     * publish degrades safely: the UI shows yellow instead of green.
+     *
+     * @param strategy_id Combined strategy identifier (e.g., "LIVE_TREND_FOLLOWING_FAST")
+     * @param portfolio_id Portfolio identifier (e.g., "BASE_PORTFOLIO", "CONSERVATIVE_PORTFOLIO")
+     * @param limits JSONB object. The engine publishes ONLY limits it actually enforces:
+     *        - max_symbol_notional: map<string, double>, per-symbol position caps in units
+     *        - max_gross_leverage: double, enforced by RiskManager::calculate_leverage_multiplier
+     *        - max_net_leverage:   double, same enforcement point
+     *
+     *        Deliberately NOT published: max_gross_notional and max_position_count. The
+     *        engine constrains leverage RATIOS, not dollar caps, and has no notion of a
+     *        maximum open-position count. Emitting either would put a number nobody chose
+     *        in front of a trader as a green light -- worse than an absent limit, because
+     *        an absent one is visibly absent. If the fund later wants those limits, they
+     *        must be enforced here first, then published; never the reverse.
+     * @param table_name Name of the table to insert into (default: "trading.risk_limits")
+     * @return Result indicating success or failure
+     */
+    Result<void> store_risk_limits(const std::string& strategy_id, const std::string& portfolio_id,
+                                    const nlohmann::json& limits,
+                                    const std::string& table_name = "trading.risk_limits");
+
+    /**
      * @brief Get contract metadata for trading instruments
      * @return Result containing Arrow table with contract metadata
      */
