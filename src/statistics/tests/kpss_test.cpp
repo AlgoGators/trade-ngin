@@ -70,7 +70,7 @@ Result<TestResult> KPSSTest::test(const std::vector<double>& data) const {
     result.statistic = kpss_stat;
     result.critical_value = critical_val;
     result.reject_null = kpss_stat > critical_val;
-    result.p_value = critical_values::approximate_kpss_p_value(kpss_stat, has_trend);
+    result.p_value = -1.0;  // Exact p-value requires tables
 
     if (result.reject_null) {
         result.interpretation = "Reject null hypothesis: Series appears to be non-stationary";

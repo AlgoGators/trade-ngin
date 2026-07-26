@@ -1,43 +1,44 @@
-#include <fstream>
-#include <iomanip>
+#include "trade_ngin/api/backtest_api.hpp"
+
 #include <iostream>
 #include <nlohmann/json.hpp>
 #include "trade_ngin/backtest/backtest_coordinator.hpp"
-#include "trade_ngin/backtest/transaction_cost_analysis.hpp"
 #include "trade_ngin/core/config_loader.hpp"
 #include "trade_ngin/core/logger.hpp"
-#include "trade_ngin/core/run_id_generator.hpp"
-#include "trade_ngin/core/time_utils.hpp"
 #include "trade_ngin/data/database_pooling.hpp"
-#include "trade_ngin/data/postgres_database.hpp"
 #include "trade_ngin/instruments/instrument_registry.hpp"
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
-#include "trade_ngin/strategy/trend_following.hpp"
-#include "trade_ngin/strategy/trend_following_fast.hpp"
 
-using namespace trade_ngin;
-using namespace trade_ngin::backtest;
+namespace trade_ngin::api {
 
-int main() {
+void BacktestRunner::initialize(std::string portfolio_name) {
+    portfolio_name_ = std::move(portfolio_name);
+
+    // TODO move database and other initialization here?
+
+    // Initialize logging
+    Logger::reset_for_tests();
+    auto& logger = Logger::instance();
+    LoggerConfig logger_config;
+    logger_config.min_level = LogLevel::DEBUG;
+    logger_config.destination = LogDestination::BOTH;
+    logger_config.log_directory = "logs";
+    logger_config.filename_prefix = "bt_portfolio_" + portfolio_name;
+    logger.initialize(logger_config);
+}
+
+Result<backtest::BacktestResults> BacktestRunner::run_backtest() {
     try {
         // Reset all singletons to ensure clean state between runs
         StateManager::reset_instance();
-        Logger::reset_for_tests();
-
-        // Initialize logger
         auto& logger = Logger::instance();
-        LoggerConfig logger_config;
-        logger_config.min_level = LogLevel::DEBUG;
-        logger_config.destination = LogDestination::BOTH;
-        logger_config.log_directory = "logs";
-        logger_config.filename_prefix = "bt_portfolio_conservative";
-        logger.initialize(logger_config);
 
         std::atomic_thread_fence(std::memory_order_seq_cst);
 
         if (!logger.is_initialized()) {
             std::cerr << "ERROR: Logger initialization failed" << std::endl;
-            return 1;
+            return make_error<backtest::BacktestResults>(
+                ErrorCode::NOT_INITIALIZED, "Logger initialization failed", "BacktestAPI");
         }
 
         INFO("Logger initialized successfully");
@@ -45,14 +46,17 @@ int main() {
         // ========================================
         // LOAD CONFIGURATION FROM MODULAR CONFIG FILES
         // ========================================
-        INFO("Loading configuration from config/portfolios/conservative...");
-        auto app_config_result = ConfigLoader::load("config", "conservative");
+        INFO("Loading configuration from config/portfolios/" + portfolio_name_ + "...");
+        auto app_config_result = ConfigLoader::load("config", portfolio_name_);
         if (app_config_result.is_error()) {
             ERROR("Failed to load configuration: " +
                   std::string(app_config_result.error()->what()));
             std::cerr << "Failed to load configuration: " << app_config_result.error()->what()
                       << std::endl;
-            return 1;
+            return make_error<backtest::BacktestResults>(
+                app_config_result.error()->code(),
+                "Failed to load configuration: " + std::string(app_config_result.error()->what()),
+                "BacktestAPI");
         }
         auto app_config = app_config_result.value();
         INFO("Configuration loaded successfully for portfolio: " + app_config.portfolio_id);
@@ -68,7 +72,10 @@ int main() {
         if (pool_result.is_error()) {
             std::cerr << "Failed to initialize connection pool: " << pool_result.error()->what()
                       << std::endl;
-            return 1;
+            return make_error<backtest::BacktestResults>(
+                ErrorCode::DATABASE_ERROR,
+                "Failed to initialize connection pool: " + std::string(pool_result.error()->what()),
+                "BacktestAPI");
         }
         INFO("Database connection pool initialized with " + std::to_string(num_connections) +
              " connections");
@@ -79,7 +86,9 @@ int main() {
 
         if (!db || !db->is_connected()) {
             std::cerr << "Failed to acquire database connection from pool" << std::endl;
-            return 1;
+            return make_error<backtest::BacktestResults>(
+                ErrorCode::DATABASE_ERROR, "Failed to acquire database connection from pool",
+                "BacktestAPI");
         }
         INFO("Successfully acquired database connection from pool");
 
@@ -91,19 +100,24 @@ int main() {
         if (instrument_registry_init_result.is_error()) {
             std::cerr << "Failed to initialize instrument registry: "
                       << instrument_registry_init_result.error()->what() << std::endl;
-            return 1;
+            return make_error<backtest::BacktestResults>(
+                ErrorCode::DATABASE_ERROR,
+                "Failed to initialize instrument registry: " +
+                    std::string(instrument_registry_init_result.error()->what()),
+                "BacktestAPI");
         }
 
-        // Load futures instruments
+        // Load instruments
         auto load_result = registry.load_instruments();
         if (load_result.is_error() || registry.get_all_instruments().empty()) {
-            std::cerr << "Failed to load futures instruments: " << load_result.error()->what()
-                      << std::endl;
-            ERROR("Failed to load futures instruments: " +
-                  std::string(load_result.error()->what()));
-            return 1;
+            std::cerr << "Failed to load instruments: " << load_result.error()->what() << std::endl;
+            ERROR("Failed to load instruments: " + std::string(load_result.error()->what()));
+            return make_error<backtest::BacktestResults>(
+                ErrorCode::DATABASE_ERROR,
+                "Failed to load instruments: " + std::string(load_result.error()->what()),
+                "BacktestAPI");
         } else {
-            INFO("Successfully loaded futures instruments from database");
+            INFO("Successfully loaded instruments from database");
         }
 
         // After loading instruments
@@ -133,6 +147,7 @@ int main() {
         // Set end date to today
         config.strategy_config.end_date = now;
 
+        // TODO make asset class configurable
         config.strategy_config.asset_class = trade_ngin::AssetClass::FUTURES;
         config.strategy_config.data_freq = trade_ngin::DataFrequency::DAILY;
         config.store_trade_details = app_config.backtest.store_trade_details;
@@ -172,8 +187,7 @@ int main() {
 
         std::cout << "Retrieved " << config.strategy_config.symbols.size() << " symbols"
                   << std::endl;
-        std::cout << "Initial capital: $" << config.portfolio_config.initial_capital
-                  << " (CONSERVATIVE)" << std::endl;
+        std::cout << "Initial capital: $" << config.portfolio_config.initial_capital << std::endl;
 
         INFO("Configuration loaded successfully. Testing " +
              std::to_string(config.strategy_config.symbols.size()) + " symbols from " +
@@ -204,7 +218,6 @@ int main() {
         coord_config.use_optimization = config.portfolio_config.use_optimization;
         coord_config.store_trade_details = config.store_trade_details;
         coord_config.portfolio_id = config.portfolio_id;
-        coord_config.csv_output_path = config.csv_output_path;
 
         auto coordinator = std::make_unique<trade_ngin::backtest::BacktestCoordinator>(
             db, &registry, coord_config);
@@ -231,7 +244,7 @@ int main() {
         // ========================================
         // LOAD STRATEGIES FROM CONFIG
         // ========================================
-        std::vector<std::shared_ptr<trade_ngin::StrategyInterface>> strategies;
+        std::vector<std::shared_ptr<trade_ngin::BaseStrategy>> strategies;
         std::vector<std::string> strategy_names;
         std::unordered_map<std::string, double> strategy_allocations;
         std::unordered_map<std::string, nlohmann::json> strategy_configs_map;
@@ -240,7 +253,8 @@ int main() {
         auto& strategies_config = app_config.strategies_config;
         if (strategies_config.empty()) {
             ERROR("No strategies found in configuration");
-            return 1;
+            return make_error<backtest::BacktestResults>(
+                ErrorCode::INVALID_DATA, "No strategies found in configuration", "BacktestAPI");
         }
 
         // Load default allocations from config
@@ -256,21 +270,15 @@ int main() {
 
         if (strategy_names.empty()) {
             ERROR("No enabled strategies found in configuration for backtest");
-            return 1;
+            return make_error<backtest::BacktestResults>(
+                ErrorCode::INVALID_DATA,
+                "No enabled strategies found in configuration for backtest", "BacktestAPI");
         }
 
-        // Normalize allocations to sum to 1.0. If configured allocations sum
-        // to <1.0 (e.g. 0.6 + 0.3, expecting 10% idle), this loop silently
-        // rescales — partial deployment is not supported. Warn so operators
-        // can spot a config mistake.
+        // Normalize allocations to sum to 1.0
         double total_allocation = 0.0;
         for (const auto& [_, alloc] : strategy_allocations) {
             total_allocation += alloc;
-        }
-        if (total_allocation > 0.0 && std::abs(total_allocation - 1.0) > 1e-6) {
-            WARN("Strategy allocations sum to " + std::to_string(total_allocation) +
-                 " (not 1.0); silently rescaling. Partial-capital deployment is not "
-                 "supported — adjust default_allocation values or accept full deployment.");
         }
         if (total_allocation > 0.0) {
             for (auto& [_, alloc] : strategy_allocations) {
@@ -278,8 +286,7 @@ int main() {
             }
         }
 
-        INFO("Loading " + std::to_string(strategy_names.size()) +
-             " strategies from conservative config");
+        INFO("Loading " + std::to_string(strategy_names.size()) + " strategies from config");
 
         // Create a shared_ptr that doesn't own the singleton registry
         auto registry_ptr =
@@ -310,88 +317,50 @@ int main() {
             INFO("Creating strategy: " + strategy_id + " (type: " + strategy_type +
                  ", allocation: " + std::to_string(allocation * 100.0) + "%)");
 
-            std::shared_ptr<trade_ngin::StrategyInterface> strategy;
-
-            if (strategy_type == "TrendFollowingStrategy") {
-                trade_ngin::TrendFollowingConfig trend_config;
-                if (strategy_def.contains("config")) {
-                    const auto& cfg = strategy_def["config"];
-                    trend_config.weight = cfg.value("weight", 0.03);
-                    trend_config.risk_target =
-                        cfg.value("risk_target", 0.15);  // Conservative default
-                    trend_config.idm = cfg.value("idm", 2.5);
-                    trend_config.max_symbol_concentration =
-                        cfg.value("max_symbol_concentration", 0.15);
-                    trend_config.use_position_buffering = cfg.value("use_position_buffering", true);
-                    trend_config.carver_buffer_floor = cfg.value(
-                        "carver_buffer_floor", app_config.strategy_defaults.carver_buffer_floor);
-                    trend_config.carver_buffer_position_factor =
-                        cfg.value("carver_buffer_position_factor",
-                                  app_config.strategy_defaults.carver_buffer_position_factor);
-                    if (cfg.contains("ema_windows")) {
-                        trend_config.ema_windows.clear();
-                        for (const auto& window : cfg["ema_windows"]) {
-                            trend_config.ema_windows.push_back(
-                                {window[0].get<int>(), window[1].get<int>()});
-                        }
-                    }
-                    trend_config.vol_lookback_short = cfg.value("vol_lookback_short", 32);
-                    trend_config.vol_lookback_long = cfg.value("vol_lookback_long", 252);
-                }
-                // Set FDM from strategy_defaults
-                if (trend_config.fdm.empty()) {
-                    trend_config.fdm = app_config.strategy_defaults.fdm;
-                }
-
-                strategy = std::make_shared<trade_ngin::TrendFollowingStrategy>(
-                    strategy_id, base_strategy_config, trend_config, db, registry_ptr);
-
-            } else if (strategy_type == "TrendFollowingFastStrategy") {
-                trade_ngin::TrendFollowingFastConfig trend_config;
-                if (strategy_def.contains("config")) {
-                    const auto& cfg = strategy_def["config"];
-                    trend_config.weight = cfg.value("weight", 0.03);
-                    trend_config.risk_target =
-                        cfg.value("risk_target", 0.20);  // Conservative default
-                    trend_config.idm = cfg.value("idm", 2.5);
-                    trend_config.max_symbol_concentration =
-                        cfg.value("max_symbol_concentration", 0.15);
-                    trend_config.use_position_buffering =
-                        cfg.value("use_position_buffering", false);
-                    trend_config.carver_buffer_floor = cfg.value(
-                        "carver_buffer_floor", app_config.strategy_defaults.carver_buffer_floor);
-                    trend_config.carver_buffer_position_factor =
-                        cfg.value("carver_buffer_position_factor",
-                                  app_config.strategy_defaults.carver_buffer_position_factor);
-                    if (cfg.contains("ema_windows")) {
-                        trend_config.ema_windows.clear();
-                        for (const auto& window : cfg["ema_windows"]) {
-                            trend_config.ema_windows.push_back(
-                                {window[0].get<int>(), window[1].get<int>()});
-                        }
-                    }
-                    trend_config.vol_lookback_short = cfg.value("vol_lookback_short", 16);
-                    trend_config.vol_lookback_long = cfg.value("vol_lookback_long", 252);
-                }
-                // Set FDM from strategy_defaults
-                if (trend_config.fdm.empty()) {
-                    trend_config.fdm = app_config.strategy_defaults.fdm;
-                }
-
-                strategy = std::make_shared<trade_ngin::TrendFollowingFastStrategy>(
-                    strategy_id, base_strategy_config, trend_config, db, registry_ptr);
-
-            } else {
-                ERROR("Unknown strategy type: " + strategy_type + " for strategy: " + strategy_id);
-                return 1;
+            if (registered_strategies_.find(strategy_id) == registered_strategies_.end()) {
+                ERROR("Strategy " + strategy_id + " is not registered");
+                return make_error<backtest::BacktestResults>(
+                    ErrorCode::INVALID_DATA, "Strategy " + strategy_id + " is not registered",
+                    "BacktestAPI");
             }
+
+            // TODO remove this - keeping it as an example
+            // This should be outside and done by the user - for future reference
+            // bt.register_strategy(
+            //     "TrendFollowingStrategy",  // strategy ID
+            //     [](const StrategyContext& ctx, const nlohmann::json& cfg) ->
+            //     std::shared_ptr<BaseStrategy> {
+            //
+            //         // Build the trend following config from JSON or defaults
+            //         TrendFollowingConfig trend_config;
+            //         trend_config.vol_lookback_short = cfg.value("vol_lookback_short", 22);
+            //         trend_config.vol_lookback_long =
+            //             cfg.value("vol_lookback_long", trend_config.vol_lookback_short * 4);
+            //
+            //         // Construct the strategy with context and config
+            //         return std::make_shared<TrendFollowingStrategy>(
+            //             "TF1",                 // strategy instance ID
+            //             ctx.portfolio_config,   // base StrategyConfig (capital, symbols, etc.)
+            //             trend_config,           // TrendFollowingConfig
+            //             ctx.db,                 // database connection
+            //             ctx.registry            // instrument registry
+            //         );
+            //     });
+
+            auto factory = registered_strategies_[strategy_id];
+            StrategyContext strategy_ctx{base_strategy_config, db, registry_ptr};
+            auto strategy = factory(strategy_ctx, strategy_def);
 
             // Initialize strategy
             auto init_result = strategy->initialize();
             if (init_result.is_error()) {
                 ERROR("Failed to initialize strategy " + strategy_id + ": " +
                       init_result.error()->what());
-                return 1;
+                return make_error<backtest::BacktestResults>(
+                    ErrorCode::STRATEGY_ERROR,
+                    "Failed to initialize strategy " + strategy_id + ": " +
+                        std::string(init_result.error()->what()),
+                    "BacktestAPI");
             }
 
             // Start strategy
@@ -399,7 +368,11 @@ int main() {
             if (start_result.is_error()) {
                 ERROR("Failed to start strategy " + strategy_id + ": " +
                       start_result.error()->what());
-                return 1;
+                return make_error<backtest::BacktestResults>(
+                    ErrorCode::STRATEGY_ERROR,
+                    "Failed to start strategy " + strategy_id + ": " +
+                        std::string(start_result.error()->what()),
+                    "BacktestAPI");
             }
 
             strategies.push_back(strategy);
@@ -425,7 +398,11 @@ int main() {
             if (add_result.is_error()) {
                 ERROR("Failed to add strategy " + strategy_id +
                       " to portfolio: " + add_result.error()->what());
-                return 1;
+                return make_error<backtest::BacktestResults>(
+                    ErrorCode::STRATEGY_ERROR,
+                    "Failed to add strategy " + strategy_id +
+                        " to portfolio: " + std::string(add_result.error()->what()),
+                    "BacktestAPI");
             }
 
             INFO("Added strategy " + strategy_id + " with allocation " +
@@ -433,7 +410,7 @@ int main() {
         }
 
         // Run the backtest
-        INFO("Running conservative portfolio backtest for time period: " +
+        INFO("Running backtest for time period: " +
              std::to_string(
                  std::chrono::system_clock::to_time_t(config.strategy_config.start_date)) +
              " to " +
@@ -447,7 +424,8 @@ int main() {
         if (result.is_error()) {
             std::cerr << "Backtest failed: " << result.error()->what() << std::endl;
             std::cerr << "Error code: " << static_cast<int>(result.error()->code()) << std::endl;
-            return 1;
+            return make_error<backtest::BacktestResults>(result.error()->code(),
+                                                         result.error()->what(), "BacktestAPI");
         }
 
         INFO("Backtest completed successfully");
@@ -457,7 +435,8 @@ int main() {
 
         INFO("Analyzing performance metrics...");
 
-        std::cout << "======= Conservative Portfolio Backtest Results =======" << std::endl;
+        std::cout << "======= Backtest Results =======" << std::endl;
+        std::cout << "Portfolio: " << portfolio_name_ << std::endl;
         std::cout << "Total Return: " << (backtest_results.total_return * 100.0) << "%"
                   << std::endl;
         std::cout << "Sharpe Ratio: " << backtest_results.sharpe_ratio << std::endl;
@@ -470,7 +449,7 @@ int main() {
         std::cout << "Total Trades: " << backtest_results.total_trades << std::endl;
 
         // Save portfolio results to database
-        INFO("Saving conservative portfolio backtest results to database...");
+        INFO("Saving portfolio backtest results to database...");
         try {
             nlohmann::json portfolio_config_json = portfolio_config.to_json();
             portfolio_config_json["strategy_allocations"] = strategy_allocations;
@@ -486,7 +465,7 @@ int main() {
                 ERROR("Failed to save portfolio backtest results to database: " +
                       std::string(save_result.error()->what()));
             } else {
-                INFO("Successfully saved conservative portfolio backtest results to database");
+                INFO("Successfully saved portfolio backtest results to database");
             }
         } catch (const std::exception& e) {
             std::cerr << "Exception during database save: " << e.what() << std::endl;
@@ -497,20 +476,36 @@ int main() {
         INFO("Cleaning up backtest coordinator...");
         coordinator.reset();
 
-        INFO("Conservative portfolio backtest application completed successfully");
+        INFO("Backtest application completed successfully");
 
         std::cerr << "At end of main: initialized=" << Logger::instance().is_initialized()
                   << std::endl;
 
-        return 0;
+        return backtest_results;
 
     } catch (const std::exception& e) {
         std::cerr << "Unexpected error: " << e.what() << std::endl;
         ERROR("Unexpected error: " + std::string(e.what()));
-        return 1;
+        return make_error<backtest::BacktestResults>(ErrorCode::UNKNOWN_ERROR, e.what(),
+                                                     "BacktestAPI");
     } catch (...) {
         std::cerr << "Unknown error occurred" << std::endl;
         ERROR("Unknown error occurred");
-        return 1;
+        return make_error<backtest::BacktestResults>(ErrorCode::UNKNOWN_ERROR, "Unknown error",
+                                                     "BacktestAPI");
     }
 }
+
+Result<void> BacktestRunner::register_strategy(const std::string& strategy_id,
+                                               StrategyFactory factory) {
+    if (registered_strategies_.find(strategy_id) != registered_strategies_.end()) {
+        return make_error<void>(ErrorCode::INVALID_DATA,
+                                "Strategy ID already registered: " + strategy_id, "BacktestAPI");
+    }
+
+    registered_strategies_[strategy_id] = factory;
+    INFO("Registered strategy factory for strategy ID: " + strategy_id);
+    return {};
+}
+
+}  // namespace trade_ngin::api

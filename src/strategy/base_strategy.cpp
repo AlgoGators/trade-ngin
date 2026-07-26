@@ -28,6 +28,22 @@ BaseStrategy::BaseStrategy(std::string id, StrategyConfig config,
     Logger::register_component("BaseStrategy");
 }
 
+BaseStrategy::BaseStrategy() : state_(StrategyState::INITIALIZED) {
+    // Default constructor for Python bindings
+    // Fields will be initialized in initialize_from_context()
+
+    // Initialize metadata
+    metadata_.id = id_;
+    metadata_.name = "Base Strategy";
+    metadata_.description = "Base strategy implementation";
+
+    // Initialize risk limits from config
+    risk_limits_.max_leverage = config_.max_leverage;
+    risk_limits_.max_drawdown = config_.max_drawdown;
+
+    Logger::register_component("BaseStrategy");
+}
+
 Result<void> BaseStrategy::initialize() {
     std::lock_guard<std::mutex> lock(mutex_);
 
@@ -345,8 +361,7 @@ Result<void> BaseStrategy::seed_positions(
     const std::unordered_map<std::string, Position>& positions) {
     std::lock_guard<std::mutex> lock(mutex_);
     positions_ = positions;
-    INFO("Seeded " + std::to_string(positions.size()) +
-         " positions into strategy " + id_ +
+    INFO("Seeded " + std::to_string(positions.size()) + " positions into strategy " + id_ +
          " (anchors position buffer across process restart)");
     return Result<void>();
 }

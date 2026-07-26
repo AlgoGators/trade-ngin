@@ -1,0 +1,13 @@
+{
+  "name": "trade-ngin",
+  "version": "0.1.0",
+  "dependencies": [
+    "arrow",
+    "curl",
+    "eigen3",
+    "libpqxx",
+    "nlopt",
+    "nlohmann-json",
+    "gtest"
+  ]
+}
