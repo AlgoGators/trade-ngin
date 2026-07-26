@@ -35,6 +35,14 @@
 
 using namespace trade_ngin;
 
+// F1 dual portfolio: the operational chain reads what QT actually decided.
+// 'What did we hold yesterday' is the qt stream, not the raw signal output --
+// position buffering and execution sizing both key off it, so reading the
+// system stream here would compute today's trades against a book we do not hold.
+// Migration 002 backfills qt for all prior history, so this is populated from
+// the first run onward.
+static constexpr const char* QT_STREAM = "qt";
+
 int main(int argc, char* argv[]) {
     try {
         // Parse command-line arguments for date override and email flag
@@ -778,7 +786,7 @@ int main(int argc, char* argv[]) {
                 for (const auto& [strategy_name, allocation] : strategy_allocations) {
                     auto prev_result = db->load_positions_by_date(
                         combined_strategy_id, strategy_name, coordinator_config.portfolio_id,
-                        previous_date_nontrade, "trading.positions");
+                        previous_date_nontrade, "trading.positions", QT_STREAM);
 
                     if (prev_result.is_ok() && !prev_result.value().empty()) {
                         strategy_positions_map[strategy_name] = prev_result.value();
@@ -894,7 +902,7 @@ int main(int argc, char* argv[]) {
                     strategy_names.empty() ? std::string() : strategy_names[0];
                 auto seed_result = db->load_positions_by_date(
                     combined_strategy_id, seed_strategy_name,
-                    coordinator_config.portfolio_id, seed_previous_date, "trading.positions");
+                    coordinator_config.portfolio_id, seed_previous_date, "trading.positions", QT_STREAM);
                 if (seed_result.is_ok() && !seed_result.value().empty()) {
                     // Fix #1: seed strategy's positions_ for buffer correctness
                     auto seeded = tf_strategy->seed_positions(seed_result.value());
@@ -1046,7 +1054,7 @@ int main(int argc, char* argv[]) {
         auto previous_date = now - std::chrono::hours(24);
         auto previous_positions_result =
             db->load_positions_by_date(combined_strategy_id, "", coordinator_config.portfolio_id,
-                                       previous_date, "trading.positions");
+                                       previous_date, "trading.positions", QT_STREAM);
         std::unordered_map<std::string, Position> previous_positions;
 
         if (previous_positions_result.is_ok()) {
@@ -1119,7 +1127,7 @@ int main(int argc, char* argv[]) {
                 // Load previous positions for this strategy
                 auto prev_strategy_result = db->load_positions_by_date(
                     combined_strategy_id, strategy_name, coordinator_config.portfolio_id,
-                    previous_date, "trading.positions");
+                    previous_date, "trading.positions", QT_STREAM);
 
                 std::unordered_map<std::string, Position> prev_strategy_positions;
                 if (prev_strategy_result.is_ok()) {
@@ -1238,7 +1246,7 @@ int main(int argc, char* argv[]) {
                     db->load_positions_by_date(combined_strategy_id,  // Combined strategy_id
                                                strategy_name,         // Individual strategy_name
                                                coordinator_config.portfolio_id,  // Portfolio ID
-                                               previous_date, "trading.positions");
+                                               previous_date, "trading.positions", QT_STREAM);
 
                 if (prev_strategy_positions_result.is_error()) {
                     INFO("No previous positions found for strategy " + strategy_name +
@@ -1379,7 +1387,7 @@ int main(int argc, char* argv[]) {
                 db->load_positions_by_date(combined_strategy_id,  // Combined strategy_id
                                            strategy_name,         // Individual strategy_name
                                            coordinator_config.portfolio_id,  // Portfolio ID
-                                           previous_date, "trading.positions");
+                                           previous_date, "trading.positions", QT_STREAM);
 
             if (prev_result.is_ok()) {
                 previous_strategy_positions[strategy_name] = prev_result.value();
