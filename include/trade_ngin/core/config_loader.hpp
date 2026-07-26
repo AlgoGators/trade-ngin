@@ -326,6 +326,28 @@ public:
      */
     static Result<AppConfig> load_legacy(const std::filesystem::path& config_file_path);
 
+    /**
+     * @brief Load configuration with optional database overlay
+     * @param config_base_path Base path to config directory
+     * @param portfolio_name Name of the portfolio
+     * @param db Optional pointer to PostgresDatabase for active config override.
+     *           If nullptr or no active row exists, falls back to file config silently.
+     *           If DB is supplied and retrieval fails (network error, etc.), logs warning
+     *           and continues with file config. Publishing failure also logs and continues.
+     * @return Result containing AppConfig with DB overlay merged (if present)
+     *
+     * Precedence (lowest to highest):
+     *   1. defaults.json
+     *   2. portfolios/{name}/*.json
+     *   3. Active DB override row (deep-merged on top via merge_json)
+     *
+     * SECURITY: DB overrides attempting to set database.* or password fields are rejected.
+     * Published manifest strips database section and password fields.
+     */
+    static Result<AppConfig> load(const std::filesystem::path& config_base_path,
+                                  const std::string& portfolio_name,
+                                  class PostgresDatabase* db);
+
 private:
     /**
      * @brief Load and parse a JSON file
@@ -362,6 +384,57 @@ private:
      * @param config Extracted AppConfig
      */
     static void log_config_summary(const AppConfig& config);
+
+    /**
+     * @brief Retrieve active config override for a portfolio from the database.
+     * @param db Database connection
+     * @param portfolio_id Portfolio identifier
+     * @return Result containing JSONB overrides object, or success with empty object if no active row
+     *
+     * Returns empty JSON object if no active row exists (not an error).
+     * If DB retrieval fails, returns error (caller decides whether to continue with file config).
+     */
+    static Result<nlohmann::json> load_db_override(class PostgresDatabase* db,
+                                                   const std::string& portfolio_id);
+
+    /**
+     * @brief Validate that an override does not attempt to set protected fields.
+     * @param override JSONB override object from DB
+     * @return Result indicating success or error (includes field name in error message)
+     *
+     * Rejects:
+     *   - database.host, database.port, database.username, database.password, database.name
+     *   - email.password
+     *
+     * SECURITY RATIONALE: These fields must never be writable from the config table.
+     * If allowed, anyone who can write strategy_config could repoint the engine at a
+     * database they control (database.*) or intercept emails (email.password).
+     */
+    static Result<void> validate_override_no_credentials(const nlohmann::json& override);
+
+    /**
+     * @brief Strip credentials from AppConfig before publishing to manifest.
+     * @param config AppConfig to sanitize
+     * @return JSON with database section and password fields removed
+     *
+     * Used before INSERT into trading.config_manifest to prevent credentials leaking
+     * into a table AlgoLens reads and renders in a browser.
+     */
+    static nlohmann::json strip_credentials_for_manifest(const AppConfig& config);
+
+    /**
+     * @brief Publish effective config to trading.config_manifest.
+     * @param db Database connection
+     * @param portfolio_id Portfolio identifier
+     * @param manifest JSON to publish (credentials already stripped)
+     * @return Result indicating success or failure
+     *
+     * Publishing failure logs warning and returns error, but does NOT stop the trading run.
+     * This is called after successful load(); if it fails, the run continues with file config.
+     */
+    static Result<void> publish_config_manifest(class PostgresDatabase* db,
+                                                 const std::string& portfolio_id,
+                                                 const nlohmann::json& manifest);
 };
 
 }  // namespace trade_ngin

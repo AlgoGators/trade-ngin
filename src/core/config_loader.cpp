@@ -5,7 +5,9 @@
 #include <fstream>
 #include <iostream>
 
+#include <pqxx/pqxx>
 #include "trade_ngin/core/logger.hpp"
+#include "trade_ngin/data/postgres_database.hpp"
 
 namespace trade_ngin {
 
@@ -312,6 +314,233 @@ Result<AppConfig> ConfigLoader::load_legacy(const std::filesystem::path& config_
         return make_error<AppConfig>(ErrorCode::INVALID_DATA,
                                      "Failed to extract legacy config: " + std::string(e.what()),
                                      "ConfigLoader");
+    }
+}
+
+Result<AppConfig> ConfigLoader::load(const std::filesystem::path& config_base_path,
+                                      const std::string& portfolio_name,
+                                      PostgresDatabase* db) {
+    // Load file config first (existing call path).
+    auto file_result = load(config_base_path, portfolio_name);
+    if (file_result.is_error()) {
+        return file_result;  // File load failed; return error, no DB fallback here.
+    }
+    AppConfig config = file_result.value();
+
+    // If no database supplied, return file config as-is.
+    if (db == nullptr) {
+        LOGGER_INFO("ConfigLoader", "No database supplied; using file config only.");
+        return config;
+    }
+
+    // Attempt to load DB override.
+    auto db_override_result = load_db_override(db, config.portfolio_id);
+    if (db_override_result.is_error()) {
+        LOGGER_WARN("ConfigLoader",
+                    "Failed to load DB override for portfolio " + config.portfolio_id +
+                        ": " + db_override_result.error()->what() +
+                        "; continuing with file config.");
+        // Fallback: use file config, but log which source was used.
+        return config;
+    }
+
+    nlohmann::json override = db_override_result.value();
+    if (override.is_null() || override.empty()) {
+        LOGGER_INFO("ConfigLoader",
+                    "No active DB override for portfolio " + config.portfolio_id +
+                        "; using file config.");
+        return config;
+    }
+
+    // Validate override does not contain protected fields.
+    auto validate_result = validate_override_no_credentials(override);
+    if (validate_result.is_error()) {
+        LOGGER_ERROR("ConfigLoader",
+                     "DB override validation failed: " + validate_result.error()->what());
+        // SECURITY: reject the override entirely if it contains protected fields.
+        // Do not merge it; fall back to file config.
+        return config;
+    }
+
+    // Merge file config with DB override (DB wins).
+    // Convert current config to JSON, merge override on top, re-extract.
+    nlohmann::json file_json = config.to_json();
+    merge_json(file_json, override);
+
+    // Re-extract to AppConfig.
+    auto merged_result = extract_config(file_json);
+    if (merged_result.is_error()) {
+        LOGGER_WARN("ConfigLoader",
+                    "Failed to extract config after DB merge: " + merged_result.error()->what() +
+                        "; using file config.");
+        return config;
+    }
+
+    AppConfig merged_config = merged_result.value();
+    LOGGER_INFO("ConfigLoader",
+                "Successfully merged DB override for portfolio " + config.portfolio_id + ".");
+
+    // Publish effective config to manifest.
+    nlohmann::json manifest = strip_credentials_for_manifest(merged_config);
+    auto pub_result = publish_config_manifest(db, merged_config.portfolio_id, manifest);
+    if (pub_result.is_error()) {
+        LOGGER_WARN("ConfigLoader",
+                    "Failed to publish config manifest: " + pub_result.error()->what() +
+                        "; trading run continues with merged config.");
+        // Publishing failure does not stop the run.
+    }
+
+    return merged_config;
+}
+
+Result<nlohmann::json> ConfigLoader::load_db_override(PostgresDatabase* db,
+                                                       const std::string& portfolio_id) {
+    // Query: SELECT overrides FROM trading.strategy_config
+    //        WHERE portfolio_id = $1 AND is_active = true LIMIT 1
+    // Return empty object if no row; error if query fails.
+
+    if (!db || !db->is_connected()) {
+        return make_error<nlohmann::json>(ErrorCode::DATABASE_ERROR,
+                                          "Database not connected for config override lookup.",
+                                          "ConfigLoader::load_db_override");
+    }
+
+    try {
+        auto conn = db->get_connection();
+        if (!conn) {
+            return make_error<nlohmann::json>(ErrorCode::DATABASE_ERROR,
+                                              "Could not acquire database connection.",
+                                              "ConfigLoader::load_db_override");
+        }
+
+        // Parameterized query to prevent injection.
+        pqxx::result r = conn->exec_params(
+            "SELECT overrides FROM trading.strategy_config "
+            "WHERE portfolio_id = $1 AND is_active = true "
+            "LIMIT 1",
+            portfolio_id);
+
+        if (r.empty()) {
+            // No active override; return empty object (not an error).
+            return nlohmann::json::object();
+        }
+
+        std::string overrides_str = r[0][0].as<std::string>();
+        nlohmann::json overrides = nlohmann::json::parse(overrides_str);
+        return overrides;
+    } catch (const pqxx::sql_error& e) {
+        return make_error<nlohmann::json>(
+            ErrorCode::DATABASE_ERROR,
+            "SQL error querying strategy_config: " + std::string(e.what()),
+            "ConfigLoader::load_db_override");
+    } catch (const pqxx::broken_connection& e) {
+        return make_error<nlohmann::json>(ErrorCode::DATABASE_ERROR,
+                                          "Database connection lost: " + std::string(e.what()),
+                                          "ConfigLoader::load_db_override");
+    } catch (const nlohmann::json::parse_error& e) {
+        return make_error<nlohmann::json>(
+            ErrorCode::JSON_PARSE_ERROR,
+            "Failed to parse overrides JSONB: " + std::string(e.what()),
+            "ConfigLoader::load_db_override");
+    } catch (const std::exception& e) {
+        return make_error<nlohmann::json>(ErrorCode::DATABASE_ERROR,
+                                          "Unexpected error: " + std::string(e.what()),
+                                          "ConfigLoader::load_db_override");
+    }
+}
+
+Result<void> ConfigLoader::validate_override_no_credentials(const nlohmann::json& override) {
+    // Recursive check: reject if override contains database.* or email.password.
+    if (!override.is_object()) {
+        return ResultVoid::ok();  // Non-object, no fields to validate.
+    }
+
+    // Check top-level fields.
+    if (override.contains("database")) {
+        return make_error<void>(
+            ErrorCode::VALIDATION_ERROR,
+            "Config override cannot contain 'database' field (security restriction: "
+            "prevents credential hijacking).",
+            "ConfigLoader::validate_override_no_credentials");
+    }
+
+    if (override.contains("email")) {
+        const auto& email_obj = override.at("email");
+        if (email_obj.is_object() && email_obj.contains("password")) {
+            return make_error<void>(
+                ErrorCode::VALIDATION_ERROR,
+                "Config override cannot contain 'email.password' field (security restriction: "
+                "prevents credential hijacking).",
+                "ConfigLoader::validate_override_no_credentials");
+        }
+    }
+
+    return ResultVoid::ok();
+}
+
+nlohmann::json ConfigLoader::strip_credentials_for_manifest(const AppConfig& config) {
+    // Start with full config JSON.
+    nlohmann::json j = config.to_json();
+
+    // Remove database section entirely.
+    if (j.contains("database")) {
+        j.erase("database");
+    }
+
+    // Remove email.password (but keep other email fields).
+    if (j.contains("email")) {
+        nlohmann::json& email_obj = j.at("email");
+        if (email_obj.is_object() && email_obj.contains("password")) {
+            email_obj.erase("password");
+        }
+    }
+
+    return j;
+}
+
+Result<void> ConfigLoader::publish_config_manifest(PostgresDatabase* db,
+                                                    const std::string& portfolio_id,
+                                                    const nlohmann::json& manifest) {
+    // INSERT into trading.config_manifest (portfolio_id, effective, published_at)
+    // VALUES ($1, $2, now())
+    // published_at defaults to now() in the schema.
+
+    if (!db || !db->is_connected()) {
+        return make_error<void>(ErrorCode::DATABASE_ERROR,
+                                "Database not connected for config manifest publish.",
+                                "ConfigLoader::publish_config_manifest");
+    }
+
+    try {
+        auto conn = db->get_connection();
+        if (!conn) {
+            return make_error<void>(ErrorCode::DATABASE_ERROR,
+                                    "Could not acquire database connection.",
+                                    "ConfigLoader::publish_config_manifest");
+        }
+
+        std::string manifest_str = manifest.dump();
+
+        // Parameterized INSERT.
+        conn->exec_params(
+            "INSERT INTO trading.config_manifest (portfolio_id, effective, published_at) "
+            "VALUES ($1, $2, now())",
+            portfolio_id, manifest_str);
+
+        return ResultVoid::ok();
+    } catch (const pqxx::sql_error& e) {
+        return make_error<void>(
+            ErrorCode::DATABASE_ERROR,
+            "SQL error publishing config manifest: " + std::string(e.what()),
+            "ConfigLoader::publish_config_manifest");
+    } catch (const pqxx::broken_connection& e) {
+        return make_error<void>(ErrorCode::DATABASE_ERROR,
+                                "Database connection lost: " + std::string(e.what()),
+                                "ConfigLoader::publish_config_manifest");
+    } catch (const std::exception& e) {
+        return make_error<void>(ErrorCode::DATABASE_ERROR,
+                                "Unexpected error: " + std::string(e.what()),
+                                "ConfigLoader::publish_config_manifest");
     }
 }
 
