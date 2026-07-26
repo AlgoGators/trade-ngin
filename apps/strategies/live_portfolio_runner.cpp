@@ -715,6 +715,43 @@ int trade_ngin::run_live_portfolio(const LivePortfolioConfig& portfolio_cfg, int
         INFO("CSV output directory: " + csv_output_dir);
         auto csv_exporter = std::make_unique<CSVExporter>(csv_output_dir);
 
+        // ========================================
+        // PUBLISH RISK LIMITS FOR ALGOLENS VALIDATION
+        // Stage 1b: engine publishes limits to database so AlgoLens can validate
+        // manual position edits before committing them.
+        // ========================================
+        {
+            // Build the limits envelope from engine config.
+            // Honest publication: only include limits that the engine actually enforces.
+            nlohmann::json limits;
+
+            // max_symbol_notional: per-symbol position caps (in units) from base_strategy_config
+            nlohmann::json symbol_notional;
+            for (const auto& [symbol, limit] : base_strategy_config.position_limits) {
+                symbol_notional[symbol] = limit;
+            }
+            limits["max_symbol_notional"] = symbol_notional;
+
+            // max_gross_leverage: enforced by RiskManager in process_positions()
+            // (see src/risk/risk_manager.cpp: calculate_leverage_multiplier)
+            limits["max_gross_leverage"] = risk_config.max_gross_leverage;
+
+            // max_net_leverage: also enforced by RiskManager
+            limits["max_net_leverage"] = risk_config.max_net_leverage;
+
+            // NOTE: max_gross_notional and max_position_count are not enforced by the engine.
+            // NOT including them is honest; omitting a limit that doesn't exist is better than
+            // publishing a number that nobody chose and will drift from reality.
+
+            INFO("Publishing risk limits for strategy=" + combined_strategy_id +
+                 " portfolio=" + portfolio_id);
+            auto publish_result = db->store_risk_limits(combined_strategy_id, portfolio_id, limits);
+            if (publish_result.is_error()) {
+                WARN("Failed to publish risk limits (trading run continues): " +
+                     std::string(publish_result.error()->what()));
+            }
+        }
+
         // Load market data for daily processing
         INFO("Loading market data for daily processing...");
         // Disable MarketDataBus auto-publish to prevent duplicate processing

@@ -14,6 +14,7 @@ set(TEST_SOURCES
     core/test_config_manager_extended.cpp
     data/test_db_utils.cpp
     data/test_postgres_database.cpp
+    data/test_risk_limits.cpp
     data/test_database_pooling.cpp
     data/test_database_pooling_extended.cpp
     data/test_market_data_bus.cpp
