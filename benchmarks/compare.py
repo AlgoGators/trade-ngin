@@ -6,7 +6,7 @@ Compares two benchmark JSON files (baseline vs. current) and reports
 regressions by percentage. Exits non-zero if any benchmark regresses
 beyond the threshold (default 10%).
 
-Handles missing/new benchmarks explicitly — does not crash or silently ignore.
+Handles missing/new benchmarks explicitly - does not crash or silently ignore.
 
 Usage:
     python3 compare.py baseline.json current.json [--threshold 10]
@@ -91,7 +91,7 @@ def print_results(regressions, warnings, threshold_percent):
     if warnings:
         print("Warnings:")
         for warning in warnings:
-            print(f"  ⚠  {warning}")
+            print(f"  [WARN] {warning}")
         print()
 
     if regressions:
@@ -109,7 +109,7 @@ def print_results(regressions, warnings, threshold_percent):
         print("=" * 80 + "\n")
         return False
     else:
-        print("✓ All benchmarks pass (no regressions beyond threshold)")
+        print("[PASS] All benchmarks pass (no regressions beyond threshold)")
         print("=" * 80 + "\n")
         return True
 

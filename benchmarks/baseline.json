@@ -1,44 +1,44 @@
 [
   {
     "iterations": 100,
-    "median_ns": 4355,
+    "median_ns": 3596,
     "name": "BarConversion_10_symbols",
-    "p95_ns": 4648
+    "p95_ns": 3649
   },
   {
     "iterations": 100,
-    "median_ns": 104,
-    "name": "MatrixOps_10x10",
-    "p95_ns": 127
-  },
-  {
-    "iterations": 100,
-    "median_ns": 1571,
-    "name": "MatrixOps_50x50",
-    "p95_ns": 1810
-  },
-  {
-    "iterations": 100,
-    "median_ns": 1878,
+    "median_ns": 1089,
     "name": "Optimizer_10_symbols",
-    "p95_ns": 2085
+    "p95_ns": 1104
   },
   {
     "iterations": 100,
-    "median_ns": 10649,
+    "median_ns": 7370,
     "name": "Optimizer_50_symbols",
-    "p95_ns": 13347
+    "p95_ns": 12001
   },
   {
     "iterations": 100,
-    "median_ns": 570,
+    "median_ns": 54084,
+    "name": "RiskMgr_PortfolioVar_10",
+    "p95_ns": 176873
+  },
+  {
+    "iterations": 100,
+    "median_ns": 223927,
+    "name": "RiskMgr_PortfolioVar_50",
+    "p95_ns": 471431
+  },
+  {
+    "iterations": 100,
+    "median_ns": 757,
     "name": "Statistics_ADF_test_10",
-    "p95_ns": 577
+    "p95_ns": 997
   },
   {
     "iterations": 100,
-    "median_ns": 1911,
+    "median_ns": 2419,
     "name": "Statistics_Normalizer_10",
-    "p95_ns": 2256
+    "p95_ns": 2502
   }
 ]

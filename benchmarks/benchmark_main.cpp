@@ -180,51 +180,93 @@ void benchmark_optimizer_50_symbols(const BenchmarkFixture& fixture) {
     }
 }
 
-void benchmark_matrix_operations_10x10(const BenchmarkFixture& fixture) {
-    // Benchmark matrix operations (core to risk and optimization).
-    // Simulate covariance matrix multiplications used in risk calculations.
+void benchmark_risk_portfolio_variance_10(const BenchmarkFixture& fixture) {
+    // Benchmark RiskManager::calculate_portfolio_multiplier with 10 symbols.
+    // This directly measures the portfolio VaR calculation path in trade-ngin's
+    // risk module, which is called on every position update.
+    // Entry point: include/trade_ngin/risk/risk_manager.hpp:181-183
 
-    Eigen::MatrixXd cov(10, 10);
+    RiskConfig config;
+    config.var_limit = 0.15;
+    config.confidence_level = 0.99;
+    config.capital = Decimal(500000.0);
+    RiskManager rm(config);
+
+    // Construct market data: 10 symbols, deterministically seeded
+    MarketData market_data;
+    market_data.ordered_symbols = {};
     for (size_t i = 0; i < 10; ++i) {
+        market_data.ordered_symbols.push_back("SYM" + std::to_string(i));
+        market_data.symbol_indices["SYM" + std::to_string(i)] = i;
+    }
+    market_data.covariance = fixture.cov_10;
+    // Returns matrix: 100 rows (lookback), 10 columns (symbols)
+    market_data.returns.resize(100, std::vector<double>(10));
+    for (size_t i = 0; i < 100; ++i) {
         for (size_t j = 0; j < 10; ++j) {
-            cov(i, j) = fixture.cov_10[i][j];
+            market_data.returns[i][j] = fixture.returns_10[j] * (1.0 + i * 0.001);
         }
     }
 
-    Eigen::VectorXd weights(10);
+    // Construct positions: equal weight across 10 symbols
+    std::unordered_map<std::string, Position> positions;
+    auto now = std::chrono::system_clock::now();
     for (size_t i = 0; i < 10; ++i) {
-        weights(i) = 0.1;
+        Position pos("SYM" + std::to_string(i), Quantity(10), Price(100.0),
+                     Decimal(0), Decimal(0), Timestamp(now));
+        positions[pos.symbol] = pos;
     }
 
-    // Compute portfolio variance: w' * Cov * w
-    Eigen::VectorXd cov_w = cov * weights;
-    double portfolio_var = weights.dot(cov_w);
-
-    volatile double val = portfolio_var;
-    do_not_optimize(val);
+    // Call process_positions: the hot path that calls calculate_portfolio_multiplier
+    auto result = rm.process_positions(positions, market_data);
+    if (result.is_ok()) {
+        volatile double val = result.value().portfolio_var;
+        do_not_optimize(val);
+    }
 }
 
-void benchmark_matrix_operations_50x50(const BenchmarkFixture& fixture) {
-    // Benchmark matrix operations with 50x50 covariance (realistic scale).
+void benchmark_risk_portfolio_variance_50(const BenchmarkFixture& fixture) {
+    // Benchmark RiskManager::calculate_portfolio_multiplier with 50 symbols.
+    // Measures the portfolio VaR calculation at realistic scale (50 positions).
+    // Entry point: include/trade_ngin/risk/risk_manager.hpp:181-183
 
-    Eigen::MatrixXd cov(50, 50);
+    RiskConfig config;
+    config.var_limit = 0.15;
+    config.confidence_level = 0.99;
+    config.capital = Decimal(500000.0);
+    RiskManager rm(config);
+
+    // Construct market data: 50 symbols, deterministically seeded
+    MarketData market_data;
+    market_data.ordered_symbols = {};
     for (size_t i = 0; i < 50; ++i) {
+        market_data.ordered_symbols.push_back("SYM" + std::to_string(i));
+        market_data.symbol_indices["SYM" + std::to_string(i)] = i;
+    }
+    market_data.covariance = fixture.cov_50;
+    // Returns matrix: 100 rows (lookback), 50 columns (symbols)
+    market_data.returns.resize(100, std::vector<double>(50));
+    for (size_t i = 0; i < 100; ++i) {
         for (size_t j = 0; j < 50; ++j) {
-            cov(i, j) = fixture.cov_50[i][j];
+            market_data.returns[i][j] = fixture.returns_50[j] * (1.0 + i * 0.001);
         }
     }
 
-    Eigen::VectorXd weights(50);
+    // Construct positions: equal weight across 50 symbols
+    std::unordered_map<std::string, Position> positions;
+    auto now = std::chrono::system_clock::now();
     for (size_t i = 0; i < 50; ++i) {
-        weights(i) = 0.02;
+        Position pos("SYM" + std::to_string(i), Quantity(5), Price(100.0),
+                     Decimal(0), Decimal(0), Timestamp(now));
+        positions[pos.symbol] = pos;
     }
 
-    // Compute portfolio variance
-    Eigen::VectorXd cov_w = cov * weights;
-    double portfolio_var = weights.dot(cov_w);
-
-    volatile double val = portfolio_var;
-    do_not_optimize(val);
+    // Call process_positions: the hot path that calls calculate_portfolio_multiplier
+    auto result = rm.process_positions(positions, market_data);
+    if (result.is_ok()) {
+        volatile double val = result.value().portfolio_var;
+        do_not_optimize(val);
+    }
 }
 
 void benchmark_bar_conversion_10_symbols(const BenchmarkFixture& fixture) {
@@ -319,12 +361,12 @@ int main(int argc, char* argv[]) {
         benchmark_optimizer_50_symbols(fixture);
     });
 
-    registry.register_benchmark("MatrixOps_10x10", [&fixture]() {
-        benchmark_matrix_operations_10x10(fixture);
+    registry.register_benchmark("RiskMgr_PortfolioVar_10", [&fixture]() {
+        benchmark_risk_portfolio_variance_10(fixture);
     });
 
-    registry.register_benchmark("MatrixOps_50x50", [&fixture]() {
-        benchmark_matrix_operations_50x50(fixture);
+    registry.register_benchmark("RiskMgr_PortfolioVar_50", [&fixture]() {
+        benchmark_risk_portfolio_variance_50(fixture);
     });
 
     registry.register_benchmark("BarConversion_10_symbols", [&fixture]() {
