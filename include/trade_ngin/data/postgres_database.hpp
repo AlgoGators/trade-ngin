@@ -505,6 +505,17 @@ public:
     }
 
     /**
+     * @brief Get a pointer to the database connection for manual query execution.
+     * @return Pointer to pqxx::connection, or nullptr if not connected.
+     *
+     * Used by ConfigLoader to retrieve config overrides directly.
+     * Caller is responsible for checking connection validity.
+     */
+    pqxx::connection* get_connection() {
+        return connection_.get();
+    }
+
+    /**
      * @brief Get the component ID
      * @return Component ID
      */
