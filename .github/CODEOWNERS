@@ -1,14 +1,22 @@
-# Code owners for AlgoGators/trade-ngin
+# Review authority for this repository.
 #
-# Policy: every PR into main needs TWO approvals, and at least one must come
-# from a repo admin listed below.
+# Points at a TEAM rather than a list of usernames. The previous list named 7-8
+# people individually, which went stale silently: it included members who had
+# not committed in over a year, and omitted at least one person who had. A team
+# reference stays correct as membership changes, in one place, for every repo.
 #
-# GitHub has no native "one approval must be from an admin" setting. This file
-# is how that rule is expressed: branch protection requires 2 approvals AND
-# "require review from Code Owners", so one of the two must be someone here.
+# Two things that make a team entry silently do nothing, both easy to trip over:
 #
-# Keep this list in sync with who actually holds the Admin role on the repo.
-# (A GitHub org team would reduce review-request noise vs. listing individuals --
-# worth switching to if one is created for admins.)
+#   1. The slug is leadership-team, not leadership. GitHub derives a team's slug
+#      from its NAME and ignores any slug supplied at creation, so
+#      "Leadership Team" became leadership-team.
+#
+#   2. The team must have explicit write access to this repository. GitHub
+#      ignores a CODEOWNERS entry for a team without repo access -- no error, no
+#      warning, reviews simply are not requested. Access was granted for exactly
+#      this reason; do not revoke it without also fixing this file.
+#
+# Verify after any change: open a PR and confirm the team is auto-requested.
+# If no review request appears, one of the two conditions above has been broken.
 
-* @colerottenberg @dominickdupuy @patrickbott @ry2009 @jrile018 @raohemdutt @roshan-h-shah @pranavb05
+*  @AlgoGators/leadership-team
