@@ -63,6 +63,12 @@ jobs:
           CIBW_BUILD_VERBOSITY: 3
           CIBW_SKIP: "*-win32 *musllinux*"
 
+          # Smoke-test each wheel after it is built. Without this the job only proves
+          # the module compiles and links -- a wheel that fails to load (missing shared
+          # library, bad rpath, ABI mismatch) would still be published as a success.
+          CIBW_TEST_COMMAND: >
+            python -c "import tradengin; print('tradengin OK:', sorted(n for n in dir(tradengin) if not n.startswith('_')))"
+
           CIBW_ENVIRONMENT_LINUX: >
             VCPKG_ROOT=/tmp/vcpkg
             VCPKG_BINARY_SOURCES=files,/tmp/vcpkg-cache,readwrite
