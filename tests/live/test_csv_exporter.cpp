@@ -18,9 +18,7 @@
 #include <unordered_map>
 #include <vector>
 
-#define private public
 #include "trade_ngin/live/csv_exporter.hpp"
-#undef private
 
 using namespace trade_ngin;
 

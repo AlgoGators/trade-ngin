@@ -9,6 +9,7 @@
 #include <sstream>
 #include <iomanip>
 #include <chrono>
+#include "trade_ngin/core/testing_access.hpp"
 
 namespace trade_ngin {
 
@@ -91,7 +92,7 @@ public:
      */
     static std::string generate_date_string(const Timestamp& date);
 
-private:
+TESTING_PRIVATE:
     /**
      * @brief Combine strategy names with '&' separator (sorted for consistency)
      * @param strategy_names Vector of strategy names

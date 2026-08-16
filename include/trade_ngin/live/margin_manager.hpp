@@ -6,6 +6,7 @@
 #include <unordered_map>
 #include <string>
 #include <memory>
+#include "trade_ngin/core/testing_access.hpp"
 
 namespace trade_ngin {
 
@@ -140,7 +141,7 @@ public:
      */
     static double calculate_margin_cushion(double equity_to_margin_ratio);
 
-private:
+TESTING_PRIVATE:
     /**
      * Normalize symbol for instrument lookup
      * Removes variant suffixes (.v.0, .c.0) for registry lookup

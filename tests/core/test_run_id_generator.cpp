@@ -5,9 +5,7 @@
 
 // combine_strategy_names is a private static helper; reach it via the same
 // pattern used elsewhere in this test suite.
-#define private public
 #include "trade_ngin/core/run_id_generator.hpp"
-#undef private
 
 using namespace trade_ngin;
 using namespace trade_ngin::testing;

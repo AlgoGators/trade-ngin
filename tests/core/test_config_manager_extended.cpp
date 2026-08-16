@@ -430,7 +430,6 @@ TEST_F(ConfigManagerInstanceTest, IsProductionReflectsCurrentEnvironment) {
     }
 }
 
-// ===== StrategyValidator validate_numeric_range (private; reach via #define private public) =====
 //
 // (Done via the StrategyValidator subclass test; the validate_numeric_range
 // helper is private. We exercise it indirectly through validate_ema_windows

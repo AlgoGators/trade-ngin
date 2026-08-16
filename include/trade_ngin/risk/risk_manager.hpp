@@ -10,6 +10,7 @@
 #include "trade_ngin/core/config_base.hpp"
 #include "trade_ngin/core/error.hpp"
 #include "trade_ngin/core/types.hpp"
+#include "trade_ngin/core/testing_access.hpp"
 
 namespace trade_ngin {
 
@@ -160,7 +161,7 @@ public:
      */
     MarketData create_market_data(const std::vector<Bar>& data);
 
-private:
+TESTING_PRIVATE:
     RiskConfig config_;
 
     /**

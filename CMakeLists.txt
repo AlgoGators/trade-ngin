@@ -166,9 +166,15 @@ elseif(NOT WIN32)
     )
 endif()
 
-# Add test-specific compile definitions when building tests
+# Add test-specific compile definitions when building tests.
+# TESTING must be PUBLIC and set on the library as well as the test target:
+# several tests exercise private members. On GCC/Clang they get away with
+# "#define private public" because access is not part of the mangled name, but
+# MSVC encodes it, so the library and the tests must agree on the access
+# specifier or the symbols fail to link.
 if(BUILD_TESTING)
     target_compile_definitions(trade_ngin PRIVATE USE_DIRECT_DB_CONNECTION)
+    target_compile_definitions(trade_ngin PUBLIC TESTING)
 endif()
 
 # Link against dependencies

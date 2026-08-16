@@ -11,6 +11,7 @@
 #include <gtest/gtest.h>
 #include <cstdlib>
 #include <filesystem>
+#include "../core/test_portability.hpp"
 #include <fstream>
 #include "trade_ngin/data/credential_store.hpp"
 
@@ -229,7 +230,8 @@ TEST_F(CredentialStoreExtendedTest, EnvVarPathOverrideIgnoresNonJsonExtension) {
         std::ofstream f(bogus);
         f << R"({"x": {"y": "z"}})";
     }
-    setenv("TRADING_CONFIG_PATH", bogus.c_str(), 1);
+    // .string() rather than .c_str(): path::value_type is wchar_t on Windows.
+    setenv("TRADING_CONFIG_PATH", bogus.string().c_str(), 1);
     // Override is ignored because extension != .json. Falls back to passed path.
     CredentialStore cs(path_.string());
     auto r = cs.get_credential("existing", "key");

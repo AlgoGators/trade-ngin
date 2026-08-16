@@ -10,6 +10,7 @@
 #include "trade_ngin/core/types.hpp"
 #include "trade_ngin/optimization/dynamic_optimizer.hpp"
 #include "trade_ngin/risk/risk_manager.hpp"
+#include "trade_ngin/core/testing_access.hpp"
 
 namespace trade_ngin {
 
@@ -326,7 +327,7 @@ public:
      */
     static Result<AppConfig> load_legacy(const std::filesystem::path& config_file_path);
 
-private:
+TESTING_PRIVATE:
     /**
      * @brief Load and parse a JSON file
      * @param file_path Path to JSON file

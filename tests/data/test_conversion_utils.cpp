@@ -16,9 +16,7 @@
 // valid; needed because extract_* helpers are private.
 #include <string>
 #include <vector>
-#define private public
 #include "trade_ngin/data/conversion_utils.hpp"
-#undef private
 
 using namespace trade_ngin;
 

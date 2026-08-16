@@ -1,6 +1,7 @@
 .env
 .vscode/
 build/
+build-mf/
 build_coverage/
 logs/
 config.json
