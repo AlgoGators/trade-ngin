@@ -57,6 +57,16 @@ GrowthInflationQuadrant::GrowthInflationQuadrant(QuadrantConfig config)
 Result<QuadrantResult> GrowthInflationQuadrant::update(const MacroPanel& panel) {
     std::lock_guard<std::mutex> lock(mutex_);
 
+    // ema_lambda is the weight on the NEW observation; <= 0 would freeze the
+    // regime at its prior forever with no error, > 1 extrapolates. Reject both
+    // loudly rather than emitting a silently stale signal.
+    if (config_.ema_lambda <= 0.0 || config_.ema_lambda > 1.0) {
+        return make_error<QuadrantResult>(
+            ErrorCode::INVALID_ARGUMENT,
+            "QuadrantConfig.ema_lambda must be in (0, 1]; 1.0 disables smoothing",
+            "GrowthInflationQuadrant");
+    }
+
     // 1. Append to rolling histories
     cpi_yoy_history_.push_back(panel.cpi_yoy);
     gdp_qoq_history_.push_back(panel.gdp_qoq_ann);
@@ -265,11 +275,13 @@ std::string GrowthInflationQuadrant::build_inflation_driver(
 // ═══════════════════════════════════════════════════════════════════
 // Getters
 // ═══════════════════════════════════════════════════════════════════
-const QuadrantResult& GrowthInflationQuadrant::get_result() const {
+QuadrantResult GrowthInflationQuadrant::get_result() const {
+    std::lock_guard<std::mutex> lock(mutex_);
     return current_result_;
 }
 
-const std::vector<QuadrantResult>& GrowthInflationQuadrant::get_history() const {
+std::vector<QuadrantResult> GrowthInflationQuadrant::get_history() const {
+    std::lock_guard<std::mutex> lock(mutex_);
     return history_;
 }
 

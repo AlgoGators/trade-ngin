@@ -36,20 +36,20 @@ struct QuadrantConfig {
     // Lookback window for z-score computation (in data points)
     size_t zscore_lookback = 60;     // ~5 years of monthly data
 
-    // Smoothing factor for EMA stabilization (0 = no smoothing)
+    // EMA smoothing weight on the NEW observation, valid range (0, 1]:
+    //   1.0 = no smoothing (raw probabilities pass through)
+    //   0.3 = default: 30% new / 70% previous
+    // Values <= 0 would freeze the regime at its prior forever and are
+    // rejected by update().
     double ema_lambda = 0.3;
 
     // How spread out the Gaussian kernels are (larger = softer boundaries)
     double kernel_bandwidth = 1.0;
 
-    // Thresholds for growth classification
-    double growth_expansion_threshold  =  0.5;   // z > 0.5 → expansion
-    double growth_slowdown_threshold   = -0.5;    // z < -0.5 → slowdown
-    double growth_recession_threshold  = -1.5;    // z < -1.5 → recession
-
-    // Thresholds for inflation classification
-    double inflation_high_threshold    =  0.5;    // z > 0.5 → inflationary
-    double inflation_low_threshold     = -0.5;    // z < -0.5 → disinflationary
+    // NOTE: classification is driven entirely by the Gaussian kernel centers
+    // (STATE_CENTERS in the .cpp), not by hard thresholds. Earlier drafts
+    // carried threshold fields here that nothing read; they were removed so a
+    // config edit cannot silently do nothing.
 
     // Weights for growth composite
     double weight_gdp     = 0.40;
@@ -66,10 +66,12 @@ public:
     Result<QuadrantResult> update(const MacroPanel& panel);
 
     /// Get the current quadrant result without updating.
-    const QuadrantResult& get_result() const;
+    /// Returns a copy taken under the lock: update() mutates these members,
+    /// so handing out references would race any concurrent reader.
+    QuadrantResult get_result() const;
 
     /// Get the full history of quadrant results.
-    const std::vector<QuadrantResult>& get_history() const;
+    std::vector<QuadrantResult> get_history() const;
 
     /// Reset all state.
     void reset();
