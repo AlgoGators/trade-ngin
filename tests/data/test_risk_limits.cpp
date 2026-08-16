@@ -1,3 +1,16 @@
+/**
+ * Tests for the Stage 1b risk-limits publication path.
+ *
+ * Two layers:
+ *  1. store_risk_limits() itself — input validation and the not-connected
+ *     error path, exercised through the real implementation (the mock database
+ *     has no live pqxx connection, so a fully valid call must stop at the
+ *     connection check rather than crash into pqxx).
+ *  2. The published envelope contract — the exact JSONB shape
+ *     live_portfolio_runner publishes and the migration COMMENT documents:
+ *     max_symbol_position_contracts (map, CONTRACT UNITS), max_gross_leverage,
+ *     max_net_leverage, and nothing else.
+ */
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 #include <memory>
@@ -7,10 +20,28 @@
 using namespace trade_ngin;
 using namespace trade_ngin::testing;
 
+namespace {
+
+// Mirror of the envelope construction in live_portfolio_runner.cpp. If the
+// runner's shape changes, change this factory and the contract tests below in
+// the same commit — that is the point of them.
+nlohmann::json make_published_envelope() {
+    nlohmann::json limits;
+    nlohmann::json symbol_contracts;
+    symbol_contracts["ES"] = 500.0;
+    symbol_contracts["NQ"] = 250.0;
+    symbol_contracts["GC"] = 100.0;
+    limits["max_symbol_position_contracts"] = symbol_contracts;
+    limits["max_gross_leverage"] = 2.0;
+    limits["max_net_leverage"] = 1.5;
+    return limits;
+}
+
+}  // namespace
+
 class RiskLimitsTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        // Create database instance with test connection string
         db = std::make_unique<MockPostgresDatabase>("mock://testdb");
         db->connect();
     }
@@ -24,155 +55,100 @@ protected:
     std::unique_ptr<MockPostgresDatabase> db;
 };
 
-/**
- * @brief Test that risk limits JSONB object is serialized correctly
- *
- * Verifies that the limits JSON includes the expected fields:
- * - max_symbol_notional: map of symbol to unit limit
- * - max_gross_leverage: scalar double
- * - max_net_leverage: scalar double
- */
-TEST_F(RiskLimitsTest, RiskLimitsSerializationValid) {
-    nlohmann::json limits;
+// ---------------------------------------------------------------------------
+// store_risk_limits(): validation and error paths
+// ---------------------------------------------------------------------------
 
-    // Build a sample limits object matching the structure published by live_portfolio_runner
-    nlohmann::json symbol_notional;
-    symbol_notional["ES"] = 500.0;
-    symbol_notional["NQ"] = 250.0;
-    symbol_notional["GC"] = 100.0;
-    limits["max_symbol_notional"] = symbol_notional;
+TEST_F(RiskLimitsTest, StoreRejectsInvalidTableName) {
+    auto result = db->store_risk_limits("trend_following", "base",
+                                        make_published_envelope(),
+                                        "trading.risk_limits; DROP TABLE x--");
+    ASSERT_TRUE(result.is_error());
+    EXPECT_EQ(result.error()->code(), ErrorCode::INVALID_ARGUMENT);
+}
 
-    limits["max_gross_leverage"] = 4.0;
-    limits["max_net_leverage"] = 2.0;
+TEST_F(RiskLimitsTest, StoreRejectsInvalidStrategyId) {
+    auto result = db->store_risk_limits("bad id; --", "base",
+                                        make_published_envelope(),
+                                        "trading.risk_limits");
+    ASSERT_TRUE(result.is_error());
+    EXPECT_EQ(result.error()->code(), ErrorCode::INVALID_ARGUMENT);
+}
 
-    // Verify the structure
-    ASSERT_TRUE(limits.contains("max_symbol_notional"));
+TEST_F(RiskLimitsTest, StoreRejectsEmptyStrategyId) {
+    auto result = db->store_risk_limits("", "base", make_published_envelope(),
+                                        "trading.risk_limits");
+    ASSERT_TRUE(result.is_error());
+    EXPECT_EQ(result.error()->code(), ErrorCode::INVALID_ARGUMENT);
+}
+
+TEST_F(RiskLimitsTest, StoreWithValidInputsStopsAtConnectionCheck) {
+    // The mock database reports connected but holds no live pqxx connection,
+    // so a fully valid call must be stopped by validate_connection() — proving
+    // input validation passed and the failure is the connection, not a crash.
+    auto result = db->store_risk_limits("trend_following", "base",
+                                        make_published_envelope(),
+                                        "trading.risk_limits");
+    ASSERT_TRUE(result.is_error());
+    EXPECT_EQ(result.error()->code(), ErrorCode::CONNECTION_ERROR);
+}
+
+TEST_F(RiskLimitsTest, StoreFailsCleanlyWhenDisconnected) {
+    db->disconnect();
+    auto result = db->store_risk_limits("trend_following", "base",
+                                        make_published_envelope(),
+                                        "trading.risk_limits");
+    ASSERT_TRUE(result.is_error());
+    EXPECT_EQ(result.error()->code(), ErrorCode::CONNECTION_ERROR);
+}
+
+// ---------------------------------------------------------------------------
+// Envelope contract: what the runner publishes and the table COMMENT documents
+// ---------------------------------------------------------------------------
+
+TEST_F(RiskLimitsTest, EnvelopeContainsExactlyTheDocumentedKeys) {
+    auto limits = make_published_envelope();
+
+    ASSERT_TRUE(limits.contains("max_symbol_position_contracts"));
     ASSERT_TRUE(limits.contains("max_gross_leverage"));
     ASSERT_TRUE(limits.contains("max_net_leverage"));
 
-    // Verify symbol notional is a map
-    ASSERT_TRUE(limits["max_symbol_notional"].is_object());
-    ASSERT_EQ(limits["max_symbol_notional"]["ES"].get<double>(), 500.0);
-    ASSERT_EQ(limits["max_symbol_notional"]["NQ"].get<double>(), 250.0);
-    ASSERT_EQ(limits["max_symbol_notional"]["GC"].get<double>(), 100.0);
-
-    // Verify leverage values
-    ASSERT_EQ(limits["max_gross_leverage"].get<double>(), 4.0);
-    ASSERT_EQ(limits["max_net_leverage"].get<double>(), 2.0);
+    // Honest publication: limits the engine does not enforce must be absent —
+    // and the misleading dollars-sounding key must never come back.
+    EXPECT_FALSE(limits.contains("max_symbol_notional"));
+    EXPECT_FALSE(limits.contains("max_gross_notional"));
+    EXPECT_FALSE(limits.contains("max_position_count"));
+    EXPECT_EQ(limits.size(), 3u);
 }
 
-/**
- * @brief Test that limits JSON can be serialized to string and deserialized
- */
-TEST_F(RiskLimitsTest, RiskLimitsJsonRoundtrip) {
-    nlohmann::json original;
-    nlohmann::json symbol_notional;
-    symbol_notional["ES"] = 500.0;
-    original["max_symbol_notional"] = symbol_notional;
-    original["max_gross_leverage"] = 4.0;
-    original["max_net_leverage"] = 2.0;
+TEST_F(RiskLimitsTest, SymbolCapsAreAContractUnitMap) {
+    auto limits = make_published_envelope();
+    const auto& caps = limits["max_symbol_position_contracts"];
 
-    // Serialize to string (as would be stored in JSONB column)
-    std::string json_str = original.dump();
-
-    // Deserialize back
-    nlohmann::json restored = nlohmann::json::parse(json_str);
-
-    // Verify values survived roundtrip
-    ASSERT_EQ(restored["max_symbol_notional"]["ES"].get<double>(), 500.0);
-    ASSERT_EQ(restored["max_gross_leverage"].get<double>(), 4.0);
-    ASSERT_EQ(restored["max_net_leverage"].get<double>(), 2.0);
+    ASSERT_TRUE(caps.is_object());
+    EXPECT_EQ(caps["ES"].get<double>(), 500.0);
+    EXPECT_EQ(caps["NQ"].get<double>(), 250.0);
+    EXPECT_EQ(caps["GC"].get<double>(), 100.0);
 }
 
-/**
- * @brief Test that empty symbol notional map is handled correctly
- */
-TEST_F(RiskLimitsTest, RiskLimitsEmptySymbolNotional) {
+TEST_F(RiskLimitsTest, EnvelopeSurvivesJsonbRoundtrip) {
+    // store_risk_limits binds limits.dump() as the $3::jsonb parameter; the
+    // consumer parses it back. dump -> parse must be lossless for this shape.
+    auto original = make_published_envelope();
+    auto restored = nlohmann::json::parse(original.dump());
+
+    EXPECT_EQ(restored, original);
+    EXPECT_EQ(restored["max_symbol_position_contracts"]["ES"].get<double>(), 500.0);
+    EXPECT_EQ(restored["max_gross_leverage"].get<double>(), 2.0);
+}
+
+TEST_F(RiskLimitsTest, EmptySymbolMapIsStillAValidEnvelope) {
     nlohmann::json limits;
-    limits["max_symbol_notional"] = nlohmann::json::object();  // Empty map
-    limits["max_gross_leverage"] = 4.0;
-    limits["max_net_leverage"] = 2.0;
+    limits["max_symbol_position_contracts"] = nlohmann::json::object();
+    limits["max_gross_leverage"] = 2.0;
+    limits["max_net_leverage"] = 1.5;
 
-    ASSERT_TRUE(limits["max_symbol_notional"].is_object());
-    ASSERT_EQ(limits["max_symbol_notional"].size(), 0);
-}
-
-/**
- * @brief Test that limits object with only published fields can be created
- *
- * Honest publication means only including limits the engine actually enforces.
- * max_gross_notional and max_position_count should NOT be included because
- * the engine does not enforce them.
- */
-TEST_F(RiskLimitsTest, RiskLimitsHonestPublication) {
-    nlohmann::json limits;
-
-    // These fields ARE enforced (Stage 1a)
-    nlohmann::json symbol_notional;
-    symbol_notional["ES"] = 500.0;
-    limits["max_symbol_notional"] = symbol_notional;
-    limits["max_gross_leverage"] = 4.0;
-    limits["max_net_leverage"] = 2.0;
-
-    // These fields should NOT be present (not enforced)
-    ASSERT_FALSE(limits.contains("max_gross_notional"));
-    ASSERT_FALSE(limits.contains("max_position_count"));
-}
-
-/**
- * @brief Test that leverage limits from RiskConfig are correctly included
- */
-TEST_F(RiskLimitsTest, RiskLimitsLeverageFromConfig) {
-    // Simulate different risk profiles
-    struct TestCase {
-        std::string name;
-        double gross_leverage;
-        double net_leverage;
-    };
-
-    std::vector<TestCase> test_cases = {
-        {"BASE_PORTFOLIO", 4.0, 2.0},
-        {"CONSERVATIVE_PORTFOLIO", 2.0, 1.5},
-    };
-
-    for (const auto& tc : test_cases) {
-        nlohmann::json limits;
-        limits["max_symbol_notional"] = nlohmann::json::object();
-        limits["max_gross_leverage"] = tc.gross_leverage;
-        limits["max_net_leverage"] = tc.net_leverage;
-
-        ASSERT_EQ(limits["max_gross_leverage"].get<double>(), tc.gross_leverage)
-            << "Test case: " << tc.name;
-        ASSERT_EQ(limits["max_net_leverage"].get<double>(), tc.net_leverage)
-            << "Test case: " << tc.name;
-    }
-}
-
-/**
- * @brief Test that symbol position limits from strategy config are included
- */
-TEST_F(RiskLimitsTest, RiskLimitsSymbolsFromStrategyConfig) {
-    // Simulate position_limits from base_strategy_config
-    std::unordered_map<std::string, double> position_limits = {
-        {"ES", 500.0},
-        {"NQ", 250.0},
-        {"GC", 100.0},
-        {"CL", 200.0},
-        {"ZB", 1000.0},
-    };
-
-    nlohmann::json limits;
-    nlohmann::json symbol_notional;
-    for (const auto& [symbol, limit] : position_limits) {
-        symbol_notional[symbol] = limit;
-    }
-    limits["max_symbol_notional"] = symbol_notional;
-
-    // Verify all symbols are present
-    ASSERT_EQ(limits["max_symbol_notional"].size(), 5);
-    ASSERT_EQ(limits["max_symbol_notional"]["ES"].get<double>(), 500.0);
-    ASSERT_EQ(limits["max_symbol_notional"]["NQ"].get<double>(), 250.0);
-    ASSERT_EQ(limits["max_symbol_notional"]["GC"].get<double>(), 100.0);
-    ASSERT_EQ(limits["max_symbol_notional"]["CL"].get<double>(), 200.0);
-    ASSERT_EQ(limits["max_symbol_notional"]["ZB"].get<double>(), 1000.0);
+    auto restored = nlohmann::json::parse(limits.dump());
+    EXPECT_TRUE(restored["max_symbol_position_contracts"].is_object());
+    EXPECT_TRUE(restored["max_symbol_position_contracts"].empty());
 }

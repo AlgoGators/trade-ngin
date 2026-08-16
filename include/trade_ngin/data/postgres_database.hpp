@@ -519,7 +519,8 @@ public:
      * @param strategy_id Combined strategy identifier (e.g., "LIVE_TREND_FOLLOWING_FAST")
      * @param portfolio_id Portfolio identifier (e.g., "BASE_PORTFOLIO", "CONSERVATIVE_PORTFOLIO")
      * @param limits JSONB object. The engine publishes ONLY limits it actually enforces:
-     *        - max_symbol_notional: map<string, double>, per-symbol position caps in units
+     *        - max_symbol_position_contracts: map<string, double>, per-symbol caps in
+     *          CONTRACT UNITS (not notional dollars)
      *        - max_gross_leverage: double, enforced by RiskManager::calculate_leverage_multiplier
      *        - max_net_leverage:   double, same enforcement point
      *

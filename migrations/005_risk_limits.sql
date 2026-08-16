@@ -43,8 +43,10 @@ CREATE INDEX IF NOT EXISTS idx_risk_limits_strategy_portfolio_published
 
 COMMENT ON TABLE trading.risk_limits IS
     'Append-only publication of risk limits enforced by the engine (Stage 1b). '
-    'AlgoLens queries this table to validate manual position edits. '
-    'limits is a JSONB object with keys: max_gross_notional, max_symbol_notional (map), '
-    'max_position_count. Rows are never updated; new rows are published as limits change.';
+    'AlgoLens queries this table (latest row per strategy/portfolio by published_at) '
+    'to validate manual position edits. limits is a JSONB object with keys: '
+    'max_symbol_position_contracts (map symbol -> cap in CONTRACT UNITS, not dollars), '
+    'max_gross_leverage, max_net_leverage. Only limits the engine actually enforces '
+    'are published. Rows are never updated; new rows are appended as limits change.';
 
 COMMIT;

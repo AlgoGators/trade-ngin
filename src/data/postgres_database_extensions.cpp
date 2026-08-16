@@ -869,22 +869,21 @@ Result<void> PostgresDatabase::store_risk_limits(const std::string& strategy_id,
                                                  const std::string& table_name) {
     std::lock_guard<std::mutex> lock(mutex_);
 
-    // Validate connection
-    auto validation = validate_connection();
-    if (validation.is_error()) {
-        return validation;
-    }
-
-    // Validate table name
+    // Validate inputs before the connection so bad arguments are rejected the
+    // same way with or without a live DB (and are unit-testable offline).
     auto table_validation = validate_table_name(table_name);
     if (table_validation.is_error()) {
         return table_validation;
     }
 
-    // Validate strategy ID
     auto strategy_validation = validate_strategy_id(strategy_id);
     if (strategy_validation.is_error()) {
         return strategy_validation;
+    }
+
+    auto validation = validate_connection();
+    if (validation.is_error()) {
+        return validation;
     }
 
     try {

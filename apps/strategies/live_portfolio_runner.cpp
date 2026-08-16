@@ -725,12 +725,16 @@ int trade_ngin::run_live_portfolio(const LivePortfolioConfig& portfolio_cfg, int
             // Honest publication: only include limits that the engine actually enforces.
             nlohmann::json limits;
 
-            // max_symbol_notional: per-symbol position caps (in units) from base_strategy_config
-            nlohmann::json symbol_notional;
+            // max_symbol_position_contracts: per-symbol position caps in CONTRACT
+            // UNITS (base_strategy_config.position_limits fans out
+            // app_config.execution.position_limit_live). Deliberately NOT named
+            // "notional": these are not dollars, and a gate reading them as
+            // dollars would wave through enormous edits.
+            nlohmann::json symbol_contracts;
             for (const auto& [symbol, limit] : base_strategy_config.position_limits) {
-                symbol_notional[symbol] = limit;
+                symbol_contracts[symbol] = limit;
             }
-            limits["max_symbol_notional"] = symbol_notional;
+            limits["max_symbol_position_contracts"] = symbol_contracts;
 
             // max_gross_leverage: enforced by RiskManager in process_positions()
             // (see src/risk/risk_manager.cpp: calculate_leverage_multiplier)
