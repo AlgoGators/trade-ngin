@@ -40,6 +40,7 @@ set(TEST_SOURCES
     backtesting/test_backtest_pnl_manager.cpp
     backtesting/test_backtest_metrics_calculator.cpp
     backtesting/test_backtest_data_loader.cpp
+    backtesting/test_market_data_source.cpp
     backtesting/test_backtest_csv_exporter.cpp
     backtesting/test_backtest_coordinator.cpp
     # backtesting/test_engine.cpp  # Deprecated - BacktestEngine replaced by BacktestCoordinator

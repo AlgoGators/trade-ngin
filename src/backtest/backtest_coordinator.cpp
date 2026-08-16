@@ -19,6 +19,19 @@ BacktestCoordinator::BacktestCoordinator(std::shared_ptr<PostgresDatabase> db,
     : config_(config),
       db_(std::move(db)),
       registry_(registry),
+      current_portfolio_value_(config.initial_capital) {
+    if (db_) {
+        data_source_ = std::make_shared<PostgresMarketDataSource>(db_);
+    }
+}
+
+BacktestCoordinator::BacktestCoordinator(std::shared_ptr<MarketDataSource> source,
+                                         InstrumentRegistry* registry,
+                                         const BacktestCoordinatorConfig& config)
+    : config_(config),
+      db_(nullptr),
+      data_source_(std::move(source)),
+      registry_(registry),
       current_portfolio_value_(config.initial_capital) {}
 
 BacktestCoordinator::~BacktestCoordinator() = default;
@@ -47,7 +60,7 @@ Result<void> BacktestCoordinator::initialize() {
 
 Result<void> BacktestCoordinator::create_components() {
     // Create data loader
-    data_loader_ = std::make_unique<BacktestDataLoader>(db_);
+    data_loader_ = std::make_unique<BacktestDataLoader>(data_source_);
 
     // Create metrics calculator (stateless)
     metrics_calculator_ = std::make_unique<BacktestMetricsCalculator>();
@@ -73,7 +86,14 @@ Result<void> BacktestCoordinator::create_components() {
 
 Result<void> BacktestCoordinator::validate_connection() const {
     if (!db_) {
-        return make_error<void>(ErrorCode::CONNECTION_ERROR, "Database interface is null",
+        // A database is optional when an explicit market data source was
+        // injected. Results simply are not persisted in that case.
+        if (data_source_) {
+            return Result<void>();
+        }
+
+        return make_error<void>(ErrorCode::CONNECTION_ERROR,
+                                "No database connection and no market data source configured",
                                 "BacktestCoordinator");
     }
 
@@ -265,14 +285,21 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
     INFO("Calculated warmup days from strategies: " + std::to_string(calculated_warmup_days) +
          ", total available days: " + std::to_string(grouped_bars.size()));
 
-    // Initialize CSV exporter
-    csv_exporter_ = std::make_unique<BacktestCSVExporter>(config_.csv_output_path);
-    auto csv_init_result = csv_exporter_->initialize_files();
-    if (csv_init_result.is_error()) {
-        WARN("Failed to initialize CSV exporter: " + std::string(csv_init_result.error()->what()));
-        csv_exporter_.reset();
+    // Initialize CSV exporter. The default output path is relative, so it is
+    // skipped entirely when export is disabled (e.g. database-free runs
+    // started from an arbitrary working directory).
+    if (config_.export_csv) {
+        csv_exporter_ = std::make_unique<BacktestCSVExporter>(config_.csv_output_path);
+        auto csv_init_result = csv_exporter_->initialize_files();
+        if (csv_init_result.is_error()) {
+            WARN("Failed to initialize CSV exporter: " +
+                 std::string(csv_init_result.error()->what()));
+            csv_exporter_.reset();
+        } else {
+            INFO("CSV exporter initialized, output: " + config_.csv_output_path);
+        }
     } else {
-        INFO("CSV exporter initialized, output: " + config_.csv_output_path);
+        INFO("CSV export disabled");
     }
 
     // Track last saved date
@@ -983,14 +1010,14 @@ Result<void> BacktestCoordinator::save_portfolio_results_to_db(
         return Result<void>();
     }
 
+    if (!db_) {
+        INFO("No database connection configured; skipping portfolio results storage");
+        return Result<void>();
+    }
+
     INFO("Using BacktestResultsManager for portfolio-level storage");
 
-    auto db_ptr = std::dynamic_pointer_cast<PostgresDatabase>(db_);
-    if (!db_ptr) {
-        ERROR("Database is not a PostgresDatabase instance");
-        return make_error<void>(ErrorCode::DATABASE_ERROR, "Invalid database type",
-                                "BacktestCoordinator");
-    }
+    auto db_ptr = db_;
 
     // Use the run_id from daily position storage if available, otherwise generate a new one
     std::string portfolio_run_id;

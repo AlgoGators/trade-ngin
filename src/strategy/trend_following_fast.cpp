@@ -1048,6 +1048,15 @@ std::unordered_map<std::string, double> TrendFollowingFastStrategy::get_weights(
     if (!weight_cache_.empty()) {
         return weight_cache_;
     }
+
+    // Sector weights come from the contract metadata table. Without a database
+    // connection the caller gets equal weights, which is what an empty map
+    // means to every consumer of this method.
+    if (!db_) {
+        WARN("No database connection; falling back to equal instrument weights");
+        return {};
+    }
+
     auto metadata_result = db_->get_contract_metadata();
     if (!metadata_result.is_ok()) {
         ERROR(std::string("Failed to get contract metadata: ")

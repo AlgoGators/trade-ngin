@@ -59,10 +59,11 @@ Result<void> BaseStrategy::initialize() {
     }
 
     try {
-        // Initialize database connection if needed
+        // A database connection is optional: it is only used to persist
+        // signals and positions. A backtest driven by a custom MarketDataSource
+        // runs without one, and every db_ use below is null-guarded.
         if (!db_) {
-            return make_error<void>(ErrorCode::NOT_INITIALIZED,
-                                    "Database interface not initialized", "BaseStrategy");
+            INFO("No database connection; strategy results will not be persisted");
         }
 
         // Generate a unique component ID for this strategy
