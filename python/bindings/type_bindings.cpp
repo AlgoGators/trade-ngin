@@ -21,8 +21,23 @@ public:
     PYBIND11_TYPE_CASTER(trade_ngin::Decimal, _("Decimal"));
 
     bool load(handle src, bool) {
-        std::string s = py::str(src);
-        value = Decimal(s);
+        if (!src) {
+            return false;
+        }
+
+        // Only accept things that are actually numeric. Previously any object
+        // was stringified and silently became a Decimal. PyNumber_Check also
+        // covers numpy scalars, so values taken straight from a DataFrame work.
+        if (!PyNumber_Check(src.ptr()) && !PyUnicode_Check(src.ptr())) {
+            return false;
+        }
+
+        try {
+            value = Decimal(static_cast<std::string>(py::str(src)));
+        } catch (const std::exception&) {
+            return false;
+        }
+
         return true;
     }
 
@@ -38,8 +53,30 @@ public:
 
 // Bind types in trade_ngin/core/types.hpp
 void bind_core_types(py::module_& m) {
+    py::enum_<AssetClass>(m, "AssetClass")
+        .value("FUTURES", AssetClass::FUTURES)
+        .value("EQUITIES", AssetClass::EQUITIES)
+        .value("OPTIONS", AssetClass::OPTIONS)
+        .value("FIXED_INCOME", AssetClass::FIXED_INCOME)
+        .value("CURRENCIES", AssetClass::CURRENCIES)
+        .value("COMMODITIES", AssetClass::COMMODITIES)
+        .value("CRYPTO", AssetClass::CRYPTO)
+        .value("UNKNOWN", AssetClass::UNKNOWN);
+
+    py::enum_<DataFrequency>(m, "DataFrequency")
+        .value("DAILY", DataFrequency::DAILY)
+        .value("HOURLY", DataFrequency::HOURLY)
+        .value("MINUTE_15", DataFrequency::MINUTE_15)
+        .value("MINUTE_5", DataFrequency::MINUTE_5)
+        .value("MINUTE_1", DataFrequency::MINUTE_1);
+
     py::class_<Bar>(m, "Bar")
         .def(py::init<>())
+        // Bind the double overload rather than the Price/Decimal one so bars
+        // can be built straight from Python floats.
+        .def(py::init<Timestamp, double, double, double, double, double, std::string>(),
+             py::arg("timestamp"), py::arg("open"), py::arg("high"), py::arg("low"),
+             py::arg("close"), py::arg("volume"), py::arg("symbol"))
         .def_readwrite("timestamp", &Bar::timestamp)
         .def_readwrite("open", &Bar::open)
         .def_readwrite("high", &Bar::high)

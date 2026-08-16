@@ -11,6 +11,7 @@ PYBIND11_MODULE(tradengin, m) {
     // bind_error_types(m);
 
     bind_database(m);
+    bind_data_source(m);
     bind_instrument_registry(m);
 
     bind_base_strategy(m);

@@ -13,6 +13,7 @@ void bind_strategy_types(py::module_& m);
 // void bind_error_types(py::module_& m);
 
 void bind_database(py::module_& m);
+void bind_data_source(py::module_& m);
 void bind_instrument_registry(py::module_& m);
 
 void bind_base_strategy(py::module_& m);
