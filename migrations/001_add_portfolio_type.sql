@@ -40,6 +40,11 @@
 -- * Wrapped in a transaction: it either fully applies or fully rolls back.
 -- * Idempotent -- safe to re-run.
 --
+-- DEPLOY ORDERING: this migration and the binary built from this commit must
+-- ship together. The equity_curve unique-key rebuild changes the ON CONFLICT
+-- target store_trading_equity_curve uses; the old binary errors against the
+-- new schema and the new binary errors against the old one.
+--
 -- Rollback: migrations/001_add_portfolio_type_rollback.sql
 
 BEGIN;
