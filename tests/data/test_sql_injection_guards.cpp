@@ -84,8 +84,13 @@ protected:
 
     Result<void> update_with_column(const std::string& column) {
         std::unordered_map<std::string, double> updates{{column, 1.0}};
-        return db->update_live_results("trend_following", std::chrono::system_clock::now(),
-                                       updates, "BASE_PORTFOLIO", "trading.live_results");
+        // Qualified call: MockPostgresDatabase overrides update_live_results
+        // with a stub, and the whitelist under test lives in the REAL
+        // implementation. Its input validation runs before the connection
+        // check, so this is safe against the mock's absent connection.
+        return db->PostgresDatabase::update_live_results(
+            "trend_following", std::chrono::system_clock::now(), updates, "BASE_PORTFOLIO",
+            "trading.live_results");
     }
 };
 
@@ -125,7 +130,7 @@ TEST_F(IdentifierWhitelistTest, ValidColumnPassesWhitelistAndStopsAtConnection) 
 TEST_F(IdentifierWhitelistTest, CompleteStoreRejectsBadMetricNames) {
     std::unordered_map<std::string, double> metrics{{"equity; --", 1.0}};
     std::unordered_map<std::string, int> int_metrics;
-    auto result = db->store_live_results_complete(
+    auto result = db->PostgresDatabase::store_live_results_complete(
         "trend_following", std::chrono::system_clock::now(), metrics, int_metrics,
         nlohmann::json::object(), "BASE_PORTFOLIO", "trading.live_results");
     ASSERT_TRUE(result.is_error());
@@ -135,7 +140,7 @@ TEST_F(IdentifierWhitelistTest, CompleteStoreRejectsBadMetricNames) {
 TEST_F(IdentifierWhitelistTest, CompleteStoreRejectsBadIntMetricNames) {
     std::unordered_map<std::string, double> metrics;
     std::unordered_map<std::string, int> int_metrics{{"trades'; DROP TABLE x--", 1}};
-    auto result = db->store_live_results_complete(
+    auto result = db->PostgresDatabase::store_live_results_complete(
         "trend_following", std::chrono::system_clock::now(), metrics, int_metrics,
         nlohmann::json::object(), "BASE_PORTFOLIO", "trading.live_results");
     ASSERT_TRUE(result.is_error());
