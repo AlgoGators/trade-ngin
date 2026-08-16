@@ -480,6 +480,19 @@ Result<void> PostgresDatabase::update_live_results(
     const std::string& table_name) {
     std::lock_guard<std::mutex> lock(mutex_);
 
+    // Column names can't be bound as $n parameters -- only values can -- so every
+    // column is checked against a strict identifier whitelist before anything else.
+    // Done ahead of the connection check so injection-shaped input is rejected the
+    // same way with or without a live DB.
+    for (const auto& [column, value] : updates) {
+        (void)value;
+        if (!is_valid_sql_identifier(column)) {
+            return make_error<void>(ErrorCode::INVALID_ARGUMENT,
+                                    "Invalid column name in updates map: '" + column + "'",
+                                    component_id_);
+        }
+    }
+
     // Validate connection
     auto validation = validate_connection();
     if (validation.is_error()) {
@@ -507,19 +520,6 @@ Result<void> PostgresDatabase::update_live_results(
 
         // Use actual portfolio_id or default to BASE_PORTFOLIO for backward compatibility
         std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
-
-        // Column names can't be bound as $n parameters -- only values can -- so every
-        // column is checked against a strict identifier whitelist before it reaches the
-        // query text. This is the only defense available for dynamic identifiers; every
-        // value is still bound as a parameter below.
-        for (const auto& [column, value] : updates) {
-            (void)value;
-            if (!is_valid_sql_identifier(column)) {
-                return make_error<void>(
-                    ErrorCode::INVALID_ARGUMENT,
-                    "Invalid column name in updates map: '" + column + "'", component_id_);
-            }
-        }
 
         std::string query = "UPDATE " + table_name + " SET ";
         pqxx::params params;
@@ -711,6 +711,25 @@ Result<void> PostgresDatabase::store_live_results_complete(
     const std::string& portfolio_id, const std::string& table_name) {
     std::lock_guard<std::mutex> lock(mutex_);
 
+    // Same identifier firewall as update_live_results, ahead of the connection
+    // check for the same reason.
+    for (const auto& [column, value] : metrics) {
+        (void)value;
+        if (!is_valid_sql_identifier(column)) {
+            return make_error<void>(ErrorCode::INVALID_ARGUMENT,
+                                    "Invalid column name in metrics map: '" + column + "'",
+                                    component_id_);
+        }
+    }
+    for (const auto& [column, value] : int_metrics) {
+        (void)value;
+        if (!is_valid_sql_identifier(column)) {
+            return make_error<void>(ErrorCode::INVALID_ARGUMENT,
+                                    "Invalid column name in int_metrics map: '" + column + "'",
+                                    component_id_);
+        }
+    }
+
     // Validate connection
     auto validation = validate_connection();
     if (validation.is_error()) {
@@ -734,25 +753,6 @@ Result<void> PostgresDatabase::store_live_results_complete(
 
         // Use provided portfolio_id or default to BASE_PORTFOLIO
         std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
-
-        // Column names can't be bound as $n parameters -- validate against the same
-        // identifier whitelist as update_live_results before either map touches the query.
-        for (const auto& [column, value] : metrics) {
-            (void)value;
-            if (!is_valid_sql_identifier(column)) {
-                return make_error<void>(
-                    ErrorCode::INVALID_ARGUMENT,
-                    "Invalid column name in metrics map: '" + column + "'", component_id_);
-            }
-        }
-        for (const auto& [column, value] : int_metrics) {
-            (void)value;
-            if (!is_valid_sql_identifier(column)) {
-                return make_error<void>(
-                    ErrorCode::INVALID_ARGUMENT,
-                    "Invalid column name in int_metrics map: '" + column + "'", component_id_);
-            }
-        }
 
         // Build column list and parameter placeholders - include portfolio_id
         std::string columns = "strategy_id, portfolio_id, date";

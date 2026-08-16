@@ -8,7 +8,8 @@
 
 #include "trade_ngin/data/market_data_bus.hpp"
 
-namespace {
+namespace trade_ngin {
+namespace detail {
 // Builds "($1,...,$cols),($cols+1,...,$2*cols),..." for `rows` row-groups of `cols`
 // placeholders each, so a multi-row INSERT can bind every value as a parameter instead
 // of concatenating it into the query text. Chunk callers to stay under Postgres's
@@ -30,7 +31,10 @@ std::string build_value_placeholders(size_t rows, size_t cols) {
     }
     return result;
 }
-}  // namespace
+}  // namespace detail
+}  // namespace trade_ngin
+using trade_ngin::detail::build_value_placeholders;
+
 
 namespace trade_ngin {
 

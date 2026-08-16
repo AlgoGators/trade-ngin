@@ -17,6 +17,14 @@
 
 namespace trade_ngin {
 
+namespace detail {
+/// Builds "($1,..,$cols),($cols+1,..)" placeholder groups for multi-row
+/// parameterized INSERTs. Callers chunk so rows * cols <= 65535 (Postgres's
+/// per-query parameter cap). Exposed for unit tests.
+std::string build_value_placeholders(size_t rows, size_t cols);
+}  // namespace detail
+
+
 /**
  * @brief Database interface for PostgreSQL
  */
