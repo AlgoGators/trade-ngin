@@ -777,63 +777,9 @@ Result<std::vector<Position>> LiveDataLoader::load_positions_for_export(
     return load_positions(strategy_id, portfolio_id, date);
 }
 
-// ========== Commission Methods ==========
+// Commission method (load_commissions_by_symbol) was deleted as dead code.
+// See header comment for rationale.
 
-Result<std::unordered_map<std::string, double>> LiveDataLoader::load_commissions_by_symbol(
-    const std::string& portfolio_id, const Timestamp& date) {
-    auto validation = validate_connection();
-    if (validation.is_error()) {
-        return make_error<std::unordered_map<std::string, double>>(
-            ErrorCode::DATABASE_ERROR, validation.error()->what(), "LiveDataLoader");
-    }
-
-    auto time_t = std::chrono::system_clock::to_time_t(date);
-    std::stringstream date_ss;
-    date_ss << std::put_time(std::gmtime(&time_t), "%Y-%m-%d");
-
-    std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
-
-    std::string query =
-        "SELECT symbol, COALESCE(SUM(commission), 0.0) as total_commission "
-        "FROM " +
-        schema_ +
-        ".executions "
-        "WHERE portfolio_id = '" +
-        actual_portfolio_id + "' AND DATE(execution_time) = '" + date_ss.str() +
-        "' "
-        "GROUP BY symbol";
-
-    DEBUG("Loading commissions by symbol: " + query);
-
-    auto result = db_->execute_query(query);
-    if (result.is_error()) {
-        return make_error<std::unordered_map<std::string, double>>(
-            ErrorCode::DATABASE_ERROR,
-            "Failed to load commissions: " + std::string(result.error()->what()), "LiveDataLoader");
-    }
-
-    std::unordered_map<std::string, double> commissions;
-    auto table = result.value();
-
-    if (!table || table->num_rows() == 0) {
-        INFO("No commissions found for " + date_ss.str());
-        return Result<std::unordered_map<std::string, double>>(commissions);
-    }
-
-    for (int64_t i = 0; i < table->num_rows(); ++i) {
-        auto symbol_array =
-            std::static_pointer_cast<arrow::StringArray>(table->column(0)->chunk(0));
-        auto commission_array =
-            std::static_pointer_cast<arrow::DoubleArray>(table->column(1)->chunk(0));
-
-        std::string symbol = symbol_array->GetString(i);
-        double commission = commission_array->Value(i);
-        commissions[symbol] = commission;
-    }
-
-    INFO("Loaded commissions for " + std::to_string(commissions.size()) + " symbols");
-    return Result<std::unordered_map<std::string, double>>(commissions);
-}
 
 Result<double> LiveDataLoader::load_daily_transaction_costs(const std::string& strategy_id,
                                                             const std::string& portfolio_id,

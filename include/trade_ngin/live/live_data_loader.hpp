@@ -233,13 +233,10 @@ public:
 
     // ========== Commission Methods ==========
 
-    /**
-     * @brief Load commissions grouped by symbol for a date
-     * @param date Target date
-     * @return Map of symbol to total commission or error
-     */
-    Result<std::unordered_map<std::string, double>> load_commissions_by_symbol(
-        const std::string& portfolio_id, const Timestamp& date);
+    // Note: load_commissions_by_symbol was deleted - it was dead code that referenced
+    // a non-existent "commission" column and the result map was never used downstream.
+    // All real transaction-cost data flows through cost_manager_->calculate_costs()
+    // at execution time and is stored on trading.executions / trading.live_results.
 
     /**
      * @brief Load total daily transaction costs for a strategy

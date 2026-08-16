@@ -5,6 +5,7 @@
 #include <iostream>
 #include <numeric>
 #include <set>
+#include <unordered_set>
 
 namespace trade_ngin {
 
@@ -135,28 +136,6 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
     if (!logged_total && on_data_call_count > 100) {
         INFO("TOTAL ON_DATA CALLS before main loop: " + std::to_string(on_data_call_count));
         logged_total = true;
-    }
-
-    // Load previous positions if not already loaded (only once per run)
-    static bool previous_positions_loaded = false;
-    if (!previous_positions_loaded && previous_positions_.empty() && db_) {
-        // Use the data's timestamp (not current time) to handle historical runs correctly
-        // Get the timestamp from the first bar to determine the processing date
-        auto data_time = data.empty() ? std::chrono::system_clock::now() : data[0].timestamp;
-        auto previous_date = data_time - std::chrono::hours(24);
-        auto previous_positions_result =
-            db_->load_positions_by_date(id_, "", "", previous_date, "trading.positions");
-
-        if (previous_positions_result.is_ok()) {
-            const auto& previous_positions = previous_positions_result.value();
-            INFO("Loaded " + std::to_string(previous_positions.size()) +
-                 " previous day positions for PnL calculation");
-            previous_positions_ = previous_positions;
-        } else {
-            INFO("No previous day positions found (first run or no data): " +
-                 std::string(previous_positions_result.error()->what()));
-        }
-        previous_positions_loaded = true;
     }
 
     // CRITICAL FIX: Update price history BEFORE base class processing
@@ -370,8 +349,9 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
                     }
 
                     // Get weight
-                    if (get_weights().count(lookup_symbol) > 0) {
-                        instrument_data.weight = get_weights().at(lookup_symbol);
+                    const auto& weights = get_weights();
+                    if (weights.count(lookup_symbol) > 0) {
+                        instrument_data.weight = weights.at(lookup_symbol);
                     } else {
                         WARN("Weight not found for " + symbol);
                     }
@@ -1058,11 +1038,29 @@ double TrendFollowingStrategy::get_abs_value(const std::vector<double>& values) 
 }
 
 std::unordered_map<std::string, double> TrendFollowingStrategy::get_weights() const {
+    if (!weight_cache_.empty()) {
+        return weight_cache_;
+    }
     auto metadata_result = db_->get_contract_metadata();
     if (!metadata_result.is_ok()) {
         ERROR(std::string("Failed to get contract metadata: ")
                   .append(metadata_result.error()->what()));
         return {};
+    }
+
+    // Get actually-traded symbols from HLCV table to filter phantom instruments
+    std::unordered_set<std::string> traded_base_symbols;
+    auto hlcv_symbols_result = db_->get_symbols(AssetClass::FUTURES);
+    if (hlcv_symbols_result.is_ok()) {
+        for (const auto& sym : hlcv_symbols_result.value()) {
+            // Strip .v.0 / .c.0 suffix to get base symbol
+            auto dot_pos = sym.find('.');
+            std::string base = (dot_pos != std::string::npos) ? sym.substr(0, dot_pos) : sym;
+            // Exclude full-size ES (filtered in portfolio apps)
+            if (base != "ES") {
+                traded_base_symbols.insert(base);
+            }
+        }
     }
 
     auto metadata = metadata_result.value();
@@ -1077,7 +1075,7 @@ std::unordered_map<std::string, double> TrendFollowingStrategy::get_weights() co
     auto sector_col = metadata->column(sector_idx);
     auto symbol_col = metadata->column(symbol_idx);
 
-    // Build map of sector -> list of symbols
+    // Build map of sector -> list of symbols, filtered to only traded instruments
     std::unordered_map<std::string, std::vector<std::string>> sector_to_symbols;
 
     for (int chunk_idx = 0; chunk_idx < sector_col->num_chunks(); ++chunk_idx) {
@@ -1091,7 +1089,10 @@ std::unordered_map<std::string, double> TrendFollowingStrategy::get_weights() co
             if (!sector_array->IsNull(i) && !symbol_array->IsNull(i)) {
                 std::string sector = sector_array->GetString(i);
                 std::string symbol = symbol_array->GetString(i);
-                sector_to_symbols[sector].push_back(symbol);
+                // Only include symbols that are actually in the HLCV table
+                if (traded_base_symbols.empty() || traded_base_symbols.count(symbol) > 0) {
+                    sector_to_symbols[sector].push_back(symbol);
+                }
             }
         }
     }
@@ -1132,7 +1133,19 @@ std::unordered_map<std::string, double> TrendFollowingStrategy::get_weights() co
         }
     }
 
-    return symbol_weights;
+    // Normalize weights to sum to 100% (compensates for capping leakage)
+    double weight_sum = 0.0;
+    for (const auto& [symbol, weight] : symbol_weights) {
+        weight_sum += weight;
+    }
+    if (weight_sum > 0.0 && std::abs(weight_sum - 1.0) > 0.001) {
+        for (auto& [symbol, weight] : symbol_weights) {
+            weight /= weight_sum;
+        }
+    }
+
+    weight_cache_ = symbol_weights;
+    return weight_cache_;
 }
 
 double TrendFollowingStrategy::calculate_position(const std::string& symbol, double forecast,
@@ -1268,7 +1281,8 @@ double TrendFollowingStrategy::apply_position_buffer(const std::string& symbol, 
     // Get current position with safeguards
     double current_position = 0.0;
     auto pos_it = positions_.find(symbol);
-    if (pos_it != positions_.end()) {
+    bool pos_found = (pos_it != positions_.end());
+    if (pos_found) {
         current_position = static_cast<double>(pos_it->second.quantity);
 
         // Sanity check on current position
@@ -1307,18 +1321,22 @@ double TrendFollowingStrategy::apply_position_buffer(const std::string& symbol, 
         }
     }
 
-    // IMPLEMENTATION: Calculate buffer width using Carver's formula
-    // buffer_width = 0.1 * capital * IDM * weight * risk_target /
-    //                (contract_size * price * fx_rate * volatility)
-    double buffer_width = 0.1 * config_.capital_allocation * trend_config_.idm *
-                          trend_config_.risk_target * weight /
-                          (contract_size * price * trend_config_.fx_rate * volatility);
+    // Buffer width = max(carver_natural, floor, position_factor × |current|). Anchored on
+    // CURRENT position, not raw, to create inertia for held positions: bigger held position →
+    // wider tolerance for raw drift. When current=0, position_term=0 and floor controls entry
+    // threshold (preserves small-natural instruments).
+    double raw_buffer_width = 0.1 * config_.capital_allocation * trend_config_.idm *
+                              trend_config_.risk_target * weight /
+                              (contract_size * price * trend_config_.fx_rate * volatility);
+    double position_term =
+        trend_config_.carver_buffer_position_factor * std::abs(current_position);
+    double buffer_width = std::max(
+        {trend_config_.carver_buffer_floor, raw_buffer_width, position_term});
 
-    // PURE CARVER APPROACH - No clamping applied
-    // This allows the buffer to scale naturally with position size and market conditions
-    // as originally intended in the methodology
     DEBUG("Buffer width for " + symbol + ": " + std::to_string(buffer_width) +
-          " contracts (unclamped Carver approach)");
+          " contracts (carver=" + std::to_string(raw_buffer_width) +
+          ", floor=" + std::to_string(trend_config_.carver_buffer_floor) +
+          ", pos_term=" + std::to_string(position_term) + ")");
 
     // Calculate buffer bounds
     double lower_buffer = raw_position - buffer_width;
@@ -1328,25 +1346,33 @@ double TrendFollowingStrategy::apply_position_buffer(const std::string& symbol, 
     // If current position is within the buffer zone [lower_buffer, upper_buffer],
     // keep the current position (no trade). Otherwise, trade to the buffer boundary.
     double new_position;
+    std::string decision;
     if (current_position < lower_buffer) {
         // Current position is below the buffer zone - trade up to lower boundary
         new_position = std::round(lower_buffer);
-        DEBUG("Position buffering for " + symbol + ": trading from " +
-              std::to_string(current_position) + " to lower buffer " +
-              std::to_string(new_position) + " (raw: " + std::to_string(raw_position) + ")");
+        decision = "TRADE_UP_TO_LOWER";
     } else if (current_position > upper_buffer) {
         // Current position is above the buffer zone - trade down to upper boundary
         new_position = std::round(upper_buffer);
-        DEBUG("Position buffering for " + symbol + ": trading from " +
-              std::to_string(current_position) + " to upper buffer " +
-              std::to_string(new_position) + " (raw: " + std::to_string(raw_position) + ")");
+        decision = "TRADE_DOWN_TO_UPPER";
     } else {
         // Current position is within the buffer zone - no trade needed
         new_position = std::round(current_position);
-        DEBUG("Position buffering for " + symbol + ": keeping current position " +
-              std::to_string(new_position) +
-              " (within buffer, raw: " + std::to_string(raw_position) + ")");
+        decision = "KEEP";
     }
+
+    // TEMP-DEBUG (BUFFER_TRACE): empirical proof of buffer-state-restart bug.
+    // Logs full buffer state per call so we can diagnose churn root cause.
+    INFO("BUFFER_TRACE: sym=" + symbol +
+         " pos_found=" + std::string(pos_found ? "Y" : "N") +
+         " current=" + std::to_string(current_position) +
+         " raw=" + std::to_string(raw_position) +
+         " width=" + std::to_string(buffer_width) +
+         " (carver=" + std::to_string(raw_buffer_width) +
+         " floor=" + std::to_string(trend_config_.carver_buffer_floor) +
+         " posT=" + std::to_string(position_term) + ")" +
+         " bounds=[" + std::to_string(lower_buffer) + "," + std::to_string(upper_buffer) + "]" +
+         " => " + decision + " new_position=" + std::to_string(new_position));
 
     // Final safety check - cap positions to configured limits
     double position_limit = 1000.0;

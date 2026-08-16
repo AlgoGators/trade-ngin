@@ -86,7 +86,7 @@ public:
         // Check for overflow using double precision
         double temp = static_cast<double>(value_) * static_cast<double>(other.value_);
         temp /= SCALE;
-        if (temp > INT64_MAX || temp < INT64_MIN) {
+        if (temp > static_cast<double>(INT64_MAX) || temp < static_cast<double>(INT64_MIN)) {
             throw std::overflow_error("Decimal multiplication overflow");
         }
         return Decimal(static_cast<int64_t>(temp));
@@ -99,7 +99,7 @@ public:
         // Use double precision for division
         double temp = static_cast<double>(value_) * SCALE;
         temp /= other.value_;
-        if (temp > INT64_MAX || temp < INT64_MIN) {
+        if (temp > static_cast<double>(INT64_MAX) || temp < static_cast<double>(INT64_MIN)) {
             throw std::overflow_error("Decimal division overflow");
         }
         return Decimal(static_cast<int64_t>(temp));

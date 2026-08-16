@@ -23,6 +23,9 @@ struct TrendFollowingSlowConfig {
     double idm{2.5};                    // Instrument diversification multiplier
     double max_symbol_concentration{0.15};  // Max % of gross exposure per symbol (15% default)
     bool use_position_buffering{true};  // Whether to use position buffers to reduce trading
+    // Minimum buffer width in contracts; see TrendFollowingConfig for rationale. Set to 0.0 to disable.
+    double carver_buffer_floor{0.5};
+    double carver_buffer_position_factor{0.2};
     std::vector<std::pair<int, int>> ema_windows{
         // EMA window pairs for crossovers (slower/longer lookback periods)
         {4, 16}, {8, 32}, {16, 64}, {32, 128}, {64, 256}, {128, 512}};
@@ -194,7 +197,7 @@ private:
     std::shared_ptr<InstrumentRegistry> registry_;
 
     std::unordered_map<std::string, double> contract_size_cache_;
-    std::unordered_map<std::string, double> weight_cache_;
+    mutable std::unordered_map<std::string, double> weight_cache_;
 
     std::unordered_map<std::string, TrendFollowingSlowInstrumentData> instrument_data_;
 

@@ -71,8 +71,12 @@ Result<MarginManager::MarginMetrics> MarginManager::calculate_margin_requirement
 
     // Calculate derived metrics
     metrics.gross_leverage = calculate_gross_leverage(metrics.gross_notional, portfolio_value);
+    // Equity-to-Margin uses portfolio equity in the numerator (NOT
+    // gross_notional). Previously the helper was called with gross_notional,
+    // which made the metric a leverage-to-margin ratio rather than a true
+    // equity coverage ratio. Higher = safer with the corrected formula.
     metrics.equity_to_margin_ratio = calculate_equity_to_margin_ratio(
-        metrics.gross_notional, metrics.total_posted_margin);
+        portfolio_value, metrics.total_posted_margin);
     metrics.margin_cushion = calculate_margin_cushion(metrics.equity_to_margin_ratio);
     metrics.cash_available = portfolio_value - metrics.total_posted_margin;
 

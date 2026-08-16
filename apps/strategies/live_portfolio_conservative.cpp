@@ -202,10 +202,18 @@ int main(int argc, char* argv[]) {
             return 1;
         }
 
-        // Normalize allocations to sum to 1.0
+        // Normalize allocations to sum to 1.0. If configured allocations sum
+        // to <1.0 (e.g. 0.6 + 0.3, expecting 10% idle), this loop silently
+        // rescales — partial deployment is not supported. Warn so operators
+        // can spot a config mistake.
         double total_allocation = 0.0;
         for (const auto& [_, alloc] : strategy_allocations) {
             total_allocation += alloc;
+        }
+        if (total_allocation > 0.0 && std::abs(total_allocation - 1.0) > 1e-6) {
+            WARN("Strategy allocations sum to " + std::to_string(total_allocation) +
+                 " (not 1.0); silently rescaling. Partial-capital deployment is not "
+                 "supported — adjust default_allocation values or accept full deployment.");
         }
         if (total_allocation > 0.0) {
             for (auto& [_, alloc] : strategy_allocations) {
@@ -258,14 +266,15 @@ int main(int argc, char* argv[]) {
         auto symbols = symbols_result.value();
 
         if (symbols_result.is_ok()) {
-            for (const auto& symbol : symbols) {
-                if (symbol.find(".c.0") != std::string::npos ||
-                    symbol.find("MES.c.0") != std::string::npos ||
-                    symbol.find("ES.v.0") != std::string::npos) {
-                    symbols.erase(std::remove(symbols.begin(), symbols.end(), symbol),
-                                  symbols.end());
-                }
-            }
+            // Remove continuous contract variants (.c.0) and full-size ES
+            // Using remove_if to avoid undefined behavior from erase-during-iteration
+            symbols.erase(
+                std::remove_if(symbols.begin(), symbols.end(),
+                    [](const std::string& s) {
+                        return s.find(".c.0") != std::string::npos ||
+                               s == "ES.v.0";
+                    }),
+                symbols.end());
         } else {
             // Detailed error logging
             ERROR("Failed to get symbols: " + std::string(symbols_result.error()->what()));
@@ -407,7 +416,14 @@ int main(int argc, char* argv[]) {
                     trend_config.weight = cfg.value("weight", 0.03);
                     trend_config.risk_target = cfg.value("risk_target", 0.2);
                     trend_config.idm = cfg.value("idm", 2.5);
+                    trend_config.max_symbol_concentration =
+                        cfg.value("max_symbol_concentration", 0.15);
                     trend_config.use_position_buffering = cfg.value("use_position_buffering", true);
+                    trend_config.carver_buffer_floor = cfg.value(
+                        "carver_buffer_floor", app_config.strategy_defaults.carver_buffer_floor);
+                    trend_config.carver_buffer_position_factor =
+                        cfg.value("carver_buffer_position_factor",
+                                  app_config.strategy_defaults.carver_buffer_position_factor);
                     if (cfg.contains("ema_windows")) {
                         trend_config.ema_windows.clear();
                         for (const auto& window : cfg["ema_windows"]) {
@@ -434,8 +450,15 @@ int main(int argc, char* argv[]) {
                     trend_config.weight = cfg.value("weight", 0.03);
                     trend_config.risk_target = cfg.value("risk_target", 0.25);
                     trend_config.idm = cfg.value("idm", 2.5);
+                    trend_config.max_symbol_concentration =
+                        cfg.value("max_symbol_concentration", 0.15);
                     trend_config.use_position_buffering =
                         cfg.value("use_position_buffering", false);
+                    trend_config.carver_buffer_floor = cfg.value(
+                        "carver_buffer_floor", app_config.strategy_defaults.carver_buffer_floor);
+                    trend_config.carver_buffer_position_factor =
+                        cfg.value("carver_buffer_position_factor",
+                                  app_config.strategy_defaults.carver_buffer_position_factor);
                     if (cfg.contains("ema_windows")) {
                         trend_config.ema_windows.clear();
                         for (const auto& window : cfg["ema_windows"]) {
@@ -461,7 +484,14 @@ int main(int argc, char* argv[]) {
                     trend_config.weight = cfg.value("weight", 0.03);
                     trend_config.risk_target = cfg.value("risk_target", 0.15);
                     trend_config.idm = cfg.value("idm", 2.5);
+                    trend_config.max_symbol_concentration =
+                        cfg.value("max_symbol_concentration", 0.15);
                     trend_config.use_position_buffering = cfg.value("use_position_buffering", true);
+                    trend_config.carver_buffer_floor = cfg.value(
+                        "carver_buffer_floor", app_config.strategy_defaults.carver_buffer_floor);
+                    trend_config.carver_buffer_position_factor =
+                        cfg.value("carver_buffer_position_factor",
+                                  app_config.strategy_defaults.carver_buffer_position_factor);
                     if (cfg.contains("ema_windows")) {
                         trend_config.ema_windows.clear();
                         for (const auto& window : cfg["ema_windows"]) {
@@ -857,6 +887,55 @@ int main(int argc, char* argv[]) {
         // Only run strategy calculations if NOT a non-trading day
         // ========================================
         if (!skip_strategy_processing) {
+            // FIX: Seed strategy's positions_ from yesterday's DB snapshot BEFORE prewarm.
+            // Each live invocation is a fresh process where positions_ defaults to zero.
+            // The Carver position buffer reads positions_ as the comparison anchor; without
+            // seeding it correctly the buffer can't absorb small day-to-day signal jitter
+            // and triggers a phantom trade every day. Backtest doesn't need this because
+            // its state is continuous in-memory across simulated days.
+            {
+                auto seed_previous_date = now - std::chrono::hours(24);
+                std::string seed_strategy_name =
+                    strategy_names.empty() ? std::string() : strategy_names[0];
+                auto seed_result = db->load_positions_by_date(
+                    combined_strategy_id, seed_strategy_name,
+                    coordinator_config.portfolio_id, seed_previous_date, "trading.positions");
+                if (seed_result.is_ok() && !seed_result.value().empty()) {
+                    // Fix #1: seed strategy's positions_ for buffer correctness
+                    auto seeded = tf_strategy->seed_positions(seed_result.value());
+                    if (seeded.is_error()) {
+                        WARN("Failed to seed strategy positions: " +
+                             std::string(seeded.error()->what()));
+                    }
+                    // Fix #7: seed PortfolioManager's info.current_positions for optimizer
+                    // baseline correctness. Without this, the optimizer's coordinate descent
+                    // starts from current=0 every fresh process and converges to a
+                    // zero-anchored compromise (e.g., MYM=2 instead of yesterday's actual=1),
+                    // producing daily ±1 trades as market noise crosses rounding boundaries.
+                    // PortfolioManager.strategies_ is keyed by the strategy's metadata.id
+                    // (e.g. "TREND_FOLLOWING"), NOT the combined_strategy_id used for DB
+                    // (e.g. "LIVE_TREND_FOLLOWING"). Use seed_strategy_name which matches.
+                    int pm_seeded_count = 0;
+                    for (const auto& [sym, pos] : seed_result.value()) {
+                        auto pm_seed = portfolio->update_strategy_position(
+                            seed_strategy_name, sym, pos);
+                        if (pm_seed.is_error()) {
+                            WARN("Failed to seed PortfolioManager position for " + sym +
+                                 ": " + std::string(pm_seed.error()->what()));
+                        } else {
+                            pm_seeded_count++;
+                        }
+                    }
+                    INFO("Seeded " + std::to_string(pm_seeded_count) +
+                         " positions into PortfolioManager.current_positions for "
+                         "optimizer-baseline correctness (strategy_name=" +
+                         seed_strategy_name + ")");
+                } else {
+                    INFO("No yesterday positions to seed for strategy " +
+                         seed_strategy_name + " (first run or no data)");
+                }
+            }
+
             // Pre-warm strategy state so portfolio can pull price history for optimization/risk
             INFO("Preprocessing data in strategy to populate price history...");
             auto strat_prewarm = tf_strategy->on_data(all_bars);
@@ -953,13 +1032,25 @@ int main(int argc, char* argv[]) {
                 }
             }
 
-            // Get optimized portfolio positions (integer-rounded after optimization/risk)
-            INFO("Retrieving optimized portfolio positions...");
-            positions = portfolio->get_portfolio_positions();
-
-            // Extract per-strategy positions map (needed for Phase 4 & 5)
+            // Extract per-strategy positions map first; build the combined
+            // map below by summing across strategies (Σ qᵢ). See
+            // live_portfolio.cpp for rationale — get_portfolio_positions()
+            // would double-apply allocation. No-op here since conservative
+            // is single-strategy, but kept for code parity.
             INFO("Extracting per-strategy positions from PortfolioManager...");
             strategy_positions_map = portfolio->get_strategy_positions();
+            INFO("Building combined portfolio positions by per-strategy sum...");
+            positions.clear();
+            for (const auto& [_, pos_map] : strategy_positions_map) {
+                for (const auto& [symbol, pos] : pos_map) {
+                    auto it = positions.find(symbol);
+                    if (it == positions.end()) {
+                        positions[symbol] = pos;
+                    } else {
+                        it->second.quantity += pos.quantity;
+                    }
+                }
+            }
             INFO("DEBUG: Retrieved " + std::to_string(strategy_positions_map.size()) +
                  " strategies from PortfolioManager");
         }  // End of if (!skip_strategy_processing) - strategy processing block
@@ -1452,19 +1543,20 @@ int main(int argc, char* argv[]) {
 
         if (margin_result.is_ok()) {
             auto& metrics = margin_result.value();
-            total_posted_margin = metrics.total_posted_margin;
-            maintenance_requirement_today = metrics.maintenance_requirement;
 
-            // Recompute gross_notional and net_notional from per-strategy positions.
-            // The combined positions map nets same-symbol quantities across strategies
-            // BEFORE taking absolute values, which understates gross exposure when
-            // strategies hold opposing positions in the same instrument.
+            // Recompute notional AND margin from per-strategy positions. See
+            // live_portfolio.cpp for the rationale: get_portfolio_positions() returns
+            // Σ qᵢ × allocᵢ, double-applying the allocation factor that strategies
+            // already account for when sizing. Per-strategy summation restores the
+            // additive invariant for both notional and posted margin.
             gross_notional = 0.0;
             net_notional = 0.0;
+            total_posted_margin = 0.0;
+            maintenance_requirement_today = 0.0;
             int true_active_positions = 0;
-            bool notional_fallback = false;
+            bool recompute_fallback = false;
             for (const auto& [strategy_id, pos_map] : strategy_positions_map) {
-                if (notional_fallback)
+                if (recompute_fallback)
                     break;
                 for (const auto& [symbol, pos] : pos_map) {
                     double qty = pos.quantity.as_double();
@@ -1472,32 +1564,42 @@ int main(int argc, char* argv[]) {
                         continue;
                     true_active_positions++;
 
-                    auto notional_result = margin_manager->calculate_position_notional(
-                        symbol, qty,
-                        previous_day_close_prices.count(symbol)
-                            ? previous_day_close_prices.at(symbol)
-                            : pos.average_price.as_double());
-                    if (notional_result.is_ok()) {
+                    double price = previous_day_close_prices.count(symbol)
+                                       ? previous_day_close_prices.at(symbol)
+                                       : pos.average_price.as_double();
+
+                    auto notional_result =
+                        margin_manager->calculate_position_notional(symbol, qty, price);
+                    auto margin_result_per =
+                        margin_manager->calculate_position_margin(symbol, qty, price);
+
+                    if (notional_result.is_ok() && margin_result_per.is_ok()) {
                         double signed_notional = notional_result.value();
                         gross_notional += std::abs(signed_notional);
                         net_notional += signed_notional;
+                        auto [initial_m, maint_m] = margin_result_per.value();
+                        total_posted_margin += initial_m;
+                        maintenance_requirement_today += maint_m;
                     } else {
-                        WARN("Failed to calculate per-strategy notional for " + symbol +
+                        WARN("Failed per-strategy notional/margin for " + symbol +
                              " in strategy " + strategy_id +
-                             ", falling back to MarginManager combined value");
+                             ", falling back to MarginManager combined values");
                         gross_notional = metrics.gross_notional;
                         net_notional = metrics.net_notional;
-                        notional_fallback = true;
+                        total_posted_margin = metrics.total_posted_margin;
+                        maintenance_requirement_today = metrics.maintenance_requirement;
+                        recompute_fallback = true;
                         break;
                     }
                 }
             }
             active_positions = true_active_positions;
 
-            INFO("Per-strategy notional: gross=$" + std::to_string(gross_notional) + ", net=$" +
-                 std::to_string(net_notional) + " (combined was gross=$" +
-                 std::to_string(metrics.gross_notional) + ", net=$" +
-                 std::to_string(metrics.net_notional) + ")");
+            INFO("Per-strategy recompute: gross=$" + std::to_string(gross_notional) +
+                 ", net=$" + std::to_string(net_notional) +
+                 ", posted_margin=$" + std::to_string(total_posted_margin) +
+                 " (combined was gross=$" + std::to_string(metrics.gross_notional) +
+                 ", posted_margin=$" + std::to_string(metrics.total_posted_margin) + ")");
             INFO("MarginManager calculated: gross_notional=$" + std::to_string(gross_notional) +
                  ", posted_margin=$" + std::to_string(total_posted_margin) +
                  ", active_positions=" + std::to_string(active_positions));
@@ -1521,15 +1623,17 @@ int main(int argc, char* argv[]) {
                 "Computed posted margin is non-positive while positions are active. Check "
                 "instrument metadata.");
         }
-        // Equity-to-Margin Ratio = gross_notional / total_posted_margin
-        // This metric shows how many times the gross notional exposure is covered by posted margin
-        // Higher values indicate more leverage relative to margin requirements
+        // Equity-to-Margin Ratio = portfolio_equity / total_posted_margin.
+        // Higher = safer (more equity per dollar of margin posted). The prior
+        // formula here used gross_notional in the numerator, which is a
+        // leverage-to-margin metric, not equity-to-margin. We use
+        // initial_capital as the equity proxy (matches MarginManager's
+        // gross_leverage convention).
         double equity_to_margin_ratio =
-            (total_posted_margin > 0.0) ? (gross_notional / total_posted_margin) : 0.0;
+            (total_posted_margin > 0.0) ? (initial_capital / total_posted_margin) : 0.0;
         if (equity_to_margin_ratio <= 1.0 && active_positions > 0) {
-            WARN(
-                "Equity-to-Margin Ratio (gross_notional / posted_margin) is <= 1.0; verify "
-                "margins.");
+            WARN("Equity-to-Margin Ratio is <= 1.0 (account equity at or below "
+                 "posted margin); verify margins and sizing.");
         }
 
         // ========================================
@@ -2183,11 +2287,9 @@ int main(int argc, char* argv[]) {
                     }
 
                     LiveHistoricalMetricsCalculator hist_calc;
-                    // Convert decimal returns to percentage points for calculator
-                    // (stored as 0.06 = 6%, calculator expects 6.0)
-                    for (auto& r : returns_hist) {
-                        r *= 100.0;
-                    }
+                    // NOTE: returns_hist is already loaded in PERCENT units (e.g., 0.11 = 0.11%,
+                    // not 11%) because daily_return is computed in SQL as `... * 100.0`. Do NOT
+                    // multiply by 100 here — that produced a 100x volatility / 100x lower sharpe.
                     yesterday_hist_metrics =
                         hist_calc.calculate(returns_hist, pnl_hist, equity_hist,
                                             yesterday_total_return_annualized, total_trades_hist);
@@ -2227,9 +2329,12 @@ int main(int argc, char* argv[]) {
                         {"worst_day", yesterday_hist_metrics.worst_day},
                         {"gross_profit", yesterday_hist_metrics.gross_profit},
                         {"gross_loss", yesterday_hist_metrics.gross_loss},
-                        {"total_trades", static_cast<double>(yesterday_hist_metrics.total_trades)},
+                        // Note: total_trades column was dropped from trading.live_results;
+                        // the count still lives on yesterday_hist_metrics for in-memory use.
                         {"winning_days", static_cast<double>(yesterday_hist_metrics.winning_days)},
                         {"losing_days", static_cast<double>(yesterday_hist_metrics.losing_days)},
+                        // flat_days NOT written to DB — column doesn't exist on trading.live_results
+                        // and is trivially derivable as total - winning - losing on read.
                         {"total_days", static_cast<double>(yesterday_hist_metrics.total_days)}};
 
                     auto yesterday_metrics_manager = std::make_unique<LiveResultsManager>(
@@ -2509,8 +2614,12 @@ int main(int argc, char* argv[]) {
         if (margin_cushion < 0.20) {
             WARN("Margin cushion below 20%.");
         }
-        if (equity_to_margin_ratio > 4.0) {
-            WARN("Equity-to-Margin Ratio above 4x.");
+        // Old WARN fired on `e2m_ratio > 4.0` — sensible only under the prior
+        // (buggy) gross_notional/margin formula where high = more leverage.
+        // After the formula fix, high e2m means more equity per dollar of
+        // posted margin (safer). Replaced with a low-floor alarm.
+        if (equity_to_margin_ratio > 0.0 && equity_to_margin_ratio < 1.5) {
+            WARN("Equity-to-Margin Ratio below 1.5x (low margin cushion).");
         }
 
         // Get forecasts for all symbols
@@ -2548,7 +2657,7 @@ int main(int argc, char* argv[]) {
             auto current_date = now;
 
             // Use the calculated returns from above
-            double volatility = 0.0;
+            [[maybe_unused]] double volatility = 0.0;
 
             // Get volatility from risk evaluation if available
             if (risk_eval.is_ok()) {
@@ -2641,12 +2750,11 @@ int main(int argc, char* argv[]) {
                         raw_dump += "] (size=" + std::to_string(returns_hist.size()) + ")";
                         INFO(raw_dump);
                     }
-                    // Convert decimal returns to percentage points for calculator
-                    // (stored as 0.06 = 6%, calculator expects 6.0)
-                    for (auto& r : returns_hist) {
-                        r *= 100.0;
-                    }
-                    returns_hist.push_back(daily_return * 100.0);
+                    // NOTE: returns_hist is already loaded in PERCENT units (daily_return SQL
+                    // computes `... * 100.0`). Do NOT multiply by 100 here — that produced a
+                    // 100x volatility / 100x lower sharpe. daily_return for today is also
+                    // already in percent (per the SQL UPDATE), so it's appended as-is.
+                    returns_hist.push_back(daily_return);
                     pnl_hist.push_back(daily_pnl);
                     equity_hist.push_back(current_portfolio_value);
 
@@ -2755,22 +2863,11 @@ int main(int argc, char* argv[]) {
         // Phase 4: Use CSVExporter for position export
         INFO("Using CSVExporter to save positions to file...");
 
-        // Query daily commissions per symbol using LiveDataLoader
-        std::unordered_map<std::string, double> symbol_commissions;
-        try {
-            auto commission_result =
-                data_loader->load_commissions_by_symbol(coordinator_config.portfolio_id, now);
-            if (commission_result.is_ok()) {
-                symbol_commissions = commission_result.value();
-                INFO("Loaded commissions for " + std::to_string(symbol_commissions.size()) +
-                     " symbols via LiveDataLoader");
-            } else {
-                WARN("Failed to query commissions via LiveDataLoader: " +
-                     std::string(commission_result.error()->what()));
-            }
-        } catch (const std::exception& e) {
-            WARN("Exception querying commissions: " + std::string(e.what()));
-        }
+        // Note: previously called LiveDataLoader::load_commissions_by_symbol here, but it
+        // was dead code (result map was unused; csv_exporter explicitly does
+        // (void)symbol_commissions) and the SQL referenced a column that no longer exists.
+        // All real transaction-cost data flows from cost_manager_->calculate_costs() at
+        // execution time and lives on trading.executions / trading.live_results directly.
 
         // Export current positions with per-strategy breakdown
         std::string today_filename;
@@ -3097,6 +3194,11 @@ int main(int argc, char* argv[]) {
                             static_cast<double>(today_row.winning_days);
                         strategy_metrics["Losing Days"] =
                             static_cast<double>(today_row.losing_days);
+                        // Flat Days = total - winning - losing (Sat/Sun/holidays w/ zero PnL).
+                        // Shown explicitly in email so the total math adds up cleanly.
+                        strategy_metrics["Flat Days"] = static_cast<double>(
+                            std::max(0, today_row.total_days - today_row.winning_days -
+                                            today_row.losing_days));
                         strategy_metrics["Total Days"] = static_cast<double>(today_row.total_days);
                     }
                     // Portfolio VaR is always sourced from the live risk evaluation,

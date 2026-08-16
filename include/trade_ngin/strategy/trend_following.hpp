@@ -22,6 +22,14 @@ struct TrendFollowingConfig {
     double idm{2.5};                    // Instrument diversification multiplier
     double max_symbol_concentration{0.15};  // Max % of gross exposure per symbol (15% default)
     bool use_position_buffering{true};  // Whether to use position buffers to reduce trading
+    // Minimum buffer width in contracts. Carver formula yields 0.02-0.28 for micros, which is
+    // sub-tick and a no-op for integer positions. 0.5 is the smallest value that can absorb a
+    // breach for typical 0-3 contract holdings; set to 0.0 to disable.
+    double carver_buffer_floor{0.5};
+    // Position-proportional buffer: buffer_width = max(floor, factor × |raw_position|).
+    // Targets high-magnitude positions (MBT/M2K/MYM) where day-over-day raw can move
+    // > 0.5 contracts, breaching the floor. Set to 0.0 to disable (floor-only).
+    double carver_buffer_position_factor{0.2};
     std::vector<std::pair<int, int>> ema_windows{
         // EMA window pairs for crossovers
         {2, 8}, {4, 16}, {8, 32}, {16, 64}, {32, 128}, {64, 256}};
@@ -198,7 +206,7 @@ private:
     std::shared_ptr<InstrumentRegistry> registry_;
 
     std::unordered_map<std::string, double> contract_size_cache_;
-    std::unordered_map<std::string, double> weight_cache_;
+    mutable std::unordered_map<std::string, double> weight_cache_;
 
     std::unordered_map<std::string, InstrumentData> instrument_data_;
 

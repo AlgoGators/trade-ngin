@@ -93,6 +93,7 @@ public:
     static ChartData fetch_equity_curve_data(
         std::shared_ptr<DatabaseInterface> db,
         const std::string& strategy_id,
+        const std::string& portfolio_id,
         int lookback_days = 30
     );
 
@@ -106,6 +107,7 @@ public:
     static ChartData fetch_pnl_by_symbol_data(
         std::shared_ptr<DatabaseInterface> db,
         const std::string& strategy_id,
+        const std::string& portfolio_id,
         const std::string& date
     );
 
@@ -120,6 +122,7 @@ public:
     static ChartData fetch_daily_pnl_data(
         std::shared_ptr<DatabaseInterface> db,
         const std::string& strategy_id,
+        const std::string& portfolio_id,
         const std::string& date,
         int lookback_days = 30
     );
@@ -127,11 +130,13 @@ public:
     static ChartData fetch_cumulative_transaction_costs_data(
         std::shared_ptr<DatabaseInterface> db,
         const std::string& strategy_id,
+        const std::string& portfolio_id,
         const std::string& date /* today, YYYY-MM-DD */);
     
     static ChartData fetch_margin_posted_data(
         std::shared_ptr<DatabaseInterface> db,
         const std::string& strategy_id,
+        const std::string& portfolio_id,
         const std::string& date /* today, YYYY-MM-DD */);
     
     /**
@@ -144,6 +149,7 @@ public:
     static ChartData fetch_cumulative_pnl_by_symbol_data(
         std::shared_ptr<DatabaseInterface> db,
         const std::string& strategy_id,
+        const std::string& portfolio_id,
         const std::string& date
     );
 
@@ -230,6 +236,7 @@ public:
     static std::string generate_equity_curve_chart(
         std::shared_ptr<DatabaseInterface> db,
         const std::string& strategy_id,
+        const std::string& portfolio_id,
         int lookback_days = 30
     );
 
@@ -247,6 +254,7 @@ public:
     static std::string generate_pnl_by_symbol_chart(
         std::shared_ptr<DatabaseInterface> db,
         const std::string& strategy_id,
+        const std::string& portfolio_id,
         const std::string& date
     );
 
@@ -266,6 +274,7 @@ public:
     static std::string generate_daily_pnl_chart(
         std::shared_ptr<DatabaseInterface> db,
         const std::string& strategy_id,
+        const std::string& portfolio_id,
         const std::string& date,
         int lookback_days = 30
     );
@@ -273,12 +282,14 @@ public:
     static std::string generate_total_transaction_costs_chart(
         std::shared_ptr<DatabaseInterface> db,
         const std::string& strategy_id,
+        const std::string& portfolio_id,
         const std::string& end_date /* today, YYYY-MM-DD */);
     
     
     static std::string generate_margin_posted_chart(
         std::shared_ptr<DatabaseInterface> db,
         const std::string& strategy_id,
+        const std::string& portfolio_id,
         const std::string& date);
     
     /**
@@ -314,6 +325,7 @@ public:
     static std::string generate_cumulative_pnl_by_symbol_chart(
         std::shared_ptr<DatabaseInterface> db,
         const std::string& strategy_id,
+        const std::string& portfolio_id,
         const std::string& date
     );
 

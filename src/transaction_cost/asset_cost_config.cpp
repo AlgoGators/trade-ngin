@@ -23,11 +23,11 @@ void AssetCostConfigRegistry::initialize_default_configs() {
     }
 
     // Crude Oil (CL)
-    // Liquid, typically 2 tick spread (observed)
+    // Very liquid, typically 1 tick spread during regular hours
     {
         AssetCostConfig config;
         config.symbol = "CL";
-        config.baseline_spread_ticks = 2.0;
+        config.baseline_spread_ticks = 1.0;
         config.min_spread_ticks = 1.0;
         config.max_spread_ticks = 5.0;
         config.max_impact_bps = 50.0;
@@ -38,11 +38,11 @@ void AssetCostConfigRegistry::initialize_default_configs() {
 
     // Gold (GC)
     // CME: tick $0.10/oz, 100 oz → tick_value = 0.10 * 100 = $10. Price feed in $/oz.
-    // Liquid, typically 2 tick spread (observed)
+    // Very liquid, typically 1 tick spread during regular hours
     {
         AssetCostConfig config;
         config.symbol = "GC";
-        config.baseline_spread_ticks = 2.0;
+        config.baseline_spread_ticks = 1.0;
         config.min_spread_ticks = 1.0;
         config.max_spread_ticks = 5.0;
         config.max_impact_bps = 50.0;

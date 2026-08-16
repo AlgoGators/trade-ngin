@@ -1,84 +1,82 @@
-FROM ubuntu:latest
+FROM ubuntu:24.04
 
-# Avoid prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install basic tools and dependencies
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    cmake \
-    git \
-    wget \
-    gnupg \
-    lsb-release \
-    libgtest-dev \
-    pkg-config \
-    libpq-dev \
-    valgrind \
-    lcov \
-    gcovr \
-    clang-tidy \
-    clang-format \
-    python3 \
-    python3-pip \
-    cppcheck \
-    unzip \
-    && pip3 install --break-system-packages cpplint \
-    && apt-get clean \
+# Tier 1: bootstrap toolchain — minimal so adding CI/project libs later
+# doesn't bust the slow source-build cache.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        cmake \
+        git \
+        ca-certificates \
+        wget \
+        gnupg \
+        lsb-release \
+        pkg-config \
+        libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Google Test and Google Mock (gmock) from source
-RUN git clone https://github.com/google/googletest.git /tmp/googletest && \
-    cd /tmp/googletest && \
-    mkdir build && cd build && \
-    cmake .. && \
-    make -j$(nproc) && \
-    make install
+# Google Test / Google Mock from source
+RUN git clone --depth 1 https://github.com/google/googletest.git /tmp/googletest && \
+    cmake -S /tmp/googletest -B /tmp/googletest/build && \
+    cmake --build /tmp/googletest/build -j"$(nproc)" --target install && \
+    rm -rf /tmp/googletest
 
-# Add Apache Arrow repository
-RUN wget -O - https://apt.llvm.org/llvm-snapshot.gpg.key | apt-key add - && \
-    wget -O /tmp/apache-arrow-apt-source.deb https://apache.jfrog.io/artifactory/arrow/ubuntu/apache-arrow-apt-source-latest-$(lsb_release -cs).deb && \
-    apt-get update && apt-get install -y /tmp/apache-arrow-apt-source.deb && \
-    apt-get update
+# Apache Arrow apt repository + dev headers
+RUN wget -qO /tmp/apache-arrow-apt-source.deb \
+        "https://apache.jfrog.io/artifactory/arrow/ubuntu/apache-arrow-apt-source-latest-$(lsb_release -cs).deb" && \
+    apt-get install -y --no-install-recommends /tmp/apache-arrow-apt-source.deb && \
+    rm /tmp/apache-arrow-apt-source.deb && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+        libarrow-dev \
+        libarrow-dataset-dev && \
+    rm -rf /var/lib/apt/lists/*
 
-# Install Arrow and other dependencies
-RUN apt-get install -y \
-    libarrow-dev \
-    libarrow-dataset-dev \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+# nlohmann_json — disable its test suite
+RUN git clone --depth 1 https://github.com/nlohmann/json.git /tmp/json && \
+    cmake -S /tmp/json -B /tmp/json/build \
+        -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+        -DJSON_BuildTests=OFF && \
+    cmake --build /tmp/json/build -j"$(nproc)" --target install && \
+    rm -rf /tmp/json
 
-# Install nlohmann_json from source
-RUN cd /tmp && \
-    git clone https://github.com/nlohmann/json.git && \
-    cd json && \
-    mkdir build && \
-    cd build && \
-    cmake .. -DCMAKE_POSITION_INDEPENDENT_CODE=ON && \
-    make -j$(nproc) && \
-    make install
-
-# Install libpqxx from source with PIC
-RUN cd /tmp && \
-    git clone https://github.com/jtv/libpqxx.git && \
-    cd libpqxx && \
-    mkdir build && \
-    cd build && \
-    cmake .. -DSKIP_BUILD_TEST=ON -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DBUILD_SHARED_LIBS=ON && \
-    make -j$(nproc) && \
-    make install && \
+# libpqxx 7.10.4 — pinned.
+RUN git clone --branch 7.10.4 --depth 1 https://github.com/jtv/libpqxx.git /tmp/libpqxx && \
+    cmake -S /tmp/libpqxx -B /tmp/libpqxx/build \
+        -DSKIP_BUILD_TEST=ON \
+        -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+        -DBUILD_SHARED_LIBS=ON && \
+    cmake --build /tmp/libpqxx/build -j"$(nproc)" --target install && \
+    rm -rf /tmp/libpqxx && \
     ldconfig
 
-# Install Docker CLI inside the container
-RUN apt-get update && apt-get install -y \
-ca-certificates \
-curl \
-gnupg \
-lsb-release && \
-mkdir -p /etc/apt/keyrings && \
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg && \
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+# Tier 2: project deps + CI-only tooling (valgrind, coverage, linters, python).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libeigen3-dev \
+        libnlopt-dev \
+        libnlopt-cxx-dev \
+        libcurl4-openssl-dev \
+        valgrind \
+        lcov \
+        gcovr \
+        clang-tidy \
+        clang-format \
+        cppcheck \
+        python3 \
+        python3-pip \
+        unzip \
+    && pip3 install --break-system-packages cpplint \
+    && rm -rf /var/lib/apt/lists/*
+
+# Docker CLI (for CI jobs that build the runtime image)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates curl gnupg lsb-release \
+    && mkdir -p /etc/apt/keyrings \
+    && curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+        | gpg --dearmor -o /etc/apt/keyrings/docker.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
 https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" \
-| tee /etc/apt/sources.list.d/docker.list > /dev/null && \
-apt-get update && apt-get install -y docker-ce-cli && \
-rm -rf /var/lib/apt/lists/*
+        > /etc/apt/sources.list.d/docker.list \
+    && apt-get update && apt-get install -y --no-install-recommends docker-ce-cli \
+    && rm -rf /var/lib/apt/lists/*

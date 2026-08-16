@@ -22,21 +22,24 @@
     "max_iterations": 100,
     "convergence_threshold": 0.000001,
     "use_buffering": true,
-    "buffer_size_factor": 0.05
+    "buffer_size_factor": 0.01
   },
   "backtest": {
     "lookback_years": 2,
     "store_trade_details": true
   },
   "live": {
-    "historical_days": 300
+    "historical_days": 730,
+    "_note": "Must match backtest.lookback_years (2 yrs ≈ 730 days). Strategy needs 256+ trading days for longest EMA and 252 for vol_lookback_long."
   },
   "strategy_defaults": {
     "fdm": [[1, 1], [2, 1.03], [3, 1.08], [4, 1.13], [5, 1.19], [6, 1.26]],
     "max_strategy_allocation": 1,
     "min_strategy_allocation": 0.1,
     "use_optimization": true,
-    "use_risk_management": true
+    "use_risk_management": true,
+    "carver_buffer_floor": 0.5,
+    "carver_buffer_position_factor": 0.0
   },
   "risk_defaults": {
     "confidence_level": 0.99,

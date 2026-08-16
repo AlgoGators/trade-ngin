@@ -233,15 +233,7 @@ Result<void> LiveTradingCoordinator::store_results(const TradingMetrics& metrics
     }
 }
 
-Result<std::unordered_map<std::string, double>> LiveTradingCoordinator::load_commissions_by_symbol(
-    const Timestamp& date) const {
-    if (!is_initialized_) {
-        return make_error<std::unordered_map<std::string, double>>(
-            ErrorCode::NOT_INITIALIZED, "Coordinator not initialized", "LiveTradingCoordinator");
-    }
-
-    return data_loader_->load_commissions_by_symbol(config_.portfolio_id, date);
-}
+// load_commissions_by_symbol() was deleted as dead code. See header for rationale.
 
 Result<std::vector<Position>> LiveTradingCoordinator::load_positions_for_export(
     const Timestamp& date) const {

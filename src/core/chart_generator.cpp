@@ -92,6 +92,7 @@ std::string ChartHelpers::format_currency(double value, int precision) {
 ChartData ChartGenerator::fetch_equity_curve_data(
     std::shared_ptr<DatabaseInterface> db,
     const std::string& strategy_id,
+                                                  const std::string& portfolio_id,
     int lookback_days)
 {
     ChartData chart_data;
@@ -107,6 +108,7 @@ ChartData ChartGenerator::fetch_equity_curve_data(
             "SELECT timestamp, equity "
             "FROM trading.equity_curve "
             "WHERE strategy_id = '" + strategy_id + "' "
+            "AND portfolio_id = '" + portfolio_id + "' "
             "ORDER BY timestamp DESC "
             "LIMIT " + std::to_string(lookback_days);
 
@@ -312,6 +314,7 @@ ChartData ChartGenerator::fetch_equity_curve_data(
 ChartData ChartGenerator::fetch_pnl_by_symbol_data(
     std::shared_ptr<DatabaseInterface> db,
     const std::string& strategy_id,
+                                                  const std::string& portfolio_id,
     const std::string& date)
 {
     ChartData chart_data;
@@ -342,6 +345,7 @@ ChartData ChartGenerator::fetch_pnl_by_symbol_data(
             "SELECT symbol, daily_realized_pnl "
             "FROM trading.positions "
             "WHERE strategy_id = '" + strategy_id + "' "
+            "AND portfolio_id = '" + portfolio_id + "' "
             "AND DATE(last_update) = DATE('" + date + "') - INTERVAL '1 day' "
             "ORDER BY last_update DESC";
 
@@ -468,6 +472,7 @@ ChartData ChartGenerator::fetch_pnl_by_symbol_data(
 ChartData ChartGenerator::fetch_daily_pnl_data(
     std::shared_ptr<DatabaseInterface> db,
     const std::string& strategy_id,
+                                                  const std::string& portfolio_id,
     const std::string& date,
     int lookback_days)
 {
@@ -484,6 +489,7 @@ ChartData ChartGenerator::fetch_daily_pnl_data(
             "SELECT date, daily_pnl "
             "FROM trading.live_results "
             "WHERE strategy_id = '" + strategy_id + "' "
+            "AND portfolio_id = '" + portfolio_id + "' "
             "AND DATE(date) < DATE('" + date + "') "
             "ORDER BY date DESC "
             "LIMIT " + std::to_string(lookback_days);
@@ -614,6 +620,7 @@ ChartData ChartGenerator::fetch_daily_pnl_data(
 ChartData ChartGenerator::fetch_cumulative_transaction_costs_data(
     std::shared_ptr<DatabaseInterface> db,
     const std::string& strategy_id,
+                                                  const std::string& portfolio_id,
     const std::string& date /* today, YYYY-MM-DD */)
 {
     ChartData chart_data;
@@ -634,6 +641,7 @@ ChartData ChartGenerator::fetch_cumulative_transaction_costs_data(
             "    GROUP BY DATE(execution_time) "
             ") trade_counts ON DATE(lr.date) = trade_counts.trade_date "
             "WHERE lr.strategy_id = '" + strategy_id + "' "
+            "AND lr.portfolio_id = '" + portfolio_id + "' "
             "AND DATE(lr.date) <= DATE('" + date + "') "
             "ORDER BY lr.date ASC";
 
@@ -847,6 +855,7 @@ ChartData ChartGenerator::fetch_cumulative_transaction_costs_data(
 ChartData ChartGenerator::fetch_margin_posted_data(
     std::shared_ptr<DatabaseInterface> db,
     const std::string& strategy_id,
+                                                  const std::string& portfolio_id,
     const std::string& date /* today, YYYY-MM-DD */)
 {
     ChartData chart_data;
@@ -858,6 +867,7 @@ ChartData ChartGenerator::fetch_margin_posted_data(
             "SELECT date, margin_posted "
             "FROM trading.live_results "
             "WHERE strategy_id = '" + strategy_id + "' "
+            "AND portfolio_id = '" + portfolio_id + "' "
             "AND DATE(date) <= DATE('" + date + "') "
             "ORDER BY date ASC";
 
@@ -1084,6 +1094,7 @@ ChartData ChartGenerator::fetch_portfolio_composition_data(
 ChartData ChartGenerator::fetch_cumulative_pnl_by_symbol_data(
     std::shared_ptr<DatabaseInterface> db,
     const std::string& strategy_id,
+                                                  const std::string& portfolio_id,
     const std::string& date)
 {
     ChartData chart_data;
@@ -1099,6 +1110,7 @@ ChartData ChartGenerator::fetch_cumulative_pnl_by_symbol_data(
             "SELECT symbol, SUM(daily_realized_pnl) as cumulative_pnl "
             "FROM trading.positions "
             "WHERE strategy_id = '" + strategy_id + "' "
+            "AND portfolio_id = '" + portfolio_id + "' "
             "AND DATE(last_update) <= DATE('" + date + "') "
             "GROUP BY symbol "
             "HAVING SUM(daily_realized_pnl) IS NOT NULL "
@@ -1697,10 +1709,11 @@ std::string ChartGenerator::render_pie_chart(const ChartData& data, const ChartC
 std::string ChartGenerator::generate_equity_curve_chart(
     std::shared_ptr<DatabaseInterface> db,
     const std::string& strategy_id,
+                                                  const std::string& portfolio_id,
     int lookback_days)
 {
     // Fetch data using modular fetcher
-    ChartData data = fetch_equity_curve_data(db, strategy_id, lookback_days);
+    ChartData data = fetch_equity_curve_data(db, strategy_id, portfolio_id, lookback_days);
 
     if (data.labels.empty() || data.values.empty()) {
         return "";
@@ -1720,12 +1733,13 @@ std::string ChartGenerator::generate_equity_curve_chart(
 std::string ChartGenerator::generate_pnl_by_symbol_chart(
     std::shared_ptr<DatabaseInterface> db,
     const std::string& strategy_id,
+                                                  const std::string& portfolio_id,
     const std::string& date)
 {
     INFO("Starting PnL by symbol chart generation for strategy: " + strategy_id);
 
     // Fetch data using modular fetcher
-    ChartData data = fetch_pnl_by_symbol_data(db, strategy_id, date);
+    ChartData data = fetch_pnl_by_symbol_data(db, strategy_id, portfolio_id, date);
 
     if (data.labels.empty() || data.values.empty()) {
         WARN("No data available for PnL by symbol chart - returning empty string");
@@ -1750,11 +1764,12 @@ std::string ChartGenerator::generate_pnl_by_symbol_chart(
 std::string ChartGenerator::generate_daily_pnl_chart(
     std::shared_ptr<DatabaseInterface> db,
     const std::string& strategy_id,
+                                                  const std::string& portfolio_id,
     const std::string& date,
     int lookback_days)
 {
     // Fetch data using modular fetcher
-    ChartData data = fetch_daily_pnl_data(db, strategy_id, date, lookback_days);
+    ChartData data = fetch_daily_pnl_data(db, strategy_id, portfolio_id, date, lookback_days);
 
     if (data.labels.empty() || data.values.empty()) {
         return "";
@@ -1774,9 +1789,10 @@ std::string ChartGenerator::generate_daily_pnl_chart(
 std::string ChartGenerator::generate_total_transaction_costs_chart(
     std::shared_ptr<DatabaseInterface> db,
     const std::string& strategy_id,
+                                                  const std::string& portfolio_id,
     const std::string& end_date)   // "YYYY-MM-DD" (today)
 {
-    ChartData data = fetch_cumulative_transaction_costs_data(db, strategy_id, end_date);
+    ChartData data = fetch_cumulative_transaction_costs_data(db, strategy_id, portfolio_id, end_date);
     if (data.labels.empty() || data.values.empty()) return "";
 
     ChartConfig config;
@@ -1791,9 +1807,10 @@ std::string ChartGenerator::generate_total_transaction_costs_chart(
 std::string ChartGenerator::generate_margin_posted_chart(
     std::shared_ptr<DatabaseInterface> db,
     const std::string& strategy_id,
+                                                  const std::string& portfolio_id,
     const std::string& date /* today */)
 {
-    ChartData data = fetch_margin_posted_data(db, strategy_id, date);
+    ChartData data = fetch_margin_posted_data(db, strategy_id, portfolio_id, date);
     if (data.labels.empty() || data.values.empty()) return "";
 
     ChartConfig config;
@@ -1843,12 +1860,13 @@ std::string ChartGenerator::generate_portfolio_composition_chart(
 std::string ChartGenerator::generate_cumulative_pnl_by_symbol_chart(
     std::shared_ptr<DatabaseInterface> db,
     const std::string& strategy_id,
+                                                  const std::string& portfolio_id,
     const std::string& date)
 {
     INFO("Starting cumulative PnL by symbol chart generation for strategy: " + strategy_id);
 
     // Fetch data
-    ChartData data = fetch_cumulative_pnl_by_symbol_data(db, strategy_id, date);
+    ChartData data = fetch_cumulative_pnl_by_symbol_data(db, strategy_id, portfolio_id, date);
 
     if (data.labels.empty() || data.values.empty()) {
         WARN("No data available for cumulative PnL by symbol chart");
