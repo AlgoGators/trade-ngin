@@ -99,6 +99,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libcurl4t64 \
         cron \
         gnuplot-nox \
+        procps \
         tzdata \
     && apt-get purge -y --auto-remove gnupg lsb-release \
     && rm -rf /var/lib/apt/lists/*

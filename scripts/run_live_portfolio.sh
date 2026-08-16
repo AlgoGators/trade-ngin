@@ -62,6 +62,14 @@ if [ ! -x "$BINARY" ]; then
     exit 127
 fi
 
+# --- working directory -------------------------------------------------------
+# cron starts jobs from $HOME, but both live binaries resolve their config
+# ("./config", see live_portfolio*.cpp ConfigLoader::load) and log directory
+# relative to the current directory. Without this cd every scheduled run dies
+# on config-not-found -- the same class of silent failure this script exists
+# to eliminate.
+cd /app || { log "FATAL: cannot cd /app"; exit 1; }
+
 # --- run ---------------------------------------------------------------------
 DATE="$(date +%Y-%m-%d)"
 log "starting $BINARY for $DATE"
