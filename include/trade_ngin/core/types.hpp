@@ -49,7 +49,13 @@ public:
             while (frac_part.length() < 8) {
                 frac_part += "0";
             }
-            value_ = std::stoll(int_part) * SCALE + std::stoll(frac_part);
+            // The fractional digits carry the same sign as the whole number.
+            // Subtracting for negatives (and honoring "-0.x", where the integer
+            // part alone loses the sign) keeps values like "-1.5" exact.
+            bool negative = !int_part.empty() && int_part[0] == '-';
+            int64_t int_value = std::stoll(int_part) * SCALE;
+            int64_t frac_value = std::stoll(frac_part);
+            value_ = negative ? int_value - frac_value : int_value + frac_value;
         }
     }
 
