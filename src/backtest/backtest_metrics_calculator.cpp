@@ -105,12 +105,22 @@ double BacktestMetricsCalculator::calculate_volatility(const std::vector<double>
         return 0.0;
     }
 
+    // Two-pass standard deviation. The previous one-pass formula
+    // (E[r^2] - mean^2) suffers catastrophic cancellation for small daily
+    // returns and can round to a slightly negative variance, turning
+    // sqrt() into NaN. That NaN passed the `volatility <= 0` guard in
+    // calculate_sharpe_ratio (NaN comparisons are false) and silently
+    // propagated into Sharpe/reporting.
     double mean_return = calculate_mean(returns);
-    double sq_sum = std::inner_product(returns.begin(), returns.end(), returns.begin(), 0.0);
-    double variance = sq_sum / returns.size() - mean_return * mean_return;
 
     // Annualize using sqrt(252) for daily volatility
-    return std::sqrt(variance) * std::sqrt(252.0);
+    double volatility = calculate_std_dev(returns, mean_return) * std::sqrt(252.0);
+
+    // A constant series still leaves rounding dust (~1e-17) in the deviations;
+    // collapse it to a clean 0 so the `volatility <= 0` guard in
+    // calculate_sharpe_ratio treats the degenerate case as such instead of
+    // dividing by dust and reporting an absurd Sharpe.
+    return volatility < 1e-12 ? 0.0 : volatility;
 }
 
 double BacktestMetricsCalculator::calculate_downside_volatility(
@@ -371,6 +381,12 @@ std::unordered_map<std::string, double> BacktestMetricsCalculator::calculate_mon
     std::unordered_map<std::string, double> monthly_returns;
 
     for (size_t i = 1; i < equity_curve.size(); ++i) {
+        // Skip non-positive equity points, matching calculate_returns_from_equity:
+        // dividing by 0 would silently inject inf/NaN into the monthly totals.
+        if (equity_curve[i - 1].second <= 0.0) {
+            continue;
+        }
+
         auto time_t = std::chrono::system_clock::to_time_t(equity_curve[i].first);
         std::tm tm;
         core::safe_localtime(&time_t, &tm);
