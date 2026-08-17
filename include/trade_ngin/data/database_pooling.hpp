@@ -4,6 +4,7 @@
 #include <deque>
 #include <memory>
 #include <mutex>
+#include <random>
 #include <thread>
 #include <vector>
 #include "trade_ngin/data/postgres_database.hpp"
@@ -33,9 +34,12 @@ auto retry_with_backoff(Func func, int max_retries = 3) -> decltype(func()) {
         // Wait before retry
         std::this_thread::sleep_for(delay);
 
-        // Exponential backoff with jitter
-        delay *= 2;
-        delay += std::chrono::milliseconds(rand() % 100);
+        // Exponential backoff with jitter. random_device-seeded engine gives
+        // real per-thread jitter; unseeded rand() produces the same sequence
+        // every run, so competing clients would retry in lockstep.
+        static thread_local std::mt19937 jitter_rng{std::random_device{}()};
+        std::uniform_int_distribution<int> jitter_ms(0, 99);
+        delay += std::chrono::milliseconds(jitter_ms(jitter_rng));
 
         attempt++;
     }
