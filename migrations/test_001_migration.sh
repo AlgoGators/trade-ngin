@@ -142,6 +142,31 @@ else
 fi
 
 echo ""
+echo "########## ENGINE STATEMENT SHAPES ##########"
+# The exact ON CONFLICT target store_trading_equity_curve uses
+# (src/data/postgres_database.cpp) -- must be inferable from the rebuilt
+# unique constraint, or every live equity write fails post-migration.
+if $PSQL -c "INSERT INTO trading.equity_curve (strategy_id, \"timestamp\", equity, portfolio_id)
+             VALUES ('s1', now(), 100.0, 'p1')
+             ON CONFLICT (portfolio_id, strategy_id, \"timestamp\", portfolio_type)
+             DO UPDATE SET equity = EXCLUDED.equity" > /dev/null 2>&1; then
+    ok "engine equity-curve upsert works against the migrated schema"
+else
+    bad "engine equity-curve ON CONFLICT target no longer matches a unique constraint"
+fi
+# The OLD 3-column target must now fail -- proving the C++ change in this PR
+# is required, not optional.
+if $PSQL -c "INSERT INTO trading.equity_curve (strategy_id, \"timestamp\", equity, portfolio_id)
+             VALUES ('s2', now(), 100.0, 'p1')
+             ON CONFLICT (portfolio_id, strategy_id, \"timestamp\")
+             DO UPDATE SET equity = EXCLUDED.equity" > /dev/null 2>&1; then
+    bad "old 3-column ON CONFLICT target unexpectedly still works"
+else
+    ok "old 3-column ON CONFLICT target correctly rejected (binary must ship with this migration)"
+fi
+$PSQL -c "DELETE FROM trading.equity_curve WHERE strategy_id IN ('s1','s2')" > /dev/null 2>&1
+
+echo ""
 echo "########## IDEMPOTENCY ##########"
 if $PSQL -f "$(dirname "$0")/001_add_portfolio_type.sql" > /dev/null 2>&1; then
     ok "re-running the migration is safe"
