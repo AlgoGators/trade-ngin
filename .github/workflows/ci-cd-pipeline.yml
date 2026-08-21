@@ -462,7 +462,7 @@ jobs:
 
       - name: Install Trivy
         shell: bash
-        run: curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+        run: curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/v0.74.0/contrib/install.sh | sh -s -- -b /usr/local/bin
 
       - name: Scan image with Trivy
         shell: bash
@@ -476,7 +476,7 @@ jobs:
             "${{ steps.build.outputs.repo }}:${{ steps.build.outputs.tag }}"
 
       - name: Upload Trivy results to Security tab
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@42947a340483f03ba47bb1a039b2c519aab3df85 # v3.37.8
         with:
           sarif_file: trivy-results.sarif
 
