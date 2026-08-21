@@ -399,3 +399,171 @@ TEST_F(ConfigLoaderDBOverlayTest, MergeJsonMultipleLevels) {
     EXPECT_EQ(target.at("optimization").at("capital"), 500000.0);
     EXPECT_EQ(target.at("optimization").at("max_iterations"), 200);
 }
+
+// ===== Tests for load_db_override, publish_config_manifest, and load() with DB =====
+// These tests verify the DB overlay functionality using MockPostgresDatabase.
+// Coverage includes: DB connection errors, validation, credential stripping, and fallback paths
+
+// TEST 15: load_db_override with disconnected DB returns error
+TEST_F(ConfigLoaderDBOverlayTest, LoadDbOverrideNotConnected) {
+    MockPostgresDatabase mock_db("postgresql://test");
+    // Don't connect - DB is disconnected
+
+    auto result = ConfigLoader::load_db_override(&mock_db, "TEST_PORTFOLIO");
+    ASSERT_TRUE(result.is_error()) << "Should return error when DB not connected";
+    EXPECT_TRUE(std::string(result.error()->what()).find("not connected") != std::string::npos);
+}
+
+// TEST 16: publish_config_manifest with disconnected DB returns error
+TEST_F(ConfigLoaderDBOverlayTest, PublishConfigManifestNotConnected) {
+    MockPostgresDatabase mock_db("postgresql://test");
+    // Don't connect
+
+    nlohmann::json manifest = {{"portfolio_id", "TEST_PORTFOLIO"}};
+
+    auto result = ConfigLoader::publish_config_manifest(&mock_db, "TEST_PORTFOLIO", manifest);
+    ASSERT_TRUE(result.is_error()) << "Should return error when DB not connected";
+    EXPECT_TRUE(std::string(result.error()->what()).find("not connected") != std::string::npos);
+}
+
+// TEST 17: load() with nullptr DB parameter works (backward compat)
+TEST_F(ConfigLoaderDBOverlayTest, LoadWithNullDbPointerWorks) {
+    auto result = ConfigLoader::load(base_, "test", nullptr);
+    ASSERT_FALSE(result.is_error()) << "load() with nullptr should work";
+
+    AppConfig config = result.value();
+    EXPECT_EQ(config.portfolio_id, "TEST_PORTFOLIO");
+    EXPECT_EQ(config.execution.commission_rate, 0.0005);
+}
+
+// TEST 18: load() with disconnected DB falls back to file config gracefully
+TEST_F(ConfigLoaderDBOverlayTest, LoadWithDisconnectedDbFallsback) {
+    MockPostgresDatabase mock_db("postgresql://test");
+    // Don't call connect() - DB is disconnected
+
+    auto result = ConfigLoader::load(base_, "test", &mock_db);
+    ASSERT_FALSE(result.is_error()) << "load() should fallback to file config on DB error";
+
+    AppConfig config = result.value();
+    EXPECT_EQ(config.portfolio_id, "TEST_PORTFOLIO");
+    EXPECT_EQ(config.initial_capital, 1'000'000.0);
+    EXPECT_EQ(config.execution.commission_rate, 0.0005)
+        << "Should use file config when DB connection fails";
+}
+
+// TEST 19: validate_override_no_credentials rejects database field
+TEST_F(ConfigLoaderDBOverlayTest, ValidateRejectsDatabaseField2) {
+    nlohmann::json bad = {{"database", {{"host", "attacker.com"}}}};
+
+    auto result = ConfigLoader::validate_override_no_credentials(bad);
+    ASSERT_TRUE(result.is_error());
+    EXPECT_TRUE(std::string(result.error()->what()).find("database") != std::string::npos);
+}
+
+// TEST 20: validate_override_no_credentials rejects email.password field
+TEST_F(ConfigLoaderDBOverlayTest, ValidateRejectsEmailPasswordField) {
+    nlohmann::json bad = {{"email", {{"password", "hacked"}}}};
+
+    auto result = ConfigLoader::validate_override_no_credentials(bad);
+    ASSERT_TRUE(result.is_error());
+    EXPECT_TRUE(std::string(result.error()->what()).find("email.password") != std::string::npos);
+}
+
+// TEST 21: validate_override_no_credentials accepts valid overrides
+TEST_F(ConfigLoaderDBOverlayTest, ValidateAcceptsGoodOverride) {
+    nlohmann::json good = {
+        {"execution", {{"commission_rate", 0.001}}},
+        {"backtest", {{"lookback_years", 3}}}
+    };
+
+    auto result = ConfigLoader::validate_override_no_credentials(good);
+    ASSERT_FALSE(result.is_error()) << "Good override should be accepted";
+}
+
+// TEST 22: validate_override_no_credentials accepts empty object
+TEST_F(ConfigLoaderDBOverlayTest, ValidateAcceptsEmpty) {
+    nlohmann::json empty = nlohmann::json::object();
+
+    auto result = ConfigLoader::validate_override_no_credentials(empty);
+    ASSERT_FALSE(result.is_error()) << "Empty override should be accepted";
+}
+
+// TEST 23: strip_credentials_for_manifest removes database section
+TEST_F(ConfigLoaderDBOverlayTest, StripCredentialsRemovesDatabase) {
+    auto file_result = ConfigLoader::load(base_, "test", nullptr);
+    ASSERT_FALSE(file_result.is_error());
+
+    AppConfig config = file_result.value();
+    nlohmann::json manifest = ConfigLoader::strip_credentials_for_manifest(config);
+
+    EXPECT_FALSE(manifest.contains("database"))
+        << "Manifest should not contain database section";
+}
+
+// TEST 24: strip_credentials_for_manifest removes email.password only
+TEST_F(ConfigLoaderDBOverlayTest, StripCredentialsRemovesPasswordOnly) {
+    auto file_result = ConfigLoader::load(base_, "test", nullptr);
+    ASSERT_FALSE(file_result.is_error());
+
+    AppConfig config = file_result.value();
+    nlohmann::json manifest = ConfigLoader::strip_credentials_for_manifest(config);
+
+    ASSERT_TRUE(manifest.contains("email")) << "Email section should exist";
+    EXPECT_FALSE(manifest.at("email").contains("password")) << "Password should be removed";
+    EXPECT_TRUE(manifest.at("email").contains("smtp_host")) << "Other fields preserved";
+}
+
+// TEST 25: strip_credentials_for_manifest preserves execution config
+TEST_F(ConfigLoaderDBOverlayTest, StripCredentialsPreservesExecution) {
+    auto file_result = ConfigLoader::load(base_, "test", nullptr);
+    ASSERT_FALSE(file_result.is_error());
+
+    AppConfig config = file_result.value();
+    nlohmann::json manifest = ConfigLoader::strip_credentials_for_manifest(config);
+
+    EXPECT_TRUE(manifest.contains("execution"));
+    EXPECT_TRUE(manifest.at("execution").contains("commission_rate"));
+}
+
+// TEST 26: merge_json deep merges nested objects
+TEST_F(ConfigLoaderDBOverlayTest, MergeJsonNestedMerge) {
+    nlohmann::json target = {
+        {"execution", {{"commission_rate", 0.0005}, {"slippage_bps", 1.0}}}
+    };
+    nlohmann::json source = {
+        {"execution", {{"commission_rate", 0.001}}}
+    };
+
+    ConfigLoader::merge_json(target, source);
+
+    EXPECT_EQ(target.at("execution").at("commission_rate"), 0.001);
+    EXPECT_EQ(target.at("execution").at("slippage_bps"), 1.0)
+        << "Sibling fields should not be lost";
+}
+
+// TEST 27: merge_json replaces scalar values
+TEST_F(ConfigLoaderDBOverlayTest, MergeJsonScalarReplacement) {
+    nlohmann::json target = {
+        {"initial_capital", 1000000.0},
+        {"reserve_capital_pct", 0.1}
+    };
+    nlohmann::json source = {
+        {"initial_capital", 2000000.0}
+    };
+
+    ConfigLoader::merge_json(target, source);
+
+    EXPECT_EQ(target.at("initial_capital"), 2000000.0);
+    EXPECT_EQ(target.at("reserve_capital_pct"), 0.1);
+}
+
+// TEST 28: File config loads without DB errors
+TEST_F(ConfigLoaderDBOverlayTest, FileConfigLoadsCorrectly) {
+    auto result = ConfigLoader::load(base_, "test", nullptr);
+    ASSERT_FALSE(result.is_error());
+
+    AppConfig config = result.value();
+    EXPECT_EQ(config.portfolio_id, "TEST_PORTFOLIO");
+    EXPECT_EQ(config.initial_capital, 1'000'000.0);
+    EXPECT_EQ(config.database.host, "default_host");
+}
