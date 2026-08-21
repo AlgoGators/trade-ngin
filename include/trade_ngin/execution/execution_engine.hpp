@@ -196,6 +196,25 @@ public:
     Result<void> register_custom_algo(const std::string& name,
                                       std::function<Result<void>(const ExecutionJob&)> algo);
 
+    /**
+     * @brief Generate the simulated child-order prices used by the VWAP algorithm
+     *
+     * Perturbs @p parent_price by a jitter drawn from uniform[-0.0005, 0.0005]
+     * to simulate market impact on synthetic fills. The generator is seeded from
+     * @p seed and constructed per call, so a given seed always reproduces the
+     * same price path regardless of thread or of how many jobs ran before it.
+     *
+     * Simulation only: these prices never influence live order routing. Exposed
+     * so the reproducibility guarantee can be tested directly.
+     *
+     * @param seed Seed for the price-path generator (ExecutionConfig::rng_seed)
+     * @param parent_price Price of the parent order
+     * @param num_slices Number of child orders to generate prices for
+     * @return Simulated child-order prices, one per slice
+     */
+    static std::vector<double> generate_vwap_slice_prices(std::uint32_t seed, double parent_price,
+                                                          int num_slices);
+
 private:
     std::shared_ptr<OrderManager> order_manager_;
     std::unordered_map<std::string, ExecutionJob> active_jobs_;
@@ -290,24 +309,6 @@ private:
      * @return Total transaction cost
      */
     static double calculate_transaction_costs(const ExecutionReport& execution, const ExecutionConfig& config);
-
-    /**
-     * @brief Generate the simulated child-order prices used by the VWAP algorithm
-     *
-     * Perturbs @p parent_price by a jitter drawn from uniform[-0.0005, 0.0005]
-     * to simulate market impact on synthetic fills. The generator is seeded from
-     * @p seed and constructed per call, so a given seed always reproduces the
-     * same price path regardless of thread or of how many jobs ran before it.
-     *
-     * Simulation only: these prices never influence live order routing.
-     *
-     * @param seed Seed for the price-path generator (ExecutionConfig::rng_seed)
-     * @param parent_price Price of the parent order
-     * @param num_slices Number of child orders to generate prices for
-     * @return Simulated child-order prices, one per slice
-     */
-    static std::vector<double> generate_vwap_slice_prices(std::uint32_t seed, double parent_price,
-                                                          int num_slices);
 };
 
 }  // namespace trade_ngin
