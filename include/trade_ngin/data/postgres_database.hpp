@@ -527,6 +527,15 @@ public:
      */
     Result<void> validate_table_name(const std::string& table_name) const;
 
+    /**
+     * @brief Build parameterized INSERT placeholders and parameters for multi-row inserts
+     * @param rows Vector of rows, where each row is a vector of string parameters
+     * @param columns_per_row Number of columns per row
+     * @return Result containing placeholders and bound parameters
+     */
+    Result<InsertPlaceholders> build_insert_placeholders_and_params(
+        const std::vector<std::vector<std::string>>& rows, size_t columns_per_row) const;
+
 private:
     std::string connection_string_;
     std::unique_ptr<pqxx::connection> connection_;
@@ -679,15 +688,6 @@ private:
     Result<size_t> get_data_count(AssetClass asset_class, DataFrequency freq,
                                   const std::string& symbol,
                                   const std::string& data_type = "ohlcv") const;
-
-    /**
-     * @brief Build parameterized INSERT placeholders and parameters for multi-row inserts
-     * @param rows Vector of rows, where each row is a vector of string parameters
-     * @param columns_per_row Number of columns per row
-     * @return Result containing placeholders and bound parameters
-     */
-    Result<InsertPlaceholders> build_insert_placeholders_and_params(
-        const std::vector<std::vector<std::string>>& rows, size_t columns_per_row) const;
 };
 
 }  // namespace trade_ngin

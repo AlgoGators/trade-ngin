@@ -1,4 +1,5 @@
 // tests/data/test_sql_injection_guards.cpp
+#include <gmock/gmock.h>
 
 #include <gtest/gtest.h>
 #include "trade_ngin/data/postgres_database.hpp"
