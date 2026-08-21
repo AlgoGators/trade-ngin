@@ -436,7 +436,7 @@ Result<nlohmann::json> ConfigLoader::load_db_override(PostgresDatabase* db,
             ErrorCode::JSON_PARSE_ERROR,
             "Failed to parse overrides JSONB: " + std::string(e.what()),
             "ConfigLoader::load_db_override");
-    } catch (const pqxx::pqxx_exception& e) {
+    } catch (const pqxx::failure& e) {
         return make_error<nlohmann::json>(ErrorCode::DATABASE_ERROR,
                                           "Database operation failed: " + std::string(e.what()),
                                           "ConfigLoader::load_db_override");
@@ -533,7 +533,7 @@ Result<void> ConfigLoader::publish_config_manifest(PostgresDatabase* db,
         return make_error<void>(ErrorCode::DATABASE_ERROR,
                                 "Database connection lost: " + std::string(e.what()),
                                 "ConfigLoader::publish_config_manifest");
-    } catch (const pqxx::pqxx_exception& e) {
+    } catch (const pqxx::failure& e) {
         return make_error<void>(ErrorCode::DATABASE_ERROR,
                                 "Database operation failed: " + std::string(e.what()),
                                 "ConfigLoader::publish_config_manifest");
