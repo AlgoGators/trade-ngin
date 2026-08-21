@@ -1593,6 +1593,17 @@ Result<void> PostgresDatabase::validate_strategy_id(const std::string& strategy_
         }
     }
 
+    // Reject SQL line-comment syntax ("--"). Single dashes are legitimate in
+    // strategy IDs (e.g. "trend-following-1"), but a run of two or more
+    // dashes has no legitimate use here and is the classic SQL-comment
+    // injection pattern; queries are already parameterized (pqxx::params),
+    // so this is defense-in-depth, not the only guard.
+    if (strategy_id.find("--") != std::string::npos) {
+        return make_error<void>(ErrorCode::INVALID_ARGUMENT,
+                                "Invalid strategy_id: consecutive dashes are not allowed",
+                                "PostgresDatabase");
+    }
+
     return Result<void>();
 }
 
