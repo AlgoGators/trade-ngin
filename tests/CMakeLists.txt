@@ -1,5 +1,6 @@
 # Set test source files
 set(TEST_SOURCES
+    core/test_decimal.cpp
     core/test_result.cpp
     core/test_state_manager.cpp
     core/test_state_manager_extended.cpp
