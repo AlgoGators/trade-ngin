@@ -17,13 +17,13 @@
 
 namespace trade_ngin {
 
-namespace detail {
-/// Builds "($1,..,$cols),($cols+1,..)" placeholder groups for multi-row
-/// parameterized INSERTs. Callers chunk so rows * cols <= 65535 (Postgres's
-/// per-query parameter cap). Exposed for unit tests.
-std::string build_value_placeholders(size_t rows, size_t cols);
-}  // namespace detail
-
+/**
+ * @brief Structure containing INSERT placeholders and parameters for multi-row inserts
+ */
+struct InsertPlaceholders {
+    std::string placeholders;  // Format: "($1, $2, ...), ($4, $5, ...)"
+    pqxx::params params;       // Bound parameters in order
+};
 
 /**
  * @brief Database interface for PostgreSQL
@@ -679,6 +679,15 @@ private:
     Result<size_t> get_data_count(AssetClass asset_class, DataFrequency freq,
                                   const std::string& symbol,
                                   const std::string& data_type = "ohlcv") const;
+
+    /**
+     * @brief Build parameterized INSERT placeholders and parameters for multi-row inserts
+     * @param rows Vector of rows, where each row is a vector of string parameters
+     * @param columns_per_row Number of columns per row
+     * @return Result containing placeholders and bound parameters
+     */
+    Result<InsertPlaceholders> build_insert_placeholders_and_params(
+        const std::vector<std::vector<std::string>>& rows, size_t columns_per_row) const;
 };
 
 }  // namespace trade_ngin
