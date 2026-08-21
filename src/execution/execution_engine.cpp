@@ -508,8 +508,8 @@ Result<void> ExecutionEngine::execute_vwap(const ExecutionJob& job) {
         double total_volume = 0.0;
         double volume_weighted_price = 0.0;
 
-        // Simulated child-order prices for this job. Seeded from the job config so
-        // the same seed always reproduces the same price path.
+        // Simulated child-order prices for this job. The fixed seed makes the
+        // same job reproduce the same price path from one run to the next.
         const std::vector<double> slice_prices = generate_vwap_slice_prices(
             kVwapJitterSeed, parent_order.price.as_double(), num_slices);
 
