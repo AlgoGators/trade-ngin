@@ -100,7 +100,7 @@ TEST_F(SqlInjectionGuardsTest, EmptyRowsError) {
     auto result = db->build_insert_placeholders_and_params(rows, 1);
 
     ASSERT_TRUE(result.is_error());
-    EXPECT_EQ(result.error()->code(), ErrorCode::INVALID_INPUT);
+    EXPECT_EQ(result.error()->code(), ErrorCode::INVALID_ARGUMENT);
     EXPECT_THAT(result.error()->what(), ::testing::HasSubstr("rows must not be empty"));
 }
 
@@ -115,7 +115,7 @@ TEST_F(SqlInjectionGuardsTest, ZeroColumnsError) {
     auto result = db->build_insert_placeholders_and_params(rows, 0);
 
     ASSERT_TRUE(result.is_error());
-    EXPECT_EQ(result.error()->code(), ErrorCode::INVALID_INPUT);
+    EXPECT_EQ(result.error()->code(), ErrorCode::INVALID_ARGUMENT);
     EXPECT_THAT(result.error()->what(), ::testing::HasSubstr("columns_per_row must be greater than 0"));
 }
 
@@ -131,7 +131,7 @@ TEST_F(SqlInjectionGuardsTest, MismatchedColumnCountError) {
     auto result = db->build_insert_placeholders_and_params(rows, 2);
 
     ASSERT_TRUE(result.is_error());
-    EXPECT_EQ(result.error()->code(), ErrorCode::INVALID_INPUT);
+    EXPECT_EQ(result.error()->code(), ErrorCode::INVALID_ARGUMENT);
     EXPECT_THAT(result.error()->what(), ::testing::HasSubstr("has 1 columns but expected 2"));
 }
 
@@ -189,7 +189,7 @@ TEST_F(SqlInjectionGuardsTest, JustAboveParameterLimit) {
     auto result = db->build_insert_placeholders_and_params(rows, COLUMNS);
 
     ASSERT_TRUE(result.is_error());
-    EXPECT_EQ(result.error()->code(), ErrorCode::INVALID_INPUT);
+    EXPECT_EQ(result.error()->code(), ErrorCode::INVALID_ARGUMENT);
     EXPECT_THAT(result.error()->what(), ::testing::HasSubstr("exceeds PostgreSQL limit"));
 }
 
@@ -206,7 +206,7 @@ TEST_F(SqlInjectionGuardsTest, SignificantlyExceedsParameterLimit) {
     auto result = db->build_insert_placeholders_and_params(rows, COLUMNS);
 
     ASSERT_TRUE(result.is_error());
-    EXPECT_EQ(result.error()->code(), ErrorCode::INVALID_INPUT);
+    EXPECT_EQ(result.error()->code(), ErrorCode::INVALID_ARGUMENT);
 }
 
 // ============================================================================

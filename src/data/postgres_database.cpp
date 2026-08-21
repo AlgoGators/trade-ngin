@@ -2341,13 +2341,13 @@ Result<InsertPlaceholders> PostgresDatabase::build_insert_placeholders_and_param
         // Validate inputs
         if (columns_per_row == 0) {
             return make_error<InsertPlaceholders>(
-                ErrorCode::INVALID_INPUT,
+                ErrorCode::INVALID_ARGUMENT,
                 "columns_per_row must be greater than 0");
         }
 
         if (rows.empty()) {
             return make_error<InsertPlaceholders>(
-                ErrorCode::INVALID_INPUT,
+                ErrorCode::INVALID_ARGUMENT,
                 "rows must not be empty");
         }
 
@@ -2355,7 +2355,7 @@ Result<InsertPlaceholders> PostgresDatabase::build_insert_placeholders_and_param
         for (size_t i = 0; i < rows.size(); ++i) {
             if (rows[i].size() != columns_per_row) {
                 return make_error<InsertPlaceholders>(
-                    ErrorCode::INVALID_INPUT,
+                    ErrorCode::INVALID_ARGUMENT,
                     "Row " + std::to_string(i) + " has " + std::to_string(rows[i].size()) +
                         " columns but expected " + std::to_string(columns_per_row));
             }
@@ -2365,7 +2365,7 @@ Result<InsertPlaceholders> PostgresDatabase::build_insert_placeholders_and_param
         size_t total_params = rows.size() * columns_per_row;
         if (total_params > POSTGRES_MAX_PARAMS) {
             return make_error<InsertPlaceholders>(
-                ErrorCode::INVALID_INPUT,
+                ErrorCode::INVALID_ARGUMENT,
                 "Total parameters (" + std::to_string(total_params) +
                     ") exceeds PostgreSQL limit of " + std::to_string(POSTGRES_MAX_PARAMS));
         }
