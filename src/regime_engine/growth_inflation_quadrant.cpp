@@ -83,7 +83,12 @@ Result<QuadrantResult> GrowthInflationQuadrant::update(const MacroPanel& panel) 
     while (conf_history_.size() > config_.zscore_lookback)
         conf_history_.pop_front();
 
-    // Need at least 3 data points for meaningful z-scores
+    // Need at least 3 data points for meaningful z-scores. Still record this
+    // placeholder result in history_ (like every other successful update())
+    // so get_history() stays index-aligned with the caller's input sequence
+    // -- callers correlating history[i] back to their own month/date list
+    // would otherwise silently see a 2-short, misaligned history during the
+    // z-score warmup window.
     if (cpi_yoy_history_.size() < 3) {
         QuadrantResult r;
         r.probabilities.fill(1.0 / MACRO_ONTOLOGY_COUNT);
@@ -91,6 +96,7 @@ Result<QuadrantResult> GrowthInflationQuadrant::update(const MacroPanel& panel) 
         r.growth_driver = "Insufficient data";
         r.inflation_driver = "Insufficient data";
         current_result_ = r;
+        history_.push_back(r);
         return r;
     }
 
