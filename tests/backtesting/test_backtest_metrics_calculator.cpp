@@ -91,6 +91,22 @@ TEST_F(BacktestMetricsCalculatorTest, VolatilityEmptyIsZero) {
     EXPECT_DOUBLE_EQ(calc_.calculate_volatility({}), 0.0);
 }
 
+TEST_F(BacktestMetricsCalculatorTest, VolatilityConstantSeriesIsZeroNotNaN) {
+    // Regression: the one-pass E[r^2] - mean^2 formula cancels catastrophically
+    // and rounds to a slightly negative variance for this input, so sqrt()
+    // returned NaN instead of 0.
+    auto vol = calc_.calculate_volatility({0.007, 0.007, 0.007, 0.007, 0.007});
+    EXPECT_DOUBLE_EQ(vol, 0.0);
+}
+
+TEST_F(BacktestMetricsCalculatorTest, SharpeConstantSeriesIsZeroNotNaN) {
+    // With NaN volatility the `volatility <= 0` guard was passed (NaN
+    // comparisons are false) and Sharpe itself became NaN.
+    auto sharpe = calc_.calculate_sharpe_ratio({0.007, 0.007, 0.007, 0.007, 0.007}, 5, 0.0);
+    EXPECT_TRUE(std::isfinite(sharpe));
+    EXPECT_DOUBLE_EQ(sharpe, 0.0);
+}
+
 TEST_F(BacktestMetricsCalculatorTest, VolatilityComputesAnnualizedStdev) {
     std::vector<double> r{0.01, -0.01, 0.01, -0.01};
     // mean=0, var=0.0001, daily std = 0.01, annualized = 0.01 * sqrt(252)
@@ -298,6 +314,20 @@ TEST_F(BacktestMetricsCalculatorTest, MonthlyReturnsAggregatesByYearMonthKey) {
     auto m = calc_.calculate_monthly_returns(curve);
     EXPECT_NEAR(m["2026-01"], 0.10, 1e-9);
     EXPECT_NEAR(m["2026-02"], 0.10, 1e-9);
+}
+
+TEST_F(BacktestMetricsCalculatorTest, MonthlyReturnsSkipsNonPositivePriorEquity) {
+    // Regression: dividing by a zero prior equity injected inf into the
+    // monthly totals and every later sum on them.
+    std::vector<std::pair<Timestamp, double>> curve;
+    curve.emplace_back(date_at(2026, 1, 15), 100.0);
+    curve.emplace_back(date_at(2026, 1, 16), 0.0);    // wiped out
+    curve.emplace_back(date_at(2026, 1, 20), 50.0);   // prior equity 0: skipped
+    curve.emplace_back(date_at(2026, 1, 22), 55.0);   // +10%
+    auto m = calc_.calculate_monthly_returns(curve);
+    EXPECT_TRUE(std::isfinite(m["2026-01"]));
+    // -100% (100 -> 0) plus +10% (50 -> 55); the 0 -> 50 step is skipped.
+    EXPECT_NEAR(m["2026-01"], -1.0 + 0.10, 1e-9);
 }
 
 TEST_F(BacktestMetricsCalculatorTest, FilterWarmupTrimsLeadingDays) {
