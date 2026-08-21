@@ -216,3 +216,6 @@ if (BUILD_PYTHON_WRAPPER)
 endif()
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+# Add benchmarks subdirectory (separate from tests; not in default test run)
+add_subdirectory(benchmarks)
