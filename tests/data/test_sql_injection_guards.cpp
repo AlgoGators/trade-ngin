@@ -146,3 +146,29 @@ TEST_F(IdentifierWhitelistTest, CompleteStoreRejectsBadIntMetricNames) {
     ASSERT_TRUE(result.is_error());
     EXPECT_EQ(result.error()->code(), ErrorCode::INVALID_ARGUMENT);
 }
+
+// ---------------------------------------------------------------------------
+// Destructor exception safety (S1048 fix)
+// ---------------------------------------------------------------------------
+
+TEST(DestructorExceptionSafety, NoThrowOnDestruction) {
+    // Verify destructor doesn't throw even if disconnect fails
+    auto db_ptr = std::make_unique<MockPostgresDatabase>("mock://testdb");
+    db_ptr->connect();
+    // Destructor should not throw
+    db_ptr.reset();  // Calls destructor - should not throw
+    SUCCEED();  // If we got here, no exception was thrown
+}
+
+// ---------------------------------------------------------------------------
+// Valid SQL identifiers (std::ranges fix)
+// ---------------------------------------------------------------------------
+
+TEST_F(IdentifierWhitelistTest, AcceptsValidIdentifiers) {
+    EXPECT_EQ(update_with_column("total_pnl").error()->code(),
+              ErrorCode::CONNECTION_ERROR);  // Passes whitelist, fails on connection
+    EXPECT_EQ(update_with_column("equity_2023").error()->code(), ErrorCode::CONNECTION_ERROR);
+    EXPECT_EQ(update_with_column("_hidden_column").error()->code(), ErrorCode::CONNECTION_ERROR);
+    EXPECT_EQ(update_with_column("a").error()->code(), ErrorCode::CONNECTION_ERROR);
+    EXPECT_EQ(update_with_column("SharePrice").error()->code(), ErrorCode::CONNECTION_ERROR);
+}

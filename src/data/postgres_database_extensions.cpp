@@ -2,8 +2,10 @@
 // Phase 0: Database Extensions to Replace Raw SQL
 // This file contains new methods to eliminate raw SQL from backtest and live trading
 
+#include <algorithm>
 #include <cctype>
 #include <ctime>
+#include <format>
 #include <iomanip>
 #include <sstream>
 #include "trade_ngin/core/time_utils.hpp"
@@ -18,12 +20,9 @@ bool is_valid_sql_identifier(const std::string& name) {
     if (name.empty() || name.size() > 63 || std::isdigit(static_cast<unsigned char>(name[0]))) {
         return false;
     }
-    for (char c : name) {
-        if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_') {
-            return false;
-        }
-    }
-    return true;
+    return std::ranges::all_of(name, [](char c) {
+        return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
+    });
 }
 }  // namespace
 
@@ -521,7 +520,7 @@ Result<void> PostgresDatabase::update_live_results(
         // Use actual portfolio_id or default to BASE_PORTFOLIO for backward compatibility
         std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
 
-        std::string query = "UPDATE " + table_name + " SET ";
+        std::string query = std::format("UPDATE {} SET ", table_name);
         pqxx::params params;
         int param_idx = 1;
 
@@ -529,14 +528,14 @@ Result<void> PostgresDatabase::update_live_results(
         for (const auto& [column, value] : updates) {
             if (!first)
                 query += ", ";
-            query += column + " = $" + std::to_string(param_idx++);
+            query += std::format("{} = ${}", column, param_idx++);
             params.append(value);
             first = false;
         }
 
-        query += " WHERE strategy_id = $" + std::to_string(param_idx++) +
-                 " AND portfolio_id = $" + std::to_string(param_idx++) +
-                 " AND DATE(date) = $" + std::to_string(param_idx++);
+        query += std::format(" WHERE strategy_id = ${} AND portfolio_id = ${} AND DATE(date) = ${}",
+                            param_idx, param_idx + 1, param_idx + 2);
+        param_idx += 3;
         params.append(strategy_id);
         params.append(actual_portfolio_id);
         params.append(format_timestamp(date).substr(0, 10));
@@ -765,27 +764,27 @@ Result<void> PostgresDatabase::store_live_results_complete(
 
         // Add double metrics
         for (const auto& [column, value] : metrics) {
-            columns += ", " + column;
-            placeholders += ", $" + std::to_string(param_idx++);
+            columns += std::format(", {}", column);
+            placeholders += std::format(", ${}", param_idx++);
             params.append(value);
         }
 
         // Add integer metrics
         for (const auto& [column, value] : int_metrics) {
-            columns += ", " + column;
-            placeholders += ", $" + std::to_string(param_idx++);
+            columns += std::format(", {}", column);
+            placeholders += std::format(", ${}", param_idx++);
             params.append(value);
         }
 
         // Add config as JSON
         if (!config.is_null()) {
             columns += ", config";
-            placeholders += ", $" + std::to_string(param_idx++);
+            placeholders += std::format(", ${}", param_idx++);
             params.append(config.dump());
         }
 
         std::string query =
-            "INSERT INTO " + table_name + " (" + columns + ") VALUES (" + placeholders + ")";
+            std::format("INSERT INTO {} ({}) VALUES ({})", table_name, columns, placeholders);
 
         txn.exec(query, params);
         txn.commit();

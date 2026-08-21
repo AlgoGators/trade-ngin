@@ -1,6 +1,7 @@
 // src/data/postgres_database.cpp
 
 #include "trade_ngin/data/postgres_database.hpp"
+#include <format>
 #include <iomanip>
 #include <sstream>
 #include "trade_ngin/core/state_manager.hpp"
@@ -8,8 +9,7 @@
 
 #include "trade_ngin/data/market_data_bus.hpp"
 
-namespace trade_ngin {
-namespace detail {
+namespace trade_ngin::detail {
 // Builds "($1,...,$cols),($cols+1,...,$2*cols),..." for `rows` row-groups of `cols`
 // placeholders each, so a multi-row INSERT can bind every value as a parameter instead
 // of concatenating it into the query text. Chunk callers to stay under Postgres's
@@ -25,14 +25,13 @@ std::string build_value_placeholders(size_t rows, size_t cols) {
         for (size_t c = 0; c < cols; ++c) {
             if (c > 0)
                 result += ",";
-            result += "$" + std::to_string(param_idx++);
+            result += std::format("${}", param_idx++);
         }
         result += ")";
     }
     return result;
 }
-}  // namespace detail
-}  // namespace trade_ngin
+}  // namespace trade_ngin::detail
 using trade_ngin::detail::build_value_placeholders;
 
 
@@ -44,7 +43,12 @@ PostgresDatabase::PostgresDatabase(std::string connection_string)
 }
 
 PostgresDatabase::~PostgresDatabase() {
-    disconnect();
+    try {
+        disconnect();
+    } catch (const std::exception& e) {
+        // Log but don't propagate - destructors must not throw
+        WARN("Exception during database cleanup: " + std::string(e.what()));
+    }
 }
 
 Result<void> PostgresDatabase::connect() {
