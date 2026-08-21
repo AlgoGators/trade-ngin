@@ -435,6 +435,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Build and Push Image
+        id: build
         shell: bash
         run: |
           REPO="ghcr.io/${GITHUB_REPOSITORY,,}"
@@ -442,19 +443,69 @@ jobs:
             BRANCH="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME:-${GITHUB_REF#refs/heads/}}}"
             BRANCH=${BRANCH:-unknown}
           BRANCH_SAFE=$(echo "$BRANCH" | tr '[:upper:]' '[:lower:]' | tr '/@: ' '-')
-            
+
             DATE=$(date +%Y%m%d)
             TIME=$(date +%H%M%S)
             TAG="${BRANCH_SAFE}-${DATE}-${TIME}"
-            
+
             docker build -t "${REPO}:${TAG}" .
             docker push "${REPO}:${TAG}"
-          
+
           # Tag as latest if prod push
             if [ "${{ github.event_name }}" == "push" ] && [ "${{ github.ref_name }}" == "prod" ]; then
               docker tag "${REPO}:${TAG}" "${REPO}:latest"
               docker push "${REPO}:latest"
             fi
+
+            echo "repo=${REPO}" >> "$GITHUB_OUTPUT"
+            echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Install Trivy
+        shell: bash
+        run: curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/v0.74.0/contrib/install.sh | sh -s -- -b /usr/local/bin
+
+      - name: Scan image with Trivy
+        shell: bash
+        # Non-blocking for now (exit-code 0): this is the first scan of an image
+        # that's been running unscanned, so the existing/known vulnerability count
+        # is unknown. Once triaged, bump exit-code to 1 for CRITICAL findings to
+        # make this a hard gate -- appropriate given this image runs live trading.
+        run: |
+          trivy image --format sarif --output trivy-results.sarif \
+            --severity CRITICAL,HIGH --exit-code 0 \
+            "${{ steps.build.outputs.repo }}:${{ steps.build.outputs.tag }}"
+
+      - name: Upload Trivy results to Security tab
+        uses: github/codeql-action/upload-sarif@42947a340483f03ba47bb1a039b2c519aab3df85 # v3.37.8
+        with:
+          sarif_file: trivy-results.sarif
+
+  schema-ownership-guard:
+    name: Schema Ownership Guard
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Fail if a forbidden schema is referenced
+        shell: bash
+        # ADR-000 C-3 (cross-repo-contracts.md) assigns futures_data/equities_data/
+        # options_data/synthetic to data-ngin, auth to AlgoLens, and research to
+        # algosystem -- trade-ngin must never write into them. This scans the two
+        # locations that build schema-qualified SQL identifiers (the DB-access
+        # layer and the results-storage layer, both confirmed by grep to be where
+        # every "schema.table"-shaped literal in this repo lives) for those
+        # forbidden prefixes. It is a permanent regression guard for the exact
+        # backtest.equity_curve/research schema-collision class of bug ADR-000 §6
+        # flagged between trade-ngin and algosystem.
+        run: |
+          FORBIDDEN='"(futures_data|equities_data|options_data|synthetic|auth|research)\.'
+          if grep -rnE "$FORBIDDEN" src/data src/storage --include="*.cpp" --include="*.hpp"; then
+            echo "::error::Found a reference to a schema trade-ngin does not own (see ADR-000 C-3). If this is intentional, update the allow-list in this workflow and confirm with whoever owns that schema."
+            exit 1
+          fi
+          echo "OK: no forbidden-schema references found in src/data or src/storage."
+
   deploy-to-ec2:
     name: 'Deploy to EC2'
     if: github.ref_name == 'prod' && github.event_name == 'push'
