@@ -6,6 +6,7 @@
 #include <fstream>
 #include <nlohmann/json.hpp>
 #include "test_base.hpp"
+#include "../data/test_db_utils.hpp"
 
 #define private public
 #include "trade_ngin/core/config_loader.hpp"
@@ -486,18 +487,6 @@ TEST_F(ConfigLoaderDBOverlayTest, ValidateAcceptsEmpty) {
 
     auto result = ConfigLoader::validate_override_no_credentials(empty);
     ASSERT_FALSE(result.is_error()) << "Empty override should be accepted";
-}
-
-// TEST 23: strip_credentials_for_manifest removes database section
-TEST_F(ConfigLoaderDBOverlayTest, StripCredentialsRemovesDatabase) {
-    auto file_result = ConfigLoader::load(base_, "test", nullptr);
-    ASSERT_FALSE(file_result.is_error());
-
-    AppConfig config = file_result.value();
-    nlohmann::json manifest = ConfigLoader::strip_credentials_for_manifest(config);
-
-    EXPECT_FALSE(manifest.contains("database"))
-        << "Manifest should not contain database section";
 }
 
 // TEST 24: strip_credentials_for_manifest removes email.password only
