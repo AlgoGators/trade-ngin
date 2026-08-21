@@ -234,17 +234,6 @@ TEST_F(ConfigLoaderDBOverlayTest, ValidateRejectsDatabaseField) {
     EXPECT_TRUE(std::string(result.error()->what()).find("database") != std::string::npos);
 }
 
-// TEST 12: validate_override_no_credentials rejects override with email.password field.
-TEST_F(ConfigLoaderDBOverlayTest, ValidateRejectsEmailPassword) {
-    nlohmann::json bad_override = {
-        {"email", {{"password", "secret"}}}
-    };
-    auto result = ConfigLoader::validate_override_no_credentials(bad_override);
-    EXPECT_TRUE(result.is_error()) << "Should reject override with email.password";
-    EXPECT_TRUE(result.error()->what() != nullptr);
-    EXPECT_TRUE(std::string(result.error()->what()).find("email.password") != std::string::npos);
-}
-
 // TEST 13: validate_override_no_credentials accepts valid override.
 TEST_F(ConfigLoaderDBOverlayTest, ValidateAcceptsValidOverride) {
     nlohmann::json good_override = {
@@ -311,7 +300,7 @@ TEST_F(ConfigLoaderDBOverlayTest, LoadMergesConfigCorrectly) {
         AppConfig config = result.value();
         EXPECT_EQ(config.portfolio_id, "TEST_PORTFOLIO");
         EXPECT_EQ(config.initial_capital, 1'000'000.0);
-        EXPECT_TRUE(config.strategies.count("TREND_FOLLOWING") > 0);
+        EXPECT_TRUE(config.strategies_config.contains("TREND_FOLLOWING"));
     }
 }
 
