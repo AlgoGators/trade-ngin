@@ -333,14 +333,14 @@ TEST(GrowthInflationQuadrant, InvalidEmaLambda) {
 
     auto result1 = quad1.update(panel);
     EXPECT_FALSE(result1.is_ok());
-    EXPECT_EQ(result1.error().code, ErrorCode::INVALID_ARGUMENT);
+    EXPECT_EQ(result1.error()->code, ErrorCode::INVALID_ARGUMENT);
 
     // Test ema_lambda > 1 (invalid)
     config.ema_lambda = 1.5;
     GrowthInflationQuadrant quad2(config);
     auto result2 = quad2.update(panel);
     EXPECT_FALSE(result2.is_ok());
-    EXPECT_EQ(result2.error().code, ErrorCode::INVALID_ARGUMENT);
+    EXPECT_EQ(result2.error()->code, ErrorCode::INVALID_ARGUMENT);
 
     // Test ema_lambda = 1.0 (valid, disables smoothing)
     config.ema_lambda = 1.0;
