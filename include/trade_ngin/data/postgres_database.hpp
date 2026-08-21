@@ -536,6 +536,13 @@ public:
     Result<InsertPlaceholders> build_insert_placeholders_and_params(
         const std::vector<std::vector<std::string>>& rows, size_t columns_per_row) const;
 
+    /**
+     * @brief Validate strategy ID for SQL injection prevention
+     * @param strategy_id Strategy ID to validate
+     * @return Result indicating success or failure
+     */
+    Result<void> validate_strategy_id(const std::string& strategy_id) const;
+
 private:
     std::string connection_string_;
     std::unique_ptr<pqxx::connection> connection_;
@@ -604,14 +611,6 @@ private:
      * @return Result indicating success or failure
      */
     Result<void> validate_symbols(const std::vector<std::string>& symbols) const;
-
-    /**
-     * @brief Validate strategy ID for SQL injection prevention
-     * @param strategy_id Strategy ID to validate
-     * @return Result indicating success or failure
-     */
-    Result<void> validate_strategy_id(const std::string& strategy_id) const;
-
     /**
      * @brief Validate execution report data
      * @param exec Execution report to validate

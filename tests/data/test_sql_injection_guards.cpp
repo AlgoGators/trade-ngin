@@ -234,7 +234,7 @@ TEST_F(SqlInjectionGuardsTest, InvalidTableNameWithSqlInjection) {
     auto result = db->validate_table_name("trading.positions'; DROP TABLE users; --");
 
     ASSERT_TRUE(result.is_error()) << "Should reject SQL injection in table name";
-    EXPECT_EQ(result.error()->code(), ErrorCode::VALIDATION_ERROR);
+    EXPECT_EQ(result.error()->code(), ErrorCode::INVALID_ARGUMENT);
 }
 
 /**
@@ -255,7 +255,7 @@ TEST_F(SqlInjectionGuardsTest, InvalidStrategyIdWithSqlInjection) {
     auto result = db->validate_strategy_id("LIVE'; DELETE FROM positions WHERE '1'='1");
 
     ASSERT_TRUE(result.is_error()) << "Should reject SQL injection in strategy ID";
-    EXPECT_EQ(result.error()->code(), ErrorCode::VALIDATION_ERROR);
+    EXPECT_EQ(result.error()->code(), ErrorCode::INVALID_ARGUMENT);
 }
 
 /**
