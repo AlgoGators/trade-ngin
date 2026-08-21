@@ -153,3 +153,25 @@ TEST_F(MarketDataUtilsTest, GetSchemaNameCryptoReturnsCorrectSchema) {
     auto schema = trade_ngin::get_schema_name(AssetClass::CRYPTO);
     EXPECT_EQ(schema, "crypto_data");
 }
+
+// ===== get_market_data_columns default case =====
+
+TEST_F(MarketDataUtilsTest, UnknownAssetClassDefaultsToPlainColumns) {
+    // Test the default case: unknown/invalid asset classes fall back to unadjusted columns.
+    // This ensures defensive behavior if new asset classes are added without handler.
+    // We cast -1 to AssetClass to force an unknown value.
+    auto unknown_class = static_cast<AssetClass>(-1);
+    auto columns = market_data_utils::get_market_data_columns(unknown_class);
+
+    // Default case should return plain unadjusted columns
+    EXPECT_NE(columns.find("open"), std::string::npos)
+        << "Default case should include plain open column";
+    EXPECT_NE(columns.find("close"), std::string::npos)
+        << "Default case should include plain close column";
+    EXPECT_EQ(columns.find("adj_open"), std::string::npos)
+        << "Default case should NOT include adjusted columns";
+    EXPECT_NE(columns.find("time"), std::string::npos)
+        << "time column must be present";
+    EXPECT_NE(columns.find("symbol"), std::string::npos)
+        << "symbol column must be present";
+}

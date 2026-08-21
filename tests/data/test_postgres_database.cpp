@@ -328,3 +328,78 @@ TEST_F(PostgresDatabaseTest, TimezoneHandling) {
             std::chrono::duration_cast<std::chrono::seconds>(utc_time.time_since_epoch()).count());
     }
 }
+
+// ===== New tests for PR #57 coverage =====
+
+TEST_F(PostgresDatabaseTest, AssetClassToStringOptionsReturnsOption) {
+    // Test that OPTIONS asset class is properly handled in asset_class_to_string().
+    // This is required for the new OPTIONS case added in PR #57.
+    auto result = db->asset_class_to_string(AssetClass::OPTIONS);
+    EXPECT_EQ(result, "OPTION");
+}
+
+TEST_F(PostgresDatabaseTest, AssetClassToStringAllClassesHaveMapping) {
+    // Verify all asset classes map to non-empty strings
+    EXPECT_NE(db->asset_class_to_string(AssetClass::EQUITIES), "");
+    EXPECT_NE(db->asset_class_to_string(AssetClass::FUTURES), "");
+    EXPECT_NE(db->asset_class_to_string(AssetClass::FIXED_INCOME), "");
+    EXPECT_NE(db->asset_class_to_string(AssetClass::CURRENCIES), "");
+    EXPECT_NE(db->asset_class_to_string(AssetClass::COMMODITIES), "");
+    EXPECT_NE(db->asset_class_to_string(AssetClass::CRYPTO), "");
+    EXPECT_NE(db->asset_class_to_string(AssetClass::OPTIONS), "");
+}
+
+TEST_F(PostgresDatabaseTest, ExecuteMarketDataQueryUsesCorrectColumnsForEquities) {
+    // Test that execute_market_data_query uses adjusted columns for equities.
+    // This verifies the new market_data_utils::get_market_data_columns() integration.
+    auto connect_result = db->connect();
+    ASSERT_TRUE(connect_result.is_ok());
+
+    std::vector<std::string> symbols = {"AAPL"};
+    auto start_date = std::chrono::system_clock::now() - std::chrono::hours(24);
+    auto end_date = std::chrono::system_clock::now();
+
+    auto result = db->get_market_data(symbols, start_date, end_date, AssetClass::EQUITIES,
+                                      DataFrequency::DAILY);
+
+    // The query should succeed and return a table with the expected columns
+    ASSERT_TRUE(result.is_ok()) << "Market data query should succeed for EQUITIES";
+    auto table = result.value();
+
+    // Verify the table has the expected columns (time, symbol, open, high, low, close, volume)
+    EXPECT_EQ(table->num_columns(), 7);
+    EXPECT_EQ(table->ColumnNames()[0], "time");
+    EXPECT_EQ(table->ColumnNames()[1], "symbol");
+    EXPECT_EQ(table->ColumnNames()[2], "open");
+    EXPECT_EQ(table->ColumnNames()[3], "high");
+    EXPECT_EQ(table->ColumnNames()[4], "low");
+    EXPECT_EQ(table->ColumnNames()[5], "close");
+    EXPECT_EQ(table->ColumnNames()[6], "volume");
+}
+
+TEST_F(PostgresDatabaseTest, ExecuteMarketDataQueryUsesCorrectColumnsForFutures) {
+    // Test that execute_market_data_query uses unadjusted columns for futures.
+    auto connect_result = db->connect();
+    ASSERT_TRUE(connect_result.is_ok());
+
+    std::vector<std::string> symbols = {"ES"};
+    auto start_date = std::chrono::system_clock::now() - std::chrono::hours(24);
+    auto end_date = std::chrono::system_clock::now();
+
+    auto result = db->get_market_data(symbols, start_date, end_date, AssetClass::FUTURES,
+                                      DataFrequency::DAILY);
+
+    // The query should succeed and return a table with unadjusted columns
+    ASSERT_TRUE(result.is_ok()) << "Market data query should succeed for FUTURES";
+    auto table = result.value();
+
+    // Verify the table has the expected columns
+    EXPECT_EQ(table->num_columns(), 7);
+    EXPECT_EQ(table->ColumnNames()[0], "time");
+    EXPECT_EQ(table->ColumnNames()[1], "symbol");
+    EXPECT_EQ(table->ColumnNames()[2], "open");
+    EXPECT_EQ(table->ColumnNames()[3], "high");
+    EXPECT_EQ(table->ColumnNames()[4], "low");
+    EXPECT_EQ(table->ColumnNames()[5], "close");
+    EXPECT_EQ(table->ColumnNames()[6], "volume");
+}
