@@ -28,7 +28,13 @@ PostgresDatabase::PostgresDatabase(std::string connection_string)
 }
 
 PostgresDatabase::~PostgresDatabase() {
-    disconnect();
+    try {
+        disconnect();
+    } catch (const std::exception& e) {
+        WARN("Exception in PostgresDatabase destructor: " + std::string(e.what()));
+    } catch (...) {
+        WARN("Unknown exception in PostgresDatabase destructor");
+    }
 }
 
 Result<void> PostgresDatabase::connect() {
