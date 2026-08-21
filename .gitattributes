@@ -1,0 +1,16 @@
+# Anything the Linux container executes must keep LF endings regardless of the
+# platform it was checked out on.
+#
+# The Dockerfile does `COPY . .`, so a checkout made on Windows with
+# core.autocrlf=true would copy CRLF files straight into the image. A shell
+# script whose shebang ends "bash\r" fails at runtime with
+# "bad interpreter: /usr/bin/env bash^M" -- and crontab silently rejects a cron
+# file with CRLF endings. Both would reproduce the exact class of failure this
+# repo just spent 81 days not noticing.
+
+*.sh    text eol=lf
+*.cron  text eol=lf
+Dockerfile text eol=lf
+*.py    text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf

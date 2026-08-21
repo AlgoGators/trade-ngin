@@ -208,3 +208,6 @@ add_subdirectory(tests)
 
 # Add apps subdirectory
 add_subdirectory(apps)
+
+# Add benchmarks subdirectory (separate from tests; not in default test run)
+add_subdirectory(benchmarks)
