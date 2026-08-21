@@ -62,13 +62,6 @@ struct ExecutionConfig : public ConfigBase {
     // Transaction cost configuration (TransactionCostManager)
     double explicit_fee_per_contract{1.50};                 // Explicit fee per contract
 
-    // Seed for the simulated-fill price jitter used by the VWAP algorithm.
-    // Simulation only: it perturbs synthetic child-order prices in backtests and
-    // never influences live routing, so a deterministic default is desirable.
-    // Holding this fixed makes a VWAP run reproducible; vary it to sample
-    // different simulated price paths.
-    std::uint32_t rng_seed{42};
-
     // Configuration metadata
     std::string version{"1.0.0"};  // Configuration version
 
@@ -85,7 +78,6 @@ struct ExecutionConfig : public ConfigBase {
         j["venues"] = venues;
         j["venue_weights"] = venue_weights;
         j["explicit_fee_per_contract"] = explicit_fee_per_contract;
-        j["rng_seed"] = rng_seed;
         j["version"] = version;
 
         return j;
@@ -114,8 +106,6 @@ struct ExecutionConfig : public ConfigBase {
             explicit_fee_per_contract = j.at("explicit_fee_per_contract").get<double>();
         else if (j.contains("fixed_cost"))
             explicit_fee_per_contract = j.at("fixed_cost").get<double>();
-        if (j.contains("rng_seed"))
-            rng_seed = j.at("rng_seed").get<std::uint32_t>();
         if (j.contains("version"))
             version = j.at("version").get<std::string>();
     }
@@ -207,7 +197,7 @@ public:
      * Simulation only: these prices never influence live order routing. Exposed
      * so the reproducibility guarantee can be tested directly.
      *
-     * @param seed Seed for the price-path generator (ExecutionConfig::rng_seed)
+     * @param seed Seed for the price-path generator
      * @param parent_price Price of the parent order
      * @param num_slices Number of child orders to generate prices for
      * @return Simulated child-order prices, one per slice

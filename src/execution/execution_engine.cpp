@@ -5,6 +5,7 @@
 #include <cmath>
 #include <iomanip>
 #include <iostream>
+#include <cstdint>
 #include <numeric>
 #include <random>
 #include <vector>
@@ -15,6 +16,13 @@
 #include "trade_ngin/data/market_data_bus.hpp"
 
 namespace trade_ngin {
+
+namespace {
+// Seed for the simulated-fill price jitter in execute_vwap. Fixed so a VWAP
+// backtest reproduces the same simulated price path from one run to the next.
+// Simulation only: these prices never feed live routing decisions.
+constexpr std::uint32_t kVwapJitterSeed = 42;
+}  // namespace
 
 ExecutionEngine::ExecutionEngine(std::shared_ptr<OrderManager> order_manager)
     : order_manager_(std::move(order_manager)) {
@@ -503,7 +511,7 @@ Result<void> ExecutionEngine::execute_vwap(const ExecutionJob& job) {
         // Simulated child-order prices for this job. Seeded from the job config so
         // the same seed always reproduces the same price path.
         const std::vector<double> slice_prices = generate_vwap_slice_prices(
-            job.config.rng_seed, parent_order.price.as_double(), num_slices);
+            kVwapJitterSeed, parent_order.price.as_double(), num_slices);
 
         // Generate child orders
         for (int i = 0; i < num_slices; ++i) {
