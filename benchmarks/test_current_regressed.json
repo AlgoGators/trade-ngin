@@ -1,0 +1,44 @@
+[
+  {
+    "iterations": 100,
+    "median_ns": 5226,
+    "name": "BarConversion_10_symbols",
+    "p95_ns": 5578
+  },
+  {
+    "iterations": 100,
+    "median_ns": 104,
+    "name": "MatrixOps_10x10",
+    "p95_ns": 127
+  },
+  {
+    "iterations": 100,
+    "median_ns": 1571,
+    "name": "MatrixOps_50x50",
+    "p95_ns": 1810
+  },
+  {
+    "iterations": 100,
+    "median_ns": 2254,
+    "name": "Optimizer_10_symbols",
+    "p95_ns": 2502
+  },
+  {
+    "iterations": 100,
+    "median_ns": 10649,
+    "name": "Optimizer_50_symbols",
+    "p95_ns": 13347
+  },
+  {
+    "iterations": 100,
+    "median_ns": 570,
+    "name": "Statistics_ADF_test_10",
+    "p95_ns": 577
+  },
+  {
+    "iterations": 100,
+    "median_ns": 1911,
+    "name": "Statistics_Normalizer_10",
+    "p95_ns": 2256
+  }
+]
