@@ -499,16 +499,19 @@ Result<void> ExecutionEngine::execute_vwap(const ExecutionJob& job) {
         double total_volume = 0.0;
         double volume_weighted_price = 0.0;
 
+        // Simulated market impact for the synthetic child fills below. Seeded per
+        // call from the job config so a given seed always reproduces the same
+        // price path, independent of thread or how many jobs ran before it. This
+        // is backtest simulation only and never feeds live routing decisions.
+        std::mt19937 rng(job.config.rng_seed);
+        std::uniform_real_distribution<double> jitter(-0.0005, 0.0005);
+
         // Generate child orders
         for (int i = 0; i < num_slices; ++i) {
             Order child = parent_order;
             child.quantity = Quantity(slice_size);
 
-            // Adjust price slightly around parent price to simulate market impact.
-            // Fixed-seed mt19937 keeps simulated fills reproducible across runs
-            // and avoids rand()'s coarse RAND_MAX (32767 on MSVC) and shared state.
-            static thread_local std::mt19937 rng(42);
-            std::uniform_real_distribution<double> jitter(-0.0005, 0.0005);
+            // Adjust price slightly around parent price to simulate market impact
             double price_adjustment = jitter(rng);
             child.price = Price(parent_order.price.as_double() * (1.0 + price_adjustment));
 
