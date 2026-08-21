@@ -338,7 +338,7 @@ public:
      *
      * Precedence (lowest to highest):
      *   1. defaults.json
-     *   2. portfolios/{name}/*.json
+     *   2. portfolios/{name}/ (*.json files)
      *   3. Active DB override row (deep-merged on top via merge_json)
      *
      * SECURITY: DB overrides attempting to set database.* or password fields are rejected.
@@ -399,7 +399,7 @@ private:
 
     /**
      * @brief Validate that an override does not attempt to set protected fields.
-     * @param override JSONB override object from DB
+     * @param override_json JSONB override object from DB
      * @return Result indicating success or error (includes field name in error message)
      *
      * Rejects:
@@ -410,7 +410,7 @@ private:
      * If allowed, anyone who can write strategy_config could repoint the engine at a
      * database they control (database.*) or intercept emails (email.password).
      */
-    static Result<void> validate_override_no_credentials(const nlohmann::json& override);
+    static Result<void> validate_override_no_credentials(const nlohmann::json& override_json);
 
     /**
      * @brief Strip credentials from AppConfig before publishing to manifest.

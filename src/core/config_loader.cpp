@@ -343,16 +343,15 @@ Result<AppConfig> ConfigLoader::load(const std::filesystem::path& config_base_pa
         return config;
     }
 
-    nlohmann::json override = db_override_result.value();
-    if (override.is_null() || override.empty()) {
+    nlohmann::json override_json = db_override_result.value();
+    if (override_json.is_null() || override_json.empty()) {
         INFO(std::string("No active DB override for portfolio ") + config.portfolio_id +
                     "; using file config.");
         return config;
     }
 
     // Validate override does not contain protected fields.
-    auto validate_result = validate_override_no_credentials(override);
-    if (validate_result.is_error()) {
+    if (auto validate_result = validate_override_no_credentials(override_json); validate_result.is_error()) {
         ERROR(std::string("DB override validation failed: ") + validate_result.error()->what());
         // SECURITY: reject the override entirely if it contains protected fields.
         // Do not merge it; fall back to file config.
@@ -362,7 +361,7 @@ Result<AppConfig> ConfigLoader::load(const std::filesystem::path& config_base_pa
     // Merge file config with DB override (DB wins).
     // Convert current config to JSON, merge override on top, re-extract.
     nlohmann::json file_json = config.to_json();
-    merge_json(file_json, override);
+    merge_json(file_json, override_json);
 
     // Re-extract to AppConfig.
     auto merged_result = extract_config(file_json);
@@ -377,8 +376,7 @@ Result<AppConfig> ConfigLoader::load(const std::filesystem::path& config_base_pa
 
     // Publish effective config to manifest.
     nlohmann::json manifest = strip_credentials_for_manifest(merged_config);
-    auto pub_result = publish_config_manifest(db, merged_config.portfolio_id, manifest);
-    if (pub_result.is_error()) {
+    if (auto pub_result = publish_config_manifest(db, merged_config.portfolio_id, manifest); pub_result.is_error()) {
         WARN(std::string("Failed to publish config manifest: ") + pub_result.error()->what() +
                     "; trading run continues with merged config.");
         // Publishing failure does not stop the run.
@@ -409,11 +407,11 @@ Result<nlohmann::json> ConfigLoader::load_db_override(PostgresDatabase* db,
 
         // Parameterized query to prevent injection.
         pqxx::work txn(*conn);
-        pqxx::result r = txn.exec_params(
+        pqxx::result r = txn.exec(
             "SELECT overrides FROM trading.strategy_config "
             "WHERE portfolio_id = $1 AND is_active = true "
             "LIMIT 1",
-            portfolio_id);
+            pqxx::params{portfolio_id});
         txn.commit();
 
         if (r.empty()) {
@@ -438,21 +436,21 @@ Result<nlohmann::json> ConfigLoader::load_db_override(PostgresDatabase* db,
             ErrorCode::JSON_PARSE_ERROR,
             "Failed to parse overrides JSONB: " + std::string(e.what()),
             "ConfigLoader::load_db_override");
-    } catch (const std::exception& e) {
+    } catch (const pqxx::pqxx_exception& e) {
         return make_error<nlohmann::json>(ErrorCode::DATABASE_ERROR,
-                                          "Unexpected error: " + std::string(e.what()),
+                                          "Database operation failed: " + std::string(e.what()),
                                           "ConfigLoader::load_db_override");
     }
 }
 
-Result<void> ConfigLoader::validate_override_no_credentials(const nlohmann::json& override) {
+Result<void> ConfigLoader::validate_override_no_credentials(const nlohmann::json& override_json) {
     // Recursive check: reject if override contains database.* or email.password.
-    if (!override.is_object()) {
+    if (!override_json.is_object()) {
         return Result<void>();  // Non-object, no fields to validate.
     }
 
     // Check top-level fields.
-    if (override.contains("database")) {
+    if (override_json.contains("database")) {
         return make_error<void>(
             ErrorCode::INVALID_ARGUMENT,
             "Config override cannot contain 'database' field (security restriction: "
@@ -460,8 +458,8 @@ Result<void> ConfigLoader::validate_override_no_credentials(const nlohmann::json
             "ConfigLoader::validate_override_no_credentials");
     }
 
-    if (override.contains("email")) {
-        const auto& email_obj = override.at("email");
+    if (override_json.contains("email")) {
+        const auto& email_obj = override_json.at("email");
         if (email_obj.is_object() && email_obj.contains("password")) {
             return make_error<void>(
                 ErrorCode::INVALID_ARGUMENT,
@@ -519,10 +517,10 @@ Result<void> ConfigLoader::publish_config_manifest(PostgresDatabase* db,
 
         // Parameterized INSERT.
         pqxx::work txn(*conn);
-        txn.exec_params(
+        txn.exec(
             "INSERT INTO trading.config_manifest (portfolio_id, effective, published_at) "
             "VALUES ($1, $2, now())",
-            portfolio_id, manifest_str);
+            pqxx::params{portfolio_id, manifest_str});
         txn.commit();
 
         return Result<void>();
@@ -535,9 +533,9 @@ Result<void> ConfigLoader::publish_config_manifest(PostgresDatabase* db,
         return make_error<void>(ErrorCode::DATABASE_ERROR,
                                 "Database connection lost: " + std::string(e.what()),
                                 "ConfigLoader::publish_config_manifest");
-    } catch (const std::exception& e) {
+    } catch (const pqxx::pqxx_exception& e) {
         return make_error<void>(ErrorCode::DATABASE_ERROR,
-                                "Unexpected error: " + std::string(e.what()),
+                                "Database operation failed: " + std::string(e.what()),
                                 "ConfigLoader::publish_config_manifest");
     }
 }

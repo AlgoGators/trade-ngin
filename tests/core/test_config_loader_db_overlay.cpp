@@ -222,3 +222,191 @@ TEST_F(ConfigLoaderDBOverlayTest, LoadWithNullDatabasePointer) {
     auto result = ConfigLoader::load(base_, "test", nullptr);
     EXPECT_FALSE(result.is_error()) << "Load failed with nullptr db: " << result.error()->what();
 }
+
+// TEST 11: validate_override_no_credentials rejects override with database field.
+TEST_F(ConfigLoaderDBOverlayTest, ValidateRejectsDatabaseField) {
+    nlohmann::json bad_override = {
+        {"database", {{"host", "evil.com"}}}
+    };
+    auto result = ConfigLoader::validate_override_no_credentials(bad_override);
+    EXPECT_TRUE(result.is_error()) << "Should reject override with database field";
+    EXPECT_TRUE(result.error()->what() != nullptr);
+    EXPECT_TRUE(std::string(result.error()->what()).find("database") != std::string::npos);
+}
+
+// TEST 12: validate_override_no_credentials rejects override with email.password field.
+TEST_F(ConfigLoaderDBOverlayTest, ValidateRejectsEmailPassword) {
+    nlohmann::json bad_override = {
+        {"email", {{"password", "secret"}}}
+    };
+    auto result = ConfigLoader::validate_override_no_credentials(bad_override);
+    EXPECT_TRUE(result.is_error()) << "Should reject override with email.password";
+    EXPECT_TRUE(result.error()->what() != nullptr);
+    EXPECT_TRUE(std::string(result.error()->what()).find("email.password") != std::string::npos);
+}
+
+// TEST 13: validate_override_no_credentials accepts valid override.
+TEST_F(ConfigLoaderDBOverlayTest, ValidateAcceptsValidOverride) {
+    nlohmann::json good_override = {
+        {"execution", {{"commission_rate", 0.001}}},
+        {"backtest", {{"lookback_years", 3}}}
+    };
+    auto result = ConfigLoader::validate_override_no_credentials(good_override);
+    EXPECT_FALSE(result.is_error()) << "Should accept valid override";
+}
+
+// TEST 14: validate_override_no_credentials accepts empty override.
+TEST_F(ConfigLoaderDBOverlayTest, ValidateAcceptsEmptyOverride) {
+    nlohmann::json empty_override = nlohmann::json::object();
+    auto result = ConfigLoader::validate_override_no_credentials(empty_override);
+    EXPECT_FALSE(result.is_error()) << "Should accept empty override";
+}
+
+// TEST 15: validate_override_no_credentials accepts non-object types without error.
+TEST_F(ConfigLoaderDBOverlayTest, ValidateAcceptsNonObject) {
+    nlohmann::json non_obj = "string_value";
+    auto result = ConfigLoader::validate_override_no_credentials(non_obj);
+    EXPECT_FALSE(result.is_error()) << "Should accept non-object (no fields to validate)";
+}
+
+// TEST 16: validate_override_no_credentials accepts override with other fields.
+TEST_F(ConfigLoaderDBOverlayTest, ValidateAcceptsOtherFields) {
+    nlohmann::json good_override = {
+        {"execution", {{"commission_rate", 0.002}}},
+        {"optimization", {{"tau", 1.5}}},
+        {"backtest", {{"store_trade_details", false}}}
+    };
+    auto result = ConfigLoader::validate_override_no_credentials(good_override);
+    EXPECT_FALSE(result.is_error()) << "Should accept override with allowed fields";
+}
+
+// TEST 17: validate_override_no_credentials with email object but no password.
+TEST_F(ConfigLoaderDBOverlayTest, ValidateAcceptsEmailWithoutPassword) {
+    nlohmann::json override_with_email = {
+        {"email", {{"smtp_host", "smtp.new.com"}, {"smtp_port", 587}}}
+    };
+    auto result = ConfigLoader::validate_override_no_credentials(override_with_email);
+    EXPECT_FALSE(result.is_error()) << "Should accept email override without password";
+}
+
+// TEST 18: validate_override_no_credentials rejects nested database fields.
+TEST_F(ConfigLoaderDBOverlayTest, ValidateRejectsNestedDatabaseFields) {
+    nlohmann::json bad_override = {
+        {"database", {
+            {"host", "evil.com"},
+            {"port", "9999"},
+            {"username", "hacker"},
+            {"password", "stolen"}
+        }}
+    };
+    auto result = ConfigLoader::validate_override_no_credentials(bad_override);
+    EXPECT_TRUE(result.is_error()) << "Should reject nested database fields";
+}
+
+// TEST 19: Configuration loads and merges override successfully (with nullptr db).
+TEST_F(ConfigLoaderDBOverlayTest, LoadMergesConfigCorrectly) {
+    auto result = ConfigLoader::load(base_, "test", nullptr);
+    EXPECT_FALSE(result.is_error());
+    if (!result.is_error()) {
+        AppConfig config = result.value();
+        EXPECT_EQ(config.portfolio_id, "TEST_PORTFOLIO");
+        EXPECT_EQ(config.initial_capital, 1'000'000.0);
+        EXPECT_TRUE(config.strategies.count("TREND_FOLLOWING") > 0);
+    }
+}
+
+// TEST 20: merge_json with empty source.
+TEST_F(ConfigLoaderDBOverlayTest, MergeJsonWithEmptySource) {
+    nlohmann::json target = {
+        {"execution", {{"commission_rate", 0.0005}}}
+    };
+    nlohmann::json empty_source = nlohmann::json::object();
+
+    ConfigLoader::merge_json(target, empty_source);
+
+    EXPECT_EQ(target.at("execution").at("commission_rate"), 0.0005);
+}
+
+// TEST 21: merge_json replaces primitive values.
+TEST_F(ConfigLoaderDBOverlayTest, MergeJsonReplacesPrimitiveValues) {
+    nlohmann::json target = {
+        {"backtest", {{"lookback_years", 2}}}
+    };
+    nlohmann::json source = {
+        {"backtest", {{"lookback_years", 5}}}
+    };
+
+    ConfigLoader::merge_json(target, source);
+
+    EXPECT_EQ(target.at("backtest").at("lookback_years"), 5);
+}
+
+// TEST 22: merge_json handles arrays (replaces rather than merges).
+TEST_F(ConfigLoaderDBOverlayTest, MergeJsonHandlesArrays) {
+    nlohmann::json target = {
+        {"strategy_defaults", {{"fdm", nlohmann::json::array({{1, 1.0}, {2, 1.03}})}}}
+    };
+    nlohmann::json source = {
+        {"strategy_defaults", {{"fdm", nlohmann::json::array({{1, 1.1}})}}}
+    };
+
+    ConfigLoader::merge_json(target, source);
+
+    auto& fdm = target.at("strategy_defaults").at("fdm");
+    EXPECT_EQ(fdm.size(), 1) << "Arrays should be replaced, not merged";
+}
+
+// TEST 23: strip_credentials_for_manifest removes database section.
+TEST_F(ConfigLoaderDBOverlayTest, StripCredentialsRemovesDatabaseSection) {
+    auto file_result = ConfigLoader::load(base_, "test", nullptr);
+    ASSERT_FALSE(file_result.is_error());
+    AppConfig config = file_result.value();
+
+    nlohmann::json manifest = ConfigLoader::strip_credentials_for_manifest(config);
+
+    EXPECT_FALSE(manifest.contains("database"))
+        << "Manifest should not contain database section";
+}
+
+// TEST 24: strip_credentials_for_manifest preserves execution section.
+TEST_F(ConfigLoaderDBOverlayTest, StripCredentialsPreservesExecutionSection) {
+    auto file_result = ConfigLoader::load(base_, "test", nullptr);
+    ASSERT_FALSE(file_result.is_error());
+    AppConfig config = file_result.value();
+
+    nlohmann::json manifest = ConfigLoader::strip_credentials_for_manifest(config);
+
+    EXPECT_TRUE(manifest.contains("execution"))
+        << "Manifest should contain execution section";
+    EXPECT_TRUE(manifest.at("execution").contains("commission_rate"));
+}
+
+// TEST 25: Load with invalid portfolio directory.
+TEST_F(ConfigLoaderDBOverlayTest, LoadWithInvalidPortfolioDirectory) {
+    auto result = ConfigLoader::load(base_, "nonexistent_portfolio", nullptr);
+    EXPECT_TRUE(result.is_error())
+        << "Should fail when portfolio directory does not exist";
+}
+
+// TEST 26: merge_json with multiple nested levels.
+TEST_F(ConfigLoaderDBOverlayTest, MergeJsonMultipleLevels) {
+    nlohmann::json target = {
+        {"optimization", {
+            {"tau", 1.0},
+            {"capital", 500000.0},
+            {"cost_penalty_scalar", 50}
+        }}
+    };
+    nlohmann::json source = {
+        {"optimization", {
+            {"tau", 1.5},
+            {"max_iterations", 200}
+        }}
+    };
+
+    ConfigLoader::merge_json(target, source);
+
+    EXPECT_EQ(target.at("optimization").at("tau"), 1.5);
+    EXPECT_EQ(target.at("optimization").at("capital"), 500000.0);
+    EXPECT_EQ(target.at("optimization").at("max_iterations"), 200);
+}
