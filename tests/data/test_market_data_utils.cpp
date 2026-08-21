@@ -113,6 +113,25 @@ TEST_F(MarketDataUtilsTest, CryptoReturnsPlainColumns) {
     EXPECT_EQ(columns.find("adj_open"), std::string::npos);
 }
 
+TEST_F(MarketDataUtilsTest, OptionsReturnsPlainColumns) {
+    // OPTIONS asset class should use unadjusted columns.
+    // Options pricing does not involve stock splits or dividends,
+    // so adjusted prices are not applicable.
+    auto columns = market_data_utils::get_market_data_columns(AssetClass::OPTIONS);
+    EXPECT_NE(columns.find("open"), std::string::npos)
+        << "open column must be present for OPTIONS";
+    EXPECT_NE(columns.find("close"), std::string::npos)
+        << "close column must be present for OPTIONS";
+    EXPECT_EQ(columns.find("adj_open"), std::string::npos)
+        << "OPTIONS should not have adj_open; adjusted prices not applicable";
+    EXPECT_EQ(columns.find("adjusted_close"), std::string::npos)
+        << "OPTIONS should not have adjusted_close; adjusted prices not applicable";
+    EXPECT_NE(columns.find("time"), std::string::npos)
+        << "time column must be present";
+    EXPECT_NE(columns.find("symbol"), std::string::npos)
+        << "symbol column must be present";
+}
+
 // ===== get_schema_name cases =====
 
 // These tests verify the types.hpp get_schema_name() function

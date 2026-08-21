@@ -5,8 +5,6 @@
 #include <string>
 #include "trade_ngin/core/types.hpp"
 
-namespace trade_ngin {
-
 /**
  * @brief Pure utility for generating market data column lists
  *
@@ -26,8 +24,10 @@ namespace trade_ngin {
  * (currently Sharadar) to contract names. This code targets the contract,
  * not the current live schema, so failures will be loud (column does not exist)
  * rather than silent (wrong prices).
+ *
+ * Namespace: trade_ngin::market_data_utils
  */
-namespace market_data_utils {
+namespace trade_ngin::market_data_utils {
 
 /**
  * @brief Generate the SELECT column list for market data queries
@@ -40,6 +40,4 @@ namespace market_data_utils {
  */
 std::string get_market_data_columns(AssetClass asset_class);
 
-}  // namespace market_data_utils
-
-}  // namespace trade_ngin
+}  // namespace trade_ngin::market_data_utils
