@@ -34,6 +34,12 @@ double compute_mark_to_market_equity(
 // changed" (e.g. a futures back-adjustment restatement) between when this
 // row was recorded and a later replay; it does not need to be
 // collision-resistant against an adversary.
+// The exact hash build_run_inputs_row uses for data_window.content_hash,
+// exposed so a replay tool can recompute it against freshly-loaded bars and
+// compare, per ADR-005 5.3 step 2b (a mismatch means a data restatement --
+// e.g. a futures back-adjustment -- happened between recording and replay).
+std::string hash_bars(const std::vector<Bar>& bars);
+
 nlohmann::json build_run_inputs_row(const std::string& trade_ngin_sha,
                                      const nlohmann::json& config_snapshot,
                                      const std::vector<std::string>& universe,

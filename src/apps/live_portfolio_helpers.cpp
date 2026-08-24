@@ -28,6 +28,21 @@ double compute_mark_to_market_equity(
     return total_equity;
 }
 
+std::string hash_bars(const std::vector<Bar>& bars) {
+    std::hash<std::string> hasher;
+    size_t running_hash = 0;
+    for (const auto& bar : bars) {
+        std::ostringstream bar_repr;
+        bar_repr << bar.symbol << std::chrono::system_clock::to_time_t(bar.timestamp)
+                  << bar.close.as_double();
+        running_hash ^=
+            hasher(bar_repr.str()) + 0x9e3779b9 + (running_hash << 6) + (running_hash >> 2);
+    }
+    std::ostringstream hash_hex;
+    hash_hex << std::hex << running_hash;
+    return hash_hex.str();
+}
+
 nlohmann::json build_run_inputs_row(const std::string& trade_ngin_sha,
                                      const nlohmann::json& config_snapshot,
                                      const std::vector<std::string>& universe,
@@ -41,23 +56,10 @@ nlohmann::json build_run_inputs_row(const std::string& trade_ngin_sha,
     nlohmann::json data_window;
     data_window["schema"] = "trading";
     data_window["table"] = "bar";
-    size_t row_count = 0;
-    std::hash<std::string> hasher;
-    size_t running_hash = 0;
-    for (const auto& bar : all_bars) {
-        ++row_count;
-        std::ostringstream bar_repr;
-        bar_repr << bar.symbol << std::chrono::system_clock::to_time_t(bar.timestamp)
-                  << bar.close.as_double();
-        running_hash ^=
-            hasher(bar_repr.str()) + 0x9e3779b9 + (running_hash << 6) + (running_hash >> 2);
-    }
-    std::ostringstream hash_hex;
-    hash_hex << std::hex << running_hash;
     data_window["start"] = 0;
     data_window["end"] = 0;
-    data_window["row_count"] = row_count;
-    data_window["content_hash"] = hash_hex.str();
+    data_window["row_count"] = all_bars.size();
+    data_window["content_hash"] = hash_bars(all_bars);
     row["data_window"] = data_window;
 
     row["risk_limits_id"] = nlohmann::json::value_t::null;
