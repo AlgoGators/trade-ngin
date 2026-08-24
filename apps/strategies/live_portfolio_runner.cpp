@@ -58,6 +58,55 @@ static constexpr const char* QT_STREAM = "qt";
 // never sees a QT edit. Requires migration 003.
 static constexpr const char* BENCHMARK_STREAM = "benchmark";
 
+// Helper: compute mark-to-market equity from positions and latest close prices
+double compute_mark_to_market_equity(
+    const std::map<std::string, trade_ngin::Position>& positions,
+    const std::map<std::string, std::vector<trade_ngin::Bar>>& all_bars) {
+    double total_equity = 0.0;
+    for (const auto& [sym, position] : positions) {
+        auto bars_it = all_bars.find(sym);
+        if (bars_it != all_bars.end() && !bars_it->second.empty()) {
+            // Use the last bar's close price
+            double close_price = bars_it->second.back().close.as_double();
+            double qty = position.quantity.as_double();
+            total_equity += qty * close_price;
+        }
+    }
+    return total_equity;
+}
+
+// Helper: build run_inputs row for replay contract
+nlohmann::json build_run_inputs_row(
+    const std::string& trade_ngin_sha,
+    const nlohmann::json& config_snapshot,
+    const std::vector<std::string>& universe,
+    const std::map<std::string, std::vector<trade_ngin::Bar>>& all_bars,
+    const std::string& benchmark_mode) {
+    nlohmann::json row;
+    row["trade_ngin_sha"] = trade_ngin_sha;
+    row["config_snapshot"] = config_snapshot;
+    row["universe"] = universe;
+
+    // data_window info
+    nlohmann::json data_window;
+    data_window["schema"] = "trading";
+    data_window["table"] = "bar";
+    data_window["start"] = 0;
+    data_window["end"] = 0;
+    data_window["row_count"] = 0;
+    data_window["content_hash"] = "";
+    row["data_window"] = data_window;
+
+    row["risk_limits_id"] = nlohmann::json::value_t::null;
+
+    nlohmann::json engine_flags;
+    engine_flags["benchmark_mode"] = benchmark_mode;
+    engine_flags["rng_seed"] = nlohmann::json::value_t::null;
+    row["engine_flags"] = engine_flags;
+
+    return row;
+}
+
 int trade_ngin::run_live_portfolio(const LivePortfolioConfig& portfolio_cfg, int argc, char* argv[]) {
     try {
         // Parse command-line arguments for date override and email flag
@@ -387,6 +436,7 @@ int trade_ngin::run_live_portfolio(const LivePortfolioConfig& portfolio_cfg, int
             app_config.strategy_defaults.min_strategy_allocation;
         portfolio_config.use_optimization = app_config.strategy_defaults.use_optimization;
         portfolio_config.use_risk_management = app_config.strategy_defaults.use_risk_management;
+        portfolio_config.benchmark_mode = app_config.benchmark_mode;
         portfolio_config.opt_config = opt_config;
         portfolio_config.risk_config = risk_config;
 
@@ -1827,6 +1877,20 @@ int trade_ngin::run_live_portfolio(const LivePortfolioConfig& portfolio_cfg, int
         INFO("PHASE 4: Total positions saved across all strategies: " +
              std::to_string(total_positions_saved));
 
+        // Write trading.run_inputs row (replay contract)
+        try {
+            nlohmann::json run_inputs_row = build_run_inputs_row(
+                "unknown",  // TODO: embed git SHA at build time
+                app_config.to_json(),
+                strategy_names,
+                portfolio_config.benchmark_mode);
+
+            // TODO: store run_inputs_row in trading.run_inputs table via db->store_run_inputs()
+            INFO("Run inputs row built for replay contract");
+        } catch (const std::exception& e) {
+            WARN("Failed to build/store run_inputs row (non-fatal): " + std::string(e.what()));
+        }
+
         // ========================================
         // BENCHMARK PASS: the untouched counterfactual portfolio
         // ========================================
@@ -1846,8 +1910,9 @@ int trade_ngin::run_live_portfolio(const LivePortfolioConfig& portfolio_cfg, int
         // A benchmark failure is never fatal. The real book is already stored by this
         // point, and a missing day of counterfactual is a reporting gap, not a trading
         // problem.
-        try {
-            INFO("BENCHMARK: computing untouched counterfactual portfolio");
+        if (portfolio_config.benchmark_mode == "live") {
+            try {
+                INFO("BENCHMARK: computing untouched counterfactual portfolio");
 
             auto bench_strategies = build_strategy_set();
 
@@ -1932,10 +1997,42 @@ int trade_ngin::run_live_portfolio(const LivePortfolioConfig& portfolio_cfg, int
                 }
                 INFO("BENCHMARK: stored " + std::to_string(bench_stored) +
                      " counterfactual position(s)");
+
+                // Compute and store mark-to-market equity for benchmark stream
+                try {
+                    double bench_equity = 0.0;
+                    for (const auto& [strat_name, pos_map] : bench_positions_map) {
+                        for (const auto& [sym, pos] : pos_map) {
+                            auto bars_it = all_bars.find(sym);
+                            if (bars_it != all_bars.end() && !bars_it->second.empty()) {
+                                double close_price = bars_it->second.back().close.as_double();
+                                double qty = pos.quantity.as_double();
+                                bench_equity += qty * close_price;
+                            }
+                        }
+                    }
+                    auto equity_store = db->store_trading_equity_curve(
+                        combined_strategy_id, now, bench_equity,
+                        coordinator_config.portfolio_id, "trading.equity_curve",
+                        BENCHMARK_STREAM);
+                    if (equity_store.is_error()) {
+                        WARN("BENCHMARK: failed to store equity curve: " +
+                             std::string(equity_store.error()->what()));
+                    } else {
+                        INFO("BENCHMARK: stored mark-to-market equity: $" +
+                             std::to_string(bench_equity));
+                    }
+                } catch (const std::exception& equity_e) {
+                    WARN("BENCHMARK: failed to compute/store equity (non-fatal): " +
+                         std::string(equity_e.what()));
+                }
             }
-        } catch (const std::exception& e) {
-            WARN("BENCHMARK pass failed (non-fatal, real book already stored): " +
-                 std::string(e.what()));
+            } catch (const std::exception& e) {
+                WARN("BENCHMARK pass failed (non-fatal, real book already stored): " +
+                     std::string(e.what()));
+            }
+        } else {
+            INFO("BENCHMARK mode is deferred; skipping live benchmark pass");
         }
 
         // Compute portfolio-level snapshot metrics using RiskManager on today's state

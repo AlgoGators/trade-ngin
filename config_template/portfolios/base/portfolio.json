@@ -3,6 +3,7 @@
   "portfolio_id": "BASE_PORTFOLIO",
   "initial_capital": 500000,
   "reserve_capital_pct": 0.1,
+  "benchmark_mode": "live",
   "strategies": {
     "TREND_FOLLOWING": {
       "enabled_backtest": true,

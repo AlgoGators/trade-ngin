@@ -38,6 +38,7 @@ struct PortfolioConfig : public ConfigBase {
     bool use_risk_management{false};  // Whether to use risk management
     DynamicOptConfig opt_config;      // Optimization configuration
     RiskConfig risk_config;           // Risk management configuration
+    std::string benchmark_mode{"live"};  // Benchmark mode: "live" or "deferred"
 
     std::string version{"1.0.0"};  // Configuration version
 
@@ -61,6 +62,7 @@ struct PortfolioConfig : public ConfigBase {
         j["min_strategy_allocation"] = min_strategy_allocation;
         j["use_optimization"] = use_optimization;
         j["use_risk_management"] = use_risk_management;
+        j["benchmark_mode"] = benchmark_mode;
         j["opt_config"] = opt_config.to_json();
         j["risk_config"] = risk_config.to_json();
         j["version"] = version;
@@ -83,6 +85,9 @@ struct PortfolioConfig : public ConfigBase {
         }
         if (j.contains("use_risk_management")) {
             use_risk_management = j.at("use_risk_management").get<bool>();
+        }
+        if (j.contains("benchmark_mode")) {
+            benchmark_mode = j.at("benchmark_mode").get<std::string>();
         }
         if (j.contains("opt_config"))
             opt_config.from_json(j.at("opt_config"));
