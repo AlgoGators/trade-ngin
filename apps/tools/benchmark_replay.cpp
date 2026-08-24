@@ -40,12 +40,20 @@
 //   via the internal --target-stream/--record-engine-mode flags below --
 //   see run_frozen_mode.)
 //
-// Internal flags (set by run_frozen_mode when invoking a historical image's
-// own benchmark_replay; not intended for direct/top-level use):
-//   --target-stream <benchmark|benchmark_rebench>   overrides which
-//       portfolio_type stream --engine current's per-day logic reads/writes.
-//   --record-engine-mode <frozen|current>            overrides the
-//       engine_mode value recorded in trading.benchmark_replays.
+// --target-stream / --record-engine-mode: mostly set internally by
+// run_frozen_mode when invoking a historical image's own benchmark_replay
+// (see above), but also the ADR-005 §7 parity gate's entry point: run
+//   benchmark_replay --portfolio X --engine frozen --through Y
+//                     --target-stream benchmark_frozen_shadow
+// to replay into the 'benchmark_frozen_shadow' stream (migration 007)
+// instead of overwriting the live 'benchmark' stream being compared
+// against, then compare the two with scripts/parity_gate.sql.
+//   --target-stream <benchmark|benchmark_rebench|benchmark_frozen_shadow>
+//       overrides which portfolio_type stream --engine current's per-day
+//       logic reads/writes.
+//   --record-engine-mode <frozen|current>
+//       overrides the engine_mode value recorded in
+//       trading.benchmark_replays.
 //
 // Construction of the strategy set itself (build_strategy_instances,
 // select_enabled_live_strategies) is shared with live_portfolio_runner.cpp
@@ -175,8 +183,11 @@ bool parse_args(int argc, char* argv[], CliArgs* args, std::string* error) {
     }
     if (args->target_stream_override.has_value() &&
         *args->target_stream_override != "benchmark" &&
-        *args->target_stream_override != "benchmark_rebench") {
-        *error = "--target-stream must be 'benchmark' or 'benchmark_rebench'";
+        *args->target_stream_override != "benchmark_rebench" &&
+        *args->target_stream_override != "benchmark_frozen_shadow") {
+        *error =
+            "--target-stream must be 'benchmark', 'benchmark_rebench', or "
+            "'benchmark_frozen_shadow'";
         return false;
     }
     if (args->record_engine_mode_override.has_value() &&
