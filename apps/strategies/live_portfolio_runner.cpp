@@ -27,6 +27,7 @@
 #include "trade_ngin/data/database_pooling.hpp"
 #include "trade_ngin/data/market_data_bus.hpp"
 #include "live_portfolio_runner.hpp"
+#include "trade_ngin/git_version.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
 #include "trade_ngin/instruments/futures.hpp"
 #include "trade_ngin/instruments/instrument_registry.hpp"
@@ -58,16 +59,29 @@ static constexpr const char* QT_STREAM = "qt";
 // never sees a QT edit. Requires migration 003.
 static constexpr const char* BENCHMARK_STREAM = "benchmark";
 
+// Helper: latest bar per symbol from a flat, chronologically-loaded bar
+// vector (all_bars' real type -- see DataConversionUtils::arrow_table_to_bars).
+// Both helpers below only ever need "the most recent close per symbol", so
+// this is built once by the caller and passed to both, rather than each
+// scanning the full vector per position.
+std::unordered_map<std::string, trade_ngin::Bar> latest_bar_by_symbol(
+    const std::vector<trade_ngin::Bar>& all_bars) {
+    std::unordered_map<std::string, trade_ngin::Bar> latest;
+    for (const auto& bar : all_bars) {
+        latest[bar.symbol] = bar;  // last occurrence per symbol wins (chronological order)
+    }
+    return latest;
+}
+
 // Helper: compute mark-to-market equity from positions and latest close prices
 double compute_mark_to_market_equity(
-    const std::map<std::string, trade_ngin::Position>& positions,
-    const std::map<std::string, std::vector<trade_ngin::Bar>>& all_bars) {
+    const std::unordered_map<std::string, trade_ngin::Position>& positions,
+    const std::unordered_map<std::string, trade_ngin::Bar>& latest_bars) {
     double total_equity = 0.0;
     for (const auto& [sym, position] : positions) {
-        auto bars_it = all_bars.find(sym);
-        if (bars_it != all_bars.end() && !bars_it->second.empty()) {
-            // Use the last bar's close price
-            double close_price = bars_it->second.back().close.as_double();
+        auto bars_it = latest_bars.find(sym);
+        if (bars_it != latest_bars.end()) {
+            double close_price = bars_it->second.close.as_double();
             double qty = position.quantity.as_double();
             total_equity += qty * close_price;
         }
@@ -80,21 +94,38 @@ nlohmann::json build_run_inputs_row(
     const std::string& trade_ngin_sha,
     const nlohmann::json& config_snapshot,
     const std::vector<std::string>& universe,
-    const std::map<std::string, std::vector<trade_ngin::Bar>>& all_bars,
+    const std::vector<trade_ngin::Bar>& all_bars,
     const std::string& benchmark_mode) {
     nlohmann::json row;
     row["trade_ngin_sha"] = trade_ngin_sha;
     row["config_snapshot"] = config_snapshot;
     row["universe"] = universe;
 
-    // data_window info
+    // data_window info -- content_hash detects a real data change (e.g. a
+    // futures back-adjustment restatement) between when this row was
+    // recorded and a later replay. Not cryptographic; std::hash is fine for
+    // "did the exact bars loaded change", which is the only property this
+    // needs (ADR-005 5.2).
     nlohmann::json data_window;
     data_window["schema"] = "trading";
     data_window["table"] = "bar";
+    size_t row_count = 0;
+    std::hash<std::string> hasher;
+    size_t running_hash = 0;
+    for (const auto& bar : all_bars) {
+        ++row_count;
+        std::ostringstream bar_repr;
+        bar_repr << bar.symbol << std::chrono::system_clock::to_time_t(bar.timestamp)
+                  << bar.close.as_double();
+        running_hash ^=
+            hasher(bar_repr.str()) + 0x9e3779b9 + (running_hash << 6) + (running_hash >> 2);
+    }
+    std::ostringstream hash_hex;
+    hash_hex << std::hex << running_hash;
     data_window["start"] = 0;
     data_window["end"] = 0;
-    data_window["row_count"] = 0;
-    data_window["content_hash"] = "";
+    data_window["row_count"] = row_count;
+    data_window["content_hash"] = hash_hex.str();
     row["data_window"] = data_window;
 
     row["risk_limits_id"] = nlohmann::json::value_t::null;
@@ -792,6 +823,9 @@ int trade_ngin::run_live_portfolio(const LivePortfolioConfig& portfolio_cfg, int
 
         auto all_bars = conversion_result.value();
         INFO("Loaded " + std::to_string(all_bars.size()) + " total bars");
+        // Latest close per symbol, built once -- used by compute_mark_to_market_equity()
+        // in the benchmark pass below, rather than re-scanning all_bars per position.
+        auto latest_bars = latest_bar_by_symbol(all_bars);
 
         // Update price manager with bars to extract T-1 and T-2 prices
         if (price_manager) {
@@ -1877,16 +1911,49 @@ int trade_ngin::run_live_portfolio(const LivePortfolioConfig& portfolio_cfg, int
         INFO("PHASE 4: Total positions saved across all strategies: " +
              std::to_string(total_positions_saved));
 
-        // Write trading.run_inputs row (replay contract)
+        // Write trading.run_inputs row (replay contract, ADR-005 5.1 D-1) --
+        // unconditional, every day, regardless of benchmark.mode, since it's
+        // what a later `deferred`-mode replay reconstructs from.
         try {
             nlohmann::json run_inputs_row = build_run_inputs_row(
-                "unknown",  // TODO: embed git SHA at build time
-                app_config.to_json(),
-                strategy_names,
+                TRADE_NGIN_GIT_SHA, app_config.to_json(), strategy_names, all_bars,
                 portfolio_config.benchmark_mode);
 
-            // TODO: store run_inputs_row in trading.run_inputs table via db->store_run_inputs()
-            INFO("Run inputs row built for replay contract");
+            auto run_date_t = std::chrono::system_clock::to_time_t(now);
+            std::ostringstream run_date_ss;
+            run_date_ss << std::put_time(std::gmtime(&run_date_t), "%Y-%m-%d");
+
+            // Dollar-quoted JSONB literals: the config/universe/bars content
+            // can legitimately contain single quotes (e.g. a strategy name),
+            // and dollar-quoting sidesteps escaping entirely rather than
+            // risking a malformed or (worse) injectable string built by hand.
+            std::ostringstream insert_sql;
+            insert_sql
+                << "INSERT INTO trading.run_inputs "
+                   "(portfolio_id, strategy_id, date, trade_ngin_sha, config_snapshot, "
+                   "universe, data_window, risk_limits_id, engine_flags) VALUES ('"
+                << coordinator_config.portfolio_id << "', '" << combined_strategy_id << "', '"
+                << run_date_ss.str() << "', '" << TRADE_NGIN_GIT_SHA << "', $rirq$"
+                << run_inputs_row["config_snapshot"].dump() << "$rirq$::jsonb, $rirq$"
+                << run_inputs_row["universe"].dump() << "$rirq$::jsonb, $rirq$"
+                << run_inputs_row["data_window"].dump() << "$rirq$::jsonb, NULL, $rirq$"
+                << run_inputs_row["engine_flags"].dump()
+                << "$rirq$::jsonb) "
+                   "ON CONFLICT (portfolio_id, strategy_id, date) DO UPDATE SET "
+                   "trade_ngin_sha = EXCLUDED.trade_ngin_sha, "
+                   "config_snapshot = EXCLUDED.config_snapshot, "
+                   "universe = EXCLUDED.universe, "
+                   "data_window = EXCLUDED.data_window, "
+                   "engine_flags = EXCLUDED.engine_flags, "
+                   "recorded_at = now()";
+
+            auto insert_result = db->execute_query(insert_sql.str());
+            if (insert_result.is_error()) {
+                WARN("Failed to store run_inputs row: " +
+                     std::string(insert_result.error()->what()));
+            } else {
+                INFO("Stored run_inputs row for replay contract (date=" + run_date_ss.str() + ")");
+            }
         } catch (const std::exception& e) {
             WARN("Failed to build/store run_inputs row (non-fatal): " + std::string(e.what()));
         }
@@ -1998,18 +2065,13 @@ int trade_ngin::run_live_portfolio(const LivePortfolioConfig& portfolio_cfg, int
                 INFO("BENCHMARK: stored " + std::to_string(bench_stored) +
                      " counterfactual position(s)");
 
-                // Compute and store mark-to-market equity for benchmark stream
+                // Compute and store mark-to-market equity for benchmark stream (ADR-005
+                // D-4): sum(quantity * close_price) per strategy's book, never derived
+                // from the fills/PnL machinery -- see compute_mark_to_market_equity().
                 try {
                     double bench_equity = 0.0;
                     for (const auto& [strat_name, pos_map] : bench_positions_map) {
-                        for (const auto& [sym, pos] : pos_map) {
-                            auto bars_it = all_bars.find(sym);
-                            if (bars_it != all_bars.end() && !bars_it->second.empty()) {
-                                double close_price = bars_it->second.back().close.as_double();
-                                double qty = pos.quantity.as_double();
-                                bench_equity += qty * close_price;
-                            }
-                        }
+                        bench_equity += compute_mark_to_market_equity(pos_map, latest_bars);
                     }
                     auto equity_store = db->store_trading_equity_curve(
                         combined_strategy_id, now, bench_equity,

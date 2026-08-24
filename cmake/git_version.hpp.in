@@ -1,0 +1,4 @@
+#pragma once
+
+// Auto-generated at build time with git SHA
+#define TRADE_NGIN_GIT_SHA "@TRADE_NGIN_GIT_SHA@"

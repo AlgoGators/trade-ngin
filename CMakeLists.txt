@@ -75,6 +75,44 @@ link_directories(${PQXX_LIBRARY_DIRS})
 # Include code coverage module if enabled
 include(cmake/CodeCoverage.cmake)
 
+# Extract git SHA at build time and generate version header
+if(GIT_FOUND OR (NOT WIN32 AND NOT APPLE))
+    execute_process(
+        COMMAND git rev-parse --short HEAD
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        OUTPUT_VARIABLE TRADE_NGIN_GIT_SHA
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET
+        RESULT_VARIABLE GIT_RESULT
+    )
+else()
+    find_package(Git QUIET)
+    if(Git_FOUND)
+        execute_process(
+            COMMAND ${GIT_EXECUTABLE} rev-parse --short HEAD
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+            OUTPUT_VARIABLE TRADE_NGIN_GIT_SHA
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_QUIET
+            RESULT_VARIABLE GIT_RESULT
+        )
+    endif()
+endif()
+
+# Fallback to "unknown" if git command failed or git not found
+if(NOT TRADE_NGIN_GIT_SHA OR GIT_RESULT)
+    set(TRADE_NGIN_GIT_SHA "unknown")
+endif()
+
+message(STATUS "Git SHA: ${TRADE_NGIN_GIT_SHA}")
+
+# Generate git_version.hpp from template
+configure_file(
+    "${CMAKE_SOURCE_DIR}/cmake/git_version.hpp.in"
+    "${CMAKE_BINARY_DIR}/include/trade_ngin/git_version.hpp"
+    @ONLY
+)
+
 # Add source files for the library
 set(TRADE_NGIN_SOURCES
     src/core/state_manager.cpp
@@ -187,6 +225,7 @@ endif()
 target_include_directories(trade_ngin
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_BINARY_DIR}/include
         ${Arrow_INCLUDE_DIRS}
 )
 
