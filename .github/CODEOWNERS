@@ -1,0 +1,18 @@
+# Code owners for AlgoGators/trade-ngin
+#
+# Every PR into main requests review from the people listed below. Branch
+# protection requires 2 approvals AND "require review from Code Owners", so at
+# least one approval must come from this list.
+#
+# NOTE: this list is intentionally NOT the repo admin list. As of 2026-08-18,
+# muriatic, NissanJonah, XanderRobbins and eschwarzzz hold write (not admin)
+# access. GitHub only honors CODEOWNERS entries for users with write access or
+# higher, so all seven can approve as code owners -- but if branch protection
+# is ever set to require an admin approval specifically, only dominickdupuy,
+# jrile018 and raohemdutt below can satisfy it.
+#
+# Previous owners removed here: colerottenberg, patrickbott, ry2009,
+# roshan-h-shah, pranavb05. (roshan-h-shah was already stale -- no longer a
+# collaborator.)
+
+* @muriatic @dominickdupuy @jrile018 @raohemdutt @NissanJonah @XanderRobbins @eschwarzzz

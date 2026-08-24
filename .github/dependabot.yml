@@ -1,0 +1,16 @@
+version: 2
+updates:
+  # Base image in the Dockerfile (C/C++ library deps are managed via the CI image
+  # and install scripts, which Dependabot does not track).
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    labels: [dependencies, docker]
+
+  # Keep the Actions in the CI/CD pipeline current
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    labels: [dependencies, ci]
