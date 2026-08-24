@@ -824,13 +824,23 @@ int run_frozen_mode(const std::shared_ptr<PostgresDatabase>& db, const std::stri
             return 4;
         }
 
+        // --entrypoint is required: the image's default ENTRYPOINT is
+        // docker-entrypoint.sh (the live-trading cron loop, which runs
+        // forever). Without overriding it explicitly, everything after
+        // image_ref below is passed as ARGUMENTS TO THAT ENTRYPOINT, not a
+        // replacement command -- `docker run <image> /path/to/binary --foo`
+        // does NOT run /path/to/binary; it runs the entrypoint with
+        // "/path/to/binary --foo" as its arguments. (Confirmed the hard way
+        // in this repo's own test workflow: `trade_ngin_tests` needs the
+        // same explicit --entrypoint for the same reason.)
         std::ostringstream run_cmd;
-        run_cmd << "docker run --rm --network " << shell_quote(args.docker_network) << " -v "
+        run_cmd << "docker run --rm --network " << shell_quote(args.docker_network)
+                << " --entrypoint /app/build/bin/Release/benchmark_replay -v "
                 << shell_quote(config_abs_path.string()) << ":/app/config:ro "
-                << shell_quote(image_ref) << " /app/build/bin/Release/benchmark_replay --portfolio "
-                << shell_quote(args.portfolio) << " --engine current --through "
-                << shell_quote(batch.through_date) << " --target-stream " << shell_quote(stream)
-                << " --record-engine-mode " << shell_quote(record_engine_mode);
+                << shell_quote(image_ref) << " --portfolio " << shell_quote(args.portfolio)
+                << " --engine current --through " << shell_quote(batch.through_date)
+                << " --target-stream " << shell_quote(stream) << " --record-engine-mode "
+                << shell_quote(record_engine_mode);
 
         auto run_result = run_shell_command(run_cmd.str());
         std::cout << "--- " << image_ref << " output ---\n"
