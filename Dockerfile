@@ -60,6 +60,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 COPY . .
 
+# ADR-005 5.2/6.3: TRADE_NGIN_GIT_SHA identifies which build produced each
+# day's run_inputs row -- load-bearing for benchmark_replay's --engine
+# frozen (resolves this SHA to a real image) and for post-hoc "which code
+# made this trade" forensics. .dockerignore excludes .git (smaller, faster
+# build context), so CMakeLists.txt's `git rev-parse` always fails inside
+# this build and silently falls back to "unknown" -- every image built from
+# this Dockerfile has done that so far. Pass the real SHA in from outside
+# instead, where it's already known: CI computes it from its own checkout
+# (which does have .git) and passes --build-arg; a local `docker build` can
+# do the same with `--build-arg TRADE_NGIN_GIT_SHA=$(git rev-parse --short HEAD)`.
+# Defaults to "unknown" (CMakeLists.txt's existing fallback) if omitted, so
+# an unmodified `docker build .` behaves exactly as before.
+ARG TRADE_NGIN_GIT_SHA=unknown
+ENV TRADE_NGIN_GIT_SHA=${TRADE_NGIN_GIT_SHA}
+
 # Patch missing includes / test signatures
 RUN sed -i '1i\#include <algorithm>' src/core/logger.cpp && \
     sed -i '1i\#include <atomic>' include/trade_ngin/order/order_manager.hpp && \

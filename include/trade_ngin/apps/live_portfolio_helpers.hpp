@@ -13,6 +13,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "trade_ngin/core/config_loader.hpp"
@@ -109,5 +110,25 @@ std::vector<std::shared_ptr<StrategyInterface>> build_strategy_instances(
     double initial_capital, const StrategyDefaultsConfig& strategy_defaults,
     std::optional<double> slow_max_symbol_concentration_override,
     std::shared_ptr<PostgresDatabase> db, std::shared_ptr<InstrumentRegistry> registry_ptr);
+
+// One contiguous run of trading.run_inputs dates that all recorded the same
+// trade_ngin_sha.
+struct RunInputsShaBatch {
+    std::string sha;
+    std::string from_date;     // inclusive, YYYY-MM-DD
+    std::string through_date;  // inclusive, YYYY-MM-DD
+};
+
+// Groups an ordered (ascending-date), already-deduplicated (date, sha)
+// sequence into contiguous same-SHA batches, preserving order. Used by
+// benchmark_replay's --engine frozen orchestrator (ADR-005 6.3): the SHA
+// only changes on a deploy, not daily, so most ranges collapse to one
+// batch -- and one batch can be replayed by a single invocation of that
+// SHA's own image, since every day in it shares the same build. Assumes
+// date_sha_pairs is already sorted ascending by date (as
+// trading.run_inputs is always queried, ORDER BY date ASC); does not
+// re-sort or validate.
+std::vector<RunInputsShaBatch> group_into_sha_batches(
+    const std::vector<std::pair<std::string, std::string>>& date_sha_pairs);
 
 }  // namespace trade_ngin

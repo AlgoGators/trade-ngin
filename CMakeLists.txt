@@ -75,8 +75,23 @@ link_directories(${PQXX_LIBRARY_DIRS})
 # Include code coverage module if enabled
 include(cmake/CodeCoverage.cmake)
 
-# Extract git SHA at build time and generate version header
-if(GIT_FOUND OR (NOT WIN32 AND NOT APPLE))
+# Extract git SHA at build time and generate version header.
+#
+# Prefer an externally-provided SHA (env var TRADE_NGIN_GIT_SHA) over
+# `git rev-parse` when one is set. This matters specifically for the Docker
+# build: .dockerignore excludes .git from the build context (smaller, faster
+# builds), so `git rev-parse` run inside a `docker build` always fails there
+# and silently falls back to "unknown" below -- every image built from this
+# repo's Dockerfile has done that until now. The Dockerfile accepts
+# --build-arg TRADE_NGIN_GIT_SHA=<sha> and exports it as this env var so a
+# build that DOES know its own SHA (CI, or a local `docker build
+# --build-arg TRADE_NGIN_GIT_SHA=$(git rev-parse --short HEAD)`) can supply
+# it. A plain `cmake -S .` outside Docker still has .git and falls through
+# to `git rev-parse` as before.
+if(DEFINED ENV{TRADE_NGIN_GIT_SHA} AND NOT "$ENV{TRADE_NGIN_GIT_SHA}" STREQUAL "")
+    set(TRADE_NGIN_GIT_SHA "$ENV{TRADE_NGIN_GIT_SHA}")
+    set(GIT_RESULT 0)
+elseif(GIT_FOUND OR (NOT WIN32 AND NOT APPLE))
     execute_process(
         COMMAND git rev-parse --short HEAD
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"

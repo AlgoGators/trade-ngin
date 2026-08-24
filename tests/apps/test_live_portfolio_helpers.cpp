@@ -197,3 +197,52 @@ TEST(BuildCombinedStrategyIdTest, SingleNameNoTrailingUnderscore) {
 TEST(BuildCombinedStrategyIdTest, EmptyNamesProducesBarePrefix) {
     EXPECT_EQ(build_combined_strategy_id({}), "LIVE_");
 }
+
+// --- group_into_sha_batches ---
+
+TEST(GroupIntoShaBatchesTest, EmptyInputProducesEmptyOutput) {
+    EXPECT_TRUE(group_into_sha_batches({}).empty());
+}
+
+TEST(GroupIntoShaBatchesTest, SingleShaCollapsesToOneBatch) {
+    std::vector<std::pair<std::string, std::string>> pairs = {
+        {"2026-08-01", "aaa"}, {"2026-08-02", "aaa"}, {"2026-08-03", "aaa"}};
+    auto batches = group_into_sha_batches(pairs);
+    ASSERT_EQ(batches.size(), 1u);
+    EXPECT_EQ(batches[0].sha, "aaa");
+    EXPECT_EQ(batches[0].from_date, "2026-08-01");
+    EXPECT_EQ(batches[0].through_date, "2026-08-03");
+}
+
+TEST(GroupIntoShaBatchesTest, ShaChangeStartsNewBatch) {
+    std::vector<std::pair<std::string, std::string>> pairs = {
+        {"2026-08-01", "aaa"}, {"2026-08-02", "aaa"}, {"2026-08-03", "bbb"}};
+    auto batches = group_into_sha_batches(pairs);
+    ASSERT_EQ(batches.size(), 2u);
+    EXPECT_EQ(batches[0].sha, "aaa");
+    EXPECT_EQ(batches[0].from_date, "2026-08-01");
+    EXPECT_EQ(batches[0].through_date, "2026-08-02");
+    EXPECT_EQ(batches[1].sha, "bbb");
+    EXPECT_EQ(batches[1].from_date, "2026-08-03");
+    EXPECT_EQ(batches[1].through_date, "2026-08-03");
+}
+
+TEST(GroupIntoShaBatchesTest, ShaRevertingLaterStartsANewBatchNotReopened) {
+    // aaa -> bbb -> aaa again: the second "aaa" run must be its own batch,
+    // not merged back into the first (they are not contiguous).
+    std::vector<std::pair<std::string, std::string>> pairs = {
+        {"2026-08-01", "aaa"}, {"2026-08-02", "bbb"}, {"2026-08-03", "aaa"}};
+    auto batches = group_into_sha_batches(pairs);
+    ASSERT_EQ(batches.size(), 3u);
+    EXPECT_EQ(batches[0].sha, "aaa");
+    EXPECT_EQ(batches[2].sha, "aaa");
+    EXPECT_EQ(batches[0].from_date, "2026-08-01");
+    EXPECT_EQ(batches[2].from_date, "2026-08-03");
+}
+
+TEST(GroupIntoShaBatchesTest, SingleRowProducesSingleBatch) {
+    std::vector<std::pair<std::string, std::string>> pairs = {{"2026-08-01", "aaa"}};
+    auto batches = group_into_sha_batches(pairs);
+    ASSERT_EQ(batches.size(), 1u);
+    EXPECT_EQ(batches[0].from_date, batches[0].through_date);
+}

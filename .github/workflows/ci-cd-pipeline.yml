@@ -448,8 +448,34 @@ jobs:
             TIME=$(date +%H%M%S)
             TAG="${BRANCH_SAFE}-${DATE}-${TIME}"
 
-            docker build -t "${REPO}:${TAG}" .
+          # Short SHA -- matches the format CMakeLists.txt embeds as
+          # TRADE_NGIN_GIT_SHA (`git rev-parse --short HEAD`), NOT the full
+          # 40-char $GITHUB_SHA. This checkout has .git (unlike the Docker
+          # build context, see .dockerignore), so this is the same value
+          # `git rev-parse --short HEAD` would produce inside the image if it
+          # could run there -- passed in explicitly via --build-arg below so
+          # the two never drift apart. Computed once, used for both the
+          # embedded version string and the image tag so a run_inputs row's
+          # trade_ngin_sha always resolves to an image tagged with the exact
+          # same string.
+            SHORT_SHA=$(git rev-parse --short HEAD)
+
+            docker build --build-arg TRADE_NGIN_GIT_SHA="${SHORT_SHA}" -t "${REPO}:${TAG}" .
             docker push "${REPO}:${TAG}"
+
+          # ADR-005 DEC-5.1: also tag by commit SHA, so benchmark_replay
+          # --engine frozen can resolve "the build that produced day d"
+          # (trading.run_inputs.trade_ngin_sha) to a real, addressable image
+          # -- additive, does not change the existing branch/timestamp tag or
+          # the prod 'latest' tag below. Provisional: this adds the addressing
+          # scheme only, not a retention/expiry policy -- GHCR's default (no
+          # auto-deletion) applies until Systems decides a real lifecycle
+          # policy for DEC-5.1. From this point forward, any run_inputs row
+          # recorded with a trade_ngin_sha from a commit that triggered this
+          # job has a resolvable image; earlier commits do not.
+            SHA_TAG="${SHORT_SHA}"
+            docker tag "${REPO}:${TAG}" "${REPO}:${SHA_TAG}"
+            docker push "${REPO}:${SHA_TAG}"
 
           # Tag as latest if prod push
             if [ "${{ github.event_name }}" == "push" ] && [ "${{ github.ref_name }}" == "prod" ]; then
@@ -459,6 +485,7 @@ jobs:
 
             echo "repo=${REPO}" >> "$GITHUB_OUTPUT"
             echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+            echo "sha_tag=${SHA_TAG}" >> "$GITHUB_OUTPUT"
 
       - name: Install Trivy
         shell: bash

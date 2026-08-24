@@ -310,4 +310,17 @@ std::vector<std::shared_ptr<StrategyInterface>> build_strategy_instances(
     return strategies;
 }
 
+std::vector<RunInputsShaBatch> group_into_sha_batches(
+    const std::vector<std::pair<std::string, std::string>>& date_sha_pairs) {
+    std::vector<RunInputsShaBatch> batches;
+    for (const auto& [date, sha] : date_sha_pairs) {
+        if (!batches.empty() && batches.back().sha == sha) {
+            batches.back().through_date = date;
+        } else {
+            batches.push_back({sha, date, date});
+        }
+    }
+    return batches;
+}
+
 }  // namespace trade_ngin
