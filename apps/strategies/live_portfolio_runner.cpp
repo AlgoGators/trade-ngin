@@ -18,6 +18,7 @@
 #include <nlohmann/json.hpp>
 #include <set>
 #include <sstream>
+#include "trade_ngin/apps/live_portfolio_helpers.hpp"
 #include "trade_ngin/core/config_loader.hpp"
 #include "trade_ngin/core/email_sender.hpp"
 #include "trade_ngin/core/holiday_checker.hpp"
@@ -59,84 +60,11 @@ static constexpr const char* QT_STREAM = "qt";
 // never sees a QT edit. Requires migration 003.
 static constexpr const char* BENCHMARK_STREAM = "benchmark";
 
-// Helper: latest bar per symbol from a flat, chronologically-loaded bar
-// vector (all_bars' real type -- see DataConversionUtils::arrow_table_to_bars).
-// Both helpers below only ever need "the most recent close per symbol", so
-// this is built once by the caller and passed to both, rather than each
-// scanning the full vector per position.
-std::unordered_map<std::string, trade_ngin::Bar> latest_bar_by_symbol(
-    const std::vector<trade_ngin::Bar>& all_bars) {
-    std::unordered_map<std::string, trade_ngin::Bar> latest;
-    for (const auto& bar : all_bars) {
-        latest[bar.symbol] = bar;  // last occurrence per symbol wins (chronological order)
-    }
-    return latest;
-}
-
-// Helper: compute mark-to-market equity from positions and latest close prices
-double compute_mark_to_market_equity(
-    const std::unordered_map<std::string, trade_ngin::Position>& positions,
-    const std::unordered_map<std::string, trade_ngin::Bar>& latest_bars) {
-    double total_equity = 0.0;
-    for (const auto& [sym, position] : positions) {
-        auto bars_it = latest_bars.find(sym);
-        if (bars_it != latest_bars.end()) {
-            double close_price = bars_it->second.close.as_double();
-            double qty = position.quantity.as_double();
-            total_equity += qty * close_price;
-        }
-    }
-    return total_equity;
-}
-
-// Helper: build run_inputs row for replay contract
-nlohmann::json build_run_inputs_row(
-    const std::string& trade_ngin_sha,
-    const nlohmann::json& config_snapshot,
-    const std::vector<std::string>& universe,
-    const std::vector<trade_ngin::Bar>& all_bars,
-    const std::string& benchmark_mode) {
-    nlohmann::json row;
-    row["trade_ngin_sha"] = trade_ngin_sha;
-    row["config_snapshot"] = config_snapshot;
-    row["universe"] = universe;
-
-    // data_window info -- content_hash detects a real data change (e.g. a
-    // futures back-adjustment restatement) between when this row was
-    // recorded and a later replay. Not cryptographic; std::hash is fine for
-    // "did the exact bars loaded change", which is the only property this
-    // needs (ADR-005 5.2).
-    nlohmann::json data_window;
-    data_window["schema"] = "trading";
-    data_window["table"] = "bar";
-    size_t row_count = 0;
-    std::hash<std::string> hasher;
-    size_t running_hash = 0;
-    for (const auto& bar : all_bars) {
-        ++row_count;
-        std::ostringstream bar_repr;
-        bar_repr << bar.symbol << std::chrono::system_clock::to_time_t(bar.timestamp)
-                  << bar.close.as_double();
-        running_hash ^=
-            hasher(bar_repr.str()) + 0x9e3779b9 + (running_hash << 6) + (running_hash >> 2);
-    }
-    std::ostringstream hash_hex;
-    hash_hex << std::hex << running_hash;
-    data_window["start"] = 0;
-    data_window["end"] = 0;
-    data_window["row_count"] = row_count;
-    data_window["content_hash"] = hash_hex.str();
-    row["data_window"] = data_window;
-
-    row["risk_limits_id"] = nlohmann::json::value_t::null;
-
-    nlohmann::json engine_flags;
-    engine_flags["benchmark_mode"] = benchmark_mode;
-    engine_flags["rng_seed"] = nlohmann::json::value_t::null;
-    row["engine_flags"] = engine_flags;
-
-    return row;
-}
+// latest_bar_by_symbol(), compute_mark_to_market_equity(), and
+// build_run_inputs_row() live in trade_ngin/apps/live_portfolio_helpers.hpp
+// (src/apps/live_portfolio_helpers.cpp) -- extracted so they're unit-tested
+// (tests/apps/test_live_portfolio_helpers.cpp) instead of living
+// uncompiled-by-anything-but-this-binary inside an apps/ entrypoint.
 
 int trade_ngin::run_live_portfolio(const LivePortfolioConfig& portfolio_cfg, int argc, char* argv[]) {
     try {
