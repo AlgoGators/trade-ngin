@@ -113,3 +113,87 @@ TEST(BuildRunInputsRowTest, EmptyBarsProducesRowCountZeroNotAFailure) {
     EXPECT_EQ(row["data_window"]["row_count"], 0);
     EXPECT_FALSE(row["data_window"]["content_hash"].get<std::string>().empty());
 }
+
+TEST(BuildRunInputsRowTest, OmittedStartEndDefaultToZero) {
+    auto row = build_run_inputs_row("sha", {}, {}, {}, "live");
+    EXPECT_EQ(row["data_window"]["start"], 0);
+    EXPECT_EQ(row["data_window"]["end"], 0);
+}
+
+TEST(BuildRunInputsRowTest, StartEndPopulateWhenGiven) {
+    auto start = std::chrono::system_clock::from_time_t(1000);
+    auto end = std::chrono::system_clock::from_time_t(2000);
+    auto row = build_run_inputs_row("sha", {}, {}, {}, "live", start, end);
+    EXPECT_EQ(row["data_window"]["start"], 1000);
+    EXPECT_EQ(row["data_window"]["end"], 2000);
+}
+
+// --- select_enabled_live_strategies ---
+
+TEST(SelectEnabledLiveStrategiesTest, ErrorsOnNullOrNonObjectConfig) {
+    EXPECT_TRUE(select_enabled_live_strategies(nlohmann::json()).is_error());
+    EXPECT_TRUE(select_enabled_live_strategies(nlohmann::json::array()).is_error());
+}
+
+TEST(SelectEnabledLiveStrategiesTest, ErrorsWhenNoStrategyIsEnabledLive) {
+    nlohmann::json cfg = {
+        {"TREND_FOLLOWING", {{"enabled_live", false}, {"default_allocation", 0.5}}}};
+    EXPECT_TRUE(select_enabled_live_strategies(cfg).is_error());
+}
+
+TEST(SelectEnabledLiveStrategiesTest, FiltersToEnabledLiveOnly) {
+    nlohmann::json cfg = {
+        {"A", {{"enabled_live", true}, {"default_allocation", 0.7}}},
+        {"B", {{"enabled_live", false}, {"default_allocation", 0.3}}},
+    };
+    auto result = select_enabled_live_strategies(cfg);
+    ASSERT_TRUE(result.is_ok());
+    EXPECT_EQ(result.value().names, (std::vector<std::string>{"A"}));
+}
+
+TEST(SelectEnabledLiveStrategiesTest, NormalizesAllocationsToSumToOne) {
+    nlohmann::json cfg = {
+        {"A", {{"enabled_live", true}, {"default_allocation", 0.6}}},
+        {"B", {{"enabled_live", true}, {"default_allocation", 0.3}}},
+    };
+    auto result = select_enabled_live_strategies(cfg);
+    ASSERT_TRUE(result.is_ok());
+    const auto& selection = result.value();
+    EXPECT_DOUBLE_EQ(selection.allocation_sum_before_normalization, 0.9);
+    EXPECT_NEAR(selection.allocations.at("A") + selection.allocations.at("B"), 1.0, 1e-9);
+    EXPECT_NEAR(selection.allocations.at("A") / selection.allocations.at("B"), 0.6 / 0.3, 1e-9);
+}
+
+TEST(SelectEnabledLiveStrategiesTest, NamesAreSortedForDeterministicCombinedId) {
+    nlohmann::json cfg = {
+        {"ZEBRA", {{"enabled_live", true}, {"default_allocation", 0.5}}},
+        {"ALPHA", {{"enabled_live", true}, {"default_allocation", 0.5}}},
+    };
+    auto result = select_enabled_live_strategies(cfg);
+    ASSERT_TRUE(result.is_ok());
+    EXPECT_EQ(result.value().names, (std::vector<std::string>{"ALPHA", "ZEBRA"}));
+}
+
+TEST(SelectEnabledLiveStrategiesTest, MissingDefaultAllocationDefaultsToHalf) {
+    nlohmann::json cfg = {{"A", {{"enabled_live", true}}}};
+    auto result = select_enabled_live_strategies(cfg);
+    ASSERT_TRUE(result.is_ok());
+    // Single strategy, no default_allocation given (defaults to 0.5) -- normalizes to 1.0
+    // regardless, but allocation_sum_before_normalization should reflect the 0.5 default.
+    EXPECT_DOUBLE_EQ(result.value().allocation_sum_before_normalization, 0.5);
+    EXPECT_DOUBLE_EQ(result.value().allocations.at("A"), 1.0);
+}
+
+// --- build_combined_strategy_id ---
+
+TEST(BuildCombinedStrategyIdTest, JoinsSortedNamesWithLivePrefix) {
+    EXPECT_EQ(build_combined_strategy_id({"ALPHA", "ZEBRA"}), "LIVE_ALPHA_ZEBRA");
+}
+
+TEST(BuildCombinedStrategyIdTest, SingleNameNoTrailingUnderscore) {
+    EXPECT_EQ(build_combined_strategy_id({"ALPHA"}), "LIVE_ALPHA");
+}
+
+TEST(BuildCombinedStrategyIdTest, EmptyNamesProducesBarePrefix) {
+    EXPECT_EQ(build_combined_strategy_id({}), "LIVE_");
+}
