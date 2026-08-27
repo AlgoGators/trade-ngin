@@ -458,6 +458,14 @@ jobs:
           # embedded version string and the image tag so a run_inputs row's
           # trade_ngin_sha always resolves to an image tagged with the exact
           # same string.
+          #
+          # This job runs inside a container (ghcr.io/algogators/trade-ngin-ci),
+          # so the checkout is owned by a different uid than the container user
+          # and git refuses to read it ("detected dubious ownership") unless the
+          # workspace is marked safe. actions/checkout only sets that under a
+          # temporary HOME it reverts afterwards, so it must be re-declared here
+          # or `git rev-parse` exits 128 and takes the whole job with it.
+            git config --global --add safe.directory "${GITHUB_WORKSPACE}"
             SHORT_SHA=$(git rev-parse --short HEAD)
 
             docker build --build-arg TRADE_NGIN_GIT_SHA="${SHORT_SHA}" -t "${REPO}:${TAG}" .
