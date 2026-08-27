@@ -337,3 +337,24 @@ TEST_F(BacktestDataLoaderTest, LivePathCannotAccessSyntheticSchema) {
             << static_cast<int>(asset_class);
     }
 }
+
+TEST_F(BacktestDataLoaderTest, OptionsAssetClassErrorIncludesRoadmapReference) {
+    // Ensure the OPTIONS rejection error message includes the roadmap reference (data-ngin#39).
+    // This provides users with actionable next steps.
+    BacktestDataLoader loader(db_);
+    auto config = make_config();
+    config.asset_class = AssetClass::OPTIONS;
+    auto result = loader.load_market_data(config);
+
+    ASSERT_TRUE(result.is_error());
+    EXPECT_EQ(result.error()->code(), ErrorCode::MARKET_DATA_ERROR);
+    std::string msg = result.error()->what();
+
+    // Verify all expected clauses are present in the error message
+    EXPECT_NE(msg.find("Options"), std::string::npos)
+        << "Error should mention 'Options'";
+    EXPECT_NE(msg.find("market data"), std::string::npos)
+        << "Error should mention 'market data'";
+    EXPECT_NE(msg.find("data-ngin#39"), std::string::npos)
+        << "Error should reference data-ngin#39 roadmap";
+}

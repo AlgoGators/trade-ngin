@@ -113,6 +113,25 @@ TEST_F(MarketDataUtilsTest, CryptoReturnsPlainColumns) {
     EXPECT_EQ(columns.find("adj_open"), std::string::npos);
 }
 
+TEST_F(MarketDataUtilsTest, OptionsReturnsPlainColumns) {
+    // OPTIONS asset class should use unadjusted columns.
+    // Options pricing does not involve stock splits or dividends,
+    // so adjusted prices are not applicable.
+    auto columns = market_data_utils::get_market_data_columns(AssetClass::OPTIONS);
+    EXPECT_NE(columns.find("open"), std::string::npos)
+        << "open column must be present for OPTIONS";
+    EXPECT_NE(columns.find("close"), std::string::npos)
+        << "close column must be present for OPTIONS";
+    EXPECT_EQ(columns.find("adj_open"), std::string::npos)
+        << "OPTIONS should not have adj_open; adjusted prices not applicable";
+    EXPECT_EQ(columns.find("adjusted_close"), std::string::npos)
+        << "OPTIONS should not have adjusted_close; adjusted prices not applicable";
+    EXPECT_NE(columns.find("time"), std::string::npos)
+        << "time column must be present";
+    EXPECT_NE(columns.find("symbol"), std::string::npos)
+        << "symbol column must be present";
+}
+
 // ===== get_schema_name cases =====
 
 // These tests verify the types.hpp get_schema_name() function
@@ -152,4 +171,26 @@ TEST_F(MarketDataUtilsTest, GetSchemaNameCommoditiesReturnsCorrectSchema) {
 TEST_F(MarketDataUtilsTest, GetSchemaNameCryptoReturnsCorrectSchema) {
     auto schema = trade_ngin::get_schema_name(AssetClass::CRYPTO);
     EXPECT_EQ(schema, "crypto_data");
+}
+
+// ===== get_market_data_columns default case =====
+
+TEST_F(MarketDataUtilsTest, UnknownAssetClassDefaultsToPlainColumns) {
+    // Test the default case: unknown/invalid asset classes fall back to unadjusted columns.
+    // This ensures defensive behavior if new asset classes are added without handler.
+    // We cast -1 to AssetClass to force an unknown value.
+    auto unknown_class = static_cast<AssetClass>(-1);
+    auto columns = market_data_utils::get_market_data_columns(unknown_class);
+
+    // Default case should return plain unadjusted columns
+    EXPECT_NE(columns.find("open"), std::string::npos)
+        << "Default case should include plain open column";
+    EXPECT_NE(columns.find("close"), std::string::npos)
+        << "Default case should include plain close column";
+    EXPECT_EQ(columns.find("adj_open"), std::string::npos)
+        << "Default case should NOT include adjusted columns";
+    EXPECT_NE(columns.find("time"), std::string::npos)
+        << "time column must be present";
+    EXPECT_NE(columns.find("symbol"), std::string::npos)
+        << "symbol column must be present";
 }
