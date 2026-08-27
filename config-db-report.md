@@ -96,7 +96,7 @@ All existing call sites compile unchanged:
 
 ## Deliverables
 
-- ✅ Migration: `migrations/006_strategy_config.sql` (versioned overrides + manifest tables)
+- ✅ Migration: `migrations/008_strategy_config.sql` (versioned overrides + manifest tables)
 - ✅ Header: `include/trade_ngin/core/config_loader.hpp` (new overload + helpers)
 - ✅ Implementation: `src/core/config_loader.cpp` (DB overlay logic)
 - ✅ Database API: `include/trade_ngin/data/postgres_database.hpp` (get_connection())

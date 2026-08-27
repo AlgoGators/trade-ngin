@@ -1,4 +1,4 @@
--- Migration 006: Strategy Configuration Database Tables
+-- Migration 008: Strategy Configuration Database Tables
 --
 -- Introduces config versioning and active-override mechanism:
 --
