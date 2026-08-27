@@ -60,6 +60,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 COPY . .
 
+# ADR-005 5.2/6.3: TRADE_NGIN_GIT_SHA identifies which build produced each
+# day's run_inputs row -- load-bearing for benchmark_replay's --engine
+# frozen (resolves this SHA to a real image) and for post-hoc "which code
+# made this trade" forensics. .dockerignore excludes .git (smaller, faster
+# build context), so CMakeLists.txt's `git rev-parse` always fails inside
+# this build and silently falls back to "unknown" -- every image built from
+# this Dockerfile has done that so far. Pass the real SHA in from outside
+# instead, where it's already known: CI computes it from its own checkout
+# (which does have .git) and passes --build-arg; a local `docker build` can
+# do the same with `--build-arg TRADE_NGIN_GIT_SHA=$(git rev-parse --short HEAD)`.
+# Defaults to "unknown" (CMakeLists.txt's existing fallback) if omitted, so
+# an unmodified `docker build .` behaves exactly as before.
+ARG TRADE_NGIN_GIT_SHA=unknown
+ENV TRADE_NGIN_GIT_SHA=${TRADE_NGIN_GIT_SHA}
+
 # Patch missing includes / test signatures
 RUN sed -i '1i\#include <algorithm>' src/core/logger.cpp && \
     sed -i '1i\#include <atomic>' include/trade_ngin/order/order_manager.hpp && \
@@ -99,6 +114,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libcurl4t64 \
         cron \
         gnuplot-nox \
+        procps \
         tzdata \
     && apt-get purge -y --auto-remove gnupg lsb-release \
     && rm -rf /var/lib/apt/lists/*
@@ -110,9 +126,18 @@ COPY --from=builder /app /app
 
 WORKDIR /app
 
-COPY live_trend.cron /etc/cron.d/live_trend
-RUN chmod 0644 /etc/cron.d/live_trend && \
-    crontab /etc/cron.d/live_trend && \
-    touch /var/log/cron.log
+COPY live_portfolio.cron /etc/cron.d/live_portfolio
+RUN chmod 0644 /etc/cron.d/live_portfolio && \
+    crontab /etc/cron.d/live_portfolio && \
+    chmod 0755 /app/scripts/run_live_portfolio.sh /app/scripts/docker-entrypoint.sh
 
-CMD ["cron", "-f"]
+# The container's only job is running cron. If the cron daemon dies, the container
+# can sit there looking alive while nothing is scheduled -- externally
+# indistinguishable from the three-month silence this change addresses.
+# Pair with `restart: unless-stopped` in the compose file on the host.
+HEALTHCHECK --interval=5m --timeout=10s --start-period=30s --retries=3 \
+    CMD pgrep -x cron > /dev/null || exit 1
+
+# The entrypoint snapshots the container environment for cron (cron does not
+# inherit it) and then execs cron in the foreground.
+ENTRYPOINT ["/app/scripts/docker-entrypoint.sh"]

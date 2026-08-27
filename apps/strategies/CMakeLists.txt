@@ -46,5 +46,5 @@ set_target_properties(live_portfolio_conservative
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/bin/Release"
 )
 # live_portfolio_runner.cpp includes "live_portfolio_runner.hpp" by plain name.
-target_include_directories(live_portfolio PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_include_directories(live_portfolio_conservative PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(live_portfolio PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_BINARY_DIR}/include)
+target_include_directories(live_portfolio_conservative PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_BINARY_DIR}/include)

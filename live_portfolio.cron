@@ -1,0 +1,10 @@
+# Daily live portfolio run.
+#
+# 09:30 Mon-Fri, America/New_York (TZ is set in the image, so this is ET not UTC).
+# The script guards against weekends too, but restricting here keeps the log clean.
+#
+# Output goes to /proc/1/fd/1 -- the container's stdout -- so `docker logs
+# trade-ngin` shows every run and every failure. The previous version wrote to
+# /var/log/cron.log inside the container, where three months of daily failures
+# accumulated unseen.
+30 9 * * 1-5 /app/scripts/run_live_portfolio.sh >> /proc/1/fd/1 2>&1

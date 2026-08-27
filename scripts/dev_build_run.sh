@@ -2,23 +2,23 @@
 set -euo pipefail
 
 # Usage:
-#   scripts/dev_build_run.sh bt_trend [Release|Debug]
-#   scripts/dev_build_run.sh live_trend [Release|Debug]
+#   scripts/dev_build_run.sh bt_portfolio [Release|Debug]
+#   scripts/dev_build_run.sh live_portfolio [Release|Debug]
 #
 # Examples:
-#   scripts/dev_build_run.sh bt_trend Release
-#   scripts/dev_build_run.sh live_trend Debug
+#   scripts/dev_build_run.sh bt_portfolio Release
+#   scripts/dev_build_run.sh live_portfolio Debug
 
 TARGET_NAME="${1:-}"
 CONFIG="${2:-Release}"
 
 if [[ -z "${TARGET_NAME}" ]]; then
-  echo "Error: missing target. Use: bt_trend or live_trend" >&2
+  echo "Error: missing target. Use: bt_portfolio, live_portfolio or live_portfolio_conservative" >&2
   exit 1
 fi
 
-if [[ "${TARGET_NAME}" != "bt_trend" && "${TARGET_NAME}" != "live_trend" ]]; then
-  echo "Error: invalid target '${TARGET_NAME}'. Use: bt_trend or live_trend" >&2
+if [[ "${TARGET_NAME}" != "bt_portfolio" && "${TARGET_NAME}" != "live_portfolio" && "${TARGET_NAME}" != "live_portfolio_conservative" ]]; then
+  echo "Error: invalid target '${TARGET_NAME}'. Use: bt_portfolio, live_portfolio or live_portfolio_conservative" >&2
   exit 1
 fi
 

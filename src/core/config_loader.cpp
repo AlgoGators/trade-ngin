@@ -65,6 +65,18 @@ Result<AppConfig> ConfigLoader::extract_config(const nlohmann::json& merged) {
             config.reserve_capital_pct = merged.at("reserve_capital_pct").get<double>();
         }
 
+        // Benchmark mode
+        if (merged.contains("benchmark_mode")) {
+            std::string mode = merged.at("benchmark_mode").get<std::string>();
+            if (mode == "live" || mode == "deferred") {
+                config.benchmark_mode = mode;
+            } else {
+                WARN("Invalid benchmark_mode '" + mode +
+                     "' (expected 'live' or 'deferred'); defaulting to 'live'");
+                config.benchmark_mode = "live";
+            }
+        }
+
         // Database configuration
         if (merged.contains("database")) {
             config.database.from_json(merged.at("database"));

@@ -18,6 +18,7 @@
 #include <nlohmann/json.hpp>
 #include <set>
 #include <sstream>
+#include "trade_ngin/apps/live_portfolio_helpers.hpp"
 #include "trade_ngin/core/config_loader.hpp"
 #include "trade_ngin/core/email_sender.hpp"
 #include "trade_ngin/core/holiday_checker.hpp"
@@ -27,6 +28,7 @@
 #include "trade_ngin/data/database_pooling.hpp"
 #include "trade_ngin/data/market_data_bus.hpp"
 #include "live_portfolio_runner.hpp"
+#include "trade_ngin/git_version.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
 #include "trade_ngin/instruments/futures.hpp"
 #include "trade_ngin/instruments/instrument_registry.hpp"
@@ -57,6 +59,12 @@ static constexpr const char* QT_STREAM = "qt";
 // The untouched counterfactual: compounds only off its own prior positions, so it
 // never sees a QT edit. Requires migration 003.
 static constexpr const char* BENCHMARK_STREAM = "benchmark";
+
+// latest_bar_by_symbol(), compute_mark_to_market_equity(), and
+// build_run_inputs_row() live in trade_ngin/apps/live_portfolio_helpers.hpp
+// (src/apps/live_portfolio_helpers.cpp) -- extracted so they're unit-tested
+// (tests/apps/test_live_portfolio_helpers.cpp) instead of living
+// uncompiled-by-anything-but-this-binary inside an apps/ entrypoint.
 
 int trade_ngin::run_live_portfolio(const LivePortfolioConfig& portfolio_cfg, int argc, char* argv[]) {
     try {
@@ -197,71 +205,32 @@ int trade_ngin::run_live_portfolio(const LivePortfolioConfig& portfolio_cfg, int
         std::string portfolio_id = app_config.portfolio_id;
         INFO("Using portfolio_id: " + portfolio_id);
 
-        // Load strategies from config (mirror bt_portfolio.cpp pattern)
-        std::vector<std::string> strategy_names;
-        std::unordered_map<std::string, double> strategy_allocations;
-        std::unordered_map<std::string, nlohmann::json> strategy_configs;
-
-        if (app_config.strategies_config.is_null() || !app_config.strategies_config.is_object()) {
-            ERROR("No strategies section found in loaded configuration");
+        // Load strategies from config (mirror bt_portfolio.cpp pattern).
+        // select_enabled_live_strategies is shared with benchmark_replay
+        // (ADR-005) so a replay derives the identical selection from a
+        // recorded run_inputs.config_snapshot rather than today's config.
+        auto selection_result =
+            trade_ngin::select_enabled_live_strategies(app_config.strategies_config);
+        if (selection_result.is_error()) {
+            ERROR("Failed to select enabled_live strategies: " +
+                  std::string(selection_result.error()->what()));
             return 1;
         }
+        auto selection = selection_result.value();
+        std::vector<std::string>& strategy_names = selection.names;
+        std::unordered_map<std::string, double>& strategy_allocations = selection.allocations;
+        std::unordered_map<std::string, nlohmann::json>& strategy_configs = selection.configs;
 
-        const auto& strategies_config = app_config.strategies_config;
-        for (const auto& [strategy_id, strategy_def] : strategies_config.items()) {
-            // Use enabled_live flag for live portfolio
-            if (strategy_def.contains("enabled_live") && strategy_def["enabled_live"].get<bool>()) {
-                double default_allocation = strategy_def.value("default_allocation", 0.5);
-                strategy_allocations[strategy_id] = default_allocation;
-                strategy_configs[strategy_id] = strategy_def;
-                strategy_names.push_back(strategy_id);
-                INFO("Loaded strategy: " + strategy_id +
-                     " with allocation: " + std::to_string(default_allocation * 100.0) + "%");
-            }
-        }
-
-        if (strategy_names.empty()) {
-            ERROR("No enabled_live strategies found in loaded configuration");
-            return 1;
-        }
-
-        // Normalize allocations to sum to 1.0. If configured allocations sum
-        // to <1.0 (e.g. 0.6 + 0.3, expecting 10% idle), this loop silently
-        // rescales — partial deployment is not supported. Warn so operators
-        // can spot a config mistake.
-        double total_allocation = 0.0;
-        for (const auto& [_, alloc] : strategy_allocations) {
-            total_allocation += alloc;
-        }
-        if (total_allocation > 0.0 && std::abs(total_allocation - 1.0) > 1e-6) {
-            WARN("Strategy allocations sum to " + std::to_string(total_allocation) +
+        if (selection.allocation_sum_before_normalization > 0.0 &&
+            std::abs(selection.allocation_sum_before_normalization - 1.0) > 1e-6) {
+            WARN("Strategy allocations sum to " +
+                 std::to_string(selection.allocation_sum_before_normalization) +
                  " (not 1.0); silently rescaling. Partial-capital deployment is not "
                  "supported — adjust default_allocation values or accept full deployment.");
         }
-        if (total_allocation > 0.0) {
-            for (auto& [_, alloc] : strategy_allocations) {
-                alloc /= total_allocation;
-            }
-        }
 
-        // Sort strategy names for deterministic combined ID (Tier 2)
-        std::sort(strategy_names.begin(), strategy_names.end());
-
-        // Generate combined strategy_id: LIVE_<sorted_names_joined_by_&>
-        std::string combined_strategy_id = "LIVE_";
-        for (size_t i = 0; i < strategy_names.size(); ++i) {
-            if (i > 0)
-                combined_strategy_id += "_";
-            combined_strategy_id += strategy_names[i];
-        }
+        std::string combined_strategy_id = trade_ngin::build_combined_strategy_id(strategy_names);
         INFO("Combined strategy_id (Tier 2): " + combined_strategy_id);
-        INFO("Total strategies enabled: " + std::to_string(strategy_names.size()));
-
-        // Log normalized allocations
-        for (const auto& [name, alloc] : strategy_allocations) {
-            INFO("Strategy " + name + " normalized allocation: " + std::to_string(alloc * 100.0) +
-                 "%");
-        }
 
         // Get current date for daily processing (or use override date)
         auto now = use_override_date ? target_date : std::chrono::system_clock::now();
@@ -387,6 +356,7 @@ int trade_ngin::run_live_portfolio(const LivePortfolioConfig& portfolio_cfg, int
             app_config.strategy_defaults.min_strategy_allocation;
         portfolio_config.use_optimization = app_config.strategy_defaults.use_optimization;
         portfolio_config.use_risk_management = app_config.strategy_defaults.use_risk_management;
+        portfolio_config.benchmark_mode = app_config.benchmark_mode;
         portfolio_config.opt_config = opt_config;
         portfolio_config.risk_config = risk_config;
 
@@ -416,176 +386,22 @@ int trade_ngin::run_live_portfolio(const LivePortfolioConfig& portfolio_cfg, int
 
         INFO("Creating " + std::to_string(strategy_names.size()) + " strategies from config");
 
-        // Factory loop: create each strategy based on type
-        // Building the strategy set is a lambda so it can be invoked twice: once for
-        // the operational chain, once for the untouched benchmark. The benchmark MUST
-        // get its own instances -- positions_ holds the Carver buffer anchor, so a
-        // shared set would let the real book leak into the counterfactual.
+        // Factory: create each strategy based on type. A lambda so it can be
+        // invoked twice: once for the operational chain, once for the
+        // untouched benchmark. The benchmark MUST get its own instances --
+        // positions_ holds the Carver buffer anchor, so a shared set would
+        // let the real book leak into the counterfactual.
+        //
+        // The construction itself lives in build_strategy_instances()
+        // (live_portfolio_helpers), shared with benchmark_replay (ADR-005)
+        // so the 7 parity gate compares positions built by identical code
+        // on both sides -- a hand-duplicated copy here would risk silent
+        // drift as this logic evolves.
         auto build_strategy_set =
             [&]() -> std::vector<std::shared_ptr<trade_ngin::StrategyInterface>> {
-            std::vector<std::shared_ptr<trade_ngin::StrategyInterface>> strategies;
-            for (const auto& strategy_name : strategy_names) {
-                const auto& strategy_def = strategy_configs[strategy_name];
-                std::string strategy_type = strategy_def.value("type", "TrendFollowingStrategy");
-                double allocation = strategy_allocations[strategy_name];
-
-                // Calculate capital allocation for this strategy
-                trade_ngin::StrategyConfig strategy_config = base_strategy_config;
-                strategy_config.capital_allocation = initial_capital * allocation;
-
-                INFO("Creating strategy: " + strategy_name + " (type: " + strategy_type +
-                     ", allocation: " + std::to_string(allocation * 100.0) + "%)");
-
-                std::shared_ptr<trade_ngin::StrategyInterface> strategy;
-
-                if (strategy_type == "TrendFollowingStrategy") {
-                    // Create TrendFollowingStrategy (normal speed)
-                    trade_ngin::TrendFollowingConfig trend_config;
-                    if (strategy_def.contains("config")) {
-                        const auto& cfg = strategy_def["config"];
-                        trend_config.weight = cfg.value("weight", 0.03);
-                        trend_config.risk_target = cfg.value("risk_target", 0.2);
-                        trend_config.idm = cfg.value("idm", 2.5);
-                        trend_config.max_symbol_concentration =
-                            cfg.value("max_symbol_concentration", 0.15);
-                        trend_config.use_position_buffering = cfg.value("use_position_buffering", true);
-                        trend_config.carver_buffer_floor = cfg.value(
-                            "carver_buffer_floor", app_config.strategy_defaults.carver_buffer_floor);
-                        trend_config.carver_buffer_position_factor =
-                            cfg.value("carver_buffer_position_factor",
-                                      app_config.strategy_defaults.carver_buffer_position_factor);
-                        if (cfg.contains("ema_windows")) {
-                            trend_config.ema_windows.clear();
-                            for (const auto& window : cfg["ema_windows"]) {
-                                trend_config.ema_windows.push_back(
-                                    {window[0].get<int>(), window[1].get<int>()});
-                            }
-                        }
-                        trend_config.vol_lookback_short = cfg.value("vol_lookback_short", 32);
-                        trend_config.vol_lookback_long = cfg.value("vol_lookback_long", 252);
-                    }
-                    // Set default FDM if not loaded
-                    if (trend_config.fdm.empty()) {
-                        trend_config.fdm = app_config.strategy_defaults.fdm;
-                    }
-
-                    strategy = std::make_shared<trade_ngin::TrendFollowingStrategy>(
-                        strategy_name, strategy_config, trend_config, db, registry_ptr);
-
-                } else if (strategy_type == "TrendFollowingFastStrategy") {
-                    // Create TrendFollowingFastStrategy
-                    trade_ngin::TrendFollowingFastConfig trend_config;
-                    if (strategy_def.contains("config")) {
-                        const auto& cfg = strategy_def["config"];
-                        trend_config.weight = cfg.value("weight", 0.03);
-                        trend_config.risk_target = cfg.value("risk_target", 0.25);
-                        trend_config.idm = cfg.value("idm", 2.5);
-                        trend_config.max_symbol_concentration =
-                            cfg.value("max_symbol_concentration", 0.15);
-                        trend_config.use_position_buffering =
-                            cfg.value("use_position_buffering", false);
-                        trend_config.carver_buffer_floor = cfg.value(
-                            "carver_buffer_floor", app_config.strategy_defaults.carver_buffer_floor);
-                        trend_config.carver_buffer_position_factor =
-                            cfg.value("carver_buffer_position_factor",
-                                      app_config.strategy_defaults.carver_buffer_position_factor);
-                        if (cfg.contains("ema_windows")) {
-                            trend_config.ema_windows.clear();
-                            for (const auto& window : cfg["ema_windows"]) {
-                                trend_config.ema_windows.push_back(
-                                    {window[0].get<int>(), window[1].get<int>()});
-                            }
-                        }
-                        trend_config.vol_lookback_short = cfg.value("vol_lookback_short", 16);
-                        trend_config.vol_lookback_long = cfg.value("vol_lookback_long", 252);
-                    }
-                    if (trend_config.fdm.empty()) {
-                        trend_config.fdm = app_config.strategy_defaults.fdm;
-                    }
-
-                    strategy = std::make_shared<trade_ngin::TrendFollowingFastStrategy>(
-                        strategy_name, strategy_config, trend_config, db, registry_ptr);
-
-                } else if (strategy_type == "TrendFollowingSlowStrategy") {
-                    // Create TrendFollowingSlowStrategy (legacy support)
-                    trade_ngin::TrendFollowingSlowConfig trend_config;
-                    if (strategy_def.contains("config")) {
-                        const auto& cfg = strategy_def["config"];
-                        trend_config.weight = cfg.value("weight", 0.03);
-                        trend_config.risk_target = cfg.value("risk_target", 0.15);
-                        trend_config.idm = cfg.value("idm", 2.5);
-                        trend_config.max_symbol_concentration =
-                            cfg.value("max_symbol_concentration", 0.15);
-                        trend_config.use_position_buffering = cfg.value("use_position_buffering", true);
-                        trend_config.carver_buffer_floor = cfg.value(
-                            "carver_buffer_floor", app_config.strategy_defaults.carver_buffer_floor);
-                        trend_config.carver_buffer_position_factor =
-                            cfg.value("carver_buffer_position_factor",
-                                      app_config.strategy_defaults.carver_buffer_position_factor);
-                        if (cfg.contains("ema_windows")) {
-                            trend_config.ema_windows.clear();
-                            for (const auto& window : cfg["ema_windows"]) {
-                                trend_config.ema_windows.push_back(
-                                    {window[0].get<int>(), window[1].get<int>()});
-                            }
-                        }
-                        trend_config.vol_lookback_short = cfg.value("vol_lookback_short", 64);
-                        trend_config.vol_lookback_long = cfg.value("vol_lookback_long", 252);
-                    } else {
-                        // Use hardcoded defaults for slow strategy
-                        trend_config.weight = 0.03;
-                        trend_config.risk_target = 0.15;
-                        // Only the base portfolio pinned this in the fallback branch; the
-                        // conservative one left the struct default in place. Preserved as a
-                        // config value so neither portfolio's behaviour changes.
-                        if (portfolio_cfg.slow_max_symbol_concentration.has_value()) {
-                            trend_config.max_symbol_concentration =
-                                *portfolio_cfg.slow_max_symbol_concentration;
-                        }
-                        trend_config.idm = 2.5;
-                        trend_config.use_position_buffering = true;
-                        trend_config.ema_windows = {{4, 16},   {8, 32},   {16, 64},
-                                                    {32, 128}, {64, 256}, {128, 512}};
-                        trend_config.vol_lookback_short = 64;
-                        trend_config.vol_lookback_long = 252;
-                    }
-                    if (trend_config.fdm.empty()) {
-                        trend_config.fdm = app_config.strategy_defaults.fdm;
-                    }
-
-                    strategy = std::make_shared<trade_ngin::TrendFollowingSlowStrategy>(
-                        strategy_name, strategy_config, trend_config, db, registry_ptr);
-
-                } else {
-                    ERROR("Unknown strategy type: " + strategy_type +
-                          " for strategy: " + strategy_name);
-                    throw std::runtime_error("Unknown strategy type: " + strategy_type +
-                                             " for strategy: " + strategy_name);
-                }
-
-                // Initialize strategy
-                auto init_result = strategy->initialize();
-                if (init_result.is_error()) {
-                    ERROR("Failed to initialize strategy " + strategy_name + ": " +
-                          init_result.error()->what());
-                    throw std::runtime_error("Failed to initialize strategy " + strategy_name +
-                                             ": " + std::string(init_result.error()->what()));
-                }
-                INFO("Strategy " + strategy_name + " initialization successful");
-
-                // Start strategy
-                auto start_result = strategy->start();
-                if (start_result.is_error()) {
-                    ERROR("Failed to start strategy " + strategy_name + ": " +
-                          start_result.error()->what());
-                    throw std::runtime_error("Failed to start strategy " + strategy_name + ": " +
-                                             std::string(start_result.error()->what()));
-                }
-                INFO("Strategy " + strategy_name + " started successfully");
-
-                strategies.push_back(strategy);
-            }
-            return strategies;
+            return trade_ngin::build_strategy_instances(
+                selection, base_strategy_config, initial_capital, app_config.strategy_defaults,
+                portfolio_cfg.slow_max_symbol_concentration, db, registry_ptr);
         };
 
         auto strategies = build_strategy_set();
@@ -783,6 +599,9 @@ int trade_ngin::run_live_portfolio(const LivePortfolioConfig& portfolio_cfg, int
 
         auto all_bars = conversion_result.value();
         INFO("Loaded " + std::to_string(all_bars.size()) + " total bars");
+        // Latest close per symbol, built once -- used by compute_mark_to_market_equity()
+        // in the benchmark pass below, rather than re-scanning all_bars per position.
+        auto latest_bars = latest_bar_by_symbol(all_bars);
 
         // Update price manager with bars to extract T-1 and T-2 prices
         if (price_manager) {
@@ -1868,6 +1687,58 @@ int trade_ngin::run_live_portfolio(const LivePortfolioConfig& portfolio_cfg, int
         INFO("PHASE 4: Total positions saved across all strategies: " +
              std::to_string(total_positions_saved));
 
+        // Write trading.run_inputs row (replay contract, ADR-005 5.1 D-1) --
+        // unconditional, every day, regardless of benchmark.mode, since it's
+        // what a later `deferred`-mode replay reconstructs from.
+        try {
+            // universe = the resolved symbol list (post .c.0/ES.v.0 filtering), not
+            // strategy_names -- ADR-005 5.2: "contract resolution is date-dependent
+            // (rolls); the replay must use the same instruments the live run saw."
+            // (Fixed here: an earlier version of this call passed strategy_names,
+            // which left every historical run_inputs.universe unusable for replay.)
+            nlohmann::json run_inputs_row = build_run_inputs_row(
+                TRADE_NGIN_GIT_SHA, app_config.to_json(), symbols, all_bars,
+                portfolio_config.benchmark_mode, start_date, end_date);
+
+            auto run_date_t = std::chrono::system_clock::to_time_t(now);
+            std::ostringstream run_date_ss;
+            run_date_ss << std::put_time(std::gmtime(&run_date_t), "%Y-%m-%d");
+
+            // Dollar-quoted JSONB literals: the config/universe/bars content
+            // can legitimately contain single quotes (e.g. a strategy name),
+            // and dollar-quoting sidesteps escaping entirely rather than
+            // risking a malformed or (worse) injectable string built by hand.
+            std::ostringstream insert_sql;
+            insert_sql
+                << "INSERT INTO trading.run_inputs "
+                   "(portfolio_id, strategy_id, date, trade_ngin_sha, config_snapshot, "
+                   "universe, data_window, risk_limits_id, engine_flags) VALUES ('"
+                << coordinator_config.portfolio_id << "', '" << combined_strategy_id << "', '"
+                << run_date_ss.str() << "', '" << TRADE_NGIN_GIT_SHA << "', $rirq$"
+                << run_inputs_row["config_snapshot"].dump() << "$rirq$::jsonb, $rirq$"
+                << run_inputs_row["universe"].dump() << "$rirq$::jsonb, $rirq$"
+                << run_inputs_row["data_window"].dump() << "$rirq$::jsonb, NULL, $rirq$"
+                << run_inputs_row["engine_flags"].dump()
+                << "$rirq$::jsonb) "
+                   "ON CONFLICT (portfolio_id, strategy_id, date) DO UPDATE SET "
+                   "trade_ngin_sha = EXCLUDED.trade_ngin_sha, "
+                   "config_snapshot = EXCLUDED.config_snapshot, "
+                   "universe = EXCLUDED.universe, "
+                   "data_window = EXCLUDED.data_window, "
+                   "engine_flags = EXCLUDED.engine_flags, "
+                   "recorded_at = now()";
+
+            auto insert_result = db->execute_query(insert_sql.str());
+            if (insert_result.is_error()) {
+                WARN("Failed to store run_inputs row: " +
+                     std::string(insert_result.error()->what()));
+            } else {
+                INFO("Stored run_inputs row for replay contract (date=" + run_date_ss.str() + ")");
+            }
+        } catch (const std::exception& e) {
+            WARN("Failed to build/store run_inputs row (non-fatal): " + std::string(e.what()));
+        }
+
         // ========================================
         // BENCHMARK PASS: the untouched counterfactual portfolio
         // ========================================
@@ -1887,8 +1758,9 @@ int trade_ngin::run_live_portfolio(const LivePortfolioConfig& portfolio_cfg, int
         // A benchmark failure is never fatal. The real book is already stored by this
         // point, and a missing day of counterfactual is a reporting gap, not a trading
         // problem.
-        try {
-            INFO("BENCHMARK: computing untouched counterfactual portfolio");
+        if (portfolio_config.benchmark_mode == "live") {
+            try {
+                INFO("BENCHMARK: computing untouched counterfactual portfolio");
 
             auto bench_strategies = build_strategy_set();
 
@@ -1973,10 +1845,37 @@ int trade_ngin::run_live_portfolio(const LivePortfolioConfig& portfolio_cfg, int
                 }
                 INFO("BENCHMARK: stored " + std::to_string(bench_stored) +
                      " counterfactual position(s)");
+
+                // Compute and store mark-to-market equity for benchmark stream (ADR-005
+                // D-4): sum(quantity * close_price) per strategy's book, never derived
+                // from the fills/PnL machinery -- see compute_mark_to_market_equity().
+                try {
+                    double bench_equity = 0.0;
+                    for (const auto& [strat_name, pos_map] : bench_positions_map) {
+                        bench_equity += compute_mark_to_market_equity(pos_map, latest_bars);
+                    }
+                    auto equity_store = db->store_trading_equity_curve(
+                        combined_strategy_id, now, bench_equity,
+                        coordinator_config.portfolio_id, "trading.equity_curve",
+                        BENCHMARK_STREAM);
+                    if (equity_store.is_error()) {
+                        WARN("BENCHMARK: failed to store equity curve: " +
+                             std::string(equity_store.error()->what()));
+                    } else {
+                        INFO("BENCHMARK: stored mark-to-market equity: $" +
+                             std::to_string(bench_equity));
+                    }
+                } catch (const std::exception& equity_e) {
+                    WARN("BENCHMARK: failed to compute/store equity (non-fatal): " +
+                         std::string(equity_e.what()));
+                }
             }
-        } catch (const std::exception& e) {
-            WARN("BENCHMARK pass failed (non-fatal, real book already stored): " +
-                 std::string(e.what()));
+            } catch (const std::exception& e) {
+                WARN("BENCHMARK pass failed (non-fatal, real book already stored): " +
+                     std::string(e.what()));
+            }
+        } else {
+            INFO("BENCHMARK mode is deferred; skipping live benchmark pass");
         }
 
         // Compute portfolio-level snapshot metrics using RiskManager on today's state
