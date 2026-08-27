@@ -863,4 +863,55 @@ Result<void> PostgresDatabase::store_live_run_metadata(
     }
 }
 
+Result<void> PostgresDatabase::store_risk_limits(const std::string& strategy_id,
+                                                 const std::string& portfolio_id,
+                                                 const nlohmann::json& limits,
+                                                 const std::string& table_name) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    // Validate inputs before the connection so bad arguments are rejected the
+    // same way with or without a live DB (and are unit-testable offline).
+    auto table_validation = validate_table_name(table_name);
+    if (table_validation.is_error()) {
+        return table_validation;
+    }
+
+    auto strategy_validation = validate_strategy_id(strategy_id);
+    if (strategy_validation.is_error()) {
+        return strategy_validation;
+    }
+
+    auto validation = validate_connection();
+    if (validation.is_error()) {
+        return validation;
+    }
+
+    try {
+        pqxx::work txn(*connection_);
+
+        // Append-only insert: risk_limits table is never updated or deleted.
+        // A consumer gets the current envelope with: ORDER BY published_at DESC LIMIT 1.
+        //
+        // All values bound as parameters to prevent injection (commit f9e885f).
+        std::string query = "INSERT INTO " + table_name +
+                            " (strategy_id, portfolio_id, limits) "
+                            "VALUES ($1, $2, $3::jsonb)";
+
+        txn.exec(query, pqxx::params{strategy_id, portfolio_id, limits.dump()});
+        txn.commit();
+
+        INFO("Published risk limits for strategy=" + strategy_id + " portfolio=" + portfolio_id);
+
+        return Result<void>();
+
+    } catch (const std::exception& e) {
+        // Failure to publish risk limits does NOT stop the trading run. AlgoLens treats
+        // a missing envelope as "not evaluated" (yellow gate) rather than "pass" (green),
+        // so a publish failure degrades safely. Log the error and continue.
+        WARN("Failed to publish risk limits for strategy=" + strategy_id + " portfolio=" +
+             portfolio_id + ": " + std::string(e.what()));
+        return make_error<void>(ErrorCode::DATABASE_ERROR, e.what(), component_id_);
+    }
+}
+
 }  // namespace trade_ngin
