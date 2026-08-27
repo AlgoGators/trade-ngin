@@ -5,7 +5,7 @@ on:
     branches: [main, develop, main-hd, prod, staging]
   pull_request:
     branches:
-      - "*"
+      - "**"
 
 env:
   COVERAGE_THRESHOLD: 10
