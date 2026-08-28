@@ -97,7 +97,7 @@ jobs:
             VCPKG_ROOT=C:\\vcpkg
             VCPKG_BINARY_SOURCES=files,C:\\vcpkg-cache,readwrite
             VCPKG_TRIPLET=${{ matrix.triplet }}
-            VCPKG_BUILD_TYPE=release
+            VCPKG_OVERLAY_TRIPLETS=$GITHUB_WORKSPACE/triplets
             CMAKE_ARGS="-DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }}"
 
           CIBW_BEFORE_ALL_MACOS: |
