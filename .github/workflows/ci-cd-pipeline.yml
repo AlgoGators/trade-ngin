@@ -248,7 +248,14 @@ jobs:
           mkdir -p build
           cd build
           # See the lint job for why the Python wrapper is off here.
+          #
+          # -DBUILD_TESTING=ON is required here. This branch introduced
+          # `option(BUILD_TESTING "Build tests" OFF)` so the wheel build could
+          # skip GTest, but nothing turned it back on for CI -- so the tests
+          # were never compiled, ctest ran an empty suite and exited 0, and
+          # the only step that noticed was lcov, failing with "no .gcda files".
           cmake .. \
+            -DBUILD_TESTING=ON \
             -DBUILD_PYTHON_WRAPPER=OFF \
             -DCMAKE_BUILD_TYPE=${{ matrix.build-type }} \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
