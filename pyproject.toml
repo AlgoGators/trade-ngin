@@ -10,3 +10,8 @@ requires-python = ">=3.10"
 [tool.scikit-build]
 cmake.version = ">=3.15"
 cmake.build-type = "Release"
+
+# The wheel ships the Python bindings, not the benchmark suite, and
+# benchmark_framework.hpp uses GCC/Clang inline asm that MSVC cannot compile.
+[tool.scikit-build.cmake.define]
+TRADE_NGIN_BUILD_BENCHMARKS = "OFF"

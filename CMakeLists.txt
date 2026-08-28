@@ -246,5 +246,15 @@ endif()
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-# Add benchmarks subdirectory (separate from tests; not in default test run)
-add_subdirectory(benchmarks)
+# Add benchmarks subdirectory (separate from tests; not in default test run).
+#
+# Optional because benchmark_framework.hpp uses GCC/Clang extended inline asm
+#   asm volatile("" : "+r,m"(value) : : "memory")
+# as its optimisation barrier, which MSVC cannot parse -- it fails with C2760
+# "'volatile' was unexpected here". The Python wheel ships bindings, not
+# benchmarks, so its build turns this off (see pyproject.toml) rather than the
+# whole Windows wheel failing on a target it does not need.
+option(TRADE_NGIN_BUILD_BENCHMARKS "Build the micro-benchmark suite" ON)
+if(TRADE_NGIN_BUILD_BENCHMARKS)
+    add_subdirectory(benchmarks)
+endif()
