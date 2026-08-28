@@ -76,10 +76,22 @@ endif()
 # Include code coverage module if enabled
 include(cmake/CodeCoverage.cmake)
 
-if(TARGET Arrow::arrow_static)
+# Static Arrow is what makes the Python wheel self-contained, so it stays the
+# default. It is not right everywhere: the CI image ships an Arrow whose
+# libarrow_bundled_dependencies.a references abseil symbols that nothing
+# else on the link line provides, so linking trade_ngin_tests against it
+# fails with hundreds of undefined `absl::debian3::...` references. main
+# links Arrow::arrow_shared and does not have this problem. Make the
+# preference switchable so the pipeline can ask for the shared library.
+option(TRADE_NGIN_PREFER_STATIC_ARROW
+       "Prefer statically-linked Arrow (needed for self-contained wheels)" ON)
+
+if(TRADE_NGIN_PREFER_STATIC_ARROW AND TARGET Arrow::arrow_static)
     set(ARROW_TARGET Arrow::arrow_static)
 elseif(TARGET Arrow::arrow_shared)
     set(ARROW_TARGET Arrow::arrow_shared)
+elseif(TARGET Arrow::arrow_static)
+    set(ARROW_TARGET Arrow::arrow_static)
 elseif(TARGET Arrow::arrow)
     set(ARROW_TARGET Arrow::arrow)
 else()

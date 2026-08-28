@@ -257,6 +257,7 @@ jobs:
           cmake .. \
             -DBUILD_TESTING=ON \
             -DBUILD_PYTHON_WRAPPER=OFF \
+            -DTRADE_NGIN_PREFER_STATIC_ARROW=OFF \
             -DCMAKE_BUILD_TYPE=${{ matrix.build-type }} \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
             -DCMAKE_CXX_COMPILER=${{ matrix.build-type == 'Debug' && 'g++' || 'g++' }} \
