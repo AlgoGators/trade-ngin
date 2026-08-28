@@ -21,12 +21,6 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - name: Install Python Development Headers
-        run: |
-          apt-get update
-          apt-get install -y python3-dev
       - name: Run Clang Format Check
         run: |
           echo "Checking code formatting..."
@@ -242,37 +236,42 @@ jobs:
         build-type: [Debug, Release]
 
     steps:
-      - name: Install Python Development Headers
-        run: |
-          apt-get update
-          apt-get install -y python3-dev
       - name: Checkout Repository
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
       - name: Configure CMake with Coverage
         run: |
-          cmake --preset coverage
+          mkdir -p build
+          cd build
+          cmake .. \
+            -DCMAKE_BUILD_TYPE=${{ matrix.build-type }} \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            -DCMAKE_CXX_COMPILER=${{ matrix.build-type == 'Debug' && 'g++' || 'g++' }} \
+            -DCMAKE_CXX_FLAGS="${{ matrix.build-type == 'Debug' && '-g -O0 --coverage -fprofile-update=atomic' || '-O3' }}" \
+            -DCMAKE_EXE_LINKER_FLAGS="${{ matrix.build-type == 'Debug' && '--coverage' || '' }}" \
+            -DNLopt_DIR=/usr/lib/x86_64-linux-gnu/cmake/nlopt
 
       - name: Build Project
         run: |
-          cmake --build --preset coverage
+          cd build
+          make -j$(nproc)
 
       - name: Run Valgrind Memory Check
         if: matrix.build-type == 'Debug'
         run: |
+          cd build
           # Run tests with Valgrind
           valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes \
-            --error-exitcode=1 ctest --preset coverage
+            --error-exitcode=1 ctest --output-on-failure --verbose
 
       - name: Run Tests
         run: |
-          ctest --preset coverage
+          cd build
+          ctest --output-on-failure --verbose
 
       - name: Generate Coverage Report
         if: matrix.build-type == 'Debug'
         run: |
-          cd build/coverage
+          cd build
           # Generate coverage data
           lcov --capture --directory . --output-file coverage.info --ignore-errors mismatch --ignore-errors negative
 
@@ -294,14 +293,14 @@ jobs:
       - name: Validate Coverage Artifacts
         if: matrix.build-type == 'Debug'
         run: |
-          cd build/coverage
-          test -s coverage-sonarqube.xml || { echo "Missing build/coverage/coverage-sonarqube.xml"; exit 1; }
-          test -s coverage.xml || { echo "Missing build/coverage/coverage.xml"; exit 1; }
+          cd build
+          test -s coverage-sonarqube.xml || { echo "Missing build/coverage-sonarqube.xml"; exit 1; }
+          test -s coverage.xml || { echo "Missing build/coverage.xml"; exit 1; }
 
       - name: Coverage Debug Summary
         if: matrix.build-type == 'Debug'
         run: |
-          cd build/coverage
+          cd build
           echo "Files included in Sonar coverage report:"
           grep -o 'path="[^"]*"' coverage-sonarqube.xml | sed 's/path="//;s/"$//' | sort -u | head -n 200
           echo ""
@@ -314,7 +313,7 @@ jobs:
       - name: Check Coverage Threshold
         if: matrix.build-type == 'Debug'
         run: |
-          cd build/coverage
+          cd build
           # Extract coverage percentage (get the number before the %)
           COVERAGE_PERCENT=$(lcov --summary coverage.info 2>&1 | grep "lines" | grep -oP '\d+\.\d+(?=%)')
           echo "Coverage: $COVERAGE_PERCENT%"
@@ -322,10 +321,10 @@ jobs:
           # Check if coverage meets threshold using awk instead of bc
           if [ $(awk -v cov="$COVERAGE_PERCENT" -v thresh="${{ env.COVERAGE_THRESHOLD }}" 'BEGIN {print (cov < thresh)}') -eq 1 ]; then
             echo "❌ Coverage ($COVERAGE_PERCENT%) is below threshold (${{ env.COVERAGE_THRESHOLD }}%)"
+            exit 1
           else
             echo "✅ Coverage ($COVERAGE_PERCENT%) meets threshold (${{ env.COVERAGE_THRESHOLD }}%)"
           fi
-
       - name: SonarCloud Scan
         if: matrix.build-type == 'Debug' && (github.event_name == 'pull_request' || github.ref_name == 'main' || github.ref_name == 'prod' || github.ref_name == 'staging')
         uses: SonarSource/sonarqube-scan-action@v6
@@ -340,12 +339,12 @@ jobs:
         with:
           name: coverage-reports-${{ github.run_number }}
           path: |
-            build/coverage/coverage_html/
-            build/coverage/coverage.xml
-            build/coverage/coverage-sonarqube.xml
-            build/coverage/coverage.txt
-            build/coverage/coverage.info
-            build/coverage/compile_commands.json
+            build/coverage_html/
+            build/coverage.xml
+            build/coverage-sonarqube.xml
+            build/coverage.txt
+            build/coverage.info
+            build/compile_commands.json
 
       - name: Upload Test Results
         uses: actions/upload-artifact@v4
@@ -360,8 +359,7 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
+
       - name: Run Security Scan
         run: |
           echo "Running basic security checks..."
@@ -378,8 +376,6 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - name: Download Coverage Reports
         uses: actions/download-artifact@v4
@@ -401,7 +397,7 @@ jobs:
           echo "- Build: ${{ needs.build.result }}" >> summary.md
           echo "- Security: ${{ needs.security-scan.result }}" >> summary.md
 
-          if [ -f "coverage-reports/build/coverage/coverage.xml" ]; then
+          if [ -f "coverage-reports/build/coverage.xml" ]; then
             echo "## Coverage Report" >> summary.md
             echo "Coverage report is available in the artifacts." >> summary.md
           fi
@@ -432,8 +428,6 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
         with:
@@ -441,6 +435,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Build and Push Image
+        id: build
         shell: bash
         run: |
           REPO="ghcr.io/${GITHUB_REPOSITORY,,}"
@@ -462,6 +457,55 @@ jobs:
               docker push "${REPO}:latest"
             fi
 
+            echo "repo=${REPO}" >> "$GITHUB_OUTPUT"
+            echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Install Trivy
+        shell: bash
+        run: curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/v0.74.0/contrib/install.sh | sh -s -- -b /usr/local/bin
+
+      - name: Scan image with Trivy
+        shell: bash
+        # Non-blocking for now (exit-code 0): this is the first scan of an image
+        # that's been running unscanned, so the existing/known vulnerability count
+        # is unknown. Once triaged, bump exit-code to 1 for CRITICAL findings to
+        # make this a hard gate -- appropriate given this image runs live trading.
+        run: |
+          trivy image --format sarif --output trivy-results.sarif \
+            --severity CRITICAL,HIGH --exit-code 0 \
+            "${{ steps.build.outputs.repo }}:${{ steps.build.outputs.tag }}"
+
+      - name: Upload Trivy results to Security tab
+        uses: github/codeql-action/upload-sarif@42947a340483f03ba47bb1a039b2c519aab3df85 # v3.37.8
+        with:
+          sarif_file: trivy-results.sarif
+
+  schema-ownership-guard:
+    name: Schema Ownership Guard
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Fail if a forbidden schema is referenced
+        shell: bash
+        # ADR-000 C-3 (cross-repo-contracts.md) assigns futures_data/equities_data/
+        # options_data/synthetic to data-ngin, auth to AlgoLens, and research to
+        # algosystem -- trade-ngin must never write into them. This scans the two
+        # locations that build schema-qualified SQL identifiers (the DB-access
+        # layer and the results-storage layer, both confirmed by grep to be where
+        # every "schema.table"-shaped literal in this repo lives) for those
+        # forbidden prefixes. It is a permanent regression guard for the exact
+        # backtest.equity_curve/research schema-collision class of bug ADR-000 §6
+        # flagged between trade-ngin and algosystem.
+        run: |
+          FORBIDDEN='"(futures_data|equities_data|options_data|synthetic|auth|research)\.'
+          if grep -rnE "$FORBIDDEN" src/data src/storage --include="*.cpp" --include="*.hpp"; then
+            echo "::error::Found a reference to a schema trade-ngin does not own (see ADR-000 C-3). If this is intentional, update the allow-list in this workflow and confirm with whoever owns that schema."
+            exit 1
+          fi
+          echo "OK: no forbidden-schema references found in src/data or src/storage."
+
   deploy-to-ec2:
     name: 'Deploy to EC2'
     if: github.ref_name == 'prod' && github.event_name == 'push'
@@ -482,3 +526,4 @@ jobs:
             docker rm trade-ngin || true
             cd /home/ubuntu/docker-compose/trade-ngin
             docker compose up -d
+            
