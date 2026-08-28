@@ -4,8 +4,13 @@ on:
   push:
     branches: [main, develop, main-hd, prod, staging]
   pull_request:
+    # "*" does not match a branch name containing a slash, so a pull
+    # request stacked on another feature branch (feat/..., fix/...) ran no
+    # checks at all -- it reported "no checks reported on the branch"
+    # rather than failing, which reads as nothing to review. "**" matches
+    # every base.
     branches:
-      - "*"
+      - "**"
 
 env:
   COVERAGE_THRESHOLD: 10
