@@ -4,8 +4,10 @@ on:
   push:
     branches: [main, develop, main-hd, prod, staging]
   pull_request:
+    # "*" does not match a slash-named base, and this PR targets
+    # feat/multi-asset-correctness -- so it ran no checks at all.
     branches:
-      - "*"
+      - "**"
 
 env:
   COVERAGE_THRESHOLD: 10
