@@ -101,7 +101,12 @@ jobs:
             CMAKE_ARGS="-DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }}"
 
           CIBW_BEFORE_ALL_MACOS: |
-            brew install bison
+            # autoconf/automake/libtool are required by vcpkg to build libpq; the
+            # Linux block already installs them via yum. Without them the arm64-osx
+            # build fails with "libpq requires autoconf from the system package
+            # manager". The x86_64 runner image happens to ship autoconf, which is
+            # why macos-intel passed and macos-arm did not.
+            brew install bison autoconf automake libtool
             export PATH=$(brew --prefix bison)/bin:$PATH
             git clone https://github.com/microsoft/vcpkg /tmp/vcpkg
             /tmp/vcpkg/bootstrap-vcpkg.sh
