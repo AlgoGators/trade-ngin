@@ -59,7 +59,19 @@ find_package(libpqxx CONFIG REQUIRED)
 find_package(Eigen3 CONFIG REQUIRED)
 find_package(NLopt CONFIG REQUIRED)
 find_package(CURL REQUIRED)
-add_subdirectory(extern/pybind11)
+# The Python wrapper is optional and lives behind a git submodule. Declared
+# here (not further down next to add_subdirectory(python)) because the
+# submodule has to be added before anything can call pybind11_add_module.
+option(BUILD_PYTHON_WRAPPER "Build Python wrapper using pybind11" ON)
+if(BUILD_PYTHON_WRAPPER)
+    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/extern/pybind11/CMakeLists.txt")
+        message(FATAL_ERROR
+            "BUILD_PYTHON_WRAPPER=ON but extern/pybind11 is empty. Either run"
+            " `git submodule update --init --recursive`, or configure with"
+            " -DBUILD_PYTHON_WRAPPER=OFF to build the C++ targets only.")
+    endif()
+    add_subdirectory(extern/pybind11)
+endif()
 
 # Include code coverage module if enabled
 include(cmake/CodeCoverage.cmake)
@@ -209,8 +221,7 @@ endif()
 # Add apps subdirectory
 add_subdirectory(apps)
 
-# Add python wrapper option
-option(BUILD_PYTHON_WRAPPER "Build Python wrapper using pybind11" ON)
+# Option is declared above, next to the pybind11 submodule it depends on.
 if (BUILD_PYTHON_WRAPPER)
     add_subdirectory(python)
 endif()
