@@ -226,8 +226,14 @@ if(ENABLE_COVERAGE)
 endif()
 
 if(BUILD_TESTING)
-    add_subdirectory(tests)
+    # enable_testing() must precede add_subdirectory(tests): tests/CMakeLists.txt
+    # registers via gtest_discover_tests(), which is a no-op if testing is not
+    # already enabled when it is processed. With the calls the other way round
+    # the test binary still built and linked, but ctest reported
+    # "No tests were found!!!" -- and exited 0, so nothing failed. main has
+    # these in the correct order.
     enable_testing()
+    add_subdirectory(tests)
 endif()
 
 # Add apps subdirectory
