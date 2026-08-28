@@ -72,6 +72,28 @@ public:
         DataFrequency freq = DataFrequency::DAILY, const std::string& data_type = "ohlcv") override;
 
     /**
+     * @brief Get market data from a custom table name
+     *
+     * Used by backtest loader to query alternative schemas (e.g., synthetic stress-test data).
+     * This method does NOT resolve table names from AssetClass; it uses the provided table name
+     * directly. This isolation ensures that only code with explicit knowledge of the table name
+     * can query it—the live trading path calls get_market_data() which always derives table names
+     * from AssetClass, and therefore cannot reach tables outside the standard schemas.
+     *
+     * @param symbols Vector of symbols to fetch
+     * @param start_date Start timestamp (inclusive)
+     * @param end_date End timestamp (inclusive)
+     * @param table_name Full table name including schema (e.g., "synthetic.ohlcv_1d")
+     * @param asset_class Asset class (used only for column selection; equities get adjusted columns)
+     * @param freq Data frequency
+     * @return Result containing Arrow table or error
+     */
+    Result<std::shared_ptr<arrow::Table>> get_market_data_from_table(
+        const std::vector<std::string>& symbols, const Timestamp& start_date,
+        const Timestamp& end_date, const std::string& table_name, AssetClass asset_class,
+        DataFrequency freq = DataFrequency::DAILY);
+
+    /**
      * @brief Get latest market prices for symbols
      * @param symbols Vector of symbols to get prices for
      * @param asset_class Asset class of the symbols
