@@ -15,6 +15,12 @@ jobs:
     name: Build wheels for ${{ matrix.os }}
     runs-on: ${{ matrix.runs-on }}
     strategy:
+      # Without this, one platform failing cancels the other three mid-build
+      # and they all report as failures. One real macos-arm failure was
+      # cancelling linux-intel, windows-intel and macos-intel within 23
+      # seconds, so four red checks described one problem and hid whether
+      # the other three platforms build at all.
+      fail-fast: false
       matrix:
         include:
           - os: linux-intel
