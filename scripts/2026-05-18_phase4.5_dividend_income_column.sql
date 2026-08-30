@@ -3,8 +3,8 @@
 -- Run once before deploying the corresponding C++ code. Safe to re-run
 -- (IF NOT EXISTS guard).
 --
--- Usage:
---   PGPASSWORD=algogators psql -h <host> -U postgres -d new_algo_data \
+-- Usage (credentials from your environment or config/, never in this file):
+--   PGPASSWORD=$DB_PASSWORD psql -h <host> -U <user> -d new_algo_data \
 --       -f scripts/2026-05-18_phase4.5_dividend_income_column.sql
 
 ALTER TABLE trading.live_results
