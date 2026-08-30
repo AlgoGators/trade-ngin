@@ -67,7 +67,7 @@ protected:
 
 // ===== initialize is not idempotent =====
 
-TEST_F(ExecutionEngineExtendedTest, DISABLED_InitializeTwiceReturnsError) {
+TEST_F(ExecutionEngineExtendedTest, InitializeTwiceReturnsError) {
     // FIXME: production behavior — ExecutionEngine::initialize() is NOT
     // idempotent. The fixture's SetUp already initialized once; a second call
     // returns an error (likely due to duplicate event-bus subscription
@@ -78,27 +78,27 @@ TEST_F(ExecutionEngineExtendedTest, DISABLED_InitializeTwiceReturnsError) {
 
 // ===== cancel_execution error path =====
 
-TEST_F(ExecutionEngineExtendedTest, DISABLED_CancelNonExistentJobReturnsError) {
+TEST_F(ExecutionEngineExtendedTest, CancelNonExistentJobReturnsError) {
     auto r = engine_->cancel_execution("nonexistent-job-id");
     EXPECT_TRUE(r.is_error());
 }
 
 // ===== get_metrics error path =====
 
-TEST_F(ExecutionEngineExtendedTest, DISABLED_GetMetricsForUnknownJobReturnsError) {
+TEST_F(ExecutionEngineExtendedTest, GetMetricsForUnknownJobReturnsError) {
     auto r = engine_->get_metrics("nonexistent-job-id");
     EXPECT_TRUE(r.is_error());
 }
 
 // ===== get_active_jobs =====
 
-TEST_F(ExecutionEngineExtendedTest, DISABLED_GetActiveJobsEmptyBeforeAnySubmission) {
+TEST_F(ExecutionEngineExtendedTest, GetActiveJobsEmptyBeforeAnySubmission) {
     auto r = engine_->get_active_jobs();
     ASSERT_TRUE(r.is_ok());
     EXPECT_TRUE(r.value().empty());
 }
 
-TEST_F(ExecutionEngineExtendedTest, DISABLED_GetActiveJobsContainsSubmittedJob) {
+TEST_F(ExecutionEngineExtendedTest, GetActiveJobsContainsSubmittedJob) {
     auto sub = engine_->submit_execution(make_order("AAPL", Side::BUY, 10, 150.0),
                                           ExecutionAlgo::TWAP, basic_config());
     ASSERT_TRUE(sub.is_ok());
@@ -111,14 +111,14 @@ TEST_F(ExecutionEngineExtendedTest, DISABLED_GetActiveJobsContainsSubmittedJob) 
     EXPECT_TRUE(found);
 }
 
-TEST_F(ExecutionEngineExtendedTest, DISABLED_CancelExecutionRemovesJobFromActive) {
+TEST_F(ExecutionEngineExtendedTest, CancelExecutionRemovesJobFromActive) {
     auto sub = engine_->submit_execution(make_order("AAPL", Side::BUY, 10, 150.0),
                                           ExecutionAlgo::TWAP, basic_config());
     ASSERT_TRUE(sub.is_ok());
     EXPECT_TRUE(engine_->cancel_execution(sub.value()).is_ok());
 }
 
-TEST_F(ExecutionEngineExtendedTest, DISABLED_GetMetricsAvailableForSubmittedJob) {
+TEST_F(ExecutionEngineExtendedTest, GetMetricsAvailableForSubmittedJob) {
     auto sub = engine_->submit_execution(make_order("AAPL", Side::BUY, 10, 150.0),
                                           ExecutionAlgo::TWAP, basic_config());
     ASSERT_TRUE(sub.is_ok());
@@ -128,14 +128,14 @@ TEST_F(ExecutionEngineExtendedTest, DISABLED_GetMetricsAvailableForSubmittedJob)
 
 // ===== custom algo registration =====
 
-TEST_F(ExecutionEngineExtendedTest, DISABLED_RegisterCustomAlgoSucceedsWithUniqueName) {
+TEST_F(ExecutionEngineExtendedTest, RegisterCustomAlgoSucceedsWithUniqueName) {
     auto r = engine_->register_custom_algo(
         "MY_CUSTOM_ALGO",
         [](const ExecutionJob&) { return Result<void>(); });
     EXPECT_TRUE(r.is_ok());
 }
 
-TEST_F(ExecutionEngineExtendedTest, DISABLED_RegisterCustomAlgoOverwritesSameName) {
+TEST_F(ExecutionEngineExtendedTest, RegisterCustomAlgoOverwritesSameName) {
     std::atomic<int> v1_calls{0};
     auto r1 = engine_->register_custom_algo(
         "DUP_ALGO",
@@ -157,14 +157,14 @@ TEST_F(ExecutionEngineExtendedTest, DISABLED_RegisterCustomAlgoOverwritesSameNam
 
 // ===== submit_execution error paths =====
 
-TEST_F(ExecutionEngineExtendedTest, DISABLED_SubmitExecutionWithZeroQuantityHandled) {
+TEST_F(ExecutionEngineExtendedTest, SubmitExecutionWithZeroQuantityHandled) {
     Order o = make_order("AAPL", Side::BUY, 0.0, 150.0);
     auto sub = engine_->submit_execution(o, ExecutionAlgo::TWAP, basic_config());
     // Either rejected (preferred) or accepted but with no fills; both paths exercised.
     (void)sub;
 }
 
-TEST_F(ExecutionEngineExtendedTest, DISABLED_SubmitExecutionWithZeroTimeHorizonHandled) {
+TEST_F(ExecutionEngineExtendedTest, SubmitExecutionWithZeroTimeHorizonHandled) {
     auto cfg = basic_config();
     cfg.time_horizon = std::chrono::minutes(0);
     auto sub = engine_->submit_execution(make_order("AAPL", Side::BUY, 10, 150.0),
@@ -177,7 +177,7 @@ TEST_F(ExecutionEngineExtendedTest, DISABLED_SubmitExecutionWithZeroTimeHorizonH
 
 // ===== Multi-job tracking =====
 
-TEST_F(ExecutionEngineExtendedTest, DISABLED_RapidSubmissionsCollideOnJobIdAndOverwrite) {
+TEST_F(ExecutionEngineExtendedTest, RapidSubmissionsCollideOnJobIdAndOverwrite) {
     // FIXME: production bug — submit_execution generates a job ID that includes
     // a timestamp at coarse resolution, so two submissions in the same tick
     // produce identical IDs. The second submission silently overwrites the
@@ -197,7 +197,7 @@ TEST_F(ExecutionEngineExtendedTest, DISABLED_RapidSubmissionsCollideOnJobIdAndOv
     EXPECT_GE(jobs.value().size(), 1u);
 }
 
-TEST_F(ExecutionEngineExtendedTest, DISABLED_SpacedSubmissionsAreTrackedDistinctly) {
+TEST_F(ExecutionEngineExtendedTest, SpacedSubmissionsAreTrackedDistinctly) {
     // Sleep between submissions to dodge the same-tick ID collision.
     auto a = engine_->submit_execution(make_order("AAPL", Side::BUY, 10, 150.0),
                                          ExecutionAlgo::TWAP, basic_config());

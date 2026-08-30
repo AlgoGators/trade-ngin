@@ -103,8 +103,13 @@ struct DatabaseConfig {
 
 /**
  * @brief Execution configuration
+ *
+ * Named ExecutionSettingsConfig, not ExecutionConfig: the execution engine owns
+ * trade_ngin::ExecutionConfig (execution_engine.hpp). Two classes with one mangled
+ * name is an ODR violation — the linker folds their ctors/dtors and corrupts
+ * whichever object loses the coin toss.
  */
-struct ExecutionConfig {
+struct ExecutionSettingsConfig {
     double commission_rate{0.0005};
     double slippage_bps{1.0};
     double position_limit_backtest{1000.0};
@@ -244,7 +249,7 @@ struct AppConfig {
     DatabaseConfig database;
 
     // Execution configuration
-    ExecutionConfig execution;
+    ExecutionSettingsConfig execution;
 
     // Optimization configuration
     DynamicOptConfig opt_config;

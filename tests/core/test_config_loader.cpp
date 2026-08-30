@@ -230,12 +230,12 @@ TEST_F(ConfigLoaderTest, EmailConfigJsonRoundTrip) {
 }
 
 TEST_F(ConfigLoaderTest, ExecutionConfigJsonRoundTrip) {
-    ExecutionConfig ex;
+    ExecutionSettingsConfig ex;
     ex.commission_rate = 0.001;
     ex.slippage_bps = 2.5;
     ex.position_limit_backtest = 5000.0;
     ex.position_limit_live = 1000.0;
-    ExecutionConfig r;
+    ExecutionSettingsConfig r;
     r.from_json(ex.to_json());
     EXPECT_DOUBLE_EQ(r.commission_rate, 0.001);
     EXPECT_DOUBLE_EQ(r.slippage_bps, 2.5);
