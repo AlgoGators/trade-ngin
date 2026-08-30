@@ -364,3 +364,52 @@ TEST_F(BacktestMetricsCalculatorTest, AllMetricsPopulatesNonZeroFields) {
     EXPECT_FALSE(r.drawdown_curve.empty());
     EXPECT_GE(r.max_drawdown, 0.0);
 }
+
+// ===== NaN / degeneracy guards (batch-2 metrics hardening) =====
+
+TEST_F(BacktestMetricsCalculatorTest, NanEquityPointExcludedFromMonthlyReturns) {
+    // NaN in the middle of the curve: neither the NaN-as-current nor the
+    // NaN-as-previous transition may contribute. Pre-fix, `prev <= 0.0` was
+    // false for NaN and a NaN period_return poisoned the month's total.
+    std::vector<std::pair<Timestamp, double>> curve = {
+        {date_at(2024, 3, 1), 100.0},
+        {date_at(2024, 3, 4), 110.0},
+        {date_at(2024, 3, 5), std::numeric_limits<double>::quiet_NaN()},
+        {date_at(2024, 3, 6), 120.0},
+        {date_at(2024, 3, 7), 126.0}};
+    auto monthly = calc_.calculate_monthly_returns(curve);
+    ASSERT_EQ(monthly.size(), 1u);
+    const double total = monthly.at("2024-03");
+    EXPECT_TRUE(std::isfinite(total));
+    // Surviving transitions: 100->110 (+10%) and 120->126 (+5%).
+    EXPECT_NEAR(total, 0.10 + 0.05, 1e-12);
+}
+
+TEST_F(BacktestMetricsCalculatorTest, NanEquityPointExcludedFromReturnSeries) {
+    std::vector<std::pair<Timestamp, double>> curve = {
+        {date_at(2024, 3, 1), 100.0},
+        {date_at(2024, 3, 4), std::numeric_limits<double>::quiet_NaN()},
+        {date_at(2024, 3, 5), 100.0},
+        {date_at(2024, 3, 6), 105.0}};
+    auto returns = calc_.calculate_returns_from_equity(curve);
+    ASSERT_EQ(returns.size(), 1u);
+    EXPECT_NEAR(returns[0], 0.05, 1e-12);
+}
+
+TEST_F(BacktestMetricsCalculatorTest, TotalReturnNanInputsReturnZero) {
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    EXPECT_DOUBLE_EQ(calc_.calculate_total_return(nan, 110.0), 0.0);
+    EXPECT_DOUBLE_EQ(calc_.calculate_total_return(100.0, nan), 0.0);
+}
+
+TEST_F(BacktestMetricsCalculatorTest, SortinoNearTargetDustHitsSentinelNotAbsurdValue) {
+    // Returns an epsilon below target leave ~1e-17 downside "dust". Pre-fix,
+    // Sortino divided by the dust and reported an absurd finite magnitude;
+    // post-fix the dust collapses to 0 and the degenerate-case sentinel applies.
+    std::vector<double> returns(100, -1e-18);
+    const double sortino =
+        calc_.calculate_sortino_ratio(returns, /*trading_days=*/100, /*mar=*/0.0);
+    EXPECT_LE(std::abs(sortino), 999.0);
+    const double downside = calc_.calculate_downside_volatility(returns, 0.0);
+    EXPECT_DOUBLE_EQ(downside, 0.0);
+}

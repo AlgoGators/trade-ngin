@@ -8,8 +8,27 @@
 #   2. it becomes possible afterwards, with existing rows untouched.
 #
 # Requires a running postgres reachable via PGHOST/PGPORT/PGUSER/PGPASSWORD.
+#
+# ⚠️ DESTRUCTIVE: the fixture begins with DROP SCHEMA trading CASCADE on
+# whatever those env vars point at. To run it you must name the scratch
+# database explicitly: export MIGRATION_TEST_DB=<dbname> with PGDATABASE set
+# to the same value. Anything else (including production) is refused.
 
-set -uo pipefail
+set -euo pipefail
+
+if [[ "${MIGRATION_TEST_DB:-}" == "" ]]; then
+    echo "REFUSING to run: this script DROPS SCHEMA trading CASCADE on the target DB." >&2
+    echo "Set MIGRATION_TEST_DB=<scratch dbname> AND PGDATABASE to the same value." >&2
+    exit 2
+fi
+if [[ "${PGDATABASE:-}" != "${MIGRATION_TEST_DB}" ]]; then
+    echo "REFUSING to run: PGDATABASE='${PGDATABASE:-}' != MIGRATION_TEST_DB='${MIGRATION_TEST_DB}'." >&2
+    exit 2
+fi
+if [[ "${MIGRATION_TEST_DB}" == "new_algo_data" ]]; then
+    echo "REFUSING to run against new_algo_data: that is the production database." >&2
+    exit 2
+fi
 
 PSQL="psql -v ON_ERROR_STOP=1 -q -X"
 pass=0

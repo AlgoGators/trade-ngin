@@ -139,28 +139,6 @@ Result<void> TrendFollowingFastStrategy::on_data(const std::vector<Bar>& data) {
         logged_total = true;
     }
 
-    // Load previous positions if not already loaded (only once per run)
-    static bool previous_positions_loaded = false;
-    if (!previous_positions_loaded && previous_positions_.empty() && db_) {
-        // Use the data's timestamp (not current time) to handle historical runs correctly
-        // Get the timestamp from the first bar to determine the processing date
-        auto data_time = data.empty() ? std::chrono::system_clock::now() : data[0].timestamp;
-        auto previous_date = data_time - std::chrono::hours(24);
-        auto previous_positions_result =
-            db_->load_positions_by_date(id_, "", "", previous_date, "trading.positions");
-
-        if (previous_positions_result.is_ok()) {
-            const auto& previous_positions = previous_positions_result.value();
-            INFO("Loaded " + std::to_string(previous_positions.size()) +
-                 " previous day positions for PnL calculation");
-            previous_positions_ = previous_positions;
-        } else {
-            INFO("No previous day positions found (first run or no data): " +
-                 std::string(previous_positions_result.error()->what()));
-        }
-        previous_positions_loaded = true;
-    }
-
     // CRITICAL FIX: Update price history BEFORE base class processing
     // This ensures price data is always updated even if leverage checks fail
     // in BaseStrategy::on_data(), preventing stuck prices in final_positions table
@@ -461,27 +439,18 @@ Result<void> TrendFollowingFastStrategy::on_data(const std::vector<Bar>& data) {
             // Get current market price
             double current_price = static_cast<double>(symbol_bars.back().close);
 
-            // Get previous position for PnL calculation
-            // First try previous_positions_ (DB data for live trading first day)
-            // Then fall back to positions_ (in-memory data for backtest/subsequent days)
-            auto prev_pos_it = previous_positions_.find(symbol);
+            // Get previous position for PnL calculation from positions_: seeded via
+            // seed_positions() on live first day, maintained by update_position()
+            // on every prior bar.
             double previous_quantity = 0.0;
             double previous_avg_price = current_price;
             double previous_realized_pnl = 0.0;
 
-            if (prev_pos_it != previous_positions_.end()) {
-                // Use DB-loaded previous positions (live trading first day)
-                previous_quantity = static_cast<double>(prev_pos_it->second.quantity);
-                previous_avg_price = static_cast<double>(prev_pos_it->second.average_price);
-                previous_realized_pnl = static_cast<double>(prev_pos_it->second.realized_pnl);
-            } else {
-                // Fallback to in-memory positions (backtest or subsequent live days)
-                auto pos_it = positions_.find(symbol);
-                if (pos_it != positions_.end()) {
-                    previous_quantity = static_cast<double>(pos_it->second.quantity);
-                    previous_avg_price = static_cast<double>(pos_it->second.average_price);
-                    previous_realized_pnl = static_cast<double>(pos_it->second.realized_pnl);
-                }
+            auto pos_it = positions_.find(symbol);
+            if (pos_it != positions_.end()) {
+                previous_quantity = static_cast<double>(pos_it->second.quantity);
+                previous_avg_price = static_cast<double>(pos_it->second.average_price);
+                previous_realized_pnl = static_cast<double>(pos_it->second.realized_pnl);
             }
 
             // Calculate realized PnL from position changes
@@ -606,10 +575,6 @@ Result<void> TrendFollowingFastStrategy::on_data(const std::vector<Bar>& data) {
                 WARN("Failed to update position for " + symbol + ": " + pos_result.error()->what());
                 // Continue processing despite position update failure
             }
-
-            // Update previous_positions_ for next iteration
-            // This ensures PnL accumulates correctly in backtests and subsequent live days
-            previous_positions_[symbol] = pos;
 
             instrument_data.last_update = symbol_bars.back().timestamp;
         }
@@ -1113,6 +1078,10 @@ std::unordered_map<std::string, double> TrendFollowingFastStrategy::get_weights(
     // Maximum weight any single symbol can have within its sector (50% of sector weight)
     const double MAX_SYMBOL_TO_SECTOR_RATIO = 0.50;
 
+    // Symbols capped below their equal share; the closing normalization must not
+    // re-inflate them.
+    std::unordered_set<std::string> capped_symbols;
+
     for (const auto& [sector, symbols] : sector_to_symbols) {
         int num_symbols = static_cast<int>(symbols.size());
         if (num_symbols == 0)
@@ -1129,6 +1098,7 @@ std::unordered_map<std::string, double> TrendFollowingFastStrategy::get_weights(
 
             // Log when a symbol's weight is capped
             if (capped_weight < per_symbol_weight) {
+                capped_symbols.insert(symbol);
                 INFO("Symbol " + symbol + " in sector " + sector +
                      " weight capped from " + std::to_string(per_symbol_weight * 100.0) +
                      "% to " + std::to_string(capped_weight * 100.0) +
@@ -1137,14 +1107,29 @@ std::unordered_map<std::string, double> TrendFollowingFastStrategy::get_weights(
         }
     }
 
-    // Normalize weights to sum to 100%
-    double weight_sum = 0.0;
+    // Normalize weights to sum to 100%. Scale only the uncapped symbols over the
+    // budget the caps freed; scaling everything re-inflates capped symbols past
+    // MAX_SYMBOL_TO_SECTOR_RATIO of their sector allocation.
+    double capped_sum = 0.0;
+    double uncapped_sum = 0.0;
     for (const auto& [symbol, weight] : symbol_weights) {
-        weight_sum += weight;
+        (capped_symbols.count(symbol) ? capped_sum : uncapped_sum) += weight;
     }
+    const double weight_sum = capped_sum + uncapped_sum;
     if (weight_sum > 0.0 && std::abs(weight_sum - 1.0) > 0.001) {
-        for (auto& [symbol, weight] : symbol_weights) {
-            weight /= weight_sum;
+        if (uncapped_sum > 0.0 && capped_sum < 1.0) {
+            const double scale = (1.0 - capped_sum) / uncapped_sum;
+            for (auto& [symbol, weight] : symbol_weights) {
+                if (capped_symbols.count(symbol) == 0) {
+                    weight *= scale;
+                }
+            }
+        } else {
+            // Every symbol capped (all sectors single-symbol): plain scaling is the
+            // only way back to a fully-invested portfolio.
+            for (auto& [symbol, weight] : symbol_weights) {
+                weight /= weight_sum;
+            }
         }
     }
 

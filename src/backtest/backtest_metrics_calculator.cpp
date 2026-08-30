@@ -12,7 +12,9 @@ namespace trade_ngin {
 // ========== Return Calculations ==========
 
 double BacktestMetricsCalculator::calculate_total_return(double start_value, double end_value) const {
-    if (start_value <= 0.0) {
+    // !(x > 0) instead of (x <= 0): NaN compares false to everything, so the
+    // old form let a NaN start value through to the division.
+    if (!(start_value > 0.0) || !std::isfinite(end_value)) {
         return 0.0;
     }
     return (end_value - start_value) / start_value;
@@ -36,7 +38,9 @@ std::vector<double> BacktestMetricsCalculator::calculate_returns_from_equity(
 
     returns.reserve(equity_curve.size() - 1);
     for (size_t i = 1; i < equity_curve.size(); ++i) {
-        if (equity_curve[i - 1].second > 0.0) {
+        // prev > 0.0 already excludes NaN prev; the current point must also be
+        // finite or the computed return itself is NaN.
+        if (equity_curve[i - 1].second > 0.0 && std::isfinite(equity_curve[i].second)) {
             double ret = (equity_curve[i].second - equity_curve[i - 1].second) /
                         equity_curve[i - 1].second;
             returns.push_back(ret);
@@ -120,7 +124,13 @@ double BacktestMetricsCalculator::calculate_volatility(const std::vector<double>
     // collapse it to a clean 0 so the `volatility <= 0` guard in
     // calculate_sharpe_ratio treats the degenerate case as such instead of
     // dividing by dust and reporting an absurd Sharpe.
-    return volatility < 1e-12 ? 0.0 : volatility;
+    if (volatility > 0.0 && volatility < 1e-12) {
+        WARN("Volatility collapsed to 0 (rounding dust; constant or near-constant "
+             "series of " + std::to_string(returns.size()) +
+             " returns); Sharpe will report 0 -- distinguish flat from broken data upstream");
+        return 0.0;
+    }
+    return volatility;
 }
 
 double BacktestMetricsCalculator::calculate_downside_volatility(
@@ -142,7 +152,17 @@ double BacktestMetricsCalculator::calculate_downside_volatility(
     }
 
     // Annualize using sqrt(252)
-    return std::sqrt(downside_sum / downside_count) * std::sqrt(252.0);
+    double downside_vol = std::sqrt(downside_sum / downside_count) * std::sqrt(252.0);
+
+    // Same rounding-dust collapse calculate_volatility applies: returns sitting a
+    // hair below target otherwise leave a ~1e-17 denominator and Sortino explodes
+    // to an absurd finite value instead of hitting its degenerate-case sentinel.
+    if (downside_vol > 0.0 && downside_vol < 1e-12) {
+        WARN("Downside volatility collapsed to 0 (rounding dust " +
+             std::to_string(downside_vol) + "); Sortino will report its degenerate-case value");
+        return 0.0;
+    }
+    return downside_vol;
 }
 
 // ========== Drawdown Metrics ==========
@@ -381,9 +401,11 @@ std::unordered_map<std::string, double> BacktestMetricsCalculator::calculate_mon
     std::unordered_map<std::string, double> monthly_returns;
 
     for (size_t i = 1; i < equity_curve.size(); ++i) {
-        // Skip non-positive equity points, matching calculate_returns_from_equity:
-        // dividing by 0 would silently inject inf/NaN into the monthly totals.
-        if (equity_curve[i - 1].second <= 0.0) {
+        // Skip non-positive OR non-finite equity points, matching
+        // calculate_returns_from_equity. !(x > 0) instead of (x <= 0): NaN
+        // compares false to everything, so the old form let NaN through into
+        // the monthly totals.
+        if (!(equity_curve[i - 1].second > 0.0) || !std::isfinite(equity_curve[i].second)) {
             continue;
         }
 
