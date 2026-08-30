@@ -414,7 +414,7 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                     } else {
                         source = "UNCLASSIFIED";
                     }
-                    INFO("CHOP_SOURCE: symbol=" + sym + " source=" + source +
+                    DEBUG("CHOP_SOURCE: symbol=" + sym + " source=" + source +
                          " prev=" + std::to_string(prev_q) +
                          " strat=" + std::to_string(strat_q) +
                          " qp=" + std::to_string(qp_q) +
@@ -1021,7 +1021,7 @@ Result<void> PortfolioManager::optimize_positions() {
             for (const auto& [strat_id, info] : strategies_) {
                 if (!info.use_optimization)
                     continue;
-                INFO("PRE_OPTIMIZER_TRACE: strat=" + strat_id +
+                DEBUG("PRE_OPTIMIZER_TRACE: strat=" + strat_id +
                      " current_positions_size=" +
                      std::to_string(info.current_positions.size()) +
                      " target_positions_size=" +

@@ -1368,9 +1368,9 @@ double TrendFollowingStrategy::apply_position_buffer(const std::string& symbol, 
         decision = "KEEP";
     }
 
-    // TEMP-DEBUG (BUFFER_TRACE): empirical proof of buffer-state-restart bug.
+    // BUFFER_TRACE: per-symbol buffer-state diagnostic (DEBUG level).
     // Logs full buffer state per call so we can diagnose churn root cause.
-    INFO("BUFFER_TRACE: sym=" + symbol +
+    DEBUG("BUFFER_TRACE: sym=" + symbol +
          " pos_found=" + std::string(pos_found ? "Y" : "N") +
          " current=" + std::to_string(current_position) +
          " raw=" + std::to_string(raw_position) +
