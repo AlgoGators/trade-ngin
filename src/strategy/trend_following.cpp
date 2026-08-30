@@ -453,27 +453,18 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
             // Get current market price
             double current_price = static_cast<double>(symbol_bars.back().close);
 
-            // Get previous position for PnL calculation
-            // First try previous_positions_ (DB data for live trading first day)
-            // Then fall back to positions_ (in-memory data for backtest/subsequent days)
-            auto prev_pos_it = previous_positions_.find(symbol);
+            // Get previous position for PnL calculation from positions_: seeded via
+            // seed_positions() on live first day, maintained by update_position()
+            // on every prior bar.
             double previous_quantity = 0.0;
             double previous_avg_price = current_price;
             double previous_realized_pnl = 0.0;
 
-            if (prev_pos_it != previous_positions_.end()) {
-                // Use DB-loaded previous positions (live trading first day)
-                previous_quantity = static_cast<double>(prev_pos_it->second.quantity);
-                previous_avg_price = static_cast<double>(prev_pos_it->second.average_price);
-                previous_realized_pnl = static_cast<double>(prev_pos_it->second.realized_pnl);
-            } else {
-                // Fallback to in-memory positions (backtest or subsequent live days)
-                auto pos_it = positions_.find(symbol);
-                if (pos_it != positions_.end()) {
-                    previous_quantity = static_cast<double>(pos_it->second.quantity);
-                    previous_avg_price = static_cast<double>(pos_it->second.average_price);
-                    previous_realized_pnl = static_cast<double>(pos_it->second.realized_pnl);
-                }
+            auto pos_it = positions_.find(symbol);
+            if (pos_it != positions_.end()) {
+                previous_quantity = static_cast<double>(pos_it->second.quantity);
+                previous_avg_price = static_cast<double>(pos_it->second.average_price);
+                previous_realized_pnl = static_cast<double>(pos_it->second.realized_pnl);
             }
 
             // Calculate realized PnL from position changes
@@ -598,10 +589,6 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
                 WARN("Failed to update position for " + symbol + ": " + pos_result.error()->what());
                 // Continue processing despite position update failure
             }
-
-            // Update previous_positions_ for next iteration
-            // This ensures PnL accumulates correctly in backtests and subsequent live days
-            previous_positions_[symbol] = pos;
 
             instrument_data.last_update = symbol_bars.back().timestamp;
         }

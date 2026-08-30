@@ -208,7 +208,6 @@ private:
     std::unordered_map<std::string, TrendFollowingFastInstrumentData> instrument_data_;
 
     // Previous day positions for PnL calculation
-    std::unordered_map<std::string, Position> previous_positions_;
 
     /**
      * @brief Calculate EWMA for a price series

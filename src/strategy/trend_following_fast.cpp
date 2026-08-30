@@ -139,28 +139,6 @@ Result<void> TrendFollowingFastStrategy::on_data(const std::vector<Bar>& data) {
         logged_total = true;
     }
 
-    // Load previous positions if not already loaded (only once per run)
-    static bool previous_positions_loaded = false;
-    if (!previous_positions_loaded && previous_positions_.empty() && db_) {
-        // Use the data's timestamp (not current time) to handle historical runs correctly
-        // Get the timestamp from the first bar to determine the processing date
-        auto data_time = data.empty() ? std::chrono::system_clock::now() : data[0].timestamp;
-        auto previous_date = data_time - std::chrono::hours(24);
-        auto previous_positions_result =
-            db_->load_positions_by_date(id_, "", "", previous_date, "trading.positions");
-
-        if (previous_positions_result.is_ok()) {
-            const auto& previous_positions = previous_positions_result.value();
-            INFO("Loaded " + std::to_string(previous_positions.size()) +
-                 " previous day positions for PnL calculation");
-            previous_positions_ = previous_positions;
-        } else {
-            INFO("No previous day positions found (first run or no data): " +
-                 std::string(previous_positions_result.error()->what()));
-        }
-        previous_positions_loaded = true;
-    }
-
     // CRITICAL FIX: Update price history BEFORE base class processing
     // This ensures price data is always updated even if leverage checks fail
     // in BaseStrategy::on_data(), preventing stuck prices in final_positions table
@@ -461,27 +439,18 @@ Result<void> TrendFollowingFastStrategy::on_data(const std::vector<Bar>& data) {
             // Get current market price
             double current_price = static_cast<double>(symbol_bars.back().close);
 
-            // Get previous position for PnL calculation
-            // First try previous_positions_ (DB data for live trading first day)
-            // Then fall back to positions_ (in-memory data for backtest/subsequent days)
-            auto prev_pos_it = previous_positions_.find(symbol);
+            // Get previous position for PnL calculation from positions_: seeded via
+            // seed_positions() on live first day, maintained by update_position()
+            // on every prior bar.
             double previous_quantity = 0.0;
             double previous_avg_price = current_price;
             double previous_realized_pnl = 0.0;
 
-            if (prev_pos_it != previous_positions_.end()) {
-                // Use DB-loaded previous positions (live trading first day)
-                previous_quantity = static_cast<double>(prev_pos_it->second.quantity);
-                previous_avg_price = static_cast<double>(prev_pos_it->second.average_price);
-                previous_realized_pnl = static_cast<double>(prev_pos_it->second.realized_pnl);
-            } else {
-                // Fallback to in-memory positions (backtest or subsequent live days)
-                auto pos_it = positions_.find(symbol);
-                if (pos_it != positions_.end()) {
-                    previous_quantity = static_cast<double>(pos_it->second.quantity);
-                    previous_avg_price = static_cast<double>(pos_it->second.average_price);
-                    previous_realized_pnl = static_cast<double>(pos_it->second.realized_pnl);
-                }
+            auto pos_it = positions_.find(symbol);
+            if (pos_it != positions_.end()) {
+                previous_quantity = static_cast<double>(pos_it->second.quantity);
+                previous_avg_price = static_cast<double>(pos_it->second.average_price);
+                previous_realized_pnl = static_cast<double>(pos_it->second.realized_pnl);
             }
 
             // Calculate realized PnL from position changes
@@ -606,10 +575,6 @@ Result<void> TrendFollowingFastStrategy::on_data(const std::vector<Bar>& data) {
                 WARN("Failed to update position for " + symbol + ": " + pos_result.error()->what());
                 // Continue processing despite position update failure
             }
-
-            // Update previous_positions_ for next iteration
-            // This ensures PnL accumulates correctly in backtests and subsequent live days
-            previous_positions_[symbol] = pos;
 
             instrument_data.last_update = symbol_bars.back().timestamp;
         }
