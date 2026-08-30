@@ -1109,6 +1109,10 @@ std::unordered_map<std::string, double> TrendFollowingStrategy::get_weights() co
     // Maximum weight any single symbol can have within its sector (50% of sector weight)
     const double MAX_SYMBOL_TO_SECTOR_RATIO = 0.50;
 
+    // Symbols capped below their equal share; the closing normalization must not
+    // re-inflate them.
+    std::unordered_set<std::string> capped_symbols;
+
     for (const auto& [sector, symbols] : sector_to_symbols) {
         int num_symbols = static_cast<int>(symbols.size());
         if (num_symbols == 0)
@@ -1125,6 +1129,7 @@ std::unordered_map<std::string, double> TrendFollowingStrategy::get_weights() co
 
             // Log when a symbol's weight is capped
             if (capped_weight < per_symbol_weight) {
+                capped_symbols.insert(symbol);
                 INFO("Symbol " + symbol + " in sector " + sector +
                      " weight capped from " + std::to_string(per_symbol_weight * 100.0) +
                      "% to " + std::to_string(capped_weight * 100.0) +
@@ -1133,14 +1138,29 @@ std::unordered_map<std::string, double> TrendFollowingStrategy::get_weights() co
         }
     }
 
-    // Normalize weights to sum to 100% (compensates for capping leakage)
-    double weight_sum = 0.0;
+    // Normalize weights to sum to 100%. Scale only the uncapped symbols over the
+    // budget the caps freed; scaling everything re-inflates capped symbols past
+    // MAX_SYMBOL_TO_SECTOR_RATIO of their sector allocation.
+    double capped_sum = 0.0;
+    double uncapped_sum = 0.0;
     for (const auto& [symbol, weight] : symbol_weights) {
-        weight_sum += weight;
+        (capped_symbols.count(symbol) ? capped_sum : uncapped_sum) += weight;
     }
+    const double weight_sum = capped_sum + uncapped_sum;
     if (weight_sum > 0.0 && std::abs(weight_sum - 1.0) > 0.001) {
-        for (auto& [symbol, weight] : symbol_weights) {
-            weight /= weight_sum;
+        if (uncapped_sum > 0.0 && capped_sum < 1.0) {
+            const double scale = (1.0 - capped_sum) / uncapped_sum;
+            for (auto& [symbol, weight] : symbol_weights) {
+                if (capped_symbols.count(symbol) == 0) {
+                    weight *= scale;
+                }
+            }
+        } else {
+            // Every symbol capped (all sectors single-symbol): plain scaling is the
+            // only way back to a fully-invested portfolio.
+            for (auto& [symbol, weight] : symbol_weights) {
+                weight /= weight_sum;
+            }
         }
     }
 

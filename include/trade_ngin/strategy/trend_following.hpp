@@ -193,6 +193,13 @@ public:
      */
     int get_max_required_lookback() const;
 
+    /**
+     * @brief Get sector-budgeted symbol weights for position sizing
+     * @return Map of symbol to weight (sums to 1.0; per-symbol capped at 50% of
+     *         its sector allocation). Public so tests can pin the cap invariant.
+     */
+    std::unordered_map<std::string, double> get_weights() const;
+
 protected:
     /**
      * @brief Validate strategy configuration
@@ -292,12 +299,6 @@ private:
      */
     std::vector<double> get_scaled_combined_forecast(
         const std::vector<double>& raw_combined_forecast) const;
-
-    /**
-     * @brief Get weights for position sizing
-     * @return Map of symbol to weight
-     */
-    std::unordered_map<std::string, double> get_weights() const;
 
     /**
      * @brief Calculate position for a symbol

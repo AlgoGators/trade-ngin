@@ -294,6 +294,77 @@ TEST(TrendFollowingConfigDefaults, CarverBufferConstantsArePinned) {
                      cfg.carver_buffer_floor);
 }
 
+namespace {
+
+// Mock DB whose contract metadata contains a single-symbol sector, so the
+// 50%-of-sector cap in get_weights() actually fires.
+class SectorMetadataMockDb : public MockPostgresDatabase {
+public:
+    using MockPostgresDatabase::MockPostgresDatabase;
+
+    Result<std::shared_ptr<arrow::Table>> get_contract_metadata() const override {
+        arrow::StringBuilder sector_b;
+        arrow::StringBuilder symbol_b;
+        const std::vector<std::pair<std::string, std::string>> rows = {
+            {"Metals", "GC"}, {"Metals", "SI"}, {"Metals", "HG"}, {"Crypto", "MBT"}};
+        for (const auto& [sec, sym] : rows) {
+            (void)sector_b.Append(sec);
+            (void)symbol_b.Append(sym);
+        }
+        std::shared_ptr<arrow::Array> sector_arr;
+        std::shared_ptr<arrow::Array> symbol_arr;
+        (void)sector_b.Finish(&sector_arr);
+        (void)symbol_b.Finish(&symbol_arr);
+        auto schema = arrow::schema({arrow::field("Sector", arrow::utf8()),
+                                     arrow::field("Databento Symbol", arrow::utf8())});
+        return Result<std::shared_ptr<arrow::Table>>(
+            arrow::Table::Make(schema, {sector_arr, symbol_arr}));
+    }
+
+    Result<std::vector<std::string>> get_symbols(AssetClass asset_class, DataFrequency freq,
+                                                 const std::string& data_type) override {
+        (void)asset_class;
+        (void)freq;
+        (void)data_type;
+        return Result<std::vector<std::string>>({"GC.v.0", "SI.v.0", "HG.v.0", "MBT.v.0"});
+    }
+};
+
+}  // namespace
+
+// The sector cap must survive normalization: a single-symbol sector is capped to
+// 50% of its sector budget and the freed weight goes to OTHER symbols only.
+// Pre-fix, the closing renormalization re-inflated the capped symbol (MBT landed
+// at 1/3 instead of 1/4).
+TEST(TrendFollowingWeights, SectorCapSurvivesNormalization) {
+    StateManager::reset_instance();
+    auto db = std::make_shared<SectorMetadataMockDb>("mock://sector");
+    ASSERT_TRUE(db->connect().is_ok());
+
+    StrategyConfig cfg;
+    cfg.capital_allocation = 1000000.0;
+    cfg.asset_classes = {AssetClass::FUTURES};
+    cfg.frequencies = {DataFrequency::DAILY};
+    TrendFollowingConfig tf;
+    TrendFollowingStrategy strat("TEST_WEIGHTS_CAP", cfg, tf, db);
+
+    auto weights = strat.get_weights();
+    ASSERT_EQ(weights.size(), 4u);
+
+    double sum = 0.0;
+    for (const auto& [sym, w] : weights) {
+        sum += w;
+    }
+    EXPECT_NEAR(sum, 1.0, 1e-9);
+
+    // 2 sectors -> sector budget 0.5 each. MBT alone in Crypto: capped at 0.25.
+    EXPECT_NEAR(weights.at("MBT"), 0.25, 1e-9)
+        << "capped symbol was re-inflated by normalization";
+    for (const auto* metal : {"GC", "SI", "HG"}) {
+        EXPECT_NEAR(weights.at(metal), 0.25, 1e-9);
+    }
+}
+
 // Test initialization and valid configuration
 TEST_F(TrendFollowingTest, ValidConfiguration) {
     EXPECT_EQ(strategy_->get_state(), StrategyState::INITIALIZED);
