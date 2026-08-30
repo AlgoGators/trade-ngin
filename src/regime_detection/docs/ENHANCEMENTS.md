@@ -376,3 +376,14 @@ implementation effort.
 - Live deployment ops (scheduled refits, model versioning, alerting on
   regime transitions) — separate ops doc, unblocked by the live-state
   serialization API but requires infrastructure beyond this module.
+
+## DATA_REQUIREMENTS (added 2026-08-30)
+
+Data that must exist before the corresponding enhancement can be built. Mirrors the
+data-owner ask packet (main tree: `docs/DATA_OWNER_ASKS_2026-08.md`, items 9–10).
+
+| Enhancement | Data needed | Current state |
+|---|---|---|
+| 1. MBFS (also closes Gaps 2/3/4) | Bid-ask spreads, order-book depth / intraday microstructure features for the futures universe | **Not ingested anywhere**; vendor + schema TBD with the data owner |
+| Funding-stress detection (Gap 6) | Credit-spread series (IG/HY OAS or similar) consumable by the MARKET pipeline | `macro_data.credit_spreads` exists as a macro-DFM input table — verify it is populated/refreshed, then wire a market-side funding-stress detector to it; if stale/empty, it is an ingest ask |
+| 3. Cross-Asset Overlay Monitor (Gap 5) | None new — uses existing cross-asset prices | Subsystem build only |
