@@ -37,10 +37,18 @@ std::shared_ptr<Instrument> InstrumentRegistry::get_instrument(const std::string
 
     // Strip variant suffix (e.g., "ZC.v.0" -> "ZC", "ES.v.0" -> "ES") before any lookup or remap
     auto v_pos = cleaned_symbol.find(".v.");
-    if (v_pos != std::string::npos) {
+    const bool had_variant_suffix = v_pos != std::string::npos;
+    if (had_variant_suffix) {
         cleaned_symbol = cleaned_symbol.substr(0, v_pos);
     }
 
+    // An exact match wins before any micro-futures remap: bare equity tickers
+    // collide with futures roots (NYSE "ES" is Eversource Energy). A .v.
+    // variant suffix marks a futures continuous series, so suffixed symbols
+    // still remap unconditionally.
+    if (!had_variant_suffix && instruments_.count(cleaned_symbol) > 0) {
+        // fall through to the map lookup below with no remap
+    } else
     // Handle special cases for micro futures
     if (cleaned_symbol == "ES") {
         cleaned_symbol = "MES";
@@ -226,10 +234,18 @@ bool InstrumentRegistry::has_instrument(const std::string& symbol) const {
 
     // Strip variant suffix (e.g., "ZC.v.0" -> "ZC", "ES.v.0" -> "ES") before any lookup or remap
     auto v_pos = cleaned_symbol.find(".v.");
-    if (v_pos != std::string::npos) {
+    const bool had_variant_suffix = v_pos != std::string::npos;
+    if (had_variant_suffix) {
         cleaned_symbol = cleaned_symbol.substr(0, v_pos);
     }
 
+    // An exact match wins before any micro-futures remap: bare equity tickers
+    // collide with futures roots (NYSE "ES" is Eversource Energy). A .v.
+    // variant suffix marks a futures continuous series, so suffixed symbols
+    // still remap unconditionally.
+    if (!had_variant_suffix && instruments_.count(cleaned_symbol) > 0) {
+        // fall through to the map lookup below with no remap
+    } else
     // Handle special cases for micro futures
     if (cleaned_symbol == "ES") {
         cleaned_symbol = "MES";

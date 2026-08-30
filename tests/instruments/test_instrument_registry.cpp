@@ -133,6 +133,24 @@ TEST_F(InstrumentRegistryTest, HasInstrumentRespectsMicroSymbolMapping) {
     EXPECT_FALSE(r.has_instrument("UNKNOWN"));
 }
 
+TEST_F(InstrumentRegistryTest, ExactEquitySymbolWinsOverMicroRemap) {
+    auto& r = InstrumentRegistry::instance();
+    auto es_equity = make_equity("ES");  // NYSE "ES" = Eversource Energy
+    auto mes = make_futures("MES");
+    r.instruments_["ES"] = es_equity;
+    r.instruments_["MES"] = mes;
+    // A registered bare symbol must win over the ES->MES micro remap; pre-fix
+    // the remap fired unconditionally and handed back the futures contract.
+    EXPECT_EQ(r.get_instrument("ES"), es_equity);
+    EXPECT_TRUE(r.has_instrument("ES"));
+    // A .v. variant suffix marks a futures continuous series: still remaps
+    // even with the equity registered.
+    EXPECT_EQ(r.get_instrument("ES.v.0"), mes);
+    EXPECT_TRUE(r.has_instrument("ES.v.0"));
+    // Micro remap unchanged when no bare registration exists.
+    EXPECT_EQ(r.get_instrument("NQ"), nullptr);
+}
+
 TEST_F(InstrumentRegistryTest, GetFuturesInstrumentReturnsNullForNonFutures) {
     auto& r = InstrumentRegistry::instance();
     r.instruments_["AAPL"] = make_equity("AAPL");
