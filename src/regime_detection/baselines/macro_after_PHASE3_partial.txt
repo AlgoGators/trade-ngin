@@ -1,0 +1,306 @@
+========================================================
+ Synthesized Macro Regime Pipeline
+ B1(DFM) + B2(MS-DFM) + B3(Quadrant) + B4(BSTS/GMM)
+ All models run automatically from database.
+========================================================
+
+[1/5] Connecting to database...
+WARNING: Logger not initialized. Message: Successfully connected to PostgreSQL database with ID: POSTGRES_DB_1
+WARNING: Logger not initialized. Message: [MacroDataLoader] loaded panel: T=4765 N=24 fill_rate=99.8924%
+      Panel: 4765 dates x 24 series
+      Range: 2011-01-01 to 2026-04-08
+
+[2/5] Fitting DFM (B1)...
+      Converged after 228 iterations (LL=-8217.3)
+
+      DFM FACTOR LOADINGS (top 3 per factor):
+      Factor 0 (macro_level): cpi (0.854), retail_sales (0.853), gdp (0.850)
+      Factor 1 (real_activity): manufacturing_capacity_util (-0.603), industrial_production (-0.520), unemployment_rate (0.400)
+      Factor 2 (commodity_inflation): wti_crude (-0.429), breakeven_5y (-0.292), manufacturing_capacity_util (0.278)
+
+[3/5] Fitting MS-DFM (B2)...
+      Converged after 56 iterations (LL=56024.8)
+
+[4/5] Fitting BSTS (B4)...
+WARNING: Logger not initialized. Message: [MacroDataLoader] loaded panel: T=4765 N=24 fill_rate=99.8924%
+[db] macro panel: 4765 dates x 24 columns
+[db] ETF data: 30099 rows
+[db] assembled DataFrame: 4765 x 20
+[bsts] ETF series...
+  SPY     LL=-2e+04
+  EEM     LL=-2e+04
+  TLT     LL=-2e+04
+  HYG     LL=-2e+04
+  GLD     LL=-2e+04
+  UUP     LL=-2e+04
+  USO     LL=-2e+04
+  CPER    LL=-2e+04
+[bsts] macro series...
+  cpi                     LL=-1e+04
+  core_pce                LL=-9e+03
+  breakeven_5y            LL=6e+03
+  gdp                     LL=-4e+04
+  manufacturing_capacity_util  LL=-2e+03
+  industrial_production   LL=-3e+03
+  yield_spread_10y_2y     LL=3e+03
+  tips_10y                LL=3e+03
+  high_yield_spread       LL=8e+02
+  unemployment_rate       LL=-1e+03
+  nonfarm_payrolls        LL=-4e+04
+  ted_spread              LL=1e+04
+[features] building 4765 x 50 matrix
+[pca] 12 components
+  variance explained: 7e+01%
+[gmm] K=4  restarts=10  (K-means++ init)
+    restart 1/10  ll=-75615.0
+    restart 2/10  ll=-71409.2
+    restart 3/10  ll=-73076.7
+    restart 4/10  ll=-72877.0
+    restart 5/10  ll=-72989.8
+    restart 6/10  ll=-76280.7
+    restart 7/10  ll=-76652.5
+    restart 8/10  ll=-75156.7
+    restart 9/10  ll=-75866.4
+    restart 10/10  ll=-72993.9
+  best ll=-71409.2
+  high-conviction obs: 98.2%
+  cluster 0  gi=1.70  gs=0.74  inf=-0.90  str=0.67  ros=0.42
+  cluster 1  gi=-0.57  gs=-1.24  inf=-0.79  str=1.27  ros=1.01
+  cluster 2  gi=-0.85  gs=-0.70  inf=0.09  str=-0.77  ros=-1.66
+  cluster 3  gi=-0.28  gs=1.19  inf=1.60  str=-1.17  ros=0.23
+  assign cluster 2 -> R2 Stagflation  (score=4.194)
+  assign cluster 0 -> R0 Risk-On Growth  (score=3.896)
+  assign cluster 1 -> R1 Risk-Off/Crash  (score=3.329)
+  assign cluster 3 -> R3 Reflation  (score=3.108)
+      T=4765  high-conviction: 98.2%
+
+[5/5] Training Synthesized MacroRegimePipeline...
+[B1] using factor 1 as growth, factor 2 as inflation
+[B1] growth thresholds: lo=-0.666 hi=0.631
+[B1] inflation split: -0.094
+[B1] EXPANSION_DISINFLATION n=349 mean(f1,f2)=[-0.972 1.313 ]
+[B1] EXPANSION_INFLATIONARY n=1081 mean(f1,f2)=[-1.283 -2.241]
+[B1] SLOWDOWN_DISINFLATION n=1454 mean(f1,f2)=[-0.029 1.868 ]
+[B1] SLOWDOWN_INFLATIONARY n=928 mean(f1,f2)=[-0.110 -1.370]
+[B1] RECESSION_DEFLATIONARY n=579 mean(f1,f2)=[1.683 1.076]
+[B1] RECESSION_INFLATIONARY n=374 mean(f1,f2)=[2.390  -0.298]
+[fingerprint] resolved columns: growth=6 inflation=4 credit=2 yield=1 policy=1
+[fingerprint] prepared standardized panel: T=4765 N=24 (growth_yoy=6 level=18, lookback=252 bars)
+[B2] native state 0 soft-weight=4303.371 n_contrib=4380 fp=[0.005  -0.015 -0.005 0.009  -0.000]
+[B2] native state 1 soft-weight=323.777 n_contrib=4658 fp=[0.009  0.129  0.004  -0.064 0.010 ]
+[B2] native state 2 soft-weight=137.852 n_contrib=645 fp=[-0.171 0.174  0.142  -0.141 -0.019]
+[B2] cross-state de-mean only (M-01: dropped /std)
+[B2] MS-DFM mapping matrix (3x6):
+  native 0: [0.161, 0.169, 0.319, 0.186, 0.082, 0.083]
+  native 1: [0.149, 0.186, 0.283, 0.214, 0.076, 0.092]
+  native 2: [0.125, 0.162, 0.275, 0.239, 0.086, 0.114]
+[B4] BSTS mapping matrix (4x6) trained
+[MacroRegimePipeline] Training complete. T=4765
+      Structural breaks detected: 94/4765 timesteps
+
+========================================================
+ MACRO REGIME BELIEF (Synthesized Pipeline)
+========================================================
+
+  Dominant regime: SLOWDOWN_INFLATIONARY
+  Confidence:      0.016
+  Regime age:      17 periods
+
+  REGIME PROBABILITIES
+  ----------------------------------------
+  EXPANSION_DISINFLATION        0.1136  ####
+  EXPANSION_INFLATIONARY        0.2480  #########
+  SLOWDOWN_DISINFLATION         0.2181  ########
+  SLOWDOWN_INFLATIONARY         0.2641  ##########
+  RECESSION_DEFLATIONARY        0.0898  ###
+  RECESSION_INFLATIONARY        0.0664  ##
+
+  MODEL CONTRIBUTIONS
+  ----------------------------------------
+  BSTS         -> EXPANSION_INFLATIONARY (0.245)
+  DFM          -> EXPANSION_INFLATIONARY (0.623)
+  MS-DFM       -> SLOWDOWN_DISINFLATION (0.319)
+  Quadrant     -> SLOWDOWN_DISINFLATION (0.317)
+
+  REGIME HISTORY (last 20 dates)
+  ----------------------------------------
+  Date          Regime                              Conf     Age
+  --------------------------------------------------------------
+  2026-03-16    SLOWDOWN_DISINFLATION              0.024      20
+  2026-03-17    SLOWDOWN_DISINFLATION              0.035      21
+  2026-03-18    SLOWDOWN_DISINFLATION              0.046      22
+  2026-03-19    SLOWDOWN_INFLATIONARY              0.057       1
+  2026-03-20    SLOWDOWN_INFLATIONARY              0.116       2
+  2026-03-21    SLOWDOWN_INFLATIONARY              0.115       3
+  2026-03-23    SLOWDOWN_INFLATIONARY              0.122       4
+  2026-03-24    SLOWDOWN_INFLATIONARY              0.122       5
+  2026-03-25    SLOWDOWN_INFLATIONARY              0.121       6
+  2026-03-26    SLOWDOWN_INFLATIONARY              0.119       7
+  2026-03-27    SLOWDOWN_INFLATIONARY              0.114       8
+  2026-03-28    SLOWDOWN_INFLATIONARY              0.108       9
+  2026-03-30    SLOWDOWN_INFLATIONARY              0.100      10
+  2026-03-31    SLOWDOWN_INFLATIONARY              0.094      11
+  2026-04-01    SLOWDOWN_INFLATIONARY              0.093      12
+  2026-04-02    SLOWDOWN_INFLATIONARY              0.088      13
+  2026-04-03    SLOWDOWN_INFLATIONARY              0.071      14
+  2026-04-06    SLOWDOWN_INFLATIONARY              0.049      15
+  2026-04-07    SLOWDOWN_INFLATIONARY              0.031      16
+  2026-04-08    SLOWDOWN_INFLATIONARY              0.016      17
+
+  === DIAGNOSTIC: MS-DFM BEHAVIOUR BY YEAR ===
+  ----------------------------------------------------------
+  Year  N      MS-DFM dominant     ns0%    ns1%    ns2%    Ensemble dominant     
+  ----------------------------------------------------------------------------
+  2011  248    SLOWDOWN_DISINFLATION    91       7       2    SLOWDOWN_INFLATIONARY
+  2012  317    SLOWDOWN_DISINFLATION    94       5       1    SLOWDOWN_INFLATIONARY
+  2013  317    SLOWDOWN_DISINFLATION    92       6       2    EXPANSION_INFLATIONARY
+  2014  316    SLOWDOWN_DISINFLATION    89       8       3    EXPANSION_INFLATIONARY
+  2015  317    SLOWDOWN_DISINFLATION    93       5       2    SLOWDOWN_DISINFLATION
+  2016  317    SLOWDOWN_DISINFLATION    91       6       3    SLOWDOWN_DISINFLATION
+  2017  316    SLOWDOWN_DISINFLATION    95       4       1    SLOWDOWN_DISINFLATION
+  2018  316    SLOWDOWN_DISINFLATION    92       6       2    EXPANSION_DISINFLATION
+  2019  317    SLOWDOWN_DISINFLATION    94       5       1    SLOWDOWN_DISINFLATION
+  2020  317    SLOWDOWN_DISINFLATION    85       8       7    RECESSION_INFLATIONARY
+  2021  317    SLOWDOWN_DISINFLATION    89       8       4    EXPANSION_INFLATIONARY
+  2022  315    SLOWDOWN_DISINFLATION    84      11       5    EXPANSION_INFLATIONARY
+  2023  316    SLOWDOWN_DISINFLATION    90       7       3    EXPANSION_INFLATIONARY
+  2024  318    SLOWDOWN_DISINFLATION    91       7       3    SLOWDOWN_INFLATIONARY
+  2025  316    SLOWDOWN_DISINFLATION    90       7       3    SLOWDOWN_INFLATIONARY
+  2026  85     SLOWDOWN_DISINFLATION    79      14       7    SLOWDOWN_INFLATIONARY
+
+  MS-DFM dominant pick, full sample:
+    EXPANSION_DISINFLATION         0.0%
+    EXPANSION_INFLATIONARY         0.0%
+    SLOWDOWN_DISINFLATION        100.0%
+    SLOWDOWN_INFLATIONARY          0.0%
+    RECESSION_DEFLATIONARY         0.0%
+    RECESSION_INFLATIONARY         0.0%
+
+  === DIAGNOSTIC: DFM BEHAVIOUR BY YEAR ===
+  ----------------------------------------------------------
+  Year  N      DFM dominant                Ensemble dominant     
+  --------------------------------------------------------------
+  2011  248    EXPANSION_INFLATIONARY      SLOWDOWN_INFLATIONARY 
+  2012  317    EXPANSION_INFLATIONARY      SLOWDOWN_INFLATIONARY 
+  2013  317    EXPANSION_INFLATIONARY      EXPANSION_INFLATIONARY
+  2014  316    EXPANSION_INFLATIONARY      EXPANSION_INFLATIONARY
+  2015  317    SLOWDOWN_DISINFLATION       SLOWDOWN_DISINFLATION 
+  2016  317    SLOWDOWN_DISINFLATION       SLOWDOWN_DISINFLATION 
+  2017  316    SLOWDOWN_DISINFLATION       SLOWDOWN_DISINFLATION 
+  2018  316    EXPANSION_DISINFLATION      EXPANSION_DISINFLATION
+  2019  317    SLOWDOWN_DISINFLATION       SLOWDOWN_DISINFLATION 
+  2020  317    RECESSION_INFLATIONARY      RECESSION_INFLATIONARY
+  2021  317    SLOWDOWN_INFLATIONARY       EXPANSION_INFLATIONARY
+  2022  315    EXPANSION_INFLATIONARY      EXPANSION_INFLATIONARY
+  2023  316    SLOWDOWN_INFLATIONARY       EXPANSION_INFLATIONARY
+  2024  318    SLOWDOWN_INFLATIONARY       SLOWDOWN_INFLATIONARY 
+  2025  316    RECESSION_DEFLATIONARY      SLOWDOWN_INFLATIONARY 
+  2026  85     RECESSION_DEFLATIONARY      SLOWDOWN_INFLATIONARY 
+
+  DFM dominant pick, full sample:
+    EXPANSION_DISINFLATION        11.4%
+    EXPANSION_INFLATIONARY        22.9%
+    SLOWDOWN_DISINFLATION         25.4%
+    SLOWDOWN_INFLATIONARY         22.7%
+    RECESSION_DEFLATIONARY        10.0%
+    RECESSION_INFLATIONARY         7.7%
+
+  === DIAGNOSTIC: Quadrant BEHAVIOUR BY YEAR ===
+  ----------------------------------------------------------
+  Year  N      Quadrant dominant           Ensemble dominant     
+  --------------------------------------------------------------
+  2011  248    SLOWDOWN_DISINFLATION       SLOWDOWN_INFLATIONARY 
+  2012  317    SLOWDOWN_DISINFLATION       SLOWDOWN_INFLATIONARY 
+  2013  317    SLOWDOWN_DISINFLATION       EXPANSION_INFLATIONARY
+  2014  316    EXPANSION_DISINFLATION      EXPANSION_INFLATIONARY
+  2015  317    EXPANSION_DISINFLATION      SLOWDOWN_DISINFLATION 
+  2016  317    SLOWDOWN_DISINFLATION       SLOWDOWN_DISINFLATION 
+  2017  316    EXPANSION_DISINFLATION      SLOWDOWN_DISINFLATION 
+  2018  316    EXPANSION_INFLATIONARY      EXPANSION_DISINFLATION
+  2019  317    EXPANSION_DISINFLATION      SLOWDOWN_DISINFLATION 
+  2020  317    SLOWDOWN_DISINFLATION       RECESSION_INFLATIONARY
+  2021  317    EXPANSION_INFLATIONARY      EXPANSION_INFLATIONARY
+  2022  315    EXPANSION_INFLATIONARY      EXPANSION_INFLATIONARY
+  2023  316    EXPANSION_INFLATIONARY      EXPANSION_INFLATIONARY
+  2024  318    SLOWDOWN_INFLATIONARY       SLOWDOWN_INFLATIONARY 
+  2025  316    SLOWDOWN_INFLATIONARY       SLOWDOWN_INFLATIONARY 
+  2026  85     SLOWDOWN_DISINFLATION       SLOWDOWN_INFLATIONARY 
+
+  Quadrant dominant pick, full sample:
+    EXPANSION_DISINFLATION        27.3%
+    EXPANSION_INFLATIONARY        31.9%
+    SLOWDOWN_DISINFLATION         21.3%
+    SLOWDOWN_INFLATIONARY         19.4%
+    RECESSION_DEFLATIONARY         0.0%
+    RECESSION_INFLATIONARY         0.0%
+
+  === DIAGNOSTIC: BSTS BEHAVIOUR BY YEAR ===
+  ----------------------------------------------------------
+  Year  N      BSTS dominant               Ensemble dominant     
+  --------------------------------------------------------------
+  2011  248    SLOWDOWN_DISINFLATION       SLOWDOWN_INFLATIONARY 
+  2012  317    SLOWDOWN_DISINFLATION       SLOWDOWN_INFLATIONARY 
+  2013  317    SLOWDOWN_DISINFLATION       EXPANSION_INFLATIONARY
+  2014  316    SLOWDOWN_DISINFLATION       EXPANSION_INFLATIONARY
+  2015  317    SLOWDOWN_DISINFLATION       SLOWDOWN_DISINFLATION 
+  2016  317    SLOWDOWN_DISINFLATION       SLOWDOWN_DISINFLATION 
+  2017  316    SLOWDOWN_DISINFLATION       SLOWDOWN_DISINFLATION 
+  2018  316    SLOWDOWN_DISINFLATION       EXPANSION_DISINFLATION
+  2019  317    SLOWDOWN_DISINFLATION       SLOWDOWN_DISINFLATION 
+  2020  317    SLOWDOWN_DISINFLATION       RECESSION_INFLATIONARY
+  2021  317    SLOWDOWN_INFLATIONARY       EXPANSION_INFLATIONARY
+  2022  315    SLOWDOWN_INFLATIONARY       EXPANSION_INFLATIONARY
+  2023  316    SLOWDOWN_INFLATIONARY       EXPANSION_INFLATIONARY
+  2024  318    SLOWDOWN_INFLATIONARY       SLOWDOWN_INFLATIONARY 
+  2025  316    SLOWDOWN_INFLATIONARY       SLOWDOWN_INFLATIONARY 
+  2026  85     EXPANSION_INFLATIONARY      SLOWDOWN_INFLATIONARY 
+
+  BSTS dominant pick, full sample:
+    EXPANSION_DISINFLATION         0.0%
+    EXPANSION_INFLATIONARY         1.8%
+    SLOWDOWN_DISINFLATION         66.0%
+    SLOWDOWN_INFLATIONARY         32.2%
+    RECESSION_DEFLATIONARY         0.0%
+    RECESSION_INFLATIONARY         0.0%
+
+  === DIAGNOSTIC: BSTS NATIVE CLUSTER FREQ BY YEAR ===
+  ----------------------------------------------------------
+  Year  N      c0%     c1%     c2%     c3%     
+  ---------------------------------------------
+  2011  248        83       0      17       0  
+  2012  317       100       0       0       0  
+  2013  317       100       0       0       0  
+  2014  316       100       0       0       0  
+  2015  317       100       0       0       0  
+  2016  317       100       0       0       0  
+  2017  316        99       1       0       0  
+  2018  316        99       1       0       0  
+  2019  317       100       0       0       0  
+  2020  317        11      89       0       0  
+  2021  317         3      26       0      72  
+  2022  315         0       0       0     100  
+  2023  316         0       0       0     100  
+  2024  318         0       0       0     100  
+  2025  316         0       0       0     100  
+  2026  85          0       0      53      47  
+
+  REGIME DISTRIBUTION (full sample, T=4765)
+  ----------------------------------------
+  EXPANSION_DISINFLATION          10.6%  ####
+  EXPANSION_INFLATIONARY          31.8%  ############
+  SLOWDOWN_DISINFLATION           27.2%  ##########
+  SLOWDOWN_INFLATIONARY           24.6%  #########
+  RECESSION_DEFLATIONARY           3.3%  #
+  RECESSION_INFLATIONARY           2.5%  #
+
+  MODEL WEIGHTS (Synthesized Spec)
+  ----------------------------------------
+  MS-DFM:   0.40
+  DFM:      0.25
+  Quadrant: 0.20
+  BSTS:     0.10
+  Base lambda: 0.20
+  Min dwell:   26 bars
+
+Done.
+WARNING: Logger not initialized. Message: Disconnected from PostgreSQL database

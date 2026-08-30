@@ -356,7 +356,7 @@ date,sleeve,regime,confidence,p_TREND_LOWVOL,p_TREND_HIGHVOL,p_MEANREV_CHOPPY,p_
 This is the bit-identity gate used by maintenance work — every change
 that should preserve the regime call must produce 0 `diff` lines vs
 the post-Phase-3 baseline at
-`apps/strategies/results/regime_fix_baselines/market_timeline_K05plus.csv`.
+`src/regime_detection/baselines/market_timeline_K05plus.csv`.
 Use it for cross-version validation, not just regression testing — the
 per-bar probabilities tell you *which* model contributions shifted
 when something changes.
@@ -484,7 +484,7 @@ cmake --build build -j 8 --target trade_ngin_tests
 The timeline-CSV diagnostic above is the bit-identity gate used by
 maintenance work — every change that should preserve the regime call
 must produce 0 diff lines vs the post-Phase-3 baseline at
-`apps/strategies/results/regime_fix_baselines/market_timeline_K05plus.csv`.
+`src/regime_detection/baselines/market_timeline_K05plus.csv`.
 
 ## Where to read next
 

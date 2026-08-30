@@ -1,0 +1,334 @@
+WARNING: Logger not initialized. Message: Successfully connected to PostgreSQL database with ID: POSTGRES_DB_1
+[MarketDataLoader] MES.v.0: T=1867 dates=[2020-01-02 .. 2025-12-31]
+[MarketDataLoader] MNQ.v.0: T=1867 dates=[2020-01-02 .. 2025-12-31]
+[MarketDataLoader] MYM.v.0: T=1866 dates=[2020-01-02 .. 2025-12-31]
+[MarketDataLoader] Sleeve 'equities': T=1866 symbols=3 common dates [2020-01-02 .. 2025-12-31]
+  equities: corr_spike computed from 3 symbols
+[MarketDataLoader] ZN.v.0: T=1866 dates=[2020-01-02 .. 2025-12-31]
+[MarketDataLoader] ZF.v.0: T=1917 dates=[2020-01-02 .. 2025-12-31]
+[MarketDataLoader] Sleeve 'rates': T=1864 symbols=2 common dates [2020-01-02 .. 2025-12-31]
+  rates: corr_spike computed from 2 symbols
+[MarketDataLoader] 6E.v.0: T=1867 dates=[2020-01-02 .. 2025-12-31]
+[MarketDataLoader] 6J.v.0: T=1867 dates=[2020-01-02 .. 2025-12-31]
+[MarketDataLoader] 6B.v.0: T=1867 dates=[2020-01-02 .. 2025-12-31]
+[MarketDataLoader] 6A.v.0: T=1920 dates=[2020-01-02 .. 2025-12-31]
+[MarketDataLoader] Sleeve 'fx': T=1867 symbols=4 common dates [2020-01-02 .. 2025-12-31]
+  fx: corr_spike computed from 4 symbols
+[MarketDataLoader] CL.v.0: T=1864 dates=[2020-01-02 .. 2025-12-31]
+[MarketDataLoader] NG.v.0: T=1917 dates=[2020-01-02 .. 2025-12-31]
+[MarketDataLoader] GC.v.0: T=1851 dates=[2020-01-02 .. 2025-12-31]
+[MarketDataLoader] HG.v.0: T=1863 dates=[2020-01-02 .. 2025-12-31]
+[MarketDataLoader] Sleeve 'commodities': T=1851 symbols=4 common dates [2020-01-02 .. 2025-12-31]
+  commodities: corr_spike computed from 4 symbols
+
+========================================================
+ SLEEVE: equities
+========================================================
+  Primary: MES.v.0  T=1866
+  HMM 0: μ=-0.000187426 σ=0.0132299
+  HMM 1: μ=0.000906764 σ=0.00650157
+  HMM 2: μ=-0.00369196 σ=0.040361
+  HMM forward pass complete (true filtered probs)
+  MSAR: using MarketMSAR joint AR estimation
+  MSAR 0: μ=-0.00146827 σ=0.0221891 φ=-0.140752
+  MSAR 1: μ=0.000757498 σ=0.00748193 φ=0.00455748
+  MSAR forward pass complete (AR(1) emission, PDF-exact)
+  GARCH σ_t: [0.00553283, 0.0587454]
+  EGARCH γ=-0.101012 (leverage effect detected)
+    GMM restart 1/10  ll=15454.0
+    GMM restart 2/10  ll=15453.7
+    GMM restart 3/10  ll=14728.4
+    GMM restart 4/10  ll=14726.2
+    GMM restart 5/10  ll=15122.1
+    GMM restart 6/10  ll=15453.4
+    GMM restart 7/10  ll=14728.2
+    GMM restart 8/10  ll=15440.4
+    GMM restart 9/10  ll=15122.1
+    GMM restart 10/10  ll=15122.1
+  GMM best ll=15454.0
+[MarketRegimePipeline] Training sleeve 'equities' T=1866
+[A1-equities] HMM state 0 μ=-0.00019 σ=0.01323
+[A1-equities] HMM state 1 μ=0.00091 σ=0.00650
+[A1-equities] HMM state 2 μ=-0.00369 σ=0.04036
+[A1-equities] HMM mapping matrix (3x5):
+  state 0: [0.193, 0.200, 0.467, 0.077, 0.063]
+  state 1: [0.486, 0.147, 0.280, 0.047, 0.040]
+  state 2: [0.013, 0.111, 0.107, 0.510, 0.259]
+[A2-equities] MSAR state 0 μ=-0.00147 σ=0.02219 φ=-0.14075
+[A2-equities] MSAR state 1 μ=0.00076 σ=0.00748 φ=0.00456
+[A2-equities] MSAR mapping matrix (2x5)
+[A3-equities] GARCH mapping trained
+[A4-equities] GMM cluster 0 n=198
+[A4-equities] GMM cluster 1 n=11
+[A4-equities] GMM cluster 2 n=1107
+[A4-equities] GMM cluster 3 n=251
+[A4-equities] GMM cluster 4 n=299
+[A4-equities] GMM mapping matrix (5x5)
+[MarketRegimePipeline] Training complete for 'equities'
+
+  REGIME HISTORY (last 5 bars)
+  ----------------------------------------
+  t=1861 
+  Sleeve: equities  |  Regime: TREND_LOWVOL  |  Confidence: 0.318  |  Age: 1 bars
+  TREND_LOWVOL=0.539  TREND_HIGHVOL=0.145  MEANREV_CHOPPY=0.220  STRESS_PRICE=0.036  STRESS_LIQUIDITY=0.061  
+    GARCH   : 0.55 0.05 0.25 0.00 0.15 
+    GMM     : 0.42 0.17 0.32 0.03 0.06 
+    HMM     : 0.49 0.15 0.28 0.05 0.04 
+    MSAR    : 0.64 0.19 0.09 0.05 0.03 
+  t=1862 
+  Sleeve: equities  |  Regime: TREND_LOWVOL  |  Confidence: 0.318  |  Age: 2 bars
+  TREND_LOWVOL=0.547  TREND_HIGHVOL=0.142  MEANREV_CHOPPY=0.230  STRESS_PRICE=0.044  STRESS_LIQUIDITY=0.037  
+    GARCH   : 0.55 0.05 0.30 0.05 0.05 
+    GMM     : 0.50 0.15 0.32 0.02 0.02 
+    HMM     : 0.49 0.15 0.28 0.05 0.04 
+    MSAR    : 0.64 0.19 0.09 0.05 0.03 
+  t=1863 
+  Sleeve: equities  |  Regime: TREND_LOWVOL  |  Confidence: 0.318  |  Age: 3 bars
+  TREND_LOWVOL=0.539  TREND_HIGHVOL=0.145  MEANREV_CHOPPY=0.220  STRESS_PRICE=0.036  STRESS_LIQUIDITY=0.061  
+    GARCH   : 0.55 0.05 0.25 0.00 0.15 
+    GMM     : 0.42 0.17 0.32 0.03 0.06 
+    HMM     : 0.49 0.15 0.28 0.05 0.04 
+    MSAR    : 0.64 0.19 0.09 0.05 0.03 
+  t=1864 
+  Sleeve: equities  |  Regime: TREND_LOWVOL  |  Confidence: 0.318  |  Age: 4 bars
+  TREND_LOWVOL=0.547  TREND_HIGHVOL=0.142  MEANREV_CHOPPY=0.230  STRESS_PRICE=0.044  STRESS_LIQUIDITY=0.037  
+    GARCH   : 0.55 0.05 0.30 0.05 0.05 
+    GMM     : 0.50 0.15 0.32 0.02 0.02 
+    HMM     : 0.49 0.15 0.28 0.05 0.04 
+    MSAR    : 0.64 0.19 0.09 0.05 0.03 
+
+========================================================
+ SLEEVE: rates
+========================================================
+  Primary: ZN.v.0  T=1865
+WARNING: Logger not initialized. Message: [MarkovSwitching::fit] did not converge after 200 iterations
+  HMM 0: μ=-0.00013 σ=0.00403
+  HMM 1: μ=-0.00004 σ=0.00221
+  HMM 2: μ=0.00156 σ=0.00901
+  HMM forward pass complete (true filtered probs)
+  MSAR: using MarketMSAR joint AR estimation
+  MSAR 0: μ=-0.00008 σ=0.00225 φ=-0.01951
+  MSAR 1: μ=-0.00007 σ=0.00439 φ=-0.01967
+  MSAR forward pass complete (AR(1) emission, PDF-exact)
+WARNING: Logger not initialized. Message: [GARCH::fit] near non-stationarity: alpha+beta=0.980194
+  GARCH σ_t: [0.00149, 0.01066]
+  EGARCH γ=0.00044 (no leverage)
+    GMM restart 1/10  ll=16683.3
+    GMM restart 2/10  ll=16683.3
+    GMM restart 3/10  ll=16688.8
+    GMM restart 4/10  ll=16688.8
+    GMM restart 5/10  ll=16683.3
+    GMM restart 6/10  ll=16683.3
+    GMM restart 7/10  ll=16688.9
+    GMM restart 8/10  ll=16683.3
+    GMM restart 9/10  ll=16683.3
+    GMM restart 10/10  ll=16683.3
+  GMM best ll=16688.9
+[MarketRegimePipeline] Training sleeve 'rates' T=1865
+[A1-rates] HMM state 0 μ=-0.00013 σ=0.00403
+[A1-rates] HMM state 1 μ=-0.00004 σ=0.00221
+[A1-rates] HMM state 2 μ=0.00156 σ=0.00901
+[A1-rates] HMM mapping matrix (3x5):
+  state 0: [0.088, 0.171, 0.473, 0.167, 0.101]
+  state 1: [0.172, 0.155, 0.472, 0.124, 0.077]
+  state 2: [0.071, 0.472, 0.176, 0.113, 0.168]
+[A2-rates] MSAR state 0 μ=-0.00008 σ=0.00225 φ=-0.01951
+[A2-rates] MSAR state 1 μ=-0.00007 σ=0.00439 φ=-0.01967
+[A2-rates] MSAR mapping matrix (2x5)
+[A3-rates] GARCH mapping trained
+[A4-rates] GMM cluster 0 n=764
+[A4-rates] GMM cluster 1 n=172
+[A4-rates] GMM cluster 2 n=475
+[A4-rates] GMM cluster 3 n=141
+[A4-rates] GMM cluster 4 n=313
+[A4-rates] GMM mapping matrix (5x5)
+[MarketRegimePipeline] Training complete for 'rates'
+
+  REGIME HISTORY (last 5 bars)
+  ----------------------------------------
+  t=1860 
+  Sleeve: rates  |  Regime: MEANREV_CHOPPY  |  Confidence: 0.023  |  Age: 1 bars
+  TREND_LOWVOL=0.302  TREND_HIGHVOL=0.166  MEANREV_CHOPPY=0.325  STRESS_PRICE=0.099  STRESS_LIQUIDITY=0.108  
+    GARCH   : 0.55 0.05 0.25 0.00 0.15 
+    GMM     : 0.13 0.17 0.28 0.16 0.25 
+    HMM     : 0.17 0.15 0.47 0.12 0.08 
+    MSAR    : 0.34 0.26 0.21 0.12 0.07 
+  t=1861 
+  Sleeve: rates  |  Regime: MEANREV_CHOPPY  |  Confidence: 0.036  |  Age: 2 bars
+  TREND_LOWVOL=0.299  TREND_HIGHVOL=0.196  MEANREV_CHOPPY=0.335  STRESS_PRICE=0.101  STRESS_LIQUIDITY=0.068  
+    GARCH   : 0.55 0.05 0.30 0.05 0.05 
+    GMM     : 0.10 0.47 0.28 0.07 0.07 
+    HMM     : 0.17 0.15 0.47 0.12 0.08 
+    MSAR    : 0.34 0.26 0.21 0.12 0.07 
+  t=1862 
+  Sleeve: rates  |  Regime: MEANREV_CHOPPY  |  Confidence: 0.023  |  Age: 3 bars
+  TREND_LOWVOL=0.302  TREND_HIGHVOL=0.166  MEANREV_CHOPPY=0.325  STRESS_PRICE=0.099  STRESS_LIQUIDITY=0.108  
+    GARCH   : 0.55 0.05 0.25 0.00 0.15 
+    GMM     : 0.13 0.17 0.28 0.16 0.26 
+    HMM     : 0.17 0.15 0.47 0.12 0.08 
+    MSAR    : 0.34 0.26 0.21 0.12 0.07 
+  t=1863 
+  Sleeve: rates  |  Regime: MEANREV_CHOPPY  |  Confidence: 0.041  |  Age: 4 bars
+  TREND_LOWVOL=0.299  TREND_HIGHVOL=0.192  MEANREV_CHOPPY=0.340  STRESS_PRICE=0.101  STRESS_LIQUIDITY=0.067  
+    GARCH   : 0.55 0.05 0.30 0.05 0.05 
+    GMM     : 0.11 0.43 0.33 0.07 0.06 
+    HMM     : 0.17 0.15 0.47 0.12 0.08 
+    MSAR    : 0.34 0.26 0.21 0.12 0.07 
+
+========================================================
+ SLEEVE: fx
+========================================================
+  Primary: 6E.v.0  T=1866
+WARNING: Logger not initialized. Message: [MarkovSwitching::fit] did not converge after 200 iterations
+  HMM 0: μ=0.00006 σ=0.00574
+  HMM 1: μ=0.00001 σ=0.00345
+  HMM 2: μ=0.00006 σ=0.00574
+  HMM forward pass complete (true filtered probs)
+  MSAR: using MarketMSAR joint AR estimation
+  MSAR 0: μ=0.00001 σ=0.00345 φ=-0.02988
+  MSAR 1: μ=0.00006 σ=0.00574 φ=0.01231
+  MSAR forward pass complete (AR(1) emission, PDF-exact)
+  GARCH σ_t: [0.00329, 0.00917]
+  EGARCH γ=0.00167 (no leverage)
+    GMM restart 1/10  ll=16814.2
+    GMM restart 2/10  ll=16814.2
+    GMM restart 3/10  ll=16814.2
+    GMM restart 4/10  ll=16823.1
+    GMM restart 5/10  ll=16405.1
+    GMM restart 6/10  ll=16405.6
+    GMM restart 7/10  ll=16407.3
+    GMM restart 8/10  ll=16405.4
+    GMM restart 9/10  ll=16823.1
+    GMM restart 10/10  ll=16809.8
+  GMM best ll=16823.1
+[MarketRegimePipeline] Training sleeve 'fx' T=1866
+[A1-fx] HMM state 0 μ=0.00006 σ=0.00574
+[A1-fx] HMM state 1 μ=0.00001 σ=0.00345
+[A1-fx] HMM state 2 μ=0.00006 σ=0.00574
+[A1-fx] HMM mapping matrix (3x5):
+  state 0: [0.046, 0.387, 0.287, 0.143, 0.137]
+  state 1: [0.280, 0.141, 0.425, 0.093, 0.060]
+  state 2: [0.046, 0.387, 0.287, 0.143, 0.137]
+[A2-fx] MSAR state 0 μ=0.00001 σ=0.00345 φ=-0.02988
+[A2-fx] MSAR state 1 μ=0.00006 σ=0.00574 φ=0.01231
+[A2-fx] MSAR mapping matrix (2x5)
+[A3-fx] GARCH mapping trained
+[A4-fx] GMM cluster 0 n=787
+[A4-fx] GMM cluster 1 n=240
+[A4-fx] GMM cluster 2 n=209
+[A4-fx] GMM cluster 3 n=311
+[A4-fx] GMM cluster 4 n=319
+[A4-fx] GMM mapping matrix (5x5)
+[MarketRegimePipeline] Training complete for 'fx'
+
+  REGIME HISTORY (last 5 bars)
+  ----------------------------------------
+  t=1861 
+  Sleeve: fx  |  Regime: MEANREV_CHOPPY  |  Confidence: 0.154  |  Age: 1 bars
+  TREND_LOWVOL=0.276  TREND_HIGHVOL=0.121  MEANREV_CHOPPY=0.430  STRESS_PRICE=0.082  STRESS_LIQUIDITY=0.090  
+    GARCH   : 0.55 0.05 0.25 0.00 0.14 
+    GMM     : 0.29 0.25 0.32 0.05 0.10 
+    HMM     : 0.28 0.14 0.43 0.09 0.06 
+    MSAR    : 0.08 0.10 0.59 0.13 0.09 
+  t=1862 
+  Sleeve: fx  |  Regime: MEANREV_CHOPPY  |  Confidence: 0.180  |  Age: 2 bars
+  TREND_LOWVOL=0.253  TREND_HIGHVOL=0.145  MEANREV_CHOPPY=0.433  STRESS_PRICE=0.101  STRESS_LIQUIDITY=0.069  
+    GARCH   : 0.55 0.05 0.30 0.05 0.05 
+    GMM     : 0.06 0.48 0.25 0.14 0.07 
+    HMM     : 0.28 0.14 0.43 0.09 0.06 
+    MSAR    : 0.08 0.10 0.59 0.13 0.09 
+  t=1863 
+  Sleeve: fx  |  Regime: MEANREV_CHOPPY  |  Confidence: 0.154  |  Age: 3 bars
+  TREND_LOWVOL=0.276  TREND_HIGHVOL=0.121  MEANREV_CHOPPY=0.430  STRESS_PRICE=0.082  STRESS_LIQUIDITY=0.090  
+    GARCH   : 0.55 0.05 0.25 0.00 0.14 
+    GMM     : 0.29 0.25 0.32 0.05 0.10 
+    HMM     : 0.28 0.14 0.43 0.09 0.06 
+    MSAR    : 0.08 0.10 0.59 0.13 0.09 
+  t=1864 
+  Sleeve: fx  |  Regime: MEANREV_CHOPPY  |  Confidence: 0.160  |  Age: 4 bars
+  TREND_LOWVOL=0.278  TREND_HIGHVOL=0.123  MEANREV_CHOPPY=0.438  STRESS_PRICE=0.095  STRESS_LIQUIDITY=0.066  
+    GARCH   : 0.55 0.05 0.30 0.05 0.05 
+    GMM     : 0.30 0.27 0.30 0.09 0.04 
+    HMM     : 0.28 0.14 0.43 0.09 0.06 
+    MSAR    : 0.08 0.10 0.59 0.13 0.09 
+
+========================================================
+ SLEEVE: commodities
+========================================================
+  Primary: CL.v.0  T=1863
+  HMM 0: μ=-0.00896 σ=0.10049
+  HMM 1: μ=0.00057 σ=0.01658
+  HMM 2: μ=-0.00001 σ=0.02824
+  HMM forward pass complete (true filtered probs)
+  MSAR: using MarketMSAR joint AR estimation
+  MSAR 0: μ=-0.00484 σ=0.08177 φ=0.02278
+  MSAR 1: μ=0.00040 σ=0.01840 φ=0.01830
+  MSAR forward pass complete (AR(1) emission, PDF-exact)
+  GARCH σ_t: [0.01338, 0.18333]
+  EGARCH γ=-0.04445 (leverage effect detected)
+    GMM restart 1/10  ll=12563.0
+    GMM restart 2/10  ll=12501.0
+    GMM restart 3/10  ll=12565.0
+    GMM restart 4/10  ll=12537.2
+    GMM restart 5/10  ll=12537.2
+    GMM restart 6/10  ll=13102.0
+    GMM restart 7/10  ll=12537.2
+    GMM restart 8/10  ll=12408.0
+    GMM restart 9/10  ll=12564.4
+    GMM restart 10/10  ll=13127.1
+  GMM best ll=13127.1
+[MarketRegimePipeline] Training sleeve 'commodities' T=1863
+[A1-commodities] HMM state 0 μ=-0.00896 σ=0.10049
+[A1-commodities] HMM state 1 μ=0.00057 σ=0.01658
+[A1-commodities] HMM state 2 μ=-0.00001 σ=0.02824
+[A1-commodities] HMM mapping matrix (3x5):
+  state 0: [0.013, 0.110, 0.106, 0.509, 0.261]
+  state 1: [0.402, 0.162, 0.334, 0.055, 0.046]
+  state 2: [0.262, 0.201, 0.410, 0.069, 0.058]
+[A2-commodities] MSAR state 0 μ=-0.00484 σ=0.08177 φ=0.02278
+[A2-commodities] MSAR state 1 μ=0.00040 σ=0.01840 φ=0.01830
+[A2-commodities] MSAR mapping matrix (2x5)
+[A3-commodities] GARCH mapping trained
+[A4-commodities] GMM cluster 0 n=15
+[A4-commodities] GMM cluster 1 n=179
+[A4-commodities] GMM cluster 2 n=1339
+[A4-commodities] GMM cluster 3 n=36
+[A4-commodities] GMM cluster 4 n=294
+[A4-commodities] GMM mapping matrix (5x5)
+[MarketRegimePipeline] Training complete for 'commodities'
+
+  REGIME HISTORY (last 5 bars)
+  ----------------------------------------
+  t=1858 
+  Sleeve: commodities  |  Regime: MEANREV_CHOPPY  |  Confidence: 0.014  |  Age: 1 bars
+  TREND_LOWVOL=0.361  TREND_HIGHVOL=0.132  MEANREV_CHOPPY=0.374  STRESS_PRICE=0.055  STRESS_LIQUIDITY=0.078  
+    GARCH   : 0.55 0.05 0.25 0.00 0.15 
+    GMM     : 0.38 0.17 0.34 0.05 0.06 
+    HMM     : 0.40 0.16 0.33 0.06 0.05 
+    MSAR    : 0.17 0.13 0.52 0.09 0.08 
+  t=1859 
+  Sleeve: commodities  |  Regime: MEANREV_CHOPPY  |  Confidence: 0.143  |  Age: 2 bars
+  TREND_LOWVOL=0.262  TREND_HIGHVOL=0.172  MEANREV_CHOPPY=0.405  STRESS_PRICE=0.092  STRESS_LIQUIDITY=0.069  
+    GARCH   : 0.10 0.20 0.42 0.18 0.10 
+    GMM     : 0.29 0.28 0.31 0.06 0.06 
+    HMM     : 0.40 0.16 0.33 0.06 0.05 
+    MSAR    : 0.17 0.13 0.52 0.09 0.08 
+  t=1860 
+  Sleeve: commodities  |  Regime: MEANREV_CHOPPY  |  Confidence: 0.123  |  Age: 3 bars
+  TREND_LOWVOL=0.283  TREND_HIGHVOL=0.160  MEANREV_CHOPPY=0.406  STRESS_PRICE=0.065  STRESS_LIQUIDITY=0.087  
+    GARCH   : 0.15 0.20 0.40 0.05 0.19 
+    GMM     : 0.40 0.16 0.35 0.04 0.05 
+    HMM     : 0.40 0.16 0.33 0.06 0.05 
+    MSAR    : 0.17 0.13 0.52 0.09 0.08 
+  t=1861 
+  Sleeve: commodities  |  Regime: MEANREV_CHOPPY  |  Confidence: 0.138  |  Age: 4 bars
+  TREND_LOWVOL=0.273  TREND_HIGHVOL=0.171  MEANREV_CHOPPY=0.411  STRESS_PRICE=0.075  STRESS_LIQUIDITY=0.069  
+    GARCH   : 0.15 0.20 0.45 0.10 0.10 
+    GMM     : 0.30 0.27 0.31 0.06 0.06 
+    HMM     : 0.40 0.16 0.33 0.06 0.05 
+    MSAR    : 0.17 0.13 0.52 0.09 0.08 
+
+========================================================
+ MARKET REGIME PIPELINE COMPLETE
+========================================================
+WARNING: Logger not initialized. Message: Disconnected from PostgreSQL database
