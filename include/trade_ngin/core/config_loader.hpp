@@ -182,7 +182,7 @@ struct StrategyDefaultsConfig {
     bool use_optimization{true};
     bool use_risk_management{true};
     double carver_buffer_floor{0.5};
-    double carver_buffer_position_factor{0.2};
+    double carver_buffer_position_factor{0.0};
 
     nlohmann::json to_json() const {
         nlohmann::json j;

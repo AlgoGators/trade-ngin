@@ -1,9 +1,13 @@
 #include <gtest/gtest.h>
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <numeric>
 #include <vector>
+#include <nlohmann/json.hpp>
+#include "trade_ngin/core/config_loader.hpp"
 #include "../core/test_base.hpp"
 #include "../data/test_db_utils.hpp"
 #include "trade_ngin/data/database_interface.hpp"
@@ -252,12 +256,42 @@ protected:
     double last_position_{0.0};
 };
 
-// Pin Carver buffer constants. If anyone tunes these defaults silently, this test fires
-// and forces them to also update PositionBuffering test bounds + buffering docs.
+// Pin Carver buffer constants. Production truth is floor-only buffering
+// (factor 0.0, floor 0.5) — the May 2026 churn-tuned values. The struct defaults,
+// the loader defaults, and the shipped config_template must all agree; a silent
+// change to any of them fires here.
 TEST(TrendFollowingConfigDefaults, CarverBufferConstantsArePinned) {
     TrendFollowingConfig cfg;
-    EXPECT_DOUBLE_EQ(cfg.carver_buffer_position_factor, 0.2);
+    EXPECT_DOUBLE_EQ(cfg.carver_buffer_position_factor, 0.0);
     EXPECT_DOUBLE_EQ(cfg.carver_buffer_floor, 0.5);
+
+    StrategyDefaultsConfig loader_defaults;
+    EXPECT_DOUBLE_EQ(loader_defaults.carver_buffer_position_factor,
+                     cfg.carver_buffer_position_factor);
+    EXPECT_DOUBLE_EQ(loader_defaults.carver_buffer_floor, cfg.carver_buffer_floor);
+
+    // Guard the tracked config_template against drifting from the code defaults.
+    // Walk up from cwd so the test works from build/, build/tests/, or repo root.
+    namespace fs = std::filesystem;
+    fs::path dir = fs::current_path();
+    fs::path tmpl;
+    for (int i = 0; i < 8 && !dir.empty(); ++i) {
+        if (fs::exists(dir / "config_template" / "defaults.json")) {
+            tmpl = dir / "config_template" / "defaults.json";
+            break;
+        }
+        dir = dir.parent_path();
+    }
+    if (tmpl.empty()) {
+        GTEST_SKIP() << "config_template/defaults.json not reachable from cwd";
+    }
+    std::ifstream in(tmpl);
+    nlohmann::json j = nlohmann::json::parse(in);
+    const auto& sd = j.at("strategy_defaults");
+    EXPECT_DOUBLE_EQ(sd.at("carver_buffer_position_factor").get<double>(),
+                     cfg.carver_buffer_position_factor);
+    EXPECT_DOUBLE_EQ(sd.at("carver_buffer_floor").get<double>(),
+                     cfg.carver_buffer_floor);
 }
 
 // Test initialization and valid configuration
@@ -579,7 +613,13 @@ TEST_F(TrendFollowingTest, PositionBuffering) {
         const double position_term =
             trend_config_.carver_buffer_position_factor * std::abs(prev);
         const double slack = 10.0;  // floor + small raw_buffer_width contributions
-        return (first_step ? 3.0 : 1.0) * position_term + slack;
+        if (first_step) {
+            // Under floor-only buffering (position factor 0.0) the first live tick
+            // settles the warm-up forecast in one re-track; bound it relative to
+            // |prev| instead of the (now zero) position term.
+            return std::max(3.0 * position_term, 0.25 * std::abs(prev)) + slack;
+        }
+        return position_term + slack;
     };
 
     // Create small update data with minimal price changes
