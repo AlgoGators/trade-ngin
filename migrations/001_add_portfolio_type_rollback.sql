@@ -26,6 +26,19 @@ DECLARE
     qt_positions BIGINT;
     qt_equity    BIGINT;
 BEGIN
+    -- On an un-migrated DB the qt count queries below would abort with the
+    -- misleading 'column "portfolio_type" does not exist'; report the actual
+    -- state instead.
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'trading' AND table_name = 'positions'
+          AND column_name = 'portfolio_type'
+    ) THEN
+        -- EXCEPTION, not NOTICE+RETURN: the ADD CONSTRAINT statements later in
+        -- this transaction would still fail confusingly on an un-migrated DB.
+        RAISE EXCEPTION 'Nothing to roll back: trading.positions has no portfolio_type column (migration 001 was never applied).';
+    END IF;
+
     SELECT count(*) INTO qt_positions FROM trading.positions    WHERE portfolio_type = 'qt';
     SELECT count(*) INTO qt_equity    FROM trading.equity_curve WHERE portfolio_type = 'qt';
 
