@@ -9,6 +9,11 @@ coverage window. The taxonomy lives in
 `include/trade_ngin/live/corporate_actions_classification.hpp`; this document
 records what each class's source can and cannot tell us today.
 
+For the wider question of which table and column any equity path should read --
+including why the vendor `adj_*` columns must never be read back in, and why
+`corporate_action` is frozen-but-needed while `sharadar_ohlcv_1d` is genuinely
+superseded -- see `DATA_SOURCES_OF_TRUTH.md`.
+
 ## Summary
 
 | Class | Vendor labels | Source | Trustworthy over | Handler |
