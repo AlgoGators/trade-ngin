@@ -202,7 +202,9 @@ TEST(CorpActionClass2, RenameRekeysPositionAndPreservesBasis) {
     positions["ANTM"] = make_position("ANTM", 40.0, 480.0);
 
     std::vector<TickerAlias> aliases = {{"ANTM", "ELV", "2022-06-28", "rebrand"}};
-    auto log = CorporateActionsLifecycle::apply_renames(positions, aliases, "2026-08-31");
+    // Held since before the rebrand, so this position IS the old-era one.
+    auto log = CorporateActionsLifecycle::apply_renames(positions, aliases, "2026-08-31",
+                                                        {{"ANTM", "2021-03-01"}});
 
     ASSERT_EQ(log.size(), 1u);
     EXPECT_EQ(log[0].outcome, LifecycleOutcome::RENAMED);
@@ -220,7 +222,8 @@ TEST(CorpActionClass2, RenameNotYetEffectiveIsLeftAlone) {
     positions["BK"] = make_position("BK", 10.0, 55.0);
 
     std::vector<TickerAlias> aliases = {{"BK", "BNY", "2026-01-01", ""}};
-    auto log = CorporateActionsLifecycle::apply_renames(positions, aliases, "2025-12-15");
+    auto log = CorporateActionsLifecycle::apply_renames(positions, aliases, "2025-12-15",
+                                                        {{"BK", "2025-06-01"}});
 
     EXPECT_TRUE(log.empty());
     EXPECT_EQ(positions.count("BK"), 1u);
@@ -235,7 +238,8 @@ TEST(CorpActionClass2, BothKeysHeldMergeAtWeightedAverageCost) {
     positions["COR"] = make_position("COR", 300.0, 20.0, /*realized=*/75.0);
 
     std::vector<TickerAlias> aliases = {{"ABC", "COR", "2023-08-30", ""}};
-    auto log = CorporateActionsLifecycle::apply_renames(positions, aliases, "2026-08-31");
+    auto log = CorporateActionsLifecycle::apply_renames(
+        positions, aliases, "2026-08-31", {{"ABC", "2022-01-04"}, {"COR", "2024-02-02"}});
 
     ASSERT_EQ(log.size(), 1u);
     EXPECT_EQ(positions.count("ABC"), 0u);
@@ -252,7 +256,8 @@ TEST(CorpActionClass2, UnmappedHistoricalTickerIsNeverLost) {
     positions["OLDCO"] = make_position("OLDCO", 5.0, 12.0);
 
     std::vector<TickerAlias> aliases = {{"ANTM", "ELV", "2022-06-28", ""}};
-    auto log = CorporateActionsLifecycle::apply_renames(positions, aliases, "2026-08-31");
+    auto log = CorporateActionsLifecycle::apply_renames(positions, aliases, "2026-08-31",
+                                                        {{"OLDCO", "2020-01-02"}});
 
     EXPECT_TRUE(log.empty());
     ASSERT_EQ(positions.count("OLDCO"), 1u);

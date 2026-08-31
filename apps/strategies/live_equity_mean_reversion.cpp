@@ -668,6 +668,13 @@ int main(int argc, char* argv[]) {
         // Adjustments land BEFORE the strategy generates today's targets.
         // See docs/CORP_ACTIONS_DATA_BOUNDARY.md. Closes audit §1.12, §1.15.
         // ========================================
+        // Position inception, read once in the class-1 block below and consumed by
+        // BOTH corp-action blocks -- which need OPPOSITE failure semantics, so the raw
+        // result is carried out here rather than the class-1 fallback map.
+        // See the read site for why class 2 must never see that fallback.
+        std::unordered_map<std::string, std::string> inception_raw;
+        bool inception_read_ok = false;
+
         if (!previous_positions.empty()) {
             // Lookback is DERIVED FROM POSITION HISTORY, never a fixed
             // constant and never from last_update.
@@ -715,14 +722,21 @@ int main(int argc, char* argv[]) {
 
             const auto bulk_start_t = today_t - max_lookback_days * kSecondsPerDay;
 
+            // One read, TWO consumers with OPPOSITE failure semantics, so the raw
+            // result is kept alongside the class-1 fallback map rather than being
+            // overwritten by it:
+            //   * class 1 (price rescale) fails WIDE -- under-applying a rescale is
+            //     the permanent error, so an unreadable inception widens the window
+            //     to the bulk edge.
+            //   * class 2 (renames) fails NARROW -- it skips entirely. Feeding it
+            //     class-1's bulk-start sentinel would be worse than useless: a
+            //     sentinel dated two years back satisfies `inception <= effective_until`
+            //     for any recent alias, which is exactly the era test's failure mode.
             std::unordered_map<std::string, std::string> inception_dates;
             auto inception_result = db->get_position_inception_dates(
                 kEquityStrategyId, kEquityStrategyName,
                 portfolio_id, held_symbols);
             if (inception_result.is_error()) {
-                // Fail wide, not narrow: without inception we cannot prove the
-                // floor covers the book, and under-applying is the permanent
-                // error. Treat every holding as reaching the bulk window edge.
                 WARN("Could not read position inception dates (" +
                      std::string(inception_result.error()->what()) +
                      ") -- falling back to the full " +
@@ -732,6 +746,8 @@ int main(int argc, char* argv[]) {
                 }
             } else {
                 inception_dates = inception_result.value();
+                inception_raw = inception_result.value();
+                inception_read_ok = true;
             }
 
             const auto window = derive_corp_action_window(
@@ -1111,9 +1127,17 @@ int main(int argc, char* argv[]) {
                     aliases.push_back(TickerAlias{row.historical_ticker, row.current_symbol,
                                                   row.effective_until, row.note});
                 }
-                auto renames = CorporateActionsLifecycle::apply_renames(
-                    previous_positions, aliases, as_of_date);
-                lifecycle_log.insert(lifecycle_log.end(), renames.begin(), renames.end());
+                if (!inception_read_ok) {
+                    // Fail narrow. A skipped rename is retried next run; a rename
+                    // applied against a guessed era re-keys a live holding onto a
+                    // symbol that may have no prices at all.
+                    WARN("Position inception dates unavailable -- skipping SERIES_CONTINUITY "
+                         "handling this run rather than applying renames unbounded");
+                } else {
+                    auto renames = CorporateActionsLifecycle::apply_renames(
+                        previous_positions, aliases, as_of_date, inception_raw);
+                    lifecycle_log.insert(lifecycle_log.end(), renames.begin(), renames.end());
+                }
             }
 
             // Class 3: build termination events from the two available
@@ -1131,9 +1155,32 @@ int main(int argc, char* argv[]) {
                      std::string(delist_result.error()->what()) +
                      " -- skipping TERMINATION timing");
             } else {
+                // Same hazard as the rename era bug, one class over: delisting_date
+                // is keyed on the ticker, and a reused ticker inherits the dead
+                // company's row. Acting on it exits a live position at a stale
+                // price. Bars settle it -- a symbol still printing after the
+                // claimed delisting is plainly not delisted -- and we already hold
+                // every bar of the load window, so this costs no query.
+                std::unordered_map<std::string, std::string> last_bar_date;
+                for (const auto& bar : all_bars) {
+                    const std::string d =
+                        format_ymd_utc(std::chrono::system_clock::to_time_t(bar.timestamp));
+                    auto it = last_bar_date.find(bar.symbol);
+                    if (it == last_bar_date.end() || d > it->second) last_bar_date[bar.symbol] = d;
+                }
+
                 for (const auto& [symbol, delist_date] : delist_result.value()) {
                     if (previous_positions.find(symbol) == previous_positions.end()) continue;
                     if (delist_date > as_of_date) continue;  // not yet effective
+                    auto lb = last_bar_date.find(symbol);
+                    const std::string last_bar =
+                        lb == last_bar_date.end() ? std::string() : lb->second;
+                    if (CorporateActionsLifecycle::delisting_is_stale(delist_date, last_bar)) {
+                        WARN("Ignoring stale delisting for " + symbol + " (delisting_date " +
+                             delist_date + " but bars run to " + last_bar +
+                             ") -- the ticker is trading, so the row belongs to a prior issuer");
+                        continue;
+                    }
                     TerminationEvent ev;
                     ev.symbol = symbol;
                     ev.event_date = delist_date;
