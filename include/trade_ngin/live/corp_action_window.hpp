@@ -13,10 +13,28 @@ namespace trade_ngin {
  * @brief How far back the corporate-action window must reach, and which
  *        holdings need price closes topped up beyond the bulk load.
  */
+/// Which rule set the window's lower bound.
+enum class CorpActionWindowSource {
+    Floor,      ///< No holding reached back further than min_days.
+    Inception,  ///< A held position established earlier widened it.
+};
+
+inline const char* to_string(CorpActionWindowSource s) {
+    return s == CorpActionWindowSource::Inception ? "inception" : "floor";
+}
+
 struct CorpActionWindow {
     std::time_t start{0};                 ///< UTC seconds; window lower bound.
     std::vector<std::string> deep_symbols; ///< Established before the bulk load.
     std::time_t deep_start{0};            ///< Earliest inception among those.
+
+    /// What decided `start`. A window sitting at the floor when positions are
+    /// held is the signature of the last_update regression this derivation
+    /// replaced, so the runner reports the rule rather than only the date --
+    /// otherwise the two are indistinguishable in a log.
+    CorpActionWindowSource source{CorpActionWindowSource::Floor};
+    /// Symbol whose inception set the bound; empty when the floor did.
+    std::string source_symbol;
 };
 
 /// Parse YYYY-MM-DD as a UTC instant. 0 on malformed input.
@@ -63,7 +81,11 @@ inline CorpActionWindow derive_corp_action_window(
     for (const auto& [sym, ymd] : inception) {
         const std::time_t inc = parse_ymd_utc(ymd);
         if (inc <= 0) continue;
-        if (inc < w.start) w.start = inc;
+        if (inc < w.start) {
+            w.start = inc;
+            w.source = CorpActionWindowSource::Inception;
+            w.source_symbol = sym;
+        }
         if (inc < bulk_start) {
             w.deep_symbols.push_back(sym);
             if (inc < w.deep_start) w.deep_start = inc;

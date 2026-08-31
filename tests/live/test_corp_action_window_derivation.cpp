@@ -164,3 +164,55 @@ TEST(CorpActionWindowDerivation, LastUpdateDatesCollapseToTheFloorButInceptionDo
     ASSERT_EQ(derived.deep_symbols.size(), 1u);
     EXPECT_EQ(derived.deep_symbols[0], "IBM");
 }
+
+// The window's lower bound must report WHICH rule set it. A window sitting at
+// the floor while positions are held is the exact signature of the last_update
+// regression this derivation replaced -- and with only a date logged, that is
+// indistinguishable from a legitimate floor.
+TEST(CorpActionWindowDerivation, FloorReportsItselfAsTheSource) {
+    const std::time_t today = parse_ymd_utc("2026-08-31");
+    const auto w = derive_corp_action_window(today, 14, 730, {});
+
+    EXPECT_EQ(w.source, CorpActionWindowSource::Floor);
+    EXPECT_TRUE(w.source_symbol.empty());
+    EXPECT_STREQ(to_string(w.source), "floor");
+}
+
+TEST(CorpActionWindowDerivation, InceptionReportsTheSymbolThatWidenedTheWindow) {
+    const std::time_t today = parse_ymd_utc("2026-08-31");
+    // AAPL is recent enough to leave the floor alone; ZT reaches back further.
+    const std::unordered_map<std::string, std::string> inception{
+        {"AAPL", "2026-08-25"},
+        {"ZT.v.0", "2025-11-11"},
+    };
+    const auto w = derive_corp_action_window(today, 14, 730, inception);
+
+    EXPECT_EQ(w.source, CorpActionWindowSource::Inception);
+    EXPECT_EQ(w.source_symbol, "ZT.v.0")
+        << "the symbol reported must be the one that actually set the bound";
+    EXPECT_EQ(w.start, parse_ymd_utc("2025-11-11"));
+    EXPECT_STREQ(to_string(w.source), "inception");
+}
+
+// A holding inside the floor must not claim to have widened anything.
+TEST(CorpActionWindowDerivation, HoldingNewerThanTheFloorLeavesTheSourceAtFloor) {
+    const std::time_t today = parse_ymd_utc("2026-08-31");
+    const std::unordered_map<std::string, std::string> inception{{"AAPL", "2026-08-29"}};
+    const auto w = derive_corp_action_window(today, 14, 730, inception);
+
+    EXPECT_EQ(w.source, CorpActionWindowSource::Floor);
+    EXPECT_TRUE(w.source_symbol.empty());
+}
+
+// A deep holding both widens the window and is flagged for close top-up; the
+// reported source must still be the symbol that set the bound.
+TEST(CorpActionWindowDerivation, DeepHoldingIsReportedAsTheSource) {
+    const std::time_t today = parse_ymd_utc("2026-08-31");
+    const std::unordered_map<std::string, std::string> inception{{"OLD", "2022-01-03"}};
+    const auto w = derive_corp_action_window(today, 14, 730, inception);
+
+    EXPECT_EQ(w.source, CorpActionWindowSource::Inception);
+    EXPECT_EQ(w.source_symbol, "OLD");
+    ASSERT_EQ(w.deep_symbols.size(), 1u);
+    EXPECT_EQ(w.deep_symbols[0], "OLD");
+}

@@ -716,9 +716,25 @@ int main(int argc, char* argv[]) {
                      " -- continuing without corp-action adjustments");
             } else {
                 const auto& rows = ca_result.value();
+                // Name the rule, not just the date. A window at the floor while
+                // positions are held is the signature of deriving from
+                // last_update -- which always reports "yesterday" and silently
+                // collapsed the window to 14 days -- and that is
+                // indistinguishable from a legitimate floor if only the date is
+                // logged. Corroborating query, no new schema needed:
+                //   SELECT min(ex_date) FROM trading.corp_action_applied
+                //    WHERE strategy_id = '...' AND strategy_name = '...';
+                // an ex_date older than 14 days can only have been applied by a
+                // window that genuinely reached back.
+                std::string window_reason =
+                    window.source == CorpActionWindowSource::Inception
+                        ? "inception of " + window.source_symbol
+                        : std::to_string(kMinLookbackDays) + "-day floor; no held "
+                          "position reaches further back";
                 INFO("Fetched " + std::to_string(rows.size()) +
                      " PRICE_RESTATING events from per-bar columns in window [" +
-                     start_buf + ", " + today_buf + "]");
+                     start_buf + ", " + today_buf + "], start derived from " +
+                     window_reason);
 
                 CorporateActionsAuditLog audit_log(ca_state_dir, db,
                                                   portfolio_id,
