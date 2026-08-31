@@ -393,3 +393,36 @@ which includes the deployed image's `TZ=America/New_York`.
 behaviour under a positive-offset TZ so the class of bug cannot return. Note E2 runs on a
 positive-offset host would shift these dates by a day — worth checking the run host before
 interpreting any E2 date anomaly as an engine defect.
+
+
+---
+
+## E1 COMPLETE — 2026-08-31
+
+**Suite 1425/1425 · 29 local commits · nothing pushed.**
+Full per-change detail: `docs/CHANGE_LEDGER_2026-08-31.md`.
+
+E1 grew from 4 planned items to 16 fixes. Of those, **5 were defects introduced by earlier
+E1 work** (the dedup-correctness chain: window no-op → key scope → fail-closed → rename
+bridge → effective_until), each caught by the next verification layer before any run.
+
+**Three independent verifications closed E1:**
+1. Independent review of the 5 previously-unreviewed commits → **GO**, reviewer ran the suite itself.
+2. Futures behaviour → **proven unchanged by execution**: same replay date, two binaries,
+   byte-identical DB output (26/26 rows, 0 differing), refactored path confirmed exercised.
+3. The four remaining gaps closed (effective_until, DB-skip guard, file-backed refusal,
+   window derivation reporting).
+
+**Known-and-accepted going into E2:**
+- Corp-action live path has NEVER executed. First equity run exercises none of it (empty
+  book → `previous_positions` empty → block skipped). **Two sequential runs required.**
+- Top-up path needs seeded old positions; no fresh run reaches it.
+- Window derivation is production-observable only via its log line (now reports its rule).
+- Atomicity tests unverified in CI (no DB service) — see the CI-postgres item, which belongs
+  to the MAIN-branch batch-3 track, NOT to equities E1-E5.
+- `mktime` sites (E3), `order_id` localtime (futures track), position/dedup CI gap.
+
+## Scope boundary note
+`docs/EXECUTION_PLAN_2026-08-27.md` batches 1'-4 are the MAIN-branch track (CI/governance,
+benchmarks, macOS build). Equities is E1-E5 here. The CI postgres-service work is
+batch-3/main-track — do not fold it into equities.
