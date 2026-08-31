@@ -8,11 +8,26 @@
 // unit-of-work contract that removes that window.
 //
 // Transaction semantics cannot be faked: pqxx rollback is only observable
-// against a real server. The DB-backed cases therefore skip when no database is
-// reachable, and write only to a scratch table plus scratch identifiers, never
-// to production rows.
+// against a real server. These cases write only to a scratch table plus scratch
+// identifiers, never to production rows.
+//
+// Reachability gate. A silent skip means a regression here passes unnoticed, so
+// the behaviour is explicit:
+//   * TRADE_NGIN_REQUIRE_DB=1 -- a missing or unreachable database FAILS the
+//     test rather than skipping it. Set this anywhere a database is expected.
+//   * unset (local dev without a server) -- skip, as before.
+//
+// UNVERIFIED IN CI TODAY. No workflow in .github/workflows declares a database
+// service, so CI runs these as skips and the atomicity guarantee is proven only
+// where a real server is present -- currently a developer machine. Closing that
+// gap needs a postgres service container added to the build job in
+// ci-cd-pipeline.yml, its connection details exported the way
+// discover_connection_string() expects, and TRADE_NGIN_REQUIRE_DB=1 set on the
+// ctest step. Until then the skip is honest rather than hidden: it is reported,
+// and this comment says what it costs.
 
 #include <gtest/gtest.h>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -83,13 +98,29 @@ PostgresDatabase::AppliedCorpActionRow make_applied_row(const std::string& symbo
 class DbTransactionAtomicityTest : public ::testing::Test {
 protected:
     void SetUp() override {
+        // A skip here hides a regression, so callers that expect a database say
+        // so and get a failure instead.
+        const bool require_db = [] {
+            const char* v = std::getenv("TRADE_NGIN_REQUIRE_DB");
+            return v && std::string(v) == "1";
+        }();
+
         const std::string conn = discover_connection_string();
         if (conn.empty()) {
+            if (require_db) {
+                FAIL() << "TRADE_NGIN_REQUIRE_DB=1 but config/defaults.json is not "
+                          "reachable, so the atomicity contract cannot be exercised";
+            }
             GTEST_SKIP() << "config/defaults.json not reachable; no database to exercise";
         }
         db_ = std::make_shared<PostgresDatabase>(conn);
         auto connected = db_->connect();
         if (connected.is_error() || !db_->is_connected()) {
+            if (require_db) {
+                FAIL() << "TRADE_NGIN_REQUIRE_DB=1 but the database is unreachable, so "
+                          "transaction rollback -- which only a real server can show -- "
+                          "goes unverified";
+            }
             GTEST_SKIP() << "database unreachable; transaction semantics need a real server";
         }
         ASSERT_TRUE(create_scratch_table());
