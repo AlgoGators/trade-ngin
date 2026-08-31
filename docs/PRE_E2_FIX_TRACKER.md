@@ -1,0 +1,69 @@
+# Pre-E2 fix tracker — LIVE DOCUMENT
+
+**Status: NOTHING IMPLEMENTED YET.** This is the working register for the pre-E2 wave.
+Update the Status column as each item lands. Sources: `E2_READINESS_AUDIT_2026-08-31.md`
+(34 findings), `E2_AUDIT_CORROBORATION_2026-08-31.md` (independent verification), plus
+first-hand checks recorded here.
+
+Branch `equities_integration` @ f64d6870 · suite 1431/1431 · 36 commits, nothing pushed.
+
+---
+
+## WAVE 1 — blocking, implement in this order
+
+| ID | Finding | Sev | Status | Notes |
+|---|---|---|---|---|
+| FIX-0 | Results-manager key mismatch: `LiveTradingConfig::portfolio_id` defaults to `BASE_PORTFOLIO` (`live_trading_coordinator.hpp:30`); equity runner sets 5 fields but not that one (`:409-414`); `ResultsManagerBase` passes `strategy_id_` as BOTH id and name (`results_manager_base.cpp:87,122,158`). Read key `(LIVE_EQUITY_MEAN_REVERSION, EQUITY_MEAN_REVERSION, EQUITY_MR_PORTFOLIO)` vs write key `(…, LIVE_EQUITY_MEAN_REVERSION, BASE_PORTFOLIO)` — 2 of 3 columns differ | CRITICAL | ☐ TODO | Run 2 loads an empty book. Futures runner already sets this (`live_portfolio_conservative.cpp:637`) — restores a line equity omitted |
+| FIX-0b (F-J) | `save_all_results` swallows per-table failures (ERROR + continue, returns success) — exit 0 ≠ all tables written | LOW | ☐ TODO | Fold into FIX-0, same file |
+| FIX-1 | `apply_renames` re-keys currently-trading symbols. **META → METV (until 2022-01-31)** from our own backfill; META has 3,589 bars through 2026-08-28, METV has none → live position re-keyed onto a symbol with no prices | HIGH | ☐ TODO | **131** historical tickers still actively trading (corroboration corrected 130→131). Fix must handle the general case, not just META. L5 (±1-day `effective_until` convention) absorbed here |
+| FIX-2 | Close top-up fetches exactly one day, never the range. Proven: whenever `deep_symbols` is non-empty, `w.start == w.deep_start` necessarily → `$2 == $3` → half-open SQL yields one day | HIGH | ☐ TODO | Silently breaks E2's >730-day scenario |
+| FIX-3 | Dividend denominator frame mixing under stacked events (two distinct mechanisms: later-split deflation of adjusted closes, and raw top-up closes in the same map) | MEDIUM | ☐ TODO | L7 (`close_t_minus_1` misnomer) absorbed here |
+| F-D | `MeanReversionInstrumentData::entry_price` never written → guard at `:1549` never passes → every persisted `trading.positions.unrealized_pnl` is 0 while `live_results.total_unrealized_pnl` is nonzero | MEDIUM | ☐ TODO | **Guaranteed log↔DB mismatch on E2 day 1.** Note: `entry_price` is vestigial — the stop-loss reads `Position::average_price`, not this field |
+
+## WAVE 2 — F-B + F-E, approved pre-E2 (must land TOGETHER)
+
+| ID | Finding | Sev | Status | Notes |
+|---|---|---|---|---|
+| F-B | Live never seeds the strategy's `positions_`, so `generate_signal` always takes the flat-book entry branch: a held long exits at z > −2.0 (entry threshold) instead of −0.5 (exit threshold), and the **5% stop-loss is dead code** | HIGH | ☐ TODO | **Verified 2026-08-31**: `BaseStrategy::seed_positions()` (`base_strategy.cpp:344`) is generic — its own doc says "Required in live … backtest doesn't need it because state is continuous in-memory". Futures calls it (`live_portfolio_conservative.cpp:906`); equities never does. It supplies BOTH fields MR needs: `quantity` (entry/exit branch) and `average_price` (stop-loss, `mean_reversion.cpp:391`). NOT futures machinery misapplied |
+| F-E | Untraded holdings' `average_price` reset to the T-1 close daily (`:1300-1308`); `on_execution` corrects only symbols that traded | MEDIUM | ☐ TODO | **MUST land with F-B.** Seeding restores `average_price`; if F-E is unfixed, the re-enabled stop-loss compares against yesterday's close instead of the true entry basis — the fix would be worse than the bug |
+
+## WAVE 2b — housekeeping (HD-approved)
+
+| ID | Item | Status | Notes |
+|---|---|---|---|
+| L10 | Doc drift: `CORP_ACTIONS_DATA_BOUNDARY.md:22` says "16 curated rows" (now 389); START_HERE commit count stale | ☐ TODO | Docs-only commit |
+| L11 | `trend_following_fast.{hpp,cpp}.backup` | ☑ KEEP | HD decision: untracked, kept for reference |
+| F-C | `order_id` localtime ALSO affects equities (same `ExecutionManager`). Failure needs two runs **straddling 20:00 EDT**: run 1 at 19:00 stores `execution_time`=Mon UTC; re-run at 21:00 asks `DATE(execution_time)=Tue` → run 1's rows never matched → duplicate executions | ☐ RUNBOOK | **E2 mitigation: run before 20:00 EDT.** Durable fix (recommended: drop the date predicate — `order_id` already embeds the date, making it redundant) stays with the deferred order_id item |
+
+## Corrections to earlier claims (recorded so they are not repeated)
+
+- "Re-pollutes the futures namespace" **overstates** FIX-0: `store_positions`' DELETE is
+  also scoped by `strategy_id`, and `LIVE_EQUITY_MEAN_REVERSION` cannot collide with
+  `LIVE_TREND_*`. Contamination, not corruption. CRITICAL stands on the empty-book
+  consequence alone.
+- FIX-0's "futures depend on base defaults" caution is **over-specified**: futures never
+  populates the setters, so `save_positions_snapshot` returns early. Verified: **0 of
+  3,781** position rows and **0 of 644** executions carry the save_all key shape. The
+  futures runner has a comment documenting this very defect and deliberately avoiding it.
+- **G-1 is NOT an active corruption.** Every 2026 futures row has `unrealized_pnl = 0`
+  (1,176 rows); the 246 non-zero rows are a closed historical window (2025-05-19 →
+  2025-11-11). Latent inconsistency for the merge gate, not a live problem. HD's proposed
+  fix (gate on asset class: futures 0/realized, equities mark-to-market) is correct.
+- `order_id` defect is **not futures-only** — START_HERE §6's scope claim is wrong.
+- Change-ledger claim "only A1–A8 and D12 touch shared/futures paths" is true **only of
+  the Aug 27–31 window**, not the whole branch (see G-series).
+- Audit line references have drifted; re-derive at implementation time.
+
+## Deferred — already slotted into existing stages (NOT new scope)
+
+**E3:** F-F, F-H, F-I (T-OR.4), G-4 (SEC/TAF fees dead — gated on `quantity < 0`, callers
+pass absolute), G-7 (borrow fees skip weekends, ~28% undercount), L3, L4, L8, L9, L14.
+**E4:** G-8 (margin default drops ×qty). **E5:** F-G (T-1 queries lack portfolio_id).
+**Merge-gate/futures:** G-1, G-2, G-3, G-5, G-6, L1, L2, L13.
+**Main batch-3:** L1, L2, L6, L12 (incl. no-postgres-in-CI).
+
+## Verification bar for this wave
+
+Every fix needs a test that provably fails before it. FIX-0 and F-B/F-E additionally need
+DB-level verification (read back what actually landed, per the log↔DB rule). No runner
+executes until Wave 1+2 are green. Suite must not drop below 1431.
