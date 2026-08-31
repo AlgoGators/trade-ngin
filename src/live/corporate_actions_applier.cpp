@@ -99,7 +99,7 @@ std::vector<PositionAdjustment> CorporateActionsApplier::apply(
                 const double ratio = 1.0 + ev.value / ev.close_t_minus_1;
                 const double avg_after = avg_before > 0.0 ? avg_before / ratio : 0.0;
                 // Dividend doesn't change quantity; only rescales avg_price into
-                // the post-dividend closeadj frame (audit §1.15).
+                // the post-dividend adjusted-price frame (audit §1.15).
                 if (avg_before > 0.0) {
                     pos.average_price = Decimal(avg_after);
                 }

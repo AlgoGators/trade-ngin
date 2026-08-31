@@ -23,7 +23,7 @@ enum class CorpActionType { SPLIT, ADR_SPLIT, DIVIDEND, UNKNOWN };
  *
  * `value` carries the event's primary parameter (split factor for SPLIT /
  * ADR_SPLIT, cash $/share for DIVIDEND). `close_t_minus_1` is required for
- * dividends to compute the closeadj ratio change; ignored for splits.
+ * dividends to compute the price-adjustment ratio change; ignored for splits.
  */
 struct CorpActionEvent {
     std::string symbol;
