@@ -330,3 +330,39 @@ Measured with `EXPLAIN (ANALYZE, BUFFERS)` using an 852-symbol IN-list built exa
 3. **Add V4-1 (LEN/Millrose) as an E3 data-quality assertion** — a test that flags symbols where a corp-action row exists but neither `split_factor` nor `div_cash` moved.
 4. E1 grows from 4 items to ~8; it remains the only code-blocked phase and the critical path is unchanged in shape.
 5. Everything else in E1→E5 ordering stands.
+
+---
+
+## Deferred to the futures / batch-4 list — `order_id` localtime date (2026-08-31)
+
+**Not an equities item; do not fix inside an equities phase.**
+
+`src/live/execution_manager.cpp:105` builds `order_id = "DAILY_" + symbol + "_" + date_str`
+where `date_str` comes from `generate_date_string` (`:159`), which uses `localtime`.
+
+Why it cannot be swapped to UTC as a one-liner: `order_id` is a **cross-run match key**.
+`LiveResultsManager::finalize` (`src/storage/live_results_manager.cpp:129-133`) collects
+this run's `order_id`s and passes them to `delete_stale_executions`
+(`postgres_database_extensions.cpp:52-56`):
+
+```sql
+DELETE ... WHERE DATE(execution_time) = $1 AND strategy_name = $2 AND order_id IN (...)
+```
+
+That matches freshly-generated ids against rows a PREVIOUS run stored. On the deployed
+image (`TZ=America/New_York`) switching to UTC shifts new ids one day relative to stored
+ones, the match fails, and stale executions accumulate in `trading.executions` instead of
+being cleaned up. This affects `live_portfolio.cpp` and `live_portfolio_conservative.cpp`
+— the working futures path.
+
+**The underlying defect is real**: on a non-UTC host the date inside `order_id` disagrees
+with `DATE(execution_time)` in the same DELETE, so the two halves of that predicate
+already reference different days.
+
+**Safe fix requires one of**: migrating stored ids, or decoupling the delete from the date
+substring (match on execution_time + strategy + symbol instead). Both carry their own
+blast radius on a working path, so this belongs with the futures work, sequenced with a
+futures regression run — not folded into an equities commit.
+
+Note `exec_id` is unaffected: it is built from epoch milliseconds and is already
+timezone-independent.
