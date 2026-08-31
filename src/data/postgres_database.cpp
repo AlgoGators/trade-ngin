@@ -2402,14 +2402,15 @@ Result<std::vector<PostgresDatabase::CorpActionRow>>
 PostgresDatabase::get_corporate_actions(
     const std::vector<std::string>& tickers,
     const std::string& start_date,
-    const std::string& end_date) {
+    const std::string& end_date,
+    const std::vector<std::string>& actions) {
 
     auto validation = validate_connection();
     if (validation.is_error()) {
         return make_error<std::vector<CorpActionRow>>(
             validation.error()->code(), validation.error()->what());
     }
-    if (tickers.empty()) {
+    if (tickers.empty() || actions.empty()) {
         return Result<std::vector<CorpActionRow>>(std::vector<CorpActionRow>{});
     }
 
@@ -2424,11 +2425,17 @@ PostgresDatabase::get_corporate_actions(
             in_list += txn.quote(tickers[i]);
         }
 
+        std::string action_list;
+        for (size_t i = 0; i < actions.size(); ++i) {
+            if (i > 0) action_list += ",";
+            action_list += txn.quote(actions[i]);
+        }
+
         const std::string query =
-            "SELECT date, action, ticker, value "
+            "SELECT date, action, ticker, value, contraticker, contraname, name "
             "FROM equities_data.corporate_action "
             "WHERE ticker IN (" + in_list + ") "
-            "  AND action IN ('split','dividend','adrratiosplit') "
+            "  AND action IN (" + action_list + ") "
             "  AND date::date BETWEEN " + txn.quote(start_date) +
             "::date AND " + txn.quote(end_date) + "::date "
             "ORDER BY date, ticker, action";
@@ -2447,10 +2454,14 @@ PostgresDatabase::get_corporate_actions(
             try {
                 ca.value = val_str.empty() ? 0.0 : std::stod(val_str);
             } catch (const std::exception&) {
-                WARN("get_corporate_actions: unparseable value '" + val_str +
-                     "' for " + ca.ticker + " on " + ca.date_str + " -- skipping");
-                continue;
+                // A TERMINATION row legitimately carries no numeric value
+                // (a delisting has no ratio); only price-restating rows need
+                // one, and those are sourced per-bar now.
+                ca.value = 0.0;
             }
+            ca.contra_ticker = row["contraticker"].is_null() ? "" : row["contraticker"].c_str();
+            ca.contra_name = row["contraname"].is_null() ? "" : row["contraname"].c_str();
+            ca.name = row["name"].is_null() ? "" : row["name"].c_str();
             rows.push_back(std::move(ca));
         }
 
@@ -2461,6 +2472,175 @@ PostgresDatabase::get_corporate_actions(
         return make_error<std::vector<CorpActionRow>>(
             ErrorCode::DATABASE_ERROR,
             "Failed to fetch corporate actions: " + std::string(e.what()),
+            "PostgresDatabase");
+    }
+}
+
+Result<std::vector<PostgresDatabase::CorpActionRow>>
+PostgresDatabase::get_per_bar_corporate_actions(
+    const std::vector<std::string>& tickers,
+    const std::string& start_date,
+    const std::string& end_date) {
+
+    auto validation = validate_connection();
+    if (validation.is_error()) {
+        return make_error<std::vector<CorpActionRow>>(
+            validation.error()->code(), validation.error()->what());
+    }
+    if (tickers.empty()) {
+        return Result<std::vector<CorpActionRow>>(std::vector<CorpActionRow>{});
+    }
+
+    try {
+        pqxx::work txn(*connection_);
+
+        std::string in_list;
+        for (size_t i = 0; i < tickers.size(); ++i) {
+            if (i > 0) in_list += ",";
+            in_list += txn.quote(tickers[i]);
+        }
+
+        // div_cash and split_factor are written on the bar the event goes ex
+        // and are never restated, so this window is exact. split_factor = 1
+        // and div_cash = 0 are the no-event values; NULLs are treated the
+        // same way. The vendor also encodes ADR-ratio changes and spin-offs
+        // in split_factor, so all three surface here as "split".
+        const std::string query =
+            "SELECT time::date AS ex_date, symbol, "
+            "       COALESCE(div_cash, 0) AS div_cash, "
+            "       COALESCE(split_factor, 1) AS split_factor "
+            "FROM equities_data.ohlcv_1d "
+            "WHERE symbol IN (" + in_list + ") "
+            "  AND time::date BETWEEN " + txn.quote(start_date) +
+            "::date AND " + txn.quote(end_date) + "::date "
+            "  AND (COALESCE(div_cash, 0) <> 0 "
+            "       OR COALESCE(split_factor, 1) NOT IN (0, 1)) "
+            "ORDER BY ex_date, symbol";
+
+        auto result = txn.exec(query);
+        std::vector<CorpActionRow> rows;
+        rows.reserve(result.size() * 2);
+
+        for (const auto& row : result) {
+            const std::string ex_date = row["ex_date"].c_str();
+            const std::string symbol = row["symbol"].c_str();
+            const double div_cash = row["div_cash"].as<double>(0.0);
+            const double split_factor = row["split_factor"].as<double>(1.0);
+
+            // A bar can carry both (e.g. a spin-off dividend alongside a
+            // ratio change); emit each as its own event. Splits first: the
+            // applier scales quantity before the dividend rescales basis, so
+            // the per-share amount lands on the post-split share count.
+            if (split_factor != 0.0 && split_factor != 1.0) {
+                CorpActionRow ca;
+                ca.ticker = symbol;
+                ca.date_str = ex_date;
+                ca.action = "split";
+                ca.value = split_factor;
+                rows.push_back(std::move(ca));
+            }
+            if (div_cash != 0.0) {
+                CorpActionRow ca;
+                ca.ticker = symbol;
+                ca.date_str = ex_date;
+                ca.action = "dividend";
+                ca.value = div_cash;
+                rows.push_back(std::move(ca));
+            }
+        }
+
+        txn.commit();
+        return Result<std::vector<CorpActionRow>>(std::move(rows));
+
+    } catch (const std::exception& e) {
+        return make_error<std::vector<CorpActionRow>>(
+            ErrorCode::DATABASE_ERROR,
+            "Failed to fetch per-bar corporate actions: " + std::string(e.what()),
+            "PostgresDatabase");
+    }
+}
+
+Result<std::vector<PostgresDatabase::TickerAliasRow>>
+PostgresDatabase::get_ticker_aliases() {
+    auto validation = validate_connection();
+    if (validation.is_error()) {
+        return make_error<std::vector<TickerAliasRow>>(
+            validation.error()->code(), validation.error()->what());
+    }
+
+    try {
+        pqxx::work txn(*connection_);
+        auto result = txn.exec(
+            "SELECT historical_ticker, current_symbol, effective_until, note "
+            "FROM equities_data.ticker_aliases "
+            "ORDER BY historical_ticker");
+
+        std::vector<TickerAliasRow> rows;
+        rows.reserve(result.size());
+        for (const auto& row : result) {
+            TickerAliasRow a;
+            a.historical_ticker = row["historical_ticker"].is_null()
+                                      ? "" : row["historical_ticker"].c_str();
+            a.current_symbol = row["current_symbol"].is_null()
+                                   ? "" : row["current_symbol"].c_str();
+            a.effective_until = row["effective_until"].is_null()
+                                    ? "" : row["effective_until"].c_str();
+            a.note = row["note"].is_null() ? "" : row["note"].c_str();
+            if (a.historical_ticker.empty() || a.current_symbol.empty()) continue;
+            rows.push_back(std::move(a));
+        }
+
+        txn.commit();
+        return Result<std::vector<TickerAliasRow>>(std::move(rows));
+
+    } catch (const std::exception& e) {
+        return make_error<std::vector<TickerAliasRow>>(
+            ErrorCode::DATABASE_ERROR,
+            "Failed to fetch ticker aliases: " + std::string(e.what()),
+            "PostgresDatabase");
+    }
+}
+
+Result<std::unordered_map<std::string, std::string>>
+PostgresDatabase::get_delisting_dates(const std::vector<std::string>& tickers) {
+    using Map = std::unordered_map<std::string, std::string>;
+
+    auto validation = validate_connection();
+    if (validation.is_error()) {
+        return make_error<Map>(validation.error()->code(), validation.error()->what());
+    }
+    if (tickers.empty()) {
+        return Result<Map>(Map{});
+    }
+
+    try {
+        pqxx::work txn(*connection_);
+
+        std::string in_list;
+        for (size_t i = 0; i < tickers.size(); ++i) {
+            if (i > 0) in_list += ",";
+            in_list += txn.quote(tickers[i]);
+        }
+
+        auto result = txn.exec(
+            "SELECT symbol, max(delisting_date)::text AS delisting_date "
+            "FROM equities_data.ohlcv_1d "
+            "WHERE symbol IN (" + in_list + ") AND delisting_date IS NOT NULL "
+            "GROUP BY symbol");
+
+        Map out;
+        for (const auto& row : result) {
+            if (row["delisting_date"].is_null()) continue;
+            out.emplace(row["symbol"].c_str(), row["delisting_date"].c_str());
+        }
+
+        txn.commit();
+        return Result<Map>(std::move(out));
+
+    } catch (const std::exception& e) {
+        return make_error<Map>(
+            ErrorCode::DATABASE_ERROR,
+            "Failed to fetch delisting dates: " + std::string(e.what()),
             "PostgresDatabase");
     }
 }

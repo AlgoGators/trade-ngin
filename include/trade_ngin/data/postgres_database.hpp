@@ -516,16 +516,28 @@ public:
     struct CorpActionRow {
         std::string ticker;
         std::string date_str;  // YYYY-MM-DD
-        std::string action;    // "split" | "dividend" | "adrratiosplit"
+        std::string action;    // vendor label, e.g. "split" | "dividend" | "mergerto"
         double value;
+        // Deal terms, populated only for TERMINATION-class rows that carry
+        // them (contraticker/contraname are NULL for splits and dividends).
+        std::string contra_ticker;
+        std::string contra_name;
+        std::string name;
     };
 
     /**
      * @brief Read corporate actions for a ticker list between two dates.
      *
      * Reads from equities_data.corporate_action (existing schema; no DDL).
-     * Filters to splits and dividends only -- spinoffs/mergers/ticker
-     * changes need basis-cost reallocation logic out of scope for Phase 4.
+     * That feed stopped receiving events on 2025-08-29, so this returns
+     * nothing for recent windows. It remains the only source of TERMINATION
+     * deal terms; PRICE_RESTATING events are now sourced from the live
+     * per-bar columns via get_per_bar_corporate_actions() instead.
+     *
+     * @param actions      Vendor labels to filter on. Defaults to the
+     *                     price-restating set for backward compatibility;
+     *                     pass vendor_labels_for_class(TERMINATION) for the
+     *                     deal-terms path.
      *
      * @param tickers      Symbols to query (typically the live portfolio's
      *                     equity universe).
@@ -536,7 +548,54 @@ public:
     Result<std::vector<CorpActionRow>> get_corporate_actions(
         const std::vector<std::string>& tickers,
         const std::string& start_date,
+        const std::string& end_date,
+        const std::vector<std::string>& actions = {"split", "dividend", "adrratiosplit"});
+
+    /**
+     * @brief PRICE_RESTATING events sourced from the live per-bar columns.
+     *
+     * equities_data.ohlcv_1d carries div_cash and split_factor on the bar the
+     * event goes ex. Unlike equities_data.corporate_action these are current,
+     * so this is the production source for class-1 events. Splits (including
+     * ADR-ratio changes and spin-offs, which the vendor also encodes in
+     * split_factor) surface as action "split"; cash dividends as "dividend".
+     *
+     * @param tickers    Symbols to query; empty returns an empty result.
+     * @param start_date Inclusive YYYY-MM-DD.
+     * @param end_date   Inclusive YYYY-MM-DD.
+     * @return Sorted by (date, ticker, action); empty result is not an error.
+     */
+    virtual Result<std::vector<CorpActionRow>> get_per_bar_corporate_actions(
+        const std::vector<std::string>& tickers,
+        const std::string& start_date,
         const std::string& end_date);
+
+    /** @brief One equities_data.ticker_aliases row (SERIES_CONTINUITY source). */
+    struct TickerAliasRow {
+        std::string historical_ticker;
+        std::string current_symbol;
+        std::string effective_until;  // YYYY-MM-DD; empty when NULL
+        std::string note;
+    };
+
+    /**
+     * @brief Read the curated historical-ticker -> current-symbol map.
+     *
+     * A curated subset, not the full rename history: symbols absent from it
+     * are simply left unmapped by the caller.
+     */
+    virtual Result<std::vector<TickerAliasRow>> get_ticker_aliases();
+
+    /**
+     * @brief Delisting dates for the given symbols (TERMINATION timing).
+     *
+     * From equities_data.ohlcv_1d.delisting_date, which is maintained
+     * independently of the frozen corporate_action feed.
+     *
+     * @return symbol -> YYYY-MM-DD for symbols carrying a delisting date.
+     */
+    virtual Result<std::unordered_map<std::string, std::string>> get_delisting_dates(
+        const std::vector<std::string>& tickers);
 
     /**
      * @brief Convert asset class to string for database queries

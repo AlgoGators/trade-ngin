@@ -20,6 +20,8 @@
 #include "trade_ngin/instruments/instrument_registry.hpp"
 #include "trade_ngin/instruments/equity.hpp"
 #include "trade_ngin/live/corporate_actions_applier.hpp"
+#include "trade_ngin/live/corporate_actions_classification.hpp"
+#include "trade_ngin/live/corporate_actions_lifecycle.hpp"
 #include "trade_ngin/live/corporate_actions_audit_log.hpp"
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
 #include "trade_ngin/strategy/mean_reversion.hpp"
@@ -598,11 +600,23 @@ int main(int argc, char* argv[]) {
              std::to_string(two_days_ago_close_prices.size()) + " Day T-2");
 
         // ========================================
-        // PHASE 4: APPLY CORPORATE ACTIONS
-        // Read events from equities_data.corporate_action between yesterday's
-        // run window and today, dedup against state file, adjust position
-        // quantities + cost basis, persist corrected positions BEFORE the
-        // strategy generates today's targets. Closes audit §1.12, §1.15.
+        // CORPORATE ACTIONS, BY MECHANICAL EFFECT CLASS
+        //
+        // Class 1 PRICE_RESTATING (splits, ADR ratios, spin-offs, dividends):
+        //   sourced from the per-bar div_cash / split_factor columns on
+        //   equities_data.ohlcv_1d -- current and never restated. (Until
+        //   Phase 4.3 this read equities_data.corporate_action, whose feed
+        //   stopped on 2025-08-29, so the applier silently saw zero events.)
+        // Class 2 SERIES_CONTINUITY (ticker renames): equities_data.ticker_aliases.
+        // Class 3 TERMINATION (mergers, acquisitions, delistings): exit timing
+        //   from ohlcv_1d.delisting_date; deal terms still only from the frozen
+        //   corporate_action table, so today the handler takes its documented
+        //   final-close exit. A revived feed activates the terms path with no
+        //   code change.
+        // Class 4 INFORMATIONAL: no handler.
+        //
+        // Adjustments land BEFORE the strategy generates today's targets.
+        // See docs/CORP_ACTIONS_DATA_BOUNDARY.md. Closes audit §1.12, §1.15.
         // ========================================
         if (!previous_positions.empty()) {
             // 14-day lookback covers weekend / holiday gaps; the audit log
@@ -615,16 +629,17 @@ int main(int argc, char* argv[]) {
             std::strftime(today_buf, sizeof(today_buf), "%Y-%m-%d", &today_tm);
             std::strftime(start_buf, sizeof(start_buf), "%Y-%m-%d", &start_tm);
 
-            auto ca_result = db->get_corporate_actions(
+            auto ca_result = db->get_per_bar_corporate_actions(
                 symbols, std::string(start_buf), std::string(today_buf));
             if (ca_result.is_error()) {
-                WARN("Failed to fetch corporate actions: " +
+                WARN("Failed to fetch per-bar corporate actions: " +
                      std::string(ca_result.error()->what()) +
                      " -- continuing without corp-action adjustments");
             } else {
                 const auto& rows = ca_result.value();
                 INFO("Fetched " + std::to_string(rows.size()) +
-                     " corp-action rows in window [" + start_buf + ", " + today_buf + "]");
+                     " PRICE_RESTATING events from per-bar columns in window [" +
+                     start_buf + ", " + today_buf + "]");
 
                 CorporateActionsAuditLog audit_log(ca_state_dir);
                 audit_log.load();
@@ -775,6 +790,140 @@ int main(int argc, char* argv[]) {
                     INFO("Persisted " + std::to_string(adjustments.size()) +
                          " corp-action adjustments to trading.positions");
                 }
+            }
+        }
+
+        // ---- Class 2 SERIES_CONTINUITY + Class 3 TERMINATION ----
+        // Both change WHAT is held rather than its price, so they run after
+        // the class-1 rescale and before target generation. Failures here are
+        // non-fatal: the position map is left as-is and the run continues.
+        if (!previous_positions.empty()) {
+            auto today_t2 = std::chrono::system_clock::to_time_t(now);
+            std::tm today_tm2 = *std::localtime(&today_t2);
+            char today_buf2[11];
+            std::strftime(today_buf2, sizeof(today_buf2), "%Y-%m-%d", &today_tm2);
+            const std::string as_of_date(today_buf2);
+            // Terminations are rare and their effective dates can lag the
+            // vendor's publication, so look back further than the class-1
+            // 14-day window.
+            auto lifecycle_start_t = today_t2 - 90 * 24 * 60 * 60;
+            std::tm lifecycle_start_tm = *std::localtime(&lifecycle_start_t);
+            char lifecycle_start_buf[11];
+            std::strftime(lifecycle_start_buf, sizeof(lifecycle_start_buf), "%Y-%m-%d",
+                          &lifecycle_start_tm);
+
+            std::vector<LifecycleAdjustment> lifecycle_log;
+
+            // Class 2: re-key positions still held under a superseded ticker.
+            auto alias_result = db->get_ticker_aliases();
+            if (alias_result.is_error()) {
+                WARN("Failed to fetch ticker aliases: " +
+                     std::string(alias_result.error()->what()) +
+                     " -- skipping SERIES_CONTINUITY handling");
+            } else {
+                std::vector<TickerAlias> aliases;
+                aliases.reserve(alias_result.value().size());
+                for (const auto& row : alias_result.value()) {
+                    aliases.push_back(TickerAlias{row.historical_ticker, row.current_symbol,
+                                                  row.effective_until, row.note});
+                }
+                auto renames = CorporateActionsLifecycle::apply_renames(
+                    previous_positions, aliases, as_of_date);
+                lifecycle_log.insert(lifecycle_log.end(), renames.begin(), renames.end());
+            }
+
+            // Class 3: build termination events from the two available
+            // sources. Timing comes from delisting_date (maintained); terms
+            // come from the frozen corporate_action table, which returns
+            // nothing today -- when it revives, the same query supplies
+            // contra_ticker/ratio and the handler rolls positions over
+            // instead of exiting, with no code change here.
+            std::vector<TerminationEvent> terminations;
+            std::unordered_map<std::string, TerminationEvent*> by_symbol;
+
+            auto delist_result = db->get_delisting_dates(symbols);
+            if (delist_result.is_error()) {
+                WARN("Failed to fetch delisting dates: " +
+                     std::string(delist_result.error()->what()) +
+                     " -- skipping TERMINATION timing");
+            } else {
+                for (const auto& [symbol, delist_date] : delist_result.value()) {
+                    if (previous_positions.find(symbol) == previous_positions.end()) continue;
+                    if (delist_date > as_of_date) continue;  // not yet effective
+                    TerminationEvent ev;
+                    ev.symbol = symbol;
+                    ev.event_date = delist_date;
+                    ev.vendor_label = "delisted";
+                    terminations.push_back(std::move(ev));
+                }
+            }
+
+            auto terms_result = db->get_corporate_actions(
+                symbols, std::string(lifecycle_start_buf), as_of_date,
+                vendor_labels_for_class(CorpActionClass::TERMINATION));
+            if (terms_result.is_error()) {
+                WARN("Failed to fetch TERMINATION deal terms: " +
+                     std::string(terms_result.error()->what()));
+            } else {
+                for (const auto& row : terms_result.value()) {
+                    if (previous_positions.find(row.ticker) == previous_positions.end()) continue;
+                    TerminationEvent ev;
+                    ev.symbol = row.ticker;
+                    ev.event_date = row.date_str;
+                    ev.vendor_label = row.action;
+                    ev.contra_ticker = row.contra_ticker;
+                    ev.ratio = row.value;
+                    ev.has_terms = !row.contra_ticker.empty() && row.value > 0.0;
+                    // A terms row supersedes a bare delisting for the same
+                    // symbol: it says what the holding BECAME.
+                    bool replaced = false;
+                    for (auto& existing : terminations) {
+                        if (existing.symbol == ev.symbol) {
+                            existing = ev;
+                            replaced = true;
+                            break;
+                        }
+                    }
+                    if (!replaced) terminations.push_back(std::move(ev));
+                }
+            }
+
+            if (!terminations.empty()) {
+                auto exits = CorporateActionsLifecycle::apply_terminations(
+                    previous_positions, terminations, previous_day_close_prices);
+                lifecycle_log.insert(lifecycle_log.end(), exits.begin(), exits.end());
+            }
+
+            // Persist whenever a lifecycle handler actually moved something.
+            bool mutated = false;
+            for (const auto& adj : lifecycle_log) {
+                if (adj.outcome == LifecycleOutcome::RENAMED ||
+                    adj.outcome == LifecycleOutcome::CONVERTED_TO_CONTRA ||
+                    adj.outcome == LifecycleOutcome::EXITED_AT_FINAL_CLOSE) {
+                    mutated = true;
+                    break;
+                }
+            }
+            if (mutated) {
+                std::vector<Position> lifecycle_positions;
+                lifecycle_positions.reserve(previous_positions.size());
+                for (const auto& [sym, pos] : previous_positions) {
+                    Position p = pos;
+                    p.symbol = sym;
+                    p.last_update = now;
+                    lifecycle_positions.push_back(std::move(p));
+                }
+                auto store_lc = db->store_positions(
+                    lifecycle_positions,
+                    "LIVE_EQUITY_MEAN_REVERSION", "EQUITY_MEAN_REVERSION",
+                    "BASE_PORTFOLIO", "trading.positions");
+                if (store_lc.is_error()) {
+                    ERROR("Failed to persist lifecycle-adjusted positions: " +
+                          std::string(store_lc.error()->what()));
+                    return 1;
+                }
+                INFO("Persisted " + std::to_string(lifecycle_log.size()) +
+                     " lifecycle adjustment(s) to trading.positions");
             }
         }
 
