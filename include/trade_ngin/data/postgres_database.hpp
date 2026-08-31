@@ -97,7 +97,8 @@ public:
     Result<std::unordered_map<std::string, Position>> load_positions_by_date(
         const std::string& strategy_id, const std::string& strategy_name,
         const std::string& portfolio_id, const Timestamp& date,
-        const std::string& table_name = "trading.positions") override;
+        const std::string& table_name = "trading.positions",
+        const std::string& portfolio_type = "system") override;
 
     /**
      * @brief Store execution reports in the database
@@ -120,12 +121,13 @@ public:
      * @param strategy_name Individual strategy name
      * @param portfolio_id Portfolio identifier
      * @param table_name Name of the table to store data
+     * @param portfolio_type "system" (engine output) or "qt" (human-adjusted, executed)
      * @return Result indicating success or failure
      */
     Result<void> store_positions(const std::vector<Position>& positions,
                                  const std::string& strategy_id, const std::string& strategy_name,
-                                 const std::string& portfolio_id,
-                                 const std::string& table_name) override;
+                                 const std::string& portfolio_id, const std::string& table_name,
+                                 const std::string& portfolio_type = "system") override;
 
     /**
      * @brief Store signals in the database
@@ -319,7 +321,26 @@ public:
     Result<void> store_trading_equity_curve(
         const std::string& strategy_id, const Timestamp& timestamp, double equity,
         const std::string& portfolio_id,
-        const std::string& table_name = "trading.equity_curve") override;
+        const std::string& table_name = "trading.equity_curve",
+        const std::string& portfolio_type = "system") override;
+
+    /**
+     * @brief Seed the 'qt' position stream from the 'system' stream for one day.
+     *
+     * Copies that day's system positions into the qt stream so QT has something
+     * to edit. IDEMPOTENT AND NON-DESTRUCTIVE: if ANY qt row already exists for
+     * this portfolio/strategy/date, nothing is written. QT's edits must survive
+     * a re-run of the engine -- overwriting them would defeat the entire point
+     * of tracking the two streams separately.
+     *
+     * No-op (with a warning) if the dual-portfolio migration has not been applied.
+     *
+     * @return Result containing the number of rows seeded (0 if already seeded)
+     */
+    Result<int> seed_qt_positions_from_system(
+        const std::string& strategy_id, const std::string& strategy_name,
+        const std::string& portfolio_id, const std::string& date,
+        const std::string& table_name = "trading.positions");
 
     /**
      * @brief Store multiple live trading equity curve points
@@ -518,6 +539,23 @@ public:
      * @return Result indicating success or failure
      */
     Result<void> validate_table_name(const std::string& table_name) const;
+
+    /**
+     * @brief Check whether a column exists on a (schema-qualified) table.
+     *
+     * Used to detect at runtime whether the dual-portfolio migration
+     * (migrations/001_add_portfolio_type.sql) has been applied, so the engine
+     * behaves correctly against both an upgraded and a not-yet-upgraded
+     * database. That decouples rolling out this code from running the
+     * migration -- neither has to go first.
+     *
+     * @param txn Active transaction to query within
+     * @param qualified_table Table name, optionally schema-qualified
+     * @param column Column to look for
+     * @return true if the column exists
+     */
+    bool column_exists(pqxx::work& txn, const std::string& qualified_table,
+                       const std::string& column) const;
 
 private:
     std::string connection_string_;

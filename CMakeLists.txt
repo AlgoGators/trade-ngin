@@ -75,6 +75,59 @@ link_directories(${PQXX_LIBRARY_DIRS})
 # Include code coverage module if enabled
 include(cmake/CodeCoverage.cmake)
 
+# Extract git SHA at build time and generate version header.
+#
+# Prefer an externally-provided SHA (env var TRADE_NGIN_GIT_SHA) over
+# `git rev-parse` when one is set. This matters specifically for the Docker
+# build: .dockerignore excludes .git from the build context (smaller, faster
+# builds), so `git rev-parse` run inside a `docker build` always fails there
+# and silently falls back to "unknown" below -- every image built from this
+# repo's Dockerfile has done that until now. The Dockerfile accepts
+# --build-arg TRADE_NGIN_GIT_SHA=<sha> and exports it as this env var so a
+# build that DOES know its own SHA (CI, or a local `docker build
+# --build-arg TRADE_NGIN_GIT_SHA=$(git rev-parse --short HEAD)`) can supply
+# it. A plain `cmake -S .` outside Docker still has .git and falls through
+# to `git rev-parse` as before.
+if(DEFINED ENV{TRADE_NGIN_GIT_SHA} AND NOT "$ENV{TRADE_NGIN_GIT_SHA}" STREQUAL "")
+    set(TRADE_NGIN_GIT_SHA "$ENV{TRADE_NGIN_GIT_SHA}")
+    set(GIT_RESULT 0)
+elseif(GIT_FOUND OR (NOT WIN32 AND NOT APPLE))
+    execute_process(
+        COMMAND git rev-parse --short HEAD
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        OUTPUT_VARIABLE TRADE_NGIN_GIT_SHA
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET
+        RESULT_VARIABLE GIT_RESULT
+    )
+else()
+    find_package(Git QUIET)
+    if(Git_FOUND)
+        execute_process(
+            COMMAND ${GIT_EXECUTABLE} rev-parse --short HEAD
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+            OUTPUT_VARIABLE TRADE_NGIN_GIT_SHA
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_QUIET
+            RESULT_VARIABLE GIT_RESULT
+        )
+    endif()
+endif()
+
+# Fallback to "unknown" if git command failed or git not found
+if(NOT TRADE_NGIN_GIT_SHA OR GIT_RESULT)
+    set(TRADE_NGIN_GIT_SHA "unknown")
+endif()
+
+message(STATUS "Git SHA: ${TRADE_NGIN_GIT_SHA}")
+
+# Generate git_version.hpp from template
+configure_file(
+    "${CMAKE_SOURCE_DIR}/cmake/git_version.hpp.in"
+    "${CMAKE_BINARY_DIR}/include/trade_ngin/git_version.hpp"
+    @ONLY
+)
+
 # Add source files for the library
 set(TRADE_NGIN_SOURCES
     src/core/state_manager.cpp
@@ -82,6 +135,7 @@ set(TRADE_NGIN_SOURCES
     src/core/config_version.cpp
     src/core/config_base.cpp
     src/core/config_loader.cpp
+    src/apps/live_portfolio_helpers.cpp
     src/core/logger.cpp
     src/core/email_sender.cpp
     src/core/chart_generator.cpp
@@ -187,6 +241,7 @@ endif()
 target_include_directories(trade_ngin
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_BINARY_DIR}/include
         ${Arrow_INCLUDE_DIRS}
 )
 

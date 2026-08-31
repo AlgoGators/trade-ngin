@@ -2,11 +2,30 @@
 // Phase 0: Database Extensions to Replace Raw SQL
 // This file contains new methods to eliminate raw SQL from backtest and live trading
 
+#include <cctype>
 #include <ctime>
 #include <iomanip>
 #include <sstream>
 #include "trade_ngin/core/time_utils.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
+
+namespace {
+// SQL identifiers (column/table names) can't be bound as query parameters -- only values
+// can. When an identifier has to be built dynamically, whitelist its character set instead:
+// letters, digits, underscore, must not start with a digit. This rejects quotes, semicolons,
+// whitespace, and comment sequences outright, regardless of what the caller intended.
+bool is_valid_sql_identifier(const std::string& name) {
+    if (name.empty() || name.size() > 63 || std::isdigit(static_cast<unsigned char>(name[0]))) {
+        return false;
+    }
+    for (char c : name) {
+        if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_') {
+            return false;
+        }
+    }
+    return true;
+}
+}  // namespace
 
 namespace trade_ngin {
 
@@ -489,22 +508,40 @@ Result<void> PostgresDatabase::update_live_results(
         // Use actual portfolio_id or default to BASE_PORTFOLIO for backward compatibility
         std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
 
-        // Build UPDATE query
+        // Column names can't be bound as $n parameters -- only values can -- so every
+        // column is checked against a strict identifier whitelist before it reaches the
+        // query text. This is the only defense available for dynamic identifiers; every
+        // value is still bound as a parameter below.
+        for (const auto& [column, value] : updates) {
+            (void)value;
+            if (!is_valid_sql_identifier(column)) {
+                return make_error<void>(
+                    ErrorCode::INVALID_ARGUMENT,
+                    "Invalid column name in updates map: '" + column + "'", component_id_);
+            }
+        }
+
         std::string query = "UPDATE " + table_name + " SET ";
+        pqxx::params params;
+        int param_idx = 1;
 
         bool first = true;
         for (const auto& [column, value] : updates) {
             if (!first)
                 query += ", ";
-            query += column + " = " + std::to_string(value);
+            query += column + " = $" + std::to_string(param_idx++);
+            params.append(value);
             first = false;
         }
 
-        query += " WHERE strategy_id = " + txn.quote(strategy_id) +
-                 " AND portfolio_id = " + txn.quote(actual_portfolio_id) + " AND DATE(date) = '" +
-                 format_timestamp(date).substr(0, 10) + "'";
+        query += " WHERE strategy_id = $" + std::to_string(param_idx++) +
+                 " AND portfolio_id = $" + std::to_string(param_idx++) +
+                 " AND DATE(date) = $" + std::to_string(param_idx++);
+        params.append(strategy_id);
+        params.append(actual_portfolio_id);
+        params.append(format_timestamp(date).substr(0, 10));
 
-        auto result = txn.exec(query);
+        auto result = txn.exec(query, params);
         txn.commit();
 
         INFO("Updated live results for " + strategy_id + " on " + format_timestamp(date) + " (" +
@@ -698,33 +735,59 @@ Result<void> PostgresDatabase::store_live_results_complete(
         // Use provided portfolio_id or default to BASE_PORTFOLIO
         std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
 
-        // Build column list and values - include portfolio_id
+        // Column names can't be bound as $n parameters -- validate against the same
+        // identifier whitelist as update_live_results before either map touches the query.
+        for (const auto& [column, value] : metrics) {
+            (void)value;
+            if (!is_valid_sql_identifier(column)) {
+                return make_error<void>(
+                    ErrorCode::INVALID_ARGUMENT,
+                    "Invalid column name in metrics map: '" + column + "'", component_id_);
+            }
+        }
+        for (const auto& [column, value] : int_metrics) {
+            (void)value;
+            if (!is_valid_sql_identifier(column)) {
+                return make_error<void>(
+                    ErrorCode::INVALID_ARGUMENT,
+                    "Invalid column name in int_metrics map: '" + column + "'", component_id_);
+            }
+        }
+
+        // Build column list and parameter placeholders - include portfolio_id
         std::string columns = "strategy_id, portfolio_id, date";
-        std::string values = txn.quote(strategy_id) + ", " + txn.quote(actual_portfolio_id) +
-                             ", '" + format_timestamp(date) + "'";
+        std::string placeholders = "$1, $2, $3";
+        pqxx::params params;
+        params.append(strategy_id);
+        params.append(actual_portfolio_id);
+        params.append(format_timestamp(date));
+        int param_idx = 4;
 
         // Add double metrics
         for (const auto& [column, value] : metrics) {
             columns += ", " + column;
-            values += ", " + std::to_string(value);
+            placeholders += ", $" + std::to_string(param_idx++);
+            params.append(value);
         }
 
         // Add integer metrics
         for (const auto& [column, value] : int_metrics) {
             columns += ", " + column;
-            values += ", " + std::to_string(value);
+            placeholders += ", $" + std::to_string(param_idx++);
+            params.append(value);
         }
 
         // Add config as JSON
         if (!config.is_null()) {
             columns += ", config";
-            values += ", " + txn.quote(config.dump());
+            placeholders += ", $" + std::to_string(param_idx++);
+            params.append(config.dump());
         }
 
         std::string query =
-            "INSERT INTO " + table_name + " (" + columns + ") VALUES (" + values + ")";
+            "INSERT INTO " + table_name + " (" + columns + ") VALUES (" + placeholders + ")";
 
-        txn.exec(query);
+        txn.exec(query, params);
         txn.commit();
 
         INFO("Stored complete live results for " + strategy_id +

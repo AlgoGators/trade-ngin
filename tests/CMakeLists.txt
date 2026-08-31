@@ -12,6 +12,7 @@ set(TEST_SOURCES
     core/test_config_base_extended.cpp
     core/test_run_id_generator.cpp
     core/test_config_loader.cpp
+    apps/test_live_portfolio_helpers.cpp
     core/test_config_manager_extended.cpp
     data/test_db_utils.cpp
     data/test_postgres_database.cpp
