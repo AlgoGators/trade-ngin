@@ -16,6 +16,13 @@ const char* CorporateActionsApplier::type_to_string(CorpActionType t) {
     return "UNKNOWN";
 }
 
+CorpActionType CorporateActionsApplier::type_from_type_string(const std::string& type_name) {
+    if (type_name == "SPLIT") return CorpActionType::SPLIT;
+    if (type_name == "ADR_SPLIT") return CorpActionType::ADR_SPLIT;
+    if (type_name == "DIVIDEND") return CorpActionType::DIVIDEND;
+    return CorpActionType::UNKNOWN;
+}
+
 CorpActionType CorporateActionsApplier::type_from_action_string(const std::string& action) {
     if (action == "split") return CorpActionType::SPLIT;
     if (action == "adrratiosplit") return CorpActionType::ADR_SPLIT;

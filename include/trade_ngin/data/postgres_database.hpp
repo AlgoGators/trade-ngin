@@ -598,6 +598,47 @@ public:
         const std::vector<std::string>& tickers);
 
     /**
+     * @brief One corporate action already applied to a live position.
+     *
+     * Mirrors trading.corp_action_applied. Dividend fields are populated only
+     * for DIVIDEND rows and are INFORMATIONAL -- the price series is
+     * total-return adjusted, so total_cash must never be added to P&L.
+     */
+    struct AppliedCorpActionRow {
+        std::string symbol;
+        std::string action_type;
+        std::string ex_date;  ///< YYYY-MM-DD
+        double qty_held{0.0};
+        double dividend_per_share{0.0};
+        double total_cash{0.0};
+    };
+
+    /**
+     * @brief Load every corp action already applied for one portfolio+strategy.
+     *
+     * Durable replacement for the applied_corp_actions.json state file, which
+     * lived under a container path with no volume and so was lost on redeploy.
+     * Loading everything is deliberate: the record is the strategy's lifetime
+     * dedup set and is small (order thousands of rows even at full universe
+     * scale), and cumulative dividend income is summed from it.
+     */
+    virtual Result<std::vector<AppliedCorpActionRow>> load_applied_corp_actions(
+        const std::string& portfolio_id, const std::string& strategy_id);
+
+    /**
+     * @brief Record corp actions as applied. Idempotent per natural key.
+     *
+     * ON CONFLICT DO NOTHING against
+     * (portfolio_id, strategy_id, strategy_name, symbol, action_type, ex_date):
+     * re-recording an event is a no-op rather than an error, so a partially
+     * completed run is safe to repeat.
+     */
+    virtual Result<void> store_applied_corp_actions(
+        const std::string& portfolio_id, const std::string& strategy_id,
+        const std::string& strategy_name,
+        const std::vector<AppliedCorpActionRow>& rows);
+
+    /**
      * @brief Convert asset class to string for database queries
      * @param asset_class Asset class to convert
      * @return String representation for database queries

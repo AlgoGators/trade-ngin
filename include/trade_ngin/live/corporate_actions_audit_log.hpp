@@ -5,6 +5,9 @@
 #include <tuple>
 #include <vector>
 
+#include <memory>
+
+#include "trade_ngin/data/postgres_database.hpp"
 #include "trade_ngin/live/corporate_actions_applier.hpp"
 
 namespace trade_ngin {
@@ -39,6 +42,25 @@ namespace trade_ngin {
 class CorporateActionsAuditLog {
 public:
     explicit CorporateActionsAuditLog(std::string state_dir);
+
+    /**
+     * @brief DB-backed dedup, with one-time import of any legacy state file.
+     *
+     * Preferred construction for the live app. The JSON state file lived under
+     * a container path with no volume declared, so losing it on redeploy was
+     * the default -- and a dedup record that evaporates makes a lookback window
+     * wide enough to cover a real outage unsafe. Backing the record with
+     * trading.corp_action_applied is what allows the window to be derived from
+     * actual state (see migration 002).
+     *
+     * state_dir is still supplied so an existing applied_corp_actions.json can
+     * be imported once; the file is left in place afterwards, not deleted.
+     */
+    CorporateActionsAuditLog(std::string state_dir,
+                             std::shared_ptr<PostgresDatabase> db,
+                             std::string portfolio_id,
+                             std::string strategy_id,
+                             std::string strategy_name);
 
     /**
      * @brief Load existing dedup records from disk.
@@ -109,7 +131,23 @@ private:
     std::set<AppliedKey> applied_;
     std::vector<DividendEvent> dividend_events_;
 
+    // Set only for the DB-backed construction. When null the class behaves
+    // exactly as before (file-only), which is what the unit tests exercise.
+    std::shared_ptr<PostgresDatabase> db_;
+    std::string portfolio_id_;
+    std::string strategy_id_;
+    std::string strategy_name_;
+    // Rows recorded since the last save(), so save() writes a delta rather
+    // than re-inserting the whole lifetime set on every run.
+    mutable std::vector<PostgresDatabase::AppliedCorpActionRow> pending_;
+
     std::string file_path() const;
+
+    /// True when constructed with a database handle.
+    bool db_backed() const { return db_ != nullptr; }
+
+    /// Import a legacy state file into the DB when the DB has no rows yet.
+    bool migrate_state_file_to_db();
 };
 
 }  // namespace trade_ngin

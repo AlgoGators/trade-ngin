@@ -623,13 +623,78 @@ int main(int argc, char* argv[]) {
         // See docs/CORP_ACTIONS_DATA_BOUNDARY.md. Closes audit §1.12, §1.15.
         // ========================================
         if (!previous_positions.empty()) {
-            // 14-day lookback covers weekend / holiday gaps; the audit log
-            // dedups any event seen on a prior run.
+            // Lookback is DERIVED FROM STATE, never a fixed constant.
+            //
+            // A fixed 14-day window silently dropped every event older than it:
+            // live last wrote 2026-05-03, and of the 9 dividends the configured
+            // universe has seen since, 8 fall outside 14 days. A dropped
+            // dividend leaves cost basis in the pre-dividend frame against a
+            // post-dividend mark, and because dividend income is deliberately
+            // informational-only, that value is simply lost from P&L --
+            // permanently, since no later event repairs a basis.
+            //
+            // Widening to a bigger constant is not sufficient either: a book can
+            // outlive any constant (the live futures book already spans 459
+            // days). The window must cover the oldest position we still hold, so
+            // it is derived from that, then clamped:
+            //   * at least 14 days, to cover weekend/holiday stacks cheaply;
+            //   * at most historical_days, because the price series does not
+            //     load further back and the dividend denominator needs a close.
+            // Anything older than that clamp is reported loudly below rather
+            // than silently under-applied.
+            //
+            // Safe only because dedup is now durable in trading.corp_action_applied
+            // (migration 002) rather than a JSON file under a container path with
+            // no volume, where state loss was the default.
             auto today_t = std::chrono::system_clock::to_time_t(now);
-            auto window_start_t = today_t - 14 * 24 * 60 * 60;
-            std::tm today_tm = *std::localtime(&today_t);
-            std::tm start_tm = *std::localtime(&window_start_t);
+
+            constexpr long kSecondsPerDay = 24 * 60 * 60;
+            constexpr long kMinLookbackDays = 14;
+            const long max_lookback_days = static_cast<long>(historical_days);
+
+            auto oldest_position_t = today_t;
+            std::string oldest_position_symbol;
+            for (const auto& [sym, pos] : previous_positions) {
+                auto pos_t = std::chrono::system_clock::to_time_t(pos.last_update);
+                if (pos_t > 0 && pos_t < oldest_position_t) {
+                    oldest_position_t = pos_t;
+                    oldest_position_symbol = sym;
+                }
+            }
+
+            const auto min_start_t = today_t - kMinLookbackDays * kSecondsPerDay;
+            const auto max_start_t = today_t - max_lookback_days * kSecondsPerDay;
+            auto window_start_t = std::min(oldest_position_t, min_start_t);
+
+            // Loud guard: a held position older than the price window cannot be
+            // covered, and under-applying corrupts its basis for good.
+            if (window_start_t < max_start_t) {
+                std::vector<std::string> uncovered;
+                for (const auto& [sym, pos] : previous_positions) {
+                    auto pos_t = std::chrono::system_clock::to_time_t(pos.last_update);
+                    if (pos_t > 0 && pos_t < max_start_t) uncovered.push_back(sym);
+                }
+                std::string sym_list;
+                for (size_t i = 0; i < uncovered.size(); ++i) {
+                    if (i) sym_list += ", ";
+                    sym_list += uncovered[i];
+                }
+                ERROR("Corp-action window cannot cover position(s) older than the "
+                      "price window (" + std::to_string(max_lookback_days) +
+                      " days): " + sym_list +
+                      ". Applying only what the window covers would leave their cost "
+                      "basis permanently wrong. Increase live.historical_days or "
+                      "reconcile these positions before continuing.");
+                window_start_t = max_start_t;
+            }
+
             char today_buf[11], start_buf[11];
+            std::tm today_tm{}, start_tm{};
+            // UTC, not localtime: bar timestamps are true UTC instants, and on
+            // the deployed image (TZ=America/New_York) localtime pushes every
+            // key a day early.
+            gmtime_r(&today_t, &today_tm);
+            gmtime_r(&window_start_t, &start_tm);
             std::strftime(today_buf, sizeof(today_buf), "%Y-%m-%d", &today_tm);
             std::strftime(start_buf, sizeof(start_buf), "%Y-%m-%d", &start_tm);
 
@@ -645,8 +710,17 @@ int main(int argc, char* argv[]) {
                      " PRICE_RESTATING events from per-bar columns in window [" +
                      start_buf + ", " + today_buf + "]");
 
-                CorporateActionsAuditLog audit_log(ca_state_dir);
-                audit_log.load();
+                CorporateActionsAuditLog audit_log(ca_state_dir, db,
+                                                  portfolio_id,
+                                                  "LIVE_EQUITY_MEAN_REVERSION",
+                                                  "EQUITY_MEAN_REVERSION");
+                if (!audit_log.load()) {
+                    // load() returns false on a genuine read failure as well as
+                    // on first run; the DB-backed path logs the distinction.
+                    INFO("Corp-action dedup record is empty or unreadable -- see "
+                         "any preceding error; proceeding with an empty record "
+                         "means events in the window may be re-applied");
+                }
 
                 // Historical close lookup keyed by (symbol, YYYY-MM-DD) so
                 // the dividend rescale denominator uses close at THIS event's
@@ -1979,7 +2053,10 @@ int main(int argc, char* argv[]) {
             // dividend value is already inside mark-to-market P&L.
             double total_dividend_income = 0.0;
             {
-                CorporateActionsAuditLog div_log(ca_state_dir);
+                CorporateActionsAuditLog div_log(ca_state_dir, db,
+                                                       portfolio_id,
+                                                       "LIVE_EQUITY_MEAN_REVERSION",
+                                                       "EQUITY_MEAN_REVERSION");
                 div_log.load();
                 total_dividend_income = div_log.total_cumulative_dividend_income();
             }
@@ -2263,7 +2340,10 @@ int main(int argc, char* argv[]) {
                 // Phase 4.5: cumulative dividend income from the corp-action
                 // state file (informational ONLY; not in any PnL total).
                 {
-                    CorporateActionsAuditLog div_log_email(ca_state_dir);
+                    CorporateActionsAuditLog div_log_email(ca_state_dir, db,
+                                                       portfolio_id,
+                                                       "LIVE_EQUITY_MEAN_REVERSION",
+                                                       "EQUITY_MEAN_REVERSION");
                     div_log_email.load();
                     strategy_metrics["Dividend Income (cumulative, informational)"] =
                         div_log_email.total_cumulative_dividend_income();

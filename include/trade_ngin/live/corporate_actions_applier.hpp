@@ -96,6 +96,16 @@ public:
 
     // Parse the action text from equities_data.corporate_action into the enum.
     static CorpActionType type_from_action_string(const std::string& action);
+
+    /**
+     * @brief Inverse of type_to_string() -- parses the ENUM-NAME form.
+     *
+     * Distinct from type_from_action_string(), which parses the VENDOR form
+     * ("dividend", "split"). The two are not interchangeable: round-tripping a
+     * stored type through the vendor parser silently yields UNKNOWN, which
+     * would make a persisted dedup record fail to match and re-apply the event.
+     */
+    static CorpActionType type_from_type_string(const std::string& type_name);
 };
 
 }  // namespace trade_ngin

@@ -2645,4 +2645,91 @@ PostgresDatabase::get_delisting_dates(const std::vector<std::string>& tickers) {
     }
 }
 
+Result<std::vector<PostgresDatabase::AppliedCorpActionRow>>
+PostgresDatabase::load_applied_corp_actions(const std::string& portfolio_id,
+                                            const std::string& strategy_id) {
+    using Rows = std::vector<AppliedCorpActionRow>;
+
+    auto validation = validate_connection();
+    if (validation.is_error()) {
+        return make_error<Rows>(validation.error()->code(), validation.error()->what());
+    }
+
+    try {
+        pqxx::work txn(*connection_);
+        // Whole-history load: this is the strategy's lifetime dedup set and the
+        // source for cumulative dividend income. Parameterised, and the PK
+        // (portfolio_id, strategy_id, ...) serves the prefix scan directly.
+        pqxx::result result = txn.exec_params(
+            "SELECT symbol, action_type, ex_date::text AS ex_date, "
+            "COALESCE(qty_held, 0) AS qty_held, "
+            "COALESCE(dividend_per_share, 0) AS dividend_per_share, "
+            "COALESCE(total_cash, 0) AS total_cash "
+            "FROM trading.corp_action_applied "
+            "WHERE portfolio_id = $1 AND strategy_id = $2",
+            portfolio_id, strategy_id);
+
+        Rows out;
+        out.reserve(result.size());
+        for (const auto& row : result) {
+            AppliedCorpActionRow r;
+            r.symbol = row["symbol"].c_str();
+            r.action_type = row["action_type"].c_str();
+            r.ex_date = row["ex_date"].c_str();
+            r.qty_held = row["qty_held"].as<double>();
+            r.dividend_per_share = row["dividend_per_share"].as<double>();
+            r.total_cash = row["total_cash"].as<double>();
+            out.push_back(std::move(r));
+        }
+
+        txn.commit();
+        return Result<Rows>(std::move(out));
+
+    } catch (const std::exception& e) {
+        return make_error<Rows>(
+            ErrorCode::DATABASE_ERROR,
+            "Failed to load applied corp actions: " + std::string(e.what()),
+            "PostgresDatabase");
+    }
+}
+
+Result<void> PostgresDatabase::store_applied_corp_actions(
+    const std::string& portfolio_id, const std::string& strategy_id,
+    const std::string& strategy_name,
+    const std::vector<AppliedCorpActionRow>& rows) {
+    if (rows.empty()) return Result<void>();
+
+    auto validation = validate_connection();
+    if (validation.is_error()) {
+        return make_error<void>(validation.error()->code(), validation.error()->what());
+    }
+
+    try {
+        pqxx::work txn(*connection_);
+        // DO NOTHING rather than DO UPDATE: the first application is the
+        // authoritative one. A repeated run must not rewrite qty_held with a
+        // post-adjustment quantity.
+        for (const auto& r : rows) {
+            txn.exec_params(
+                "INSERT INTO trading.corp_action_applied "
+                "(portfolio_id, strategy_id, strategy_name, symbol, action_type, "
+                " ex_date, qty_held, dividend_per_share, total_cash) "
+                "VALUES ($1, $2, $3, $4, $5, $6::date, $7, $8, $9) "
+                "ON CONFLICT (portfolio_id, strategy_id, strategy_name, symbol, "
+                "             action_type, ex_date) DO NOTHING",
+                portfolio_id, strategy_id, strategy_name, r.symbol, r.action_type,
+                r.ex_date, r.qty_held, r.dividend_per_share, r.total_cash);
+        }
+
+        txn.commit();
+        return Result<void>();
+
+    } catch (const std::exception& e) {
+        return make_error<void>(
+            ErrorCode::DATABASE_ERROR,
+            "Failed to store applied corp actions: " + std::string(e.what()),
+            "PostgresDatabase");
+    }
+}
+
 }  // namespace trade_ngin
