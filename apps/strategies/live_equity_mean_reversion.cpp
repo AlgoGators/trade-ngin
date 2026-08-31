@@ -132,6 +132,10 @@ int main(int argc, char* argv[]) {
         auto app_config = app_config_result.value();
         INFO("Configuration loaded successfully for portfolio: " + app_config.portfolio_id);
 
+        // Storage identity comes from config, never a literal: this runner writes to
+        // its own portfolio namespace (EQUITY_MR_PORTFOLIO), not the futures book's.
+        const std::string portfolio_id = app_config.portfolio_id;
+
         // Wire the shared HolidayChecker into EquityInstrument's static slot so
         // that EquityInstrument::is_market_open() actually consults the calendar.
         // Same checker is reused below for the previous-trading-day lookup.
@@ -570,7 +574,7 @@ int main(int argc, char* argv[]) {
 
         // Load previous day positions for PnL calculation
         INFO("Loading previous day positions for PnL calculation...");
-        auto previous_positions_result = db->load_positions_by_date("LIVE_EQUITY_MEAN_REVERSION", "EQUITY_MEAN_REVERSION", "BASE_PORTFOLIO", previous_date, "trading.positions");
+        auto previous_positions_result = db->load_positions_by_date("LIVE_EQUITY_MEAN_REVERSION", "EQUITY_MEAN_REVERSION", portfolio_id, previous_date, "trading.positions");
         std::unordered_map<std::string, Position> previous_positions;
         
         if (previous_positions_result.is_ok()) {
@@ -688,7 +692,7 @@ int main(int argc, char* argv[]) {
                         auto tp = std::chrono::system_clock::from_time_t(tt);
                         auto r = db->load_positions_by_date(
                             "LIVE_EQUITY_MEAN_REVERSION", "EQUITY_MEAN_REVERSION",
-                            "BASE_PORTFOLIO", tp, "trading.positions");
+                            portfolio_id, tp, "trading.positions");
                         auto& slot = positions_at_date_cache[ex_date];
                         if (r.is_ok()) slot = r.value();
                         cached = positions_at_date_cache.find(ex_date);
@@ -776,7 +780,7 @@ int main(int argc, char* argv[]) {
                     auto store_result = db->store_positions(
                         positions_to_store,
                         "LIVE_EQUITY_MEAN_REVERSION", "EQUITY_MEAN_REVERSION",
-                        "BASE_PORTFOLIO", "trading.positions");
+                        portfolio_id, "trading.positions");
                     if (store_result.is_error()) {
                         ERROR("Failed to persist corp-action-adjusted positions: " +
                               std::string(store_result.error()->what()));
@@ -916,7 +920,7 @@ int main(int argc, char* argv[]) {
                 auto store_lc = db->store_positions(
                     lifecycle_positions,
                     "LIVE_EQUITY_MEAN_REVERSION", "EQUITY_MEAN_REVERSION",
-                    "BASE_PORTFOLIO", "trading.positions");
+                    portfolio_id, "trading.positions");
                 if (store_lc.is_error()) {
                     ERROR("Failed to persist lifecycle-adjusted positions: " +
                           std::string(store_lc.error()->what()));
@@ -1006,7 +1010,7 @@ int main(int argc, char* argv[]) {
             if (!yesterday_finalized_positions.empty()) {
                 // Always save yesterday's finalized positions immediately (not queued)
                 // These are updates to existing positions from the previous day
-                auto update_result = db->store_positions(yesterday_finalized_positions, "LIVE_EQUITY_MEAN_REVERSION", "EQUITY_MEAN_REVERSION", "BASE_PORTFOLIO", "trading.positions");
+                auto update_result = db->store_positions(yesterday_finalized_positions, "LIVE_EQUITY_MEAN_REVERSION", "EQUITY_MEAN_REVERSION", portfolio_id, "trading.positions");
                 if (update_result.is_error()) {
                     ERROR("Failed to update Day T-1 positions: " + std::string(update_result.error()->what()));
                 } else {
@@ -1425,7 +1429,7 @@ int main(int argc, char* argv[]) {
             // Use LiveDataLoader to get yesterday's metrics
             try {
                 INFO("Using LiveDataLoader to query yesterday's metrics for date: " + yesterday_date_str);
-                auto live_results = data_loader->load_live_results("LIVE_EQUITY_MEAN_REVERSION", "BASE_PORTFOLIO", previous_date);
+                auto live_results = data_loader->load_live_results("LIVE_EQUITY_MEAN_REVERSION", portfolio_id, previous_date);
 
                 if (live_results.is_ok()) {
                     auto& row = live_results.value();
@@ -1467,7 +1471,7 @@ int main(int argc, char* argv[]) {
             try {
                 auto db_ptr = std::dynamic_pointer_cast<PostgresDatabase>(db);
                 if (db_ptr) {
-                    auto prev_agg = db_ptr->get_previous_live_aggregates("LIVE_EQUITY_MEAN_REVERSION", "BASE_PORTFOLIO", previous_date, "trading.live_results");
+                    auto prev_agg = db_ptr->get_previous_live_aggregates("LIVE_EQUITY_MEAN_REVERSION", portfolio_id, previous_date, "trading.live_results");
                     if (prev_agg.is_ok()) {
                         std::tie(day_before_yesterday_portfolio_value, day_before_yesterday_total_pnl, day_before_yesterday_total_commissions) = prev_agg.value();
                         INFO("Loaded day-before-yesterday aggregates: portfolio=$" + std::to_string(day_before_yesterday_portfolio_value) +
@@ -1540,7 +1544,7 @@ int main(int argc, char* argv[]) {
 
             // Load existing values from database using LiveDataLoader - DO NOT RECALCULATE
             try {
-                auto margin_metrics = data_loader->load_margin_metrics("LIVE_EQUITY_MEAN_REVERSION", "BASE_PORTFOLIO", previous_date);
+                auto margin_metrics = data_loader->load_margin_metrics("LIVE_EQUITY_MEAN_REVERSION", portfolio_id, previous_date);
                 if (margin_metrics.is_ok() && margin_metrics.value().valid) {
                     auto& metrics = margin_metrics.value();
                     yesterday_portfolio_leverage = metrics.gross_leverage;
@@ -1747,7 +1751,7 @@ int main(int argc, char* argv[]) {
         try {
             auto db_ptr = std::dynamic_pointer_cast<PostgresDatabase>(db);
             if (db_ptr) {
-                auto prev_agg = db_ptr->get_previous_live_aggregates("LIVE_EQUITY_MEAN_REVERSION", "BASE_PORTFOLIO", now, "trading.live_results");
+                auto prev_agg = db_ptr->get_previous_live_aggregates("LIVE_EQUITY_MEAN_REVERSION", portfolio_id, now, "trading.live_results");
                 if (prev_agg.is_ok()) {
                     std::tie(previous_portfolio_value, previous_total_pnl, previous_total_commissions) = prev_agg.value();
                     INFO("Loaded updated previous aggregates - portfolio_value: $" + std::to_string(previous_portfolio_value) +
@@ -2033,7 +2037,7 @@ int main(int argc, char* argv[]) {
         // Query daily commissions per symbol using LiveDataLoader
         std::unordered_map<std::string, double> symbol_commissions;
         try {
-            auto commission_result = data_loader->load_commissions_by_symbol("BASE_PORTFOLIO", now);
+            auto commission_result = data_loader->load_commissions_by_symbol(portfolio_id, now);
             if (commission_result.is_ok()) {
                 symbol_commissions = commission_result.value();
                 INFO("Loaded commissions for " + std::to_string(symbol_commissions.size()) + " symbols via LiveDataLoader");
