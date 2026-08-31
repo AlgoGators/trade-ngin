@@ -30,6 +30,7 @@
   },
   "live": {
     "historical_days": 730,
+    "data_staleness_tolerance_days": 4,
     "_note": "Must match backtest.lookback_years (2 yrs ≈ 730 days). Strategy needs 256+ trading days for longest EMA and 252 for vol_lookback_long."
   },
   "strategy_defaults": {
