@@ -103,8 +103,13 @@ struct DatabaseConfig {
 
 /**
  * @brief Execution configuration
+ *
+ * Named ExecutionSettingsConfig, not ExecutionConfig: the execution engine owns
+ * trade_ngin::ExecutionConfig (execution_engine.hpp). Two classes with one mangled
+ * name is an ODR violation — the linker folds their ctors/dtors and corrupts
+ * whichever object loses the coin toss.
  */
-struct ExecutionConfig {
+struct ExecutionSettingsConfig {
     double commission_rate{0.0005};
     double slippage_bps{1.0};
     double position_limit_backtest{1000.0};
@@ -188,6 +193,8 @@ struct StrategyDefaultsConfig {
     double min_strategy_allocation{0.1};
     bool use_optimization{true};
     bool use_risk_management{true};
+    double carver_buffer_floor{0.5};
+    double carver_buffer_position_factor{0.0};
 
     nlohmann::json to_json() const {
         nlohmann::json j;
@@ -200,6 +207,8 @@ struct StrategyDefaultsConfig {
         j["min_strategy_allocation"] = min_strategy_allocation;
         j["use_optimization"] = use_optimization;
         j["use_risk_management"] = use_risk_management;
+        j["carver_buffer_floor"] = carver_buffer_floor;
+        j["carver_buffer_position_factor"] = carver_buffer_position_factor;
         return j;
     }
 
@@ -218,6 +227,11 @@ struct StrategyDefaultsConfig {
             use_optimization = j.at("use_optimization").get<bool>();
         if (j.contains("use_risk_management"))
             use_risk_management = j.at("use_risk_management").get<bool>();
+        if (j.contains("carver_buffer_floor"))
+            carver_buffer_floor = j.at("carver_buffer_floor").get<double>();
+        if (j.contains("carver_buffer_position_factor"))
+            carver_buffer_position_factor =
+                j.at("carver_buffer_position_factor").get<double>();
     }
 };
 
@@ -242,7 +256,7 @@ struct AppConfig {
     DatabaseConfig database;
 
     // Execution configuration
-    ExecutionConfig execution;
+    ExecutionSettingsConfig execution;
 
     // Optimization configuration
     DynamicOptConfig opt_config;

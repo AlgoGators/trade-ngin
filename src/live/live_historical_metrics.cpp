@@ -133,6 +133,8 @@ HistoricalMetrics LiveHistoricalMetricsCalculator::calculate(
         } else if (r < 0.0) {
             metrics.losing_days += 1;
             sum_losses_abs += std::abs(r);
+        } else {
+            metrics.flat_days += 1;  // zero PnL = weekend / holiday / no-position day
         }
 
         if (r > metrics.best_day) {

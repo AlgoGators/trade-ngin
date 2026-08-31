@@ -836,8 +836,10 @@ Result<std::vector<Position>> LiveDataLoader::load_positions_for_export(
     return load_positions(strategy_id, portfolio_id, date);
 }
 
-// ========== Commission Methods ==========
-
+// Kept (not deleted as on the futures line): live_equity_mean_reversion.cpp calls this
+// for per-symbol commission reporting. FIXME(4.2): trading.executions has no "commission"
+// column today, so the query errors at runtime and the caller degrades to a WARN --
+// commission sourcing is reworked with the equity data layer.
 Result<std::unordered_map<std::string, double>> LiveDataLoader::load_commissions_by_symbol(
     const std::string& portfolio_id, const Timestamp& date) {
     auto validation = validate_connection();

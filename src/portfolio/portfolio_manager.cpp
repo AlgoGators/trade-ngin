@@ -160,7 +160,12 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
     std::vector<std::string> processed_strategies;
 
     try {
+        std::unordered_map<std::string, std::unordered_map<std::string, Position>> prev_positions;
         std::unordered_map<std::string, Position> prev_portfolio_positions;
+        // Chop-source attribution snapshots: integer position values at each pipeline phase,
+        // used at end of cycle to tag each integer transition with its trigger.
+        std::unordered_map<std::string, std::unordered_map<std::string, double>> attr_strategy_target;
+        std::unordered_map<std::string, std::unordered_map<std::string, double>> attr_post_qp;
         {
             std::lock_guard<std::mutex> lock(mutex_);
 
@@ -174,7 +179,17 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
             // Update historical returns for all symbols
             update_historical_returns(data);
 
-            // Store current portfolio positions to detect changes
+            // Store current positions for each strategy to detect changes
+            for (const auto& [id, info] : strategies_) {
+                prev_positions[id] = info.current_positions;
+            }
+
+            // Snapshot of aggregated portfolio positions, used only for the
+            // backward-compat portfolio-level execution diff below
+            // (recent_executions_, no production consumer). Returns the
+            // under-scaled view (Σ qᵢ × allocᵢ) — fine here because the
+            // matching post_opt computed downstream uses the same scale, so
+            // the diff is internally consistent.
             prev_portfolio_positions = get_positions_internal();
 
             // Process data through each strategy
@@ -188,9 +203,8 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                 }
 
                 try {
-                    // Store current positions
-                    info.current_positions = info.strategy->get_positions();
-
+                    // info.current_positions must persist as the optimizer's prior-cycle output
+                    // (anchor for its cost penalty); do not overwrite with strategy positions here.
                     std::ostringstream oss;
                     for (auto& [sym, pos] : info.current_positions) {
                         oss << sym << ": " << pos.quantity << ", ";
@@ -214,6 +228,11 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                     info.target_positions = info.strategy->get_target_positions();
                     DEBUG("Retrieved " + std::to_string(info.target_positions.size()) +
                           " target positions from strategy " + id);
+
+                    // Chop-source attribution: snapshot strategy's integer target before optimizer runs
+                    for (const auto& [sym, pos] : info.target_positions) {
+                        attr_strategy_target[id][sym] = static_cast<double>(pos.quantity);
+                    }
 
                     // STICKY_DEBUG: Trace average_price after get_target_positions
                     for (const auto& [sym, tpos] : info.target_positions) {
@@ -263,6 +282,15 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                     WARN("Exception during portfolio optimization in iteration " +
                          std::to_string(iteration) + ": " + std::string(e.what()) +
                          ", continuing without optimization");
+                }
+            }
+            // Chop-source attribution: snapshot first optimizer call output (before risk manager)
+            if (iteration == 1) {
+                std::lock_guard<std::mutex> lock(mutex_);
+                for (const auto& [id, info] : strategies_) {
+                    for (const auto& [sym, pos] : info.target_positions) {
+                        attr_post_qp[id][sym] = static_cast<double>(pos.quantity);
+                    }
                 }
             }
 
@@ -359,6 +387,41 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                 }
             }
 
+            // Chop-source attribution: classify each integer position transition for trades
+            // about to be generated (final integer != prev integer). Tags with which pipeline
+            // layer caused the change (strategy / QP / risk-scale / unclassified).
+            for (auto& [id, info] : strategies_) {
+                auto prev_it = prev_positions.find(id);
+                if (prev_it == prev_positions.end()) continue;
+                for (const auto& [sym, target_pos] : info.target_positions) {
+                    double final_q = std::round(static_cast<double>(target_pos.quantity));
+                    double prev_q = 0.0;
+                    auto pp = prev_it->second.find(sym);
+                    if (pp != prev_it->second.end()) {
+                        prev_q = std::round(static_cast<double>(pp->second.quantity));
+                    }
+                    if (std::abs(final_q - prev_q) < 0.5) continue;  // No trade
+
+                    double strat_q = std::round(attr_strategy_target[id][sym]);
+                    double qp_q = std::round(attr_post_qp[id][sym]);
+                    std::string source;
+                    if (std::abs(strat_q - prev_q) >= 0.5) {
+                        source = "STRATEGY_FLIP";
+                    } else if (std::abs(qp_q - strat_q) >= 0.5) {
+                        source = "QP_FLIP";
+                    } else if (std::abs(final_q - qp_q) >= 0.5) {
+                        source = "RISK_SCALE_FLIP";
+                    } else {
+                        source = "UNCLASSIFIED";
+                    }
+                    DEBUG("CHOP_SOURCE: symbol=" + sym + " source=" + source +
+                         " prev=" + std::to_string(prev_q) +
+                         " strat=" + std::to_string(strat_q) +
+                         " qp=" + std::to_string(qp_q) +
+                         " final=" + std::to_string(final_q));
+                }
+            }
+
             // CRITICAL FIX: Update current_positions with optimized/rounded target_positions
             // This ensures get_strategy_positions() returns integer positions, not fractional ones
             for (auto& [id, info] : strategies_) {
@@ -375,15 +438,12 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
             }
         }
 
-        // Get optimized positions (should be whole numbers after dynamic optimization)
+        // post_opt feeds the backward-compat portfolio-level executions loop
+        // below (recent_executions_). It returns under-scaled aggregated
+        // quantities (Σ qᵢ × allocᵢ); only used for diff-based execution
+        // synthesis that no production consumer reads. Broker executions are
+        // emitted per-strategy from info.target_positions.
         auto post_opt = get_portfolio_positions();
-        {
-            std::ostringstream oss3;
-            for (const auto& [symbol, pos] : post_opt) {
-                oss3 << symbol << ": " << pos.quantity << ", ";
-            }
-            DEBUG("Post-optimization positions: " + oss3.str());
-        }
 
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -419,34 +479,45 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                         ", target_positions size: " + std::to_string(info.target_positions.size()) +
                         ", existing executions: " + std::to_string(exec_counter));
 
-                    // Per-strategy filled-position ledger: the net position this
-                    // manager has actually traded into, accumulated from the
-                    // executions it generates. Sizing the next order as
-                    // (target - filled) is self-correcting -- a position that ever
-                    // desyncs from its target (e.g. a target the warmup left
-                    // unexecuted) gets traded back rather than stranded. Deliberately
-                    // NOT sourced from strategy get_positions(): that is not a
-                    // reliable actual-holdings record across strategy types
-                    // (trend-following never maintains its positions_ map).
-                    auto& strategy_filled = filled_positions_[strategy_id];
-                    INFO("Filled-position ledger for strategy " + strategy_id +
-                         " size: " + std::to_string(strategy_filled.size()));
+                    // Get previous positions for this strategy
+                    const auto& prev_strategy_positions = prev_positions[strategy_id];
+                    INFO("Previous positions for strategy " + strategy_id +
+                         " size: " + std::to_string(prev_strategy_positions.size()));
+
+                    // OPTION 3 ENHANCEMENT: Detect first post-warmup day by checking if no
+                    // executions have been generated yet (exec_counter == 0). On the first
+                    // post-warmup day, generate "establishment executions" for all non-zero
+                    // positions, even if they match previous positions. This ensures executions
+                    // show how we got to the positions, not just changes. With Option 3, positions
+                    // accumulate during warmup but executions are cleared, so exec_counter == 0
+                    // indicates first post-warmup day.
+                    bool is_first_post_warmup_day = (exec_counter == 0);
+                    bool should_generate_establishment_execs = is_first_post_warmup_day;
 
                     // Generate executions based on individual strategy position changes
                     for (const auto& [symbol, new_pos] : info.target_positions) {
                         double current_qty = 0.0;
-                        auto filled_it = strategy_filled.find(symbol);
-                        if (filled_it != strategy_filled.end()) {
-                            current_qty = filled_it->second;
+                        auto prev_pos_it = prev_strategy_positions.find(symbol);
+                        if (prev_pos_it != prev_strategy_positions.end()) {
+                            current_qty = static_cast<double>(prev_pos_it->second.quantity);
                         }
 
                         double new_qty = static_cast<double>(new_pos.quantity);
-                        double trade_size = new_qty - current_qty;
 
-                        // Trade whenever the target differs from what has actually
-                        // been filled. Establishing a position from flat is simply
-                        // current_qty == 0 and needs no special case.
-                        if (std::abs(trade_size) > 1e-6) {
+                        // Generate execution if:
+                        // 1. Position changed (normal case), OR
+                        // 2. This is first post-warmup day and position is non-zero (establishment
+                        // execution)
+                        bool position_changed = (std::abs(new_qty - current_qty) > 1e-6);
+                        bool is_establishment_exec =
+                            should_generate_establishment_execs && (std::abs(new_qty) > 1e-6);
+
+                        if (position_changed || is_establishment_exec) {
+                            // Calculate trade size
+                            // For establishment executions, use the full new_qty (we're
+                            // establishing the position) For normal changes, use the difference
+                            double trade_size =
+                                is_establishment_exec ? new_qty : (new_qty - current_qty);
                             Side side = trade_size > 0 ? Side::BUY : Side::SELL;
 
                             // Find latest price for symbol
@@ -494,11 +565,10 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                             // Add to strategy-specific executions
                             strategy_execs.push_back(exec);
                             exec_counter++;
-                            // Ledger now reflects the position we just traded into.
-                            strategy_filled[symbol] = new_qty;
+                            std::string exec_type = is_establishment_exec ? " [ESTABLISHMENT]" : "";
                             INFO("Generated execution for strategy " + strategy_id + ": " + symbol +
                                  " " + (side == Side::BUY ? "BUY" : "SELL") +
-                                 " qty=" + std::to_string(exec.filled_quantity));
+                                 " qty=" + std::to_string(exec.filled_quantity) + exec_type);
                         }
                     }
                     INFO("Total executions generated for strategy " + strategy_id + ": " +
@@ -608,7 +678,11 @@ std::vector<double> PortfolioManager::calculate_weights_per_contract(
             auto instrument = registry_->get_instrument(symbol);
             contract_size = instrument->get_multiplier();
 
-            // Get latest price from positions or market data
+            // Look up the symbol's average_price for weight-per-contract
+            // sizing. Reads price only — get_portfolio_positions() scales
+            // quantity by allocation but leaves average_price untouched, so
+            // safe here. Don't replicate this pattern for any field that
+            // depends on quantity.
             const auto& portfolio_positions = get_portfolio_positions();
             auto pos_it = portfolio_positions.find(symbol);
             if (pos_it != portfolio_positions.end()) {
@@ -941,6 +1015,19 @@ Result<void> PortfolioManager::optimize_positions() {
             current_weights.resize(symbols.size(), 0.0);
             target_weights.resize(symbols.size(), 0.0);
 
+            // PRE_OPTIMIZER_TRACE: log the optimizer's per-strategy current_positions size,
+            // to verify Fix #7 (PortfolioManager seeding) actually took effect. If empty here,
+            // optimizer's coord descent runs from a zero baseline (the source of daily churn).
+            for (const auto& [strat_id, info] : strategies_) {
+                if (!info.use_optimization)
+                    continue;
+                DEBUG("PRE_OPTIMIZER_TRACE: strat=" + strat_id +
+                     " current_positions_size=" +
+                     std::to_string(info.current_positions.size()) +
+                     " target_positions_size=" +
+                     std::to_string(info.target_positions.size()));
+            }
+
             for (size_t i = 0; i < symbols.size(); ++i) {
                 const std::string& symbol = symbols[i];
 
@@ -1122,8 +1209,25 @@ Result<void> PortfolioManager::apply_risk_management(const std::vector<Bar>& dat
 
         MarketData market_data = active_manager->create_market_data(risk_history_);
 
-        // Collect all positions
-        auto portfolio_positions = get_portfolio_positions();
+        // Collect aggregated portfolio positions for risk evaluation.
+        // Use simple per-strategy sum (Σ qᵢ) instead of get_portfolio_positions(),
+        // which scales by allocation a second time. Strategies size for their
+        // capital slice already, so the broker holds Σ qᵢ — that's what risk
+        // checks (VaR, gross leverage, correlation, jump) must operate on.
+        std::unordered_map<std::string, Position> portfolio_positions;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            for (const auto& [_, info] : strategies_) {
+                for (const auto& [symbol, pos] : info.target_positions) {
+                    auto it = portfolio_positions.find(symbol);
+                    if (it == portfolio_positions.end()) {
+                        portfolio_positions[symbol] = pos;
+                    } else {
+                        it->second.quantity += pos.quantity;
+                    }
+                }
+            }
+        }
 
         // Check if we have positions to process
         if (portfolio_positions.empty()) {
@@ -1316,12 +1420,6 @@ PortfolioManager::get_strategy_executions() const {
     return strategy_executions_;
 }
 
-void PortfolioManager::append_synthetic_execution(const std::string& strategy_id,
-                                                  const ExecutionReport& exec) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    strategy_executions_[strategy_id].push_back(exec);
-}
-
 void PortfolioManager::clear_execution_history() {
     std::lock_guard<std::mutex> lock(mutex_);
     // Only clear portfolio-level executions (recent_executions_)
@@ -1337,8 +1435,6 @@ void PortfolioManager::clear_all_executions() {
     // Used during warmup to ensure no executions from warmup period persist
     recent_executions_.clear();
     strategy_executions_.clear();
-    // Keep the filled-position ledger in lockstep with strategy_executions_.
-    filled_positions_.clear();
 }
 
 void PortfolioManager::update_cost_manager_market_data(const std::string& symbol, double volume,

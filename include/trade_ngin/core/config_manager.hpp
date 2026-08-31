@@ -186,7 +186,7 @@ private:
     std::filesystem::path config_path_;
     nlohmann::json config_;
     std::unordered_map<ConfigType, std::unique_ptr<ConfigValidator>> validators_;
-    mutable std::mutex mutex_;
+    mutable std::recursive_mutex mutex_;
 
     /**
      * @brief Path to credentials file
@@ -252,7 +252,7 @@ private:
 // Template implementation
 template <typename T>
 Result<T> ConfigManager::get_config(ConfigType component_type) const {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
 
     try {
         std::string component = get_component_name(component_type);

@@ -86,7 +86,7 @@ public:
         // Check for overflow using double precision
         double temp = static_cast<double>(value_) * static_cast<double>(other.value_);
         temp /= SCALE;
-        if (temp > INT64_MAX || temp < INT64_MIN) {
+        if (temp > static_cast<double>(INT64_MAX) || temp < static_cast<double>(INT64_MIN)) {
             throw std::overflow_error("Decimal multiplication overflow");
         }
         return Decimal(static_cast<int64_t>(temp));
@@ -99,7 +99,7 @@ public:
         // Use double precision for division
         double temp = static_cast<double>(value_) * SCALE;
         temp /= other.value_;
-        if (temp > INT64_MAX || temp < INT64_MIN) {
+        if (temp > static_cast<double>(INT64_MAX) || temp < static_cast<double>(INT64_MIN)) {
             throw std::overflow_error("Decimal division overflow");
         }
         return Decimal(static_cast<int64_t>(temp));
@@ -183,10 +183,18 @@ public:
 
     // String conversion
     std::string to_string() const {
-        int64_t integer_part = value_ / SCALE;
-        int64_t fractional_part = std::abs(value_ % SCALE);
+        // Format from the magnitude and prepend the sign explicitly so values
+        // in (-1, 0) keep their sign: value_ / SCALE truncates -0.5 to 0,
+        // which would otherwise print as "0.5".
+        bool negative = value_ < 0;
+        // Two's-complement negate in unsigned arithmetic; safe for INT64_MIN.
+        uint64_t magnitude = negative ? ~static_cast<uint64_t>(value_) + 1
+                                      : static_cast<uint64_t>(value_);
+        uint64_t integer_part = magnitude / SCALE;
+        uint64_t fractional_part = magnitude % SCALE;
 
-        std::string result = std::to_string(integer_part);
+        std::string result = negative ? "-" : "";
+        result += std::to_string(integer_part);
         if (fractional_part > 0) {
             std::string frac_str = std::to_string(fractional_part);
             // Pad with leading zeros

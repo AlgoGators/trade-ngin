@@ -141,14 +141,15 @@ int main() {
         auto symbols = symbols_result.value();
 
         if (symbols_result.is_ok()) {
-            for (const auto& symbol : symbols) {
-                if (symbol.find(".c.0") != std::string::npos ||
-                    symbol.find("MES.c.0") != std::string::npos ||
-                    symbol.find("ES.v.0") != std::string::npos) {
-                    symbols.erase(std::remove(symbols.begin(), symbols.end(), symbol),
-                                  symbols.end());
-                }
-            }
+            // Remove continuous contract variants (.c.0) and full-size ES
+            // Using remove_if to avoid undefined behavior from erase-during-iteration
+            symbols.erase(
+                std::remove_if(symbols.begin(), symbols.end(),
+                    [](const std::string& s) {
+                        return s.find(".c.0") != std::string::npos ||
+                               s == "ES.v.0";
+                    }),
+                symbols.end());
             config.strategy_config.symbols = symbols;
         } else {
             ERROR("Failed to get symbols: " + std::string(symbols_result.error()->what()));
@@ -257,10 +258,18 @@ int main() {
             return 1;
         }
 
-        // Normalize allocations to sum to 1.0
+        // Normalize allocations to sum to 1.0. If configured allocations sum
+        // to <1.0 (e.g. 0.6 + 0.3, expecting 10% idle), this loop silently
+        // rescales — partial deployment is not supported. Warn so operators
+        // can spot a config mistake.
         double total_allocation = 0.0;
         for (const auto& [_, alloc] : strategy_allocations) {
             total_allocation += alloc;
+        }
+        if (total_allocation > 0.0 && std::abs(total_allocation - 1.0) > 1e-6) {
+            WARN("Strategy allocations sum to " + std::to_string(total_allocation) +
+                 " (not 1.0); silently rescaling. Partial-capital deployment is not "
+                 "supported — adjust default_allocation values or accept full deployment.");
         }
         if (total_allocation > 0.0) {
             for (auto& [_, alloc] : strategy_allocations) {
@@ -308,7 +317,14 @@ int main() {
                     trend_config.weight = cfg.value("weight", 0.03);
                     trend_config.risk_target = cfg.value("risk_target", 0.15);  // Conservative default
                     trend_config.idm = cfg.value("idm", 2.5);
+                    trend_config.max_symbol_concentration =
+                        cfg.value("max_symbol_concentration", 0.15);
                     trend_config.use_position_buffering = cfg.value("use_position_buffering", true);
+                    trend_config.carver_buffer_floor = cfg.value(
+                        "carver_buffer_floor", app_config.strategy_defaults.carver_buffer_floor);
+                    trend_config.carver_buffer_position_factor =
+                        cfg.value("carver_buffer_position_factor",
+                                  app_config.strategy_defaults.carver_buffer_position_factor);
                     if (cfg.contains("ema_windows")) {
                         trend_config.ema_windows.clear();
                         for (const auto& window : cfg["ema_windows"]) {
@@ -334,8 +350,15 @@ int main() {
                     trend_config.weight = cfg.value("weight", 0.03);
                     trend_config.risk_target = cfg.value("risk_target", 0.20);  // Conservative default
                     trend_config.idm = cfg.value("idm", 2.5);
+                    trend_config.max_symbol_concentration =
+                        cfg.value("max_symbol_concentration", 0.15);
                     trend_config.use_position_buffering =
                         cfg.value("use_position_buffering", false);
+                    trend_config.carver_buffer_floor = cfg.value(
+                        "carver_buffer_floor", app_config.strategy_defaults.carver_buffer_floor);
+                    trend_config.carver_buffer_position_factor =
+                        cfg.value("carver_buffer_position_factor",
+                                  app_config.strategy_defaults.carver_buffer_position_factor);
                     if (cfg.contains("ema_windows")) {
                         trend_config.ema_windows.clear();
                         for (const auto& window : cfg["ema_windows"]) {

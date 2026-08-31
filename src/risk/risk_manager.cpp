@@ -141,7 +141,27 @@ Result<RiskResult> RiskManager::process_positions(
         result.leverage_multiplier =
             calculate_leverage_multiplier(market_data, weights, position_values, total_value, result);
 
-        // Recompute portfolio_var for reporting using volatility-only weights (WITHOUT multipliers)
+        // ─────────────────────────────────────────────────────────────────────
+        // portfolio_var — REPORTING FORM (this block).
+        //   Inputs : vol_weights = (signed qty × price) / gross of same.
+        //            Contract multiplier is intentionally NOT applied here, so
+        //            this weighting represents per-contract volatility exposure
+        //            rather than dollar-notional exposure.
+        //   Formula: σ = √(vol_weights' · Σ · vol_weights), Σ annualized.
+        //   Used by: email_sender HTML report, stdout "Volatility:" line,
+        //            JSON metrics written to disk, chart_generator inputs,
+        //            and the trading.live_results.portfolio_var DB column.
+        //   Not used for any sizing/gating decision — those use the gating
+        //   form set inside calculate_portfolio_multiplier(); see comment
+        //   there.
+        //
+        // The two forms can diverge when book composition is dominated by
+        // contracts whose price-to-multiplier ratio is very different from
+        // the rest (e.g. MBT, MNQ): vol_weights weighs them by spot price
+        // while gating weights weigh them by dollar notional.
+        // ─────────────────────────────────────────────────────────────────────
+        double gate_sigma = result.portfolio_var;  // captured before the overwrite below
+
         if (!market_data.covariance.empty() && !vol_weights.empty()) {
             double variance = 0.0;
             for (size_t i = 0; i < vol_weights.size(); ++i) {
@@ -150,6 +170,29 @@ Result<RiskResult> RiskManager::process_positions(
                 }
             }
             result.portfolio_var = variance > 0.0 ? std::sqrt(variance) : 0.0;
+        }
+
+        // Surface both forms each cycle so anyone investigating a divergence
+        // between the displayed "Volatility" and the gate's behavior can see
+        // them side-by-side along with the per-instrument weights and σᵢ.
+        DEBUG("VAR_DEBUG: gate_sigma=" + std::to_string(gate_sigma) +
+             " reported_sigma=" + std::to_string(result.portfolio_var) +
+             " var_limit=" + std::to_string(config_.var_limit) +
+             " portfolio_mult=" + std::to_string(result.portfolio_multiplier));
+        for (size_t i = 0; i < weights.size() && i < vol_weights.size(); ++i) {
+            if (std::abs(weights[i]) > 1e-9 || std::abs(vol_weights[i]) > 1e-9) {
+                double sigma_i = (i < market_data.covariance.size() &&
+                                  market_data.covariance[i][i] > 0.0)
+                                     ? std::sqrt(market_data.covariance[i][i])
+                                     : 0.0;
+                const std::string& sym = i < market_data.ordered_symbols.size()
+                                             ? market_data.ordered_symbols[i]
+                                             : std::string("?");
+                DEBUG("VAR_DEBUG:   " + sym +
+                     " w_true=" + std::to_string(weights[i]) +
+                     " w_vol=" + std::to_string(vol_weights[i]) +
+                     " sigma_i=" + std::to_string(sigma_i));
+            }
         }
 
         // Overall scale is minimum of all multipliers
@@ -232,7 +275,20 @@ double RiskManager::calculate_portfolio_multiplier(const MarketData& market_data
         }
     }
 
-    // Calculate portfolio variance: w' * Cov * w (single vectorized operation)
+    // ─────────────────────────────────────────────────────────────────────────
+    // portfolio_var — GATING FORM (this block).
+    //   Inputs : weights = (signed qty × price × contract_multiplier) / total
+    //            notional. This is the dollar-notional weighting of the book.
+    //   Formula: σ = √(weights' · Σ · weights), Σ annualized.
+    //   Used by: the var_limit check at the bottom of this function, which
+    //            returns min(1, var_limit / σ) as portfolio_multiplier and
+    //            feeds into recommended_scale (the multiplier applied to all
+    //            order sizes).
+    //   This value is stored in result.portfolio_var here, but is later
+    //   overwritten in process_positions() with the reporting form (which
+    //   uses different weights). The gate has already consumed the gating
+    //   form by the time the overwrite happens.
+    // ─────────────────────────────────────────────────────────────────────────
     double variance = w.transpose() * cov * w;
     result.portfolio_var = std::sqrt(std::max(0.0, variance));
 
@@ -257,6 +313,26 @@ double RiskManager::calculate_portfolio_multiplier(const MarketData& market_data
     return std::min(1.0, config_.var_limit / result.portfolio_var);
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════════
+// JUMP RISK MULTIPLIER — TWO IMPLEMENTATIONS COEXIST
+// ═══════════════════════════════════════════════════════════════════════════════════
+// VERSION B (PRODUCTION, called from process_positions):
+//   Per-bar 99th-percentile of |w·r| (weighted-sum absolute return) compared against
+//   jump_risk_limit (configured in risk.json). Empirically delivers Carver's intended
+//   risk-control behavior at our retail capital + long-short universe scale.
+//
+// VERSION A (ALTERNATIVE — calculate_jump_multiplier_carver_shock, NOT called):
+//   Carver-correct annualized portfolio σ under shocked (99th-pct rolling) stdevs vs
+//   jump_shock_threshold (Advanced Futures Trading Strategies, p.607-608).
+//   Theoretically more correct, but at our scale long/short cancellation keeps the
+//   shocked portfolio σ well below the threshold, so the multiplier essentially never
+//   fires. Preserved here as a reference implementation, not bit-rotted in git history.
+//
+// To switch back to Version A: change the call in process_positions() from
+// calculate_jump_multiplier(...) to calculate_jump_multiplier_carver_shock(...).
+// ═══════════════════════════════════════════════════════════════════════════════════
+
+// VERSION B — PRODUCTION
 double RiskManager::calculate_jump_multiplier(const MarketData& market_data,
                                               const std::vector<double>& weights,
                                               RiskResult& result) const {
@@ -279,6 +355,145 @@ double RiskManager::calculate_jump_multiplier(const MarketData& market_data,
     return std::min(1.0, config_.jump_risk_limit / result.jump_risk);
 }
 
+// VERSION A — ALTERNATIVE, NOT called from process_positions
+double RiskManager::calculate_jump_multiplier_carver_shock(const MarketData& market_data,
+                                                           const std::vector<double>& weights,
+                                                           RiskResult& result) const {
+    // Carver's jump risk multiplier (Advanced Futures Trading Strategies, p.607-608):
+    //   1. For each instrument, compute the 99th-percentile of historical rolling-window
+    //      standard deviations (the "shocked" stdev = worst-case vol regime per instrument).
+    //   2. Build covariance matrix Σ_jump using shocked stdevs on diagonal but original
+    //      correlations on off-diagonals.
+    //   3. Compute portfolio std under jump scenario: σ_jump = sqrt(w' × Σ_jump × w)
+    //   4. If σ_jump > jump_shock_threshold (default 0.75 = 3.75 × τ for τ=0.20),
+    //      scale by threshold / σ_jump.
+    if (weights.empty() || market_data.covariance.empty() || market_data.returns.empty()) {
+        result.jump_risk = 0.0;
+        return 1.0;
+    }
+
+    const size_t n = std::min(weights.size(), market_data.covariance.size());
+    if (n < 1) {
+        result.jump_risk = 0.0;
+        return 1.0;
+    }
+
+    try {
+        // Current per-instrument stdevs (annualized) from covariance diagonal
+        std::vector<double> current_stdevs(n);
+        for (size_t i = 0; i < n; ++i) {
+            current_stdevs[i] = std::sqrt(std::max(0.0, market_data.covariance[i][i]));
+        }
+
+        // Compute per-instrument 99th-percentile rolling stdev (the shocked stdev).
+        // Use a 22-day rolling window over historical returns (~1 trading month).
+        constexpr size_t window = 22;
+        constexpr double trading_days_per_year = 252.0;
+        const size_t T = market_data.returns.size();
+
+        std::vector<double> shocked_stdevs(n);
+        if (T < window + 1) {
+            // Not enough history for a meaningful 99th-percentile shock — fall back to
+            // current stdev × Carver's "extremely high" multiplier of 2.5x as a proxy.
+            for (size_t i = 0; i < n; ++i) {
+                shocked_stdevs[i] = current_stdevs[i] * 2.5;
+            }
+        } else {
+            for (size_t i = 0; i < n; ++i) {
+                std::vector<double> rolling_stdevs;
+                rolling_stdevs.reserve(T - window);
+                for (size_t t = window; t <= T; ++t) {
+                    double mean = 0.0;
+                    for (size_t k = t - window; k < t; ++k) {
+                        if (i < market_data.returns[k].size()) mean += market_data.returns[k][i];
+                    }
+                    mean /= static_cast<double>(window);
+                    double var = 0.0;
+                    for (size_t k = t - window; k < t; ++k) {
+                        if (i < market_data.returns[k].size()) {
+                            double d = market_data.returns[k][i] - mean;
+                            var += d * d;
+                        }
+                    }
+                    var /= static_cast<double>(window - 1);
+                    rolling_stdevs.push_back(std::sqrt(std::max(0.0, var)) *
+                                              std::sqrt(trading_days_per_year));
+                }
+                if (rolling_stdevs.empty()) {
+                    shocked_stdevs[i] = current_stdevs[i] * 2.5;
+                    continue;
+                }
+                std::sort(rolling_stdevs.begin(), rolling_stdevs.end());
+                size_t idx = static_cast<size_t>(rolling_stdevs.size() * 0.99);
+                if (idx >= rolling_stdevs.size()) idx = rolling_stdevs.size() - 1;
+                shocked_stdevs[i] = std::max(rolling_stdevs[idx], current_stdevs[i]);
+            }
+        }
+
+        // Build Σ_jump: diagonal = shocked_σ_i^2, off-diagonal = shocked_σ_i × shocked_σ_j × ρ_ij_current
+        // where ρ_ij_current = covariance[i][j] / (current_σ_i × current_σ_j).
+        Eigen::MatrixXd Sigma_jump(n, n);
+        for (size_t i = 0; i < n; ++i) {
+            for (size_t j = 0; j < n; ++j) {
+                if (i == j) {
+                    Sigma_jump(i, j) = shocked_stdevs[i] * shocked_stdevs[i];
+                } else {
+                    double rho = 0.0;
+                    if (current_stdevs[i] > 0 && current_stdevs[j] > 0) {
+                        rho = market_data.covariance[i][j] /
+                              (current_stdevs[i] * current_stdevs[j]);
+                        if (std::isnan(rho) || std::isinf(rho)) rho = 0.0;
+                        rho = std::max(-1.0, std::min(1.0, rho));
+                    }
+                    Sigma_jump(i, j) = shocked_stdevs[i] * shocked_stdevs[j] * rho;
+                }
+            }
+        }
+
+        // Portfolio std under jump scenario
+        Eigen::VectorXd w(n);
+        for (size_t i = 0; i < n; ++i) {
+            w(i) = weights[i];
+        }
+        double variance_jump = w.transpose() * Sigma_jump * w;
+        double risk_jump = std::sqrt(std::max(0.0, variance_jump));
+
+        result.jump_risk = risk_jump;
+        result.max_jump_risk = std::max(result.jump_risk, result.max_jump_risk);
+
+        // Scale down if jump portfolio risk exceeds threshold
+        if (risk_jump > config_.jump_shock_threshold && risk_jump > 0.0) {
+            return config_.jump_shock_threshold / risk_jump;
+        }
+
+        return 1.0;
+    } catch (const std::exception& e) {
+        ERROR("Exception in jump shock calculation: " + std::string(e.what()));
+        return 1.0;  // Safe default
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════════
+// CORRELATION RISK MULTIPLIER — TWO IMPLEMENTATIONS COEXIST
+// ═══════════════════════════════════════════════════════════════════════════════════
+// VERSION B (PRODUCTION, called from process_positions):
+//   max(|ρ_ij|) over all pairs vs max_correlation cap (configured in risk.json).
+//   Pre-Carver-compliant pair-wise cap. At our scale, this delivers Carver's intended
+//   risk-control behavior: scales positions down when broad pair-wise correlation
+//   regimes spike, while staying inactive in normal markets.
+//
+// VERSION A (ALTERNATIVE — calculate_correlation_multiplier_carver_shock, NOT called):
+//   Carver-correct portfolio σ under 99th-pct shocked correlations vs corr_shock_threshold
+//   (Advanced Futures Trading Strategies, p.610-614). Theoretically more rigorous, but
+//   at our scale long/short cancellation in the shocked portfolio σ keeps it well below
+//   the threshold — the multiplier essentially never fires. Preserved here as a
+//   reference implementation, not bit-rotted in git history.
+//
+// To switch back to Version A: change the call in process_positions() from
+// calculate_correlation_multiplier(...) to calculate_correlation_multiplier_carver_shock(...).
+// ═══════════════════════════════════════════════════════════════════════════════════
+
+// VERSION B — PRODUCTION
 double RiskManager::calculate_correlation_multiplier(const MarketData& market_data,
                                                      const std::vector<double>& weights,
                                                      RiskResult& result) const {
@@ -353,6 +568,96 @@ double RiskManager::calculate_correlation_multiplier(const MarketData& market_da
     }
 
     return 1.0;  // No scaling needed
+}
+
+// VERSION A — ALTERNATIVE, NOT called from process_positions
+double RiskManager::calculate_correlation_multiplier_carver_shock(const MarketData& market_data,
+                                                                  const std::vector<double>& weights,
+                                                                  RiskResult& result) const {
+    // Carver's correlation shock risk multiplier (Advanced Futures Trading Strategies, p.610-614):
+    //   1. Build a "shocked" correlation matrix where every off-diagonal entry equals the
+    //      99th-percentile of observed pair-wise correlations.
+    //   2. Compute portfolio standard deviation under this shocked matrix:
+    //        σ_shock = sqrt(w' × Σ_shock × w)
+    //   3. If σ_shock > corr_shock_threshold (default 0.65 = 3.25 × τ for τ=0.20),
+    //      scale positions by threshold / σ_shock.
+    if (weights.empty() || market_data.covariance.empty()) {
+        result.correlation_risk = 0.0;
+        return 1.0;
+    }
+
+    const size_t n = std::min(weights.size(), market_data.covariance.size());
+    if (n < 2) {
+        result.correlation_risk = 0.0;
+        return 1.0;
+    }
+
+    try {
+        // Per-instrument standard deviations from current covariance diagonal
+        std::vector<double> stdevs(n);
+        for (size_t i = 0; i < n; ++i) {
+            stdevs[i] = std::sqrt(std::max(0.0, market_data.covariance[i][i]));
+        }
+
+        // Collect absolute pair-wise correlations from the current covariance matrix
+        std::vector<double> abs_correlations;
+        abs_correlations.reserve(n * (n - 1) / 2);
+        for (size_t i = 0; i < n; ++i) {
+            if (stdevs[i] <= 0) continue;
+            for (size_t j = i + 1; j < n; ++j) {
+                if (stdevs[j] <= 0) continue;
+                double corr = market_data.covariance[i][j] / (stdevs[i] * stdevs[j]);
+                if (std::isnan(corr) || std::isinf(corr)) continue;
+                corr = std::max(-1.0, std::min(1.0, corr));
+                abs_correlations.push_back(std::abs(corr));
+            }
+        }
+
+        if (abs_correlations.empty()) {
+            result.correlation_risk = 0.0;
+            return 1.0;
+        }
+
+        // 99th percentile of pair-wise correlations = the shocked correlation value
+        std::sort(abs_correlations.begin(), abs_correlations.end());
+        size_t idx = static_cast<size_t>(abs_correlations.size() * 0.99);
+        if (idx >= abs_correlations.size()) idx = abs_correlations.size() - 1;
+        const double shocked_corr = abs_correlations[idx];
+
+        // Build shocked covariance matrix:
+        //   diagonal: σ_i^2 (unchanged)
+        //   off-diagonal: shocked_corr × σ_i × σ_j (worst-case correlation)
+        Eigen::MatrixXd Sigma_shock(n, n);
+        for (size_t i = 0; i < n; ++i) {
+            for (size_t j = 0; j < n; ++j) {
+                if (i == j) {
+                    Sigma_shock(i, j) = stdevs[i] * stdevs[i];
+                } else {
+                    Sigma_shock(i, j) = shocked_corr * stdevs[i] * stdevs[j];
+                }
+            }
+        }
+
+        // Portfolio standard deviation under the shocked correlation matrix
+        Eigen::VectorXd w(n);
+        for (size_t i = 0; i < n; ++i) {
+            w(i) = weights[i];
+        }
+        const double variance_shock = w.transpose() * Sigma_shock * w;
+        const double risk_shock = std::sqrt(std::max(0.0, variance_shock));
+
+        result.correlation_risk = risk_shock;
+
+        // Scale down if shocked portfolio risk exceeds Carver's threshold
+        if (risk_shock > config_.corr_shock_threshold && risk_shock > 0.0) {
+            return config_.corr_shock_threshold / risk_shock;
+        }
+
+        return 1.0;
+    } catch (const std::exception& e) {
+        ERROR("Exception in correlation shock calculation: " + std::string(e.what()));
+        return 1.0;  // Safe default
+    }
 }
 
 double RiskManager::calculate_leverage_multiplier(const MarketData& market_data,

@@ -54,6 +54,19 @@ ExecutionEngine::~ExecutionEngine() {
             }
         }
 
+        // Deactivate our MarketDataBus subscriptions: the engine-wide one from
+        // initialize() and any per-job ADAPTIVE_ ones a failed cancel left behind.
+        // The bus is a process-lifetime singleton; a subscription left active here
+        // holds a callback into this destroyed engine.
+        try {
+            (void)MarketDataBus::instance().unsubscribe("EXECUTION_ENGINE");
+            for (const auto& job_id : jobs_to_cancel) {
+                (void)MarketDataBus::instance().unsubscribe("ADAPTIVE_" + job_id);
+            }
+        } catch (const std::exception& e) {
+            std::cerr << "Exception during bus unsubscription: " << e.what() << std::endl;
+        }
+
         std::lock_guard<std::mutex> lock(mutex_);
         active_jobs_.clear();
 
@@ -262,7 +275,7 @@ Result<std::string> ExecutionEngine::submit_execution(const Order& order, Execut
 Result<void> ExecutionEngine::cancel_execution(const std::string& job_id) {
     INFO("Attempting to cancel execution job " << job_id);
 
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::mutex> lock(mutex_);
 
     auto it = active_jobs_.find(job_id);
     if (it == active_jobs_.end()) {
@@ -300,6 +313,11 @@ Result<void> ExecutionEngine::cancel_execution(const std::string& job_id) {
 
     // Remove from active jobs
     active_jobs_.erase(it);
+
+    // Release our lock before touching the bus: publish() invokes callbacks that
+    // take mutex_, so unsubscribing under it risks lock-order inversion.
+    lock.unlock();
+    (void)MarketDataBus::instance().unsubscribe("ADAPTIVE_" + job_id);
 
     INFO("Successfully cancelled execution job " << job_id);
     return Result<void>();

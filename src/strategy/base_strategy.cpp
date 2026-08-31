@@ -341,6 +341,16 @@ Result<void> BaseStrategy::update_position(const std::string& symbol, const Posi
     return Result<void>();
 }
 
+Result<void> BaseStrategy::seed_positions(
+    const std::unordered_map<std::string, Position>& positions) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    positions_ = positions;
+    INFO("Seeded " + std::to_string(positions.size()) +
+         " positions into strategy " + id_ +
+         " (anchors position buffer across process restart)");
+    return Result<void>();
+}
+
 Result<void> BaseStrategy::update_risk_limits(const RiskLimits& limits) {
     std::lock_guard<std::mutex> lock(mutex_);
     risk_limits_ = limits;

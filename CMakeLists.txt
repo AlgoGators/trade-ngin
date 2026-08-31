@@ -27,12 +27,21 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 
 # Output directories
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/bin/Debug")
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/bin/Release")
-set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/bin/Debug")
-set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/bin/Release")
-set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/bin/Debug")
-set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/bin/Release")
+# Multi-config generators (Visual Studio, Xcode) use the _DEBUG/_RELEASE variants.
+# Single-config generators (Unix Makefiles, Ninja) use the unsuffixed variables;
+# CMAKE_BUILD_TYPE is resolved at configure time so the path matches what the README expects.
+if(CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_DEBUG   "${CMAKE_BINARY_DIR}/bin/Debug")
+    set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/bin/Release")
+    set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_DEBUG   "${CMAKE_BINARY_DIR}/bin/Debug")
+    set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/bin/Release")
+    set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_DEBUG   "${CMAKE_BINARY_DIR}/bin/Debug")
+    set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/bin/Release")
+else()
+    set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/${CMAKE_BUILD_TYPE}")
+    set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/${CMAKE_BUILD_TYPE}")
+    set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/${CMAKE_BUILD_TYPE}")
+endif()
 
 # RPATH: executables and libtrade_ngin.dylib share an output directory, so
 # resolve @rpath next to the loading binary. Without this, the build picks up
@@ -69,7 +78,9 @@ set_target_properties(libpqxx::pqxx PROPERTIES
 
 link_directories(${PQXX_LIBRARY_DIRS})
 
-link_directories(/opt/homebrew/lib)
+
+# Include code coverage module if enabled
+include(cmake/CodeCoverage.cmake)
 
 # Add source files for the library
 set(TRADE_NGIN_SOURCES
@@ -159,6 +170,11 @@ set(TRADE_NGIN_SOURCES
 # Add library target
 add_library(trade_ngin SHARED ${TRADE_NGIN_SOURCES})
 
+ # Add test-specific compile definitions when building tests
+if(BUILD_TESTING)
+    target_compile_definitions(trade_ngin PRIVATE USE_DIRECT_DB_CONNECTION)
+endif()
+
 # Link against dependencies
 target_link_libraries(trade_ngin
     PUBLIC
@@ -184,6 +200,11 @@ target_include_directories(trade_ngin
         ${Arrow_INCLUDE_DIRS}
 )
 
+# Apply coverage flags if enabled
+if(ENABLE_COVERAGE)
+    add_coverage_target(trade_ngin)
+endif()
+
 # Enable testing
 enable_testing()
 
@@ -192,3 +213,6 @@ add_subdirectory(tests)
 
 # Add apps subdirectory
 add_subdirectory(apps)
+
+# Add benchmarks subdirectory (separate from tests; not in default test run)
+add_subdirectory(benchmarks)

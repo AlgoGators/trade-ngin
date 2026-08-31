@@ -1,0 +1,62 @@
+name: Live Trading Watchdog
+
+# Answers one question every weekday morning: did the trading engine actually
+# write anything?
+#
+# It exists because live trading stopped on 2026-05-05 and nothing noticed for
+# 81 days. The engine was failing nightly -- cron invoked a binary that does not
+# exist -- and logging the error inside the container where nothing surfaced it.
+#
+# This checks the OUTCOME rather than the process, so it catches every failure
+# mode at once: container down, cron dead, binary missing, credentials
+# unavailable, or the engine crashing mid-run.
+#
+# REQUIRES repo secrets: DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME.
+# (data-ngin already has these configured and verified working against the same
+# database -- the trading schema lives there too.)
+
+on:
+  schedule:
+    # 15:00 UTC = 11:00 ET, ~1.5h after the 09:30 ET scheduled run, so a slow
+    # run is not mistaken for a missing one.
+    - cron: "0 15 * * 1-5"
+  workflow_dispatch:
+  pull_request:
+    # Keep the staleness logic itself under test on any change to it.
+    paths:
+      - "scripts/check_live_trading.py"
+      - ".github/workflows/live-trading-watchdog.yml"
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  watchdog:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # Runs everywhere, including PRs from forks, since it needs no database.
+      - name: Self-test the staleness logic
+        run: python scripts/check_live_trading.py --self-test
+
+      - name: Install database dependencies
+        if: github.event_name != 'pull_request'
+        run: pip install psycopg2-binary requests
+
+      - name: Check that live trading is writing
+        if: github.event_name != 'pull_request'
+        env:
+          DB_HOST: ${{ secrets.DB_HOST }}
+          DB_PORT: ${{ secrets.DB_PORT }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPO: ${{ github.repository }}
+        run: python scripts/check_live_trading.py

@@ -28,7 +28,13 @@ PostgresDatabase::PostgresDatabase(std::string connection_string)
 }
 
 PostgresDatabase::~PostgresDatabase() {
-    disconnect();
+    try {
+        disconnect();
+    } catch (const std::exception& e) {
+        WARN("Exception in PostgresDatabase destructor: " + std::string(e.what()));
+    } catch (...) {
+        WARN("Unknown exception in PostgresDatabase destructor");
+    }
 }
 
 Result<void> PostgresDatabase::connect() {
@@ -2286,7 +2292,7 @@ Result<void> PostgresDatabase::store_trading_equity_curve(const std::string& str
         std::string query = "INSERT INTO " + table_name +
                             " (strategy_id, timestamp, equity, portfolio_id) "
                             "VALUES ($1, $2, $3, $4) "
-                            "ON CONFLICT (portfolio_id, strategy_id, timestamp) "
+                            "ON CONFLICT (portfolio_id, strategy_id, timestamp, portfolio_type) "
                             "DO UPDATE SET equity = EXCLUDED.equity";
 
         txn.exec(query, pqxx::params{strategy_id, format_timestamp(timestamp), equity, portfolio_id});
@@ -2320,7 +2326,7 @@ Result<void> PostgresDatabase::store_trading_equity_curve_batch(
             std::string query = "INSERT INTO " + table_name +
                                 " (strategy_id, timestamp, equity, portfolio_id) "
                                 "VALUES ($1, $2, $3, $4) "
-                                "ON CONFLICT (portfolio_id, strategy_id, timestamp) "
+                                "ON CONFLICT (portfolio_id, strategy_id, timestamp, portfolio_type) "
                                 "DO UPDATE SET equity = EXCLUDED.equity";
 
             txn.exec(query, pqxx::params{strategy_id, format_timestamp(timestamp), equity, portfolio_id});

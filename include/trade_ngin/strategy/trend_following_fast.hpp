@@ -23,6 +23,9 @@ struct TrendFollowingFastConfig {
     double idm{2.5};                    // Instrument diversification multiplier
     double max_symbol_concentration{0.15};  // Max % of gross exposure per symbol (15% default)
     bool use_position_buffering{false}; // Disable position buffering for more frequent trades
+    // Minimum buffer width in contracts; see TrendFollowingConfig for rationale. Set to 0.0 to disable.
+    double carver_buffer_floor{0.5};
+    double carver_buffer_position_factor{0.0};
     std::vector<std::pair<int, int>> ema_windows{
         // EMA window pairs for crossovers (faster/shorter lookback periods)
         {1, 4}, {2, 8}, {4, 16}, {8, 32}, {16, 64}};
@@ -200,12 +203,11 @@ private:
     std::shared_ptr<InstrumentRegistry> registry_;
 
     std::unordered_map<std::string, double> contract_size_cache_;
-    std::unordered_map<std::string, double> weight_cache_;
+    mutable std::unordered_map<std::string, double> weight_cache_;
 
     std::unordered_map<std::string, TrendFollowingFastInstrumentData> instrument_data_;
 
     // Previous day positions for PnL calculation
-    std::unordered_map<std::string, Position> previous_positions_;
 
     /**
      * @brief Calculate EWMA for a price series

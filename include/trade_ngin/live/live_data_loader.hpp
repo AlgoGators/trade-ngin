@@ -256,6 +256,11 @@ public:
      * @brief Load commissions grouped by symbol for a date
      * @param date Target date
      * @return Map of symbol to total commission or error
+     *
+     * Dead on the futures line (deleted there), but the equity live runner calls it
+     * for commission reporting. FIXME(4.2): trading.executions has no "commission"
+     * column today -- the query errors at runtime and callers degrade gracefully;
+     * commission sourcing is reworked with the equity data layer.
      */
     Result<std::unordered_map<std::string, double>> load_commissions_by_symbol(
         const std::string& portfolio_id, const Timestamp& date);

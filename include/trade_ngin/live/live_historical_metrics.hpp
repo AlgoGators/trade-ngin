@@ -24,7 +24,8 @@ struct HistoricalMetrics {
     // Day-level win/loss statistics
     int winning_days = 0;
     int losing_days = 0;
-    int total_days = 0;
+    int flat_days = 0;   // days with zero PnL — typically weekends + market holidays
+    int total_days = 0;  // = winning_days + losing_days + flat_days
     double win_rate = 0.0;  // %
     double avg_win = 0.0;   // average positive daily return, %
     double avg_loss = 0.0;  // abs(average negative daily return), %
