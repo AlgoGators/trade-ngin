@@ -47,6 +47,7 @@ set(TEST_SOURCES
     transaction_cost/test_spread_model.cpp
     transaction_cost/test_impact_model.cpp
     live/test_corp_actions_applier.cpp
+    live/test_corp_actions_effect_classes.cpp
     live/test_corp_actions_audit_log.cpp
     live/test_corp_actions_long_hold_total_return.cpp
     live/test_audit_log_cumulative_dividend.cpp
