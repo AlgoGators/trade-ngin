@@ -44,7 +44,10 @@ struct MeanReversionInstrumentData {
 
     // Position data
     double target_position = 0.0;
-    double entry_price = 0.0;
+    // NOTE: there is deliberately no entry_price here. One existed and had no writer
+    // anywhere in the tree, so every reader silently got 0.0. Cost basis lives on
+    // Position::average_price, which on_execution maintains and the corp-action applier
+    // adjusts; both the stop-loss and the unrealized-P&L persistence read it.
 
     // Volatility
     double current_volatility = 0.01;

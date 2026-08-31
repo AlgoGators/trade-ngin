@@ -171,10 +171,13 @@ Result<void> LivePnLManager::calculate_position_pnls(
         position_daily_pnl_[symbol] = daily_pnl;
         cumulative_daily_pnl_ += daily_pnl;
 
-        // Track unrealized PnL from cost basis (average_price)
+        // Track unrealized PnL from cost basis (average_price). Shared rule -- the
+        // equity runner persists per-row unrealized_pnl through the same function, so
+        // the aggregate here and the DB rows cannot drift apart.
         double avg_price = position.average_price.as_double();
         if (avg_price > 0.0 && quantity != 0.0) {
-            position_unrealized_pnl_[symbol] = quantity * (current_price - avg_price) * point_value;
+            position_unrealized_pnl_[symbol] =
+                unrealized_from_cost_basis(quantity, avg_price, current_price, point_value);
         }
 
         DEBUG("Position PnL for " + symbol +

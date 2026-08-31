@@ -1619,25 +1619,35 @@ int main(int argc, char* argv[]) {
 
             // For equities, track both realized and unrealized PnL
             validated_position.realized_pnl = position.realized_pnl;
-            // Calculate unrealized PnL using strategy's entry price (true cost basis)
+            // Unrealized P&L against the position's own cost basis.
+            //
+            // This used to read MeanReversionInstrumentData::entry_price, which has no
+            // writer anywhere in the tree -- it was always 0.0, so the guard below never
+            // passed and EVERY persisted trading.positions.unrealized_pnl was written as
+            // 0 while live_results.total_unrealized_pnl was nonzero: a guaranteed
+            // log-versus-DB mismatch. Position::average_price is the field that is
+            // actually maintained (mean_reversion.cpp names on_execution as its sole
+            // writer, and the stop-loss already reads it rather than entry_price), and it
+            // is corp-action adjusted, so it is the cost basis this belongs on.
+            //
+            // It is 0 for a position whose fill has not been processed yet, hence the
+            // guard; that case persists 0, as before.
             if (position.quantity.as_double() != 0.0) {
                 double current_price = 0.0;
                 auto price_it = previous_day_close_prices.find(symbol);
                 if (price_it != previous_day_close_prices.end()) {
                     current_price = price_it->second;
                 }
-                // Use strategy's entry price for accurate unrealized PnL
-                double entry_price = 0.0;
-                auto* inst_data = mr_strategy->get_instrument_data(symbol);
-                if (inst_data && inst_data->entry_price > 0.0) {
-                    entry_price = inst_data->entry_price;
-                }
-                if (current_price > 0.0 && entry_price > 0.0) {
-                    double unrealized = (current_price - entry_price) * position.quantity.as_double();
-                    validated_position.unrealized_pnl = Decimal(unrealized);
-                } else {
-                    validated_position.unrealized_pnl = Decimal(0.0);
-                }
+                // Same rule the live_results aggregate uses, so the row and the total
+                // cannot disagree. Equities are point_value 1. The mark check stays here
+                // because current_price is 0.0 when the symbol has no T-1 close, and
+                // measuring against 0 would book the whole notional as a gain.
+                validated_position.unrealized_pnl =
+                    current_price > 0.0
+                        ? Decimal(LivePnLManager::unrealized_from_cost_basis(
+                              position.quantity.as_double(),
+                              static_cast<double>(position.average_price), current_price))
+                        : Decimal(0.0);
             } else {
                 validated_position.unrealized_pnl = Decimal(0.0);
             }
