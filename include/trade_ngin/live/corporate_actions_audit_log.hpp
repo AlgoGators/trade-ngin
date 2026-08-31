@@ -15,13 +15,27 @@ namespace trade_ngin {
 /**
  * @brief On-disk dedup record for corp-action events applied to a strategy.
  *
- * Persists to `<state_dir>/applied_corp_actions.json` per strategy. Each
- * entry pins one (symbol, ex_date, action) tuple as "already applied" so
+ * Each entry pins one (symbol, ex_date, action) tuple as "already applied" so
  * the daily live app can re-run safely without double-adjusting positions.
  *
- * No DB dependency by design -- the Phase 4 scope constraint forbids new
- * schema. The audit's original dividend_ledger DB table is the natural
- * future home; this state file is a stand-in until that constraint lifts.
+ * TWO BACKINGS, AND ONLY ONE IS OPERATIONAL.
+ *
+ * The DB-backed constructor is what the live app uses, and the only one safe
+ * for deciding whether an event has been applied. trading.corp_action_applied
+ * (migration 002) survives the redeploys that used to wipe the state file, and
+ * it is the only backing that can bridge ticker renames: that bridge needs
+ * equities_data.ticker_aliases, which requires a database handle. A file-backed
+ * log therefore cannot tell that an event applied under AA is the same event now
+ * resurfacing under HWM, and would apply it a second time.
+ *
+ * The file backing survives for exactly two uses: importing a pre-existing
+ * applied_corp_actions.json once (migrate_state_file_to_db), and tests that
+ * exercise file semantics directly. bridges_renames() reports which backing is
+ * in force, and the live runner refuses to adjust positions without it.
+ *
+ * (Superseded note, kept for context: this class was originally file-only
+ * because the Phase 4 scope constraint forbade new schema. Migration 002 lifted
+ * that, and the DB table the audit originally asked for now exists.)
  *
  * File format:
  * {
@@ -168,6 +182,20 @@ private:
 
     /// True when constructed with a database handle.
     bool db_backed() const { return db_ != nullptr; }
+
+public:
+    /**
+     * @brief Whether this log can recognise an event across a ticker rename.
+     *
+     * Only the DB backing can: the bridge reads equities_data.ticker_aliases.
+     * A file-backed log answers is_applied() on the pre-rename symbol alone, so
+     * an event already applied under the old ticker is applied again under the
+     * new one -- quantity re-multiplied, cost basis re-rescaled, permanently.
+     * The live runner checks this before adjusting any position.
+     */
+    bool bridges_renames() const { return db_backed(); }
+
+private:
 
     /// Import a legacy state file into the DB when the DB has no rows yet.
     bool migrate_state_file_to_db();

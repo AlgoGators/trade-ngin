@@ -477,3 +477,21 @@ TEST(CorpActionRenameBridge, ReusedTickerRoutesEachEventToItsOwnEra) {
     // Cross-era leakage is the failure the date bound exists to prevent.
     EXPECT_FALSE(after.is_applied("BBT1", "2015-06-01", CorpActionType::DIVIDEND));
 }
+
+// Only the DB backing can bridge a rename, because the bridge reads
+// ticker_aliases. A file-backed log answers on the pre-rename symbol alone, so
+// the live runner refuses to adjust positions with one -- this pins the
+// distinction the runner checks.
+TEST(CorpActionRenameBridge, OnlyTheDatabaseBackingBridgesRenames) {
+    const auto state_dir = make_temp_state_dir("bridge_capability");
+
+    CorporateActionsAuditLog file_backed(state_dir.string());
+    EXPECT_FALSE(file_backed.bridges_renames())
+        << "a file-backed log has no alias source, so it cannot recognise an "
+           "event across a rename and must not be used for that decision";
+
+    auto db = std::make_shared<FakeDedupDatabase>();
+    CorporateActionsAuditLog db_backed(state_dir.string(), db, "EQUITY_MR_PORTFOLIO",
+                                       "LIVE_EQUITY_MEAN_REVERSION", "EQUITY_MEAN_REVERSION");
+    EXPECT_TRUE(db_backed.bridges_renames());
+}

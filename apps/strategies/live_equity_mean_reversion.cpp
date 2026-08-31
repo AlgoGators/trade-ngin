@@ -724,6 +724,17 @@ int main(int argc, char* argv[]) {
                                                   portfolio_id,
                                                   "LIVE_EQUITY_MEAN_REVERSION",
                                                   "EQUITY_MEAN_REVERSION");
+                // A file-backed log cannot consult ticker_aliases, so it cannot
+                // tell that an event applied under the old ticker is the one now
+                // resurfacing under the new one -- it would be applied twice.
+                // The runner is the point where that becomes position damage, so
+                // refuse here rather than trusting construction to stay correct.
+                if (!audit_log.bridges_renames()) {
+                    ERROR("Corp-action dedup log is not database-backed, so it cannot "
+                          "recognise events across a ticker rename and would re-apply "
+                          "them. Refusing to adjust positions.");
+                    return 1;
+                }
                 auto dedup_loaded = audit_log.load();
                 if (dedup_loaded.is_error()) {
                     // Abort rather than adjust positions against an unknown
