@@ -3,7 +3,9 @@
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <unordered_map>
 #include <utility>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
@@ -124,6 +126,50 @@ Result<bool> CorporateActionsAuditLog::load() {
                 dividend_events_.push_back(std::move(de));
             }
         }
+        // Rename bridge. Dedup rows are keyed to the symbol held when the event
+        // was applied, but the vendor migrates a renamed symbol's ENTIRE history
+        // to the new ticker -- verified in the live DB: AA carries 0 bars while
+        // HWM carries 6,703 back to 2000-01-03, dividends included. So once
+        // apply_renames re-keys a position, the same event resurfaces under the
+        // new ticker, and a dedup keyed to the old one would not match: the split
+        // would re-multiply the quantity, the dividend would re-rescale the cost
+        // basis, permanently and compounding. Mirror every entry under its
+        // current symbol so the check succeeds whichever side of a rename the
+        // run is on. Read-side only -- no rows are rewritten, so this is
+        // idempotent and cannot corrupt the record it protects.
+        auto aliases = db_->get_ticker_aliases();
+        if (aliases.is_error()) {
+            // Fail closed for the same reason the read above does: a missing
+            // alias map silently reopens the re-application path.
+            ERROR("CorporateActionsAuditLog: cannot read ticker aliases: " +
+                  std::string(aliases.error()->what()));
+            return make_error<bool>(ErrorCode::DATABASE_ERROR,
+                                    "cannot read ticker aliases for dedup rename bridge: " +
+                                        std::string(aliases.error()->what()),
+                                    "CorporateActionsAuditLog");
+        }
+        std::unordered_map<std::string, std::string> to_current;
+        for (const auto& a : aliases.value()) {
+            if (!a.historical_ticker.empty() && !a.current_symbol.empty() &&
+                a.historical_ticker != a.current_symbol) {
+                to_current[a.historical_ticker] = a.current_symbol;
+            }
+        }
+        if (!to_current.empty()) {
+            std::vector<AppliedKey> mirrors;
+            for (const auto& k : applied_) {
+                // Follow the chain (A->B->C), bounded so a cyclic map cannot spin.
+                std::string sym = std::get<0>(k);
+                for (int hop = 0; hop < 8; ++hop) {
+                    auto it = to_current.find(sym);
+                    if (it == to_current.end() || it->second == sym) break;
+                    sym = it->second;
+                    mirrors.emplace_back(sym, std::get<1>(k), std::get<2>(k));
+                }
+            }
+            for (auto& m : mirrors) applied_.insert(std::move(m));
+        }
+
         return Result<bool>(!existing.value().empty());
     }
 

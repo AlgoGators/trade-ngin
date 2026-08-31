@@ -58,8 +58,20 @@ public:
         return Result<void>();
     }
 
+    // The real load() consults ticker_aliases to bridge renames, so the mock
+    // must answer too. Empty by default: tests that care set `aliases`.
+    Result<std::vector<TickerAliasRow>> get_ticker_aliases() override {
+        if (alias_read_fails) {
+            return make_error<std::vector<TickerAliasRow>>(
+                ErrorCode::DATABASE_ERROR, "simulated alias read failure", "FakeDedupDatabase");
+        }
+        return Result<std::vector<TickerAliasRow>>(aliases);
+    }
+
     std::vector<AppliedCorpActionRow> rows;
     std::vector<std::string> row_names;
+    std::vector<TickerAliasRow> aliases;
+    bool alias_read_fails{false};
     int load_calls{0};
 };
 
@@ -344,4 +356,52 @@ TEST(CorpActionFailClosed, ReadFailureDoesNotYieldAnEmptyAppliedSet) {
         << "the empty set is exactly why the error must be propagated";
 
     std::filesystem::remove_all(state_dir);
+}
+
+// A symbol renamed between runs must not have its already-applied events
+// re-applied under the new ticker. The vendor migrates a renamed symbol's whole
+// history to the current ticker (AA has 0 bars; HWM carries 6,703 back to 2000),
+// so the event genuinely resurfaces under the new name -- only the dedup bridge
+// stops it being applied a second time.
+TEST(CorpActionRenameBridge, AppliedEventIsNotReAppliedUnderTheNewTicker) {
+    auto db = std::make_shared<FakeDedupDatabase>();
+    PostgresDatabase::TickerAliasRow alias;
+    alias.historical_ticker = "AA";
+    alias.current_symbol = "HWM";
+    alias.effective_until = "2016-11-01";
+    db->aliases.push_back(alias);
+
+    const auto state_dir = make_temp_state_dir("rename_bridge");
+    {
+        CorporateActionsAuditLog log(state_dir.string(), db, "EQUITY_MR_PORTFOLIO",
+                                     "LIVE_EQUITY_MEAN_REVERSION", "EQUITY_MEAN_REVERSION");
+        ASSERT_TRUE(log.load().is_ok());
+        log.record(make_dividend("AA", "2016-05-10", 100.0, 0.27));
+        ASSERT_TRUE(log.save());
+    }
+
+    // Next run: apply_renames has re-keyed the position AA -> HWM, and the bars
+    // now carry that same dividend under HWM.
+    CorporateActionsAuditLog after(state_dir.string(), db, "EQUITY_MR_PORTFOLIO",
+                                  "LIVE_EQUITY_MEAN_REVERSION", "EQUITY_MEAN_REVERSION");
+    ASSERT_TRUE(after.load().is_ok());
+    EXPECT_TRUE(after.is_applied("HWM", "2016-05-10", CorpActionType::DIVIDEND))
+        << "dividend applied under AA must be seen as applied under HWM; "
+           "otherwise it is applied twice and the cost basis is permanently wrong";
+    // The original key must still match, for a book that has not been re-keyed yet.
+    EXPECT_TRUE(after.is_applied("AA", "2016-05-10", CorpActionType::DIVIDEND));
+    // An unrelated symbol is unaffected.
+    EXPECT_FALSE(after.is_applied("MSFT", "2016-05-10", CorpActionType::DIVIDEND));
+}
+
+// The alias map is what stops re-application across a rename, so an unreadable
+// map must fail closed rather than silently dropping the bridge.
+TEST(CorpActionRenameBridge, UnreadableAliasMapFailsClosed) {
+    auto db = std::make_shared<FakeDedupDatabase>();
+    db->alias_read_fails = true;
+    const auto state_dir = make_temp_state_dir("alias_fail");
+    CorporateActionsAuditLog log(state_dir.string(), db, "EQUITY_MR_PORTFOLIO",
+                                 "LIVE_EQUITY_MEAN_REVERSION", "EQUITY_MEAN_REVERSION");
+    EXPECT_TRUE(log.load().is_error())
+        << "a missing alias map silently reopens the re-application path";
 }
