@@ -658,16 +658,25 @@ public:
     };
 
     /**
-     * @brief Load every corp action already applied for one portfolio+strategy.
+     * @brief Load every corp action already applied for one portfolio+strategy+name.
      *
      * Durable replacement for the applied_corp_actions.json state file, which
      * lived under a container path with no volume and so was lost on redeploy.
      * Loading everything is deliberate: the record is the strategy's lifetime
      * dedup set and is small (order thousands of rows even at full universe
      * scale), and cumulative dividend income is summed from it.
+     *
+     * strategy_name is part of the key, not decoration: one strategy_id can
+     * carry several names (the live runners build a combined id, so
+     * LIVE_TREND_FOLLOWING_TREND_FOLLOWING_FAST holds both TREND_FOLLOWING and
+     * TREND_FOLLOWING_FAST rows). Reading without it hands one strategy's
+     * applied events to another, which then skips its own adjustment and
+     * carries a permanently wrong cost basis, and sums dividend income across
+     * every name under the id.
      */
     virtual Result<std::vector<AppliedCorpActionRow>> load_applied_corp_actions(
-        const std::string& portfolio_id, const std::string& strategy_id);
+        const std::string& portfolio_id, const std::string& strategy_id,
+        const std::string& strategy_name);
 
     /**
      * @brief Record corp actions as applied. Idempotent per natural key.

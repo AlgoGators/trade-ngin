@@ -25,29 +25,41 @@ public:
     FakeDedupDatabase() : PostgresDatabase("mock://dedup") {}
 
     Result<std::vector<AppliedCorpActionRow>> load_applied_corp_actions(
-        const std::string&, const std::string&) override {
+        const std::string&, const std::string&, const std::string& strategy_name) override {
         ++load_calls;
-        return Result<std::vector<AppliedCorpActionRow>>(rows);
+        // Mirrors the real WHERE clause: rows are keyed by strategy_name too,
+        // so a load only sees what its own name wrote.
+        std::vector<AppliedCorpActionRow> mine;
+        for (size_t i = 0; i < rows.size(); ++i) {
+            if (row_names[i] == strategy_name) mine.push_back(rows[i]);
+        }
+        return Result<std::vector<AppliedCorpActionRow>>(mine);
     }
 
     Result<void> store_applied_corp_actions(
-        const std::string&, const std::string&, const std::string&,
+        const std::string&, const std::string&, const std::string& strategy_name,
         const std::vector<AppliedCorpActionRow>& incoming) override {
         for (const auto& r : incoming) {
             bool dup = false;
-            for (const auto& e : rows) {
-                if (e.symbol == r.symbol && e.ex_date == r.ex_date &&
-                    e.action_type == r.action_type) {
-                    dup = true;  // mirrors ON CONFLICT DO NOTHING
+            for (size_t i = 0; i < rows.size(); ++i) {
+                // ON CONFLICT covers strategy_name, so the same event under a
+                // different name is a distinct row, not a duplicate.
+                if (rows[i].symbol == r.symbol && rows[i].ex_date == r.ex_date &&
+                    rows[i].action_type == r.action_type && row_names[i] == strategy_name) {
+                    dup = true;
                     break;
                 }
             }
-            if (!dup) rows.push_back(r);
+            if (!dup) {
+                rows.push_back(r);
+                row_names.push_back(strategy_name);
+            }
         }
         return Result<void>();
     }
 
     std::vector<AppliedCorpActionRow> rows;
+    std::vector<std::string> row_names;
     int load_calls{0};
 };
 
@@ -98,6 +110,52 @@ TEST(CorpActionDedupDurability, SurvivesWipedStateDirectory) {
         << "dedup must survive loss of the state directory, or a wide lookback "
            "window re-applies every event in it";
     EXPECT_DOUBLE_EQ(after_redeploy.total_cumulative_dividend_income(), 27.0);
+}
+
+// Two strategies can share one strategy_id: the live runners build a combined
+// id, so LIVE_TREND_FOLLOWING_TREND_FOLLOWING_FAST carries both TREND_FOLLOWING
+// and TREND_FOLLOWING_FAST rows in trading.positions today. The dedup write has
+// always keyed on strategy_name; the read did not, so one strategy received the
+// other's applied events, skipped its own adjustment, and kept a permanently
+// wrong cost basis -- while dividend income summed across both names.
+TEST(CorpActionDedupDurability, OneStrategyDoesNotInheritAnothersAppliedEvents) {
+    auto db = std::make_shared<FakeDedupDatabase>();
+    const auto state_dir = make_temp_state_dir("names");
+
+    const std::string portfolio = "BASE_PORTFOLIO";
+    const std::string shared_id = "LIVE_TREND_FOLLOWING_TREND_FOLLOWING_FAST";
+
+    // Strategy A applies the event and records it.
+    {
+        CorporateActionsAuditLog a(state_dir.string(), db, portfolio, shared_id,
+                                   "TREND_FOLLOWING");
+        a.load();
+        a.record(make_dividend("AAPL", "2026-08-10", 100.0, 0.27));
+        ASSERT_TRUE(a.save());
+    }
+
+    // Strategy B shares the id but is a different strategy holding its own
+    // position. It must NOT see A's record.
+    CorporateActionsAuditLog b(state_dir.string(), db, portfolio, shared_id,
+                               "TREND_FOLLOWING_FAST");
+    b.load();
+    EXPECT_FALSE(b.is_applied("AAPL", "2026-08-10", CorpActionType::DIVIDEND))
+        << "reading the dedup record without strategy_name hands one strategy "
+           "another's applied events, so B skips its own adjustment and its "
+           "cost basis stays wrong for good";
+    EXPECT_DOUBLE_EQ(b.total_cumulative_dividend_income(), 0.0)
+        << "dividend income must not sum across every name under the id";
+
+    // And A still sees its own after B has written its own row.
+    b.record(make_dividend("AAPL", "2026-08-10", 50.0, 0.27));
+    ASSERT_TRUE(b.save());
+
+    CorporateActionsAuditLog a_again(state_dir.string(), db, portfolio, shared_id,
+                                     "TREND_FOLLOWING");
+    a_again.load();
+    EXPECT_TRUE(a_again.is_applied("AAPL", "2026-08-10", CorpActionType::DIVIDEND));
+    EXPECT_DOUBLE_EQ(a_again.total_cumulative_dividend_income(), 27.0)
+        << "A owns 100 shares at 0.27; B's 50-share row belongs to B alone";
 }
 
 // A legacy JSON file on a host upgrading to the DB-backed record must be

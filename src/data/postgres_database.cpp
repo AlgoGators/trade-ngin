@@ -2762,7 +2762,8 @@ PostgresDatabase::get_historical_closes(const std::vector<std::string>& symbols,
 
 Result<std::vector<PostgresDatabase::AppliedCorpActionRow>>
 PostgresDatabase::load_applied_corp_actions(const std::string& portfolio_id,
-                                            const std::string& strategy_id) {
+                                            const std::string& strategy_id,
+                                            const std::string& strategy_name) {
     using Rows = std::vector<AppliedCorpActionRow>;
 
     auto validation = validate_connection();
@@ -2774,15 +2775,18 @@ PostgresDatabase::load_applied_corp_actions(const std::string& portfolio_id,
         pqxx::work txn(*connection_);
         // Whole-history load: this is the strategy's lifetime dedup set and the
         // source for cumulative dividend income. Parameterised, and the PK
-        // (portfolio_id, strategy_id, ...) serves the prefix scan directly.
+        // (portfolio_id, strategy_id, strategy_name, ...) serves the prefix
+        // scan directly. strategy_name must match the write key: one
+        // strategy_id spans several names, and dropping it returns another
+        // strategy's applied events as if they were this one's.
         pqxx::result result = txn.exec_params(
             "SELECT symbol, action_type, ex_date::text AS ex_date, "
             "COALESCE(qty_held, 0) AS qty_held, "
             "COALESCE(dividend_per_share, 0) AS dividend_per_share, "
             "COALESCE(total_cash, 0) AS total_cash "
             "FROM trading.corp_action_applied "
-            "WHERE portfolio_id = $1 AND strategy_id = $2",
-            portfolio_id, strategy_id);
+            "WHERE portfolio_id = $1 AND strategy_id = $2 AND strategy_name = $3",
+            portfolio_id, strategy_id, strategy_name);
 
         Rows out;
         out.reserve(result.size());

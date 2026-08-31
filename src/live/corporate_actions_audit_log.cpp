@@ -93,7 +93,7 @@ bool CorporateActionsAuditLog::load() {
     if (db_backed()) {
         // Import any legacy file BEFORE reading, so a first DB-backed run on a
         // host that still has the old state file does not re-apply its events.
-        auto existing = db_->load_applied_corp_actions(portfolio_id_, strategy_id_);
+        auto existing = db_->load_applied_corp_actions(portfolio_id_, strategy_id_, strategy_name_);
         if (existing.is_error()) {
             // Fail closed: an unreadable dedup record must not be mistaken for
             // "nothing applied yet", which would re-apply the whole window.
@@ -102,7 +102,7 @@ bool CorporateActionsAuditLog::load() {
             return false;
         }
         if (existing.value().empty() && migrate_state_file_to_db()) {
-            existing = db_->load_applied_corp_actions(portfolio_id_, strategy_id_);
+            existing = db_->load_applied_corp_actions(portfolio_id_, strategy_id_, strategy_name_);
             if (existing.is_error()) {
                 ERROR("CorporateActionsAuditLog: re-read after import failed: " +
                       std::string(existing.error()->what()));
