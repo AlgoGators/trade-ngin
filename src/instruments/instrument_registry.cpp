@@ -30,6 +30,46 @@ Result<void> InstrumentRegistry::initialize(std::shared_ptr<PostgresDatabase> db
     return Result<void>();
 }
 
+Result<void> InstrumentRegistry::initialize_without_database() {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    db_ = nullptr;
+    initialized_ = true;
+
+    INFO("InstrumentRegistry initialized without a database connection");
+    return Result<void>();
+}
+
+Result<void> InstrumentRegistry::register_instrument(std::shared_ptr<Instrument> instrument) {
+    if (!instrument) {
+        return make_error<void>(ErrorCode::INVALID_ARGUMENT, "Instrument cannot be null",
+                                "InstrumentRegistry");
+    }
+
+    const std::string symbol = instrument->get_symbol();
+    if (symbol.empty()) {
+        return make_error<void>(ErrorCode::INVALID_ARGUMENT, "Instrument symbol cannot be empty",
+                                "InstrumentRegistry");
+    }
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    instruments_[symbol] = std::move(instrument);
+    initialized_ = true;
+
+    DEBUG("Registered instrument: " + symbol);
+    return Result<void>();
+}
+
+void InstrumentRegistry::clear() {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    instruments_.clear();
+    db_ = nullptr;
+    initialized_ = false;
+
+    INFO("InstrumentRegistry cleared");
+}
+
 std::shared_ptr<Instrument> InstrumentRegistry::get_instrument(const std::string& symbol) const {
     std::lock_guard<std::mutex> lock(mutex_);
 
@@ -109,6 +149,14 @@ Result<void> InstrumentRegistry::load_instruments() {
     if (!initialized_) {
         return make_error<void>(ErrorCode::NOT_INITIALIZED, "InstrumentRegistry not initialized",
                                 "InstrumentRegistry");
+    }
+
+    if (!db_) {
+        return make_error<void>(
+            ErrorCode::NOT_INITIALIZED,
+            "InstrumentRegistry has no database connection; instruments must be supplied via "
+            "register_instrument()",
+            "InstrumentRegistry");
     }
 
     try {

@@ -28,6 +28,22 @@ BaseStrategy::BaseStrategy(std::string id, StrategyConfig config,
     Logger::register_component("BaseStrategy");
 }
 
+BaseStrategy::BaseStrategy() : state_(StrategyState::INITIALIZED) {
+    // Default constructor for Python bindings
+    // Fields will be initialized in initialize_from_context()
+
+    // Initialize metadata
+    metadata_.id = id_;
+    metadata_.name = "Base Strategy";
+    metadata_.description = "Base strategy implementation";
+
+    // Initialize risk limits from config
+    risk_limits_.max_leverage = config_.max_leverage;
+    risk_limits_.max_drawdown = config_.max_drawdown;
+
+    Logger::register_component("BaseStrategy");
+}
+
 Result<void> BaseStrategy::initialize() {
     std::lock_guard<std::mutex> lock(mutex_);
 
@@ -43,10 +59,11 @@ Result<void> BaseStrategy::initialize() {
     }
 
     try {
-        // Initialize database connection if needed
+        // A database connection is optional: it is only used to persist
+        // signals and positions. A backtest driven by a custom MarketDataSource
+        // runs without one, and every db_ use below is null-guarded.
         if (!db_) {
-            return make_error<void>(ErrorCode::NOT_INITIALIZED,
-                                    "Database interface not initialized", "BaseStrategy");
+            INFO("No database connection; strategy results will not be persisted");
         }
 
         // Generate a unique component ID for this strategy
@@ -345,8 +362,7 @@ Result<void> BaseStrategy::seed_positions(
     const std::unordered_map<std::string, Position>& positions) {
     std::lock_guard<std::mutex> lock(mutex_);
     positions_ = positions;
-    INFO("Seeded " + std::to_string(positions.size()) +
-         " positions into strategy " + id_ +
+    INFO("Seeded " + std::to_string(positions.size()) + " positions into strategy " + id_ +
          " (anchors position buffer across process restart)");
     return Result<void>();
 }

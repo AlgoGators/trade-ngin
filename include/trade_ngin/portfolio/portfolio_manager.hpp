@@ -21,6 +21,7 @@
 #include "trade_ngin/strategy/strategy_interface.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
 #include "trade_ngin/transaction_cost/transaction_cost_manager.hpp"
+#include "trade_ngin/core/testing_access.hpp"
 
 namespace trade_ngin {
 
@@ -241,7 +242,7 @@ public:
         }
     }
 
-private:
+TESTING_PRIVATE:
     PortfolioConfig config_;
     std::string id_;
 

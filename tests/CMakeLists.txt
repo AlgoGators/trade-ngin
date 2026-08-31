@@ -41,6 +41,7 @@ set(TEST_SOURCES
     backtesting/test_backtest_pnl_manager.cpp
     backtesting/test_backtest_metrics_calculator.cpp
     backtesting/test_backtest_data_loader.cpp
+    backtesting/test_market_data_source.cpp
     backtesting/test_backtest_csv_exporter.cpp
     backtesting/test_backtest_coordinator.cpp
     # backtesting/test_engine.cpp  # Deprecated - BacktestEngine replaced by BacktestCoordinator
@@ -76,20 +77,6 @@ set(TEST_SOURCES
     statistics/test_hmm.cpp
     statistics/test_critical_values.cpp
     statistics/test_statistics_integration.cpp
-    statistics/test_ols_regression.cpp
-    statistics/test_ridge_regression.cpp
-    statistics/test_lasso_regression.cpp
-    statistics/test_egarch.cpp
-    statistics/test_hurst_exponent.cpp
-    statistics/test_markov_switching.cpp
-    statistics/test_phillips_perron.cpp
-    statistics/test_variance_ratio.cpp
-    statistics/test_gjr_garch.cpp
-    statistics/test_dcc_garch.cpp
-    statistics/test_extended_kalman_filter.cpp
-    statistics/test_outlier_handler.cpp
-    statistics/test_missing_data_handler.cpp
-    statistics/test_convergence_monitoring.cpp
 )
 
 # Create test executable

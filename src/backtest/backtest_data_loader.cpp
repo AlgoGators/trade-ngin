@@ -8,15 +8,16 @@ namespace trade_ngin {
 namespace backtest {
 
 BacktestDataLoader::BacktestDataLoader(std::shared_ptr<PostgresDatabase> db)
-    : db_(std::move(db)) {}
+    : source_(std::make_shared<PostgresMarketDataSource>(std::move(db))) {}
+
+BacktestDataLoader::BacktestDataLoader(std::shared_ptr<MarketDataSource> source)
+    : source_(std::move(source)) {}
 
 Result<std::vector<Bar>> BacktestDataLoader::load_market_data(const DataLoadConfig& config) {
-    // Ensure database connection
-    auto conn_result = ensure_connection();
-    if (conn_result.is_error()) {
+    if (!source_) {
         return make_error<std::vector<Bar>>(
-            conn_result.error()->code(),
-            conn_result.error()->what(),
+            ErrorCode::NOT_INITIALIZED,
+            "No market data source configured",
             "BacktestDataLoader");
     }
 
@@ -28,29 +29,20 @@ Result<std::vector<Bar>> BacktestDataLoader::load_market_data(const DataLoadConf
             "BacktestDataLoader");
     }
 
-    // Load market data in batches
-    std::vector<Bar> all_bars;
-    size_t batch_size = config.batch_size > 0 ? config.batch_size : 5;
+    // Delegate loading to the configured source. Batching and any provider
+    // specific conversion is the source's responsibility.
+    auto load_result = source_->load_bars(
+        config.symbols, config.start_date, config.end_date,
+        config.asset_class, config.data_freq);
 
-    for (size_t i = 0; i < config.symbols.size(); i += batch_size) {
-        // Create a batch of symbols
-        size_t end_idx = std::min(i + batch_size, config.symbols.size());
-        std::vector<std::string> symbol_batch(
-            config.symbols.begin() + i,
-            config.symbols.begin() + end_idx);
-
-        // Load this batch
-        auto batch_result = load_symbol_batch(symbol_batch, config);
-        if (batch_result.is_error()) {
-            WARN("Error loading data for symbols batch " + std::to_string(i) + "-" +
-                 std::to_string(end_idx) + ": " + batch_result.error()->what() +
-                 ". Continuing with other batches.");
-            continue;
-        }
-
-        auto& batch_bars = batch_result.value();
-        all_bars.insert(all_bars.end(), batch_bars.begin(), batch_bars.end());
+    if (load_result.is_error()) {
+        return make_error<std::vector<Bar>>(
+            load_result.error()->code(),
+            load_result.error()->what(),
+            "BacktestDataLoader");
     }
+
+    auto& all_bars = load_result.value();
 
     // Check for empty data
     if (all_bars.empty()) {
@@ -178,69 +170,6 @@ std::unordered_map<std::string, double> BacktestDataLoader::get_price_statistics
     }
 
     return stats;
-}
-
-Result<std::vector<Bar>> BacktestDataLoader::load_symbol_batch(
-    const std::vector<std::string>& symbols,
-    const DataLoadConfig& config) {
-    try {
-        auto result = db_->get_market_data(
-            symbols, config.start_date, config.end_date,
-            config.asset_class, config.data_freq, config.data_type);
-
-        if (result.is_error()) {
-            return make_error<std::vector<Bar>>(
-                result.error()->code(),
-                result.error()->what(),
-                "BacktestDataLoader");
-        }
-
-        auto arrow_table = result.value();
-        if (arrow_table->num_rows() == 0) {
-            return make_error<std::vector<Bar>>(
-                ErrorCode::DATA_NOT_FOUND,
-                "Market data query returned an empty table",
-                "BacktestDataLoader");
-        }
-
-        // Convert Arrow table to Bars
-        auto conversion_result = DataConversionUtils::arrow_table_to_bars(arrow_table);
-        if (conversion_result.is_error()) {
-            return make_error<std::vector<Bar>>(
-                conversion_result.error()->code(),
-                conversion_result.error()->what(),
-                "BacktestDataLoader");
-        }
-
-        return conversion_result;
-
-    } catch (const std::exception& e) {
-        return make_error<std::vector<Bar>>(
-            ErrorCode::UNKNOWN_ERROR,
-            std::string("Exception loading market data: ") + e.what(),
-            "BacktestDataLoader");
-    }
-}
-
-Result<void> BacktestDataLoader::ensure_connection() {
-    if (!db_) {
-        return make_error<void>(
-            ErrorCode::CONNECTION_ERROR,
-            "Database interface is null",
-            "BacktestDataLoader");
-    }
-
-    if (!db_->is_connected()) {
-        auto connect_result = db_->connect();
-        if (connect_result.is_error()) {
-            return make_error<void>(
-                connect_result.error()->code(),
-                "Failed to connect to database: " + std::string(connect_result.error()->what()),
-                "BacktestDataLoader");
-        }
-    }
-
-    return Result<void>();
 }
 
 } // namespace backtest

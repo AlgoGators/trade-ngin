@@ -42,6 +42,7 @@ struct BacktestCoordinatorConfig {
     bool store_trade_details = true;
     std::string portfolio_id = "BASE_PORTFOLIO";
     std::string csv_output_path = "apps/backtest/results";
+    bool export_csv = true;  // Disable for runs started from an arbitrary working directory
 };
 
 /**
@@ -65,8 +66,11 @@ private:
     // Configuration
     BacktestCoordinatorConfig config_;
 
-    // Shared database connection
+    // Shared database connection. Null for database-free runs.
     std::shared_ptr<PostgresDatabase> db_;
+
+    // Market data source. Wraps db_ unless one was injected explicitly.
+    std::shared_ptr<MarketDataSource> data_source_;
 
     // Reference to instrument registry
     InstrumentRegistry* registry_;
@@ -113,6 +117,33 @@ public:
         std::shared_ptr<PostgresDatabase> db,
         InstrumentRegistry* registry,
         const BacktestCoordinatorConfig& config = {});
+
+    /**
+     * @brief Constructor for a database-free backtest
+     * @param source Market data source to load bars from
+     * @param registry Reference to instrument registry
+     * @param config Configuration for the coordinator
+     *
+     * No database connection is used, so results are not persisted and
+     * instruments must have been registered on @p registry beforehand.
+     */
+    BacktestCoordinator(
+        std::shared_ptr<MarketDataSource> source,
+        InstrumentRegistry* registry,
+        const BacktestCoordinatorConfig& config = {});
+
+    /**
+     * @brief Constructor
+     *
+     * Disambiguates BacktestCoordinator(nullptr, ...), which would otherwise
+     * be an ambiguous call between the two shared_ptr overloads. Routes to the
+     * database overload so a null argument keeps reporting CONNECTION_ERROR.
+     */
+    BacktestCoordinator(
+        std::nullptr_t,
+        InstrumentRegistry* registry,
+        const BacktestCoordinatorConfig& config = {})
+        : BacktestCoordinator(std::shared_ptr<PostgresDatabase>{}, registry, config) {}
 
     /**
      * @brief Destructor

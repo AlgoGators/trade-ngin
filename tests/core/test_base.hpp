@@ -6,6 +6,7 @@
 #endif
 
 #include <gtest/gtest.h>
+#include "test_portability.hpp"
 #include "trade_ngin/core/state_manager.hpp"
 
 namespace trade_ngin {

@@ -1,6 +1,7 @@
 .env
 .vscode/
 build/
+build-mf/
 build_coverage/
 logs/
 config.json
@@ -40,3 +41,4 @@ config/defaults.json
 config/portfolios/conservative/portfolio.json
 config/portfolios/conservative/risk.json
 email.json
+/vcpkg_installed/vcpkg

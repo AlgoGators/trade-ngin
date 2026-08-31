@@ -27,9 +27,6 @@ public:
      */
     Result<void> fit(const Eigen::MatrixXd& observations);
 
-    Result<ConvergenceInfo> fit_with_diagnostics(const Eigen::MatrixXd& observations);
-    const ConvergenceInfo& get_convergence_info() const { return last_convergence_info_; }
-
     /**
      * @brief Decode most likely state sequence (Viterbi algorithm)
      * @param observations Matrix of observations
@@ -64,7 +61,6 @@ private:
     std::vector<Eigen::MatrixXd> covariances_; // Emission covariances
 
     bool initialized_{false};
-    ConvergenceInfo last_convergence_info_;
     mutable std::mutex mutex_;
 
     // Helper methods for Baum-Welch

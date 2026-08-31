@@ -6,6 +6,7 @@
 #include <unordered_map>
 #include "trade_ngin/core/types.hpp"
 #include "trade_ngin/core/error.hpp"
+#include "trade_ngin/data/market_data_source.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
 
 namespace trade_ngin {
@@ -20,21 +21,26 @@ struct DataLoadConfig {
     Timestamp end_date;
     AssetClass asset_class = AssetClass::FUTURES;
     DataFrequency data_freq = DataFrequency::DAILY;
+    // data_type and batch_size describe how a database-backed source queries.
+    // They are configured on PostgresMarketDataSource itself; a custom
+    // MarketDataSource decides for itself whether they mean anything.
     std::string data_type = "ohlcv";
     size_t batch_size = 5;  // Max symbols per batch query
 };
 
 /**
- * @brief Encapsulates PostgreSQL batch data loading for backtesting
+ * @brief Loads market data for a backtest from a MarketDataSource
  *
- * This class extracts the load_market_data() method from BacktestEngine
- * (lines 1909-2082). It provides:
- * - Batch loading of market data from database
+ * Provides:
+ * - Loading market data through the configured source
  * - Data quality validation
  * - Grouping bars by timestamp
  *
+ * The source is either a PostgresMarketDataSource wrapping a database
+ * connection, or any custom provider (CSV, pandas, a Python subclass).
+ *
  * Design principles:
- * - Stateless (only holds database reference)
+ * - Stateless (only holds the data source reference)
  * - Returns Result types for error handling
  * - No modification of external state
  */
@@ -43,8 +49,29 @@ public:
     /**
      * @brief Constructor
      * @param db Database connection
+     *
+     * Convenience overload that wraps @p db in a PostgresMarketDataSource.
      */
     explicit BacktestDataLoader(std::shared_ptr<PostgresDatabase> db);
+
+    /**
+     * @brief Constructor
+     * @param source Market data source to load bars from
+     *
+     * Allows any custom data provider (CSV, pandas, a Python subclass, ...)
+     * to feed the backtest without a database connection.
+     */
+    explicit BacktestDataLoader(std::shared_ptr<MarketDataSource> source);
+
+    /**
+     * @brief Constructor
+     *
+     * Disambiguates BacktestDataLoader(nullptr), which would otherwise be an
+     * ambiguous call between the two shared_ptr overloads. Routes to the
+     * database overload so a null argument keeps reporting CONNECTION_ERROR.
+     */
+    explicit BacktestDataLoader(std::nullptr_t)
+        : BacktestDataLoader(std::shared_ptr<PostgresDatabase>{}) {}
 
     ~BacktestDataLoader() = default;
 
@@ -103,19 +130,7 @@ public:
         const std::string& symbol) const;
 
 private:
-    std::shared_ptr<PostgresDatabase> db_;
-
-    /**
-     * @brief Load a batch of symbols
-     */
-    Result<std::vector<Bar>> load_symbol_batch(
-        const std::vector<std::string>& symbols,
-        const DataLoadConfig& config);
-
-    /**
-     * @brief Ensure database connection
-     */
-    Result<void> ensure_connection();
+    std::shared_ptr<MarketDataSource> source_;
 };
 
 } // namespace backtest

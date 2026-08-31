@@ -16,6 +16,10 @@
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/instruments/instrument_registry.hpp"
 
+// Undefine Windows macros that conflict with std::min/std::max
+#undef min
+#undef max
+
 namespace trade_ngin {
 
 // Global variables for curl email payload
@@ -26,7 +30,7 @@ size_t read_callback(char* buffer, size_t size, size_t nitems, void* userdata) {
     (void)userdata;
     size_t buffer_size = size * nitems;
     size_t remaining = g_email_payload.size() - g_payload_pos;
-    size_t copy_size = std::min(buffer_size, remaining);
+    size_t copy_size = std::min<size_t>(buffer_size, remaining);
 
     if (copy_size > 0) {
         std::memcpy(buffer, g_email_payload.c_str() + g_payload_pos, copy_size);
@@ -759,8 +763,8 @@ std::string EmailSender::generate_trading_report_body(
         // (returns no rows). Kept compiling for legacy / future use.
         const std::string chart_portfolio_id_legacy = "";
         // Generate equity curve chart
-        chart_base64_ = ChartGenerator::generate_equity_curve_chart(
-            db, "LIVE_TREND_FOLLOWING", chart_portfolio_id_legacy, 30);
+        chart_base64_ = ChartGenerator::generate_equity_curve_chart(db, "LIVE_TREND_FOLLOWING",
+                                                                    chart_portfolio_id_legacy, 30);
         if (!chart_base64_.empty()) {
             html << "<h3 style=\"margin-top: 20px; color: #333;\">Equity Curve</h3>\n";
             html << "<div style=\"width: 100%; max-width: 1000px; margin: 20px auto; text-align: "
@@ -773,9 +777,8 @@ std::string EmailSender::generate_trading_report_body(
 
         // Generate PnL by symbol chart - ONLY if show_yesterday_pnl is true
         if (show_yesterday_pnl) {
-            pnl_by_symbol_base64_ =
-                ChartGenerator::generate_pnl_by_symbol_chart(
-                    db, "LIVE_TREND_FOLLOWING", chart_portfolio_id_legacy, date);
+            pnl_by_symbol_base64_ = ChartGenerator::generate_pnl_by_symbol_chart(
+                db, "LIVE_TREND_FOLLOWING", chart_portfolio_id_legacy, date);
             if (!pnl_by_symbol_base64_.empty()) {
                 html << "<h3 style=\"margin-top: 20px; color: #333;\">Yesterday's PnL by "
                         "Symbol</h3>\n";
@@ -789,9 +792,8 @@ std::string EmailSender::generate_trading_report_body(
         }
 
         // Generate daily PnL chart
-        daily_pnl_base64_ =
-            ChartGenerator::generate_daily_pnl_chart(
-                db, "LIVE_TREND_FOLLOWING", chart_portfolio_id_legacy, date, 30);
+        daily_pnl_base64_ = ChartGenerator::generate_daily_pnl_chart(
+            db, "LIVE_TREND_FOLLOWING", chart_portfolio_id_legacy, date, 30);
         if (!daily_pnl_base64_.empty()) {
             html << "<h3 style=\"margin-top: 20px; color: #333;\">Daily PnL (Last 30 Days)</h3>\n";
             html << "<div style=\"width: 100%; max-width: 1000px; margin: 20px auto; text-align: "
@@ -879,8 +881,10 @@ std::string EmailSender::generate_trading_report_body(
         html << "<strong>Note:</strong> This strategy is based on daily OHLCV data. We currently "
                 "only provide data for the front-month contract.<br><br>\n";
         html << "All values reflect a trading start date of October 5th, 2025.<br><br>\n";
-        html << "As of March 1st, 2026, we expanded our tradeable universe by adding 6 new contracts: "
-                "ZT (2-Year T-Note), ZF (5-Year T-Note), 6A (Australian Dollar), 6L (Brazilian Real), "
+        html << "As of March 1st, 2026, we expanded our tradeable universe by adding 6 new "
+                "contracts: "
+                "ZT (2-Year T-Note), ZF (5-Year T-Note), 6A (Australian Dollar), 6L (Brazilian "
+                "Real), "
                 "HO (Heating Oil), and NG (Natural Gas).\n";
         html << "</div>\n";
     }
@@ -1907,7 +1911,8 @@ std::string EmailSender::format_symbols_table_for_positions(
                                [](unsigned char c) { return !(std::isalnum(c) || c == '/'); }),
                 b.end());
         if (!b.empty()) {
-            INFO("EmailSender: Position " + sym + " (qty=" + std::to_string(pos.quantity.as_double()) + ") -> normalized symbol: " + b);
+            INFO("EmailSender: Position " + sym + " (qty=" +
+                 std::to_string(pos.quantity.as_double()) + ") -> normalized symbol: " + b);
             base_syms.insert(b);
         }
     }
@@ -1915,7 +1920,8 @@ std::string EmailSender::format_symbols_table_for_positions(
     // Log all collected symbols
     std::ostringstream collected_syms;
     for (const auto& s : base_syms) {
-        if (!collected_syms.str().empty()) collected_syms << ", ";
+        if (!collected_syms.str().empty())
+            collected_syms << ", ";
         collected_syms << s;
     }
     INFO("EmailSender: Collected symbols for query: " + collected_syms.str());
@@ -2360,7 +2366,8 @@ std::string EmailSender::format_symbols_table_for_positions(
 
             std::string front_month = get_front_month_symbol(ib_sym, months, date);
             if (front_month.empty()) {
-                INFO("EmailSender: Front month calculation returned empty for " + ib_sym + " (" + months + ")");
+                INFO("EmailSender: Front month calculation returned empty for " + ib_sym + " (" +
+                     months + ")");
             } else {
                 INFO("EmailSender: Front month for " + ib_sym + " = " + front_month);
             }
@@ -2711,8 +2718,10 @@ std::string EmailSender::format_rollover_warning(
                                 expiry_date.tm_mday--;
                                 std::mktime(&expiry_date);
                             }
-                        } else if (symbol == "ZN" || symbol == "UB" || symbol == "ZT" || symbol == "ZF") {
-                            // Treasury futures: Last business day of month, then 7 business days before
+                        } else if (symbol == "ZN" || symbol == "UB" || symbol == "ZT" ||
+                                   symbol == "ZF") {
+                            // Treasury futures: Last business day of month, then 7 business days
+                            // before
                             expiry_date = get_last_day_of_month_local(disp_year, disp_month);
                             if (!is_business_day_local(expiry_date))
                                 expiry_date = get_previous_business_day_local(expiry_date);
@@ -2728,8 +2737,10 @@ std::string EmailSender::format_rollover_warning(
                         } else if (symbol == "6C") {
                             expiry_date = get_nth_weekday_local(disp_year, disp_month, 3, 3);
                             expiry_date = get_previous_business_day_local(expiry_date);
-                        } else if (symbol == "CL" || symbol == "HO" || symbol == "RB" || symbol == "NG") {
-                            // Energy futures: 3rd business day prior to 25th of month before contract month
+                        } else if (symbol == "CL" || symbol == "HO" || symbol == "RB" ||
+                                   symbol == "NG") {
+                            // Energy futures: 3rd business day prior to 25th of month before
+                            // contract month
                             expiry_date.tm_year = disp_year - 1900;
                             expiry_date.tm_mon = disp_month - 2;  // Month before contract month
                             if (expiry_date.tm_mon < 0) {
@@ -3751,8 +3762,8 @@ std::string EmailSender::generate_trading_report_body(
         const std::string& chart_portfolio_id = portfolio_name;
 
         // Generate equity curve chart
-        chart_base64_ = ChartGenerator::generate_equity_curve_chart(
-            db, "LIVE_TREND_FOLLOWING", chart_portfolio_id, 30);
+        chart_base64_ = ChartGenerator::generate_equity_curve_chart(db, "LIVE_TREND_FOLLOWING",
+                                                                    chart_portfolio_id, 30);
         if (!chart_base64_.empty()) {
             html << "<h3 style=\"margin-top: 20px; color: #333;\">Equity Curve</h3>\n";
             html << "<div style=\"width: 100%; max-width: 1000px; margin: 20px auto; text-align: "
@@ -3780,8 +3791,8 @@ std::string EmailSender::generate_trading_report_body(
         }
 
         // Generate daily PnL chart
-        daily_pnl_base64_ = ChartGenerator::generate_daily_pnl_chart(
-            db, "LIVE_TREND_FOLLOWING", chart_portfolio_id, date, 30);
+        daily_pnl_base64_ = ChartGenerator::generate_daily_pnl_chart(db, "LIVE_TREND_FOLLOWING",
+                                                                     chart_portfolio_id, date, 30);
         if (!daily_pnl_base64_.empty()) {
             html << "<h3 style=\"margin-top: 20px; color: #333;\">Daily PnL (Last 30 Days)</h3>\n";
             html << "<div style=\"width: 100%; max-width: 1000px; margin: 20px auto; text-align: "
@@ -3867,8 +3878,10 @@ std::string EmailSender::generate_trading_report_body(
         html << "<strong>Note:</strong> This strategy is based on daily OHLCV data. We currently "
                 "only provide data for the front-month contract.<br><br>\n";
         html << "All values reflect a trading start date of October 5th, 2025.<br><br>\n";
-        html << "As of March 1st, 2026, we expanded our tradeable universe by adding 6 new contracts: "
-                "ZT (2-Year T-Note), ZF (5-Year T-Note), 6A (Australian Dollar), 6L (Brazilian Real), "
+        html << "As of March 1st, 2026, we expanded our tradeable universe by adding 6 new "
+                "contracts: "
+                "ZT (2-Year T-Note), ZF (5-Year T-Note), 6A (Australian Dollar), 6L (Brazilian "
+                "Real), "
                 "HO (Heating Oil), and NG (Natural Gas).\n";
         html << "</div>\n";
     }

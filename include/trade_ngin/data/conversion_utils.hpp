@@ -7,6 +7,7 @@
 #include <vector>
 #include "trade_ngin/core/error.hpp"
 #include "trade_ngin/core/types.hpp"
+#include "trade_ngin/core/testing_access.hpp"
 
 namespace trade_ngin {
 
@@ -19,7 +20,7 @@ public:
      */
     static Result<std::vector<Bar>> arrow_table_to_bars(const std::shared_ptr<arrow::Table>& table);
 
-private:
+TESTING_PRIVATE:
     /**
      * @brief Extract timestamp from Arrow array
      * @param array Arrow array containing timestamps

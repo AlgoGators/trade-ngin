@@ -16,12 +16,12 @@ namespace trade_ngin {
  * @brief Configuration specific to trend following strategy
  */
 struct TrendFollowingConfig {
-    double weight{1.0};                 // Weight for position sizing
-    double risk_target{0.2};            // Target annualized risk level
-    double fx_rate{1.0};                // FX conversion rate
-    double idm{2.5};                    // Instrument diversification multiplier
+    double weight{1.0};                    // Weight for position sizing
+    double risk_target{0.2};                // Target annualized risk level
+    double fx_rate{1.0};                    // FX conversion rate
+    double idm{2.5};                        // Instrument diversification multiplier
     double max_symbol_concentration{0.15};  // Max % of gross exposure per symbol (15% default)
-    bool use_position_buffering{true};  // Whether to use position buffers to reduce trading
+    bool use_position_buffering{true};      // Whether to use position buffers to reduce trading
     // Minimum buffer width in contracts. Carver formula yields 0.02-0.28 for micros, which is
     // sub-tick and a no-op for integer positions. 0.5 is the smallest value that can absorb a
     // breach for typical 0-3 contract holdings; set to 0.0 to disable.
@@ -33,9 +33,9 @@ struct TrendFollowingConfig {
     std::vector<std::pair<int, int>> ema_windows{
         // EMA window pairs for crossovers
         {2, 8}, {4, 16}, {8, 32}, {16, 64}, {32, 128}, {64, 256}};
-    int vol_lookback_short{32};   // Short lookback for volatility calculation
+    int vol_lookback_short{32};  // Short lookback for volatility calculation
     int vol_lookback_long{2520};  // Long lookback for volatility calculation
-    size_t max_history_size{0};   // 0 = auto-compute from vol_lookback_long
+    size_t max_history_size{0};  // 0 = auto-compute from vol_lookback_long
     std::vector<std::pair<int, double>> fdm{{1, 1.0},  {2, 1.03}, {3, 1.08},
                                             {4, 1.13}, {5, 1.19}, {6, 1.26}};
 };
@@ -185,7 +185,8 @@ public:
      * @param windows Vector of EMA window sizes to calculate
      * @return Map of window sizes to EMA values
      */
-    std::unordered_map<int, double> get_ema_values(const std::string& symbol, const std::vector<int>& windows) const;
+    std::unordered_map<int, double> get_ema_values(const std::string& symbol,
+                                                   const std::vector<int>& windows) const;
 
     /**
      * @brief Get the maximum required lookback period for this strategy

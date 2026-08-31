@@ -21,9 +21,7 @@
 #include "trade_ngin/core/types.hpp"
 #include "../core/test_base.hpp"
 
-#define private public
 #include "trade_ngin/risk/risk_manager.hpp"
-#undef private
 
 using namespace trade_ngin;
 using namespace trade_ngin::testing;

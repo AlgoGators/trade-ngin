@@ -44,7 +44,12 @@ jobs:
           echo "Running clang-tidy static analysis..."
           mkdir -p build
           cd build
+          # -DBUILD_PYTHON_WRAPPER=OFF: the wrapper needs the extern/pybind11
+          # submodule, which this pipeline does not check out, and Python dev
+          # headers, which the CI image does not ship. The wrapper is built by
+          # pypi-deploy.yml, which does check out submodules.
           cmake .. -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            -DBUILD_PYTHON_WRAPPER=OFF \
             -DNLopt_DIR=/usr/lib/x86_64-linux-gnu/cmake/nlopt
 
           # Run clang-tidy on all source files and output to report
@@ -242,7 +247,17 @@ jobs:
         run: |
           mkdir -p build
           cd build
+          # See the lint job for why the Python wrapper is off here.
+          #
+          # -DBUILD_TESTING=ON is required here. This branch introduced
+          # `option(BUILD_TESTING "Build tests" OFF)` so the wheel build could
+          # skip GTest, but nothing turned it back on for CI -- so the tests
+          # were never compiled, ctest ran an empty suite and exited 0, and
+          # the only step that noticed was lcov, failing with "no .gcda files".
           cmake .. \
+            -DBUILD_TESTING=ON \
+            -DBUILD_PYTHON_WRAPPER=OFF \
+            -DTRADE_NGIN_PREFER_STATIC_ARROW=OFF \
             -DCMAKE_BUILD_TYPE=${{ matrix.build-type }} \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
             -DCMAKE_CXX_COMPILER=${{ matrix.build-type == 'Debug' && 'g++' || 'g++' }} \

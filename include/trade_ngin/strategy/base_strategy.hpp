@@ -200,6 +200,11 @@ public:
      */
     Result<void> transition_state(StrategyState new_state);
 
+    /**
+     * @brief Default constructor for Python bindings (initializes with default values)
+     */
+    BaseStrategy();
+
 protected:
     // Protected methods for derived classes
     virtual Result<void> validate_config() const;
