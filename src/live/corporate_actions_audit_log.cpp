@@ -1,5 +1,6 @@
 #include "trade_ngin/live/corporate_actions_audit_log.hpp"
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -148,23 +149,51 @@ Result<bool> CorporateActionsAuditLog::load() {
                                         std::string(aliases.error()->what()),
                                     "CorporateActionsAuditLog");
         }
-        std::unordered_map<std::string, std::string> to_current;
+        // effective_until is the date the rename took effect, so a ticker maps
+        // to its successor only for events dated on or before it. Tickers ARE
+        // reused: 33 historical_tickers in the live table carry two or more
+        // successors (BBT -> BBT1 until 1998-12-10, and BBT -> TFC until
+        // 2019-12-10). Keying a plain map on historical_ticker alone therefore
+        // both picks an arbitrary winner and can mirror a later company's event
+        // onto an unrelated symbol -- masking a genuine event that shares the
+        // ex_date and action, which skips its adjustment and leaves the basis
+        // wrong in the opposite direction. Resolve per event date instead.
+        std::unordered_map<std::string, std::vector<std::pair<std::string, std::string>>> renames;
         for (const auto& a : aliases.value()) {
             if (!a.historical_ticker.empty() && !a.current_symbol.empty() &&
-                a.historical_ticker != a.current_symbol) {
-                to_current[a.historical_ticker] = a.current_symbol;
+                !a.effective_until.empty() && a.historical_ticker != a.current_symbol) {
+                renames[a.historical_ticker].emplace_back(a.effective_until, a.current_symbol);
             }
         }
-        if (!to_current.empty()) {
+        // Ascending by date; ISO YYYY-MM-DD compares lexicographically.
+        for (auto& entry : renames) {
+            std::sort(entry.second.begin(), entry.second.end());
+        }
+
+        // The successor a symbol had at ex_date: the first rename on or after
+        // that date. An event later than every rename belongs to whoever holds
+        // the ticker now, not to the old company, so it maps nowhere.
+        auto successor_at = [&renames](const std::string& sym,
+                                       const std::string& ex_date) -> std::string {
+            auto it = renames.find(sym);
+            if (it == renames.end()) return {};
+            for (const auto& [effective_until, current_symbol] : it->second) {
+                if (ex_date <= effective_until) return current_symbol;
+            }
+            return {};
+        };
+
+        if (!renames.empty()) {
             std::vector<AppliedKey> mirrors;
             for (const auto& k : applied_) {
                 // Follow the chain (A->B->C), bounded so a cyclic map cannot spin.
                 std::string sym = std::get<0>(k);
+                const std::string& ex_date = std::get<1>(k);
                 for (int hop = 0; hop < 8; ++hop) {
-                    auto it = to_current.find(sym);
-                    if (it == to_current.end() || it->second == sym) break;
-                    sym = it->second;
-                    mirrors.emplace_back(sym, std::get<1>(k), std::get<2>(k));
+                    std::string next = successor_at(sym, ex_date);
+                    if (next.empty() || next == sym) break;
+                    sym = next;
+                    mirrors.emplace_back(sym, ex_date, std::get<2>(k));
                 }
             }
             for (auto& m : mirrors) applied_.insert(std::move(m));

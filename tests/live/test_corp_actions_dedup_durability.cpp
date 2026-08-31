@@ -405,3 +405,75 @@ TEST(CorpActionRenameBridge, UnreadableAliasMapFailsClosed) {
     EXPECT_TRUE(log.load().is_error())
         << "a missing alias map silently reopens the re-application path";
 }
+
+// effective_until is the rename DATE, so an event maps to the successor only
+// when it predates the rename. Tickers are reused -- 33 historical_tickers in
+// the live table carry two or more successors -- so mirroring without that
+// bound both picks an arbitrary winner and can mask a genuine event on the
+// unrelated company that now holds the ticker.
+TEST(CorpActionRenameBridge, EventAfterTheRenameIsNotMirrored) {
+    auto db = std::make_shared<FakeDedupDatabase>();
+    PostgresDatabase::TickerAliasRow alias;
+    alias.historical_ticker = "AA";
+    alias.current_symbol = "HWM";
+    alias.effective_until = "2016-11-01";
+    db->aliases.push_back(alias);
+
+    const auto state_dir = make_temp_state_dir("rename_after");
+    {
+        CorporateActionsAuditLog log(state_dir.string(), db, "EQUITY_MR_PORTFOLIO",
+                                     "LIVE_EQUITY_MEAN_REVERSION", "EQUITY_MEAN_REVERSION");
+        ASSERT_TRUE(log.load().is_ok());
+        // Dated AFTER the rename: at this point "AA" is whoever was reassigned
+        // the ticker, a different company from the one that became HWM.
+        log.record(make_dividend("AA", "2020-05-10", 100.0, 0.27));
+        ASSERT_TRUE(log.save());
+    }
+
+    CorporateActionsAuditLog after(state_dir.string(), db, "EQUITY_MR_PORTFOLIO",
+                                   "LIVE_EQUITY_MEAN_REVERSION", "EQUITY_MEAN_REVERSION");
+    ASSERT_TRUE(after.load().is_ok());
+    EXPECT_TRUE(after.is_applied("AA", "2020-05-10", CorpActionType::DIVIDEND));
+    EXPECT_FALSE(after.is_applied("HWM", "2020-05-10", CorpActionType::DIVIDEND))
+        << "an event dated after the rename belongs to the reused ticker, not to "
+           "the successor; mirroring it would mask a genuine HWM event sharing "
+           "that ex_date and action, skipping its adjustment entirely";
+}
+
+// A reused ticker with two successors must route each event to the company that
+// held it at the time, not to whichever alias row happened to be read last.
+TEST(CorpActionRenameBridge, ReusedTickerRoutesEachEventToItsOwnEra) {
+    auto db = std::make_shared<FakeDedupDatabase>();
+    PostgresDatabase::TickerAliasRow first;
+    first.historical_ticker = "BBT";
+    first.current_symbol = "BBT1";
+    first.effective_until = "1998-12-10";
+    PostgresDatabase::TickerAliasRow second;
+    second.historical_ticker = "BBT";
+    second.current_symbol = "TFC";
+    second.effective_until = "2019-12-10";
+    // Deliberately out of chronological order: resolution must not depend on
+    // read order.
+    db->aliases.push_back(second);
+    db->aliases.push_back(first);
+
+    const auto state_dir = make_temp_state_dir("rename_reuse");
+    {
+        CorporateActionsAuditLog log(state_dir.string(), db, "EQUITY_MR_PORTFOLIO",
+                                     "LIVE_EQUITY_MEAN_REVERSION", "EQUITY_MEAN_REVERSION");
+        ASSERT_TRUE(log.load().is_ok());
+        log.record(make_dividend("BBT", "1998-06-01", 100.0, 0.10));  // first era
+        log.record(make_dividend("BBT", "2015-06-01", 100.0, 0.20));  // second era
+        ASSERT_TRUE(log.save());
+    }
+
+    CorporateActionsAuditLog after(state_dir.string(), db, "EQUITY_MR_PORTFOLIO",
+                                   "LIVE_EQUITY_MEAN_REVERSION", "EQUITY_MEAN_REVERSION");
+    ASSERT_TRUE(after.load().is_ok());
+    EXPECT_TRUE(after.is_applied("BBT1", "1998-06-01", CorpActionType::DIVIDEND))
+        << "the 1998 event predates the first rename, so it belongs to BBT1";
+    EXPECT_TRUE(after.is_applied("TFC", "2015-06-01", CorpActionType::DIVIDEND))
+        << "the 2015 event falls between the two renames, so it belongs to TFC";
+    // Cross-era leakage is the failure the date bound exists to prevent.
+    EXPECT_FALSE(after.is_applied("BBT1", "2015-06-01", CorpActionType::DIVIDEND));
+}
