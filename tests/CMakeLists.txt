@@ -37,6 +37,8 @@ set(TEST_SOURCES
     live/corp_actions/test_applier.cpp
     live/corp_actions/test_effect_classes.cpp
     live/corp_actions/test_rename_eras.cpp
+    live/corp_actions/test_denominator_frame.cpp
+    live/corp_actions/test_denominator_range_db.cpp
     live/corp_actions/test_audit_log.cpp
     live/corp_actions/test_income.cpp
     live/test_live_metrics_includes_dividend_income.cpp

@@ -753,8 +753,16 @@ int main(int argc, char* argv[]) {
             const auto window = derive_corp_action_window(
                 today_t, kMinLookbackDays, max_lookback_days, inception_dates);
             auto window_start_t = window.start;
-            const auto& deep_symbols = window.deep_symbols;
-            const auto deep_start_t = window.deep_start;
+            // window.deep_symbols / window.deep_start no longer drive a second
+            // "top up the deep holdings" read: the single raw-close read below spans
+            // [window.start, today], and window.start already equals window.deep_start
+            // whenever there are deep symbols. They stay on the struct because the
+            // derivation tests pin them and they name the reason the window is wide.
+            if (!window.deep_symbols.empty()) {
+                INFO(std::to_string(window.deep_symbols.size()) +
+                     " holding(s) predate the bulk price load; corp-action window opens at " +
+                     format_ymd_utc(window.deep_start));
+            }
 
             // UTC, not localtime: bar timestamps are true UTC instants, and on
             // the deployed image (TZ=America/New_York) localtime pushes every
@@ -827,67 +835,77 @@ int main(int argc, char* argv[]) {
                          "empty -- genuine first run for this strategy");
                 }
 
-                // Historical close lookup keyed by (symbol, YYYY-MM-DD) so
-                // the dividend rescale denominator uses close at THIS event's
-                // ex_date - 1, not today's T-1 close (ultrareview bug_002).
-                // Built once from the same `all_bars` we already loaded.
-                std::unordered_map<std::string, std::map<std::string, double>>
-                    close_by_symbol_date;
-                for (const auto& bar : all_bars) {
-                    auto bt = std::chrono::system_clock::to_time_t(bar.timestamp);
-                    std::tm btm{};
-                    gmtime_r(&bt, &btm);
-                    char dbuf[11];
-                    std::strftime(dbuf, sizeof(dbuf), "%Y-%m-%d", &btm);
-                    close_by_symbol_date[bar.symbol][std::string(dbuf)] =
-                        bar.close.as_double();
+                // Dividend-denominator closes, keyed (symbol, YYYY-MM-DD).
+                //
+                // RAW closes, from one range read, and nothing else. Two separate
+                // defects made the old construction wrong, and this single source
+                // removes both:
+                //
+                // 1. Frame. The map was built from `all_bars`, which are ADJUSTED
+                //    closes. The applier's per-event basis rescale must equal
+                //    compute_backward_adjustment_factors' per-event step, and that
+                //    step works in raw closes. An adjusted close already carries
+                //    every LATER event in the window, so the two agree only when no
+                //    later event exists. Stacked div-then-split in one catch-up
+                //    batch rescaled basis by 1 + split*d/c instead of 1 + d/c:
+                //    10 sh @ $100 with a $1 dividend then a 2:1 split gave 49.01
+                //    against the correct 49.505.
+                // 2. Range. The old deep top-up passed [deep_start, window_start) --
+                //    and window.start EQUALS window.deep_start whenever deep_symbols
+                //    is non-empty, because the globally-oldest inception is always
+                //    itself a deep symbol. The half-open range therefore collapsed
+                //    to a single day, and a holding older than the bulk load got a
+                //    denominator from the wrong end of its history with no error.
+                //
+                // window_start_t already reaches back to the oldest inception (that
+                // is what made the collapse possible), so one read over
+                // [window_start, today] covers the deep holdings too: no second
+                // call, no deep/bulk seam, no two frames to reconcile. The read is
+                // an indexed point lookup per (symbol, date) -- the denominator
+                // needs a close AT each ex-date, not a contiguous series -- and is
+                // scoped to symbols that actually have events in the window, so it
+                // is far cheaper than the ~25 s full-universe adjusted-series query.
+                std::vector<std::string> event_symbols;
+                {
+                    std::set<std::string> uniq;
+                    for (const auto& row : rows) {
+                        if (previous_positions.find(row.ticker) != previous_positions.end()) {
+                            uniq.insert(row.ticker);
+                        }
+                    }
+                    event_symbols.assign(uniq.begin(), uniq.end());
                 }
 
-                // Top up closes for holdings established before the bulk price
-                // load, so an old position is fully covered instead of being
-                // partially adjusted. Targeted range read: the denominator needs
-                // a close AT each ex-date, not a contiguous series, so this is an
-                // indexed lookup (~45 ms for one symbol over ten years), not a
-                // re-run of the ~25 s adjusted-series query.
-                //
-                // Bound: held symbols that predate the bulk load, over their own
-                // inception -- deliberately NOT capped. A cap would reintroduce
-                // the partial coverage this replaces, and partial coverage
-                // corrupts a cost basis permanently. Measured: 10 deep symbols
-                // over 10 years = 0.97 s; the pathological case (all 852 symbols
-                // held since 2000) = 6.1 s / 4.6 M rows, which is survivable and
-                // unreachable in practice, since positions accrue gradually.
-                if (!deep_symbols.empty()) {
-                    const std::string deep_buf = format_ymd_utc(deep_start_t);
+                std::unordered_map<std::string, std::map<std::string, double>>
+                    close_by_symbol_date;
+                if (!event_symbols.empty()) {
+                    const auto denom_range = denominator_fetch_range(window, today_t);
+                    INFO("Loading raw closes for " + std::to_string(event_symbols.size()) +
+                         " held symbol(s) with corp-action events, from " +
+                         denom_range.start + " to " + denom_range.end);
 
-                    INFO("Topping up closes for " + std::to_string(deep_symbols.size()) +
-                         " holding(s) established before the price window, from " +
-                         std::string(deep_buf));
-
-                    auto deep_result = db->get_historical_closes(
-                        deep_symbols, std::string(deep_buf), std::string(start_buf));
-                    if (deep_result.is_error()) {
-                        ERROR("Could not top up closes for holdings older than the "
-                              "price window: " +
-                              std::string(deep_result.error()->what()) +
-                              ". Their dividend adjustments would use a missing "
-                              "denominator and leave cost basis permanently wrong.");
+                    auto closes_result = db->get_historical_closes(
+                        event_symbols, denom_range.start, denom_range.end);
+                    if (closes_result.is_error()) {
+                        ERROR("Could not load raw closes for the dividend denominator: " +
+                              std::string(closes_result.error()->what()) +
+                              ". Dividend adjustments would use a missing denominator and "
+                              "leave cost basis permanently wrong.");
                     } else {
                         size_t added = 0;
-                        for (const auto& [sym, by_date] : deep_result.value()) {
+                        for (const auto& [sym, by_date] : closes_result.value()) {
                             for (const auto& [d, close] : by_date) {
-                                // insert, never overwrite: bars already loaded
-                                // are the authoritative frame for their dates.
-                                if (close_by_symbol_date[sym].emplace(d, close).second) ++added;
+                                close_by_symbol_date[sym][d] = close;
+                                ++added;
                             }
                         }
                         INFO("Added " + std::to_string(added) +
-                             " historical closes for deep holdings");
+                             " historical closes for corp-action denominators");
 
-                        // The only genuinely unrecoverable case: no bars at all
-                        // for a symbol we hold. Everything else is now covered.
+                        // The only genuinely unrecoverable case: no closes at all
+                        // for a symbol we hold and that has an event.
                         std::vector<std::string> no_data;
-                        for (const auto& sym : deep_symbols) {
+                        for (const auto& sym : event_symbols) {
                             auto it = close_by_symbol_date.find(sym);
                             if (it == close_by_symbol_date.end() || it->second.empty()) {
                                 no_data.push_back(sym);
@@ -906,6 +924,7 @@ int main(int argc, char* argv[]) {
                         }
                     }
                 }
+
                 // Last close strictly BEFORE ex_date (walks back over
                 // weekends/holidays via the map's ordering). 0.0 if no bar.
                 // Close ON ex_date -- the denominator the price series uses.
@@ -1012,7 +1031,7 @@ int main(int argc, char* argv[]) {
                                      " -- using today's T-1 close as a fallback");
                             }
                         }
-                        ev.close_t_minus_1 = c;
+                        ev.close_at_ex_date = c;
                         // bug_021: prefer qty at ex_date - 1; fall back to
                         // current qty if the historical positions row is
                         // missing (e.g. first-week catch-up runs).

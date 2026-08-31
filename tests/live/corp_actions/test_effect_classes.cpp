@@ -121,7 +121,7 @@ TEST(CorpActionClass1, PerBarDividendRescalesBasisWithoutTouchingShareCount) {
     ev.ex_date = "2026-08-10";
     ev.type = CorporateActionsApplier::type_from_action_string("dividend");
     ev.value = 0.485;
-    ev.close_t_minus_1 = 72.50;
+    ev.close_at_ex_date = 72.50;
 
     auto log = CorporateActionsApplier::apply(positions, {ev});
 
@@ -149,7 +149,7 @@ TEST(CorpActionClass1, DividendCashIsRecordedButNeverAddedToPositionPnl) {
     ev.ex_date = "2026-08-10";
     ev.type = CorpActionType::DIVIDEND;
     ev.value = 0.485;
-    ev.close_t_minus_1 = 72.50;
+    ev.close_at_ex_date = 72.50;
     ev.qty_at_ex_date = 250.0;
 
     auto log = CorporateActionsApplier::apply(positions, {ev});
@@ -180,7 +180,7 @@ TEST(CorpActionClass1, SplitBeforeDividendOnASharedBarLandsCashOnPostSplitShares
     div.ex_date = "2026-06-30";
     div.type = CorpActionType::DIVIDEND;
     div.value = 1.0;
-    div.close_t_minus_1 = 100.0;
+    div.close_at_ex_date = 100.0;
 
     auto log = CorporateActionsApplier::apply(positions, {split, div});
 
