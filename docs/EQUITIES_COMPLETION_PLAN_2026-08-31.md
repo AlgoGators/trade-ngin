@@ -366,3 +366,30 @@ futures regression run — not folded into an equities commit.
 
 Note `exec_id` is unaffected: it is built from epoch milliseconds and is already
 timezone-independent.
+
+---
+
+## E3 scope — two surviving `std::mktime` sites (logged 2026-08-31, not fixed)
+
+The E1 claim that "the UTC fix is complete on these paths" was **inaccurate**. F-2
+converted six `localtime` date-*rendering* sites; two `std::mktime` date-*parsing* sites
+remain in `apps/strategies/live_equity_mean_reversion.cpp`:
+
+| Line | Purpose |
+|---|---|
+| `:83` | CLI date argument → `target_date` (`from_time_t(mktime(&tm))`) |
+| `:863` | `qty_at_ex_date` — ex_date minus one day, inside the dividend path |
+
+`mktime` interprets a `struct tm` as **local** time. Both sites feed UTC-anchored
+comparisons, so on a host with a positive UTC offset (Europe, Asia) the resulting instant
+lands on the previous day.
+
+**Not introduced by E1** — blame is `220554c2` (2026-02-24), predating this work.
+
+**Not currently wrong in production**: correct on UTC and on every negative-offset zone,
+which includes the deployed image's `TZ=America/New_York`.
+
+**Fix in E3** alongside the other date-handling work, and add a test that pins the
+behaviour under a positive-offset TZ so the class of bug cannot return. Note E2 runs on a
+positive-offset host would shift these dates by a day — worth checking the run host before
+interpreting any E2 date anomaly as an engine defect.
