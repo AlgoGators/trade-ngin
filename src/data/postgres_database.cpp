@@ -871,6 +871,30 @@ Result<pqxx::result> PostgresDatabase::execute_market_data_query(
     std::string start_ts = format_timestamp(start_date);
     std::string end_ts = format_timestamp(end_date);
 
+    if (asset_class == AssetClass::EQUITIES) {
+        // The equity path computes backward adjustment with a window function
+        // over every held symbol's full history, which sorts more than the 2 MB
+        // default allows: measured 12 MB + 6 MB spilled to disk at the full
+        // 852-symbol universe over two years.
+        //
+        // SET LOCAL, so it lasts exactly this transaction -- no server change,
+        // no effect on other sessions or asset classes.
+        //
+        // Honest scope: this removes the spills (18 MB of avoidable disk I/O per
+        // call) but is NOT a speedup -- measured 33.7 s -> 33.2 s, inside noise.
+        // The cost is dominated by the WindowAgg itself (~19 s) and the scan
+        // feeding it, not by the sort spilling. Treat full-universe adjustment
+        // as an inherently ~25 s query (symbol-filtered shape) when planning
+        // runs; making it genuinely fast would mean materialising factors
+        // rather than tuning memory.
+        try {
+            txn.exec("SET LOCAL work_mem = '64MB'");
+        } catch (const std::exception& e) {
+            WARN("Could not raise work_mem for the equity adjustment query: " +
+                 std::string(e.what()) + " -- continuing with the session default");
+        }
+    }
+
     if (symbols.empty()) {
         // No symbol filter. Equities compute per-bar backward adjustment in the
         // query; other classes read plain columns.
