@@ -2,6 +2,9 @@
 
 #include <cstdlib>
 #include <filesystem>
+#include <mutex>
+#include <set>
+#include <unordered_set>
 #include <string>
 #include <unordered_map>
 #include <optional>
@@ -28,7 +31,21 @@ struct HolidayInfo {
 };
 
 /**
- * @brief Federal holiday checker using JSON configuration
+ * @brief US equity-market holiday checker (NYSE/NASDAQ full closures).
+ *
+ * This is the MARKET calendar, not the federal one: it includes Good Friday
+ * (not a federal holiday) and excludes Columbus Day and Veterans Day (federal
+ * holidays on which the equity markets trade).
+ *
+ * Coverage is finite -- the JSON spans a fixed range of years. A query outside
+ * that range cannot be answered and is NOT the same as "not a holiday", so
+ * `is_holiday` warns once per out-of-range year and callers whose correctness
+ * depends on the answer should consult `covers_date` and fail closed. See
+ * `scripts/generate_market_holidays.py` for how the file is produced.
+ *
+ * One calendar is shared by equities and futures. The scheduled closures
+ * coincide, but ad-hoc closures (funerals, disasters) can differ between NYSE
+ * and CME; the file follows NYSE.
  */
 class HolidayChecker {
 public:
@@ -89,7 +106,50 @@ public:
      * @return true if holiday, false otherwise
      */
     bool is_holiday(const std::string& date) const {
+        // A date outside the calendar's range is unanswerable. Returning false
+        // silently -- the previous behaviour -- reads as "trading day" and has
+        // no symptom, so warn once per year rather than degrade quietly.
+        if (!covers_date(date)) {
+            warn_out_of_range_once(date);
+        }
         return holidays_.find(date) != holidays_.end();
+    }
+
+    /**
+     * @brief Years the loaded calendar can answer for.
+     */
+    const std::set<int>& coverage_years() const { return covered_years_; }
+
+    /**
+     * @brief Whether the calendar covers `year`.
+     */
+    bool covers_year(int year) const {
+        return covered_years_.find(year) != covered_years_.end();
+    }
+
+    /**
+     * @brief Whether a "YYYY-MM-DD" date falls inside the calendar's coverage.
+     *
+     * Callers whose correctness depends on holiday awareness (previous-trading-
+     * day walks, non-trading-day skips) should check this and fail closed; a
+     * false answer from `is_holiday` outside coverage means "unknown", not "no".
+     */
+    bool covers_date(const std::string& date) const {
+        if (date.size() < 4) return false;
+        try {
+            return covers_year(std::stoi(date.substr(0, 4)));
+        } catch (const std::exception&) {
+            return false;
+        }
+    }
+
+    /**
+     * @brief Human-readable coverage range for error messages.
+     */
+    std::string coverage_description() const {
+        if (covered_years_.empty()) return "no years loaded";
+        return std::to_string(*covered_years_.begin()) + "-" +
+               std::to_string(*covered_years_.rbegin());
     }
 
     /**
@@ -168,6 +228,29 @@ public:
 private:
     std::string json_path_;
     std::unordered_map<std::string, HolidayInfo> holidays_;
+    std::set<int> covered_years_;
+
+    // is_holiday is const and may be called per-bar, so the warn-once state is
+    // mutable and guarded. One warning per out-of-range year, not per query.
+    mutable std::mutex warn_mutex_;
+    mutable std::unordered_set<int> warned_years_;
+
+    void warn_out_of_range_once(const std::string& date) const {
+        int year = 0;
+        try {
+            year = std::stoi(date.substr(0, 4));
+        } catch (const std::exception&) {
+            return;
+        }
+        std::lock_guard<std::mutex> lock(warn_mutex_);
+        if (warned_years_.insert(year).second) {
+            WARN("Holiday calendar does not cover " + std::to_string(year) +
+                 " (loaded: " + coverage_description() + "). Dates in that year "
+                 "report as non-holidays because the answer is unknown, not "
+                 "because the market was open. Extend " + json_path_ +
+                 " via scripts/generate_market_holidays.py.");
+        }
+    }
 
     /**
      * @brief Load holidays from JSON file
@@ -185,9 +268,15 @@ private:
             file >> j;
 
             holidays_.clear();
+            covered_years_.clear();
 
             // Iterate through each year
             for (auto& [year, holidays_array] : j.items()) {
+                try {
+                    covered_years_.insert(std::stoi(year));
+                } catch (const std::exception&) {
+                    WARN("Holiday calendar has a non-numeric year key: " + year);
+                }
                 for (auto& holiday : holidays_array) {
                     HolidayInfo info;
                     info.date = holiday["date"].get<std::string>();

@@ -1,11 +1,165 @@
-#include <gtest/gtest.h>
+// CorporateActionsAuditLog -- the dedup record that makes corp-action
+// application idempotent, plus the DB/file backing behind it.
+//
+// Consolidated from test_corp_actions_audit_log.cpp, test_corp_actions_dedup_durability.cpp
+// and the audit-log half of test_corp_actions_ultrareview_fixes.cpp.
+//
+// Contracts worth keeping in view: a read FAILURE must stay distinguishable
+// from an empty record (conflating them yields an empty applied-set, which
+// re-applies every event in the window); the record is keyed on strategy_name
+// as well as strategy_id, so two strategies sharing an id cannot inherit each
+// other's entries; and entries are mirrored across ticker renames, bounded by
+// the alias effective date, because the vendor migrates a renamed symbol's
+// whole history to its successor.
 
+#include <gtest/gtest.h>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
-#include <memory>
-
+#include <iterator>
+#include <string>
 #include "trade_ngin/live/corporate_actions_applier.hpp"
 #include "trade_ngin/live/corporate_actions_audit_log.hpp"
+#include <memory>
+#include <unordered_map>
+#include <vector>
+#include "trade_ngin/core/types.hpp"
+
+// ---------------------------------------------------------------------------
+// from test_corp_actions_audit_log.cpp
+// Wrapped in a namespace so its file-local helpers cannot collide with the
+// other sections; gtest test identities are unaffected.
+// ---------------------------------------------------------------------------
+namespace audit_core {
+
+using namespace trade_ngin;
+
+// Phase 4 audit test T4.4 — idempotency via the on-disk dedup state file.
+
+namespace {
+
+class CorpActionsAuditLogTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        state_dir_ = (std::filesystem::temp_directory_path() /
+                      ("ca_audit_log_" + std::to_string(std::rand())))
+                         .string();
+    }
+    void TearDown() override {
+        std::error_code ec;
+        std::filesystem::remove_all(state_dir_, ec);
+    }
+    std::string state_dir_;
+};
+
+PositionAdjustment make_split_adj(const std::string& symbol,
+                                  const std::string& date) {
+    PositionAdjustment adj;
+    adj.symbol = symbol;
+    adj.event_date = date;
+    adj.type = CorpActionType::SPLIT;
+    adj.quantity_before = 100.0;
+    adj.quantity_after = 400.0;
+    adj.avg_price_before = 400.0;
+    adj.avg_price_after = 100.0;
+    adj.event_value = 4.0;
+    adj.ratio_change = 4.0;
+    return adj;
+}
+
+PositionAdjustment make_div_adj(const std::string& symbol,
+                                const std::string& date,
+                                double qty_held,
+                                double per_share) {
+    PositionAdjustment adj;
+    adj.symbol = symbol;
+    adj.event_date = date;
+    adj.type = CorpActionType::DIVIDEND;
+    adj.quantity_before = qty_held;
+    adj.quantity_after = qty_held;  // dividend doesn't change qty
+    adj.avg_price_before = 100.0;
+    adj.avg_price_after = 99.75;
+    adj.event_value = per_share;
+    adj.ratio_change = 1.0 + per_share / 100.0;
+    return adj;
+}
+
+}  // namespace
+
+// First-run: load returns false, in-memory state is empty.
+TEST_F(CorpActionsAuditLogTest, FirstRunLoadReturnsFalseEmpty) {
+    CorporateActionsAuditLog log(state_dir_);
+    EXPECT_FALSE(log.load().value());
+    EXPECT_FALSE(log.is_applied("AAPL", "2020-08-31", CorpActionType::SPLIT));
+}
+
+// Record, save, reload, verify the dedup record persists.
+TEST_F(CorpActionsAuditLogTest, RecordSaveReloadDedupesFutureRuns) {
+    {
+        CorporateActionsAuditLog log(state_dir_);
+        log.load();
+        log.record(make_split_adj("AAPL", "2020-08-31"));
+        EXPECT_TRUE(log.save());
+    }
+    // Fresh instance loads from disk.
+    CorporateActionsAuditLog log2(state_dir_);
+    EXPECT_TRUE(log2.load().value());
+    EXPECT_TRUE(log2.is_applied("AAPL", "2020-08-31", CorpActionType::SPLIT));
+    EXPECT_FALSE(log2.is_applied("AAPL", "2020-08-31", CorpActionType::DIVIDEND));
+    EXPECT_FALSE(log2.is_applied("NVDA", "2024-06-10", CorpActionType::SPLIT));
+}
+
+// Dividend records also capture cash-flow detail in the dividend_events
+// section of the JSON file -- this is the audit-trail substitute for the
+// deferred trading.dividend_ledger table.
+TEST_F(CorpActionsAuditLogTest, DividendCashFlowCapturedInState) {
+    {
+        CorporateActionsAuditLog log(state_dir_);
+        log.load();
+        log.record(make_div_adj("AAPL", "2024-08-12", 100.0, 0.25));
+        ASSERT_TRUE(log.save());
+    }
+    // Read the file directly and confirm dividend_events has the entry.
+    std::ifstream f(state_dir_ + "/applied_corp_actions.json");
+    ASSERT_TRUE(f.is_open());
+    std::string content((std::istreambuf_iterator<char>(f)),
+                        std::istreambuf_iterator<char>());
+    EXPECT_NE(content.find("dividend_events"), std::string::npos);
+    EXPECT_NE(content.find("AAPL"), std::string::npos);
+    EXPECT_NE(content.find("2024-08-12"), std::string::npos);
+    // total_cash = qty_held (100) * per_share (0.25) = 25.0
+    EXPECT_NE(content.find("25.0"), std::string::npos);
+}
+
+// Idempotency: applying the same event twice via the audit-log dedup
+// pattern must result in only one record in state. Mimics what the live
+// equity app's filter_unapplied + record loop produces across two daily runs.
+TEST_F(CorpActionsAuditLogTest, IdempotencyAcrossTwoRuns) {
+    const auto adj = make_split_adj("NVDA", "2024-06-10");
+
+    // Run 1: not yet applied -> record + save.
+    {
+        CorporateActionsAuditLog log(state_dir_);
+        log.load();
+        ASSERT_FALSE(log.is_applied(adj.symbol, adj.event_date, adj.type));
+        log.record(adj);
+        ASSERT_TRUE(log.save());
+    }
+    // Run 2: load -> already applied -> caller would skip.
+    CorporateActionsAuditLog log2(state_dir_);
+    log2.load();
+    EXPECT_TRUE(log2.is_applied(adj.symbol, adj.event_date, adj.type));
+    // Caller filter_unapplied would drop this event; positions stay unchanged.
+}
+
+}  // namespace audit_core
+
+// ---------------------------------------------------------------------------
+// from test_corp_actions_dedup_durability.cpp
+// Wrapped in a namespace so its file-local helpers cannot collide with the
+// other sections; gtest test identities are unaffected.
+// ---------------------------------------------------------------------------
+namespace audit_dedup {
 
 using namespace trade_ngin;
 
@@ -495,3 +649,166 @@ TEST(CorpActionRenameBridge, OnlyTheDatabaseBackingBridgesRenames) {
                                        "LIVE_EQUITY_MEAN_REVERSION", "EQUITY_MEAN_REVERSION");
     EXPECT_TRUE(db_backed.bridges_renames());
 }
+
+}  // namespace audit_dedup
+
+// ---------------------------------------------------------------------------
+// from ur_audit.cpp
+// Wrapped in a namespace so its file-local helpers cannot collide with the
+// other sections; gtest test identities are unaffected.
+// ---------------------------------------------------------------------------
+namespace audit_ex_date_cash {
+
+using namespace trade_ngin;
+
+// Ultrareview PR #38 fix verification.
+// Pins the three behaviors that ultrareview flagged as real correctness or
+// durability gaps and we resolved in this PR:
+//   - bug_021 (cash-basis qty): the audit log records ex_date qty, not today's.
+//   - bug_003 (atomic save):    the on-disk state file is written via tmp+rename.
+// bug_007, merged_bug_001, bug_013, bug_037, bug_002 are wire-up concerns in
+// the live equity app's main() and are exercised via integration / manual
+// verification (the unit-test surface here is just the pure-logic layer).
+
+namespace {
+
+Position make_position(const std::string& symbol, double qty, double avg_price) {
+    Position p;
+    p.symbol = symbol;
+    p.quantity = Quantity(qty);
+    p.average_price = Decimal(avg_price);
+    return p;
+}
+
+CorpActionEvent dividend_event(const std::string& symbol,
+                               const std::string& date,
+                               double per_share,
+                               double close_tm1,
+                               double qty_at_ex = 0.0) {
+    CorpActionEvent ev;
+    ev.symbol = symbol;
+    ev.ex_date = date;
+    ev.type = CorpActionType::DIVIDEND;
+    ev.value = per_share;
+    ev.close_t_minus_1 = close_tm1;
+    ev.qty_at_ex_date = qty_at_ex;
+    return ev;
+}
+
+}  // namespace
+
+// bug_021: cash-flow figure uses ex_date qty (not today's), so a catch-up
+// run days after the ex_date still records the correct dividend cash.
+//
+// Setup: position is 100 today, but on ex_date the operator was holding 200.
+// $0.50 dividend per share. The cash recorded should be 200*0.50 = $100,
+// NOT 100*0.50 = $50.
+TEST(CorpActionsUltrareviewFixes, AuditLogTotalCashHonorsExDateQty) {
+    const std::string state_dir =
+        (std::filesystem::temp_directory_path() /
+         ("ca_ultrareview_div_basis_" + std::to_string(std::rand()))).string();
+
+    std::unordered_map<std::string, Position> positions;
+    positions["AAPL"] = make_position("AAPL", 100.0, 100.0);
+
+    auto log_records = CorporateActionsApplier::apply(
+        positions,
+        {dividend_event("AAPL", "2024-08-12", 0.50, 100.0, /*qty_at_ex=*/200.0)});
+
+    CorporateActionsAuditLog audit(state_dir);
+    audit.load();
+    for (const auto& r : log_records) audit.record(r);
+    EXPECT_DOUBLE_EQ(audit.total_cumulative_dividend_income(), 100.0);
+
+    std::error_code ec;
+    std::filesystem::remove_all(state_dir, ec);
+}
+
+// bug_003: save() must be atomic -- write to a sibling .tmp and rename
+// into place. After a successful save, the .tmp must not linger.
+
+TEST(CorpActionsUltrareviewFixes, AtomicSaveLeavesNoTempFile) {
+    const std::string state_dir =
+        (std::filesystem::temp_directory_path() /
+         ("ca_ultrareview_atomic_" + std::to_string(std::rand()))).string();
+
+    {
+        CorporateActionsAuditLog audit(state_dir);
+        audit.load();
+        PositionAdjustment adj;
+        adj.symbol = "AAPL";
+        adj.event_date = "2024-08-12";
+        adj.type = CorpActionType::DIVIDEND;
+        adj.quantity_before = 100.0;
+        adj.quantity_after = 100.0;
+        adj.avg_price_before = 100.0;
+        adj.avg_price_after = 99.75;
+        adj.event_value = 0.25;
+        adj.ratio_change = 1.0025;
+        audit.record(adj);
+        ASSERT_TRUE(audit.save());
+    }
+
+    const std::string final_path = state_dir + "/applied_corp_actions.json";
+    const std::string tmp_path = final_path + ".tmp";
+    EXPECT_TRUE(std::filesystem::exists(final_path));
+    EXPECT_FALSE(std::filesystem::exists(tmp_path))
+        << "Atomic save must not leave a .tmp sibling after success";
+
+    // Reload from disk and verify the JSON parsed (i.e. the file is not
+    // corrupted from a half-write).
+    CorporateActionsAuditLog reload(state_dir);
+    ASSERT_TRUE(reload.load().value());
+    EXPECT_DOUBLE_EQ(reload.total_cumulative_dividend_income(), 25.0);
+
+    std::error_code ec;
+    std::filesystem::remove_all(state_dir, ec);
+}
+
+// bug_003 regression: a stale .tmp from an earlier crash is harmless --
+// the next save() overwrites it via the rename, leaving the final file
+// valid and the .tmp gone.
+
+TEST(CorpActionsUltrareviewFixes, AtomicSaveOverwritesStaleTempFile) {
+    const std::string state_dir =
+        (std::filesystem::temp_directory_path() /
+         ("ca_ultrareview_stale_tmp_" + std::to_string(std::rand()))).string();
+    std::filesystem::create_directories(state_dir);
+    const std::string final_path = state_dir + "/applied_corp_actions.json";
+    const std::string tmp_path = final_path + ".tmp";
+
+    // Simulate stale tmp from a prior crash (corrupt half-JSON).
+    {
+        std::ofstream stale(tmp_path);
+        stale << "{ \"applied\": [ corrupt";
+    }
+    ASSERT_TRUE(std::filesystem::exists(tmp_path));
+
+    CorporateActionsAuditLog audit(state_dir);
+    audit.load();
+    PositionAdjustment adj;
+    adj.symbol = "MSFT";
+    adj.event_date = "2024-08-15";
+    adj.type = CorpActionType::DIVIDEND;
+    adj.quantity_before = 100.0;
+    adj.quantity_after = 100.0;
+    adj.avg_price_before = 200.0;
+    adj.avg_price_after = 199.70;
+    adj.event_value = 0.30;
+    adj.ratio_change = 1.0015;
+    audit.record(adj);
+    ASSERT_TRUE(audit.save());
+
+    EXPECT_TRUE(std::filesystem::exists(final_path));
+    EXPECT_FALSE(std::filesystem::exists(tmp_path))
+        << "Atomic save must clean up its tmp after rename";
+
+    CorporateActionsAuditLog reload(state_dir);
+    ASSERT_TRUE(reload.load().value());
+    EXPECT_DOUBLE_EQ(reload.total_cumulative_dividend_income(), 30.0);
+
+    std::error_code ec;
+    std::filesystem::remove_all(state_dir, ec);
+}
+
+}  // namespace audit_ex_date_cash
