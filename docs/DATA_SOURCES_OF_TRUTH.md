@@ -152,3 +152,59 @@ The frozen table holds 12,867 historical ticker-change pairs while `ticker_alias
 5. Anything reading `corporate_action` must behave correctly with **zero rows** returned,
    and must light up unchanged when rows appear.
 6. When a feed's staleness would change a result, fail loudly — do not silently proceed.
+
+---
+
+## 7. Required database objects — engine dependencies
+
+Any environment running this engine (including the algogators mono repo after migration,
+and any fresh/staging/prod database) MUST have the objects below. They are not optional
+performance tuning: without the indexes the live equity path degrades from ~1 s to ~14 s
+per query at full universe scale, and without the tables the corp-action path cannot
+dedup and will re-apply events.
+
+### Owned by this repo — `trading` schema
+
+| Object | Created by | Purpose |
+|---|---|---|
+| `trading.positions.portfolio_type` + widened keys | `migrations/001_add_portfolio_type.sql` | dual-portfolio streams (system/qt) |
+| `trading.equity_curve` unique key incl. `portfolio_type` | same | upsert target for live equity-curve writes |
+| `trading.corp_action_applied` | `migrations/002_corp_action_applied.sql` | durable corporate-action dedup. Replaces a JSON file under a container path with no volume, where state loss was the default and re-application the consequence |
+
+### NOT owned by this repo — `equities_data` schema (data-ngin owns it)
+
+`migrations/003_equity_query_indexes.sql` creates indexes inside `equities_data`. This is
+a deliberate boundary crossing: additive and reversible (`DROP INDEX`), but the schema
+belongs to the data pipeline.
+
+**Two consequences the data owner must know:**
+1. If data-ngin ever rebuilds or recreates these tables, the indexes disappear with them.
+   The only symptom is the live equity run silently getting ~15x slower — nothing points
+   at the cause.
+2. data-ngin's own migration tooling has no record of these objects, so its schema
+   definition and reality drift apart.
+
+**Requested resolution:** adopt these indexes into data-ngin's own schema definition so
+they survive table rebuilds and are visible to its tooling. Until then they work, but are
+not durable against upstream changes.
+
+Measured impact at 852 symbols (before → after):
+
+| Query | Before | After |
+|---|---|---|
+| per-bar corporate actions (every live run) | 14,301 ms | 800 ms |
+| `get_delisting_dates` | 14,144 ms | 1,865 ms |
+| deal terms lookup | 491 ms | 281 ms |
+
+### Known cost that indexing does NOT solve
+
+The equity adjustment query is ~25 s at 852 symbols over two years. The cost is the
+`WindowAgg` computing the backward cumulative product (~364k rows), not I/O or sorting —
+`work_mem` tuning removes the disk spills but not the time. Making it genuinely fast means
+materialising adjustment factors rather than recomputing per query. Budget for it in run
+planning; it is not a defect.
+
+### Migration order for a fresh environment
+
+001 → 002 → 003, then `scripts/backfill_ticker_aliases.sql`. All are idempotent and carry
+rollback files (003's rollback drops only the indexes it created).
