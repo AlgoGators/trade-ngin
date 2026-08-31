@@ -259,6 +259,30 @@ double CorporateActionsAuditLog::total_cumulative_dividend_income() const {
     return sum;
 }
 
+Result<void> CorporateActionsAuditLog::save_in(DbTransaction& txn) const {
+    if (!db_backed()) {
+        return make_error<void>(
+            ErrorCode::INVALID_ARGUMENT,
+            "save_in requires a DB-backed audit log: a state file cannot join a "
+            "database transaction",
+            "CorporateActionsAuditLog");
+    }
+    if (pending_.empty()) return Result<void>();
+
+    auto res = db_->store_applied_corp_actions(txn, portfolio_id_, strategy_id_, strategy_name_,
+                                               pending_);
+    if (res.is_error()) {
+        ERROR("CorporateActionsAuditLog: cannot persist dedup record: " +
+              std::string(res.error()->what()));
+        return res;
+    }
+    // Cleared only once the statements are in the transaction. If the caller's
+    // commit later fails, the whole unit rolls back -- positions included -- so
+    // there is nothing left to re-persist.
+    pending_.clear();
+    return Result<void>();
+}
+
 bool CorporateActionsAuditLog::save() const {
     if (db_backed()) {
         // Delta write. The natural key plus ON CONFLICT DO NOTHING makes a

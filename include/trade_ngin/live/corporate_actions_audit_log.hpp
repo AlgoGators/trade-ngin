@@ -102,6 +102,16 @@ public:
     bool save() const;
 
     /**
+     * @brief Persist the dedup record inside a caller-owned unit of work.
+     *
+     * The DB-backed counterpart to save(), for the case where the adjusted
+     * positions and the dedup rows that protect them must commit together.
+     * Does not commit -- the caller owns that. Errors if this log is
+     * file-backed, since a filesystem write cannot join a DB transaction.
+     */
+    Result<void> save_in(DbTransaction& txn) const;
+
+    /**
      * @brief Sum of total_cash across all recorded dividend events.
      *
      * Cumulative across the lifetime of the state file (no date filter --

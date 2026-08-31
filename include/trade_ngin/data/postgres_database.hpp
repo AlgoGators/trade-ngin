@@ -34,6 +34,59 @@
 
 namespace trade_ngin {
 
+class PostgresDatabase;
+
+/**
+ * @brief RAII scope for composing several writes into one atomic unit.
+ *
+ * Every write method on PostgresDatabase historically opened and committed its
+ * own transaction, so no caller -- equity or futures -- could make two writes
+ * land together. That is not a style problem: the live equity path writes
+ * corp-action-adjusted positions and then the dedup record that stops those
+ * events being applied again. Split across two transactions, a failure between
+ * them leaves positions adjusted with no dedup row, and the next run re-applies
+ * the events: splits re-multiply quantity, dividends re-rescale cost basis.
+ *
+ * Hold one of these across the writes that must not be separated, then commit.
+ * Destruction without commit rolls back, so an early return or a thrown
+ * exception cannot leave a half-applied unit behind.
+ *
+ * pqxx is deliberately not exposed: callers pass this object back to the
+ * PostgresDatabase overloads, which reach the underlying transaction as a
+ * friend.
+ */
+class DbTransaction {
+public:
+    ~DbTransaction();
+
+    DbTransaction(const DbTransaction&) = delete;
+    DbTransaction& operator=(const DbTransaction&) = delete;
+    DbTransaction(DbTransaction&&) noexcept;
+    DbTransaction& operator=(DbTransaction&&) noexcept;
+
+    /**
+     * @brief Commit every write made in this scope. Idempotent-safe: a second
+     *        call is an error rather than a double commit.
+     */
+    Result<void> commit();
+
+    /// True once commit() has succeeded. False means the destructor will roll back.
+    bool committed() const { return committed_; }
+
+    /// True when the scope holds a live transaction (false after a move).
+    bool valid() const { return txn_ != nullptr; }
+
+private:
+    friend class PostgresDatabase;
+
+    explicit DbTransaction(pqxx::connection& conn);
+
+    pqxx::work& work() { return *txn_; }
+
+    std::unique_ptr<pqxx::work> txn_;
+    bool committed_{false};
+};
+
 /**
  * @brief Database interface for PostgreSQL
  */
@@ -143,6 +196,24 @@ public:
                                  const std::string& strategy_id, const std::string& strategy_name,
                                  const std::string& portfolio_id,
                                  const std::string& table_name) override;
+
+    /**
+     * @brief Open a scope in which several writes commit or roll back together.
+     *
+     * Pass the returned scope to the overloads that accept a DbTransaction, then
+     * call commit(). Errors if the connection is unavailable.
+     */
+    Result<std::unique_ptr<DbTransaction>> begin_unit_of_work();
+
+    /**
+     * @brief Store positions inside a caller-owned unit of work.
+     *
+     * Same statements as the single-write overload; the caller commits. Use when
+     * the positions must land together with another write.
+     */
+    Result<void> store_positions(DbTransaction& txn, const std::vector<Position>& positions,
+                                 const std::string& strategy_id, const std::string& strategy_name,
+                                 const std::string& portfolio_id, const std::string& table_name);
 
     /**
      * @brief Store signals in the database
@@ -692,6 +763,17 @@ public:
         const std::vector<AppliedCorpActionRow>& rows);
 
     /**
+     * @brief Record applied corp actions inside a caller-owned unit of work.
+     *
+     * Composed with store_positions(DbTransaction&, ...) so an adjusted position
+     * and the dedup row that protects it cannot be separated by a failure.
+     */
+    virtual Result<void> store_applied_corp_actions(
+        DbTransaction& txn, const std::string& portfolio_id, const std::string& strategy_id,
+        const std::string& strategy_name,
+        const std::vector<AppliedCorpActionRow>& rows);
+
+    /**
      * @brief Convert asset class to string for database queries
      * @param asset_class Asset class to convert
      * @return String representation for database queries
@@ -756,6 +838,26 @@ private:
      * @return Formatted string
      */
     std::string format_timestamp(const Timestamp& ts) const;
+
+    /**
+     * @brief Position-write statements, executed in a transaction that is NOT
+     *        committed here. The single-write overload wraps this in its own
+     *        transaction; the composing overload runs it in the caller's.
+     */
+    Result<void> store_positions_in(pqxx::work& txn, const std::vector<Position>& positions,
+                                    const std::string& strategy_id,
+                                    const std::string& strategy_name,
+                                    const std::string& portfolio_id,
+                                    const std::string& table_name);
+
+    /**
+     * @brief Dedup-write statements, executed in a transaction that is NOT
+     *        committed here. Same wrapper/composition split as above.
+     */
+    Result<void> store_applied_corp_actions_in(pqxx::work& txn, const std::string& portfolio_id,
+                                               const std::string& strategy_id,
+                                               const std::string& strategy_name,
+                                               const std::vector<AppliedCorpActionRow>& rows);
 
     /**
      * @brief Convert a Side enum to a string

@@ -328,7 +328,43 @@ Result<void> PostgresDatabase::store_positions(const std::vector<Position>& posi
 
     try {
         pqxx::work txn(*connection_);
+        auto stored = store_positions_in(txn, positions, strategy_id, strategy_name, portfolio_id,
+                                         table_name);
+        if (stored.is_error())
+            return stored;
+        txn.commit();
+        INFO("Successfully updated " + std::to_string(positions.size()) + " positions");
+        return Result<void>();
 
+    } catch (const std::exception& e) {
+        return make_error<void>(ErrorCode::DATABASE_ERROR,
+                                "Failed to store positions: " + std::string(e.what()),
+                                "PostgresDatabase");
+    }
+}
+
+Result<void> PostgresDatabase::store_positions(DbTransaction& txn,
+                                               const std::vector<Position>& positions,
+                                               const std::string& strategy_id,
+                                               const std::string& strategy_name,
+                                               const std::string& portfolio_id,
+                                               const std::string& table_name) {
+    if (!txn.valid()) {
+        return make_error<void>(ErrorCode::DATABASE_ERROR,
+                                "store_positions called with a moved-from unit of work",
+                                "PostgresDatabase");
+    }
+    return store_positions_in(txn.work(), positions, strategy_id, strategy_name, portfolio_id,
+                              table_name);
+}
+
+Result<void> PostgresDatabase::store_positions_in(pqxx::work& txn,
+                                                  const std::vector<Position>& positions,
+                                                  const std::string& strategy_id,
+                                                  const std::string& strategy_name,
+                                                  const std::string& portfolio_id,
+                                                  const std::string& table_name) {
+    try {
         // Validate table name
         auto table_validation = validate_table_name(table_name);
         if (table_validation.is_error()) {
@@ -341,9 +377,6 @@ Result<void> PostgresDatabase::store_positions(const std::vector<Position>& posi
         if (auto sv = validate_strategy_id(strategy_id); sv.is_error()) return sv;
         if (auto sn = validate_strategy_id(strategy_name); sn.is_error()) return sn;
         if (auto pv = validate_strategy_id(portfolio_id); pv.is_error()) return pv;
-
-        // Begin transaction
-        txn.exec("BEGIN");
 
         // Clear existing positions for this strategy (by strategy_id AND strategy_name)
         // and the date of the positions being inserted.
@@ -482,8 +515,6 @@ Result<void> PostgresDatabase::store_positions(const std::vector<Position>& posi
             }
         }
 
-        txn.commit();
-        INFO("Successfully updated " + std::to_string(positions.size()) + " positions");
         return Result<void>();
 
     } catch (const std::exception& e) {
@@ -2825,6 +2856,43 @@ Result<void> PostgresDatabase::store_applied_corp_actions(
 
     try {
         pqxx::work txn(*connection_);
+        auto stored =
+            store_applied_corp_actions_in(txn, portfolio_id, strategy_id, strategy_name, rows);
+        if (stored.is_error())
+            return stored;
+        txn.commit();
+        return Result<void>();
+
+    } catch (const std::exception& e) {
+        return make_error<void>(
+            ErrorCode::DATABASE_ERROR,
+            "Failed to store applied corp actions: " + std::string(e.what()),
+            "PostgresDatabase");
+    }
+}
+
+Result<void> PostgresDatabase::store_applied_corp_actions(
+    DbTransaction& txn, const std::string& portfolio_id, const std::string& strategy_id,
+    const std::string& strategy_name,
+    const std::vector<AppliedCorpActionRow>& rows) {
+    if (rows.empty()) return Result<void>();
+    if (!txn.valid()) {
+        return make_error<void>(
+            ErrorCode::DATABASE_ERROR,
+            "store_applied_corp_actions called with a moved-from unit of work",
+            "PostgresDatabase");
+    }
+    return store_applied_corp_actions_in(txn.work(), portfolio_id, strategy_id, strategy_name,
+                                         rows);
+}
+
+Result<void> PostgresDatabase::store_applied_corp_actions_in(
+    pqxx::work& txn, const std::string& portfolio_id, const std::string& strategy_id,
+    const std::string& strategy_name,
+    const std::vector<AppliedCorpActionRow>& rows) {
+    if (rows.empty()) return Result<void>();
+
+    try {
         // DO NOTHING rather than DO UPDATE: the first application is the
         // authoritative one. A repeated run must not rewrite qty_held with a
         // post-adjustment quantity.
@@ -2839,8 +2907,6 @@ Result<void> PostgresDatabase::store_applied_corp_actions(
                 portfolio_id, strategy_id, strategy_name, r.symbol, r.action_type,
                 r.ex_date, r.qty_held, r.dividend_per_share, r.total_cash);
         }
-
-        txn.commit();
         return Result<void>();
 
     } catch (const std::exception& e) {
@@ -2848,6 +2914,76 @@ Result<void> PostgresDatabase::store_applied_corp_actions(
             ErrorCode::DATABASE_ERROR,
             "Failed to store applied corp actions: " + std::string(e.what()),
             "PostgresDatabase");
+    }
+}
+
+DbTransaction::DbTransaction(pqxx::connection& conn)
+    : txn_(std::make_unique<pqxx::work>(conn)) {}
+
+DbTransaction::DbTransaction(DbTransaction&& other) noexcept
+    : txn_(std::move(other.txn_)), committed_(other.committed_) {
+    other.committed_ = false;
+}
+
+DbTransaction& DbTransaction::operator=(DbTransaction&& other) noexcept {
+    if (this != &other) {
+        txn_ = std::move(other.txn_);
+        committed_ = other.committed_;
+        other.committed_ = false;
+    }
+    return *this;
+}
+
+DbTransaction::~DbTransaction() {
+    // pqxx::work rolls back on destruction when it was never committed, which is
+    // exactly the behaviour we want for an abandoned unit of work. Destroying it
+    // here (rather than letting the member die silently) keeps that explicit.
+    if (txn_ && !committed_) {
+        try {
+            txn_->abort();
+        } catch (...) {
+            // A rollback that itself fails leaves the server to clean up when the
+            // connection closes. Nothing useful can be done from a destructor.
+        }
+    }
+}
+
+Result<void> DbTransaction::commit() {
+    if (!txn_) {
+        return make_error<void>(ErrorCode::DATABASE_ERROR,
+                                "commit called on a moved-from unit of work", "DbTransaction");
+    }
+    if (committed_) {
+        return make_error<void>(ErrorCode::DATABASE_ERROR,
+                                "unit of work already committed", "DbTransaction");
+    }
+    try {
+        txn_->commit();
+        committed_ = true;
+        return Result<void>();
+    } catch (const std::exception& e) {
+        return make_error<void>(ErrorCode::DATABASE_ERROR,
+                                "Failed to commit unit of work: " + std::string(e.what()),
+                                "DbTransaction");
+    }
+}
+
+Result<std::unique_ptr<DbTransaction>> PostgresDatabase::begin_unit_of_work() {
+    using Scope = std::unique_ptr<DbTransaction>;
+
+    auto validation = validate_connection();
+    if (validation.is_error()) {
+        return make_error<Scope>(validation.error()->code(), validation.error()->what(),
+                                 "PostgresDatabase");
+    }
+    try {
+        // `new` rather than make_unique: the constructor is private to keep
+        // pqxx out of caller code, and make_unique is not a friend.
+        return Result<Scope>(Scope(new DbTransaction(*connection_)));
+    } catch (const std::exception& e) {
+        return make_error<Scope>(ErrorCode::DATABASE_ERROR,
+                                 "Failed to begin unit of work: " + std::string(e.what()),
+                                 "PostgresDatabase");
     }
 }
 

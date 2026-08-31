@@ -966,22 +966,42 @@ int main(int argc, char* argv[]) {
                         p.last_update = now;
                         positions_to_store.push_back(std::move(p));
                     }
-                    // Persist DB first, THEN save the dedup state file
-                    // (ultrareview merged_bug_001): if DB write fails, the state
-                    // file must NOT claim "applied" -- otherwise the next run
-                    // skips the event and positions drift permanently.
+                    // Adjusted positions and the dedup rows that stop those
+                    // events being applied again commit as ONE unit. Ordering
+                    // alone (ultrareview merged_bug_001: DB first, then the
+                    // dedup record) only covered the failure where the position
+                    // write fails; the inverse -- positions committed, dedup
+                    // write lost -- left the next run free to re-apply every
+                    // event, re-multiplying quantities and re-rescaling basis.
+                    // Either both land or neither does.
+                    auto unit = db->begin_unit_of_work();
+                    if (unit.is_error()) {
+                        ERROR("Cannot open a unit of work for corp-action persistence: " +
+                              std::string(unit.error()->what()));
+                        return 1;
+                    }
+                    DbTransaction& ca_txn = *unit.value();
+
                     auto store_result = db->store_positions(
-                        positions_to_store,
+                        ca_txn, positions_to_store,
                         "LIVE_EQUITY_MEAN_REVERSION", "EQUITY_MEAN_REVERSION",
                         portfolio_id, "trading.positions");
                     if (store_result.is_error()) {
                         ERROR("Failed to persist corp-action-adjusted positions: " +
                               std::string(store_result.error()->what()));
-                        return 1;
+                        return 1;  // ca_txn rolls back on scope exit
                     }
-                    if (!audit_log.save()) {
-                        ERROR("Failed to persist corp-actions audit log -- "
-                              "next run may double-apply events");
+                    auto dedup_result = audit_log.save_in(ca_txn);
+                    if (dedup_result.is_error()) {
+                        ERROR("Failed to persist corp-actions dedup record: " +
+                              std::string(dedup_result.error()->what()) +
+                              " -- rolling back the adjusted positions with it");
+                        return 1;  // ca_txn rolls back on scope exit
+                    }
+                    auto commit_result = ca_txn.commit();
+                    if (commit_result.is_error()) {
+                        ERROR("Failed to commit corp-action adjustments: " +
+                              std::string(commit_result.error()->what()));
                         return 1;
                     }
                     INFO("Persisted " + std::to_string(adjustments.size()) +
