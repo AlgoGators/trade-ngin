@@ -22,6 +22,7 @@
 #include "trade_ngin/live/corporate_actions_applier.hpp"
 #include "trade_ngin/live/corporate_actions_classification.hpp"
 #include "trade_ngin/live/corporate_actions_lifecycle.hpp"
+#include "trade_ngin/live/corp_action_window.hpp"
 #include "trade_ngin/live/corporate_actions_audit_log.hpp"
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
 #include "trade_ngin/strategy/mean_reversion.hpp"
@@ -630,7 +631,8 @@ int main(int argc, char* argv[]) {
         // See docs/CORP_ACTIONS_DATA_BOUNDARY.md. Closes audit §1.12, §1.15.
         // ========================================
         if (!previous_positions.empty()) {
-            // Lookback is DERIVED FROM STATE, never a fixed constant.
+            // Lookback is DERIVED FROM POSITION HISTORY, never a fixed
+            // constant and never from last_update.
             //
             // A fixed 14-day window silently dropped every event older than it:
             // live last wrote 2026-05-03, and of the 9 dividends the configured
@@ -642,68 +644,69 @@ int main(int argc, char* argv[]) {
             //
             // Widening to a bigger constant is not sufficient either: a book can
             // outlive any constant (the live futures book already spans 459
-            // days). The window must cover the oldest position we still hold, so
-            // it is derived from that, then clamped:
-            //   * at least 14 days, to cover weekend/holiday stacks cheaply;
-            //   * at most historical_days, because the price series does not
-            //     load further back and the dividend denominator needs a close.
-            // Anything older than that clamp is reported loudly below rather
-            // than silently under-applied.
+            // days). Neither is deriving from previous_positions.last_update --
+            // load_positions_by_date() selects WHERE DATE(last_update) =
+            // DATE($n), so every row it returns carries the requested date by
+            // construction (the table has zero rows where last_update differs
+            // from date). That derivation always collapsed to "yesterday",
+            // leaving the effective window at the 14-day floor it was meant to
+            // replace. The window is therefore derived from when positions were
+            // actually ESTABLISHED, via position history.
+            //
+            // A holding older than the bulk price load does not truncate the
+            // window: the closes those events need are topped up per symbol
+            // below (~45 ms for one symbol over ten years, against the ~25 s
+            // full-universe adjusted-series query). Only a symbol with no bars
+            // at all is unrecoverable, and that errors loudly.
             //
             // Safe only because dedup is now durable in trading.corp_action_applied
             // (migration 002) rather than a JSON file under a container path with
-            // no volume, where state loss was the default.
+            // no volume, where state loss was the default: an over-wide window
+            // costs query time, never a double-applied event.
             auto today_t = std::chrono::system_clock::to_time_t(now);
 
             constexpr long kSecondsPerDay = 24 * 60 * 60;
             constexpr long kMinLookbackDays = 14;
             const long max_lookback_days = static_cast<long>(historical_days);
 
-            auto oldest_position_t = today_t;
-            std::string oldest_position_symbol;
+            std::vector<std::string> held_symbols;
+            held_symbols.reserve(previous_positions.size());
             for (const auto& [sym, pos] : previous_positions) {
-                auto pos_t = std::chrono::system_clock::to_time_t(pos.last_update);
-                if (pos_t > 0 && pos_t < oldest_position_t) {
-                    oldest_position_t = pos_t;
-                    oldest_position_symbol = sym;
-                }
+                if (pos.quantity.as_double() != 0.0) held_symbols.push_back(sym);
             }
 
-            const auto min_start_t = today_t - kMinLookbackDays * kSecondsPerDay;
-            const auto max_start_t = today_t - max_lookback_days * kSecondsPerDay;
-            auto window_start_t = std::min(oldest_position_t, min_start_t);
+            const auto bulk_start_t = today_t - max_lookback_days * kSecondsPerDay;
 
-            // Loud guard: a held position older than the price window cannot be
-            // covered, and under-applying corrupts its basis for good.
-            if (window_start_t < max_start_t) {
-                std::vector<std::string> uncovered;
-                for (const auto& [sym, pos] : previous_positions) {
-                    auto pos_t = std::chrono::system_clock::to_time_t(pos.last_update);
-                    if (pos_t > 0 && pos_t < max_start_t) uncovered.push_back(sym);
+            std::unordered_map<std::string, std::string> inception_dates;
+            auto inception_result = db->get_position_inception_dates(
+                "LIVE_EQUITY_MEAN_REVERSION", "EQUITY_MEAN_REVERSION",
+                portfolio_id, held_symbols);
+            if (inception_result.is_error()) {
+                // Fail wide, not narrow: without inception we cannot prove the
+                // floor covers the book, and under-applying is the permanent
+                // error. Treat every holding as reaching the bulk window edge.
+                WARN("Could not read position inception dates (" +
+                     std::string(inception_result.error()->what()) +
+                     ") -- falling back to the full " +
+                     std::to_string(max_lookback_days) + "-day price window");
+                for (const auto& sym : held_symbols) {
+                    inception_dates[sym] = format_ymd_utc(bulk_start_t);
                 }
-                std::string sym_list;
-                for (size_t i = 0; i < uncovered.size(); ++i) {
-                    if (i) sym_list += ", ";
-                    sym_list += uncovered[i];
-                }
-                ERROR("Corp-action window cannot cover position(s) older than the "
-                      "price window (" + std::to_string(max_lookback_days) +
-                      " days): " + sym_list +
-                      ". Applying only what the window covers would leave their cost "
-                      "basis permanently wrong. Increase live.historical_days or "
-                      "reconcile these positions before continuing.");
-                window_start_t = max_start_t;
+            } else {
+                inception_dates = inception_result.value();
             }
 
-            char today_buf[11], start_buf[11];
-            std::tm today_tm{}, start_tm{};
+            const auto window = derive_corp_action_window(
+                today_t, kMinLookbackDays, max_lookback_days, inception_dates);
+            auto window_start_t = window.start;
+            const auto& deep_symbols = window.deep_symbols;
+            const auto deep_start_t = window.deep_start;
+
             // UTC, not localtime: bar timestamps are true UTC instants, and on
             // the deployed image (TZ=America/New_York) localtime pushes every
             // key a day early.
-            gmtime_r(&today_t, &today_tm);
-            gmtime_r(&window_start_t, &start_tm);
-            std::strftime(today_buf, sizeof(today_buf), "%Y-%m-%d", &today_tm);
-            std::strftime(start_buf, sizeof(start_buf), "%Y-%m-%d", &start_tm);
+            const std::string today_buf = format_ymd_utc(today_t);
+            const std::string start_buf = format_ymd_utc(window_start_t);
 
             auto ca_result = db->get_per_bar_corporate_actions(
                 symbols, std::string(start_buf), std::string(today_buf));
@@ -743,6 +746,70 @@ int main(int argc, char* argv[]) {
                     std::strftime(dbuf, sizeof(dbuf), "%Y-%m-%d", &btm);
                     close_by_symbol_date[bar.symbol][std::string(dbuf)] =
                         bar.close.as_double();
+                }
+
+                // Top up closes for holdings established before the bulk price
+                // load, so an old position is fully covered instead of being
+                // partially adjusted. Targeted range read: the denominator needs
+                // a close AT each ex-date, not a contiguous series, so this is an
+                // indexed lookup (~45 ms for one symbol over ten years), not a
+                // re-run of the ~25 s adjusted-series query.
+                //
+                // Bound: held symbols that predate the bulk load, over their own
+                // inception -- deliberately NOT capped. A cap would reintroduce
+                // the partial coverage this replaces, and partial coverage
+                // corrupts a cost basis permanently. Measured: 10 deep symbols
+                // over 10 years = 0.97 s; the pathological case (all 852 symbols
+                // held since 2000) = 6.1 s / 4.6 M rows, which is survivable and
+                // unreachable in practice, since positions accrue gradually.
+                if (!deep_symbols.empty()) {
+                    const std::string deep_buf = format_ymd_utc(deep_start_t);
+
+                    INFO("Topping up closes for " + std::to_string(deep_symbols.size()) +
+                         " holding(s) established before the price window, from " +
+                         std::string(deep_buf));
+
+                    auto deep_result = db->get_historical_closes(
+                        deep_symbols, std::string(deep_buf), std::string(start_buf));
+                    if (deep_result.is_error()) {
+                        ERROR("Could not top up closes for holdings older than the "
+                              "price window: " +
+                              std::string(deep_result.error()->what()) +
+                              ". Their dividend adjustments would use a missing "
+                              "denominator and leave cost basis permanently wrong.");
+                    } else {
+                        size_t added = 0;
+                        for (const auto& [sym, by_date] : deep_result.value()) {
+                            for (const auto& [d, close] : by_date) {
+                                // insert, never overwrite: bars already loaded
+                                // are the authoritative frame for their dates.
+                                if (close_by_symbol_date[sym].emplace(d, close).second) ++added;
+                            }
+                        }
+                        INFO("Added " + std::to_string(added) +
+                             " historical closes for deep holdings");
+
+                        // The only genuinely unrecoverable case: no bars at all
+                        // for a symbol we hold. Everything else is now covered.
+                        std::vector<std::string> no_data;
+                        for (const auto& sym : deep_symbols) {
+                            auto it = close_by_symbol_date.find(sym);
+                            if (it == close_by_symbol_date.end() || it->second.empty()) {
+                                no_data.push_back(sym);
+                            }
+                        }
+                        if (!no_data.empty()) {
+                            std::string sym_list;
+                            for (size_t i = 0; i < no_data.size(); ++i) {
+                                if (i) sym_list += ", ";
+                                sym_list += no_data[i];
+                            }
+                            ERROR("No price history exists for held symbol(s): " +
+                                  sym_list +
+                                  ". Corporate actions on them cannot be applied at all "
+                                  "-- reconcile these positions before continuing.");
+                        }
+                    }
                 }
                 // Last close strictly BEFORE ex_date (walks back over
                 // weekends/holidays via the map's ordering). 0.0 if no bar.

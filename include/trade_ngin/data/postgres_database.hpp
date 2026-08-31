@@ -598,6 +598,50 @@ public:
         const std::vector<std::string>& tickers);
 
     /**
+     * @brief Earliest date each symbol was held (non-zero) by this strategy.
+     *
+     * The corp-action window must reach back to when a position was
+     * ESTABLISHED, not to when its row was last written. `last_update` cannot
+     * serve that purpose: load_positions_by_date() selects
+     * `WHERE DATE(last_update) = DATE($n)`, so every row it returns carries the
+     * requested date by construction, and the table has zero rows where
+     * last_update differs from date. Deriving a lookback from it always
+     * collapses to "yesterday". This queries the position history instead.
+     *
+     * Erring wide is safe: re-fetched events are rejected by
+     * trading.corp_action_applied, so the only cost of an over-wide window is
+     * query time.
+     *
+     * @return symbol -> YYYY-MM-DD of the earliest non-zero holding. Symbols
+     *         with no history are absent.
+     */
+    virtual Result<std::unordered_map<std::string, std::string>> get_position_inception_dates(
+        const std::string& strategy_id,
+        const std::string& strategy_name,
+        const std::string& portfolio_id,
+        const std::vector<std::string>& symbols,
+        const std::string& table_name = "trading.positions");
+
+    /**
+     * @brief Raw closes for specific symbols over a date range.
+     *
+     * Targeted top-up for the corp-action path when a position predates the
+     * bulk price load. The dividend denominator needs a close AT each ex-date,
+     * not a contiguous series, so this is a plain indexed range read (~45 ms
+     * for one symbol over ten years) rather than a re-run of the ~25 s
+     * adjusted-series window function.
+     *
+     * Returns RAW closes, matching close_by_symbol_date's frame -- the
+     * denominator is raw-dollar over the ex-date close (05-22 doc §B6).
+     *
+     * @return symbol -> (YYYY-MM-DD -> close).
+     */
+    virtual Result<std::unordered_map<std::string, std::map<std::string, double>>>
+    get_historical_closes(const std::vector<std::string>& symbols,
+                          const std::string& start_date,
+                          const std::string& end_date);
+
+    /**
      * @brief One corporate action already applied to a live position.
      *
      * Mirrors trading.corp_action_applied. Dividend fields are populated only

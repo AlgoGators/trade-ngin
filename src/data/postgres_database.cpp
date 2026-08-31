@@ -2667,6 +2667,99 @@ PostgresDatabase::get_delisting_dates(const std::vector<std::string>& tickers) {
     }
 }
 
+Result<std::unordered_map<std::string, std::string>>
+PostgresDatabase::get_position_inception_dates(const std::string& strategy_id,
+                                               const std::string& strategy_name,
+                                               const std::string& portfolio_id,
+                                               const std::vector<std::string>& symbols,
+                                               const std::string& table_name) {
+    using Map = std::unordered_map<std::string, std::string>;
+
+    auto validation = validate_connection();
+    if (validation.is_error()) {
+        return make_error<Map>(validation.error()->code(), validation.error()->what());
+    }
+    if (symbols.empty()) return Result<Map>(Map{});
+
+    // table_name is an internal default (trading.positions), never user input --
+    // same contract as load_positions_by_date, which interpolates it likewise.
+
+    try {
+        pqxx::work txn(*connection_);
+
+        // Earliest date this strategy ever held the symbol non-zero. Wider than
+        // the current unbroken holding period when a position was closed and
+        // reopened, which is deliberate: over-fetching is rejected by
+        // trading.corp_action_applied, while under-fetching corrupts a basis
+        // permanently.
+        auto result = txn.exec(
+            "SELECT symbol, min(date)::text AS inception "
+            "FROM " + table_name +
+                " WHERE strategy_id = $1 AND strategy_name = $2 AND portfolio_id = $3 "
+                "  AND symbol = ANY($4) AND quantity <> 0 "
+                "GROUP BY symbol",
+            pqxx::params{strategy_id, strategy_name, portfolio_id, symbols});
+
+        Map out;
+        for (const auto& row : result) {
+            if (row["inception"].is_null()) continue;
+            out.emplace(row["symbol"].c_str(), row["inception"].c_str());
+        }
+
+        txn.commit();
+        return Result<Map>(std::move(out));
+
+    } catch (const std::exception& e) {
+        return make_error<Map>(
+            ErrorCode::DATABASE_ERROR,
+            "Failed to fetch position inception dates: " + std::string(e.what()),
+            "PostgresDatabase");
+    }
+}
+
+Result<std::unordered_map<std::string, std::map<std::string, double>>>
+PostgresDatabase::get_historical_closes(const std::vector<std::string>& symbols,
+                                        const std::string& start_date,
+                                        const std::string& end_date) {
+    using Map = std::unordered_map<std::string, std::map<std::string, double>>;
+
+    auto validation = validate_connection();
+    if (validation.is_error()) {
+        return make_error<Map>(validation.error()->code(), validation.error()->what());
+    }
+    if (symbols.empty()) return Result<Map>(Map{});
+
+    try {
+        pqxx::work txn(*connection_);
+
+        // Half-open timestamp range so the (symbol, time) primary key is usable;
+        // a time::date cast here would be non-sargable, which is what made the
+        // per-bar event query 14.3 s before migration 003.
+        auto result = txn.exec(
+            "SELECT symbol, time::date::text AS bar_date, close "
+            "FROM equities_data.ohlcv_1d "
+            "WHERE symbol = ANY($1) AND time >= $2::date AND time < ($3::date + 1) "
+            "  AND close IS NOT NULL "
+            "ORDER BY symbol, time",
+            pqxx::params{symbols, start_date, end_date});
+
+        Map out;
+        for (const auto& row : result) {
+            out[row["symbol"].c_str()][row["bar_date"].c_str()] =
+                row["close"].as<double>();
+        }
+
+        txn.commit();
+        return Result<Map>(std::move(out));
+
+    } catch (const std::exception& e) {
+        return make_error<Map>(
+            ErrorCode::DATABASE_ERROR,
+            "Failed to fetch historical closes: " + std::string(e.what()),
+            "PostgresDatabase");
+    }
+}
+
 Result<std::vector<PostgresDatabase::AppliedCorpActionRow>>
 PostgresDatabase::load_applied_corp_actions(const std::string& portfolio_id,
                                             const std::string& strategy_id) {
