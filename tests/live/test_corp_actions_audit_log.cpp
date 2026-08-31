@@ -64,7 +64,7 @@ PositionAdjustment make_div_adj(const std::string& symbol,
 // First-run: load returns false, in-memory state is empty.
 TEST_F(CorpActionsAuditLogTest, FirstRunLoadReturnsFalseEmpty) {
     CorporateActionsAuditLog log(state_dir_);
-    EXPECT_FALSE(log.load());
+    EXPECT_FALSE(log.load().value());
     EXPECT_FALSE(log.is_applied("AAPL", "2020-08-31", CorpActionType::SPLIT));
 }
 
@@ -78,7 +78,7 @@ TEST_F(CorpActionsAuditLogTest, RecordSaveReloadDedupesFutureRuns) {
     }
     // Fresh instance loads from disk.
     CorporateActionsAuditLog log2(state_dir_);
-    EXPECT_TRUE(log2.load());
+    EXPECT_TRUE(log2.load().value());
     EXPECT_TRUE(log2.is_applied("AAPL", "2020-08-31", CorpActionType::SPLIT));
     EXPECT_FALSE(log2.is_applied("AAPL", "2020-08-31", CorpActionType::DIVIDEND));
     EXPECT_FALSE(log2.is_applied("NVDA", "2024-06-10", CorpActionType::SPLIT));

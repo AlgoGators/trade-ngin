@@ -106,7 +106,7 @@ TEST_F(AuditLogCumulativeDividendTest, SumPersistsAcrossReload) {
         ASSERT_TRUE(log.save());
     }
     CorporateActionsAuditLog log2(state_dir_);
-    ASSERT_TRUE(log2.load());
+    ASSERT_TRUE(log2.load().value());
     EXPECT_DOUBLE_EQ(log2.total_cumulative_dividend_income(), 55.0);
 }
 

@@ -223,3 +223,125 @@ TEST(CorpActionDedupDurability, DedupIsScopedPerStrategy) {
         << "a fresh strategy record must start empty";
     std::filesystem::remove_all(state_dir);
 }
+
+// ---------------------------------------------------------------------------
+// Fail-closed contract.
+//
+// load() used to return a bare bool for three different situations: DB read
+// error, read-OK-but-empty, and no-state-file. The caller could not tell them
+// apart, so a transient read failure produced an EMPTY applied-set and the
+// runner carried on -- making every is_applied() false and re-applying every
+// event in the window. record()'s ON CONFLICT protects the table, not the
+// positions already double-adjusted in memory and written to
+// trading.positions. E1 widened that window from 14 days to position
+// inception, so the blast radius can span years.
+// ---------------------------------------------------------------------------
+namespace {
+
+// Fails only the read; store still works, so a test can seed rows first and
+// then prove the failing read is not mistaken for "nothing applied yet".
+class ReadFailingDedupDatabase : public FakeDedupDatabase {
+public:
+    Result<std::vector<AppliedCorpActionRow>> load_applied_corp_actions(
+        const std::string&, const std::string&, const std::string&) override {
+        ++load_calls;
+        return make_error<std::vector<AppliedCorpActionRow>>(
+            ErrorCode::DATABASE_ERROR, "connection reset by peer", "FakeDedup");
+    }
+};
+
+}  // namespace
+
+// 1. A read failure is reported as an error, distinct from an empty record.
+TEST(CorpActionFailClosed, ReadFailureIsDistinctFromEmptyRecord) {
+    const auto state_dir = make_temp_state_dir("readfail");
+
+    auto broken = std::make_shared<ReadFailingDedupDatabase>();
+    CorporateActionsAuditLog failing(state_dir.string(), broken, "EQUITY_MR_PORTFOLIO",
+                                     "LIVE_EQUITY_MEAN_REVERSION", "EQUITY_MEAN_REVERSION");
+    auto failed = failing.load();
+    ASSERT_TRUE(failed.is_error())
+        << "an unreadable dedup record must surface as an error, not as false";
+
+    auto healthy = std::make_shared<FakeDedupDatabase>();
+    CorporateActionsAuditLog empty_log(state_dir.string(), healthy, "EQUITY_MR_PORTFOLIO",
+                                       "LIVE_EQUITY_MEAN_REVERSION", "EQUITY_MEAN_REVERSION");
+    auto first_run = empty_log.load();
+    ASSERT_FALSE(first_run.is_error()) << "a genuine first run is not an error";
+    EXPECT_FALSE(first_run.value()) << "and reports 'nothing loaded'";
+
+    std::filesystem::remove_all(state_dir);
+}
+
+// 2. Genuine first run still proceeds normally.
+TEST(CorpActionFailClosed, GenuineFirstRunProceeds) {
+    auto db = std::make_shared<FakeDedupDatabase>();
+    const auto state_dir = make_temp_state_dir("firstrun");
+
+    CorporateActionsAuditLog log(state_dir.string(), db, "EQUITY_MR_PORTFOLIO",
+                                 "LIVE_EQUITY_MEAN_REVERSION", "EQUITY_MEAN_REVERSION");
+    auto loaded = log.load();
+    ASSERT_FALSE(loaded.is_error());
+    EXPECT_FALSE(loaded.value());
+    EXPECT_FALSE(log.is_applied("AAPL", "2026-08-10", CorpActionType::DIVIDEND));
+
+    std::filesystem::remove_all(state_dir);
+}
+
+// 3. Legacy file present, DB empty: import runs and the load succeeds.
+TEST(CorpActionFailClosed, LegacyFileImportStillWorks) {
+    auto db = std::make_shared<FakeDedupDatabase>();
+    const auto state_dir = make_temp_state_dir("legacy");
+
+    {
+        CorporateActionsAuditLog file_only(state_dir.string());
+        file_only.record(make_dividend("MSFT", "2026-08-20", 50.0, 0.91));
+        ASSERT_TRUE(file_only.save());
+    }
+
+    CorporateActionsAuditLog log(state_dir.string(), db, "EQUITY_MR_PORTFOLIO",
+                                 "LIVE_EQUITY_MEAN_REVERSION", "EQUITY_MEAN_REVERSION");
+    auto loaded = log.load();
+    ASSERT_FALSE(loaded.is_error()) << "a successful import is not a failure";
+    EXPECT_TRUE(loaded.value()) << "imported rows must be visible to this run";
+    EXPECT_TRUE(log.is_applied("MSFT", "2026-08-20", CorpActionType::DIVIDEND))
+        << "the imported event must not be re-applied";
+
+    std::filesystem::remove_all(state_dir);
+}
+
+// 4. The regression itself: on read failure the applier must NOT be handed an
+//    empty applied-set that would re-apply an event the DB already recorded.
+TEST(CorpActionFailClosed, ReadFailureDoesNotYieldAnEmptyAppliedSet) {
+    const auto state_dir = make_temp_state_dir("noempty");
+
+    // The event IS applied as far as durable state is concerned.
+    auto broken = std::make_shared<ReadFailingDedupDatabase>();
+    broken->rows.push_back([] {
+        PostgresDatabase::AppliedCorpActionRow r;
+        r.symbol = "AAPL";
+        r.ex_date = "2026-08-10";
+        r.action_type = "DIVIDEND";
+        r.qty_held = 100.0;
+        r.dividend_per_share = 0.27;
+        r.total_cash = 27.0;
+        return r;
+    }());
+    broken->row_names.push_back("EQUITY_MEAN_REVERSION");
+
+    CorporateActionsAuditLog log(state_dir.string(), broken, "EQUITY_MR_PORTFOLIO",
+                                 "LIVE_EQUITY_MEAN_REVERSION", "EQUITY_MEAN_REVERSION");
+    auto loaded = log.load();
+
+    // The in-memory set IS empty here -- that is unavoidable, the read failed.
+    // The contract that protects positions is that load() reports the failure so
+    // the caller aborts instead of trusting this empty set. Were it to report
+    // "false / first run" (the old behaviour), the runner would proceed, find
+    // is_applied() false, and re-apply a dividend already recorded.
+    ASSERT_TRUE(loaded.is_error())
+        << "silently returning an empty applied-set re-applies every event in the window";
+    EXPECT_FALSE(log.is_applied("AAPL", "2026-08-10", CorpActionType::DIVIDEND))
+        << "the empty set is exactly why the error must be propagated";
+
+    std::filesystem::remove_all(state_dir);
+}

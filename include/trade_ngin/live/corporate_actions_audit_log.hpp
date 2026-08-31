@@ -63,11 +63,24 @@ public:
                              std::string strategy_name);
 
     /**
-     * @brief Load existing dedup records from disk.
-     * @return true if the file existed and parsed; false if first-run.
-     *         Either way, the in-memory state is initialized.
+     * @brief Load existing dedup records.
+     *
+     * Three outcomes, deliberately distinguishable -- collapsing them into one
+     * bool is what made a transient read failure look identical to a genuine
+     * first run, and an empty applied-set re-applies every event in the window
+     * (splits re-multiply quantity, dividends re-rescale basis). Since the
+     * window now reaches back to position inception rather than 14 days, that
+     * blast radius can span years.
+     *
+     * @return error  -- the dedup record could NOT be read. The caller MUST NOT
+     *                   apply corporate actions; skipping a day is recoverable
+     *                   on the next run (the window covers it), double-applying
+     *                   is not.
+     * @return true   -- records loaded; in-memory state populated.
+     * @return false  -- read succeeded and found nothing: genuine first run.
+     *                   Safe to proceed.
      */
-    bool load();
+    Result<bool> load();
 
     /**
      * @brief Has this (symbol, ex_date, action) tuple already been applied?

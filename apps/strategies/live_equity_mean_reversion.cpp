@@ -724,12 +724,26 @@ int main(int argc, char* argv[]) {
                                                   portfolio_id,
                                                   "LIVE_EQUITY_MEAN_REVERSION",
                                                   "EQUITY_MEAN_REVERSION");
-                if (!audit_log.load()) {
-                    // load() returns false on a genuine read failure as well as
-                    // on first run; the DB-backed path logs the distinction.
-                    INFO("Corp-action dedup record is empty or unreadable -- see "
-                         "any preceding error; proceeding with an empty record "
-                         "means events in the window may be re-applied");
+                auto dedup_loaded = audit_log.load();
+                if (dedup_loaded.is_error()) {
+                    // Abort rather than adjust positions against an unknown
+                    // dedup state. An empty applied-set makes every is_applied()
+                    // false, so every event in the window is re-applied: splits
+                    // re-multiply quantity, dividends re-rescale cost basis, and
+                    // the result is persisted to trading.positions. Skipping
+                    // today is recoverable -- the window reaches back to
+                    // position inception, so the next successful run applies
+                    // what was missed. Double-applying is not recoverable.
+                    ERROR("Cannot read the corp-action dedup record: " +
+                          std::string(dedup_loaded.error()->what()) +
+                          ". Refusing to apply corporate actions against an "
+                          "unknown applied-set; re-run once the database is "
+                          "reachable.");
+                    return 1;
+                }
+                if (!dedup_loaded.value()) {
+                    INFO("Corp-action dedup record read successfully and is "
+                         "empty -- genuine first run for this strategy");
                 }
 
                 // Historical close lookup keyed by (symbol, YYYY-MM-DD) so
@@ -2164,7 +2178,16 @@ int main(int argc, char* argv[]) {
                                                        portfolio_id,
                                                        "LIVE_EQUITY_MEAN_REVERSION",
                                                        "EQUITY_MEAN_REVERSION");
-                div_log.load();
+                auto div_loaded = div_log.load();
+                if (div_loaded.is_error()) {
+                    // Reporting-only: the trading decisions are already made and
+                    // persisted by this point, and this figure is informational
+                    // (never added to P&L). Under-reporting it is preferable to
+                    // failing a completed run, but it must not pass silently.
+                    WARN("Cannot read dividend income from the corp-action dedup "
+                         "record: " + std::string(div_loaded.error()->what()) +
+                         " -- reporting 0; the stored value is unaffected");
+                }
                 total_dividend_income = div_log.total_cumulative_dividend_income();
             }
 
@@ -2451,7 +2474,12 @@ int main(int argc, char* argv[]) {
                                                        portfolio_id,
                                                        "LIVE_EQUITY_MEAN_REVERSION",
                                                        "EQUITY_MEAN_REVERSION");
-                    div_log_email.load();
+                    auto div_email_loaded = div_log_email.load();
+                    if (div_email_loaded.is_error()) {
+                        WARN("Cannot read dividend income for the email report: " +
+                             std::string(div_email_loaded.error()->what()) +
+                             " -- reporting 0");
+                    }
                     strategy_metrics["Dividend Income (cumulative, informational)"] =
                         div_log_email.total_cumulative_dividend_income();
                 }

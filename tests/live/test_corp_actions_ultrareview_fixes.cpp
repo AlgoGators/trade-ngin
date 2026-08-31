@@ -148,7 +148,7 @@ TEST(CorpActionsUltrareviewFixes, AtomicSaveLeavesNoTempFile) {
     // Reload from disk and verify the JSON parsed (i.e. the file is not
     // corrupted from a half-write).
     CorporateActionsAuditLog reload(state_dir);
-    ASSERT_TRUE(reload.load());
+    ASSERT_TRUE(reload.load().value());
     EXPECT_DOUBLE_EQ(reload.total_cumulative_dividend_income(), 25.0);
 
     std::error_code ec;
@@ -193,7 +193,7 @@ TEST(CorpActionsUltrareviewFixes, AtomicSaveOverwritesStaleTempFile) {
         << "Atomic save must clean up its tmp after rename";
 
     CorporateActionsAuditLog reload(state_dir);
-    ASSERT_TRUE(reload.load());
+    ASSERT_TRUE(reload.load().value());
     EXPECT_DOUBLE_EQ(reload.total_cumulative_dividend_income(), 30.0);
 
     std::error_code ec;

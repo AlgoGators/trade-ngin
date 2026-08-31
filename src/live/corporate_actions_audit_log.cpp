@@ -33,7 +33,11 @@ bool CorporateActionsAuditLog::migrate_state_file_to_db() {
     if (!std::filesystem::exists(file_path())) return false;
 
     CorporateActionsAuditLog file_log(state_dir_);
-    if (!file_log.load()) return false;
+    auto file_loaded = file_log.load();
+    // The file-only path never reports an error today (a corrupt file is
+    // WARNed and treated as empty); handle it anyway so this stays correct if
+    // that changes.
+    if (file_loaded.is_error() || !file_loaded.value()) return false;
     if (file_log.applied_.empty()) return false;
 
     std::vector<PostgresDatabase::AppliedCorpActionRow> rows;
@@ -74,7 +78,7 @@ std::string CorporateActionsAuditLog::file_path() const {
     return state_dir_ + "/applied_corp_actions.json";
 }
 
-bool CorporateActionsAuditLog::load() {
+Result<bool> CorporateActionsAuditLog::load() {
     applied_.clear();
     dividend_events_.clear();
     pending_.clear();
@@ -86,16 +90,24 @@ bool CorporateActionsAuditLog::load() {
         if (existing.is_error()) {
             // Fail closed: an unreadable dedup record must not be mistaken for
             // "nothing applied yet", which would re-apply the whole window.
+            // Returned as an error, not false, so the caller cannot conflate it
+            // with a genuine first run and proceed.
             ERROR("CorporateActionsAuditLog: cannot read trading.corp_action_applied: " +
                   std::string(existing.error()->what()));
-            return false;
+            return make_error<bool>(ErrorCode::DATABASE_ERROR,
+                                    "cannot read trading.corp_action_applied: " +
+                                        std::string(existing.error()->what()),
+                                    "CorporateActionsAuditLog");
         }
         if (existing.value().empty() && migrate_state_file_to_db()) {
             existing = db_->load_applied_corp_actions(portfolio_id_, strategy_id_, strategy_name_);
             if (existing.is_error()) {
                 ERROR("CorporateActionsAuditLog: re-read after import failed: " +
                       std::string(existing.error()->what()));
-                return false;
+                return make_error<bool>(ErrorCode::DATABASE_ERROR,
+                                        "re-read after legacy import failed: " +
+                                            std::string(existing.error()->what()),
+                                        "CorporateActionsAuditLog");
             }
         }
 
@@ -112,14 +124,14 @@ bool CorporateActionsAuditLog::load() {
                 dividend_events_.push_back(std::move(de));
             }
         }
-        return !existing.value().empty();
+        return Result<bool>(!existing.value().empty());
     }
 
     const std::string path = file_path();
     std::ifstream f(path);
     if (!f.is_open()) {
         // First run for this strategy. Not an error.
-        return false;
+        return Result<bool>(false);
     }
 
     try {
@@ -155,9 +167,9 @@ bool CorporateActionsAuditLog::load() {
              " -- treating as empty");
         applied_.clear();
         dividend_events_.clear();
-        return false;
+        return Result<bool>(false);
     }
-    return true;
+    return Result<bool>(true);
 }
 
 bool CorporateActionsAuditLog::is_applied(const std::string& symbol,
