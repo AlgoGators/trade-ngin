@@ -30,7 +30,13 @@ struct CorpActionEvent {
     std::string ex_date;          // YYYY-MM-DD
     CorpActionType type{CorpActionType::UNKNOWN};
     double value{0.0};            // split factor OR dividend $/share
-    double close_t_minus_1{0.0};  // required for DIVIDEND only; close at ex_date-1
+    // Required for DIVIDEND only. Despite the name this now carries the close
+    // ON the ex-date, which is the denominator build_equity_adjusted_query uses
+    // (it scales pre-dividend bars by close_D / (close_D + div_D)). Using
+    // close[ex_date - 1] here instead puts cost basis in a slightly different
+    // frame than the marks, drifting on every dividend. Name kept to avoid
+    // churning four test files; see test_corp_actions_frame_consistency.
+    double close_t_minus_1{0.0};
     // Quantity held at end of business on ex_date - 1 (the eligibility cutoff
     // for cash dividends). Optional: when > 0, the applier records this on
     // PositionAdjustment.quantity_before/after for DIVIDEND events instead of

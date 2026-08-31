@@ -197,7 +197,14 @@ int main(int argc, char* argv[]) {
         // Get current date for daily processing (or use override date)
         auto now = use_override_date ? target_date : std::chrono::system_clock::now();
         auto now_time_t = std::chrono::system_clock::to_time_t(now);
-        std::tm* now_tm = std::localtime(&now_time_t);
+        // UTC, and a local struct rather than localtime's shared static buffer.
+        // A run-date override parses to UTC midnight, so rendering it through
+        // localtime on the deployed image (TZ=America/New_York) names the
+        // PREVIOUS day -- shifting the trading-date key this whole run writes
+        // under, and the day-of-week it branches on.
+        std::tm now_tm_storage{};
+        gmtime_r(&now_time_t, &now_tm_storage);
+        std::tm* now_tm = &now_tm_storage;
 
         // Set start date based on config historical_days
         int historical_days = app_config.live.historical_days;
@@ -730,7 +737,8 @@ int main(int argc, char* argv[]) {
                     close_by_symbol_date;
                 for (const auto& bar : all_bars) {
                     auto bt = std::chrono::system_clock::to_time_t(bar.timestamp);
-                    std::tm btm = *std::localtime(&bt);
+                    std::tm btm{};
+                    gmtime_r(&bt, &btm);
                     char dbuf[11];
                     std::strftime(dbuf, sizeof(dbuf), "%Y-%m-%d", &btm);
                     close_by_symbol_date[bar.symbol][std::string(dbuf)] =
@@ -738,6 +746,15 @@ int main(int argc, char* argv[]) {
                 }
                 // Last close strictly BEFORE ex_date (walks back over
                 // weekends/holidays via the map's ordering). 0.0 if no bar.
+                // Close ON ex_date -- the denominator the price series uses.
+                auto close_on = [&](const std::string& symbol,
+                                    const std::string& ex_date) -> double {
+                    auto sym_it = close_by_symbol_date.find(symbol);
+                    if (sym_it == close_by_symbol_date.end()) return 0.0;
+                    auto it = sym_it->second.find(ex_date);
+                    return it == sym_it->second.end() ? 0.0 : it->second;
+                };
+
                 auto close_before = [&](const std::string& symbol,
                                         const std::string& ex_date) -> double {
                     auto sym_it = close_by_symbol_date.find(symbol);
@@ -797,12 +814,33 @@ int main(int argc, char* argv[]) {
                     ev.type = type;
                     ev.value = row.value;
                     if (type == CorpActionType::DIVIDEND) {
-                        // bug_002: use close at THIS event's ex_date - 1.
-                        // Fall back to today's T-1 with a warning if not in
-                        // the loaded bar window (rare; the strategy's
-                        // historical_days window should cover the 14-day
-                        // catch-up easily).
-                        double c = close_before(row.ticker, row.date_str);
+                        // Denominator must be THIS event's EX-DATE close, because
+                        // that is the close the price series itself divides by.
+                        // build_equity_adjusted_query scales every pre-dividend
+                        // bar by close_D / (close_D + div_D), so a basis rescaled
+                        // by 1 + div/close_(D-1) would land in a slightly
+                        // different frame than the marks it is compared against
+                        // -- a small systematic drift on every dividend.
+                        //
+                        // This is a different axis from the deliberate
+                        // raw-dollar / adjusted-close frame mix documented in
+                        // 05-22 §B6, which is preserved: the dividend amount is
+                        // still a raw dollar figure and the close is still an
+                        // adjusted one. Only WHICH close changed.
+                        //
+                        // Note this was previously masked: with dates formatted
+                        // via localtime on a TZ=America/New_York host, keys
+                        // shifted a day and close_before() happened to return the
+                        // ex-date close. Fixing the timezone alone would have
+                        // moved the denominator to the wrong close, which is why
+                        // the two land together.
+                        double c = close_on(row.ticker, row.date_str);
+                        if (c <= 0.0) {
+                            // No bar on the ex-date itself (suspended, holiday
+                            // mislabel): the last close before it is the closest
+                            // available stand-in.
+                            c = close_before(row.ticker, row.date_str);
+                        }
                         if (c <= 0.0) {
                             auto p_it = previous_day_close_prices.find(row.ticker);
                             c = (p_it != previous_day_close_prices.end()) ? p_it->second : 0.0;
@@ -877,7 +915,8 @@ int main(int argc, char* argv[]) {
         // non-fatal: the position map is left as-is and the run continues.
         if (!previous_positions.empty()) {
             auto today_t2 = std::chrono::system_clock::to_time_t(now);
-            std::tm today_tm2 = *std::localtime(&today_t2);
+            std::tm today_tm2{};
+            gmtime_r(&today_t2, &today_tm2);
             char today_buf2[11];
             std::strftime(today_buf2, sizeof(today_buf2), "%Y-%m-%d", &today_tm2);
             const std::string as_of_date(today_buf2);
@@ -885,7 +924,8 @@ int main(int argc, char* argv[]) {
             // vendor's publication, so look back further than the class-1
             // 14-day window.
             auto lifecycle_start_t = today_t2 - 90 * 24 * 60 * 60;
-            std::tm lifecycle_start_tm = *std::localtime(&lifecycle_start_t);
+            std::tm lifecycle_start_tm{};
+            gmtime_r(&lifecycle_start_t, &lifecycle_start_tm);
             char lifecycle_start_buf[11];
             std::strftime(lifecycle_start_buf, sizeof(lifecycle_start_buf), "%Y-%m-%d",
                           &lifecycle_start_tm);
