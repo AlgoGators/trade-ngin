@@ -11,17 +11,6 @@
 
 namespace trade_ngin {
 
-namespace {
-
-CorpActionType parse_type(const std::string& s) {
-    if (s == "SPLIT") return CorpActionType::SPLIT;
-    if (s == "ADR_SPLIT") return CorpActionType::ADR_SPLIT;
-    if (s == "DIVIDEND") return CorpActionType::DIVIDEND;
-    return CorpActionType::UNKNOWN;
-}
-
-}  // namespace
-
 CorporateActionsAuditLog::CorporateActionsAuditLog(std::string state_dir)
     : state_dir_(std::move(state_dir)) {}
 
@@ -146,7 +135,8 @@ bool CorporateActionsAuditLog::load() {
                 applied_.emplace(
                     entry["symbol"].get<std::string>(),
                     entry["ex_date"].get<std::string>(),
-                    parse_type(entry["action"].get<std::string>()));
+                    CorporateActionsApplier::type_from_type_string(
+                        entry["action"].get<std::string>()));
             }
         }
         if (j.contains("dividend_events") && j["dividend_events"].is_array()) {
