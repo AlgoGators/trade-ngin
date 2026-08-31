@@ -67,3 +67,65 @@ pass absolute), G-7 (borrow fees skip weekends, ~28% undercount), L3, L4, L8, L9
 Every fix needs a test that provably fails before it. FIX-0 and F-B/F-E additionally need
 DB-level verification (read back what actually landed, per the log↔DB rule). No runner
 executes until Wave 1+2 are green. Suite must not drop below 1431.
+
+---
+
+## E2 SCOPE — expanded (HD directive, 2026-08-31)
+
+E2 verifies **both asset classes**, each with the full bar: inline logs reconciled against
+**every** table written, per-action sanity checks, performance observed, and baseline
+comparison where a baseline exists. Runners strictly sequential throughout.
+
+### E2-A — futures (regression: nothing may have moved)
+Full run + log↔DB reconciliation + performance. Baseline exists (integration-gate window
+2024-06-25 → 2026-06-25, pre-dates the 08-06 feed death), so this is a true before/after.
+Expected: **identical**. Any delta must be attributed or is a blocker.
+
+### E2-B — equities (first execution ever of this path)
+No live baseline exists — the first run *establishes* it. Two sequential runs minimum:
+run 1 creates the book, run 2 is the first that can exercise corporate actions at all
+(run 1 skips the block by its own `!previous_positions.empty()` guard).
+
+### E2-C — mean-reversion behaviour-change sanity checks (because of F-B seeding)
+
+Seeding deliberately changes live exit behaviour. These bound the change to exactly what
+was intended and no more:
+
+1. **Backtest must be UNCHANGED.** The backtest never used seeding — `positions_`
+   accumulates in-process. Re-run the equity backtest before/after the F-B change:
+   **byte-identical output required.** A backtest delta means the fix leaked somewhere it
+   does not belong. This is the strongest single guard.
+2. **Day 1 (empty book) must be inert.** With nothing to seed, seeded and unseeded runs
+   must produce identical signals, positions and executions. Proves the change cannot
+   affect a flat book.
+3. **Day 2+ differences must be confined to HELD symbols.** Any symbol that was flat at
+   the start of the day must produce the same signal as before. A flat symbol changing
+   behaviour means seeding altered the entry branch, which it must not.
+4. **Exit threshold now governs exits.** A held long must exit at `z > −exit_threshold`
+   (−0.5), not at `z > −entry_threshold` (−2.0). Capture the z-score at each exit and
+   confirm which threshold it corresponds to. This is the intended change, and it must be
+   observed rather than assumed.
+5. **Stop-loss must be reachable.** Confirm the 5% stop can fire — via a seeded scenario
+   if the replay window contains no natural trigger. It has been dead code; "no stop-loss
+   fired" is not evidence that it works.
+6. **Stop-loss must fire against the TRUE entry basis, not the T-1 close.** This is the
+   F-E coupling: verify `average_price` on a held-but-untraded position does not drift
+   day over day. If it drifts, F-E is not fixed and the stop-loss is measuring from the
+   wrong reference.
+7. **Live↔backtest parity should IMPROVE.** Before F-B they diverge structurally (live
+   always takes the flat-book branch). After, the same window should converge. Quantify
+   both — a parity check that was meaningless before should now have content. This is
+   T-OR.5 strengthened from construction-drift to genuine runner-path parity.
+8. **Turnover and holding periods should move toward backtest expectations.** Live
+   previously exited early, so it over-traded. Compare trade counts and average holding
+   period against the backtest for the same window; the gap should narrow, not widen.
+
+### E2-D — mandatory observations (from earlier, still in force)
+- `find_previous_trading_day` resolved date, checked against weekend/holiday/last-bar.
+- Corp-action window start must report its DERIVATION RULE; a 14-day floor reported while
+  positions are held is a contradiction to investigate.
+- Runs scheduled **before 20:00 EDT** (F-C order_id boundary).
+
+### Sequence agreed
+docs (this) → Wave 1 → Wave 2 → **independent confirmation agent** → E2. No runner
+executes before that confirmation passes.
