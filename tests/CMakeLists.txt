@@ -7,14 +7,12 @@ set(TEST_SOURCES
     core/test_config_manager.cpp
     core/test_config_version.cpp
     core/test_config_base.cpp
-    core/test_holiday_lookback.cpp
+    core/test_holiday_checker.cpp
     core/test_run_id_generator.cpp
     core/test_config_loader.cpp
     data/test_db_utils.cpp
     data/test_utc_date_contract.cpp
     data/test_postgres_param_safety.cpp
-    core/test_holiday_path_resolution.cpp
-    core/test_holiday_calendar_coverage.cpp
     instruments/test_equity_market_hours_exchange.cpp
     data/test_postgres_database.cpp
     data/test_database_pooling.cpp
@@ -34,8 +32,6 @@ set(TEST_SOURCES
     optimization/test_dynamic_optimizer.cpp
     backtest/test_transaction_cost_analysis.cpp
     transaction_cost/test_transaction_cost_manager.cpp
-    transaction_cost/test_unknown_equity_costs_dispatch.cpp
-    transaction_cost/test_equity_borrow_fees.cpp
     transaction_cost/test_spread_model.cpp
     transaction_cost/test_impact_model.cpp
     live/corp_actions/test_applier.cpp

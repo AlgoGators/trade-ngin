@@ -26,6 +26,8 @@
 #include "trade_ngin/core/types.hpp"
 
 // ---------------------------------------------------------------------------
+// SUBJECT: the record's basic contract -- first run is empty, a recorded
+// event survives save/reload, and a second run does not re-apply it.
 // from test_corp_actions_audit_log.cpp
 // Wrapped in a namespace so its file-local helpers cannot collide with the
 // other sections; gtest test identities are unaffected.
@@ -155,6 +157,10 @@ TEST_F(CorpActionsAuditLogTest, IdempotencyAcrossTwoRuns) {
 }  // namespace audit_core
 
 // ---------------------------------------------------------------------------
+// SUBJECT: dedup that survives reality -- a wiped state directory, a legacy
+// file import, two strategies sharing one strategy_id, and a read failure
+// that must NOT read as 'nothing applied yet'. Re-application is permanent
+// corruption, so these are the highest-stakes cases in the component.
 // from test_corp_actions_dedup_durability.cpp
 // Wrapped in a namespace so its file-local helpers cannot collide with the
 // other sections; gtest test identities are unaffected.
@@ -653,6 +659,7 @@ TEST(CorpActionRenameBridge, OnlyTheDatabaseBackingBridgesRenames) {
 }  // namespace audit_dedup
 
 // ---------------------------------------------------------------------------
+// SUBJECT: the cash figure recorded per event, measured at the ex-date.
 // from ur_audit.cpp
 // Wrapped in a namespace so its file-local helpers cannot collide with the
 // other sections; gtest test identities are unaffected.

@@ -116,11 +116,6 @@ public:
     }
 
     /**
-     * @brief Years the loaded calendar can answer for.
-     */
-    const std::set<int>& coverage_years() const { return covered_years_; }
-
-    /**
      * @brief Whether the calendar covers `year`.
      */
     bool covers_year(int year) const {

@@ -28,6 +28,9 @@
 #include "trade_ngin/live/corporate_actions_audit_log.hpp"
 
 // ---------------------------------------------------------------------------
+// SUBJECT: core applier arithmetic -- a split multiplies quantity and divides
+// basis so position VALUE is unchanged; a dividend rescales basis only. Also
+// the skip paths: unknown symbol, zero quantity, malformed factors.
 // from test_corp_actions_applier.cpp
 // Wrapped in a namespace so its file-local helpers cannot collide with the
 // other sections; gtest test identities are unaffected.
@@ -215,6 +218,9 @@ TEST(CorpActionsApplierTest, TypeFromActionString) {
 }  // namespace applier_core
 
 // ---------------------------------------------------------------------------
+// SUBJECT: the applier's dividend denominator must match the price series.
+// Both use the ex-date close, so basis adjustment and mark move together --
+// a mismatch here silently biases every dividend.
 // from test_corp_actions_frame_consistency.cpp
 // Wrapped in a namespace so its file-local helpers cannot collide with the
 // other sections; gtest test identities are unaffected.
@@ -354,6 +360,8 @@ TEST(CorpActionFrameConsistency, DateKeysAreUtcRegardlessOfHostTimezone) {
 }  // namespace applier_frame
 
 // ---------------------------------------------------------------------------
+// SUBJECT: a position held across many events accumulates them correctly,
+// i.e. repeated application composes rather than drifting.
 // from test_corp_actions_long_hold_total_return.cpp
 // Wrapped in a namespace so its file-local helpers cannot collide with the
 // other sections; gtest test identities are unaffected.
@@ -427,6 +435,8 @@ TEST(CorpActionsLongHoldTotalReturnTest, FourQuarterlyDividendsCaptureTotalRetur
 }  // namespace applier_long_hold
 
 // ---------------------------------------------------------------------------
+// SUBJECT: quantity as of the ex-date -- the applier must size the dividend
+// on shares actually held that day, not on today's (possibly changed) size.
 // from ur_applier.cpp
 // Wrapped in a namespace so its file-local helpers cannot collide with the
 // other sections; gtest test identities are unaffected.

@@ -1,13 +1,35 @@
-#include <gtest/gtest.h>
+// TransactionCostManager -- all cost paths for the component in one place.
+//
+// Sections below: registering equity costs from bars (the ADV/spread
+// classifier), overnight borrow-fee accrual on short equity, and the
+// calculate_costs fallback when a symbol has no registered config.
+
 #include <chrono>
+#include <cmath>
+#include <gtest/gtest.h>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
+
+#include "../core/test_base.hpp"
+#include "../data/test_db_utils.hpp"
 #include "trade_ngin/core/types.hpp"
+#include "trade_ngin/instruments/equity.hpp"
+#include "trade_ngin/instruments/instrument_registry.hpp"
 #include "trade_ngin/transaction_cost/transaction_cost_manager.hpp"
 
 using namespace trade_ngin;
 using namespace trade_ngin::transaction_cost;
+using namespace trade_ngin::testing;
+
+// ──────────────────────────────────────────────────────────────────────────
+// Equity cost registration from bars -- the ADV classifier.
+// register_equity_costs_from_bars derives a liquidity tier from recent
+// volume, so a thinly-traded symbol is not charged mega-cap spreads. Pins
+// the tier boundaries and that the wiring is actually reached.
+// (was: test_adv_classifier_wireup.cpp)
+// ──────────────────────────────────────────────────────────────────────────
 
 // Regression test for audit finding §1.1 — Phase 1a-ii wire-up. Before this
 // fix, every traded equity needed an explicit hardcoded config in
@@ -125,4 +147,278 @@ TEST(ADVClassifierWireupTest, MultipleSymbolsBatch) {
     EXPECT_EQ(tcm.get_asset_config("AAPL").asset_type, AssetType::EQUITY);
     EXPECT_EQ(tcm.get_asset_config("MSFT").asset_type, AssetType::EQUITY);
     EXPECT_EQ(tcm.get_asset_config("NVDA").asset_type, AssetType::EQUITY);
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Overnight borrow fees -- short equity carry.
+// A short equity position accrues a borrow fee per calendar day held.
+// Hard-to-borrow names cost more, and the accrual must not fire for longs
+// or on an account mode that forbids shorting.
+// (was: test_equity_borrow_fees.cpp)
+// ──────────────────────────────────────────────────────────────────────────
+
+// Audit tests T2.6, T2.7, T2.8 -- borrow fee model on TCM (§3.2).
+// Multi-factor risk scoring (dollar-volume + price + is_easy_to_borrow flag)
+// × volatility multiplier × short notional / 365. Per-symbol
+// borrow_rate_override bypasses the formula.
+
+namespace {
+
+// Synthesize bars at constant price/volume so ADV is exactly `volume`.
+std::vector<Bar> bars_for(const std::string& symbol, int days, double price, double volume) {
+    std::vector<Bar> bars;
+    bars.reserve(days);
+    auto now = std::chrono::system_clock::now();
+    for (int i = 0; i < days; ++i) {
+        Bar b;
+        b.symbol = symbol;
+        b.timestamp = now - std::chrono::hours(24 * (days - i));
+        b.open = price;
+        b.high = price * 1.001;
+        b.low = price * 0.999;
+        b.close = price;
+        b.volume = volume;
+        bars.push_back(b);
+    }
+    return bars;
+}
+
+EquitySpec regt_spec(bool shorts = true) {
+    EquitySpec spec;
+    spec.exchange = "NASDAQ";
+    spec.currency = "USD";
+    spec.tick_size = 0.01;
+    spec.account_mode = EquityAccountMode::REG_T;
+    spec.short_selling_allowed = shorts;
+    return spec;
+}
+
+class BorrowFeesTest : public TestBase {
+protected:
+    void SetUp() override {
+        TestBase::SetUp();
+        auto& registry = InstrumentRegistry::instance();
+        auto db = std::make_shared<MockPostgresDatabase>("mock://borrow_fees_test");
+        ASSERT_TRUE(db->connect().is_ok());
+        (void)registry.initialize(db);  // Idempotent.
+    }
+};
+
+}  // namespace
+
+// T2.6: REG_T short 100 AAPL @ $150, mega-cap (ADV >10M -> dollar volume
+// >$1.5B/day, no flag), price > $10 (no flag), default is_easy_to_borrow=true
+// (no flag) -> 0 flags -> 25 bps base. Annual vol 25% -> multiplier 1.0.
+// Daily fee = 0.0025 * $15,000 / 365 ~= $0.1027.
+TEST_F(BorrowFeesTest, MegaCapShortYieldsLowFee) {
+    TransactionCostManager::Config tcm_config;
+    TransactionCostManager tcm(tcm_config);
+    auto& registry = InstrumentRegistry::instance();
+
+    const std::string sym = "PHASE2_T26_AAPL";
+    registry.register_instrument(sym, std::make_shared<EquityInstrument>(sym, regt_spec()));
+
+    // Register equity cost config so impact_model knows the ADV.
+    std::unordered_map<std::string, std::vector<Bar>> bars;
+    bars[sym] = bars_for(sym, 30, 150.0, 50'000'000.0);
+    tcm.register_equity_costs_from_bars({sym}, bars);
+
+    // Feed log returns to seed the vol estimate at 25% annualized.
+    // daily_log_return for 25% annual vol = 0.25/sqrt(252) ~ 0.01575.
+    const double daily_ret = 0.25 / std::sqrt(252.0);
+    for (int i = 0; i < 22; ++i) {
+        const double r = (i % 2 == 0) ? daily_ret : -daily_ret;
+        tcm.update_market_data(sym, 50'000'000.0, 150.0 + r * 150.0, 150.0);
+    }
+
+    // Short 100 shares.
+    std::unordered_map<std::string, Position> positions;
+    Position p;
+    p.symbol = sym;
+    p.quantity = -100.0;
+    p.average_price = 150.0;
+    positions[sym] = p;
+
+    std::unordered_map<std::string, double> prices;
+    prices[sym] = 150.0;
+
+    auto fees = tcm.calculate_overnight_borrow_fees(positions, prices, registry);
+    ASSERT_EQ(fees.size(), 1u);
+
+    const double expected = 0.0025 * 15000.0 / 365.0;  // ~0.1027
+    EXPECT_NEAR(fees.at(sym), expected, 0.05)
+        << "Mega-cap short fee should be ~$0.10/day (25 bps × $15K / 365); "
+           "got " << fees.at(sym);
+}
+
+// T2.7: short 100 of small-cap @ $4. ADV 80K -> dollar volume $320K/day -> 1 flag.
+// Price < $5 -> 1 flag. is_easy_to_borrow=true so no extra flag. Total 2 flags
+// -> 150 bps base. Annual vol set to 75% -> raw multiplier 3.0 (capped).
+// Annual rate = 0.015 × 3.0 = 0.045 (4.5%). Daily fee = 0.045 × $400 / 365 ~= $0.0493.
+TEST_F(BorrowFeesTest, SmallCapHighVolYieldsScaledFee) {
+    TransactionCostManager::Config tcm_config;
+    TransactionCostManager tcm(tcm_config);
+    auto& registry = InstrumentRegistry::instance();
+
+    const std::string sym = "PHASE2_T27_SMALLCAP";
+    registry.register_instrument(sym, std::make_shared<EquityInstrument>(sym, regt_spec()));
+
+    std::unordered_map<std::string, std::vector<Bar>> bars;
+    bars[sym] = bars_for(sym, 30, 4.0, 80'000.0);
+    tcm.register_equity_costs_from_bars({sym}, bars);
+
+    // Seed 75% annual vol via daily log returns.
+    const double daily_ret = 0.75 / std::sqrt(252.0);
+    for (int i = 0; i < 22; ++i) {
+        const double r = (i % 2 == 0) ? daily_ret : -daily_ret;
+        tcm.update_market_data(sym, 80'000.0, 4.0 + r * 4.0, 4.0);
+    }
+
+    std::unordered_map<std::string, Position> positions;
+    Position p;
+    p.symbol = sym;
+    p.quantity = -100.0;
+    p.average_price = 4.0;
+    positions[sym] = p;
+
+    std::unordered_map<std::string, double> prices;
+    prices[sym] = 4.0;
+
+    auto fees = tcm.calculate_overnight_borrow_fees(positions, prices, registry);
+    ASSERT_EQ(fees.size(), 1u);
+
+    // 2 flags -> 150 bps base. 75% vol -> 3× cap. Annual rate = 0.045.
+    // Daily fee = 0.045 × $400 / 365 ~= $0.0493
+    const double expected = 0.045 * 400.0 / 365.0;
+    EXPECT_NEAR(fees.at(sym), expected, 0.02)
+        << "Small-cap high-vol short should scale via 2-flag base × 3× vol mult; "
+           "got " << fees.at(sym);
+}
+
+// T2.8: borrow_rate_override = 0.50 (50% annual). Formula is bypassed entirely.
+// Daily fee = 0.50 × $15,000 / 365 ~= $20.55.
+TEST_F(BorrowFeesTest, OverrideBypassesFormula) {
+    TransactionCostManager::Config tcm_config;
+    TransactionCostManager tcm(tcm_config);
+    auto& registry = InstrumentRegistry::instance();
+
+    const std::string sym = "PHASE2_T28_OVERRIDE";
+    EquitySpec spec = regt_spec();
+    spec.borrow_rate_override = 0.50;
+    registry.register_instrument(sym, std::make_shared<EquityInstrument>(sym, spec));
+
+    // No ADV / vol seeding -- override means formula isn't consulted.
+
+    std::unordered_map<std::string, Position> positions;
+    Position p;
+    p.symbol = sym;
+    p.quantity = -100.0;
+    p.average_price = 150.0;
+    positions[sym] = p;
+
+    std::unordered_map<std::string, double> prices;
+    prices[sym] = 150.0;
+
+    auto fees = tcm.calculate_overnight_borrow_fees(positions, prices, registry);
+    ASSERT_EQ(fees.size(), 1u);
+
+    const double expected = 0.50 * 15000.0 / 365.0;  // ~$20.55
+    EXPECT_NEAR(fees.at(sym), expected, 0.05)
+        << "Override should bypass formula; expected " << expected
+        << ", got " << fees.at(sym);
+}
+
+// Longs and non-equities should be skipped (no borrow fee).
+TEST_F(BorrowFeesTest, LongsAndNonEquitiesAreSkipped) {
+    TransactionCostManager::Config tcm_config;
+    TransactionCostManager tcm(tcm_config);
+    auto& registry = InstrumentRegistry::instance();
+
+    const std::string sym = "PHASE2_T28_LONG";
+    registry.register_instrument(sym, std::make_shared<EquityInstrument>(sym, regt_spec()));
+
+    std::unordered_map<std::string, Position> positions;
+    Position p;
+    p.symbol = sym;
+    p.quantity = 100.0;  // Long.
+    p.average_price = 150.0;
+    positions[sym] = p;
+
+    std::unordered_map<std::string, double> prices;
+    prices[sym] = 150.0;
+
+    auto fees = tcm.calculate_overnight_borrow_fees(positions, prices, registry);
+    EXPECT_TRUE(fees.empty()) << "Long positions must not accrue borrow fees.";
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Unregistered-symbol dispatch -- the calculate_costs fallback.
+// An equity symbol with no registered cost config must fall back to a
+// documented default rather than silently costing zero, which would make a
+// backtest look cheaper than reality.
+// (was: test_unknown_equity_costs_dispatch.cpp)
+// ──────────────────────────────────────────────────────────────────────────
+
+// Regression test for audit finding §1.1 dispatch dead-end.
+//
+// Before Phase 1a-i, TransactionCostManager::calculate_costs() called
+// asset_configs_.get_config(symbol) without asset_type. The default branch
+// at asset_cost_config.cpp:670 gated on `asset_type == EQUITY` but always
+// received NONE, so unknown equity symbols fell through to the futures
+// default: point_value=100, commission=$1.50/share. ~157× cost overstatement.
+//
+// Post-fix, calculate_costs accepts an optional `asset_type` parameter that
+// threads through to get_config, allowing equity callers to opt into the
+// correct fallback even for unregistered symbols.
+
+// Unregistered symbol "ZZZZ", buy 100 shares at $50.
+// With AssetType::EQUITY hint: commission = max($1 floor, 100 × $0.005) = $1.00.
+// Without the hint: commission would be 100 × $1.50 = $150 (futures fallback).
+TEST(UnknownEquityCostsDispatchTest, EquityHintRoutesUnregisteredToEquityDefault) {
+    TransactionCostManager::Config tcm_config;
+    TransactionCostManager tcm(tcm_config);
+
+    // No registration of "ZZZZ"; calling code passes AssetType::EQUITY so
+    // the fallback at AssetCostConfigRegistry::get_config returns equity
+    // defaults instead of futures defaults.
+    auto result = tcm.calculate_costs("ZZZZ", /*quantity=*/100.0,
+                                       /*reference_price=*/50.0,
+                                       AssetType::EQUITY);
+
+    // $1.00 min commission floor binds (raw = 100 × $0.005 = $0.50).
+    EXPECT_NEAR(result.commissions_fees, 1.00, 0.01)
+        << "Unregistered equity should fall back to equity default ($0.005/share, $1 min). "
+        << "Got " << result.commissions_fees
+        << " -- if this is ~$150, the dispatch dead-end has regressed.";
+}
+
+// Larger trade so the per-share rate exceeds the floor. 500 shares × $0.005 = $2.50.
+TEST(UnknownEquityCostsDispatchTest, EquityHintScalesByShares) {
+    TransactionCostManager::Config tcm_config;
+    TransactionCostManager tcm(tcm_config);
+
+    auto result = tcm.calculate_costs("UNKNOWN_LARGE", /*quantity=*/500.0,
+                                       /*reference_price=*/100.0,
+                                       AssetType::EQUITY);
+    EXPECT_NEAR(result.commissions_fees, 2.50, 0.01)
+        << "500 × $0.005 = $2.50; got " << result.commissions_fees;
+}
+
+// Without the hint, an unknown symbol still gets the legacy futures default.
+// This documents the contract: callers MUST pass AssetType::EQUITY for the
+// equity fallback to apply.
+TEST(UnknownEquityCostsDispatchTest, WithoutHintFallsThroughToFuturesDefault) {
+    TransactionCostManager::Config tcm_config;
+    TransactionCostManager tcm(tcm_config);
+
+    // No asset_type hint -> defaults to AssetType::NONE -> falls through to
+    // get_default_config() (futures: point_value=100, commission absent so
+    // global config_.explicit_fee_per_contract kicks in).
+    auto result = tcm.calculate_costs("UNKNOWN_NO_HINT", /*quantity=*/100.0,
+                                       /*reference_price=*/50.0);
+    // Documents that the unhinted path is NOT equity-shaped. Production
+    // callers that handle equities should always pass AssetType::EQUITY.
+    EXPECT_GT(result.commissions_fees, 1.50)
+        << "Without an equity hint, fallback should still be futures-shaped. "
+           "If this asserts because the result is ~$1, dispatch defaults changed.";
 }
