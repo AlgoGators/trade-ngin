@@ -567,21 +567,19 @@ Result<std::vector<std::string>> PostgresDatabase::get_symbols(AssetClass asset_
                                                         table_validation.error()->what());
         }
 
-        // Use different column names for equities vs futures
-        std::string symbol_col = (asset_class == AssetClass::EQUITIES) ? "ticker" : "symbol";
-        std::string time_col = (asset_class == AssetClass::EQUITIES) ? "date" : "time";
-
+        // All asset-class tables share the symbol/time naming (the old Sharadar
+        // ticker/date shape now lives only in equities_data.sharadar_ohlcv_1d).
         std::string query =
             "WITH latest_data AS ("
-            "   SELECT DISTINCT ON (" + symbol_col + ") " + symbol_col + ", " + time_col + " "
+            "   SELECT DISTINCT ON (symbol) symbol, time "
             "   FROM " +
             full_table_name +
             " "
-            "   ORDER BY " + symbol_col + ", " + time_col + " DESC"
+            "   ORDER BY symbol, time DESC"
             ") "
-            "SELECT " + symbol_col + " "
+            "SELECT symbol "
             "FROM latest_data "
-            "ORDER BY " + symbol_col;
+            "ORDER BY symbol";
 
         auto result = txn.exec(query);
 
@@ -630,19 +628,16 @@ Result<std::unordered_map<std::string, double>> PostgresDatabase::get_latest_pri
                 symbol_validation.error()->code(), symbol_validation.error()->what());
         }
 
-        // Query to get latest close price for each symbol
-        // Equity tables use ticker/date/closeadj instead of symbol/time/close
-        std::string symbol_col = (asset_class == AssetClass::EQUITIES) ? "ticker" : "symbol";
-        std::string time_col = (asset_class == AssetClass::EQUITIES) ? "date" : "time";
-        std::string close_col = (asset_class == AssetClass::EQUITIES) ? "closeadj" : "close";
-
+        // Query to get latest close price for each symbol. The latest bar's raw
+        // close IS its adjusted close (backward adjustment anchors factor 1 on
+        // the newest bar), so equities need no special-casing here.
         std::string query =
-            "SELECT DISTINCT ON (" + symbol_col + ") " + symbol_col + ", " + close_col + " "
+            "SELECT DISTINCT ON (symbol) symbol, close "
             "FROM " +
             full_table_name +
             " "
-            "WHERE " + symbol_col + " = ANY($1) "
-            "ORDER BY " + symbol_col + ", " + time_col + " DESC";
+            "WHERE symbol = ANY($1) "
+            "ORDER BY symbol, time DESC";
 
         auto result = txn.exec(query, pqxx::params{symbols});
         txn.commit();
@@ -873,24 +868,18 @@ Result<pqxx::result> PostgresDatabase::execute_market_data_query(
 
     std::string full_table_name = build_table_name(asset_class, data_type, freq);
 
-    // Select columns based on asset class. Equities use adjusted columns aliased to
-    // plain names; all other classes use unadjusted columns directly.
-    std::string columns = market_data_utils::get_market_data_columns(asset_class);
-
-    // Base query with parameterized timestamps
-    std::string base_query =
-        "SELECT " + columns +
-        " FROM " +
-        full_table_name +
-        " "
-        "WHERE time BETWEEN $1 AND $2";
-
     std::string start_ts = format_timestamp(start_date);
     std::string end_ts = format_timestamp(end_date);
 
     if (symbols.empty()) {
-        // No symbol filter
-        std::string query = base_query + " ORDER BY time, symbol";
+        // No symbol filter. Equities compute per-bar backward adjustment in the
+        // query; other classes read plain columns.
+        std::string query =
+            (asset_class == AssetClass::EQUITIES)
+                ? market_data_utils::build_equity_adjusted_query(full_table_name, false)
+                : "SELECT " + market_data_utils::get_market_data_columns(asset_class) +
+                      " FROM " + full_table_name +
+                      " WHERE time BETWEEN $1 AND $2 ORDER BY time, symbol";
         try {
             return Result<pqxx::result>(txn.exec(query, pqxx::params{start_ts, end_ts}));
         } catch (const std::exception& e) {
@@ -905,8 +894,13 @@ Result<pqxx::result> PostgresDatabase::execute_market_data_query(
                                             symbol_validation.error()->what());
         }
 
-        // Build parameterized query for symbols
-        std::string query = base_query + " AND symbol = ANY($3) ORDER BY time, symbol";
+        std::string query =
+            (asset_class == AssetClass::EQUITIES)
+                ? market_data_utils::build_equity_adjusted_query(full_table_name, true)
+                : "SELECT " + market_data_utils::get_market_data_columns(asset_class) +
+                      " FROM " + full_table_name +
+                      " WHERE time BETWEEN $1 AND $2 AND symbol = ANY($3)"
+                      " ORDER BY time, symbol";
 
         try {
             return Result<pqxx::result>(txn.exec(query, pqxx::params{start_ts, end_ts, symbols}));

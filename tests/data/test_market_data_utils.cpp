@@ -1,6 +1,11 @@
 // Coverage for market_data_utils.cpp. Targets:
-// - get_market_data_columns(AssetClass::EQUITIES) returns adjusted columns
-//   with correct aliases (adj_open AS open, etc.)
+// - get_market_data_columns(AssetClass::EQUITIES) returns the RAW per-bar
+//   columns plus the corporate-action primitives (div_cash, split_factor).
+//   Phase 4.2 moved equity adjustment in-engine: the loader computes the
+//   backward cumulative factor itself instead of reading the vendor's derived
+//   adj_*/adjusted_close columns, which can go stale when the vendor's
+//   restating job stalls (it did, 2026-08-06). Behavioural coverage of the
+//   adjustment maths lives in test_bar_close_uses_adjusted.cpp.
 // - get_market_data_columns(AssetClass::FUTURES) returns plain columns,
 //   no adj_* columns mentioned
 // - All other asset classes return plain columns
@@ -17,38 +22,50 @@ class MarketDataUtilsTest : public ::testing::Test {};
 
 // ===== get_market_data_columns for EQUITIES =====
 
-TEST_F(MarketDataUtilsTest, EquitiesReturnsAdjustedColumnsWithAliases) {
+TEST_F(MarketDataUtilsTest, EquitiesReturnsRawColumnsPlusAdjustmentPrimitives) {
     auto columns = market_data_utils::get_market_data_columns(AssetClass::EQUITIES);
 
-    // Must contain adjusted column names from ADR-000 C-2 contract
-    EXPECT_NE(columns.find("adj_open"), std::string::npos)
-        << "adj_open not found in equities columns";
-    EXPECT_NE(columns.find("adj_high"), std::string::npos)
-        << "adj_high not found in equities columns";
-    EXPECT_NE(columns.find("adj_low"), std::string::npos)
-        << "adj_low not found in equities columns";
-    EXPECT_NE(columns.find("adjusted_close"), std::string::npos)
-        << "adjusted_close not found in equities columns";
-    EXPECT_NE(columns.find("adj_volume"), std::string::npos)
-        << "adj_volume not found in equities columns";
+    // Raw OHLCV: adjustment is applied by the engine, not selected from the vendor.
+    EXPECT_NE(columns.find("open"), std::string::npos) << "open column missing";
+    EXPECT_NE(columns.find("high"), std::string::npos) << "high column missing";
+    EXPECT_NE(columns.find("low"), std::string::npos) << "low column missing";
+    EXPECT_NE(columns.find("close"), std::string::npos) << "close column missing";
+    EXPECT_NE(columns.find("volume"), std::string::npos) << "volume column missing";
 
-    // Must alias to plain names so downstream consumers are unchanged
-    EXPECT_NE(columns.find("AS open"), std::string::npos)
-        << "adj_open must be aliased AS open";
-    EXPECT_NE(columns.find("AS high"), std::string::npos)
-        << "adj_high must be aliased AS high";
-    EXPECT_NE(columns.find("AS low"), std::string::npos)
-        << "adj_low must be aliased AS low";
-    EXPECT_NE(columns.find("AS close"), std::string::npos)
-        << "adjusted_close must be aliased AS close";
-    EXPECT_NE(columns.find("AS volume"), std::string::npos)
-        << "adj_volume must be aliased AS volume";
+    // The per-bar corporate-action primitives the adjustment recursion needs.
+    EXPECT_NE(columns.find("div_cash"), std::string::npos)
+        << "div_cash missing; dividend adjustment impossible";
+    EXPECT_NE(columns.find("split_factor"), std::string::npos)
+        << "split_factor missing; split/spin-off adjustment impossible";
+
+    // The vendor's derived columns must NOT be read.
+    EXPECT_EQ(columns.find("adj_open"), std::string::npos)
+        << "equities must not read the vendor's derived adj_* columns";
+    EXPECT_EQ(columns.find("adjusted_close"), std::string::npos)
+        << "equities must not read the vendor's derived adjusted_close";
+    EXPECT_EQ(columns.find("closeadj"), std::string::npos)
+        << "closeadj belongs to the legacy sharadar table only";
 
     // Must include time and symbol
     EXPECT_NE(columns.find("time"), std::string::npos)
         << "time column missing";
     EXPECT_NE(columns.find("symbol"), std::string::npos)
         << "symbol column missing";
+}
+
+TEST_F(MarketDataUtilsTest, EquityAdjustedQueryAppliesFactorAndBindsParameters) {
+    auto query = market_data_utils::build_equity_adjusted_query("equities_data.ohlcv_1d", false);
+    EXPECT_NE(query.find("equities_data.ohlcv_1d"), std::string::npos);
+    EXPECT_NE(query.find("time BETWEEN $1 AND $2"), std::string::npos);
+    EXPECT_EQ(query.find("$3"), std::string::npos)
+        << "unfiltered query must not reference a symbol parameter";
+    EXPECT_NE(query.find("close * f AS close"), std::string::npos)
+        << "adjustment factor must scale close";
+    EXPECT_NE(query.find("ORDER BY time, symbol"), std::string::npos);
+
+    auto filtered = market_data_utils::build_equity_adjusted_query("equities_data.ohlcv_1d", true);
+    EXPECT_NE(filtered.find("symbol = ANY($3)"), std::string::npos)
+        << "symbol filter must bind as a parameter, never interpolate";
 }
 
 // ===== get_market_data_columns for FUTURES =====
