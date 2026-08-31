@@ -29,6 +29,7 @@
 #include "trade_ngin/core/time_utils.hpp"
 #include "trade_ngin/data/conversion_utils.hpp"
 #include "trade_ngin/data/database_pooling.hpp"
+#include "trade_ngin/data/market_data_utils.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
 #include "trade_ngin/instruments/equity.hpp"
 #include "trade_ngin/instruments/instrument_registry.hpp"
@@ -45,6 +46,28 @@ using namespace trade_ngin::backtest;
 static int total_checks = 0;
 static int passed_checks = 0;
 static int failed_checks = 0;
+
+// SQL literal quoting for the ad-hoc validation queries below. execute_query()
+// takes a raw string, so anything interpolated must be quoted here; doubling
+// embedded single quotes is the standard SQL escape.
+static std::string quote_sql_literal(const std::string& value) {
+    std::string out = "'";
+    for (char ch : value) {
+        if (ch == '\'') out += '\'';
+        out += ch;
+    }
+    out += "'";
+    return out;
+}
+
+static std::string quote_sql_list(const std::vector<std::string>& values) {
+    std::string out;
+    for (size_t i = 0; i < values.size(); ++i) {
+        if (i > 0) out += ", ";
+        out += quote_sql_literal(values[i]);
+    }
+    return out;
+}
 
 static bool approx_eq(double a, double b, double rel_tol = 1e-4, double abs_tol = 1e-6) {
     if (std::abs(a - b) < abs_tol) return true;
@@ -154,9 +177,13 @@ int main() {
         for (const auto& sym : candidate_symbols) {
             if (symbols.size() >= 3) break;
 
-            // NOTE: execute_query returns all columns as strings (arrow::utf8)
+            // NOTE: execute_query returns all columns as strings (arrow::utf8).
+            // Symbols come from the hardcoded candidate list above, but quote
+            // them anyway so this never becomes an injection seam if the list
+            // is ever made configurable.
             std::string check_sql =
-                "SELECT COUNT(*) as cnt FROM equities_data.ohlcv_1d WHERE ticker = '" + sym + "'";
+                "SELECT COUNT(*) as cnt FROM equities_data.ohlcv_1d WHERE symbol = " +
+                quote_sql_literal(sym);
             auto check_result = db->execute_query(check_sql);
             if (!check_result.is_error()) {
                 auto check_table = check_result.value();
@@ -198,15 +225,10 @@ int main() {
 
         // Determine date range from actual data in DB for selected symbols
         // Use a text cast for dates to avoid Arrow type issues
-        std::string sym_list_for_range;
-        for (size_t i = 0; i < symbols.size(); i++) {
-            if (i > 0) sym_list_for_range += "','";
-            sym_list_for_range += symbols[i];
-        }
         std::string range_sql =
-            "SELECT MIN(date)::text as min_date, MAX(date)::text as max_date "
+            "SELECT MIN(time)::text as min_date, MAX(time)::text as max_date "
             "FROM equities_data.ohlcv_1d "
-            "WHERE ticker IN ('" + sym_list_for_range + "')";
+            "WHERE symbol IN (" + quote_sql_list(symbols) + ")";
         auto range_result = db->execute_query(range_sql);
 
         Timestamp start_date, end_date;
@@ -269,23 +291,20 @@ int main() {
         std::cout << "------------------------------------------------------\n" << std::endl;
 
         {
-            // Build symbol list for SQL
-            std::string sym_list;
-            for (size_t i = 0; i < symbols.size(); i++) {
-                if (i > 0) sym_list += "','";
-                sym_list += symbols[i];
-            }
-
             std::string start_str = ts_to_date_str(start_date);
             std::string end_str = ts_to_date_str(end_date);
 
-            // Query RAW data (unadjusted) via execute_query
+            // Query RAW data plus the per-bar corporate-action primitives. The
+            // framework now computes adjustment from these (per-bar-native), so
+            // this validation recomputes the same recursion independently.
             std::string raw_sql =
-                "SELECT date::text as date_str, ticker, open, high, low, close, closeadj, volume "
+                "SELECT time::text as date_str, symbol, open, high, low, close, volume, "
+                "COALESCE(div_cash, 0) as div_cash, COALESCE(split_factor, 1) as split_factor "
                 "FROM equities_data.ohlcv_1d "
-                "WHERE ticker IN ('" + sym_list + "') "
-                "AND date BETWEEN '" + start_str + "'::date AND '" + end_str + "'::date "
-                "ORDER BY date, ticker LIMIT 30";
+                "WHERE symbol IN (" + quote_sql_list(symbols) + ") "
+                "AND time BETWEEN " + quote_sql_literal(start_str) + "::date AND " +
+                quote_sql_literal(end_str) + "::date "
+                "ORDER BY symbol, time";
 
             auto raw_arrow_result = db->execute_query(raw_sql);
             if (raw_arrow_result.is_error()) {
@@ -320,14 +339,15 @@ int main() {
 
             // Extract raw data from Arrow table
             auto date_col = raw_table->GetColumnByName("date_str");
-            auto ticker_col = raw_table->GetColumnByName("ticker");
+            auto ticker_col = raw_table->GetColumnByName("symbol");
             auto open_col = raw_table->GetColumnByName("open");
             auto high_col = raw_table->GetColumnByName("high");
             auto low_col = raw_table->GetColumnByName("low");
             auto close_col = raw_table->GetColumnByName("close");
-            auto closeadj_col = raw_table->GetColumnByName("closeadj");
+            auto div_col = raw_table->GetColumnByName("div_cash");
+            auto split_col = raw_table->GetColumnByName("split_factor");
 
-            if (!date_col || !ticker_col || !open_col || !close_col || !closeadj_col) {
+            if (!date_col || !ticker_col || !open_col || !close_col || !div_col || !split_col) {
                 ERROR("Raw query missing expected columns");
                 return 1;
             }
@@ -358,74 +378,92 @@ int main() {
             int rows_checked = 0;
             int64_t num_rows = raw_table->num_rows();
 
+            auto extract_double = [](const std::shared_ptr<arrow::ChunkedArray>& col,
+                                     int64_t idx) -> double {
+                auto arr = std::static_pointer_cast<arrow::StringArray>(col->chunk(0));
+                try { return std::stod(arr->GetString(idx)); } catch (...) { return 0.0; }
+            };
+            auto date_arr = std::static_pointer_cast<arrow::StringArray>(date_col->chunk(0));
+            auto ticker_arr = std::static_pointer_cast<arrow::StringArray>(ticker_col->chunk(0));
+
+            // Recompute the backward adjustment independently, per symbol, using
+            // the same recursion the loader uses (rows come back ordered by
+            // symbol, time).
+            std::map<std::string, std::vector<int64_t>> rows_by_symbol;
             for (int64_t r = 0; r < num_rows; r++) {
-                // Extract values from Arrow arrays
-                auto date_arr = std::static_pointer_cast<arrow::StringArray>(date_col->chunk(0));
-                auto ticker_arr = std::static_pointer_cast<arrow::StringArray>(ticker_col->chunk(0));
+                rows_by_symbol[ticker_arr->GetString(r)].push_back(r);
+            }
 
-                std::string date_str = date_arr->GetString(r);
-                std::string ticker = ticker_arr->GetString(r);
-
-                // Extract doubles — execute_query returns all columns as strings
-                double raw_open = 0, raw_high = 0, raw_low = 0, raw_close = 0, closeadj = 0;
-
-                auto extract_double = [](const std::shared_ptr<arrow::ChunkedArray>& col, int64_t idx) -> double {
-                    auto arr = std::static_pointer_cast<arrow::StringArray>(col->chunk(0));
-                    try { return std::stod(arr->GetString(idx)); } catch (...) { return 0.0; }
-                };
-
-                raw_open = extract_double(open_col, r);
-                raw_high = extract_double(high_col, r);
-                raw_low = extract_double(low_col, r);
-                raw_close = extract_double(close_col, r);
-                closeadj = extract_double(closeadj_col, r);
-
-                if (raw_close == 0.0) continue;
-
-                double ratio = closeadj / raw_close;
-                double manual_adj_open = raw_open * ratio;
-                double manual_adj_high = raw_high * ratio;
-                double manual_adj_low = raw_low * ratio;
-                double manual_adj_close = closeadj;
-
-                // Trim date_str to just YYYY-MM-DD (10 chars) for matching
-                if (date_str.size() > 10) date_str = date_str.substr(0, 10);
-
-                auto key = std::make_pair(date_str, ticker);
-                auto it = framework_bars.find(key);
-                if (it == framework_bars.end()) continue;
-
-                const auto& fw_bar = it->second;
-                double fw_open = fw_bar.open.as_double();
-                double fw_high = fw_bar.high.as_double();
-                double fw_low = fw_bar.low.as_double();
-                double fw_close = fw_bar.close.as_double();
-
-                bool open_match = approx_eq(manual_adj_open, fw_open, 1e-6);
-                bool high_match = approx_eq(manual_adj_high, fw_high, 1e-6);
-                bool low_match = approx_eq(manual_adj_low, fw_low, 1e-6);
-                bool close_match = approx_eq(manual_adj_close, fw_close, 1e-6);
-
-                if (rows_checked < 10) {
-                    std::cout << std::setw(12) << date_str << " | "
-                              << std::setw(6) << ticker << " | "
-                              << std::fixed << std::setprecision(4)
-                              << std::setw(10) << raw_open << " | "
-                              << std::setw(10) << manual_adj_open << " | "
-                              << std::setw(10) << fw_open << " | "
-                              << std::setw(6) << (open_match ? "OK" : "FAIL") << std::endl;
+            for (const auto& [sym, row_idx] : rows_by_symbol) {
+                std::vector<market_data_utils::AdjustmentBar> adj_bars;
+                adj_bars.reserve(row_idx.size());
+                for (int64_t r : row_idx) {
+                    market_data_utils::AdjustmentBar b;
+                    b.close = extract_double(close_col, r);
+                    b.div_cash = extract_double(div_col, r);
+                    b.split_factor = extract_double(split_col, r);
+                    adj_bars.push_back(b);
                 }
+                auto factors = market_data_utils::compute_backward_adjustment_factors(adj_bars);
 
-                check("adj_open [" + date_str + " " + ticker + "]", open_match,
-                      "manual=" + std::to_string(manual_adj_open) + " fw=" + std::to_string(fw_open));
-                check("adj_high [" + date_str + " " + ticker + "]", high_match,
-                      "manual=" + std::to_string(manual_adj_high) + " fw=" + std::to_string(fw_high));
-                check("adj_low [" + date_str + " " + ticker + "]", low_match,
-                      "manual=" + std::to_string(manual_adj_low) + " fw=" + std::to_string(fw_low));
-                check("adj_close [" + date_str + " " + ticker + "]", close_match,
-                      "manual=" + std::to_string(manual_adj_close) + " fw=" + std::to_string(fw_close));
+                for (size_t i = 0; i < row_idx.size(); i++) {
+                    int64_t r = row_idx[i];
+                    double raw_open = extract_double(open_col, r);
+                    double raw_high = extract_double(high_col, r);
+                    double raw_low = extract_double(low_col, r);
+                    double raw_close = adj_bars[i].close;
+                    if (raw_close == 0.0) continue;
 
-                rows_checked++;
+                    double f = factors[i];
+                    double manual_adj_open = raw_open * f;
+                    double manual_adj_high = raw_high * f;
+                    double manual_adj_low = raw_low * f;
+                    double manual_adj_close = raw_close * f;
+
+                    std::string date_str = date_arr->GetString(r);
+                    if (date_str.size() > 10) date_str = date_str.substr(0, 10);
+
+                    auto it = framework_bars.find(std::make_pair(date_str, sym));
+                    if (it == framework_bars.end()) continue;
+
+                    const auto& fw_bar = it->second;
+                    double fw_open = fw_bar.open.as_double();
+                    double fw_high = fw_bar.high.as_double();
+                    double fw_low = fw_bar.low.as_double();
+                    double fw_close = fw_bar.close.as_double();
+
+                    bool open_match = approx_eq(manual_adj_open, fw_open, 1e-6);
+                    bool high_match = approx_eq(manual_adj_high, fw_high, 1e-6);
+                    bool low_match = approx_eq(manual_adj_low, fw_low, 1e-6);
+                    bool close_match = approx_eq(manual_adj_close, fw_close, 1e-6);
+
+                    if (rows_checked < 10) {
+                        std::cout << std::setw(12) << date_str << " | "
+                                  << std::setw(6) << sym << " | "
+                                  << std::fixed << std::setprecision(4)
+                                  << std::setw(10) << raw_open << " | "
+                                  << std::setw(10) << manual_adj_open << " | "
+                                  << std::setw(10) << fw_open << " | "
+                                  << std::setw(6) << (open_match ? "OK" : "FAIL") << std::endl;
+                    }
+
+                    check("adj_open [" + date_str + " " + sym + "]", open_match,
+                          "manual=" + std::to_string(manual_adj_open) +
+                              " fw=" + std::to_string(fw_open));
+                    check("adj_high [" + date_str + " " + sym + "]", high_match,
+                          "manual=" + std::to_string(manual_adj_high) +
+                              " fw=" + std::to_string(fw_high));
+                    check("adj_low [" + date_str + " " + sym + "]", low_match,
+                          "manual=" + std::to_string(manual_adj_low) +
+                              " fw=" + std::to_string(fw_low));
+                    check("adj_close [" + date_str + " " + sym + "]", close_match,
+                          "manual=" + std::to_string(manual_adj_close) +
+                              " fw=" + std::to_string(fw_close));
+
+                    rows_checked++;
+                    if (rows_checked >= 30) break;
+                }
+                if (rows_checked >= 30) break;
             }
             std::cout << "\nChecked " << rows_checked << " rows of OHLC adjustment data\n" << std::endl;
         }
