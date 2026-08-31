@@ -1821,8 +1821,9 @@ int main(int argc, char* argv[]) {
 
             // Phase 4.5: cumulative dividend income, sourced from the
             // Phase 4 corp-action state file. Informational ONLY -- NOT
-            // added to total_pnl (closeadj already captures dividend
-            // total-return via Phase 4's avg_price frame-alignment fix).
+            // added to total_pnl: bars carry total-return adjusted prices
+            // (Phase 4.2 computes that in-engine from per-bar div_cash), so
+            // dividend value is already inside mark-to-market P&L.
             double total_dividend_income = 0.0;
             {
                 CorporateActionsAuditLog div_log(ca_state_dir);

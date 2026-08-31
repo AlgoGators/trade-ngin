@@ -2,6 +2,8 @@
 #include <cstdlib>
 #include <filesystem>
 #include <string>
+#include <vector>
+#include "trade_ngin/data/market_data_utils.hpp"
 #include "trade_ngin/live/corporate_actions_applier.hpp"
 #include "trade_ngin/live/corporate_actions_audit_log.hpp"
 
@@ -120,4 +122,63 @@ TEST_F(AuditLogCumulativeDividendTest, FractionalSumsExactly) {
     log.record(dividend_adj("BAR", "2024-02-01", 25.0, 0.05));
     // Total: 6.17 + 1.25 = 7.42
     EXPECT_NEAR(log.total_cumulative_dividend_income(), 7.42, 1e-9);
+}
+
+// ---------------------------------------------------------------------------
+// Phase 4.2 double-count guard.
+//
+// Equity bars carry TOTAL-RETURN adjusted prices: the loader scales historical
+// prices by close/(close+div_cash) at each ex-date, so a dividend already
+// shows up as mark-to-market P&L. total_cumulative_dividend_income() therefore
+// exists for reporting only and must never be summed into a P&L total.
+//
+// This pins both halves of the contract: the price series really does carry
+// the dividend, and the reported cash is the SAME economic value measured a
+// second way -- which is exactly why adding them together would double it.
+// ---------------------------------------------------------------------------
+
+TEST_F(AuditLogCumulativeDividendTest, PriceAdjustmentAlreadyCarriesDividendValue) {
+    using market_data_utils::AdjustmentBar;
+    using market_data_utils::compute_backward_adjustment_factors;
+
+    // Two bars, flat raw price, $0.25/share dividend going ex on the second.
+    const double raw_close = 100.0;
+    const double per_share = 0.25;
+    const double qty = 100.0;
+
+    std::vector<AdjustmentBar> bars = {
+        {raw_close, 0.0, 1.0},
+        {raw_close, per_share, 1.0},
+    };
+    auto factors = compute_backward_adjustment_factors(bars);
+    const double adjusted_prior = bars[0].close * factors[0];
+    const double adjusted_ex = bars[1].close * factors[1];
+
+    // Raw prices are identical, so all P&L across this pair comes from the
+    // dividend adjustment marking the PRIOR bar down. Adjustment is
+    // MULTIPLICATIVE (it preserves returns, not absolute cash), so the gain is
+    // the dividend scaled by close/(close+div) -- very slightly under the cash
+    // amount, and exactly so.
+    const double per_share_gain = adjusted_ex - adjusted_prior;
+    const double expected_gain = per_share * raw_close / (raw_close + per_share);
+    EXPECT_NEAR(per_share_gain, expected_gain, 1e-9)
+        << "Total-return adjustment must place the dividend into the price "
+           "series via the proportional factor close/(close+div_cash).";
+    EXPECT_GT(per_share_gain, 0.0)
+        << "If this is zero the price series no longer carries dividends and "
+           "the informational-only contract for total_cumulative_dividend_"
+           "income is wrong -- the cash WOULD need to reach P&L.";
+
+    // The audit log reports the same economic event as cash. The two measures
+    // agree to within the proportional-adjustment factor (~0.25% here); they
+    // are not independent quantities to be summed.
+    CorporateActionsAuditLog audit(state_dir_);
+    audit.record(dividend_adj("DIV", "2026-05-11", qty, per_share));
+
+    const double reported_cash = audit.total_cumulative_dividend_income();
+    const double mark_to_market = per_share_gain * qty;
+    EXPECT_NEAR(reported_cash, mark_to_market, 0.01 * reported_cash)
+        << "Reported dividend cash and the price-adjustment P&L are the same "
+           "event measured twice -- summing them into total_pnl would "
+           "roughly double it.";
 }

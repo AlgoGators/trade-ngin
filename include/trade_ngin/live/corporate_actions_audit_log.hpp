@@ -78,8 +78,11 @@ public:
      * (Phase 4.5). Splits do not contribute (only DIVIDEND events are
      * captured in dividend_events_).
      *
-     * Informational ONLY: closeadj already captures dividend total-return
-     * via price continuity (Phase 4 avg_price frame-alignment fix). Do NOT
+     * Informational ONLY: the equity price series is total-return adjusted,
+     * so dividend value is ALREADY in mark-to-market P&L via price
+     * continuity. Post Phase 4.2 that adjustment is computed in-engine from
+     * per-bar div_cash/split_factor rather than read from the vendor's
+     * closeadj column, but the accounting consequence is unchanged: do NOT
      * add this value to P&L totals -- it would double-count.
      */
     double total_cumulative_dividend_income() const;

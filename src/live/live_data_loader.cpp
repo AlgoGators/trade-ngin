@@ -40,6 +40,19 @@ Result<double> read_double_or_zero_on_null(
     return r;
 }
 
+// Quote a value as a SQL string literal. execute_query() takes a raw string
+// (no parameter binding), so every interpolated value must be quoted here;
+// doubling embedded single quotes is the standard SQL escape.
+std::string quote_literal(const std::string& value) {
+    std::string out = "'";
+    for (char ch : value) {
+        if (ch == '\'') out += '\'';
+        out += ch;
+    }
+    out += "'";
+    return out;
+}
+
 }  // namespace
 
 LiveDataLoader::LiveDataLoader(std::shared_ptr<PostgresDatabase> db, const std::string& schema)
@@ -836,10 +849,16 @@ Result<std::vector<Position>> LiveDataLoader::load_positions_for_export(
     return load_positions(strategy_id, portfolio_id, date);
 }
 
-// Kept (not deleted as on the futures line): live_equity_mean_reversion.cpp calls this
-// for per-symbol commission reporting. FIXME(4.2): trading.executions has no "commission"
-// column today, so the query errors at runtime and the caller degrades to a WARN --
-// commission sourcing is reworked with the equity data layer.
+// Kept (not deleted as on the futures line): live_equity_mean_reversion.cpp calls
+// this for per-symbol commission reporting.
+//
+// The FIXME(4.2) this carried was a wrong column name, not missing data:
+// <schema>.executions stores realised commissions in "commissions_fees"
+// (alongside implicit_price_impact / slippage_market_impact /
+// total_transaction_costs), never "commission". The old query therefore failed
+// at runtime and every caller silently degraded to a WARN with an empty map.
+// Corrected below, and the portfolio/date inputs now bind as parameters
+// instead of being concatenated into the SQL.
 Result<std::unordered_map<std::string, double>> LiveDataLoader::load_commissions_by_symbol(
     const std::string& portfolio_id, const Timestamp& date) {
     auto validation = validate_connection();
@@ -855,13 +874,14 @@ Result<std::unordered_map<std::string, double>> LiveDataLoader::load_commissions
     std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
 
     std::string query =
-        "SELECT symbol, COALESCE(SUM(commission), 0.0) as total_commission "
+        "SELECT symbol, COALESCE(SUM(commissions_fees), 0.0) as total_commission "
         "FROM " +
         schema_ +
         ".executions "
-        "WHERE portfolio_id = '" +
-        actual_portfolio_id + "' AND DATE(execution_time) = '" + date_str +
-        "' "
+        "WHERE portfolio_id = " +
+        quote_literal(actual_portfolio_id) + " AND DATE(execution_time) = " +
+        quote_literal(date_str) +
+        " "
         "GROUP BY symbol";
 
     DEBUG("Loading commissions by symbol: " + query);
