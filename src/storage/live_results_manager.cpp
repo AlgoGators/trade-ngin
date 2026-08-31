@@ -6,6 +6,7 @@
 #include <cmath>
 #include <iomanip>
 #include <sstream>
+#include <vector>
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/core/types.hpp"
 #include "trade_ngin/data/conversion_utils.hpp"
@@ -14,12 +15,14 @@ namespace trade_ngin {
 
 LiveResultsManager::LiveResultsManager(std::shared_ptr<PostgresDatabase> db, bool store_enabled,
                                        const std::string& strategy_id,
-                                       const std::string& portfolio_id)
-    : ResultsManagerBase(db, store_enabled, "trading", strategy_id, portfolio_id),
+                                       const std::string& portfolio_id,
+                                       const std::string& strategy_name)
+    : ResultsManagerBase(db, store_enabled, "trading", strategy_id, portfolio_id,
+                         strategy_name),
       current_equity_(0.0),
       has_equity_update_(false) {
     INFO("Initialized LiveResultsManager for strategy: " + strategy_id +
-         ", portfolio: " + portfolio_id);
+         ", name: " + get_strategy_name() + ", portfolio: " + portfolio_id);
 }
 
 std::string LiveResultsManager::generate_run_id(const std::string& strategy_id,
@@ -58,41 +61,45 @@ Result<void> LiveResultsManager::save_all_results(const std::string& run_id,
         // Non-fatal, continue
     }
 
+    // Attempt every table even after a failure -- a signals error must not cost us the
+    // executions row -- but remember what failed. Before F-J each failure was logged and
+    // swallowed, so save_all_results returned success and the runner exited 0 with tables
+    // silently missing. Exit 0 now means every table was actually written.
+    std::vector<std::string> failed_tables;
+    auto attempt = [&](const char* table, Result<void> r) {
+        if (r.is_error()) {
+            ERROR("Failed to save " + std::string(table) + ": " +
+                  std::string(r.error()->what()));
+            failed_tables.emplace_back(table);
+        }
+    };
+
     // 2. Save positions
-    result = save_positions_snapshot(date);
-    if (result.is_error()) {
-        ERROR("Failed to save positions: " + std::string(result.error()->what()));
-        // Continue with other saves
-    }
+    attempt("positions", save_positions_snapshot(date));
 
     // 3. Save executions
-    result = save_executions_batch(date);
-    if (result.is_error()) {
-        ERROR("Failed to save executions: " + std::string(result.error()->what()));
-        // Continue
-    }
+    attempt("executions", save_executions_batch(date));
 
     // 4. Save signals
-    result = save_signals_snapshot(date);
-    if (result.is_error()) {
-        ERROR("Failed to save signals: " + std::string(result.error()->what()));
-        // Continue
-    }
+    attempt("signals", save_signals_snapshot(date));
 
     // 5. Save live results (metrics)
-    result = save_live_results(date);
-    if (result.is_error()) {
-        ERROR("Failed to save live results: " + std::string(result.error()->what()));
-        // Continue
-    }
+    attempt("live_results", save_live_results(date));
 
     // 6. Save/update equity curve
     if (has_equity_update_) {
-        result = save_equity_curve(date);
-        if (result.is_error()) {
-            ERROR("Failed to save equity curve: " + std::string(result.error()->what()));
-            // Non-fatal
+        attempt("equity_curve", save_equity_curve(date));
+    }
+
+    if (!failed_tables.empty()) {
+        std::string joined;
+        for (size_t i = 0; i < failed_tables.size(); ++i) {
+            if (i > 0) joined += ", ";
+            joined += failed_tables[i];
         }
+        return make_error<void>(ErrorCode::DATABASE_ERROR,
+                                "Failed to persist live results table(s): " + joined,
+                                component_id_);
     }
 
     INFO("Successfully saved all live trading results for date: " +

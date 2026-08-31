@@ -40,6 +40,16 @@
 
 using namespace trade_ngin;
 
+// Storage identity for this runner. The read path
+// (load_positions_by_date / corp-action queries) and the write path
+// (LiveResultsManager -> ResultsManagerBase) must agree on all three key columns:
+// (strategy_id, strategy_name, portfolio_id). They did not before FIX-0 -- the
+// coordinator defaulted portfolio_id to the futures book's BASE_PORTFOLIO and
+// ResultsManagerBase substituted strategy_id for strategy_name -- so writes landed
+// under a key no read would ever match. Named here so the two paths cannot drift again.
+static constexpr const char* kEquityStrategyId = "LIVE_EQUITY_MEAN_REVERSION";
+static constexpr const char* kEquityStrategyName = "EQUITY_MEAN_REVERSION";
+
 // Resolve the on-disk dedup state directory for the live equity app.
 // Honors TRADE_NGIN_STATE_DIR (treated as the parent directory) when set;
 // otherwise roots an absolute path at the current working directory. Always
@@ -407,7 +417,14 @@ int main(int argc, char* argv[]) {
         // Create LiveTradingCoordinator to manage all live trading components
         INFO("Creating LiveTradingCoordinator for centralized component management");
         LiveTradingConfig coordinator_config;
-        coordinator_config.strategy_id = "LIVE_EQUITY_MEAN_REVERSION";
+        coordinator_config.strategy_id = kEquityStrategyId;
+        // Without these two the write key is (LIVE_EQUITY_MEAN_REVERSION,
+        // LIVE_EQUITY_MEAN_REVERSION, BASE_PORTFOLIO) while every read uses
+        // (LIVE_EQUITY_MEAN_REVERSION, EQUITY_MEAN_REVERSION, <configured portfolio>):
+        // two of three columns differ, so run 2 loads an empty book. The futures runner
+        // has always set portfolio_id here; equity omitted it.
+        coordinator_config.strategy_name = kEquityStrategyName;
+        coordinator_config.portfolio_id = portfolio_id;
         coordinator_config.schema = "trading";
         coordinator_config.initial_capital = mr_config.capital_allocation;
         coordinator_config.store_results = true;
@@ -603,7 +620,7 @@ int main(int argc, char* argv[]) {
 
         // Load previous day positions for PnL calculation
         INFO("Loading previous day positions for PnL calculation...");
-        auto previous_positions_result = db->load_positions_by_date("LIVE_EQUITY_MEAN_REVERSION", "EQUITY_MEAN_REVERSION", portfolio_id, previous_date, "trading.positions");
+        auto previous_positions_result = db->load_positions_by_date(kEquityStrategyId, kEquityStrategyName, portfolio_id, previous_date, "trading.positions");
         std::unordered_map<std::string, Position> previous_positions;
         
         if (previous_positions_result.is_ok()) {
@@ -700,7 +717,7 @@ int main(int argc, char* argv[]) {
 
             std::unordered_map<std::string, std::string> inception_dates;
             auto inception_result = db->get_position_inception_dates(
-                "LIVE_EQUITY_MEAN_REVERSION", "EQUITY_MEAN_REVERSION",
+                kEquityStrategyId, kEquityStrategyName,
                 portfolio_id, held_symbols);
             if (inception_result.is_error()) {
                 // Fail wide, not narrow: without inception we cannot prove the
@@ -911,7 +928,7 @@ int main(int argc, char* argv[]) {
                         auto tt = std::mktime(&tm) - 24 * 60 * 60;  // ex_date - 1 day
                         auto tp = std::chrono::system_clock::from_time_t(tt);
                         auto r = db->load_positions_by_date(
-                            "LIVE_EQUITY_MEAN_REVERSION", "EQUITY_MEAN_REVERSION",
+                            kEquityStrategyId, kEquityStrategyName,
                             portfolio_id, tp, "trading.positions");
                         auto& slot = positions_at_date_cache[ex_date];
                         if (r.is_ok()) slot = r.value();
@@ -1032,7 +1049,7 @@ int main(int argc, char* argv[]) {
 
                     auto store_result = db->store_positions(
                         ca_txn, positions_to_store,
-                        "LIVE_EQUITY_MEAN_REVERSION", "EQUITY_MEAN_REVERSION",
+                        kEquityStrategyId, kEquityStrategyName,
                         portfolio_id, "trading.positions");
                     if (store_result.is_error()) {
                         ERROR("Failed to persist corp-action-adjusted positions: " +
@@ -1182,7 +1199,7 @@ int main(int argc, char* argv[]) {
                 }
                 auto store_lc = db->store_positions(
                     lifecycle_positions,
-                    "LIVE_EQUITY_MEAN_REVERSION", "EQUITY_MEAN_REVERSION",
+                    kEquityStrategyId, kEquityStrategyName,
                     portfolio_id, "trading.positions");
                 if (store_lc.is_error()) {
                     ERROR("Failed to persist lifecycle-adjusted positions: " +
@@ -1273,7 +1290,7 @@ int main(int argc, char* argv[]) {
             if (!yesterday_finalized_positions.empty()) {
                 // Always save yesterday's finalized positions immediately (not queued)
                 // These are updates to existing positions from the previous day
-                auto update_result = db->store_positions(yesterday_finalized_positions, "LIVE_EQUITY_MEAN_REVERSION", "EQUITY_MEAN_REVERSION", portfolio_id, "trading.positions");
+                auto update_result = db->store_positions(yesterday_finalized_positions, kEquityStrategyId, kEquityStrategyName, portfolio_id, "trading.positions");
                 if (update_result.is_error()) {
                     ERROR("Failed to update Day T-1 positions: " + std::string(update_result.error()->what()));
                 } else {

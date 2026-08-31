@@ -33,7 +33,8 @@ private:
 public:
     LiveResultsManager(std::shared_ptr<PostgresDatabase> db, bool store_enabled,
                        const std::string& strategy_id,
-                       const std::string& portfolio_id = "BASE_PORTFOLIO");
+                       const std::string& portfolio_id = "BASE_PORTFOLIO",
+                       const std::string& strategy_name = "");
 
     ~LiveResultsManager() override = default;
 
