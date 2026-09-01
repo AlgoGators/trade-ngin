@@ -340,7 +340,16 @@ int main(int argc, char* argv[]) {
         portfolio_config.reserve_capital = initial_capital * app_config.reserve_capital_pct;
         portfolio_config.max_strategy_allocation = app_config.strategy_defaults.max_strategy_allocation;
         portfolio_config.min_strategy_allocation = app_config.strategy_defaults.min_strategy_allocation;
-        portfolio_config.use_optimization = app_config.strategy_defaults.use_optimization;
+        // Mean reversion does NOT use dynamic optimization (HD, 2026-09-01). The optimizer
+        // is a trend-following construct -- position-buffered contract optimization over a
+        // futures universe -- and it cannot even see this strategy: PortfolioManager
+        // populates its symbol data only for TrendFollowingStrategy
+        // (portfolio_manager.cpp:993), so every equity symbol fell through to a flat 0.01
+        // weight (the true weight is price/capital, wrong by 1.4x-7.7x) and zero cost
+        // against a cost penalty of 50 -- 30,692 "not found in trading data" warnings in a
+        // single run. bt_equity_mean_reversion.cpp already disables it; this makes live
+        // agree rather than optimising on values it made up.
+        portfolio_config.use_optimization = false;
         portfolio_config.use_risk_management = app_config.strategy_defaults.use_risk_management;
         portfolio_config.opt_config = opt_config;
         portfolio_config.risk_config = risk_config;
@@ -425,6 +434,51 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         INFO("Strategy added to portfolio successfully");
+
+        // Per-run provenance: what this run was configured with. The futures runners have
+        // always written it (live_portfolio_conservative.cpp:620); the equity runner never
+        // did, so trading.live_run_metadata held 245 futures rows and nothing for
+        // equities. Nothing reads this table -- it exists so a past run's allocations and
+        // config can be reconstructed after the fact, which is exactly what you want when
+        // a number from months ago has to be explained.
+        {
+            nlohmann::json portfolio_config_json;
+            portfolio_config_json["total_capital"] =
+                static_cast<double>(portfolio_config.total_capital);
+            portfolio_config_json["reserve_capital"] =
+                static_cast<double>(portfolio_config.reserve_capital);
+            portfolio_config_json["use_optimization"] = portfolio_config.use_optimization;
+            portfolio_config_json["use_risk_management"] = portfolio_config.use_risk_management;
+            portfolio_config_json["allow_fractional_positions"] =
+                portfolio_config.allow_fractional_positions;
+
+            // Single-strategy runner: the live equity path rejects more than one strategy.
+            nlohmann::json strategy_alloc_json;
+            strategy_alloc_json[kEquityStrategyName] = 1.0;
+
+            nlohmann::json strategy_configs_json;
+            strategy_configs_json[kEquityStrategyName] = {
+                {"lookback_period", mean_rev_config.lookback_period},
+                {"entry_threshold", mean_rev_config.entry_threshold},
+                {"exit_threshold", mean_rev_config.exit_threshold},
+                {"risk_target", mean_rev_config.risk_target},
+                {"position_size", mean_rev_config.position_size},
+                {"vol_lookback", mean_rev_config.vol_lookback},
+                {"use_stop_loss", mean_rev_config.use_stop_loss},
+                {"stop_loss_pct", mean_rev_config.stop_loss_pct},
+                {"allow_fractional_shares", mean_rev_config.allow_fractional_shares}};
+
+            auto metadata_result = db->store_live_run_metadata(
+                now, kEquityStrategyId, portfolio_id, strategy_alloc_json,
+                portfolio_config_json, strategy_configs_json);
+
+            if (metadata_result.is_error()) {
+                WARN("Failed to store live run metadata: " +
+                     std::string(metadata_result.error()->what()));
+            } else {
+                INFO("Successfully stored live run metadata for date");
+            }
+        }
 
         // Create LiveTradingCoordinator to manage all live trading components
         INFO("Creating LiveTradingCoordinator for centralized component management");
@@ -602,9 +656,26 @@ int main(int argc, char* argv[]) {
         bool today_is_non_trading = (today_dow == 0 || today_dow == 6 ||
                                      holiday_checker.is_holiday(today_date_str));
 
-        if (today_is_non_trading && !use_override_date) {
-            INFO("Today (" + today_date_str + ") is a non-trading day - skipping equity processing");
-            return 0;
+        // A closed market does NOT mean "do nothing". You still hold the book over a
+        // weekend or holiday even though no new bar exists to signal from, so the day is
+        // processed as a CARRY-FORWARD: positions, live_results and equity_curve are all
+        // written with the previous day's book, and signal generation and execution are
+        // skipped. Futures already behaves this way -- CONSERVATIVE_PORTFOLIO has rows on
+        // all seven weekdays across positions (244 Sat / 244 Sun), live_results and
+        // equity_curve alike.
+        //
+        // Previously this returned early, and only in real-time mode: an explicit replay
+        // date bypassed the guard entirely and processed the weekend as a normal trading
+        // day, which would book a fill dated Saturday at Friday's close. Equities cannot
+        // trade Saturday, so that execution is factually false and would break broker
+        // reconciliation, even though the net position lands the same. The T-1 lag already
+        // handles the real case: Monday's run reaches back to Friday's close via the
+        // widened lookup and trades there.
+        if (today_is_non_trading) {
+            INFO("Today (" + today_date_str +
+                 ") is a non-trading day - carrying the book forward: no signals, no "
+                 "executions, positions/live_results/equity_curve written from the "
+                 "previous session.");
         }
 
         // Load previous day positions for PnL calculation
@@ -1293,28 +1364,39 @@ int main(int argc, char* argv[]) {
         // has to be handed the book back first, and it has to be the book as restated
         // by the corporate-action blocks above, since a split changes quantity and a
         // dividend changes cost basis. See LiveDailyCycle::prepare_strategy_for_signals.
-        INFO("Seeding strategy with previous-day book and generating signals...");
-        auto strat_prewarm = LiveDailyCycle::prepare_strategy_for_signals(
-            *mr_strategy, previous_positions, all_bars);
-        if (strat_prewarm.is_error()) {
-            std::cerr << "Failed to preprocess data in strategy: "
-                      << strat_prewarm.error()->what() << std::endl;
-            return 1;
-        }
+        std::unordered_map<std::string, Position> positions;
 
-        // Process data through portfolio pipeline (optimization + risk), mirroring backtest
-        INFO("Processing data through portfolio manager (optimization + risk)...");
-        auto port_process_result = portfolio->process_market_data(all_bars);
-        if (port_process_result.is_error()) {
-            std::cerr << "Failed to process data in portfolio manager: "
-                      << port_process_result.error()->what() << std::endl;
-            return 1;
-        }
-        INFO("Portfolio processing completed");
+        if (today_is_non_trading) {
+            // Carry the book forward untouched. No bar closed today, so there is nothing
+            // to signal from and nothing legitimate to trade against; re-deriving targets
+            // from a stale bar would manufacture a weekend trade.
+            positions = previous_positions;
+            INFO("Non-trading day: carried " + std::to_string(positions.size()) +
+                 " position(s) forward without generating signals.");
+        } else {
+            INFO("Seeding strategy with previous-day book and generating signals...");
+            auto strat_prewarm = LiveDailyCycle::prepare_strategy_for_signals(
+                *mr_strategy, previous_positions, all_bars);
+            if (strat_prewarm.is_error()) {
+                std::cerr << "Failed to preprocess data in strategy: "
+                          << strat_prewarm.error()->what() << std::endl;
+                return 1;
+            }
 
-        // Get optimized portfolio positions (integer-rounded after optimization/risk)
-        INFO("Retrieving optimized portfolio positions...");
-        auto positions = portfolio->get_portfolio_positions();
+            // Process data through portfolio pipeline (risk; optimization is off for MR)
+            INFO("Processing data through portfolio manager (risk)...");
+            auto port_process_result = portfolio->process_market_data(all_bars);
+            if (port_process_result.is_error()) {
+                std::cerr << "Failed to process data in portfolio manager: "
+                          << port_process_result.error()->what() << std::endl;
+                return 1;
+            }
+            INFO("Portfolio processing completed");
+
+            // Get portfolio positions (post risk-management)
+            INFO("Retrieving portfolio positions...");
+            positions = portfolio->get_portfolio_positions();
+        }
 
         // Verify we have prices for all required symbols
         std::set<std::string> all_symbols;
@@ -1425,15 +1507,33 @@ int main(int argc, char* argv[]) {
                 throw std::runtime_error("PnLManager finalization failed");
             }
 
-            // Store updated positions for yesterday (Day T-1) in database
-            if (!yesterday_finalized_positions.empty()) {
+            // Store updated positions for yesterday (Day T-1) in database.
+            // finalize_previous_day returns a row for EVERY carried position, flat ones
+            // included, so it must apply the same zero-quantity rule as the Day-T write
+            // above or it re-introduces exactly the rows that rule exists to prevent.
+            // This is the path that actually produced the observed dead rows: 4 of the 6
+            // had zero quantity AND zero P&L, so the Day-T filter was never the one
+            // letting them through. The futures finalization path has no filter either,
+            // but never needs one -- its Day-T rule keeps zeros out of the table, so a
+            // zero never comes back through previous_positions.
+            std::vector<Position> finalized_to_store;
+            finalized_to_store.reserve(yesterday_finalized_positions.size());
+            for (const auto& fp : yesterday_finalized_positions) {
+                if (std::abs(fp.quantity.as_double()) > 1e-10) {
+                    finalized_to_store.push_back(fp);
+                } else {
+                    DEBUG("Skipping zero-quantity Day T-1 position: " + fp.symbol);
+                }
+            }
+
+            if (!finalized_to_store.empty()) {
                 // Always save yesterday's finalized positions immediately (not queued)
                 // These are updates to existing positions from the previous day
-                auto update_result = db->store_positions(yesterday_finalized_positions, kEquityStrategyId, kEquityStrategyName, portfolio_id, "trading.positions");
+                auto update_result = db->store_positions(finalized_to_store, kEquityStrategyId, kEquityStrategyName, portfolio_id, "trading.positions");
                 if (update_result.is_error()) {
                     ERROR("Failed to update Day T-1 positions: " + std::string(update_result.error()->what()));
                 } else {
-                    INFO("Successfully updated " + std::to_string(yesterday_finalized_positions.size()) + " Day T-1 positions with finalized PnL");
+                    INFO("Successfully updated " + std::to_string(finalized_to_store.size()) + " Day T-1 positions with finalized PnL");
                 }
             }
 
@@ -1488,17 +1588,28 @@ int main(int argc, char* argv[]) {
         // Price, execute, and roll back anything that could not be priced. The rules
         // and their rationale live in LiveDailyCycle::execute_day_t so that the runner
         // and its tests exercise one implementation rather than two that can drift.
-        auto day_t_exec = LiveDailyCycle::execute_day_t(
-            *execution_manager, positions, previous_positions, previous_day_close_prices,
-            all_bars, now, app_config.live.execution_price_max_staleness_days);
+        //
+        // Skipped entirely on a non-trading day. `positions` was carried forward from
+        // `previous_positions` above, so every delta is zero and no execution could be
+        // generated anyway -- but the guard is explicit rather than incidental, because
+        // "the deltas happen to be zero" is not the reason we must not trade on a day the
+        // exchange is shut.
+        LiveDailyCycle::ExecutionOutcome exec_outcome;
+        if (today_is_non_trading) {
+            INFO("Non-trading day: skipping execution generation entirely.");
+        } else {
+            auto day_t_exec = LiveDailyCycle::execute_day_t(
+                *execution_manager, positions, previous_positions, previous_day_close_prices,
+                all_bars, now, app_config.live.execution_price_max_staleness_days);
 
-        if (day_t_exec.is_error()) {
-            ERROR("ExecutionManager failed: " + std::string(day_t_exec.error()->what()));
-            // No fallback - component is required to work
-            throw std::runtime_error("ExecutionManager failed");
+            if (day_t_exec.is_error()) {
+                ERROR("ExecutionManager failed: " + std::string(day_t_exec.error()->what()));
+                // No fallback - component is required to work
+                throw std::runtime_error("ExecutionManager failed");
+            }
+            exec_outcome = day_t_exec.value();
         }
 
-        auto exec_outcome = day_t_exec.value();
         std::vector<ExecutionReport> daily_executions = exec_outcome.executions;
         INFO("ExecutionManager generated " + std::to_string(daily_executions.size()) +
              " executions");
@@ -1704,12 +1815,23 @@ int main(int argc, char* argv[]) {
         positions_to_save.reserve(positions.size());
 
         for (const auto& [symbol, position] : positions) {
-            // Save positions if they have non-zero quantity OR if they have PnL (closed positions today)
-            bool has_quantity = position.quantity.as_double() != 0.0;
-            bool has_pnl = (position.realized_pnl.as_double() != 0.0 || position.unrealized_pnl.as_double() != 0.0);
+            // Only save positions with non-zero quantity.
+            // Zero-quantity positions (closed positions) should NOT be stored -- the same
+            // rule and tolerance the futures runner uses
+            // (live_portfolio_conservative.cpp:1657). A flat symbol is ABSENT from
+            // trading.positions, not present with a zero: futures conservative holds 0
+            // zero-qty rows in 1702, and only 1702 of a possible 4830 symbol-days exist.
+            // The close is recorded in trading.executions, which is the audit trail; a
+            // zero position row adds nothing and accumulates (at 852 symbols it would
+            // dominate the table). Realized P&L from the exit lands in
+            // live_results.daily_realized_pnl, exactly as it does for futures.
+            //
+            // The previous rule also kept a row when it carried PnL, which is why flat
+            // rows survived here and never do on the futures path.
+            bool has_quantity = std::abs(position.quantity.as_double()) > 1e-10;
 
-            // Don't save positions with zero quantity and zero PnL
-            if (!has_quantity && !has_pnl) {
+            if (!has_quantity) {
+                DEBUG("Skipping zero-quantity position: " + symbol);
                 continue;
             }
 
@@ -2041,7 +2163,7 @@ int main(int argc, char* argv[]) {
                 "         COALESCE(total_pnl, 0.0) as total_pnl, "
                 "         COALESCE(total_realized_pnl, 0.0) as total_realized_pnl_prev "
                 "  FROM trading.live_results "
-                "  WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND DATE(date) < '" + yesterday_date_str + "' "
+                "  WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND portfolio_id = '" + portfolio_id + "' AND DATE(date) < '" + yesterday_date_str + "' "
                 "  ORDER BY date DESC LIMIT 1"
                 ") "
                 "UPDATE trading.live_results SET "
@@ -2058,7 +2180,7 @@ int main(int argc, char* argv[]) {
                 "portfolio_leverage = CASE WHEN portfolio_leverage IS NULL OR portfolio_leverage = 0 THEN " + std::to_string(yesterday_portfolio_leverage) + " ELSE portfolio_leverage END, "
                 "equity_to_margin_ratio = CASE WHEN equity_to_margin_ratio IS NULL OR equity_to_margin_ratio = 0 THEN " + std::to_string(yesterday_equity_to_margin_ratio) + " ELSE equity_to_margin_ratio END, "
                 "cash_available = COALESCE((SELECT portfolio FROM day_before), " + std::to_string(initial_capital) + ") + (" + std::to_string(yesterday_total_pnl) + " - COALESCE(daily_transaction_costs, 0.0)) - COALESCE(margin_posted, 0.0) "
-                "WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND DATE(date) = '" + yesterday_date_str + "'";
+                "WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND portfolio_id = '" + portfolio_id + "' AND DATE(date) = '" + yesterday_date_str + "'";
 
             INFO("Executing UPDATE query for Day T-1 live_results...");
             INFO("UPDATE will set current_portfolio_value for date: " + yesterday_date_str);
@@ -2081,7 +2203,7 @@ int main(int argc, char* argv[]) {
             // Query the current portfolio value from updated live_results
             std::string get_equity_query =
                 "SELECT current_portfolio_value FROM trading.live_results "
-                "WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND DATE(date) = '" + yesterday_date_str + "'";
+                "WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND portfolio_id = '" + portfolio_id + "' AND DATE(date) = '" + yesterday_date_str + "'";
 
             INFO("Querying for portfolio value with date: " + yesterday_date_str);
 
@@ -2159,7 +2281,7 @@ int main(int argc, char* argv[]) {
                     "SELECT daily_return, daily_pnl, daily_realized_pnl, daily_unrealized_pnl, "
                     "portfolio_leverage, equity_to_margin_ratio "
                     "FROM trading.live_results "
-                    "WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND DATE(date) = '" + yesterday_date_str + "'";
+                    "WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND portfolio_id = '" + portfolio_id + "' AND DATE(date) = '" + yesterday_date_str + "'";
 
                 INFO("Loading yesterday's metrics from database with query: " + metrics_query);
                 auto metrics_result = db->execute_query(metrics_query);
@@ -2629,7 +2751,7 @@ int main(int argc, char* argv[]) {
 
                 std::string positions_query_email = "SELECT symbol, quantity, average_price, daily_realized_pnl, daily_unrealized_pnl, last_update "
                                                    "FROM trading.positions "
-                                                   "WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND DATE(last_update) = '" + yesterday_date_for_email + "'";
+                                                   "WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND portfolio_id = '" + portfolio_id + "' AND DATE(last_update) = '" + yesterday_date_for_email + "'";
 
                 auto positions_result_email = db->execute_query(positions_query_email);
 
@@ -2679,7 +2801,7 @@ int main(int argc, char* argv[]) {
                         "SELECT daily_return, daily_unrealized_pnl, daily_realized_pnl, daily_pnl, "
                         "daily_transaction_costs, total_dividend_income "
                         "FROM trading.live_results "
-                        "WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND date = '" + yesterday_date_for_email + "' "
+                        "WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND portfolio_id = '" + portfolio_id + "' AND date = '" + yesterday_date_for_email + "' "
                         "ORDER BY date DESC LIMIT 1";
 
                     INFO("Loading yesterday's daily metrics from live_results: " + yesterday_metrics_query);
