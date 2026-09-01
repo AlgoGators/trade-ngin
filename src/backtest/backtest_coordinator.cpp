@@ -658,9 +658,36 @@ Result<void> BacktestCoordinator::process_portfolio_day(
         // written by on_execution -- coordinator must NOT stamp realized_pnl
         // here for equities).
         std::unordered_map<std::string, PnLAccountingMethod> pnl_method_by_strategy;
+        // E2-F8: and a lookup of each strategy's OWN fill-maintained holdings, which is
+        // where a real cost basis lives.
+        //
+        // The positions this loop iterates come from get_strategy_positions() ==
+        // info.current_positions == the TARGET positions the strategy produced, and
+        // MeanReversionStrategy::get_target_positions() sets
+        // `pos.average_price = inst_data.current_price` (mean_reversion.cpp:214) -- a MARK,
+        // not a basis. Measured: the mark implied by day D's stored unrealized equals day
+        // D+1's stored average_price on ~87% of consecutive rows, i.e. the column was a
+        // one-day mark change rather than a position-lifetime unrealized.
+        //
+        // BaseStrategy::on_execution() is the sole legitimate writer of a volume-weighted
+        // basis (base_strategy.cpp:216-252) and keeps it in positions_, which
+        // get_target_positions() deliberately does NOT read. on_execution has already run
+        // for this bar by the time we get here (executions are applied ~40 lines above), so
+        // positions_ carries the post-fill basis.
+        //
+        // This is the backtest half of the fix documented in docs/AVERAGE_PRICE_LIFECYCLE.md
+        // -- the live path closes the same gap in LiveDailyCycle::resolve_and_apply_basis
+        // (its "step 8"), and the backtest never had an equivalent.
+        //
+        // Futures are unaffected: TrendFollowingStrategy::on_execution only bumps a counter
+        // and never populates positions_, so the lookup misses and the basis is untouched --
+        // and under REALIZED_ONLY the basis is not consulted at all.
+        std::unordered_map<std::string, const std::unordered_map<std::string, Position>*>
+            fill_positions_by_strategy;
         for (const auto& s : portfolio->get_strategies()) {
             if (auto bs = std::dynamic_pointer_cast<BaseStrategy>(s)) {
                 pnl_method_by_strategy[bs->get_metadata().id] = bs->get_pnl_accounting().method;
+                fill_positions_by_strategy[bs->get_metadata().id] = &bs->get_positions();
             }
         }
 
@@ -708,6 +735,35 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                     if (method == PnLAccountingMethod::REALIZED_ONLY) {
                         updated_pos.realized_pnl = Decimal(pnl_result.daily_pnl);
                     }
+                    // E2-F8: prefer the strategy's fill-maintained basis over the target
+                    // position's average_price, which for mean reversion is the day's close
+                    // (a mark) rather than what the position cost. A basis of 0 means "no
+                    // basis known" and is left as such -- it must never be replaced by a
+                    // mark, which is the substitution this fix exists to remove.
+                    double cost_basis = static_cast<double>(pos.average_price);
+                    if (method != PnLAccountingMethod::REALIZED_ONLY) {
+                        auto fp_it = fill_positions_by_strategy.find(strategy_id);
+                        if (fp_it != fill_positions_by_strategy.end() && fp_it->second) {
+                            auto held = fp_it->second->find(symbol);
+                            if (held != fp_it->second->end()) {
+                                cost_basis = static_cast<double>(held->second.average_price);
+                            }
+                        }
+                        // Keep the stored row self-consistent: a reader recomputing
+                        // qty * (close - average_price) from backtest.final_positions must
+                        // get the unrealized_pnl we wrote. Leaving average_price as a mark
+                        // while measuring unrealized against a basis is what made the two
+                        // disagree.
+                        //
+                        // Deliberately gated on the accounting method rather than relying on
+                        // TrendFollowingStrategy::on_execution being a no-op
+                        // (trend_following.cpp:103-115, which never populates positions_).
+                        // That is true today, but futures must be untouched here by
+                        // CONSTRUCTION, not by a property of another class that a future
+                        // edit could quietly change.
+                        updated_pos.average_price = Decimal(cost_basis);
+                    }
+
                     // E2-F2: unrealized is gated on the SAME accounting method as
                     // realized, and dollarised with point_value. Both were missing here:
                     // futures rows carried the settled move a second time, divided by the
@@ -716,8 +772,7 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                     // changing this line.
                     updated_pos.unrealized_pnl =
                         Decimal(BacktestPnLManager::unrealized_for_accounting(
-                            method, qty, static_cast<double>(pos.average_price), current_close,
-                            pnl_result.point_value));
+                            method, qty, cost_basis, current_close, pnl_result.point_value));
 
                     auto update_result =
                         portfolio->update_strategy_position(strategy_id, symbol, updated_pos);
