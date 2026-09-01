@@ -2093,7 +2093,8 @@ int main(int argc, char* argv[]) {
             try {
                 // Call PostgreSQL function to calculate trading days
                 auto trading_days_result = db->execute_query(
-                    "SELECT trading.get_trading_days('LIVE_EQUITY_MEAN_REVERSION', DATE '" + yesterday_date_str + "')");
+                    "SELECT trading.get_trading_days('LIVE_EQUITY_MEAN_REVERSION', DATE '" + yesterday_date_str +
+                    "', '" + portfolio_id + "')");
                 
                 if (trading_days_result.is_ok()) {
                     auto table = trading_days_result.value();
@@ -2403,7 +2404,8 @@ int main(int argc, char* argv[]) {
 
             // Call PostgreSQL function to calculate trading days
             auto trading_days_result = db->execute_query(
-                "SELECT trading.get_trading_days('LIVE_EQUITY_MEAN_REVERSION', DATE '" + now_date_str + "')");
+                "SELECT trading.get_trading_days('LIVE_EQUITY_MEAN_REVERSION', DATE '" + now_date_str +
+                    "', '" + portfolio_id + "')");
             
             if (trading_days_result.is_ok()) {
                 auto table = trading_days_result.value();
