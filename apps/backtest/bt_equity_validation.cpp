@@ -609,28 +609,32 @@ int main() {
                       << std::setw(10) << "Volatility" << std::endl;
             std::cout << std::string(75, '-') << std::endl;
 
-            // BOD (Beginning-of-Day) model replication:
-            // Day 1: on_data() receives Day 1 bars (first time, no previous exists)
-            // Day 2: on_data() receives Day 1 bars (previous day's bars)
-            // Day 3: on_data() receives Day 2 bars
-            // ...
-            // Day N: on_data() receives Day N-1 bars
-            // After Day N: portfolio_previous_bars_ = Day N bars (NOT fed to strategy)
+            // Sequence of closes the strategy actually sees.
             //
-            // So the strategy receives: close[0], close[0], close[1], close[2], ..., close[N-2]
-            // (Day 1 appears twice, Day N-1 is last one fed, Day N is never fed)
+            // The coordinator feeds PREVIOUS-day bars for signal generation
+            // (backtest_coordinator.cpp: `bars_for_signals = portfolio_previous_bars_`),
+            // which lags the feed by one day but does NOT drop either end:
             //
-            // Build the actual sequence of closes the strategy sees:
-            std::vector<double> bod_closes;
-            std::vector<Timestamp> bod_timestamps;
-            // Day 1: first-time fallback, strategy sees Day 1
-            bod_closes.push_back(closes[0]);
-            bod_timestamps.push_back(timestamps[0]);
-            // Day 2 onwards: strategy sees previous day's bars
-            for (size_t i = 0; i < closes.size() - 1; i++) {
-                bod_closes.push_back(closes[i]);
-                bod_timestamps.push_back(timestamps[i]);
-            }
+            //  * Day 1 is not processed twice. The coordinator early-returns on the first
+            //    bar set, seeding portfolio_previous_bars_ and nothing else, so close[0]
+            //    reaches the strategy exactly once -- on day 2.
+            //  * The final bar is not skipped. The backtest range runs to end_date (today),
+            //    beyond the last bar with data, so the trailing iterations feed the last
+            //    bar as "previous bars". close[N-1] does reach the strategy.
+            //
+            // The net effect is a pure one-day lag, so the SET of closes the strategy sees
+            // is every close in order. Verified against a live run (E2-F4): for AMZN --
+            // chosen because it has no corporate action in the window, so raw == adjusted --
+            // the strategy's final state matches the 20 bars ending on the LAST bar
+            // (SMA 266.739500, StdDev 7.346419, vol 0.321135, z -0.042129) on all four
+            // metrics to six decimals.
+            //
+            // The previous model here duplicated close[0] and stopped at close[N-2]. Its
+            // window therefore ended one bar early, and it compared its 2026-08-27 state
+            // against the strategy's 2026-08-28 state -- 12 false failures, 3 symbols x
+            // 4 metrics, while both sides' arithmetic was individually correct.
+            std::vector<double> bod_closes = closes;
+            std::vector<Timestamp> bod_timestamps = timestamps;
 
             std::cout << "BOD sequence length: " << bod_closes.size()
                       << " (from " << closes.size() << " raw bars)" << std::endl;
