@@ -573,16 +573,10 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        // Update price manager with bars to extract T-1 and T-2 prices
-        if (price_manager) {
-            auto price_update_result = price_manager->update_from_bars(all_bars, now);
-            if (price_update_result.is_error()) {
-                ERROR("Failed to update price manager with bar data: " +
-                      std::string(price_update_result.error()->what()));
-                return 1;
-            }
-            INFO("Price manager updated - extracted T-1 and T-2 prices from bars");
-        } else {
+        // NOTE: the price manager is deliberately NOT updated here. It is updated below,
+        // immediately after `previous_date` is resolved, so the T-1 price lookup and the
+        // T-1 position book are keyed on the SAME trading day. See E2-F14 there.
+        if (!price_manager) {
             ERROR("Price manager not initialized");
             return 1;
         }
@@ -647,6 +641,37 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         auto previous_date = *prev_day_opt;
+
+        // E2-F14: extract T-1/T-2 prices keyed on the trading day we just resolved, NOT on
+        // `now - 24h`.
+        //
+        // This call used to sit ~70 lines above, before `previous_date` existed, and passed
+        // only `now`. LivePriceManager then derived T-1 as `now - 24h` with no fallback,
+        // while the book being finalized came from find_previous_trading_day(). On a Sunday
+        // or Monday run those disagree -- the book says FRIDAY, the price lookup asks for
+        // Saturday/Sunday, and equities_data.ohlcv_1d has no weekend rows -- so an
+        // already-finalized Friday was re-finalized against an empty price map and its
+        // position rows overwritten with 0/0 by the store_positions call in STEP 1, which
+        // runs outside the `yesterday_total_pnl != 0.0` gate that protects live_results.
+        //
+        // Measured on the 2026-07-24..08-04 weekend-inclusive replay: Sat 08-01 correctly
+        // finalized Friday at $864.759444, then Sun 08-02 and Mon 08-03 each re-zeroed it.
+        // L5 residual was -864.7594 on 07-31 and -14.6574 on 07-24, 0.0000 elsewhere.
+        //
+        // Passing the resolved date makes the two lookups agree by construction and makes
+        // re-finalization idempotent. Futures is unaffected: both futures runners pass no
+        // t1_date and their own book lookup is `now - 24h`, the same value this defaults to.
+        // Do NOT move this call back above the resolution, and do NOT "simplify" it by
+        // dropping the argument.
+        {
+            auto price_update_result = price_manager->update_from_bars(all_bars, now, previous_date);
+            if (price_update_result.is_error()) {
+                ERROR("Failed to update price manager with bar data: " +
+                      std::string(price_update_result.error()->what()));
+                return 1;
+            }
+            INFO("Price manager updated - T-1/T-2 prices keyed on resolved trading day");
+        }
 
         // Check if today itself is a non-trading day
         int today_dow = now_tm->tm_wday;
@@ -1744,7 +1769,27 @@ int main(int argc, char* argv[]) {
                 }
             }
 
-            if (!finalized_to_store.empty()) {
+            // E2-F14 guard: never let a day with NO T-1 prices overwrite a day that was
+            // already finalized correctly.
+            //
+            // store_positions is DELETE-then-INSERT keyed on (strategy, portfolio, T-1
+            // date), and it runs here -- ~480 lines BEFORE the `yesterday_total_pnl != 0.0`
+            // gate that protects the live_results UPDATE. So when finalization degenerates
+            // (every symbol takes the no-T-1-close branch and returns 0/0), live_results is
+            // spared but the position rows are silently replaced with zeros.
+            //
+            // Resolving t1_date from the trading calendar removes the weekend cause, but a
+            // genuine data gap on a real trading day can still empty this map. In that case
+            // the rows being written are all 0/0 and carry no information: the day's own run
+            // already wrote the real rows, so skipping loses nothing and refusing to write
+            // is strictly safer than overwriting. Failing closed here is deliberate.
+            const bool have_t1_prices = !previous_day_close_prices.empty();
+            if (!finalized_to_store.empty() && !have_t1_prices) {
+                WARN("Refusing to write " + std::to_string(finalized_to_store.size()) +
+                     " Day T-1 position rows: no T-1 close prices were resolved, so every "
+                     "row is a degenerate 0/0 that would overwrite an already-finalized day");
+            }
+            if (!finalized_to_store.empty() && have_t1_prices) {
                 // Always save yesterday's finalized positions immediately (not queued)
                 // These are updates to existing positions from the previous day
                 auto update_result = db->store_positions(finalized_to_store, kEquityStrategyId, kEquityStrategyName, portfolio_id, "trading.positions");
