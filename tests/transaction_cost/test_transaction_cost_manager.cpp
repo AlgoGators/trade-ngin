@@ -531,3 +531,73 @@ TEST(EquityCommissionSchedule, RegulatoryFeesAreNotChargedOnTopOfFixed) {
            "on top of an all-inclusive Fixed schedule. That is a double-charge. It would be "
            "correct under Tiered, where fees are passed through.";
 }
+
+// ===========================================================================
+// E2-F3: a missing prior close must omit the RETURN, not the VOLUME.
+//
+// BacktestCoordinator used to `continue` when a symbol had no bar on the previous processed
+// day, skipping update_market_data entirely -- which dropped the volume observation along
+// with the log return. Volume is a valid, correct observation regardless of whether a prior
+// bar exists, and ADV is what sizes market impact.
+//
+// The futures universe has mixed calendars: the eight grain/livestock roots have ZERO Sunday
+// bars while the rest of the book has ~95 over two years, so every Monday those symbols hit
+// the missing-prior-bar path. That excluded Mondays from a 20-day ADV window for ten symbols
+// -- 6.7% of all symbol-days, ~21% of trading days for those ten. KE.v.0 sits on the 20,000
+// ADV bucket boundary (20,092 with Mondays, 19,948 without), flipping its impact coefficient
+// 60 -> 80 bps purely on which days were counted.
+//
+// The coordinator now passes prev_close = 0.0 instead of skipping, relying on the gate below.
+// Do NOT "fix" this by passing prev_close = close (what main does): that injects a
+// log(close/close) = 0 return, a false observation that biases volatility downward.
+// ===========================================================================
+
+TEST(MarketDataUpdate, ZeroPrevCloseStillRecordsVolume) {
+    TransactionCostManager::Config cfg;
+    TransactionCostManager tcm(cfg);
+
+    // No prior close available -- the coordinator's missing-T-1-bar case.
+    tcm.update_market_data("ZC", /*volume=*/12345.0, /*close=*/600.0, /*prev_close=*/0.0);
+
+    EXPECT_DOUBLE_EQ(tcm.get_adv("ZC"), 12345.0)
+        << "Volume was not recorded when the prior close was unavailable. ADV must still "
+           "advance -- dropping it is what excluded Mondays from the ag symbols' ADV window "
+           "and flipped KE.v.0 across the 20,000 impact bucket boundary.";
+}
+
+TEST(MarketDataUpdate, ZeroPrevCloseAddsNoReturnObservation) {
+    TransactionCostManager::Config cfg;
+    TransactionCostManager tcm(cfg);
+
+    // A symbol that has only ever been seen without a prior close carries no return
+    // observations at all, so volatility falls back to the model default rather than being
+    // pulled toward zero by fabricated log(close/close) = 0 entries.
+    const double untouched = tcm.get_annual_volatility("NEVER_SEEN");
+
+    for (int i = 0; i < 5; ++i) {
+        tcm.update_market_data("ZW", 1000.0, 600.0 + i, /*prev_close=*/0.0);
+    }
+
+    EXPECT_DOUBLE_EQ(tcm.get_annual_volatility("ZW"), untouched)
+        << "A return was recorded from an absent prior close. Passing prev_close = close "
+           "instead (what main does) injects a zero return, which biases the volatility "
+           "estimate downward on 1 day in 5 for symbols with no Sunday session.";
+    EXPECT_DOUBLE_EQ(tcm.get_adv("ZW"), 1000.0)
+        << "Volume must still have been recorded on every one of those bars.";
+}
+
+TEST(MarketDataUpdate, ValidPrevCloseRecordsBothVolumeAndReturn) {
+    TransactionCostManager::Config cfg;
+    TransactionCostManager tcm(cfg);
+
+    // Varying returns, so the series has real dispersion -- a constant return has zero
+    // stddev and would prove nothing.
+    const double closes[] = {600.0, 612.0, 605.0, 621.0, 610.0, 628.0};
+    for (int i = 1; i < 6; ++i) {
+        tcm.update_market_data("ZS", 1000.0, closes[i], closes[i - 1]);
+    }
+
+    EXPECT_DOUBLE_EQ(tcm.get_adv("ZS"), 1000.0);
+    EXPECT_GT(tcm.get_annual_volatility("ZS"), 0.0)
+        << "A genuine prior close must still produce a return observation.";
+}

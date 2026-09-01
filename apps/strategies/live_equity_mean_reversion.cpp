@@ -313,8 +313,25 @@ int main(int argc, char* argv[]) {
 
         std::cout << "Retrieved " << symbols.size() << " symbols" << std::endl;
         std::cout << "Initial capital: $" << initial_capital << std::endl;
-        std::cout << "Commission rate: " << (commission_rate * 100) << " bps" << std::endl;
-        std::cout << "Slippage model: " << slippage_model << " bps" << std::endl;
+        // E2-C6: describe the model that actually charges, not two inert config values.
+        //
+        // These printed `execution.commission_rate` and `execution.slippage_bps` from
+        // config/defaults.json as though they were the live cost model. Neither is used:
+        // commission_rate is written into StrategyConfig::costs, which has NO reader anywhere
+        // in the tree, and slippage_bps is read into a local and never consulted. The banner
+        // told an operator the book paid "0.05 bps" while TransactionCostManager was charging
+        // a $1.00-per-order floor -- on the observed window that floor was 96% of all
+        // commission paid.
+        //
+        // Print the real schedule instead. If the config values are ever wired up, print them
+        // here again -- but they must drive the model first.
+        std::cout << "Commission model: IBKR Pro Fixed -- $0.005/share, $1.00 min/order, "
+                     "1% of trade value max, fees included" << std::endl;
+        std::cout << "Implicit costs: spread + market impact, charged via "
+                     "total_transaction_costs" << std::endl;
+        std::cout << "  (config execution.commission_rate=" << commission_rate
+                  << ", execution.slippage_bps=" << slippage_model
+                  << " are NOT used by the cost model)" << std::endl;
 
         INFO("Configuration loaded successfully. Processing " +
              std::to_string(symbols.size()) + " symbols from " +
@@ -2190,6 +2207,36 @@ int main(int argc, char* argv[]) {
                  " daily_unrealized_pnl=" + std::to_string(static_cast<double>(validated_position.unrealized_pnl)));
         }
         
+        // E2-C7: live has NO overnight borrow-cost accrual, so it must not carry a short.
+        //
+        // TransactionCostManager::calculate_overnight_borrow_fees() has exactly one caller,
+        // backtest_coordinator.cpp -- the live path never accrues it. A short position held
+        // live would therefore cost nothing overnight while the same position in the backtest
+        // is charged, making the two silently disagree on any short book.
+        //
+        // Unreachable today: Equity::is_short_allowed() requires account_mode == REG_T AND
+        // short_selling_allowed, and equity.hpp defaults them to CASH/false with REG_T
+        // configured nowhere. That is exactly why this is a guard rather than an
+        // implementation -- writing untested borrow accrual for a case that cannot occur is
+        // worse than refusing the case. When shorting IS enabled (tracked as T2.10), this
+        // fires on day one and the accrual gets written then, against a real book.
+        {
+            std::vector<std::string> shorts;
+            for (const auto& p : positions_to_save) {
+                if (p.quantity.as_double() < 0.0) shorts.push_back(p.symbol);
+            }
+            if (!shorts.empty()) {
+                std::string joined;
+                for (const auto& sym : shorts) joined += (joined.empty() ? "" : ", ") + sym;
+                ERROR("Refusing to persist a short equity position: live accrues no overnight "
+                      "borrow cost, so this book would be under-charged against its own "
+                      "backtest. Symbols: " + joined);
+                ERROR("Enable borrow-fee accrual in the live EOD path before allowing shorts "
+                      "(see TransactionCostManager::calculate_overnight_borrow_fees).");
+                return 1;
+            }
+        }
+
         if (!positions_to_save.empty()) {
             INFO("Attempting to save " + std::to_string(positions_to_save.size()) + " positions to database");
             DEBUG("Database connection status: " + std::string(db->is_connected() ? "connected" : "disconnected"));

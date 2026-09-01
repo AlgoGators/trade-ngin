@@ -440,8 +440,27 @@ Result<void> BacktestCoordinator::process_day(
                 }
             }
             if (!found_prev) {
-                WARN("No T-1 bar found for " + bar.symbol + " -- skipping market data update");
-                continue;
+                // E2-F3: record the VOLUME anyway; omit only the return.
+                //
+                // This used to `continue`, dropping update_volume along with the log return.
+                // Today's volume is a valid, correct observation regardless of whether a
+                // prior bar exists, and ADV is what sizes market impact. Dropping it left a
+                // 20-observation ADV window that systematically excluded Mondays for the ten
+                // agricultural/livestock symbols, which have no Sunday session while the rest
+                // of the universe does -- 6.7% of all symbol-days, but ~21% of trading days
+                // for those ten. KE.v.0 sits on the 20,000 ADV bucket boundary (20,092 with
+                // Mondays, 19,948 without), so its impact coefficient flipped 60 -> 80 bps
+                // purely as a function of which days got counted.
+                //
+                // Passing prev_close = 0.0 is deliberate and sufficient: update_market_data
+                // records volume unconditionally and gates update_log_returns on
+                // `prev_close_price > 0.0`, so the return is omitted rather than fabricated.
+                //
+                // Do NOT restore `prev_close = close` (what main does). That injects a
+                // log(close/close) = 0 return -- a false observation that biases the
+                // volatility estimate downward on 1 day in 5 for the affected symbols.
+                WARN("No T-1 bar found for " + bar.symbol +
+                     " -- recording volume, omitting the return");
             }
 
             execution_manager_->update_market_data(bar.symbol, volume, close, prev_close);
@@ -523,8 +542,27 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                 }
             }
             if (!found_prev) {
-                WARN("No T-1 bar found for " + bar.symbol + " -- skipping market data update");
-                continue;
+                // E2-F3: record the VOLUME anyway; omit only the return.
+                //
+                // This used to `continue`, dropping update_volume along with the log return.
+                // Today's volume is a valid, correct observation regardless of whether a
+                // prior bar exists, and ADV is what sizes market impact. Dropping it left a
+                // 20-observation ADV window that systematically excluded Mondays for the ten
+                // agricultural/livestock symbols, which have no Sunday session while the rest
+                // of the universe does -- 6.7% of all symbol-days, but ~21% of trading days
+                // for those ten. KE.v.0 sits on the 20,000 ADV bucket boundary (20,092 with
+                // Mondays, 19,948 without), so its impact coefficient flipped 60 -> 80 bps
+                // purely as a function of which days got counted.
+                //
+                // Passing prev_close = 0.0 is deliberate and sufficient: update_market_data
+                // records volume unconditionally and gates update_log_returns on
+                // `prev_close_price > 0.0`, so the return is omitted rather than fabricated.
+                //
+                // Do NOT restore `prev_close = close` (what main does). That injects a
+                // log(close/close) = 0 return -- a false observation that biases the
+                // volatility estimate downward on 1 day in 5 for the affected symbols.
+                WARN("No T-1 bar found for " + bar.symbol +
+                     " -- recording volume, omitting the return");
             }
 
             execution_manager_->update_market_data(bar.symbol, volume, close, prev_close);

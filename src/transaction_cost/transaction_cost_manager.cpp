@@ -121,6 +121,27 @@ TransactionCostResult TransactionCostManager::calculate_costs(
     result.implicit_price_impact =
         result.spread_price_impact + result.market_impact_price_impact;
 
+    // E2-C5: enforce max_total_implicit_bps.
+    //
+    // This field is set on EVERY asset config (75-200 bps depending on tier) and was read by
+    // NOTHING -- the documented cap on total implicit cost did not exist. max_impact_bps
+    // bounds the market-impact term alone; nothing bounded spread + impact together.
+    //
+    // It should not bind in normal conditions: the impact term is already capped below this
+    // value and futures spreads are a tick or two, so the sum stays well under. That is
+    // precisely why it went unnoticed. It is a tail guard, so when it DOES bind that is worth
+    // seeing rather than absorbing silently -- hence the warning.
+    if (asset_config.max_total_implicit_bps >= 0.0 && reference_price > 0.0) {
+        const double cap = (asset_config.max_total_implicit_bps / 10000.0) * reference_price;
+        if (result.implicit_price_impact > cap) {
+            WARN("Implicit cost cap binding for " + symbol + ": " +
+                 std::to_string((result.implicit_price_impact / reference_price) * 10000.0) +
+                 " bps clamped to " + std::to_string(asset_config.max_total_implicit_bps) +
+                 " bps (spread + market impact)");
+            result.implicit_price_impact = cap;
+        }
+    }
+
     // 5. Convert implicit to dollars
     // slippage_market_impact = implicit_price_impact * |qty| * point_value
     result.slippage_market_impact =
