@@ -774,6 +774,25 @@ int main(int argc, char* argv[]) {
             }
         }
 
+        // The book AS IT STOOD on T-1, captured before any corporate action touches it.
+        //
+        // The corp-action blocks below mutate `previous_positions` IN PLACE (non-const ref
+        // by design -- see AVERAGE_PRICE_LIFECYCLE.md step 2). The Day T-1 finalization then
+        // builds its input from that same map and writes the result back at the T-1 DATE, so
+        // the post-action quantities and basis landed on a row for a day the action had not
+        // yet happened. Measured: a position seeded at 10 @ 4194.31 on 2026-04-02 came back
+        // as 250 @ 167.7724 on 2026-04-02 after the 2026-04-06 split was applied -- history
+        // restated four days before the ex-date.
+        //
+        // For a split that is "only" falsified quantity history, since notional is
+        // preserved. For a DIVIDEND it is worse: the basis changes without notional being
+        // preserved, so the T-1 row would carry a cost basis that was not true that day and
+        // any P&L computed over it would be wrong.
+        //
+        // T-1 is finalized from this snapshot; the adjustment belongs to the ex-date forward.
+        const std::unordered_map<std::string, Position> previous_positions_pre_action =
+            previous_positions;
+
         DEBUG("Previous date used for lookup: " + std::to_string(std::chrono::system_clock::to_time_t(previous_date)));
         DEBUG("Current date: " + std::to_string(std::chrono::system_clock::to_time_t(now)));
         DEBUG("Previous positions loaded: " + std::to_string(previous_positions.size()));
@@ -1386,8 +1405,22 @@ int main(int argc, char* argv[]) {
                     ev.event_date = row.date_str;
                     ev.vendor_label = row.action;
                     ev.contra_ticker = row.contra_ticker;
-                    ev.ratio = row.value;
-                    ev.has_terms = !row.contra_ticker.empty() && row.value > 0.0;
+                    // corporate_action.value is NOT a share exchange ratio. Measured over
+                    // the table: acquisitionby/of average 2,051 and reach 133,846.7, and
+                    // `split` reaches 10,872,442 -- these are deal values in millions. A
+                    // real stock-for-stock ratio is ~0.1-3.0. Feeding it in as `ratio` would
+                    // have turned 40 DFS shares into 40 x 50343.3 = 2,013,732 COF shares at
+                    // a basis of $0.0039, against a real currently-trading symbol, with
+                    // nothing downstream able to catch it (E2-F9).
+                    //
+                    // So this runner does not claim to have terms. The handler's rollover
+                    // path is left fully intact and still activates the day a trustworthy
+                    // deal-terms source exists -- the judgement is about PROVENANCE, not
+                    // magnitude, and a plausibility band cannot separate a genuine 0.5 ratio
+                    // from a $0.6m deal value. Until then every termination exits at the
+                    // final real close, which is conservative and broker-reconcilable.
+                    ev.ratio = 0.0;
+                    ev.has_terms = false;
                     // A terms row supersedes a bare delisting for the same
                     // symbol: it says what the holding BECAME.
                     bool replaced = false;
@@ -1554,10 +1587,14 @@ int main(int argc, char* argv[]) {
         if (!two_days_ago_close_prices.empty() && !previous_positions.empty() && pnl_manager) {
             INFO("Using PnLManager to finalize Day T-1 positions...");
 
-            // Convert map to vector for PnLManager
+            // Convert map to vector for PnLManager.
+            // Sourced from the PRE-corp-action snapshot: Day T-1 is finalized as the book
+            // actually stood on T-1. Using the mutated `previous_positions` here wrote the
+            // post-action quantities and basis onto the T-1 row, restating a day before the
+            // ex-date (see the snapshot's comment above).
             std::vector<Position> prev_positions_vec;
-            prev_positions_vec.reserve(previous_positions.size());
-            for (const auto& [symbol, pos] : previous_positions) {
+            prev_positions_vec.reserve(previous_positions_pre_action.size());
+            for (const auto& [symbol, pos] : previous_positions_pre_action) {
                 prev_positions_vec.push_back(pos);
             }
 

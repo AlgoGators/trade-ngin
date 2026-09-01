@@ -137,7 +137,17 @@ Result<void> LiveResultsManager::delete_stale_data(const Timestamp& date) {
             order_ids.push_back(exec.order_id);
         }
 
-        result = db_->delete_stale_executions(order_ids, date, strategy_id_, "trading.executions");
+        // The DELETE filters on trading.executions.strategy_name, so it must be given the
+        // NAME, not the id. Passing strategy_id_ here matched nothing wherever the two
+        // differ -- for equities the rows carry strategy_name 'EQUITY_MEAN_REVERSION' while
+        // strategy_id_ is 'LIVE_EQUITY_MEAN_REVERSION' -- so the stale rows survived and the
+        // re-insert failed on executions_pkey (portfolio_id, strategy_id, strategy_name,
+        // date, exec_id). That made a date impossible to re-run, which breaks both
+        // idempotency (protocol 3f) and the replay-the-missed-day remedy for a run gap.
+        //
+        // strategy_name_ falls back to strategy_id_ when unset, so callers that never
+        // populate the name -- the futures runners -- pass exactly what they passed before.
+        result = db_->delete_stale_executions(order_ids, date, strategy_name_, "trading.executions");
         if (result.is_error()) {
             WARN("Failed to delete stale executions: " + std::string(result.error()->what()));
         }
