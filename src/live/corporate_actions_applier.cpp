@@ -133,10 +133,26 @@ std::vector<PositionAdjustment> CorporateActionsApplier::apply(
                 //       also the desired behavior for shorts (the short
                 //       owes the dividend; we record |qty| via the abs in
                 //       calculate_commission elsewhere).
-                const double basis_qty =
-                    (ev.qty_at_ex_date > 0.0 && std::isfinite(ev.qty_at_ex_date))
-                        ? ev.qty_at_ex_date
-                        : qty_before;
+                const bool have_ex_date_qty =
+                    (ev.qty_at_ex_date > 0.0 && std::isfinite(ev.qty_at_ex_date));
+                const double basis_qty = have_ex_date_qty ? ev.qty_at_ex_date : qty_before;
+
+                // The fallback is deliberate (see above) but it must not be SILENT. It only
+                // affects the audit cash-flow figure -- qty_held and total_cash on the
+                // trading.corp_action_applied row -- and never the basis adjustment, which
+                // is computed from the ratio above. But a dividend recorded against today's
+                // share count instead of the ex-date holding gives a wrong total_cash with
+                // nothing to indicate it, and the two differ precisely when they matter
+                // most: during a catch-up over a period where position history is thin, or
+                // right after a position was resized. Say so, and print both numbers so the
+                // discrepancy is measurable rather than merely suspected.
+                if (!have_ex_date_qty && std::abs(qty_before) > 1e-9) {
+                    WARN("CorporateActionsApplier: dividend for " + ev.symbol + " (ex_date " +
+                         ev.ex_date + "): no holding recorded at ex_date-1, so the cash-flow "
+                         "basis falls back to today's quantity " + std::to_string(qty_before) +
+                         ". qty_held and total_cash on the dedup row reflect that fallback, "
+                         "not the ex-date holding. The basis adjustment is unaffected.");
+                }
                 adj.quantity_before = basis_qty;
                 adj.quantity_after = basis_qty;  // unchanged
                 adj.avg_price_after = avg_after;

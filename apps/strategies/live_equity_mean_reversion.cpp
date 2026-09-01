@@ -1436,8 +1436,51 @@ int main(int argc, char* argv[]) {
             }
 
             if (!terminations.empty()) {
+                // A terminating symbol is, by definition, one that has STOPPED trading, so
+                // it cannot be in previous_day_close_prices -- that map is built from the
+                // run date's T-1 bar, and a delisted name has no bar there. Handing it in
+                // alone meant every termination took the SKIPPED_NO_PRICE branch and the
+                // position was left dangling with "operator review required", even though
+                // the final close sits in the database (DFS: 200.05 on its last bar,
+                // 2025-05-16). The data was never missing; the lookup was asking the wrong
+                // question (E2-F10).
+                //
+                // So: start from the T-1 map, then for any terminating symbol still absent,
+                // fall back to its LAST REAL CLOSE. Same principle as the execution price
+                // resolver -- price from a real session, never from a basis or a guess.
+                std::unordered_map<std::string, double> final_closes = previous_day_close_prices;
+
+                std::vector<std::string> need_final;
+                for (const auto& ev : terminations) {
+                    if (final_closes.find(ev.symbol) == final_closes.end()) {
+                        need_final.push_back(ev.symbol);
+                    }
+                }
+
+                if (!need_final.empty()) {
+                    // Bounded window: the event date is the last day it could have traded.
+                    auto hist = db->get_historical_closes(
+                        need_final, std::string(lifecycle_start_buf), as_of_date);
+                    if (hist.is_ok()) {
+                        for (const auto& [sym, series] : hist.value()) {
+                            if (series.empty()) continue;
+                            const auto& last = *series.rbegin();   // most recent real close
+                            if (last.second > 0.0 && std::isfinite(last.second)) {
+                                final_closes[sym] = last.second;
+                                INFO("Termination price | " + sym + " has no T-1 close (it "
+                                     "stopped trading); using its last real close " +
+                                     std::to_string(last.second) + " from " + last.first);
+                            }
+                        }
+                    } else {
+                        WARN("Could not load final closes for terminating symbols: " +
+                             std::string(hist.error()->what()) +
+                             " -- those positions will be left untouched for operator review.");
+                    }
+                }
+
                 auto exits = CorporateActionsLifecycle::apply_terminations(
-                    previous_positions, terminations, previous_day_close_prices);
+                    previous_positions, terminations, final_closes);
                 lifecycle_log.insert(lifecycle_log.end(), exits.begin(), exits.end());
             }
 
