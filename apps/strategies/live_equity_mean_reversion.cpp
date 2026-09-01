@@ -2030,7 +2030,10 @@ int main(int argc, char* argv[]) {
 
             // UPDATE yesterday's live_results with ALL recalculated metrics
             // Note: We calculate daily_pnl, total_pnl, and current_portfolio_value in SQL
-            // to properly incorporate the EXISTING daily_commissions value
+            // to properly incorporate the EXISTING daily_transaction_costs value
+            // (trading.live_results has no commissions column -- see E2-F5; the INSERT
+            //  above writes the equity commission into daily_transaction_costs, and this
+            //  UPDATE must read the same column or the whole statement fails)
             // IMPORTANT: Only update portfolio_leverage and equity_to_margin_ratio if they are NULL or 0
             std::string update_query =
                 "WITH day_before AS ("
@@ -2043,18 +2046,18 @@ int main(int argc, char* argv[]) {
                 ") "
                 "UPDATE trading.live_results SET "
                 "daily_realized_pnl = " + std::to_string(yesterday_total_pnl) + ", "
-                "daily_pnl = " + std::to_string(yesterday_total_pnl) + " - COALESCE(daily_commissions, 0.0), "
-                "total_pnl = COALESCE((SELECT total_pnl FROM day_before), 0.0) + (" + std::to_string(yesterday_total_pnl) + " - COALESCE(daily_commissions, 0.0)), "
+                "daily_pnl = " + std::to_string(yesterday_total_pnl) + " - COALESCE(daily_transaction_costs, 0.0), "
+                "total_pnl = COALESCE((SELECT total_pnl FROM day_before), 0.0) + (" + std::to_string(yesterday_total_pnl) + " - COALESCE(daily_transaction_costs, 0.0)), "
                 "total_realized_pnl = " + std::to_string(yesterday_total_realized_pnl_cumulative) + ", "
-                "current_portfolio_value = COALESCE((SELECT portfolio FROM day_before), " + std::to_string(initial_capital) + ") + (" + std::to_string(yesterday_total_pnl) + " - COALESCE(daily_commissions, 0.0)), "
+                "current_portfolio_value = COALESCE((SELECT portfolio FROM day_before), " + std::to_string(initial_capital) + ") + (" + std::to_string(yesterday_total_pnl) + " - COALESCE(daily_transaction_costs, 0.0)), "
                 "daily_return = CASE WHEN COALESCE((SELECT portfolio FROM day_before), " + std::to_string(initial_capital) + ") > 0 "
-                "               THEN ((" + std::to_string(yesterday_total_pnl) + " - COALESCE(daily_commissions, 0.0)) / COALESCE((SELECT portfolio FROM day_before), " + std::to_string(initial_capital) + ")) * 100.0 "
+                "               THEN ((" + std::to_string(yesterday_total_pnl) + " - COALESCE(daily_transaction_costs, 0.0)) / COALESCE((SELECT portfolio FROM day_before), " + std::to_string(initial_capital) + ")) * 100.0 "
                 "               ELSE 0.0 END, "
                 "total_cumulative_return = " + std::to_string(yesterday_total_cumulative_return_pct) + ", "
                 "total_annualized_return = " + std::to_string(yesterday_total_return_annualized) + ", "
                 "portfolio_leverage = CASE WHEN portfolio_leverage IS NULL OR portfolio_leverage = 0 THEN " + std::to_string(yesterday_portfolio_leverage) + " ELSE portfolio_leverage END, "
                 "equity_to_margin_ratio = CASE WHEN equity_to_margin_ratio IS NULL OR equity_to_margin_ratio = 0 THEN " + std::to_string(yesterday_equity_to_margin_ratio) + " ELSE equity_to_margin_ratio END, "
-                "cash_available = COALESCE((SELECT portfolio FROM day_before), " + std::to_string(initial_capital) + ") + (" + std::to_string(yesterday_total_pnl) + " - COALESCE(daily_commissions, 0.0)) - COALESCE(margin_posted, 0.0) "
+                "cash_available = COALESCE((SELECT portfolio FROM day_before), " + std::to_string(initial_capital) + ") + (" + std::to_string(yesterday_total_pnl) + " - COALESCE(daily_transaction_costs, 0.0)) - COALESCE(margin_posted, 0.0) "
                 "WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND DATE(date) = '" + yesterday_date_str + "'";
 
             INFO("Executing UPDATE query for Day T-1 live_results...");
@@ -2090,13 +2093,28 @@ int main(int argc, char* argv[]) {
                 INFO("Query returned " + std::to_string(table->num_rows()) + " rows");
 
                 if (table->num_rows() > 0) {
-                    auto array = std::static_pointer_cast<arrow::DoubleArray>(table->column(0)->chunk(0));
+                    // current_portfolio_value is NUMERIC, which this driver surfaces as a
+                    // StringArray -- every other numeric read in this file does the same
+                    // (see the yesterday-metrics block below). Casting the chunk to
+                    // DoubleArray does not convert it; static_pointer_cast just
+                    // reinterprets the pointer, so Value(0) read a garbage double that
+                    // printed as 0.000000, failed the "< 1000" guard, and skipped the
+                    // Day T-1 equity_curve update on 6 of 10 days -- leaving equity_curve
+                    // disagreeing with live_results.current_portfolio_value (E2-F7).
+                    auto array = std::static_pointer_cast<arrow::StringArray>(table->column(0)->chunk(0));
 
                     // Check for NULL value before reading
                     if (array->IsNull(0)) {
                         ERROR("Cannot update Day T-1 equity_curve: current_portfolio_value is NULL for date " + yesterday_date_str);
                     } else {
-                        double portfolio_value = array->Value(0);
+                        double portfolio_value = 0.0;
+                        try {
+                            portfolio_value = std::stod(std::string(array->GetView(0)));
+                        } catch (const std::exception& e) {
+                            ERROR("Could not parse current_portfolio_value '" +
+                                  std::string(array->GetView(0)) + "' for " + yesterday_date_str +
+                                  ": " + e.what());
+                        }
                         INFO("Raw value read from database: " + std::to_string(portfolio_value));
 
                         // Validate the value before using it
@@ -2659,7 +2677,7 @@ int main(int argc, char* argv[]) {
                     // email body alongside Daily Total PnL.
                     std::string yesterday_metrics_query =
                         "SELECT daily_return, daily_unrealized_pnl, daily_realized_pnl, daily_pnl, "
-                        "daily_commissions, total_dividend_income "
+                        "daily_transaction_costs, total_dividend_income "
                         "FROM trading.live_results "
                         "WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND date = '" + yesterday_date_for_email + "' "
                         "ORDER BY date DESC LIMIT 1";
