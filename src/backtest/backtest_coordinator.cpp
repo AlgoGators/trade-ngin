@@ -708,14 +708,16 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                     if (method == PnLAccountingMethod::REALIZED_ONLY) {
                         updated_pos.realized_pnl = Decimal(pnl_result.daily_pnl);
                     }
-                    // For equities: unrealized = (current_price - cost_basis) * qty
-                    // For futures: unrealized = 0 (mark-to-market settles daily)
-                    double avg_price = static_cast<double>(pos.average_price);
-                    if (avg_price > 0.0 && std::abs(qty) > 1e-8) {
-                        updated_pos.unrealized_pnl = Decimal((current_close - avg_price) * qty);
-                    } else {
-                        updated_pos.unrealized_pnl = Decimal(0.0);
-                    }
+                    // E2-F2: unrealized is gated on the SAME accounting method as
+                    // realized, and dollarised with point_value. Both were missing here:
+                    // futures rows carried the settled move a second time, divided by the
+                    // contract multiplier. The rule and the full rationale live in
+                    // BacktestPnLManager::unrealized_for_accounting -- read it before
+                    // changing this line.
+                    updated_pos.unrealized_pnl =
+                        Decimal(BacktestPnLManager::unrealized_for_accounting(
+                            method, qty, static_cast<double>(pos.average_price), current_close,
+                            pnl_result.point_value));
 
                     auto update_result =
                         portfolio->update_strategy_position(strategy_id, symbol, updated_pos);

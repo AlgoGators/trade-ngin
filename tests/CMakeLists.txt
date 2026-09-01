@@ -52,6 +52,7 @@ set(TEST_SOURCES
     backtest/test_backtest_data_loader.cpp
     backtest/test_backtest_csv_exporter.cpp
     backtest/test_backtest_coordinator.cpp
+    backtest/test_backtest_unrealized_accounting.cpp
     execution/test_execution_engine.cpp
     portfolio/test_portfolio_manager.cpp
     core/test_equity_portfolio_namespace.cpp
