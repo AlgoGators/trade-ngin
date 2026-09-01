@@ -84,12 +84,23 @@ public:
      * @param carried_basis The basis the same symbol carries in the previous day's
      *        book, AFTER corporate actions have restated it. <= 0 when the symbol
      *        is not a carried-over holding.
-     * @return the basis to record, or 0.0 when neither source knows one. A new
-     *         position genuinely has no basis until its fill is processed, and
-     *         unrealized_from_cost_basis() reads 0.0 as "no PnL to report" rather
-     *         than booking the whole notional. A mark is deliberately never a
-     *         candidate: the day's close is what the position is worth, not what
-     *         it cost, and substituting one for the other is the bug above.
+     * @return the basis to record, or 0.0 when neither source knows one. A mark is
+     *         deliberately never a candidate: the day's close is what the position is
+     *         worth, not what it cost, and substituting one for the other is the bug
+     *         above.
+     *
+     * On the 0.0 return: it means "no basis is known", and it is the CALLER's job to
+     * decide what that means for a row it is about to persist. Do not read it as a
+     * price and do not skip the write and leave the day-T placeholder in place -- that
+     * placeholder is the previous close, so skipping reinstates the very mark-as-basis
+     * substitution this function exists to prevent. The equity runner treats it as an
+     * upstream invariant failure: it logs the symbol and records a zero basis with zero
+     * unrealized PnL, so the row reads as incomplete rather than as a plausible lie.
+     *
+     * In normal flow it should be unreachable for a held position. Every holding has a
+     * basis -- it either traded today, in which case on_execution() set one from a fill
+     * that ExecutionManager refused to price without a real close, or it was carried,
+     * in which case the seeded book supplied one.
      */
     static double resolve_day_t_cost_basis(double strategy_basis, double carried_basis) {
         if (strategy_basis > 0.0) return strategy_basis;

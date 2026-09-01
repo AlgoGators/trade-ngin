@@ -52,15 +52,24 @@ public:
      *
      * @param current_positions Current day's positions
      * @param previous_positions Previous day's positions
-     * @param market_prices Market prices (typically T-1 close prices)
+     * @param market_prices Market prices (typically T-1 close prices). MUST contain a
+     *        positive price for every symbol whose position changes. There is no
+     *        fallback: a symbol absent here, or priced <= 0, is SKIPPED with an ERROR
+     *        and generates no execution. Widen the map with ExecutionPriceResolver
+     *        before calling if legitimate session gaps are expected.
      * @param timestamp Execution timestamp
+     * @param unpriced_out Optional. Receives the symbols that were skipped for want of
+     *        a price. A skip is not a flat position and not a fill -- the caller must
+     *        reconcile these before persisting, or the book will silently disagree with
+     *        the executions.
      * @return Vector of execution reports
      */
     Result<std::vector<ExecutionReport>> generate_daily_executions(
         const std::unordered_map<std::string, Position>& current_positions,
         const std::unordered_map<std::string, Position>& previous_positions,
         const std::unordered_map<std::string, double>& market_prices,
-        const Timestamp& timestamp);
+        const Timestamp& timestamp,
+        std::vector<std::string>* unpriced_out = nullptr);
 
     /**
      * Generate a single execution report

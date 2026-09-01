@@ -34,6 +34,7 @@
 #include "trade_ngin/live/live_metrics_calculator.hpp"
 #include "trade_ngin/live/live_trading_coordinator.hpp"
 #include "trade_ngin/live/live_price_manager.hpp"
+#include "trade_ngin/live/execution_price_resolver.hpp"
 #include "trade_ngin/live/live_pnl_manager.hpp"
 #include "trade_ngin/live/execution_manager.hpp"
 #include "trade_ngin/live/margin_manager.hpp"
@@ -1296,14 +1297,45 @@ int main(int argc, char* argv[]) {
             all_symbols.insert(symbol);
         }
 
+        // A held position with no T-1 close is not a warning any more. Downstream the
+        // execution path will refuse to price it from a cost basis, so it would either
+        // be silently skipped or -- before that refusal existed -- filled at zero. The
+        // widened lookup below rescues the ordinary cases (halts, thin names, the
+        // session after a holiday) from real older closes; anything it cannot rescue is
+        // a genuine data gap on a position carrying real risk, and the run must not
+        // quietly price around it.
+        std::vector<std::string> missing_t1_with_position;
         for (const auto& symbol : all_symbols) {
             if (previous_day_close_prices.find(symbol) == previous_day_close_prices.end()) {
-                WARN("Missing T-1 price for symbol: " + symbol);
+                bool holds_risk = false;
+                auto pos_it = positions.find(symbol);
+                if (pos_it != positions.end() && pos_it->second.quantity.as_double() != 0.0) {
+                    holds_risk = true;
+                }
+                auto prev_it = previous_positions.find(symbol);
+                if (prev_it != previous_positions.end() &&
+                    prev_it->second.quantity.as_double() != 0.0) {
+                    holds_risk = true;
+                }
+                if (holds_risk) {
+                    missing_t1_with_position.push_back(symbol);
+                } else {
+                    WARN("Missing T-1 price for symbol: " + symbol + " (no position - ignored)");
+                }
             }
             if (two_days_ago_close_prices.find(symbol) == two_days_ago_close_prices.end() &&
                 previous_positions.find(symbol) != previous_positions.end()) {
                 WARN("Missing T-2 price for symbol: " + symbol + " (needed for PnL finalization)");
             }
+        }
+        if (!missing_t1_with_position.empty()) {
+            std::sort(missing_t1_with_position.begin(), missing_t1_with_position.end());
+            for (const auto& symbol : missing_t1_with_position) {
+                ERROR("Missing T-1 price for symbol with a non-zero position: " + symbol);
+            }
+            INFO("Will attempt to price " + std::to_string(missing_t1_with_position.size()) +
+                 " position-carrying symbol(s) from their most recent real close; any that "
+                 "cannot be priced will not trade.");
         }
 
         // ========================================
@@ -1420,21 +1452,40 @@ int main(int argc, char* argv[]) {
                 << std::setw(2) << now_tm->tm_mday;
         std::string date_str = date_ss.str();
 
-        auto execution_result = execution_manager->generate_daily_executions(
-            positions,
-            previous_positions,
-            previous_day_close_prices,
-            now
-        );
+        // Price, execute, and roll back anything that could not be priced. The rules
+        // and their rationale live in LiveDailyCycle::execute_day_t so that the runner
+        // and its tests exercise one implementation rather than two that can drift.
+        auto day_t_exec = LiveDailyCycle::execute_day_t(
+            *execution_manager, positions, previous_positions, previous_day_close_prices,
+            all_bars, now, app_config.live.execution_price_max_staleness_days);
 
-        std::vector<ExecutionReport> daily_executions;
-        if (execution_result.is_ok()) {
-            daily_executions = execution_result.value();
-            INFO("ExecutionManager generated " + std::to_string(daily_executions.size()) + " executions");
-        } else {
-            ERROR("ExecutionManager failed: " + std::string(execution_result.error()->what()));
+        if (day_t_exec.is_error()) {
+            ERROR("ExecutionManager failed: " + std::string(day_t_exec.error()->what()));
             // No fallback - component is required to work
             throw std::runtime_error("ExecutionManager failed");
+        }
+
+        auto exec_outcome = day_t_exec.value();
+        std::vector<ExecutionReport> daily_executions = exec_outcome.executions;
+        INFO("ExecutionManager generated " + std::to_string(daily_executions.size()) +
+             " executions");
+
+        for (const auto& entry : exec_outcome.widened_prices) {
+            INFO("BASIS TRACE | price widened | " + entry +
+                 " (no T-1 close; used most recent real session)");
+        }
+        for (const auto& symbol : exec_outcome.unpriced) {
+            ERROR("BASIS TRACE | unpriced | " + symbol + " has no close within " +
+                  std::to_string(app_config.live.execution_price_max_staleness_days) +
+                  " days - it did not trade today");
+        }
+        for (const auto& symbol : exec_outcome.rolled_back) {
+            auto prev_it = previous_positions.find(symbol);
+            double carried =
+                prev_it != previous_positions.end() ? prev_it->second.quantity.as_double() : 0.0;
+            ERROR("BASIS TRACE | rolled back | " + symbol +
+                  " day-T target discarded, book restored to carried quantity " +
+                  std::to_string(carried) + " (unpriced, no execution)");
         }
 
         // Feed executions back to strategy for cost basis tracking.
@@ -1450,55 +1501,39 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        // Now update Day T positions with the corrected average_price from on_execution().
-        // The strategy's positions now have correct cost basis from weighted averaging.
-        // Day-T positions open with average_price set to the previous close, because
-        // that same field is what ExecutionManager reads as the fill price. Now that
-        // executions have been generated and priced, the field goes back to meaning
-        // cost basis -- and a held position's basis is whatever it has always been,
-        // not today's mark. Before Wave 2 the basis was only restored for symbols the
-        // strategy knew about, and since positions_ was never seeded that meant only
-        // the symbols that traded today: every untraded holding kept the close it was
-        // initialised with and its basis drifted a day at a time.
+        // Now resolve each day-T position's cost basis. The rules -- strategy basis
+        // from on_execution, else the carried (post-corporate-action) basis, and never
+        // a mark -- and the handling of the residual live in
+        // LiveDailyCycle::resolve_and_apply_basis, so the runner and its tests share
+        // one implementation. Marks come from the same widened price map the fills were
+        // priced at, so unrealized PnL and the executions agree on what a symbol was
+        // worth today.
         auto strategy_positions = mr_strategy->get_positions();
-        for (auto& [symbol, current_position] : positions) {
+        for (const auto& [symbol, pos] : positions) {
+            if (pos.quantity.as_double() == 0.0) continue;
             auto strat_it = strategy_positions.find(symbol);
-            double strategy_basis = 0.0;
-            if (strat_it != strategy_positions.end()) {
-                strategy_basis = strat_it->second.average_price.as_double();
-            }
-
-            // The carried book is post-corporate-action, so a split or dividend has
-            // already restated this basis.
-            double carried_basis = 0.0;
             auto carried_it = previous_positions.find(symbol);
-            if (carried_it != previous_positions.end() &&
-                carried_it->second.quantity.as_double() != 0.0) {
-                carried_basis = carried_it->second.average_price.as_double();
-            }
-
-            double cost_basis = LivePnLManager::resolve_day_t_cost_basis(
-                strategy_basis, carried_basis);
-
-            if (cost_basis > 0.0) {
-                current_position.average_price = Decimal(cost_basis);
-                // Recalculate unrealized PnL with correct cost basis
-                double current_price = 0.0;
-                if (previous_day_close_prices.find(symbol) != previous_day_close_prices.end()) {
-                    current_price = previous_day_close_prices[symbol];
-                }
-                if (current_price > 0.0) {
-                    current_position.unrealized_pnl = Decimal(
-                        LivePnLManager::unrealized_from_cost_basis(
-                            current_position.quantity.as_double(), cost_basis, current_price));
-                }
-            }
-
-            // Carry realized PnL from strategy
-            if (strat_it != strategy_positions.end()) {
-                current_position.realized_pnl = strat_it->second.realized_pnl;
-            }
+            DEBUG("BASIS TRACE | inputs | " + symbol + " strategy=" +
+                  (strat_it != strategy_positions.end()
+                       ? std::to_string(strat_it->second.average_price.as_double())
+                       : std::string("none")) +
+                  " carried=" +
+                  (carried_it != previous_positions.end()
+                       ? std::to_string(carried_it->second.average_price.as_double())
+                       : std::string("none")));
         }
+
+        auto unresolved_basis = LiveDailyCycle::resolve_and_apply_basis(
+            positions, strategy_positions, previous_positions, exec_outcome.execution_prices);
+
+        for (const auto& symbol : unresolved_basis) {
+            ERROR("BASIS TRACE | UNRESOLVED | " + symbol +
+                  " holds a non-zero quantity with no cost basis from either the strategy "
+                  "or the carried book. Recorded basis 0 and zero unrealized PnL rather "
+                  "than substituting today's close. This is an upstream invariant "
+                  "failure - investigate.");
+        }
+
         // Log final Day T position state
         for (const auto& [symbol, pos] : positions) {
             if (pos.quantity.as_double() != 0.0) {
