@@ -793,6 +793,11 @@ int main(int argc, char* argv[]) {
         const std::unordered_map<std::string, Position> previous_positions_pre_action =
             previous_positions;
 
+        // Executions synthesised from corporate actions (terminations), merged into the
+        // day's executions after execute_day_t so their realized P&L reaches live_results
+        // and the equity curve, and so a broker statement has a counterpart (E2-F11).
+        std::vector<ExecutionReport> corp_action_executions;
+
         DEBUG("Previous date used for lookup: " + std::to_string(std::chrono::system_clock::to_time_t(previous_date)));
         DEBUG("Current date: " + std::to_string(std::chrono::system_clock::to_time_t(now)));
         DEBUG("Previous positions loaded: " + std::to_string(previous_positions.size()));
@@ -1315,6 +1320,8 @@ int main(int argc, char* argv[]) {
                           &lifecycle_start_tm);
 
             std::vector<LifecycleAdjustment> lifecycle_log;
+            // Executions synthesised from corporate actions, merged into the day's
+            // executions below so they reach live_results and the equity curve (E2-F11).
 
             // Class 2: re-key positions still held under a superseded ticker.
             auto alias_result = db->get_ticker_aliases();
@@ -1493,6 +1500,53 @@ int main(int argc, char* argv[]) {
                     mutated = true;
                     break;
                 }
+            }
+
+            // A termination closes a real position at a real price, so it is a TRADE and
+            // must be recorded as one. Without an execution row it was invisible twice
+            // over (E2-F11):
+            //
+            //   * live_results is computed from the PnL manager and the day's executions,
+            //     so a corp-action exit's realized P&L had no route into the aggregate.
+            //     The position row said 122.00 and live_results said 0.00 -- rows and
+            //     aggregate disagreeing, the F-D failure shape in a third place, and it
+            //     never reached the equity curve either.
+            //   * A broker statement shows a liquidation or cash-in-lieu event with no
+            //     counterpart in trading.executions, so the two books cannot be reconciled.
+            //
+            // Emitting the execution closes both at once, through the path that already
+            // exists, rather than adding a second private channel into the aggregate.
+            //
+            // exec_id/order_id are DETERMINISTIC (symbol + ex_date, not a clock) so a
+            // replay of the same date regenerates the same ids, delete_stale_executions
+            // matches them, and the re-insert is an overwrite rather than a duplicate.
+            for (const auto& adj : lifecycle_log) {
+                if (adj.outcome != LifecycleOutcome::EXITED_AT_FINAL_CLOSE) continue;
+                if (std::abs(adj.quantity_before) < 1e-9 || !(adj.exit_price > 0.0)) continue;
+
+                ExecutionReport ca_exec;
+                ca_exec.order_id = "CORPACTION_" + adj.symbol + "_" + adj.event_date;
+                ca_exec.exec_id  = "CA_" + adj.symbol + "_" + adj.event_date + "_EXIT";
+                ca_exec.symbol   = adj.symbol;
+                // Closing a long is a SELL; closing a short is a BUY.
+                ca_exec.side = adj.quantity_before > 0.0 ? Side::SELL : Side::BUY;
+                ca_exec.filled_quantity = Quantity(std::abs(adj.quantity_before));
+                ca_exec.fill_price = Price(adj.exit_price);
+                ca_exec.fill_time = now;
+                // A corporate action is not a discretionary trade: the holder pays no
+                // commission and crosses no spread, so every cost component is zero.
+                ca_exec.commissions_fees = Decimal(0.0);
+                ca_exec.implicit_price_impact = Decimal(0.0);
+                ca_exec.slippage_market_impact = Decimal(0.0);
+                ca_exec.total_transaction_costs = Decimal(0.0);
+                ca_exec.is_partial = false;
+
+                corp_action_executions.push_back(ca_exec);
+                INFO("Corp-action exit booked as an execution: " + adj.symbol + " " +
+                     (ca_exec.side == Side::SELL ? "SELL" : "BUY") + " " +
+                     std::to_string(std::abs(adj.quantity_before)) + " @ " +
+                     std::to_string(adj.exit_price) + " (realized " +
+                     std::to_string(adj.realized_delta) + ", zero cost -- corporate action)");
             }
             if (mutated) {
                 std::vector<Position> lifecycle_positions;
@@ -1775,6 +1829,16 @@ int main(int argc, char* argv[]) {
         }
 
         std::vector<ExecutionReport> daily_executions = exec_outcome.executions;
+        // Corporate-action exits are trades too. Appending them here -- before set_executions,
+        // the PnL aggregation and the DB write -- is what gives their realized P&L a route
+        // into live_results and the equity curve, and gives a broker statement something to
+        // reconcile against (E2-F11).
+        if (!corp_action_executions.empty()) {
+            INFO("Merging " + std::to_string(corp_action_executions.size()) +
+                 " corp-action exit execution(s) into the day's executions");
+            daily_executions.insert(daily_executions.end(),
+                                    corp_action_executions.begin(), corp_action_executions.end());
+        }
         INFO("ExecutionManager generated " + std::to_string(daily_executions.size()) +
              " executions");
 
