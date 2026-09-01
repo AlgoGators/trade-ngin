@@ -596,8 +596,8 @@ void AssetCostConfigRegistry::initialize_default_configs() {
         config.commission_per_unit = 0.005;   // IBKR Pro: $0.005/share
         config.min_commission_per_order = 1.00;
         config.max_commission_per_order = 1e9;
-        config.max_commission_pct = 0.005;    // 0.5% of trade value (IBKR Tiered cap)
-        config.apply_regulatory_fees = true;
+        config.max_commission_pct = 0.01;   // E2-C1: IBKR Fixed 1%; 0.5% is the Tiered cap
+        config.apply_regulatory_fees = false;  // E2-C3: IBKR Fixed is all-inclusive
         config.max_impact_bps = 50.0;
         config.max_total_implicit_bps = 75.0;
         configs_[config.symbol] = config;
@@ -616,8 +616,8 @@ void AssetCostConfigRegistry::initialize_default_configs() {
         config.commission_per_unit = 0.005;
         config.min_commission_per_order = 1.00;
         config.max_commission_per_order = 1e9;
-        config.max_commission_pct = 0.005;
-        config.apply_regulatory_fees = true;
+        config.max_commission_pct = 0.01;   // E2-C1: IBKR Fixed 1%; 0.5% is the Tiered cap
+        config.apply_regulatory_fees = false;  // E2-C3: IBKR Fixed is all-inclusive
         config.max_impact_bps = 75.0;
         config.max_total_implicit_bps = 100.0;
         configs_[config.symbol] = config;
@@ -636,8 +636,8 @@ void AssetCostConfigRegistry::initialize_default_configs() {
         config.commission_per_unit = 0.005;
         config.min_commission_per_order = 1.00;
         config.max_commission_per_order = 1e9;
-        config.max_commission_pct = 0.005;
-        config.apply_regulatory_fees = true;
+        config.max_commission_pct = 0.01;   // E2-C1: IBKR Fixed 1%; 0.5% is the Tiered cap
+        config.apply_regulatory_fees = false;  // E2-C3: IBKR Fixed is all-inclusive
         config.max_impact_bps = 100.0;
         config.max_total_implicit_bps = 150.0;
         configs_[config.symbol] = config;
@@ -715,8 +715,8 @@ AssetCostConfig AssetCostConfigRegistry::get_equity_default_config() {
     config.commission_per_unit = 0.005;    // IBKR Pro: $0.005/share
     config.min_commission_per_order = 1.00;
     config.max_commission_per_order = 1e9;
-    config.max_commission_pct = 0.005;     // 0.5% of trade value cap
-    config.apply_regulatory_fees = true;   // SEC + FINRA on sells
+    config.max_commission_pct = 0.01;   // E2-C1: IBKR Fixed 1%; 0.5% is the Tiered cap
+    config.apply_regulatory_fees = false;  // E2-C3: IBKR Fixed is all-inclusive
     config.max_impact_bps = 100.0;
     config.max_total_implicit_bps = 200.0;
     return config;

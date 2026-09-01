@@ -65,14 +65,33 @@ TransactionCostResult TransactionCostManager::calculate_costs(
         double raw_commission = abs_qty * asset_config.commission_per_unit;
         double effective_max;
         if (asset_config.max_commission_pct >= 0.0) {
-            // Percentage-based cap: e.g., 0.5% of trade value (IBKR Tiered)
-            // IBKR Fixed uses 1.0% -- configurable via max_commission_pct
+            // Percentage-based cap. The equity configs are IBKR Pro FIXED, so this is 1.0%
+            // of trade value (0.5% is the Tiered cap -- see the field's comment in
+            // asset_cost_config.hpp before changing it).
             effective_max = asset_config.max_commission_pct * abs_qty * reference_price;
         } else {
             effective_max = asset_config.max_commission_per_order;
         }
-        result.commissions_fees = std::max(asset_config.min_commission_per_order,
-                                           std::min(effective_max, raw_commission));
+        // E2-C2: the cap is a CEILING and must be applied last.
+        //
+        // This was `max(floor, min(cap, raw))`, which lets the floor override the cap. IBKR
+        // publishes the schedule as "Minimum per order: USD 1.00 / Maximum per order: 1
+        // percent of trade value" -- a maximum that a minimum can exceed is not a maximum.
+        //
+        // The old order also made max_commission_pct DEAD for any normal stock: the inner
+        // min(cap, raw) picks the cap only when `pct * price < commission_per_unit`, i.e.
+        // below $0.50 a share, so above that the expression collapsed to max(floor, raw) and
+        // the configured cap could not change a single output value.
+        //
+        // The two only collide on very small orders, which is exactly what a fractional-share
+        // book trades. Measured 2026-07-24..08-03: the cap should have bound on 5 of 15
+        // executions and did not -- an $18.70 AMZN trade paid $1.00 (535 bps) where the 1%
+        // cap says $0.187. 21% over-charge, concentrated on the smallest clips.
+        //
+        // The floor protects the broker on small-but-normal orders; the cap protects the
+        // client on tiny ones. Both belong here, in this order.
+        result.commissions_fees = std::min(
+            effective_max, std::max(asset_config.min_commission_per_order, raw_commission));
     } else {
         // Global fee per contract (futures default)
         result.commissions_fees = abs_qty * config_.explicit_fee_per_contract;
@@ -164,8 +183,33 @@ int TransactionCostManager::register_equity_costs_from_bars(
     for (const auto& symbol : symbols) {
         auto it = bars_by_symbol.find(symbol);
         if (it == bars_by_symbol.end() || it->second.empty()) {
+            // E2-F14: register the untiered equity default rather than skipping.
+            //
+            // Skipping left the symbol ABSENT from configs_, and an absent symbol does NOT
+            // fall back to the equity default -- AssetCostConfigRegistry::get_config() only
+            // reaches get_equity_default_config() when the caller passes
+            // AssetType::EQUITY, and NONE of the nine production call sites passes an
+            // AssetType at all. So an unregistered equity resolved to the FUTURES default:
+            // $1.50 per SHARE instead of $0.005, and point_value 100 instead of 1, i.e. 100x
+            // the slippage. The old WARN here claimed "will use equity default if traded",
+            // which was simply untrue.
+            //
+            // Worse, configs_ is one flat symbol->config map shared across asset classes, and
+            // real tickers collide with futures roots: CL is Colgate-Palmolive AND Crude Oil,
+            // ES is Eversource AND the E-mini S&P. An unregistered CL equity would have
+            // resolved to the Crude Oil config -- point_value 1000.
+            //
+            // Registering the default keeps every configured equity inside the equity cost
+            // model, so the futures fallthrough is unreachable for them regardless of what
+            // any call site passes. Fail-safe by construction rather than by every caller
+            // remembering an argument.
             WARN("register_equity_costs_from_bars: no bars for " + symbol +
-                 " -- skipping (will use equity default if traded)");
+                 " -- registering the untiered equity default so it can never resolve to a "
+                 "futures cost config");
+            AssetCostConfig fallback = AssetCostConfigRegistry::get_equity_default_config();
+            fallback.symbol = symbol;
+            asset_configs_.register_config(fallback);
+            ++registered;
             continue;
         }
 
@@ -180,8 +224,15 @@ int TransactionCostManager::register_equity_costs_from_bars(
         const double adv = volume_sum / static_cast<double>(n);
 
         if (adv <= 0.0) {
+            // E2-F14: same reasoning as the no-bars branch above -- never leave a configured
+            // equity unregistered, or it inherits futures pricing.
             WARN("register_equity_costs_from_bars: zero ADV for " + symbol +
-                 " over " + std::to_string(n) + " bars -- skipping");
+                 " over " + std::to_string(n) + " bars -- registering the untiered equity "
+                 "default rather than leaving it to resolve as a future");
+            AssetCostConfig fallback = AssetCostConfigRegistry::get_equity_default_config();
+            fallback.symbol = symbol;
+            asset_configs_.register_config(fallback);
+            ++registered;
             continue;
         }
 

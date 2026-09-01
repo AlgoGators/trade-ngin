@@ -157,7 +157,9 @@ TEST_F(EquityPnLAccountingTest, UnknownEquityGetsCorrectDefaults) {
     auto equity_config = registry.get_config("RANDOM_STOCK", AssetType::EQUITY);
     EXPECT_NEAR(equity_config.point_value, 1.0, 1e-6);        // NOT 100.0
     EXPECT_NEAR(equity_config.commission_per_unit, 0.005, 1e-6); // NOT -1.0
-    EXPECT_TRUE(equity_config.apply_regulatory_fees);
+    // E2-C3: IBKR Pro Fixed is all-inclusive of exchange, clearing and regulatory fees, so
+    // SEC/FINRA must NOT be charged separately. True would be correct under Tiered.
+    EXPECT_FALSE(equity_config.apply_regulatory_fees);
 
     // Unknown futures should still get futures defaults
     auto futures_config = registry.get_config("UNKNOWN_FUTURE");
@@ -172,8 +174,13 @@ TEST_F(EquityPnLAccountingTest, KnownEquityGetsExplicitConfig) {
     auto aapl_config = registry.get_config("AAPL");
     EXPECT_NEAR(aapl_config.point_value, 1.0, 1e-6);
     EXPECT_NEAR(aapl_config.commission_per_unit, 0.005, 1e-6);
-    EXPECT_TRUE(aapl_config.apply_regulatory_fees);
-    EXPECT_NEAR(aapl_config.max_commission_pct, 0.005, 1e-6);  // 0.5% cap
+    // E2-C3 / E2-C1: the equity schedule is IBKR Pro FIXED throughout -- $0.005/share,
+    // $1.00 minimum, 1% maximum, fees included. It previously carried Tiered's 0.5% cap on
+    // top of Fixed's rate and minimum, taking the worse half of each tier. Switching to
+    // Tiered is a three-field change (rate -> 0.0005-0.0035, minimum -> 0.35,
+    // apply_regulatory_fees -> true), not a one-field one.
+    EXPECT_FALSE(aapl_config.apply_regulatory_fees);
+    EXPECT_NEAR(aapl_config.max_commission_pct, 0.01, 1e-6);  // 1% cap (Fixed)
 }
 
 TEST_F(EquityPnLAccountingTest, TieredEquityConfig) {

@@ -83,14 +83,25 @@ TEST(ADVClassifierWireupTest, MegaCapSymbolGetsTier1Config) {
     EXPECT_EQ(cfg.asset_type, AssetType::EQUITY);
     EXPECT_DOUBLE_EQ(cfg.point_value, 1.0);
     EXPECT_DOUBLE_EQ(cfg.commission_per_unit, 0.005);
-    EXPECT_TRUE(cfg.apply_regulatory_fees);
+    // E2-C3: false under IBKR Pro Fixed, whose $0.005/share is all-inclusive of exchange,
+    // clearing and regulatory fees. Charging SEC/FINRA on top double-charges. It would be
+    // true under Tiered, where fees are passed through.
+    EXPECT_FALSE(cfg.apply_regulatory_fees);
     EXPECT_LE(cfg.baseline_spread_ticks, 2.0)
         << "Mega-cap should have tight spread (≤2 ticks); got "
         << cfg.baseline_spread_ticks;
 }
 
-// Symbol with no bars gets skipped (warning logged); not registered.
-TEST(ADVClassifierWireupTest, SymbolWithNoBarsIsSkipped) {
+// E2-F14: a symbol with no bars is registered with the UNTIERED EQUITY DEFAULT, not
+// skipped. Skipping left it absent from configs_, and an absent symbol does not fall back
+// to the equity default -- get_config() only reaches that when the caller passes
+// AssetType::EQUITY, which none of the nine production call sites does. So a skipped equity
+// resolved to the FUTURES default: $1.50/share instead of $0.005 and point_value 100
+// instead of 1. Worse, configs_ is one flat map shared across asset classes and real tickers
+// collide with futures roots (CL = Colgate-Palmolive AND Crude Oil; ES = Eversource AND the
+// E-mini S&P). Registering the default makes the futures fallthrough unreachable for a
+// configured equity regardless of what any call site passes.
+TEST(ADVClassifierWireupTest, SymbolWithNoBarsGetsEquityDefaultNotFuturesPricing) {
     TransactionCostManager::Config tcm_config;
     TransactionCostManager tcm(tcm_config);
 
@@ -98,11 +109,18 @@ TEST(ADVClassifierWireupTest, SymbolWithNoBarsIsSkipped) {
     // No entry for "MSFT".
 
     int registered = tcm.register_equity_costs_from_bars({"MSFT"}, bars_by_symbol);
-    EXPECT_EQ(registered, 0);
+    EXPECT_EQ(registered, 1) << "A configured equity with no bars must still be registered.";
+
+    AssetCostConfig cfg = tcm.get_asset_config("MSFT");
+    EXPECT_DOUBLE_EQ(cfg.point_value, 1.0)
+        << "Unregistered equity inherited a futures point_value -- 100x the slippage.";
+    EXPECT_DOUBLE_EQ(cfg.commission_per_unit, 0.005)
+        << "Unregistered equity inherited the futures per-contract fee, i.e. $1.50/SHARE.";
 }
 
-// Symbol with bars but zero volume is skipped (degenerate ADV).
-TEST(ADVClassifierWireupTest, ZeroVolumeIsSkipped) {
+// E2-F14: same reasoning as the no-bars case -- a degenerate ADV must not leave a
+// configured equity resolving as a future.
+TEST(ADVClassifierWireupTest, ZeroVolumeGetsEquityDefaultNotFuturesPricing) {
     TransactionCostManager::Config tcm_config;
     TransactionCostManager tcm(tcm_config);
 
@@ -110,7 +128,11 @@ TEST(ADVClassifierWireupTest, ZeroVolumeIsSkipped) {
     bars_by_symbol["GOOG"] = synthetic_equity_bars("GOOG", 20, 150.0, /*volume=*/0.0);
 
     int registered = tcm.register_equity_costs_from_bars({"GOOG"}, bars_by_symbol);
-    EXPECT_EQ(registered, 0);
+    EXPECT_EQ(registered, 1) << "A zero-ADV equity must still be registered.";
+
+    AssetCostConfig cfg = tcm.get_asset_config("GOOG");
+    EXPECT_DOUBLE_EQ(cfg.point_value, 1.0);
+    EXPECT_DOUBLE_EQ(cfg.commission_per_unit, 0.005);
 }
 
 // Smaller bar history than the lookback window still computes ADV from what
@@ -421,4 +443,91 @@ TEST(UnknownEquityCostsDispatchTest, WithoutHintFallsThroughToFuturesDefault) {
     EXPECT_GT(result.commissions_fees, 1.50)
         << "Without an equity hint, fallback should still be futures-shaped. "
            "If this asserts because the result is ~$1, dispatch defaults changed.";
+}
+
+// ===========================================================================
+// E2-C1 / E2-C2 / E2-C3 -- the equity commission schedule is IBKR Pro FIXED:
+//   $0.005/share, minimum $1.00 per order, maximum 1% of trade value,
+//   all-inclusive of exchange, clearing and regulatory fees.
+//
+// The floor and the cap do different jobs and only collide on very small orders --
+// exactly what a fractional-share book trades. The floor protects the broker on
+// small-but-normal orders; the cap protects the client on tiny ones. IBKR publishes the
+// cap as "Maximum per order", so it is a ceiling and must be applied LAST.
+//
+// The code computed max(floor, min(cap, raw)), which let the floor override the cap and
+// made max_commission_pct provably dead for any stock above $0.50/share: the inner
+// min(cap, raw) picks the cap only when pct*price < commission_per_unit, so above that the
+// expression collapsed to max(floor, raw) and the configured cap could not change a single
+// output value.
+//
+// Real numbers from EQUITY_MR_PORTFOLIO, 2026-07-24..08-03, so the fixture cannot drift
+// from what production produced: the cap should have bound on 5 of 15 executions and did
+// not, a 21% over-charge ($15.00 vs $12.35) concentrated on the smallest clips.
+// ===========================================================================
+
+namespace {
+// AAPL et al. are pre-registered by initialize_default_configs(), so these exercise the
+// real production config rather than a synthetic one.
+TransactionCostManager make_equity_tcm() {
+    TransactionCostManager::Config cfg;
+    return TransactionCostManager(cfg);
+}
+}  // namespace
+
+TEST(EquityCommissionSchedule, CapSupersedesFloorOnATinyOrder) {
+    auto tcm = make_equity_tcm();
+
+    // The worst observed case: AMZN 2026-07-29, 0.081001 shares at $230.86 = $18.70 notional.
+    //   raw  = 0.081001 * 0.005 = $0.000405
+    //   cap  = 1% * 18.70       = $0.187
+    //   floor                   = $1.00
+    const double qty = 0.081001, px = 230.86;
+    auto r = tcm.calculate_costs("AMZN", qty, px);
+
+    EXPECT_NEAR(r.commissions_fees, 0.01 * qty * px, 1e-9)
+        << "The 1% cap did not bind. Production charged $1.00 on an $18.70 trade -- 535 bps "
+           "where the schedule caps at 100 bps. A maximum a minimum can exceed is not a "
+           "maximum; the cap must be applied after the floor.";
+    EXPECT_LT(r.commissions_fees, 1.0)
+        << "Commission is still pinned at the $1.00 floor, i.e. the old clamp order.";
+}
+
+TEST(EquityCommissionSchedule, FloorAppliesWhenTheCapSitsAboveIt) {
+    auto tcm = make_equity_tcm();
+
+    // GOOGL 2026-07-24: 7.149959 shares at $317.69 = $2,271.47 notional.
+    //   raw = $0.0357, cap = 1% * 2271.47 = $22.71, floor = $1.00  -> floor wins.
+    auto r = tcm.calculate_costs("GOOGL", 7.149959, 317.69);
+
+    EXPECT_NEAR(r.commissions_fees, 1.00, 1e-9)
+        << "The $1.00 per-order minimum stopped applying on a normal-sized order. The cap "
+           "must not be allowed to pull the charge below the floor when it sits above it.";
+}
+
+TEST(EquityCommissionSchedule, LargeOrderPaysThePerShareRate) {
+    auto tcm = make_equity_tcm();
+
+    // 10,000 shares at $300: raw = $50, floor $1.00, cap 1% * 3,000,000 = $30,000.
+    // Neither bound applies -- the per-share rate is what is charged.
+    auto r = tcm.calculate_costs("AAPL", 10000.0, 300.0);
+
+    EXPECT_NEAR(r.commissions_fees, 50.0, 1e-9)
+        << "A large order should pay the per-share rate, with neither bound binding.";
+}
+
+TEST(EquityCommissionSchedule, RegulatoryFeesAreNotChargedOnTopOfFixed) {
+    auto tcm = make_equity_tcm();
+
+    // AMZN 2026-08-03 sell: 16.590374 shares at $271.58 = $4,505.61.
+    // Under Fixed the $0.005/share already includes exchange, clearing and regulatory fees,
+    // so SEC ($0.0928 here) and FINRA TAF ($0.0032) must NOT be added.
+    const double qty = 16.590374, px = 271.58;
+    auto sell = tcm.calculate_costs("AMZN", -qty, px);
+    auto buy = tcm.calculate_costs("AMZN", qty, px);
+
+    EXPECT_NEAR(sell.commissions_fees, buy.commissions_fees, 1e-9)
+        << "A sell was charged more than the identical buy, i.e. regulatory fees were added "
+           "on top of an all-inclusive Fixed schedule. That is a double-charge. It would be "
+           "correct under Tiered, where fees are passed through.";
 }
