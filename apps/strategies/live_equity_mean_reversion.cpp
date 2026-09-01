@@ -405,6 +405,16 @@ int main(int argc, char* argv[]) {
 
         // Create portfolio manager and add strategy
         INFO("Creating portfolio manager...");
+        // A fractional target is a legitimate end state when the strategy allows
+        // fractional shares, so the optimizer/risk loop must not keep iterating
+        // toward whole units -- each extra lap re-applies the risk scale to an
+        // already-scaled book (E2-F1). Set from the strategy's own config so live
+        // and backtest agree. Futures leave this false and are unaffected.
+        portfolio_config.allow_fractional_positions = mean_rev_config.allow_fractional_shares;
+        INFO(std::string("Fractional positions permitted: ") +
+             (portfolio_config.allow_fractional_positions
+                  ? "yes (from strategy allow_fractional_shares)"
+                  : "no"));
         auto portfolio = std::make_shared<trade_ngin::PortfolioManager>(portfolio_config);
         auto add_result =
             portfolio->add_strategy(mr_strategy, 1.0, portfolio_config.use_optimization,

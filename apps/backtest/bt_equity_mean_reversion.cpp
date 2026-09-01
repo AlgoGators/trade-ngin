@@ -248,6 +248,10 @@ int main() {
         // Build each enabled strategy. Dispatch on type (collect_enabled_equity_strategies
         // already validated that the type is recognized).
         std::vector<std::pair<std::shared_ptr<StrategyInterface>, double>> strategies;
+        // The optimizer/risk loop is portfolio-wide, so a fractional target is a
+        // legitimate end state for the portfolio as soon as any enabled strategy
+        // permits one.
+        bool any_fractional_shares = false;
         for (const auto& entry : strat_entries) {
             double weight = entry.allocation / total_allocation;
             StrategyConfig sc = base_strategy_config;
@@ -256,6 +260,7 @@ int main() {
             std::shared_ptr<StrategyInterface> strategy;
             if (entry.type == "MeanReversionStrategy") {
                 auto mr_config = trade_ngin::apps::build_mean_reversion_config(entry.def["config"]);
+                any_fractional_shares |= mr_config.allow_fractional_shares;
                 strategy = std::make_shared<MeanReversionStrategy>(
                     entry.id, sc, mr_config, db, registry_ptr);
             } else {
@@ -288,7 +293,10 @@ int main() {
         portfolio_config.reserve_capital = Decimal(initial_capital * app_config.reserve_capital_pct);
         portfolio_config.use_optimization = false;
         portfolio_config.use_risk_management = app_config.strategy_defaults.use_risk_management;
+        portfolio_config.allow_fractional_positions = any_fractional_shares;
         portfolio_config.risk_config = app_config.risk_config;
+        INFO(std::string("Fractional positions permitted: ") +
+             (any_fractional_shares ? "yes (from strategy allow_fractional_shares)" : "no"));
 
         auto portfolio = std::make_shared<PortfolioManager>(portfolio_config);
 

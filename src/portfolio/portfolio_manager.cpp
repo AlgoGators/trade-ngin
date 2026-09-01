@@ -322,9 +322,16 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                      std::to_string(iteration));
             }
 
-            // Check for partial contracts in final positions
+            // Check for partial contracts in final positions.
+            // When the portfolio permits fractional positions there is nothing to
+            // converge to, so a fraction is the answer rather than a reason to
+            // iterate. Re-entering the loop would re-apply the risk scale to an
+            // already-scaled book, compounding it once per lap (E2-F1); the gate
+            // is scale-invariant (E2-F2) so shrinking never satisfies it and the
+            // position decays to zero. Futures leave the flag false and are
+            // unaffected: whole contracts already converge on the first pass.
             bool partials_found = false;
-            {
+            if (!config_.allow_fractional_positions) {
                 std::lock_guard<std::mutex> lock(mutex_);
                 for (const auto& [id, info] : strategies_) {
                     for (const auto& [symbol, pos] : info.target_positions) {
@@ -344,8 +351,14 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
             }
 
             if (!partials_found) {
-                INFO("No partial contracts after iteration " + std::to_string(iteration) +
-                     ". Converged!");
+                if (config_.allow_fractional_positions) {
+                    INFO("Fractional positions permitted; accepting iteration " +
+                         std::to_string(iteration) +
+                         " output as final (risk scale applied once). Converged!");
+                } else {
+                    INFO("No partial contracts after iteration " + std::to_string(iteration) +
+                         ". Converged!");
+                }
                 done = true;
             }
         }

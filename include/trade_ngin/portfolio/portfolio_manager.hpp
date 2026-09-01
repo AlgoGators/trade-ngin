@@ -36,6 +36,13 @@ struct PortfolioConfig : public ConfigBase {
         0.0};  // Minimum allocation to any strategy (keep as double - it's a ratio)
     bool use_optimization{false};     // Whether to use position optimization
     bool use_risk_management{false};  // Whether to use risk management
+    // Whether a fractional target quantity is a legitimate end state for this
+    // portfolio. Futures trade whole contracts and leave this false, so the
+    // optimizer/risk loop keeps iterating until positions are integral, exactly
+    // as it always has. Equities with fractional shares enabled set it true:
+    // there is nothing to converge to, and re-entering the loop would re-apply
+    // the risk scale to an already-scaled book (see E2-F1).
+    bool allow_fractional_positions{false};
     DynamicOptConfig opt_config;      // Optimization configuration
     RiskConfig risk_config;           // Risk management configuration
 
@@ -61,6 +68,7 @@ struct PortfolioConfig : public ConfigBase {
         j["min_strategy_allocation"] = min_strategy_allocation;
         j["use_optimization"] = use_optimization;
         j["use_risk_management"] = use_risk_management;
+        j["allow_fractional_positions"] = allow_fractional_positions;
         j["opt_config"] = opt_config.to_json();
         j["risk_config"] = risk_config.to_json();
         j["version"] = version;
@@ -83,6 +91,9 @@ struct PortfolioConfig : public ConfigBase {
         }
         if (j.contains("use_risk_management")) {
             use_risk_management = j.at("use_risk_management").get<bool>();
+        }
+        if (j.contains("allow_fractional_positions")) {
+            allow_fractional_positions = j.at("allow_fractional_positions").get<bool>();
         }
         if (j.contains("opt_config"))
             opt_config.from_json(j.at("opt_config"));

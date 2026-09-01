@@ -60,6 +60,7 @@ set(TEST_SOURCES
     instruments/test_futures_margin_overload.cpp
     portfolio/test_portfolio_aggregation.cpp
     portfolio/test_portfolio_manager_internals.cpp
+    portfolio/test_fractional_position_convergence.cpp
     storage/test_backtest_results_manager.cpp
     storage/test_live_results_manager.cpp
     storage/test_live_results_key_roundtrip_db.cpp
