@@ -129,8 +129,12 @@ public:
         outcome.widened_prices = fill.widened;
         outcome.execution_prices = execution_prices;
 
+        // STRICT: mean reversion's average_price is a weighted cost basis, so the
+        // mark fallback would price a new position's fill at 0.00. Futures callers
+        // keep MARK_FALLBACK, where that field holds a mark and the fallback is right.
         auto exec_result = execution_manager.generate_daily_executions(
-            positions, previous_positions, execution_prices, now, &outcome.unpriced);
+            positions, previous_positions, execution_prices, now,
+            PricingPolicy::STRICT, &outcome.unpriced);
         if (exec_result.is_error()) {
             return make_error<ExecutionOutcome>(exec_result.error()->code(),
                                                 exec_result.error()->what(),
