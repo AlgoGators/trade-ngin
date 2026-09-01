@@ -115,6 +115,11 @@ Result<LivePnLManager::FinalizationResult> LivePnLManager::finalize_previous_day
                 (avg_price > 0.0 && quantity != 0.0)
                     ? Decimal(quantity * (day_t1_close - avg_price) * point_value)
                     : Decimal(0.0);
+            // E2-F1: carry the same figure into the aggregate so the row-sums-to-aggregate
+            // invariant (protocol L5) holds by construction. Deliberately accumulated inside
+            // the MARK_TO_MARKET branch only -- under SETTLED this stays 0.0 for futures
+            // without needing a second guard anywhere.
+            result.finalized_unrealized_pnl += finalized_pos.unrealized_pnl.as_double();
         } else {
             finalized_pos.unrealized_pnl = Decimal(0.0);
         }

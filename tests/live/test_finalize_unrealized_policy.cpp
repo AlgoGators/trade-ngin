@@ -169,3 +169,86 @@ TEST_F(FinalizeUnrealizedPolicyTest, ThePolicyIsWhatDecidesTheOutcome) {
         << "UnrealizedPolicy changed nothing. If both paths agree the parameter is not "
            "wired into the finalizer, and this suite would not catch a regression of E2-F3.";
 }
+
+// ===========================================================================
+// E2-F1: FinalizationResult::finalized_unrealized_pnl -- the aggregate counterpart of the
+// per-row unrealized written above.
+//
+// live_results.total_unrealized_pnl used to be a DAY-T snapshot: the book priced at
+// close(T-2), computed at insert and never revisited by the T-1 finalization. The finalized
+// position rows were priced at close(T-1). So the aggregate and the rows it is supposed to
+// summarise differed by exactly that day's P&L -- E2-F13, residual 0.0000 against
+// `tu + daily_realized` on every finalized row, which is far too tight to be coincidence.
+//
+// The aggregate is now summed from the same finalized rows that get persisted, so the
+// row-sums-to-aggregate invariant (protocol L5) holds by construction rather than by two
+// code paths happening to agree. Verified on the 2026-07-24..08-04 replay: L5 residual
+// 0.0000 on all 12 days, weekends included.
+//
+// Futures safety is structural: the accumulation lives INSIDE the MARK_TO_MARKET branch, so
+// SETTLED cannot reach it. Both futures runners pass no policy argument and therefore get
+// SETTLED and an aggregate of exactly 0.0.
+// ===========================================================================
+
+// THE FUTURES PIN. Must be exactly 0.0 with no policy argument at all -- that is how both
+// futures runners call it.
+TEST_F(FinalizeUnrealizedPolicyTest, FinalizedUnrealizedAggregateIsZeroForFuturesByDefault) {
+    auto& registry = InstrumentRegistry::instance();
+    LivePnLManager mgr(500000.0, registry);
+
+    std::vector<Position> prev{futures_position()};
+    std::unordered_map<std::string, double> t1{{"MNQ.v.0", kT1Close}};
+    std::unordered_map<std::string, double> t2{{"MNQ.v.0", kT2Close}};
+
+    auto res = mgr.finalize_previous_day(prev, t1, t2, 500000.0, 0.0);
+    ASSERT_TRUE(res.is_ok());
+
+    EXPECT_DOUBLE_EQ(res.value().finalized_unrealized_pnl, 0.0)
+        << "The default (futures) path accumulated a non-zero unrealized aggregate. Under "
+           "SETTLED every finalized row's unrealized is 0 by the settlement identity, so the "
+           "sum must be 0 too -- by construction, not by measurement. A non-zero value here "
+           "means the accumulation escaped the MARK_TO_MARKET branch.";
+}
+
+// And explicitly under SETTLED, for a caller that names the policy.
+TEST_F(FinalizeUnrealizedPolicyTest, FinalizedUnrealizedAggregateIsZeroUnderSettled) {
+    auto& registry = InstrumentRegistry::instance();
+    LivePnLManager mgr(500000.0, registry);
+
+    std::vector<Position> prev{futures_position()};
+    std::unordered_map<std::string, double> t1{{"MNQ.v.0", kT1Close}};
+    std::unordered_map<std::string, double> t2{{"MNQ.v.0", kT2Close}};
+
+    auto res = mgr.finalize_previous_day(prev, t1, t2, 500000.0, 0.0,
+                                         LivePnLManager::UnrealizedPolicy::SETTLED);
+    ASSERT_TRUE(res.is_ok());
+    EXPECT_DOUBLE_EQ(res.value().finalized_unrealized_pnl, 0.0);
+}
+
+// Equities: the aggregate must equal the sum of the rows it summarises. This is L5.
+TEST_F(FinalizeUnrealizedPolicyTest, FinalizedUnrealizedAggregateEqualsSumOfFinalizedRows) {
+    auto& registry = InstrumentRegistry::instance();
+    LivePnLManager mgr(500000.0, registry);
+
+    std::vector<Position> prev{futures_position()};
+    std::unordered_map<std::string, double> t1{{"MNQ.v.0", kT1Close}};
+    std::unordered_map<std::string, double> t2{{"MNQ.v.0", kT2Close}};
+
+    auto res = mgr.finalize_previous_day(prev, t1, t2, 500000.0, 0.0,
+                                         LivePnLManager::UnrealizedPolicy::MARK_TO_MARKET);
+    ASSERT_TRUE(res.is_ok());
+
+    double row_sum = 0.0;
+    for (const auto& p : res.value().finalized_positions) {
+        row_sum += p.unrealized_pnl.as_double();
+    }
+
+    EXPECT_DOUBLE_EQ(res.value().finalized_unrealized_pnl, row_sum)
+        << "The aggregate diverged from the rows. live_results.total_unrealized_pnl is "
+           "written from this figure and trading.positions.daily_unrealized_pnl from those "
+           "rows, so any gap here reappears as an L5 violation in the database -- which is "
+           "exactly what E2-F13 was.";
+    EXPECT_DOUBLE_EQ(res.value().finalized_unrealized_pnl, kOneDayMove)
+        << "The mark-to-market aggregate should equal the one-day move for this fixture, "
+           "whose average_price is the T-2 close.";
+}

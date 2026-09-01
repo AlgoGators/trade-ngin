@@ -139,6 +139,23 @@ public:
         double finalized_portfolio_value = 0.0;
         std::unordered_map<std::string, double> position_realized_pnl;
         std::vector<Position> finalized_positions;
+
+        /**
+         * @brief Sum of the finalized rows' unrealized P&L -- the Day T-1 book marked at
+         *        close(T-1). E2-F1.
+         *
+         * This is the aggregate counterpart of the per-row unrealized written below, so
+         * `live_results.total_unrealized_pnl[T-1] == SUM(positions.daily_unrealized_pnl[T-1])`
+         * holds by construction rather than by two code paths happening to agree. Before
+         * this the aggregate was a DAY-T snapshot priced at close(T-2) that finalization
+         * never revisited, so the two differed by exactly that day's P&L (E2-F13).
+         *
+         * Accumulated ONLY under MARK_TO_MARKET. Under SETTLED every finalized row's
+         * unrealized is 0 by the settlement identity, so this is exactly 0.0 for futures --
+         * by construction, not by measurement.
+         */
+        double finalized_unrealized_pnl = 0.0;
+
         bool success = false;
     };
 
