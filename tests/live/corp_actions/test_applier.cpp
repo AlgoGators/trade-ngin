@@ -529,3 +529,65 @@ TEST(CorpActionsUltrareviewFixes, DividendFallsBackToCurrentQtyWhenExDateQtyUnse
 // $0.50/share, total_cash should be $100, not $50.
 
 }  // namespace applier_ex_date_qty
+
+namespace unresolvable_denominator {
+using namespace applier_core;
+
+// A dividend whose ex-date close could not be established must be SKIPPED, and
+// the skip must leave NO PositionAdjustment behind.
+//
+// This is load-bearing, not cosmetic. The runner used to fall back to today's
+// T-1 close when no historical close was available, which sails past the
+// applier's positive-close guard and applies the dividend against the wrong
+// denominator: DD's 2025-11-03 dividend of $47.50 against its ex-date close of
+// $34.69 is a ratio of 2.3693, but against a later close of $136.98 it is
+// 1.3468 -- a true basis of $100 persisted as $175.92. The fix removes that
+// fallback so the close arrives here as 0.0 and the event is skipped.
+//
+// The skip is only recoverable because CorporateActionsAuditLog::record() takes
+// a PositionAdjustment: no adjustment means no trading.corp_action_applied row,
+// which means is_applied() does not block the event and a later run retries it
+// once price history covers the ex-date. If the applier ever starts emitting an
+// adjustment for a skipped event, the dedup row would pin an unapplied dividend
+// permanently -- so these assertions guard the mechanism, not just the arithmetic.
+
+TEST(CorpActionsApplierTest, DividendWithNoEstablishedCloseIsSkippedAndLeavesNoAdjustment) {
+    std::unordered_map<std::string, Position> positions;
+    positions["DD"] = make_position("DD", 100.0, 100.0);
+
+    auto log = CorporateActionsApplier::apply(
+        positions, {dividend_event("DD", "2025-11-03", 47.50, /*close_tm1=*/0.0)});
+
+    EXPECT_TRUE(log.empty())
+        << "a skipped dividend must produce no adjustment, or the dedup row would "
+           "pin it as applied and it could never be retried";
+    EXPECT_DOUBLE_EQ(positions["DD"].average_price.as_double(), 100.0)
+        << "cost basis must be left untouched, not rescaled by a fabricated ratio";
+    EXPECT_DOUBLE_EQ(positions["DD"].quantity.as_double(), 100.0);
+}
+
+// The specific corruption the fix prevents, stated as arithmetic: had the
+// runner's old fallback supplied a later close, the basis would have been
+// rescaled by the wrong ratio. Pins the correct denominator's result so a
+// regression shows up as a number, not a philosophy.
+TEST(CorpActionsApplierTest, DividendUsesTheExDateCloseNotALaterOne) {
+    std::unordered_map<std::string, Position> correct;
+    correct["DD"] = make_position("DD", 100.0, 100.0);
+    CorporateActionsApplier::apply(
+        correct, {dividend_event("DD", "2025-11-03", 47.50, /*ex-date close=*/34.69)});
+
+    std::unordered_map<std::string, Position> wrong;
+    wrong["DD"] = make_position("DD", 100.0, 100.0);
+    CorporateActionsApplier::apply(
+        wrong, {dividend_event("DD", "2025-11-03", 47.50, /*a later close=*/136.98)});
+
+    // 100 / (1 + 47.50/34.69) = 42.207 ; 100 / (1 + 47.50/136.98) = 74.252
+    EXPECT_NEAR(correct["DD"].average_price.as_double(), 42.21, 0.01);
+    EXPECT_NEAR(wrong["DD"].average_price.as_double(), 74.252, 0.01);
+    EXPECT_GT(std::abs(wrong["DD"].average_price.as_double() -
+                       correct["DD"].average_price.as_double()),
+              30.0)
+        << "the denominator's date is worth ~76% of the cost basis on this event";
+}
+
+}  // namespace unresolvable_denominator

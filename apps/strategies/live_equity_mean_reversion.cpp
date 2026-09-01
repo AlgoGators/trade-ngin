@@ -868,8 +868,10 @@ int main(int argc, char* argv[]) {
                     if (closes_result.is_error()) {
                         ERROR("Could not load raw closes for the dividend denominator: " +
                               std::string(closes_result.error()->what()) +
-                              ". Dividend adjustments would use a missing denominator and "
-                              "leave cost basis permanently wrong.");
+                              ". Every dividend in this window is therefore SKIPPED and left "
+                              "unapplied; none is recorded in trading.corp_action_applied, so "
+                              "all of them are retried on a later run. Cost bases are stale "
+                              "until then, not wrong.");
                     } else {
                         size_t added = 0;
                         for (const auto& [sym, by_date] : closes_result.value()) {
@@ -898,8 +900,10 @@ int main(int argc, char* argv[]) {
                             }
                             ERROR("No price history exists for held symbol(s): " +
                                   sym_list +
-                                  ". Corporate actions on them cannot be applied at all "
-                                  "-- reconcile these positions before continuing.");
+                                  ". Dividends on them are SKIPPED and left unapplied (no "
+                                  "dedup record is written, so they are retried once price "
+                                  "history covers the ex-date). Splits and renames, which "
+                                  "need no close, still apply. Reconcile these positions.");
                         }
                     }
                 }
@@ -1002,13 +1006,29 @@ int main(int argc, char* argv[]) {
                             c = close_before(row.ticker, row.date_str);
                         }
                         if (c <= 0.0) {
-                            auto p_it = previous_day_close_prices.find(row.ticker);
-                            c = (p_it != previous_day_close_prices.end()) ? p_it->second : 0.0;
-                            if (c > 0.0) {
-                                WARN("No historical close for " + row.ticker +
-                                     " before ex_date " + row.date_str +
-                                     " -- using today's T-1 close as a fallback");
-                            }
+                            // Deliberately NO fallback to today's T-1 close. The
+                            // denominator has to be the close as at the ex-date: the
+                            // ratio is 1 + dividend / close_at_ex_date, so a close from
+                            // a different date yields a different ratio, and the result
+                            // is written into average_price and then stamped in
+                            // trading.corp_action_applied, which stops the event ever
+                            // being reconsidered. DD's 2025-11-03 dividend of 47.50
+                            // against its ex-date close of 34.69 is a ratio of 2.3693;
+                            // against a later close of 136.98 it is 1.3468, and a true
+                            // basis of 100.00 is persisted as 175.92 forever.
+                            //
+                            // Leaving c at 0.0 makes CorporateActionsApplier skip the
+                            // event (it rejects a non-positive close), which produces no
+                            // PositionAdjustment, so no dedup row is recorded and the
+                            // dividend is reconsidered on a later run once the closes
+                            // are available. An unapplied adjustment is recoverable; a
+                            // wrongly applied one is not.
+                            ERROR("No close at or before ex_date " + row.date_str +
+                                  " for " + row.ticker +
+                                  " -- the dividend denominator cannot be established, so "
+                                  "this event is SKIPPED and left unapplied. It carries no "
+                                  "dedup record and will be retried once price history "
+                                  "covers the ex-date.");
                         }
                         ev.close_at_ex_date = c;
                         // bug_021: prefer qty at ex_date - 1; fall back to
@@ -2078,8 +2098,14 @@ int main(int argc, char* argv[]) {
                             INFO("✓ Valid portfolio value for Day T-1: $" + std::to_string(portfolio_value));
 
                             // Create a temporary LiveResultsManager for Day T-1 equity update
+                            // portfolio_id is NOT defaultable here: LiveResultsManager
+                            // falls back to "BASE_PORTFOLIO", the futures book, so
+                            // omitting it files this portfolio's equity curve under a
+                            // portfolio it does not belong to while EQUITY_MR_PORTFOLIO
+                            // gets no row at all. live_portfolio_conservative.cpp:2217
+                            // passes it at the byte-identical call site.
                             auto yesterday_manager = std::make_unique<LiveResultsManager>(
-                                db, true, "LIVE_EQUITY_MEAN_REVERSION"
+                                db, true, kEquityStrategyId, portfolio_id, kEquityStrategyName
                             );
                             yesterday_manager->set_equity(portfolio_value);
 
