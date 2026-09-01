@@ -2198,7 +2198,10 @@ int main(int argc, char* argv[]) {
         }
 
         double daily_realized_pnl = 0.0;
-        double daily_unrealized_pnl = 0.0;
+        // daily_unrealized_pnl used to be declared and pinned to 0.0 here as a Day-T placeholder.
+        // Nothing ever repaired it -- the Day T-1 UPDATE below never mentions the column -- so
+        // every equity row carried 0 even though the book had open marks (E2-F12). It is now
+        // computed for real in STEP 5, once the previous day's mark is known.
         double daily_pnl_for_today = -total_daily_commissions;  // Only commissions on Day T
 
         INFO("Day T PnL (placeholder): $0.00");
@@ -2291,13 +2294,78 @@ int main(int argc, char* argv[]) {
                 INFO("Could not load day-before-yesterday aggregates: " + std::string(e.what()));
             }
 
+            // Strip the mark out of the day-before-yesterday total_pnl, for the same reason as
+            // in STEP 5: get_previous_live_aggregates() returns the STORED total_pnl, which is
+            // now mark-to-market for equities. yesterday_total_pnl_cumulative is a REALIZED
+            // running total -- it feeds total_realized_pnl below -- so an unstripped value
+            // would push the day-before-yesterday's open-position mark into the realized
+            // column, inflating it by exactly the prior day's total_unrealized_pnl.
+            double day_before_yesterday_total_unrealized_pnl = 0.0;
+            try {
+                std::string dby_unrl_query =
+                    "SELECT COALESCE(total_unrealized_pnl, 0.0) FROM trading.live_results "
+                    "WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND portfolio_id = '" + portfolio_id + "' "
+                    "AND DATE(date) < '" + yesterday_date_str + "' "
+                    "ORDER BY date DESC LIMIT 1";
+                auto du = db->execute_query(dby_unrl_query);
+                if (du.is_ok() && du.value()->num_rows() > 0) {
+                    auto r = DataConversionUtils::safe_get_double(du.value()->column(0), 0,
+                                                                  "total_unrealized_pnl");
+                    if (r.is_ok()) {
+                        day_before_yesterday_total_unrealized_pnl = r.value();
+                    } else {
+                        WARN("Could not read day-before-yesterday total_unrealized_pnl (" +
+                             std::string(r.error()->what()) + "); treating it as 0, which will "
+                             "overstate total_realized_pnl by the prior mark.");
+                    }
+                }
+            } catch (const std::exception& e) {
+                WARN("Could not load day-before-yesterday total_unrealized_pnl: " + std::string(e.what()));
+            }
+            const double day_before_yesterday_realized_only =
+                day_before_yesterday_total_pnl - day_before_yesterday_total_unrealized_pnl;
+
             // Calculate yesterday's cumulative values
             // NOTE: Since we may not have correct commissions, the cumulative values will be recalculated by SQL
             // using the daily_pnl formula (daily_realized_pnl - daily_commissions)
-            double yesterday_total_pnl_cumulative = day_before_yesterday_total_pnl + yesterday_daily_pnl_finalized;
+            double yesterday_total_pnl_cumulative = day_before_yesterday_realized_only + yesterday_daily_pnl_finalized;
             double yesterday_total_commissions_cumulative = day_before_yesterday_total_commissions + yesterday_commissions;
             double yesterday_total_realized_pnl_cumulative = yesterday_total_pnl_cumulative + yesterday_total_commissions_cumulative;
-            double yesterday_portfolio_value_finalized = day_before_yesterday_portfolio_value + yesterday_daily_pnl_finalized;
+            // Yesterday's own mark, i.e. the total_unrealized_pnl the INSERT wrote on the T-1
+            // row. The UPDATE's current_portfolio_value expression below reads the same stored
+            // value (bare `total_unrealized_pnl` on the RHS of a SET is the pre-UPDATE value),
+            // so computing it the same way here keeps the return columns consistent with the
+            // equity they are supposed to describe.
+            double yesterday_total_unrealized_pnl = 0.0;
+            try {
+                std::string y_unrl_query =
+                    "SELECT COALESCE(total_unrealized_pnl, 0.0) FROM trading.live_results "
+                    "WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND portfolio_id = '" + portfolio_id + "' "
+                    "AND DATE(date) = '" + yesterday_date_str + "'";
+                auto yu = db->execute_query(y_unrl_query);
+                if (yu.is_ok() && yu.value()->num_rows() > 0) {
+                    auto r = DataConversionUtils::safe_get_double(yu.value()->column(0), 0,
+                                                                  "total_unrealized_pnl");
+                    if (r.is_ok()) {
+                        yesterday_total_unrealized_pnl = r.value();
+                    } else {
+                        WARN("Could not read yesterday's total_unrealized_pnl (" +
+                             std::string(r.error()->what()) + "); the T-1 return columns will be "
+                             "computed off a realized-only equity and will disagree with "
+                             "current_portfolio_value.");
+                    }
+                }
+            } catch (const std::exception& e) {
+                WARN("Could not load yesterday's total_unrealized_pnl: " + std::string(e.what()));
+            }
+
+            // Mark-to-market equity for T-1. Anchored on initial_capital rather than chained off
+            // the previous stored value, so it cannot drift from the SQL expression that writes
+            // current_portfolio_value -- the two are the same formula.
+            double yesterday_portfolio_value_finalized = initial_capital
+                + day_before_yesterday_realized_only
+                + yesterday_daily_pnl_finalized
+                + yesterday_total_unrealized_pnl;
 
             // Calculate yesterday's returns using LiveMetricsCalculator
             double yesterday_daily_return = metrics_calculator->calculate_daily_return(
@@ -2387,9 +2455,21 @@ int main(int argc, char* argv[]) {
             //  UPDATE must read the same column or the whole statement fails)
             // IMPORTANT: Only update portfolio_leverage and equity_to_margin_ratio if they are NULL or 0
             std::string update_query =
+                // Mark-to-market, EQUITIES ONLY -- mirrors the Day-T block in STEP 5; read the
+                // long comment there first. Two things matter here:
+                //   (1) The running total must stay REALIZED-ONLY, so the prior row's mark is
+                //       stripped back off (`total_pnl - total_unrealized_pnl` in day_before)
+                //       before today's realized flow is added. Without the strip, each day
+                //       re-adds the previous day's open-position mark and the curve diverges.
+                //   (2) This row's OWN mark is then layered on once. Bare `total_unrealized_pnl`
+                //       on the right-hand side of a SET reads the row's pre-UPDATE value, which
+                //       is the snapshot the INSERT wrote for that day -- exactly what we want.
+                // This UPDATE previously never mentioned daily_unrealized_pnl at all, which is
+                // why the Day-T placeholder 0 survived on every finalized equity row.
                 "WITH day_before AS ("
                 "  SELECT COALESCE(current_portfolio_value, " + std::to_string(initial_capital) + ") as portfolio, "
-                "         COALESCE(total_pnl, 0.0) as total_pnl, "
+                "         COALESCE(total_pnl, 0.0) - COALESCE(total_unrealized_pnl, 0.0) as realized_only, "
+                "         COALESCE(total_unrealized_pnl, 0.0) as prev_unrealized, "
                 "         COALESCE(total_realized_pnl, 0.0) as total_realized_pnl_prev "
                 "  FROM trading.live_results "
                 "  WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND portfolio_id = '" + portfolio_id + "' AND DATE(date) < '" + yesterday_date_str + "' "
@@ -2397,18 +2477,22 @@ int main(int argc, char* argv[]) {
                 ") "
                 "UPDATE trading.live_results SET "
                 "daily_realized_pnl = " + std::to_string(yesterday_total_pnl) + ", "
-                "daily_pnl = " + std::to_string(yesterday_total_pnl) + " - COALESCE(daily_transaction_costs, 0.0), "
-                "total_pnl = COALESCE((SELECT total_pnl FROM day_before), 0.0) + (" + std::to_string(yesterday_total_pnl) + " - COALESCE(daily_transaction_costs, 0.0)), "
+                "daily_unrealized_pnl = COALESCE(total_unrealized_pnl, 0.0) - COALESCE((SELECT prev_unrealized FROM day_before), 0.0), "
+                "daily_pnl = (" + std::to_string(yesterday_total_pnl) + " - COALESCE(daily_transaction_costs, 0.0)) "
+                "            + (COALESCE(total_unrealized_pnl, 0.0) - COALESCE((SELECT prev_unrealized FROM day_before), 0.0)), "
+                "total_pnl = COALESCE((SELECT realized_only FROM day_before), 0.0) + (" + std::to_string(yesterday_total_pnl) + " - COALESCE(daily_transaction_costs, 0.0)) + COALESCE(total_unrealized_pnl, 0.0), "
                 "total_realized_pnl = " + std::to_string(yesterday_total_realized_pnl_cumulative) + ", "
-                "current_portfolio_value = COALESCE((SELECT portfolio FROM day_before), " + std::to_string(initial_capital) + ") + (" + std::to_string(yesterday_total_pnl) + " - COALESCE(daily_transaction_costs, 0.0)), "
+                "current_portfolio_value = " + std::to_string(initial_capital) + " + COALESCE((SELECT realized_only FROM day_before), 0.0) + (" + std::to_string(yesterday_total_pnl) + " - COALESCE(daily_transaction_costs, 0.0)) + COALESCE(total_unrealized_pnl, 0.0), "
                 "daily_return = CASE WHEN COALESCE((SELECT portfolio FROM day_before), " + std::to_string(initial_capital) + ") > 0 "
-                "               THEN ((" + std::to_string(yesterday_total_pnl) + " - COALESCE(daily_transaction_costs, 0.0)) / COALESCE((SELECT portfolio FROM day_before), " + std::to_string(initial_capital) + ")) * 100.0 "
+                "               THEN (((" + std::to_string(yesterday_total_pnl) + " - COALESCE(daily_transaction_costs, 0.0)) "
+                "                      + (COALESCE(total_unrealized_pnl, 0.0) - COALESCE((SELECT prev_unrealized FROM day_before), 0.0))) "
+                "                     / COALESCE((SELECT portfolio FROM day_before), " + std::to_string(initial_capital) + ")) * 100.0 "
                 "               ELSE 0.0 END, "
                 "total_cumulative_return = " + std::to_string(yesterday_total_cumulative_return_pct) + ", "
                 "total_annualized_return = " + std::to_string(yesterday_total_return_annualized) + ", "
                 "portfolio_leverage = CASE WHEN portfolio_leverage IS NULL OR portfolio_leverage = 0 THEN " + std::to_string(yesterday_portfolio_leverage) + " ELSE portfolio_leverage END, "
                 "equity_to_margin_ratio = CASE WHEN equity_to_margin_ratio IS NULL OR equity_to_margin_ratio = 0 THEN " + std::to_string(yesterday_equity_to_margin_ratio) + " ELSE equity_to_margin_ratio END, "
-                "cash_available = COALESCE((SELECT portfolio FROM day_before), " + std::to_string(initial_capital) + ") + (" + std::to_string(yesterday_total_pnl) + " - COALESCE(daily_transaction_costs, 0.0)) - COALESCE(margin_posted, 0.0) "
+                "cash_available = " + std::to_string(initial_capital) + " + COALESCE((SELECT realized_only FROM day_before), 0.0) + (" + std::to_string(yesterday_total_pnl) + " - COALESCE(daily_transaction_costs, 0.0)) + COALESCE(total_unrealized_pnl, 0.0) - COALESCE(margin_posted, 0.0) "
                 "WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND portfolio_id = '" + portfolio_id + "' AND DATE(date) = '" + yesterday_date_str + "'";
 
             INFO("Executing UPDATE query for Day T-1 live_results...");
@@ -2580,6 +2664,12 @@ int main(int argc, char* argv[]) {
         double previous_portfolio_value = initial_capital; // Default to initial capital
         double previous_total_pnl = 0.0;
         double previous_total_commissions = 0.0;
+        // The previous row's mark-to-market snapshot. Needed for two things: to strip the mark
+        // back out of the previous stored total_pnl so the running total stays realized-only,
+        // and to difference into daily_unrealized_pnl. get_previous_live_aggregates() is shared
+        // with the futures runners so it is not widened to return this; the equity runner reads
+        // the column itself, scoped by portfolio_id like every other query in this file.
+        double previous_total_unrealized_pnl = 0.0;
 
         try {
             auto db_ptr = std::dynamic_pointer_cast<PostgresDatabase>(db);
@@ -2598,19 +2688,95 @@ int main(int argc, char* argv[]) {
             INFO("Could not load previous day aggregates: " + std::string(e.what()));
         }
 
-        // Calculate cumulative values for Day T
-        double total_pnl = previous_total_pnl + daily_pnl_for_today;
-        double current_portfolio_value = previous_portfolio_value + daily_pnl_for_today;
-        double daily_pnl = daily_pnl_for_today;  // Only commissions on Day T
+        // Load the previous row's mark-to-market snapshot (see declaration above). A missing
+        // row -- the first trading day -- correctly leaves this at 0.0, which makes the
+        // realized-only strip a no-op and makes daily_unrealized_pnl equal the full opening
+        // mark, both of which are right on day one.
+        try {
+            std::string prev_unrealized_query =
+                "SELECT COALESCE(total_unrealized_pnl, 0.0) FROM trading.live_results "
+                "WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND portfolio_id = '" + portfolio_id + "' "
+                "AND DATE(date) < '" + today_date_str + "' "
+                "ORDER BY date DESC LIMIT 1";
+            auto pu = db->execute_query(prev_unrealized_query);
+            if (pu.is_ok() && pu.value()->num_rows() > 0) {
+                auto r = DataConversionUtils::safe_get_double(pu.value()->column(0), 0,
+                                                              "total_unrealized_pnl");
+                if (r.is_ok()) {
+                    previous_total_unrealized_pnl = r.value();
+                    INFO("Loaded previous total_unrealized_pnl: $" +
+                         std::to_string(previous_total_unrealized_pnl));
+                } else {
+                    WARN("Could not read previous total_unrealized_pnl (" +
+                         std::string(r.error()->what()) + "); treating the previous mark as 0. "
+                         "total_pnl will be overstated by the prior mark until the next clean read.");
+                }
+            } else {
+                INFO("No previous total_unrealized_pnl row; treating the previous mark as 0");
+            }
+        } catch (const std::exception& e) {
+            WARN("Could not load previous total_unrealized_pnl: " + std::string(e.what()));
+        }
+
+        // Mark-to-market accounting -- EQUITIES ONLY. Read this before changing anything here.
+        //
+        // WHY EQUITIES DIFFER FROM FUTURES (E2-F12). `average_price` does not mean the same
+        // thing in the two books:
+        //   * Futures: average_price IS the prior settlement close, i.e. a mark. A position is
+        //     entered at close(T-1) and settled at close(T), so the entire move is realized on
+        //     the day it happens and unrealized is 0 BY IDENTITY. The futures runners therefore
+        //     write 0 to both unrealized columns and a realized-only total_pnl, which for them
+        //     already IS mark-to-market. Nothing about the futures path may change.
+        //   * Equities: average_price is a true weighted cost basis that survives across days.
+        //     An open position carries a real mark-to-market gain or loss that is NOT in
+        //     realized PnL. Reporting realized-only here understates a book holding winners and
+        //     leaves the equity curve flat while the book actually moves.
+        // So this runner reports total_pnl and current_portfolio_value INCLUDING unrealized.
+        //
+        // WHY THE RECURSION IS REALIZED-ONLY. total_pnl was previously accumulated as
+        // `previous_total_pnl + daily_pnl_for_today`, reading the previous row's total_pnl back
+        // out of the DB. If unrealized were folded into the stored total_pnl and that same
+        // recursion were kept, every day would re-add the PRIOR day's open-position mark on top
+        // of today's -- unrealized would compound into a cumulative sum of daily snapshots and
+        // the equity curve would diverge without bound. Unrealized is a SNAPSHOT, not a flow:
+        // it replaces the prior snapshot, it does not add to it. The running total therefore
+        // stays realized-only and unrealized is layered on top once, at the end.
         double total_commissions_cumulative = previous_total_commissions + total_daily_commissions;
 
-        // For equities, track realized PnL separately from unrealized
-        double total_realized_pnl = total_pnl + total_commissions_cumulative;
-        // Calculate total unrealized PnL from current open positions
+        // Calculate total unrealized PnL from current open positions. Computed BEFORE total_pnl
+        // now (it used to be derived after) because total_pnl depends on it.
         double total_unrealized_pnl = 0.0;
         for (const auto& [sym, pos] : positions) {
             total_unrealized_pnl += pos.unrealized_pnl.as_double();
         }
+
+        // Strip the mark out of the previous row's stored total_pnl to recover the realized-only
+        // running total. previous_total_pnl comes from get_previous_live_aggregates(), which is
+        // shared with the futures runners and reads the stored total_pnl column -- for futures
+        // previous_total_unrealized_pnl is 0 so this subtraction is a no-op there.
+        double previous_total_pnl_realized_only = previous_total_pnl - previous_total_unrealized_pnl;
+
+        // Realized-only running total: the accumulator, unchanged in meaning from before.
+        double total_pnl_realized_only = previous_total_pnl_realized_only + daily_pnl_for_today;
+
+        // total_realized_pnl keeps its original derivation off the realized-only accumulator,
+        // so the invariant total_pnl_realized_only == total_realized_pnl - total_commissions
+        // still holds exactly and the reconciliation in the protocol is unaffected.
+        double total_realized_pnl = total_pnl_realized_only + total_commissions_cumulative;
+
+        // Day-over-day change in the mark. This is what daily_unrealized_pnl should have held
+        // all along; it was previously hard-wired to 0.0 as a Day-T placeholder and never
+        // repaired by the Day T-1 UPDATE, so it read 0 on every equity row.
+        double daily_unrealized_pnl = total_unrealized_pnl - previous_total_unrealized_pnl;
+
+        // Mark-to-market reported figures.
+        double total_pnl = total_pnl_realized_only + total_unrealized_pnl;
+        double current_portfolio_value = initial_capital + total_pnl;
+
+        // daily_pnl must be the day-over-day change in total_pnl or the equity-curve continuity
+        // invariant (protocol L6: value(T) - value(T-1) == daily_pnl(T)) breaks the moment the
+        // curve became mark-to-market.
+        double daily_pnl = daily_pnl_for_today + daily_unrealized_pnl;
 
         // Calculate returns using LiveMetricsCalculator
         double daily_return = metrics_calculator->calculate_daily_return(daily_pnl, previous_portfolio_value);
