@@ -388,16 +388,22 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                  " iterations.");
         }
 
-        // Final verification of all positions for partial contracts
+        // Final verification of all positions for partial contracts.
+        // Diagnostic only -- it reports, it does not alter the position. Skipped when the
+        // portfolio permits fractional positions, where a fraction is the intended result
+        // and not an anomaly: reporting it would emit an ERROR per symbol per bar (1,702
+        // in one equity run) and bury the errors that do matter.
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            for (const auto& [id, info] : strategies_) {
-                for (const auto& [symbol, pos] : info.target_positions) {
-                    double fractional = std::abs(static_cast<double>(pos.quantity) -
-                                                 std::round(static_cast<double>(pos.quantity)));
-                    if (fractional > 1e-6) {
-                        ERROR("FINAL CHECK: Fractional contract detected for " + symbol +
-                              " after all iterations. Quantity=" + std::to_string(pos.quantity));
+            if (!config_.allow_fractional_positions) {
+                for (const auto& [id, info] : strategies_) {
+                    for (const auto& [symbol, pos] : info.target_positions) {
+                        double fractional = std::abs(static_cast<double>(pos.quantity) -
+                                                     std::round(static_cast<double>(pos.quantity)));
+                        if (fractional > 1e-6) {
+                            ERROR("FINAL CHECK: Fractional contract detected for " + symbol +
+                                  " after all iterations. Quantity=" + std::to_string(pos.quantity));
+                        }
                     }
                 }
             }

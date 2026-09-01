@@ -2482,10 +2482,15 @@ int main(int argc, char* argv[]) {
                 {"net_notional", net_notional},
                 {"daily_return", daily_return},
                 {"daily_pnl", daily_pnl},
-                {"total_commissions", total_commissions_cumulative},
+                // trading.live_results has no commissions columns -- it carries the
+                // transaction-cost pair the futures runner writes. For equities the
+                // commission IS the realised transaction cost, so it lands there.
+                // Naming a non-existent column makes the whole INSERT fail, which is
+                // how live_results silently went unwritten (E2-F5).
+                {"total_transaction_costs", total_commissions_cumulative},
                 {"daily_realized_pnl", daily_realized_pnl},
                 {"daily_unrealized_pnl", daily_unrealized_pnl},
-                {"daily_commissions", total_daily_commissions},
+                {"daily_transaction_costs", total_daily_commissions},
                 {"margin_posted", total_posted_margin},
                 {"cash_available", current_portfolio_value - total_posted_margin},
                 {"total_dividend_income", total_dividend_income}
@@ -2534,8 +2539,13 @@ int main(int argc, char* argv[]) {
         // Use the new LiveResultsManager - save all results at once
         INFO("Saving all live trading results using LiveResultsManager...");
 
+        bool persist_failed = false;
         auto save_result = results_manager->save_all_results("LIVE_EQUITY_MEAN_REVERSION", now);
         if (save_result.is_error()) {
+            // save_all_results attempts every table and names the ones that failed
+            // (FIX-0b). Logging that and returning 0 anyway defeats the point: a caller
+            // reading the exit status would treat a partially-written run as a success.
+            persist_failed = true;
             ERROR("Failed to save all live results: " + std::string(save_result.error()->what()));
         } else {
             INFO("Successfully saved all live trading results to database");
@@ -2807,6 +2817,11 @@ int main(int argc, char* argv[]) {
         std::cerr << "At end of main: initialized=" << Logger::instance().is_initialized()
                   << std::endl;
 
+        if (persist_failed) {
+            ERROR("Run completed but one or more result tables were not persisted -- "
+                  "exiting non-zero so this is not mistaken for a successful run.");
+            return 1;
+        }
         return 0;
 
     } catch (const std::exception& e) {
