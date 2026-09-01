@@ -690,6 +690,90 @@ int main(int argc, char* argv[]) {
             INFO("No previous day positions found (first run or no data): " + std::string(previous_positions_result.error()->what()));
         }
 
+        // An empty prior book is legitimate on a genuine first run, and catastrophic
+        // otherwise. The two are indistinguishable from here -- both are an empty map --
+        // and the consequences of guessing wrong are total: the strategy seeds flat, the
+        // corporate-action block is skipped by its own !previous_positions.empty() guard,
+        // every position silently disappears from trading.positions, and the next day's
+        // executions are sized as deltas from zero against stock the broker still holds.
+        //
+        // Runs MUST be sequential and complete -- that is inherent to the T-1 lag model,
+        // where day T's P&L is finalized by day T+1's run -- so a hole here means a run was
+        // missed, not that the strategy is flat. The remedy is to replay the missing dates
+        // in order, which works and needs no code. What was missing is being TOLD: this
+        // previously exited 0 with no ERROR and no WARN, so a monitor watching exit codes
+        // saw a clean run while the book was being abandoned (E2-F8).
+        //
+        // Deliberately NOT resolved by falling back to MAX(date): that would paper over a
+        // broken invariant and could silently revive a stale book.
+        if (previous_positions.empty()) {
+            // An empty prior book has two very different causes and they must not be
+            // conflated:
+            //   (a) the strategy legitimately holds nothing -- it exited everything, or it
+            //       is a genuine first run;
+            //   (b) a run was MISSED, so the prior day was never written at all.
+            //
+            // (b) is silent and destructive: the strategy seeds flat, the corporate-action
+            // block is skipped by its own !previous_positions.empty() guard, every position
+            // vanishes from trading.positions, and the next day's executions are sized as
+            // deltas from zero against stock the broker still holds (E2-F8).
+            //
+            // The discriminator is NOT "are there positions" -- a flat book has none and is
+            // perfectly valid. It is "did a run HAPPEN for that date". Every run writes a
+            // live_results row whether or not it holds anything, so that row is the evidence
+            // a run occurred. Testing positions instead would refuse to start every time the
+            // strategy went flat, which is a normal state.
+            //
+            // Deliberately NOT resolved by falling back to MAX(date): that would paper over
+            // a broken invariant and could silently revive a stale book. Runs must be
+            // sequential -- inherent to the T-1 lag model -- so the remedy is to replay the
+            // missing dates in order, which works and needs no code change. What was missing
+            // was being TOLD.
+            const std::string prev_date_str = trade_ngin::core::format_utc_date(previous_date);
+            auto prev_run = db->execute_query(
+                "SELECT count(*)::text FROM trading.live_results "
+                "WHERE strategy_id = '" + std::string(kEquityStrategyId) + "'"
+                " AND portfolio_id = '" + portfolio_id + "'"
+                " AND date = '" + prev_date_str + "'");
+
+            long prev_run_rows = 0;
+            if (prev_run.is_ok() && prev_run.value()->num_rows() > 0) {
+                auto col = std::static_pointer_cast<arrow::StringArray>(
+                    prev_run.value()->column(0)->chunk(0));
+                if (!col->IsNull(0)) prev_run_rows = std::stol(std::string(col->GetView(0)));
+            }
+
+            if (prev_run_rows > 0) {
+                INFO("Previous trading day (" + prev_date_str +
+                     ") ran and held no positions -- the strategy is flat, which is a valid "
+                     "state. Continuing.");
+            } else {
+                auto last_run = db->execute_query(
+                    "SELECT MAX(date)::text FROM trading.live_results "
+                    "WHERE strategy_id = '" + std::string(kEquityStrategyId) + "'"
+                    " AND portfolio_id = '" + portfolio_id + "'"
+                    " AND date < '" + today_date_str + "'");
+
+                std::string last_run_date;
+                if (last_run.is_ok() && last_run.value()->num_rows() > 0) {
+                    auto col = std::static_pointer_cast<arrow::StringArray>(
+                        last_run.value()->column(0)->chunk(0));
+                    if (!col->IsNull(0)) last_run_date = std::string(col->GetView(0));
+                }
+
+                if (!last_run_date.empty()) {
+                    ERROR("No run was recorded for the previous trading day (" + prev_date_str +
+                          "), but this strategy last ran on " + last_run_date +
+                          ". A run was missed. Replay every date from " + last_run_date +
+                          " forward, in order, before running " + today_date_str +
+                          " -- continuing would seed the strategy flat and silently abandon "
+                          "the book. Refusing to run.");
+                    return 1;
+                }
+                INFO("No prior run anywhere for this strategy -- genuine first run.");
+            }
+        }
+
         DEBUG("Previous date used for lookup: " + std::to_string(std::chrono::system_clock::to_time_t(previous_date)));
         DEBUG("Current date: " + std::to_string(std::chrono::system_clock::to_time_t(now)));
         DEBUG("Previous positions loaded: " + std::to_string(previous_positions.size()));
