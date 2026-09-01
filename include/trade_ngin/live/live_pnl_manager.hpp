@@ -36,6 +36,29 @@ public:
         : PnLManagerBase(initial_capital), registry_(registry) {}
 
     /**
+     * @brief How Day T-1 finalization records unrealized P&L.
+     *
+     * SETTLED (the default) -- futures. Under the T-1 lag model the runner enters a
+     * position at close(T-1) and the next day's run settles it at close(T), booking the
+     * entire move as realized. The position is never carried at an unsettled price, so
+     * there is no unrealized component: 0 is an identity of the model, not a convention.
+     *
+     * This matters because `average_price` on a futures row IS the prior settlement
+     * close, i.e. exactly the `t2_close` the finalizer already uses for realized. So
+     * `quantity * (t1_close - average_price) * point_value` is algebraically the realized
+     * formula, and writing it into unrealized records the same settlement move in two
+     * columns -- E2-F3, measured at up to -12,586.69 in a day, and a violation of the
+     * row-sums-to-aggregate invariant since live_results correctly reports 0.
+     *
+     * MARK_TO_MARKET -- equities. There `average_price` is a true weighted cost basis, so
+     * the same expression is the genuine unrealized P&L.
+     *
+     * The default is SETTLED so that a caller which says nothing keeps the futures
+     * behaviour; both futures runners pass no policy argument.
+     */
+    enum class UnrealizedPolicy { SETTLED, MARK_TO_MARKET };
+
+    /**
      * @brief Unrealized P&L of one position against its own cost basis.
      *
      * The single rule for "what is this position worth versus what it cost", shared by
@@ -129,7 +152,8 @@ public:
         const std::unordered_map<std::string, double>& t1_close_prices,
         const std::unordered_map<std::string, double>& t2_close_prices,
         double previous_portfolio_value,
-        double commissions = 0.0);
+        double commissions = 0.0,
+        UnrealizedPolicy unrealized_policy = UnrealizedPolicy::SETTLED);
 
     /**
      * Calculate PnL for current day positions

@@ -9,7 +9,8 @@ Result<LivePnLManager::FinalizationResult> LivePnLManager::finalize_previous_day
     const std::unordered_map<std::string, double>& t1_close_prices,
     const std::unordered_map<std::string, double>& t2_close_prices,
     double previous_portfolio_value,
-    double commissions) {
+    double commissions,
+    UnrealizedPolicy unrealized_policy) {
 
     FinalizationResult result;
 
@@ -98,13 +99,22 @@ Result<LivePnLManager::FinalizationResult> LivePnLManager::finalize_previous_day
         Position finalized_pos = position;
         finalized_pos.realized_pnl = Decimal(yesterday_position_pnl);
 
-        // Compute unrealized PnL from cost basis (average_price).
-        // For futures: average_price resets to close after daily settlement, so this is ~0.
-        // For equities: average_price is the weighted average purchase price (cost basis),
-        // so this gives the correct mark-to-market unrealized PnL.
-        double avg_price = position.average_price.as_double();
-        if (avg_price > 0.0 && quantity != 0.0) {
-            finalized_pos.unrealized_pnl = Decimal(quantity * (day_t1_close - avg_price) * point_value);
+        // Unrealized P&L, per the caller's settlement model -- see UnrealizedPolicy.
+        //
+        // SETTLED (futures, the default): the position was entered at close(T-1) and is
+        // being settled here at close(T); that whole move is booked as realized just
+        // above, so there is no unrealized component. Writing one would record the same
+        // settlement move twice, because on a futures row average_price IS day_t2_close
+        // and the expression below reduces exactly to the realized formula (E2-F3).
+        //
+        // MARK_TO_MARKET (equities): average_price is a true weighted cost basis, so the
+        // expression is the genuine unrealized P&L.
+        if (unrealized_policy == UnrealizedPolicy::MARK_TO_MARKET) {
+            double avg_price = position.average_price.as_double();
+            finalized_pos.unrealized_pnl =
+                (avg_price > 0.0 && quantity != 0.0)
+                    ? Decimal(quantity * (day_t1_close - avg_price) * point_value)
+                    : Decimal(0.0);
         } else {
             finalized_pos.unrealized_pnl = Decimal(0.0);
         }

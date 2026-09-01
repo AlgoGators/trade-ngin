@@ -1401,8 +1401,11 @@ int main(int argc, char* argv[]) {
                 previous_day_close_prices,  // T-1 prices
                 two_days_ago_close_prices,  // T-2 prices
                 initial_capital,  // Previous portfolio value (TODO: get actual previous value)
-                0.0  // Commissions (will be handled later)
-            );
+                0.0,  // Commissions (will be handled later)
+                // Equities carry a true weighted cost basis in average_price, so the
+                // T-1 row records mark-to-market unrealized P&L. Futures pass no policy
+                // and stay on SETTLED, where the move is entirely realized (E2-F3).
+                trade_ngin::LivePnLManager::UnrealizedPolicy::MARK_TO_MARKET);
 
             if (finalization_result.is_ok()) {
                 auto& result = finalization_result.value();
