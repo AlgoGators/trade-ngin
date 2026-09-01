@@ -24,6 +24,7 @@
 #include "trade_ngin/live/corporate_actions_lifecycle.hpp"
 #include "trade_ngin/live/corp_action_window.hpp"
 #include "trade_ngin/live/corporate_actions_audit_log.hpp"
+#include "trade_ngin/live/live_daily_cycle.hpp"
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
 #include "trade_ngin/strategy/mean_reversion.hpp"
 #include "trade_ngin/strategy/equity_strategy_builder.hpp"
@@ -542,29 +543,6 @@ int main(int argc, char* argv[]) {
                 .register_equity_costs_from_bars(symbols, bars_by_symbol);
         }
 
-        // Pre-warm strategy state so portfolio can pull price history for optimization/risk
-        INFO("Preprocessing data in strategy to populate price history...");
-        auto strat_prewarm = mr_strategy->on_data(all_bars);
-        if (strat_prewarm.is_error()) {
-            std::cerr << "Failed to preprocess data in strategy: "
-                      << strat_prewarm.error()->what() << std::endl;
-            return 1;
-        }
-
-        // Process data through portfolio pipeline (optimization + risk), mirroring backtest
-        INFO("Processing data through portfolio manager (optimization + risk)...");
-        auto port_process_result = portfolio->process_market_data(all_bars);
-        if (port_process_result.is_error()) {
-            std::cerr << "Failed to process data in portfolio manager: "
-                      << port_process_result.error()->what() << std::endl;
-            return 1;
-        }
-        INFO("Portfolio processing completed");
-
-        // Get optimized portfolio positions (integer-rounded after optimization/risk)
-        INFO("Retrieving optimized portfolio positions...");
-        auto positions = portfolio->get_portfolio_positions();
-        
         // ========================================
         // NON-TRADING DAY DETECTION
         // Find the actual previous trading day (skip weekends and holidays)
@@ -1277,6 +1255,36 @@ int main(int argc, char* argv[]) {
             }
         }
 
+        // Seed the strategy with the previous day's holdings, then generate the day's
+        // signals. Both the ordering and the placement of this block are load-bearing:
+        // MeanReversionStrategy::generate_signal() branches on what it currently holds,
+        // so a live process -- which starts with an empty positions_ every session --
+        // has to be handed the book back first, and it has to be the book as restated
+        // by the corporate-action blocks above, since a split changes quantity and a
+        // dividend changes cost basis. See LiveDailyCycle::prepare_strategy_for_signals.
+        INFO("Seeding strategy with previous-day book and generating signals...");
+        auto strat_prewarm = LiveDailyCycle::prepare_strategy_for_signals(
+            *mr_strategy, previous_positions, all_bars);
+        if (strat_prewarm.is_error()) {
+            std::cerr << "Failed to preprocess data in strategy: "
+                      << strat_prewarm.error()->what() << std::endl;
+            return 1;
+        }
+
+        // Process data through portfolio pipeline (optimization + risk), mirroring backtest
+        INFO("Processing data through portfolio manager (optimization + risk)...");
+        auto port_process_result = portfolio->process_market_data(all_bars);
+        if (port_process_result.is_error()) {
+            std::cerr << "Failed to process data in portfolio manager: "
+                      << port_process_result.error()->what() << std::endl;
+            return 1;
+        }
+        INFO("Portfolio processing completed");
+
+        // Get optimized portfolio positions (integer-rounded after optimization/risk)
+        INFO("Retrieving optimized portfolio positions...");
+        auto positions = portfolio->get_portfolio_positions();
+
         // Verify we have prices for all required symbols
         std::set<std::string> all_symbols;
         for (const auto& [symbol, position] : positions) {
@@ -1444,25 +1452,51 @@ int main(int argc, char* argv[]) {
 
         // Now update Day T positions with the corrected average_price from on_execution().
         // The strategy's positions now have correct cost basis from weighted averaging.
+        // Day-T positions open with average_price set to the previous close, because
+        // that same field is what ExecutionManager reads as the fill price. Now that
+        // executions have been generated and priced, the field goes back to meaning
+        // cost basis -- and a held position's basis is whatever it has always been,
+        // not today's mark. Before Wave 2 the basis was only restored for symbols the
+        // strategy knew about, and since positions_ was never seeded that meant only
+        // the symbols that traded today: every untraded holding kept the close it was
+        // initialised with and its basis drifted a day at a time.
         auto strategy_positions = mr_strategy->get_positions();
         for (auto& [symbol, current_position] : positions) {
             auto strat_it = strategy_positions.find(symbol);
+            double strategy_basis = 0.0;
             if (strat_it != strategy_positions.end()) {
-                double cost_basis = strat_it->second.average_price.as_double();
-                if (cost_basis > 0.0) {
-                    current_position.average_price = Decimal(cost_basis);
-                    // Recalculate unrealized PnL with correct cost basis
-                    double current_price = 0.0;
-                    if (previous_day_close_prices.find(symbol) != previous_day_close_prices.end()) {
-                        current_price = previous_day_close_prices[symbol];
-                    }
-                    if (current_price > 0.0 && current_position.quantity.as_double() != 0.0) {
-                        current_position.unrealized_pnl = Decimal(
-                            current_position.quantity.as_double() * (current_price - cost_basis));
-                    }
-                    // Carry realized PnL from strategy
-                    current_position.realized_pnl = strat_it->second.realized_pnl;
+                strategy_basis = strat_it->second.average_price.as_double();
+            }
+
+            // The carried book is post-corporate-action, so a split or dividend has
+            // already restated this basis.
+            double carried_basis = 0.0;
+            auto carried_it = previous_positions.find(symbol);
+            if (carried_it != previous_positions.end() &&
+                carried_it->second.quantity.as_double() != 0.0) {
+                carried_basis = carried_it->second.average_price.as_double();
+            }
+
+            double cost_basis = LivePnLManager::resolve_day_t_cost_basis(
+                strategy_basis, carried_basis);
+
+            if (cost_basis > 0.0) {
+                current_position.average_price = Decimal(cost_basis);
+                // Recalculate unrealized PnL with correct cost basis
+                double current_price = 0.0;
+                if (previous_day_close_prices.find(symbol) != previous_day_close_prices.end()) {
+                    current_price = previous_day_close_prices[symbol];
                 }
+                if (current_price > 0.0) {
+                    current_position.unrealized_pnl = Decimal(
+                        LivePnLManager::unrealized_from_cost_basis(
+                            current_position.quantity.as_double(), cost_basis, current_price));
+                }
+            }
+
+            // Carry realized PnL from strategy
+            if (strat_it != strategy_positions.end()) {
+                current_position.realized_pnl = strat_it->second.realized_pnl;
             }
         }
         // Log final Day T position state

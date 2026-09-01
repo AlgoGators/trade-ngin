@@ -65,6 +65,39 @@ public:
     }
 
     /**
+     * @brief The cost basis to record against a position on day T.
+     *
+     * A basis is established when a position is opened and has to survive every
+     * day it is held: realized PnL on exit, unrealized PnL while held, and the
+     * mean-reversion stop-loss are all measured from it. The equity runner used to
+     * seed every day-T position's average_price with the previous session's close
+     * and then correct only the symbols the strategy knew about -- which, because
+     * positions_ was never seeded, meant only the symbols that traded that day. A
+     * held-but-untraded position therefore had its basis re-anchored to the latest
+     * close every session: it always looked flat, its unrealized PnL was always
+     * ~0, and its stop-loss measured from yesterday rather than from what it cost.
+     *
+     * @param strategy_basis The weighted average BaseStrategy::on_execution()
+     *        maintains. Authoritative when set: a symbol that traded today has a
+     *        basis that already accounts for today's fills. <= 0 when the strategy
+     *        has no record of the symbol.
+     * @param carried_basis The basis the same symbol carries in the previous day's
+     *        book, AFTER corporate actions have restated it. <= 0 when the symbol
+     *        is not a carried-over holding.
+     * @return the basis to record, or 0.0 when neither source knows one. A new
+     *         position genuinely has no basis until its fill is processed, and
+     *         unrealized_from_cost_basis() reads 0.0 as "no PnL to report" rather
+     *         than booking the whole notional. A mark is deliberately never a
+     *         candidate: the day's close is what the position is worth, not what
+     *         it cost, and substituting one for the other is the bug above.
+     */
+    static double resolve_day_t_cost_basis(double strategy_basis, double carried_basis) {
+        if (strategy_basis > 0.0) return strategy_basis;
+        if (carried_basis > 0.0) return carried_basis;
+        return 0.0;
+    }
+
+    /**
      * Finalization result structure for Day T-1
      */
     struct FinalizationResult {
