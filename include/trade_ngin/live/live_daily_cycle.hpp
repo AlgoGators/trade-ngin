@@ -56,7 +56,30 @@ public:
         BaseStrategy& strategy,
         const std::unordered_map<std::string, Position>& previous_positions,
         const std::vector<Bar>& bars) {
-        auto seeded = strategy.seed_positions(previous_positions);
+        // E2-F19 / E2-F20: seed quantity, basis and mark -- never yesterday's realized.
+        //
+        // BaseStrategy::seed_positions is a wholesale copy and on_execution() adds to
+        // whatever it finds, so a seeded realized_pnl made every persisted day-T row
+        // "yesterday's row + today's fills": a running total under a column named
+        // daily. Worse, on a Monday yesterday's row was Friday's, already rewritten by
+        // the Saturday and Sunday finalizations with Friday's MARK MOVE, so a price
+        // move entered a column that is supposed to hold trades (measured: META
+        // 2026-08-04 = 73.35 Friday mark + 31.31 Mon trade + 15.93 Tue trade).
+        //
+        // Zeroing it here makes positions_[sym].realized_pnl mean "realized by this
+        // symbol in this process", i.e. today. metrics_.realized_pnl -- the aggregate
+        // live_results is built from -- was never seeded and does not change.
+        //
+        // unrealized_pnl stays seeded on purpose: update_metrics() sums it into the
+        // drawdown gate, so zeroing it would move a risk limit, not a report.
+        //
+        // Done in the caller rather than in seed_positions(), which the futures
+        // runners call directly: this header is not in their translation units.
+        std::unordered_map<std::string, Position> seed_book = previous_positions;
+        for (auto& [symbol, position] : seed_book) {
+            position.realized_pnl = Decimal(0.0);
+        }
+        auto seeded = strategy.seed_positions(seed_book);
         if (seeded.is_error()) return seeded;
         return strategy.on_data(bars);
     }
@@ -249,10 +272,20 @@ public:
     /**
      * @brief Whether a position row carries nothing worth persisting.
      *
-     * Phase 0 stub: today's rule -- a row is dropped on quantity alone.
+     * A row is dead only when it has neither quantity nor realized P&L. The old rule
+     * dropped on quantity alone, which is right for futures -- an exit there realizes
+     * exactly zero, because average_price is reset to close(T-1) daily and the fill
+     * strikes at close(T-1) -- and wrong for equities, where average_price is a true
+     * cost basis and the exit realizes the whole accumulated gain. Measured
+     * 2026-04-15: TMUS sold out for -402.65, live_results carried it, the positions
+     * table did not (E2-F19 route 3).
+     *
+     * A closed symbol carries realized on the close day only and never has a row
+     * again, so this keeps one row per close event, not one per flat day.
      */
     static bool is_dead_row(const Position& position, double tol = kRowTolerance) {
-        return std::abs(position.quantity.as_double()) <= tol;
+        return std::abs(position.quantity.as_double()) <= tol &&
+               std::abs(position.realized_pnl.as_double()) <= tol;
     }
 
     /**
@@ -283,31 +316,111 @@ public:
     /**
      * @brief Put the LOADED T-1 realized figure back on each finalized T-1 row.
      *
-     * Phase 0 stub: identity -- the finalizer's output is persisted as-is.
+     * LivePnLManager::finalize_previous_day writes the settlement move
+     * qty x (close(T-1) - close(T-2)) into every finalized row's realized_pnl. Under
+     * SETTLED that is the day's realized. Under MARK_TO_MARKET it is a mark, and
+     * writing it over the trade realized the day's own run recorded is how the
+     * column came to hold price moves; on a weekend it is written three times.
+     *
+     * The row the day-T write produced already holds the correct per-day figure
+     * (seeded from zero, accumulated from that day's fills), so the T-1 rewrite
+     * carries it through unchanged. The finalizer's aggregate fields --
+     * finalized_daily_pnl, position_realized_pnl, finalized_unrealized_pnl -- are
+     * not touched, so yesterday_total_pnl and total_unrealized_pnl stay as they
+     * are. The shared finalizer is not edited: the futures runners persist its rows
+     * directly and must keep the settlement move.
+     *
+     * A finalized row with no loaded counterpart cannot carry a loaded realized; it
+     * gets 0 rather than the mark move.
      */
     static void restore_loaded_realized(
         std::vector<Position>& finalized,
         const std::unordered_map<std::string, Position>& loaded) {
-        (void)finalized;
-        (void)loaded;
+        for (auto& position : finalized) {
+            auto it = loaded.find(position.symbol);
+            position.realized_pnl =
+                it != loaded.end() ? it->second.realized_pnl : Decimal(0.0);
+        }
     }
 
     /**
      * @brief Give a row to a symbol the strategy realized P&L on that has no
      *        entry in the day-T book.
      *
-     * Phase 0 stub: no-op.
+     * The day-T book is the strategy's target map, which covers the configured
+     * universe. A held symbol that has LEFT the universe -- contra-merged, renamed
+     * to a name not in config, or simply de-configured -- is still closed out by
+     * ExecutionManager::generate_daily_executions and still booked by
+     * on_execution(), so its realized reaches the aggregate; but nothing iterates
+     * it into a row, so the rows no longer sum to the aggregate. This is the case
+     * the in-run L5 assertion would otherwise trip on.
+     *
+     * @return the symbols given a row, sorted, for the caller to log.
      */
     static std::vector<std::string> add_rowless_exits(
         std::unordered_map<std::string, Position>& positions,
         const std::unordered_map<std::string, Position>& strategy_positions,
         const Timestamp& now,
         double tol = kRowTolerance) {
-        (void)positions;
-        (void)strategy_positions;
-        (void)now;
-        (void)tol;
-        return {};
+        std::vector<std::string> added;
+        for (const auto& [symbol, held] : strategy_positions) {
+            if (positions.find(symbol) != positions.end()) continue;
+            if (std::abs(held.realized_pnl.as_double()) <= tol) continue;
+            Position closed;
+            closed.symbol = symbol;
+            closed.quantity = Quantity(0.0);
+            closed.average_price = Decimal(0.0);  // no basis: the position no longer exists
+            closed.unrealized_pnl = Decimal(0.0);
+            closed.realized_pnl = held.realized_pnl;
+            closed.last_update = now;
+            positions[symbol] = closed;
+            added.push_back(symbol);
+        }
+        std::sort(added.begin(), added.end());
+        return added;
+    }
+
+    /**
+     * @brief The book the Day T-1 finalization should be run from, per symbol.
+     *
+     * T-1 is finalized as the book actually stood on T-1, i.e. from the snapshot
+     * taken before any corporate action touched it (8a1a96ef). The exception is a
+     * DEFERRED class-1 event catching up: when its ex-date is on or before T-1 the
+     * T-1 close is already post-event, so the pre-action basis would be a frame
+     * behind the price (E2-F16); that symbol is finalized from the restated book.
+     *
+     * The restated book is the one taken AFTER the class-1 rescale and BEFORE the
+     * lifecycle handlers. Terminations set quantity to 0 and add a day-T cash flow
+     * to realized_pnl; renames and contra-merges re-key and merge entries. None of
+     * that happened on T-1, and reading the post-lifecycle map here would finalize
+     * a symbol that split and terminated in the same run as a qty-0 row with a
+     * day-T flow on the T-1 date (E2-F19 gap G4).
+     *
+     * @param restated_out symbols taken from the restated book, for the caller's log.
+     */
+    static std::vector<Position> select_finalization_book(
+        const std::unordered_map<std::string, Position>& pre_action,
+        const std::unordered_map<std::string, Position>& post_class1,
+        const std::unordered_map<std::string, std::string>& applied_class1_ex_date,
+        const std::string& t1_date,
+        std::vector<std::string>* restated_out = nullptr) {
+        std::vector<Position> book;
+        book.reserve(pre_action.size());
+        for (const auto& [symbol, position] : pre_action) {
+            auto ex = applied_class1_ex_date.find(symbol);
+            const bool event_covers_t1 =
+                ex != applied_class1_ex_date.end() && ex->second <= t1_date;
+            if (event_covers_t1) {
+                auto restated = post_class1.find(symbol);
+                if (restated != post_class1.end()) {
+                    book.push_back(restated->second);
+                    if (restated_out) restated_out->push_back(symbol);
+                    continue;
+                }
+            }
+            book.push_back(position);
+        }
+        return book;
     }
 };
 

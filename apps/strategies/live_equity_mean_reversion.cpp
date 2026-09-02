@@ -747,6 +747,26 @@ int main(int argc, char* argv[]) {
             INFO("No previous day positions found (first run or no data): " + std::string(previous_positions_result.error()->what()));
         }
 
+        // E2-F19: a position closed to zero keeps its row for the day it closed, so the
+        // exit's realized P&L has somewhere to live (see LiveDailyCycle::is_dead_row).
+        // Everything below this line -- corporate actions, the run-gap guard, seeding,
+        // execution, basis resolution -- is written against a book of HELD positions,
+        // so closed rows are split out here and reach exactly one place: the T-1 write
+        // set, where they are re-appended verbatim so the DELETE-then-INSERT that
+        // rewrites the T-1 date does not destroy them.
+        std::unordered_map<std::string, Position> previous_closed_rows;
+        {
+            std::unordered_map<std::string, Position> open_rows;
+            LiveDailyCycle::split_open_and_closed(previous_positions, open_rows,
+                                                  previous_closed_rows);
+            previous_positions = std::move(open_rows);
+            if (!previous_closed_rows.empty()) {
+                INFO("Loaded " + std::to_string(previous_closed_rows.size()) +
+                     " closed row(s) for Day T-1 (realized carried on the close date); " +
+                     std::to_string(previous_positions.size()) + " held position(s) remain");
+            }
+        }
+
         // An empty prior book is legitimate on a genuine first run, and catastrophic
         // otherwise. The two are indistinguishable from here -- both are an empty map --
         // and the consequences of guessing wrong are total: the strategy seeds flat, the
@@ -1657,6 +1677,13 @@ int main(int argc, char* argv[]) {
                     for (const auto& [sym, pos] : previous_positions) {
                         Position p = pos;
                         p.last_update = now;
+                        // E2-F19: this is a day-T placeholder for the restated book, not
+                        // a P&L record. The loaded realized is T-1's flow; stamping it on
+                        // a day-T row would let a placeholder that survives an empty
+                        // day-T write (book fully terminated) reload tomorrow as a closed
+                        // row carrying yesterday's realized, and be re-persisted at T-1
+                        // forever. The day-T write below records the day's real figure.
+                        p.realized_pnl = Decimal(0.0);
                         positions_to_store.push_back(std::move(p));
                     }
                     // Adjusted positions and the dedup rows that stop those
@@ -1702,6 +1729,14 @@ int main(int argc, char* argv[]) {
                 }
             }
         }
+
+        // The book after the class-1 rescale and BEFORE the lifecycle handlers. The
+        // E2-F16 restated-frame rule for the T-1 finalization needs exactly this
+        // snapshot: a termination sets quantity to 0 and adds a day-T cash flow to
+        // realized_pnl, and a rename or contra-merge re-keys entries -- none of which
+        // happened on T-1 (E2-F19 gap G4; LiveDailyCycle::select_finalization_book).
+        const std::unordered_map<std::string, Position> previous_positions_post_class1 =
+            previous_positions;
 
         // ---- Class 2 SERIES_CONTINUITY + Class 3 TERMINATION ----
         // Both change WHAT is held rather than its price, so they run after
@@ -1963,6 +1998,10 @@ int main(int argc, char* argv[]) {
                     Position p = pos;
                     p.symbol = sym;
                     p.last_update = now;
+                    // E2-F19: day-T placeholder, same rule as the class-1 store above.
+                    // A termination's realized_delta reaches the day-T row and the
+                    // aggregate through corp_action_realized_total, not through here.
+                    p.realized_pnl = Decimal(0.0);
                     lifecycle_positions.push_back(std::move(p));
                 }
 
@@ -2210,25 +2249,22 @@ int main(int argc, char* argv[]) {
             // The gate now defers exactly that event, so the situation cannot arise upstream
             // of here. The predicate is kept explicit rather than assumed: it states the rule
             // that makes this correct, and keeps it correct if the gate's horizon ever moves.
-            std::vector<Position> prev_positions_vec;
-            prev_positions_vec.reserve(previous_positions_pre_action.size());
-            for (const auto& [symbol, pos] : previous_positions_pre_action) {
-                auto ex = applied_class1_ex_date.find(symbol);
-                const bool event_covers_t1 =
-                    ex != applied_class1_ex_date.end() &&
-                    ex->second <= core::format_utc_date(previous_date);
-                if (event_covers_t1) {
-                    auto restated = previous_positions.find(symbol);
-                    if (restated != previous_positions.end()) {
-                        INFO("Finalizing " + symbol + " from the RESTATED T-1 book: a " +
-                             "deferred corp action for " + ex->second +
-                             " was applied this run, so the T-1 close is already post-event "
-                             "and the pre-action basis would be a frame behind it (E2-F15).");
-                        prev_positions_vec.push_back(restated->second);
-                        continue;
-                    }
-                }
-                prev_positions_vec.push_back(pos);
+            //
+            // E2-F19 gap G4: the restated book is the POST-CLASS-1, PRE-LIFECYCLE
+            // snapshot, not the fully mutated map -- a symbol that also terminated or
+            // was renamed this run would otherwise be finalized onto T-1 as a qty-0 row
+            // carrying a day-T cash flow. The rule lives in
+            // LiveDailyCycle::select_finalization_book so it is unit-testable.
+            std::vector<std::string> restated_symbols;
+            std::vector<Position> prev_positions_vec = LiveDailyCycle::select_finalization_book(
+                previous_positions_pre_action, previous_positions_post_class1,
+                applied_class1_ex_date, core::format_utc_date(previous_date),
+                &restated_symbols);
+            for (const auto& symbol : restated_symbols) {
+                INFO("Finalizing " + symbol + " from the RESTATED T-1 book: a " +
+                     "deferred corp action for " + applied_class1_ex_date.at(symbol) +
+                     " was applied this run, so the T-1 close is already post-event "
+                     "and the pre-action basis would be a frame behind it (E2-F15).");
             }
 
             // Use PnLManager to finalize previous day
@@ -2263,22 +2299,39 @@ int main(int argc, char* argv[]) {
             }
 
             // Store updated positions for yesterday (Day T-1) in database.
+            //
+            // E2-F19 / E2-F20: the finalizer writes the settlement move into every row's
+            // realized_pnl. That is the futures definition; on this cash book it is a
+            // MARK, and it overwrote the trade realized T-1's own run had recorded -- on
+            // a weekend three times over, so Monday's load read Friday's mark move and
+            // seeded it. The T-1 row keeps the LOADED realized (the day's own flow); the
+            // finalizer's aggregate fields are untouched. The shared finalizer is not
+            // edited: the futures runners persist its rows as-is.
+            LiveDailyCycle::restore_loaded_realized(yesterday_finalized_positions,
+                                                    previous_positions_pre_action);
+
             // finalize_previous_day returns a row for EVERY carried position, flat ones
-            // included, so it must apply the same zero-quantity rule as the Day-T write
-            // above or it re-introduces exactly the rows that rule exists to prevent.
-            // This is the path that actually produced the observed dead rows: 4 of the 6
-            // had zero quantity AND zero P&L, so the Day-T filter was never the one
-            // letting them through. The futures finalization path has no filter either,
-            // but never needs one -- its Day-T rule keeps zeros out of the table, so a
-            // zero never comes back through previous_positions.
+            // included, so it applies the same dead-row rule as the Day-T write below:
+            // a row is dropped only when it carries neither quantity nor realized. This
+            // is the path that actually produced the observed dead rows (4 of the 6 had
+            // zero quantity AND zero P&L), and those are still dropped. A row with zero
+            // quantity and a realized figure is a close-day row and is kept.
             std::vector<Position> finalized_to_store;
-            finalized_to_store.reserve(yesterday_finalized_positions.size());
+            finalized_to_store.reserve(yesterday_finalized_positions.size() +
+                                       previous_closed_rows.size());
             for (const auto& fp : yesterday_finalized_positions) {
-                if (std::abs(fp.quantity.as_double()) > 1e-10) {
+                if (!LiveDailyCycle::is_dead_row(fp)) {
                     finalized_to_store.push_back(fp);
                 } else {
-                    DEBUG("Skipping zero-quantity Day T-1 position: " + fp.symbol);
+                    DEBUG("Skipping dead Day T-1 position (no quantity, no realized): " +
+                          fp.symbol);
                 }
+            }
+            // Closed rows loaded for T-1 are re-appended verbatim -- there is nothing to
+            // mark and their realized is already the day's figure. Appended AFTER the
+            // finalized rows: store_positions keys its DELETE on positions[0].last_update.
+            for (const auto& [symbol, closed] : previous_closed_rows) {
+                finalized_to_store.push_back(closed);
             }
 
             // E2-F14 guard: never let a day with NO T-1 prices overwrite a day that was
@@ -2460,8 +2513,16 @@ int main(int argc, char* argv[]) {
             }
             auto exec_result = mr_strategy->on_execution(exec);
             if (exec_result.is_error()) {
-                WARN("Failed to process execution for " + exec.symbol + ": " +
-                     std::string(exec_result.error()->what()));
+                // E2-F19: FATAL. A dropped fill leaves its cost in total_daily_commissions
+                // while its realized reaches neither the row nor metrics_, and the
+                // strategy's book no longer matches the executions the run has already
+                // persisted. Continuing would produce a day whose rows cannot sum to its
+                // aggregate for a reason no later check could name.
+                ERROR("Failed to process execution for " + exec.symbol + ": " +
+                      std::string(exec_result.error()->what()) +
+                      ". Refusing to continue with a book that does not reflect a "
+                      "persisted execution.");
+                return 1;
             } else {
                 DEBUG("Strategy processed execution for " + exec.symbol +
                       ": avg_price updated via on_execution()");
@@ -2642,25 +2703,28 @@ int main(int argc, char* argv[]) {
         positions_to_save.reserve(positions.size());
 
         for (const auto& [symbol, position] : positions) {
-            // Only save positions with non-zero quantity.
-            // Zero-quantity positions (closed positions) should NOT be stored -- the same
-            // rule and tolerance the futures runner uses
-            // (live_portfolio_conservative.cpp:1657). A flat symbol is ABSENT from
-            // trading.positions, not present with a zero: futures conservative holds 0
-            // zero-qty rows in 1702, and only 1702 of a possible 4830 symbol-days exist.
-            // The close is recorded in trading.executions, which is the audit trail; a
-            // zero position row adds nothing and accumulates (at 852 symbols it would
-            // dominate the table). Realized P&L from the exit lands in
-            // live_results.daily_realized_pnl, exactly as it does for futures.
+            // E2-F19: a row is dropped only when it carries neither quantity nor
+            // realized P&L (LiveDailyCycle::is_dead_row). The previous rule dropped on
+            // quantity alone, copied from the futures runner on the premise that "the
+            // exit's realized lands in live_results exactly as it does for futures".
+            // The rule was identical; the consequence was not. A futures exit realizes
+            // exactly zero (average_price is reset to close(T-1) daily and the fill
+            // strikes at close(T-1)), so its dropped row is genuinely empty. An equity
+            // exit realizes the whole accumulated gain against a true cost basis, and
+            // dropping the row lost the largest figure of the position's life at row
+            // level: 11 close events in the 2026-04..08 series, e.g. TMUS 2026-04-15
+            // -402.65 in live_results with no row to carry it.
             //
-            // The previous rule also kept a row when it carried PnL, which is why flat
-            // rows survived here and never do on the futures path.
-            bool has_quantity = std::abs(position.quantity.as_double()) > 1e-10;
-
-            if (!has_quantity) {
-                DEBUG("Skipping zero-quantity position: " + symbol);
+            // A flat symbol with no trade still writes no row -- the 852-symbol
+            // accumulation the old comment feared cannot occur, because a symbol that
+            // closed on an earlier day carries realized 0 today (the seed is zeroed).
+            // A closed row exists on the close date only.
+            if (LiveDailyCycle::is_dead_row(position)) {
+                DEBUG("Skipping dead position (no quantity, no realized): " + symbol);
                 continue;
             }
+            const bool closed_row =
+                std::abs(position.quantity.as_double()) <= LiveDailyCycle::kRowTolerance;
 
             // Create a new position with validated values
             trade_ngin::Position validated_position;
@@ -2728,6 +2792,15 @@ int main(int argc, char* argv[]) {
                         validated_position.average_price = trade_ngin::Decimal(1.0);
                     }
                 }
+            }
+
+            if (closed_row) {
+                // No basis for a position that no longer exists: on_execution leaves the
+                // exit price in average_price after a full close, and storing a price on
+                // a closed row is the category error AVERAGE_PRICE_LIFECYCLE.md exists to
+                // prevent. Zero reads unambiguously as "closed".
+                validated_position.average_price = Decimal(0.0);
+                validated_position.unrealized_pnl = Decimal(0.0);
             }
 
             positions_to_save.push_back(validated_position);
