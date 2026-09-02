@@ -38,6 +38,8 @@ set(TEST_SOURCES
     transaction_cost/test_impact_model.cpp
     live/corp_actions/test_applier.cpp
     live/corp_actions/test_effect_classes.cpp
+    live/corp_actions/test_frame_horizon.cpp
+    live/corp_actions/test_ex_date_eligibility.cpp
     live/corp_actions/test_rename_eras.cpp
     live/corp_actions/test_denominator_frame.cpp
     live/corp_actions/test_denominator_range_db.cpp

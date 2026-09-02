@@ -61,6 +61,36 @@ std::vector<PositionAdjustment> CorporateActionsApplier::apply(
             continue;
         }
 
+        // E2-F17: refuse an event for a position the book did NOT hold on the ex-date.
+        //
+        // A class-1 event restates a basis into post-event units. That is only right when the
+        // basis was formed BEFORE the event. A position opened after the ex-date was bought at
+        // a price the market had already adjusted, so restating it a second time is a pure
+        // fabrication -- and it is not exotic. Measured over an 82-day live replay, FOUR of the
+        // six dividends applied were applied to positions held on no part of their ex-date:
+        //
+        //   ABT   ex 2026-04-15, applied 04-18   AAPL  ex 2026-05-11, applied 06-11
+        //   DD    ex 2026-05-15, applied 06-12   TMUS  ex 2026-05-29, applied 06-05
+        //
+        // ABT alone moved the basis 95.47 -> 94.881429 and put +$33.79 of unrealized that does
+        // not exist onto the equity curve, permanently once the position is sold. The applier
+        // walks CURRENTLY-held symbols and applies anything inside the fetch window, so any
+        // name bought within 14 days after an ex-date lands here. Magnitude scales with the
+        // event: 0.62% for that dividend, 2400% for a 25:1 split.
+        //
+        // Gated on book_state_known_at_ex_date so a thin or missing position history is NOT
+        // read as "flat" -- that would silently DROP real adjustments, which is the worse
+        // failure. Unknown keeps the old behaviour and the dividend warning below.
+        if (ev.book_state_known_at_ex_date && !(std::abs(ev.qty_at_ex_date) > 1e-9)) {
+            WARN("CorporateActionsApplier: skipping " + std::string(type_to_string(ev.type)) +
+                 " for " + ev.symbol + " (ex_date " + ev.ex_date + "): the book is on record as "
+                 "holding nothing in this symbol at the ex-date, so the " +
+                 std::to_string(qty_before) + " shares held now were bought AFTER it, at a price "
+                 "the market had already adjusted. Restating this basis would double-adjust it "
+                 "(E2-F17).");
+            continue;
+        }
+
         PositionAdjustment adj;
         adj.symbol = ev.symbol;
         adj.event_date = ev.ex_date;

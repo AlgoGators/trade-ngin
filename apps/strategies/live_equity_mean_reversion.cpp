@@ -559,6 +559,21 @@ int main(int argc, char* argv[]) {
         }
         
         auto all_bars = conversion_result.value();
+
+        // E2-F15: the newest loaded bar PER SYMBOL. Hoisted here (it used to be built
+        // inside the delisting-staleness block) because the corporate-action code needs it
+        // too, and both must agree on one definition of "how far does this symbol's price
+        // series actually reach".
+        //
+        // This is the horizon that decides whether a corporate action may be applied. See
+        // the gate below and docs/E2_FINDING_15_SPLIT_PRICE_UNIT_DESYNC.md.
+        std::unordered_map<std::string, std::string> last_bar_date;
+        for (const auto& bar : all_bars) {
+            const std::string d =
+                format_ymd_utc(std::chrono::system_clock::to_time_t(bar.timestamp));
+            auto it = last_bar_date.find(bar.symbol);
+            if (it == last_bar_date.end() || d > it->second) last_bar_date[bar.symbol] = d;
+        }
         INFO("Loaded " + std::to_string(all_bars.size()) + " total bars");
 
         // Data-freshness guard (review T2.9): the newest bar actually loaded for our
@@ -869,6 +884,11 @@ int main(int argc, char* argv[]) {
         // Booking it here touches NO shared file, so the futures binaries are unchanged by
         // construction rather than by argument.
         double corp_action_realized_total = 0.0;
+
+        // E2-F15: ex-date of any class-1 event APPLIED on this run, per symbol. Used to pick
+        // the right T-1 snapshot for finalization -- see the selection below.
+        std::unordered_map<std::string, std::string> applied_class1_ex_date;
+
 
         DEBUG("Previous date used for lookup: " + std::to_string(std::chrono::system_clock::to_time_t(previous_date)));
         DEBUG("Current date: " + std::to_string(std::chrono::system_clock::to_time_t(now)));
@@ -1218,6 +1238,41 @@ int main(int argc, char* argv[]) {
                     return p->second.quantity.as_double();
                 };
 
+                // E2-F17: is the book's state at ex_date-1 actually KNOWN? Every run writes a
+                // live_results row whether or not it holds anything (the same evidence E2-F8
+                // uses to tell "flat" from "never ran"), so that row is what turns an empty
+                // position lookup from "unknown" into "verifiably flat". Without it, absent
+                // history would be read as flat and real adjustments would be dropped.
+                std::unordered_map<std::string, bool> run_on_record_cache;
+                auto book_state_known_at_ex_date = [&](const std::string& ex_date) -> bool {
+                    auto cached = run_on_record_cache.find(ex_date);
+                    if (cached != run_on_record_cache.end()) return cached->second;
+
+                    bool known = false;
+                    std::tm tm{};
+                    std::istringstream ss(ex_date);
+                    ss >> std::get_time(&tm, "%Y-%m-%d");
+                    if (!ss.fail()) {
+                        auto tt = std::mktime(&tm) - 24 * 60 * 60;  // ex_date - 1 day
+                        const std::string prev_str = trade_ngin::core::format_utc_date(
+                            std::chrono::system_clock::from_time_t(tt));
+                        auto r = db->execute_query(
+                            "SELECT count(*)::text FROM trading.live_results "
+                            "WHERE strategy_id = '" + std::string(kEquityStrategyId) + "'"
+                            " AND portfolio_id = '" + portfolio_id + "'"
+                            " AND date = '" + prev_str + "'");
+                        if (r.is_ok() && r.value()->num_rows() > 0) {
+                            auto col = std::static_pointer_cast<arrow::StringArray>(
+                                r.value()->column(0)->chunk(0));
+                            if (!col->IsNull(0)) {
+                                known = std::stol(std::string(col->GetView(0))) > 0;
+                            }
+                        }
+                    }
+                    run_on_record_cache[ex_date] = known;
+                    return known;
+                };
+
                 std::vector<CorpActionEvent> events;
                 events.reserve(rows.size());
                 // Intra-batch dedup (ultrareview bug_037): if the same
@@ -1232,6 +1287,60 @@ int main(int argc, char* argv[]) {
                     if (audit_log.is_applied(row.ticker, row.date_str, type)) continue;
                     if (previous_positions.find(row.ticker) == previous_positions.end()) continue;
                     if (!seen_in_batch.emplace(row.ticker, row.date_str, type).second) continue;
+
+                    // E2-F15 HORIZON GATE: only apply an event the PRICE SERIES already knows
+                    // about.
+                    //
+                    // The applier's real contract is "restate the basis into the frame the
+                    // price series is already in". Two windows made that false: the event
+                    // fetch reads split_factor / div_cash from the ex-date bar ROW and so
+                    // spans day D, while the bar load ends at the last completed session on a
+                    // replay (`end_date = now - 24h`, :226). build_equity_adjusted_query
+                    // back-adjusts a bar by the steps of every LATER bar, so with the ex-date
+                    // bar outside the window there is no step to apply and the closes stay
+                    // raw -- correctly, given what it was given.
+                    //
+                    // The position then moved into post-event units while every price stayed
+                    // pre-event. Reproduced live: BKNG 25:1 on 2026-04-06 restated qty 10 ->
+                    // 250 and basis 4194.31 -> 167.7724, then sold 248.799399 shares at the
+                    // PRE-split 4194.31 -- $1,001,800 of realized P&L on a $100,000 book. It
+                    // also mis-sized the target (1.200601 pre-split shares read as post-split)
+                    // and, on a REVERSE split, inverts the stop-loss into a spurious
+                    // liquidation.
+                    //
+                    // Deferring costs one run and is self-healing by design:
+                    // derive_corp_action_window reaches back to position inception and the
+                    // dedup record is durable, precisely so a deferred event is picked up
+                    // later. No PositionAdjustment is produced, so no dedup row is written and
+                    // the event is reconsidered next run -- the same recovery shape the
+                    // dividend-denominator skip above already relies on.
+                    //
+                    // In TRUE LIVE this gate is a no-op: `end_date = now`, so once the ex-date
+                    // bar is published it is loaded and the horizon passes. The defect lives
+                    // on the replay branch.
+                    //
+                    // DO NOT "fix" this by rescaling the price maps instead. previous_day_ and
+                    // two_days_ago_close_prices are also the inputs to finalize_previous_day,
+                    // which marks previous_positions_pre_action -- the deliberately
+                    // un-restated T-1 snapshot from 8a1a96ef. Rescaling them restates Day T-1
+                    // by the ratio and trades a $1M error for a $40k one.
+                    {
+                        auto lb = last_bar_date.find(row.ticker);
+                        if (lb == last_bar_date.end() || row.date_str > lb->second) {
+                            WARN("Deferring " +
+                                 std::string(CorporateActionsApplier::type_to_string(type)) +
+                                 " for " + row.ticker + " (ex_date " + row.date_str +
+                                 "): its loaded price series ends " +
+                                 (lb == last_bar_date.end() ? std::string("nowhere -- the symbol "
+                                  "is held but has no bars in the load window")
+                                                            : lb->second) +
+                                 ", so the bars are still in PRE-event units and restating the "
+                                 "basis now would leave price and position in different frames "
+                                 "(E2-F15). No dedup row is written; it applies on the next run "
+                                 "once the ex-date bar is in the window.");
+                            continue;
+                        }
+                    }
 
                     CorpActionEvent ev;
                     ev.symbol = row.ticker;
@@ -1296,6 +1405,8 @@ int main(int argc, char* argv[]) {
                         // current qty if the historical positions row is
                         // missing (e.g. first-week catch-up runs).
                         ev.qty_at_ex_date = qty_at_ex_date(row.ticker, row.date_str);
+                        ev.book_state_known_at_ex_date =
+                            book_state_known_at_ex_date(row.date_str);
                     }
                     events.push_back(std::move(ev));
                 }
@@ -1311,6 +1422,61 @@ int main(int argc, char* argv[]) {
                              std::to_string(adj.avg_price_after) +
                              ", ratio " + std::to_string(adj.ratio_change));
                         audit_log.record(adj);
+                    }
+
+                    for (const auto& adj : adjustments) {
+                        auto& slot = applied_class1_ex_date[adj.symbol];
+                        if (slot.empty() || adj.event_date > slot) slot = adj.event_date;
+                    }
+
+                    // E2-F15 / G1 -- THE INVARIANT THAT WOULD HAVE CAUGHT THIS.
+                    //
+                    // A price-restating event rescales the basis. If the price series is in
+                    // the same frame, it has been rescaled by the SAME factor, so the ratio
+                    // of basis to mark is unchanged:
+                    //
+                    //     avg_after / mark_after  ==  avg_before / mark_before
+                    //
+                    // On the BKNG failure this read 167.7724/4194.31 against 4194.31/4194.31
+                    // -- off by exactly the split ratio, 25. Nothing else caught it: L5,
+                    // total_pnl = (realized - costs) + unrealized, equity continuity and the
+                    // daily-flow identity are all INTERNAL-consistency checks, and the wrong
+                    // number was consistently wrong everywhere. This is the one statement
+                    // that compares the restatement against something outside itself.
+                    //
+                    // It generalises unchanged to dividends and to reverse splits, and it
+                    // fires on any future path that rescales one side and not the other.
+                    for (const auto& adj : adjustments) {
+                        auto mk = previous_day_close_prices.find(adj.symbol);
+                        if (mk == previous_day_close_prices.end() || !(mk->second > 0.0)) continue;
+                        if (!(adj.avg_price_before > 0.0) || !(adj.avg_price_after > 0.0)) continue;
+
+                        // The mark is NOT restated by the applier, so post-event it should
+                        // already be in the same frame as the new basis. Compare the implied
+                        // ratios rather than the raw numbers.
+                        const double implied = (adj.avg_price_before / adj.avg_price_after);
+                        if (std::abs(implied - adj.ratio_change) > 1e-6 * std::max(1.0, adj.ratio_change)) {
+                            ERROR("E2-F15 invariant violated for " + adj.symbol + " (" +
+                                  adj.event_date + "): basis moved by " +
+                                  std::to_string(implied) + " but the event ratio is " +
+                                  std::to_string(adj.ratio_change) +
+                                  " -- the basis and the price series are in different frames.");
+                            return 1;
+                        }
+
+                        const double basis_to_mark = adj.avg_price_after / mk->second;
+                        if (basis_to_mark > 5.0 || basis_to_mark < 0.2) {
+                            ERROR("E2-F15 guard: after applying " +
+                                  std::string(CorporateActionsApplier::type_to_string(adj.type)) +
+                                  " to " + adj.symbol + " the cost basis (" +
+                                  std::to_string(adj.avg_price_after) +
+                                  ") is implausible against the mark (" +
+                                  std::to_string(mk->second) + "), ratio " +
+                                  std::to_string(basis_to_mark) +
+                                  ". The position and the price series are almost certainly in "
+                                  "different unit frames. Refusing to trade on it.");
+                            return 1;
+                        }
                     }
 
                     // Persist corrected positions back so future runs (and
@@ -1442,13 +1608,7 @@ int main(int argc, char* argv[]) {
                 // price. Bars settle it -- a symbol still printing after the
                 // claimed delisting is plainly not delisted -- and we already hold
                 // every bar of the load window, so this costs no query.
-                std::unordered_map<std::string, std::string> last_bar_date;
-                for (const auto& bar : all_bars) {
-                    const std::string d =
-                        format_ymd_utc(std::chrono::system_clock::to_time_t(bar.timestamp));
-                    auto it = last_bar_date.find(bar.symbol);
-                    if (it == last_bar_date.end() || d > it->second) last_bar_date[bar.symbol] = d;
-                }
+                // last_bar_date is built once, above -- see E2-F15.
 
                 for (const auto& [symbol, delist_date] : delist_result.value()) {
                     if (previous_positions.find(symbol) == previous_positions.end()) continue;
@@ -1462,6 +1622,11 @@ int main(int argc, char* argv[]) {
                              ") -- the ticker is trading, so the row belongs to a prior issuer");
                         continue;
                     }
+                    // E2-F15 (DEFERRED, logged): if this symbol also had a class-1 event applied
+                    // on THIS run, its basis is post-event while final_closes is seeded from
+                    // the pre-event price map, so realized_delta would be computed across two
+                    // frames. Rare -- it needs a class-1 event and a termination on the same
+                    // run date -- and deferred by HD. See E2_FINDING_15 section 10.
                     TerminationEvent ev;
                     ev.symbol = symbol;
                     ev.event_date = delist_date;
@@ -1853,9 +2018,49 @@ int main(int argc, char* argv[]) {
             // actually stood on T-1. Using the mutated `previous_positions` here wrote the
             // post-action quantities and basis onto the T-1 row, restating a day before the
             // ex-date (see the snapshot's comment above).
+            //
+            // E2-F15: that is right ONLY while the event's ex-date is AFTER T-1. When a
+            // DEFERRED event is catching up -- ex_date <= T-1 -- the T-1 close is already
+            // post-event, so finalizing the pre-action book marks a pre-event basis against a
+            // post-event price. Measured: BKNG's 2026-04-06 row took
+            // `1.200601 * (176.19 - 4194.31) = -4824.16` of phantom unrealized, dropping the
+            // equity curve to 95,080.29 for that day. It does NOT self-correct -- running
+            // 04-08 and 04-09 left the 04-06 row unchanged.
+            //
+            // So pick per symbol: the RESTATED book where a deferred event has now been
+            // applied for a date on or before T-1, the pre-action snapshot everywhere else.
+            //
+            // NOTE ON REACHABILITY, so nobody reads more discrimination into this than it has.
+            // The E2-F15 gate only admits an event when `ex_date <= last_bar_date`, and the
+            // loaded series never reaches past T-1 under the lag model, so every APPLIED
+            // class-1 event necessarily satisfies `ex_date <= T-1`. The predicate below is
+            // therefore true for every symbol carrying an applied event today, and the
+            // pre-action snapshot survives only for symbols with NO event -- which is the
+            // overwhelming majority and the case 8a1a96ef was actually about.
+            //
+            // 8a1a96ef's protection is NOT weakened by that. Its regression was an event with
+            // `ex_date == today` applying and restating T-1, a day before its own ex-date.
+            // The gate now defers exactly that event, so the situation cannot arise upstream
+            // of here. The predicate is kept explicit rather than assumed: it states the rule
+            // that makes this correct, and keeps it correct if the gate's horizon ever moves.
             std::vector<Position> prev_positions_vec;
             prev_positions_vec.reserve(previous_positions_pre_action.size());
             for (const auto& [symbol, pos] : previous_positions_pre_action) {
+                auto ex = applied_class1_ex_date.find(symbol);
+                const bool event_covers_t1 =
+                    ex != applied_class1_ex_date.end() &&
+                    ex->second <= core::format_utc_date(previous_date);
+                if (event_covers_t1) {
+                    auto restated = previous_positions.find(symbol);
+                    if (restated != previous_positions.end()) {
+                        INFO("Finalizing " + symbol + " from the RESTATED T-1 book: a " +
+                             "deferred corp action for " + ex->second +
+                             " was applied this run, so the T-1 close is already post-event "
+                             "and the pre-action basis would be a frame behind it (E2-F15).");
+                        prev_positions_vec.push_back(restated->second);
+                        continue;
+                    }
+                }
                 prev_positions_vec.push_back(pos);
             }
 

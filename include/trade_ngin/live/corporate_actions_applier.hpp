@@ -54,6 +54,13 @@ struct CorpActionEvent {
     // (ultrareview bug_021). Has NO effect on the actual position quantity
     // (dividends never change qty), nor on splits.
     double qty_at_ex_date{0.0};
+
+    // E2-F17. `qty_at_ex_date == 0` is ambiguous: it means EITHER the book genuinely held
+    // nothing on the ex-date, OR nothing is known about that date (no run on record, a gap in
+    // position history, a legacy caller that never populated the field). Only the first
+    // justifies refusing to apply the event, so the caller must say which it is. False keeps
+    // the historical behaviour -- apply, and warn -- for every caller that does not set it.
+    bool book_state_known_at_ex_date{false};
 };
 
 /**
