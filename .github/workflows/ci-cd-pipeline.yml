@@ -6,6 +6,9 @@ on:
   pull_request:
     branches:
       - "**"
+  # Preview-branch only: lets this exact merge be built without opening a PR.
+  # Do NOT carry this into main -- it exists so qt-platform-preview can be verified.
+  workflow_dispatch:
 
 env:
   COVERAGE_THRESHOLD: 10
