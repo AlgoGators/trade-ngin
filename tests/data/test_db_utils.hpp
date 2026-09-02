@@ -122,9 +122,9 @@ public:
     // Position storage
     Result<void> store_positions(const std::vector<Position>& positions,
                                  const std::string& strategy_id, const std::string& strategy_name,
-                                 const std::string& portfolio_id,
-                                 const std::string& table_name) override {
-        (void)strategy_id; (void)strategy_name; (void)portfolio_id;
+                                 const std::string& portfolio_id, const std::string& table_name,
+                                 const std::string& portfolio_type = "system") override {
+        (void)strategy_id; (void)strategy_name; (void)portfolio_id; (void)portfolio_type;
         if (!connected_)
             return make_error<void>(ErrorCode::DATABASE_ERROR, "Not connected");
         if (table_name != "trading.positions") {
@@ -268,9 +268,10 @@ public:
     Result<void> store_trading_equity_curve(const std::string& strategy_id,
                                             const Timestamp& timestamp, double equity,
                                             const std::string& portfolio_id,
-                                            const std::string& table_name) override {
+                                            const std::string& table_name,
+                                            const std::string& portfolio_type = "system") override {
         (void)strategy_id; (void)timestamp; (void)equity;
-        (void)portfolio_id; (void)table_name;
+        (void)portfolio_id; (void)table_name; (void)portfolio_type;
         return record_call("store_trading_equity_curve");
     }
 

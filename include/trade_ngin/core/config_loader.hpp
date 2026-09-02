@@ -245,6 +245,9 @@ struct AppConfig {
     double initial_capital{500000.0};
     double reserve_capital_pct{0.10};
 
+    // Benchmark mode: "live" or "deferred"
+    std::string benchmark_mode{"live"};
+
     // Database configuration
     DatabaseConfig database;
 
@@ -284,6 +287,7 @@ struct AppConfig {
         j["portfolio_id"] = portfolio_id;
         j["initial_capital"] = initial_capital;
         j["reserve_capital_pct"] = reserve_capital_pct;
+        j["benchmark_mode"] = benchmark_mode;
         j["database"] = database.to_json();
         j["execution"] = execution.to_json();
         j["optimization"] = opt_config.to_json();
