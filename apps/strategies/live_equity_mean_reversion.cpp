@@ -904,6 +904,11 @@ int main(int argc, char* argv[]) {
         // Booking it here touches NO shared file, so the futures binaries are unchanged by
         // construction rather than by argument.
         double corp_action_realized_total = 0.0;
+        // E2-F19 (R4): the same deltas, per symbol, so the terminated symbol's day-T
+        // ROW carries what the aggregate carries. Filled under the identical gate as
+        // corp_action_realized_total so the two can never disagree about which events
+        // were recognised.
+        std::unordered_map<std::string, double> corp_action_realized_by_symbol;
 
         // E2-F15: ex-date of any class-1 event APPLIED on this run, per symbol. Used to pick
         // the right T-1 snapshot for finalization -- see the selection below.
@@ -1966,6 +1971,7 @@ int main(int argc, char* argv[]) {
                 // E2-F7: the P&L route. Gated on the same conditions as the execution row so
                 // the two can never disagree about which events were recognised.
                 corp_action_realized_total += adj.realized_delta;
+                corp_action_realized_by_symbol[adj.symbol] += adj.realized_delta;
 
                 ExecutionReport ca_exec;
                 ca_exec.order_id = "CORPACTION_" + adj.symbol + "_" + adj.event_date;
@@ -2562,6 +2568,44 @@ int main(int argc, char* argv[]) {
                   "failure - investigate.");
         }
 
+        // E2-F19 gap G1: a held symbol that left the configured universe was closed out
+        // by execute_day_t and booked by on_execution, but has no entry in the target
+        // map and so no row. Give the exit a row, or the rows cannot sum to the
+        // aggregate.
+        auto rowless_exits = LiveDailyCycle::add_rowless_exits(positions, strategy_positions, now);
+        for (const auto& symbol : rowless_exits) {
+            WARN("Closed-out symbol " + symbol + " has no day-T target entry (left the "
+                 "universe?); recorded a closed row carrying its realized P&L of $" +
+                 std::to_string(positions.at(symbol).realized_pnl.as_double()));
+        }
+
+        // E2-F19 (R4): a termination's realized P&L reaches the aggregate through
+        // corp_action_realized_total; the synthetic exit is deliberately kept out of
+        // on_execution (E2-F11), so nothing put it on the symbol's row. Add it here,
+        // once, after resolve_and_apply_basis has assigned the strategy's figure with
+        // `=`. On a non-trading day the terminated entry arrives through the carried
+        // book (qty 0); on a trading day through the target map. Either way the row
+        // exists, or is created, and the dead-row rule below keeps it because it
+        // carries realized.
+        for (const auto& [symbol, delta] : corp_action_realized_by_symbol) {
+            if (delta == 0.0) continue;
+            auto it = positions.find(symbol);
+            if (it == positions.end()) {
+                Position closed;
+                closed.symbol = symbol;
+                closed.quantity = Quantity(0.0);
+                closed.average_price = Decimal(0.0);
+                closed.unrealized_pnl = Decimal(0.0);
+                closed.realized_pnl = Decimal(0.0);
+                closed.last_update = now;
+                it = positions.emplace(symbol, closed).first;
+            }
+            it->second.realized_pnl = Decimal(it->second.realized_pnl.as_double() + delta);
+            INFO("Corp-action realized $" + std::to_string(delta) + " booked onto the " +
+                 symbol + " day-T row (row now " +
+                 std::to_string(it->second.realized_pnl.as_double()) + ")");
+        }
+
         // Log final Day T position state
         for (const auto& [symbol, pos] : positions) {
             if (pos.quantity.as_double() != 0.0) {
@@ -2962,6 +3006,48 @@ int main(int argc, char* argv[]) {
             INFO("Corp-action realized P&L booked into Day T aggregate: $" +
                  std::to_string(corp_action_realized_total));
             daily_realized_pnl += corp_action_realized_total;
+        }
+
+        // E2-F19 (R5): protocol L5's realized clause, asserted inside the run.
+        //
+        // The rows and the aggregate come from the SAME accumulator -- pos.realized_pnl
+        // and metrics_.realized_pnl are incremented in the same branch of on_execution
+        // from the same expression; the rows are the decomposition by symbol, the
+        // aggregate the sum (plus the day's costs added back, plus corp-action realized,
+        // which R4 put on the rows too). So the residual is identically zero unless
+        // something broke the identity: a fill whose on_execution failed (now fatal
+        // above), a held symbol absent from the target map (add_rowless_exits above),
+        // or a future filter that drops a row carrying realized. Both previous attempts
+        // at this column shipped without this check and were reverted after a replay
+        // found 20 and 32 violating days. This is the difference between "L5 passed on
+        // the days we checked" and "L5 cannot fail without the run failing".
+        //
+        // Tolerance 1e-4 absolute: Decimal is fixed-point at 1e-8 with per-fill
+        // rounding on the row side while metrics_ is a double, so the sides differ by
+        // up to ~5e-9 per fill.
+        {
+            double row_realized_sum = 0.0;
+            std::string breakdown;
+            for (const auto& p : positions_to_save) {
+                const double r = static_cast<double>(p.realized_pnl);
+                row_realized_sum += r;
+                if (std::abs(r) > LiveDailyCycle::kRowTolerance) {
+                    breakdown += " " + p.symbol + "=" + std::to_string(r);
+                }
+            }
+            const double residual = row_realized_sum - daily_realized_pnl;
+            if (std::abs(residual) > 1e-4) {
+                ERROR("L5 realized identity VIOLATED: sum of positions.daily_realized_pnl (" +
+                      std::to_string(row_realized_sum) + ") != live_results.daily_realized_pnl (" +
+                      std::to_string(daily_realized_pnl) + "), residual " +
+                      std::to_string(residual) + ". Per-symbol rows:" +
+                      (breakdown.empty() ? std::string(" <none>") : breakdown) +
+                      ". Refusing to persist a day whose rows do not sum to its aggregate.");
+                return 1;
+            }
+            INFO("L5 realized identity holds: rows " + std::to_string(row_realized_sum) +
+                 " == aggregate " + std::to_string(daily_realized_pnl) +
+                 " (residual " + std::to_string(residual) + ")");
         }
 
         // daily_unrealized_pnl used to be declared and pinned to 0.0 here as a Day-T placeholder.
