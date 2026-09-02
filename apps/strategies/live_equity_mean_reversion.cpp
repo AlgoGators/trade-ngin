@@ -1817,7 +1817,22 @@ int main(int argc, char* argv[]) {
                 // These are updates to existing positions from the previous day
                 auto update_result = db->store_positions(finalized_to_store, kEquityStrategyId, kEquityStrategyName, portfolio_id, "trading.positions");
                 if (update_result.is_error()) {
+                    // E2-F5 follow-on: FATAL, like every other store_positions site in this
+                    // runner. This one logged and carried on, so a failed T-1 position write
+                    // left the run exiting 0 with the previous day's rows still holding their
+                    // Day-T placeholders -- the row-versus-aggregate split that L5 exists to
+                    // catch, produced by a run that looked clean.
+                    //
+                    // It matters more since E2-F5: store_positions now REFUSES to fall back to
+                    // an unscoped delete and returns an error instead, so this path is
+                    // genuinely reachable on a transient SQL fault rather than only on a
+                    // broken schema. The transaction rolls back cleanly (pqxx::work destructs
+                    // uncommitted), so nothing is half-written -- but the day is unfinalized
+                    // and the next run would build on it.
                     ERROR("Failed to update Day T-1 positions: " + std::string(update_result.error()->what()));
+                    ERROR("Day T-1 positions could not be finalized. Refusing to exit 0 with "
+                          "an unfinalized book.");
+                    return 1;
                 } else {
                     INFO("Successfully updated " + std::to_string(finalized_to_store.size()) + " Day T-1 positions with finalized PnL");
                 }

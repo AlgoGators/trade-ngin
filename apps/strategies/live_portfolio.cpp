@@ -1935,9 +1935,17 @@ int main(int argc, char* argv[]) {
             int trading_days_count = 1;
             try {
                 // Call PostgreSQL function to calculate trading days
+                // E2-F6: portfolio-scoped (3-arg) form. The 2-arg overload keys on
+                // strategy_id alone with `ORDER BY live_start_date LIMIT 1` and NO portfolio
+                // predicate, so it takes the earliest row across ALL portfolios.
+                // LIVE_TREND_FOLLOWING has a metadata row under both BASE_PORTFOLIO and
+                // CONSERVATIVE_PORTFOLIO; they agree only because both carry
+                // live_start_date = 2025-10-05. Add or edit a BASE row with an earlier date
+                // and the conservative book's annualization changes silently -- no error, no
+                // log line. Definition is versioned in migrations/004.
                 std::string trading_days_query = "SELECT trading.get_trading_days('" +
                                                  combined_strategy_id + "', DATE '" +
-                                                 yesterday_date_ss.str() + "')";
+                                                 yesterday_date_ss.str() + "', '" + portfolio_id + "')";
 
                 INFO("TRADING_DAYS_CALC [Day T-1]: Querying trading days...");
                 INFO("TRADING_DAYS_CALC [Day T-1]: Query: " + trading_days_query);
@@ -2502,9 +2510,17 @@ int main(int argc, char* argv[]) {
             now_date_ss << std::put_time(std::gmtime(&now_time_t_for_query), "%Y-%m-%d");
 
             // Call PostgreSQL function to calculate trading days
+            // E2-F6: portfolio-scoped (3-arg) form. The 2-arg overload keys on
+            // strategy_id alone with `ORDER BY live_start_date LIMIT 1` and NO portfolio
+            // predicate, so it takes the earliest row across ALL portfolios.
+            // LIVE_TREND_FOLLOWING has a metadata row under both BASE_PORTFOLIO and
+            // CONSERVATIVE_PORTFOLIO; they agree only because both carry
+            // live_start_date = 2025-10-05. Add or edit a BASE row with an earlier date
+            // and the conservative book's annualization changes silently -- no error, no
+            // log line. Definition is versioned in migrations/004.
             std::string trading_days_query = "SELECT trading.get_trading_days('" +
                                              combined_strategy_id + "', DATE '" +
-                                             now_date_ss.str() + "')";
+                                             now_date_ss.str() + "', '" + portfolio_id + "')";
 
             INFO("TRADING_DAYS_CALC [Day T]: Querying trading days...");
             INFO("TRADING_DAYS_CALC [Day T]: Query: " + trading_days_query);

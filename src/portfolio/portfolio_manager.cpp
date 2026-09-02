@@ -1453,6 +1453,19 @@ void PortfolioManager::clear_all_executions() {
     recent_executions_.clear();
     strategy_executions_.clear();
     // Keep the filled-position ledger in lockstep with strategy_executions_.
+    // E2-P3-a: the filled-position ledger MUST be cleared with the executions it mirrors.
+    //
+    // filled_positions_ records what this manager has actually traded into, and order sizing
+    // is `target - filled`. Clearing the execution history without clearing the ledger would
+    // leave sizing measuring against fills that no longer exist, so the next cycle would
+    // under-trade by exactly the discarded quantity.
+    //
+    // This is the ONLY reset. BacktestCoordinator::reset() does not touch PortfolioManager at
+    // all, so a coordinator reset does not clear this -- safe today because run_portfolio has
+    // a single period loop and each process builds a fresh PortfolioManager, but it means a
+    // second backtest period against a reused manager would size against stale fills. If a
+    // period loop is ever added, reset the manager here too rather than assuming this covers
+    // it.
     filled_positions_.clear();
 }
 
@@ -1565,9 +1578,21 @@ double PortfolioManager::get_portfolio_value(
             double avg_price = static_cast<double>(pos.average_price);
             double quantity = static_cast<double>(pos.quantity);
 
-            // Only calculate fresh unrealized if position has non-zero unrealized stored
-            // For REALIZED_ONLY accounting (futures), unrealized_pnl is always 0
-            // and this fresh calculation would be incorrect (missing point_value multiplier)
+            // Only recompute unrealized if the position has a non-zero value stored.
+            //
+            // E2-P3-b: the original comment asserted "For REALIZED_ONLY accounting (futures),
+            // unrealized_pnl is always 0" as though it were a system-wide invariant. It is
+            // not. It held for the STRATEGY's own positions_ -- which is what
+            // get_positions_internal() returns here, and which TrendFollowingStrategy never
+            // populates -- but the backtest coordinator wrote a NON-zero unrealized onto
+            // futures rows until E2-F2 fixed it. The invariant this guard leans on was false
+            // for two commits and nobody noticed, because this function has no production
+            // caller (tests only).
+            //
+            // The guard itself is fine: it skips the recompute unless something is stored. But
+            // if this function ever gains a caller, check where its positions came from first
+            // -- the expression below omits point_value and is therefore valid for equities
+            // only.
             if (std::abs(static_cast<double>(pos.unrealized_pnl)) > 1e-6) {
                 // For equities: unrealized_pnl = quantity * (current_price - avg_price)
                 double unrealized_pnl = quantity * (current_price - avg_price);
