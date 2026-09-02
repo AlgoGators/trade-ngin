@@ -17,6 +17,7 @@ set(TEST_SOURCES
     data/test_postgres_database.cpp
     data/test_database_pooling.cpp
     data/test_db_transaction_atomicity.cpp
+    data/test_delete_stale_executions_scope_db.cpp
     data/test_market_data_bus.cpp
     data/test_credential_store.cpp
     data/test_bar_close_uses_adjusted.cpp

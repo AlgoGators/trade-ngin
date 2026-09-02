@@ -1480,7 +1480,8 @@ int main(int argc, char* argv[]) {
 
                         // Use the delete_stale_executions method with strategy name
                         auto del_res = db->delete_stale_executions(
-                            order_ids_vector, now, strategy_name, "trading.executions");
+                            order_ids_vector, now, strategy_name, portfolio_id,
+                            "trading.executions");
                         if (del_res.is_error()) {
                             WARN("Failed to delete stale executions for strategy " + strategy_name +
                                  ": " + std::string(del_res.error()->what()));

@@ -17,6 +17,7 @@ namespace trade_ngin {
 Result<void> PostgresDatabase::delete_stale_executions(const std::vector<std::string>& order_ids,
                                                        const Timestamp& date,
                                                        const std::string& strategy_name,
+                                                       const std::string& portfolio_id,
                                                        const std::string& table_name) {
     std::lock_guard<std::mutex> lock(mutex_);
 
@@ -48,14 +49,18 @@ Result<void> PostgresDatabase::delete_stale_executions(const std::vector<std::st
             in_list += txn.quote(order_ids[i]);
         }
 
+        // E2-F4: scoped by portfolio_id. Without it this reaches across books -- order_id
+        // is portfolio-independent and TREND_FOLLOWING runs in both. See the header.
         std::string query = "DELETE FROM " + table_name +
                             " WHERE DATE(execution_time) = $1 "
                             " AND strategy_name = $2 "
+                            " AND portfolio_id = $3 "
                             " AND order_id IN (" +
                             in_list + ")";
 
         // Execute delete for the specified date (YYYY-MM-DD)
-        txn.exec(query, pqxx::params{format_timestamp(date).substr(0, 10), strategy_name});
+        txn.exec(query, pqxx::params{format_timestamp(date).substr(0, 10), strategy_name,
+                                     portfolio_id});
 
         txn.commit();
 

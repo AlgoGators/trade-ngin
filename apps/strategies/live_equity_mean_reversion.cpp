@@ -2022,7 +2022,11 @@ int main(int argc, char* argv[]) {
                     INFO("Deleting stale executions for today with matching order_ids: " + std::to_string(order_ids_vector.size()));
 
                     // Use the new delete_stale_executions method
-                    auto del_res = db->delete_stale_executions(order_ids_vector, now, "trading.executions");
+                    // E2-F4: was a 3-arg call putting the table name in the strategy_name
+                    // slot, so it deleted nothing. Now correctly scoped.
+                    auto del_res = db->delete_stale_executions(
+                        order_ids_vector, now, kEquityStrategyName, portfolio_id,
+                        "trading.executions");
                     if (del_res.is_error()) {
                         WARN("Failed to delete stale executions: " + std::string(del_res.error()->what()));
                     } else {

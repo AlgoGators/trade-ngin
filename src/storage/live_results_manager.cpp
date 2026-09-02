@@ -147,7 +147,8 @@ Result<void> LiveResultsManager::delete_stale_data(const Timestamp& date) {
         //
         // strategy_name_ falls back to strategy_id_ when unset, so callers that never
         // populate the name -- the futures runners -- pass exactly what they passed before.
-        result = db_->delete_stale_executions(order_ids, date, strategy_name_, "trading.executions");
+        result = db_->delete_stale_executions(order_ids, date, strategy_name_, portfolio_id_,
+                                             "trading.executions");
         if (result.is_error()) {
             WARN("Failed to delete stale executions: " + std::string(result.error()->what()));
         }

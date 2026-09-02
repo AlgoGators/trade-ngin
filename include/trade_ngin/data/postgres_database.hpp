@@ -434,9 +434,29 @@ public:
      * @param table_name Name of the executions table
      * @return Result indicating success or failure
      */
+    /**
+     * @brief Delete this book's executions for a date so a re-run can re-insert them.
+     *
+     * E2-F4: portfolio_id is REQUIRED and deliberately has no default.
+     *
+     * The predicate used to be (date, strategy_name, order_id) with no portfolio at all,
+     * while trading.executions is keyed (portfolio_id, strategy_id, strategy_name, date,
+     * exec_id). order_id is portfolio-independent -- ExecutionManager builds it as
+     * "DAILY_<symbol>_<date>" (execution_manager.cpp:147) -- and TREND_FOLLOWING is
+     * enabled-live in BOTH the base and conservative books. So a conservative run could
+     * delete BASE_PORTFOLIO's rows for the same symbol and date, and vice versa; the
+     * survivor was whichever book ran last, and the delete leaves no trace of what it took.
+     *
+     * It never fired only because of a SECOND bug that happened to mask it: two call sites
+     * passed table_name into the strategy_name slot, so the predicate matched nothing.
+     * Fixing that alone would have ARMED this one -- the two must move together, which is
+     * why portfolio_id is required rather than defaulted. A default would let a caller be
+     * silently re-armed by omission.
+     */
     virtual Result<void> delete_stale_executions(const std::vector<std::string>& order_ids,
                                                   const Timestamp& date,
                                                   const std::string& strategy_name,
+                                                  const std::string& portfolio_id,
                                                   const std::string& table_name = "trading.executions");
 
     /**

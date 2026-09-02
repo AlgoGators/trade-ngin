@@ -231,7 +231,13 @@ Result<void> PostgresDatabase::store_executions(const std::vector<ExecutionRepor
 
             // Use the date from the first execution's fill_time
             Timestamp date_for_delete = executions.front().fill_time;
-            auto del_result = delete_stale_executions(order_ids, date_for_delete, table_name);
+            // E2-F4: this passed `table_name` into the strategy_name slot -- a 3-arg call
+            // against a 4-arg signature -- so the predicate matched nothing and the
+            // defensive pre-insert cleanup silently deleted zero rows for years. Fixing
+            // the argument order without also scoping by portfolio would have ARMED the
+            // cross-portfolio delete this masked; both land together.
+            auto del_result = delete_stale_executions(order_ids, date_for_delete, strategy_name,
+                                                      portfolio_id, table_name);
             if (del_result.is_error()) {
                 std::cout << "DEBUG: Pre-insert delete_stale_executions failed: "
                           << del_result.error()->what() << std::endl;
@@ -402,23 +408,36 @@ Result<void> PostgresDatabase::store_positions_in(pqxx::work& txn,
                          pqxx::params{strategy_id, strategy_name, portfolio_id, position_date});
             }
         } catch (const std::exception& e) {
-            // If strategy_id/strategy_name columns don't exist, clear all positions for the
-            // position date only
-            WARN(
-                "strategy_id/strategy_name columns may not exist, clearing all positions for "
-                "position date: " +
-                std::string(e.what()));
-
-            if (!positions.empty()) {
-                // Phase 5 §5c: UTC date-string contract.
-                const std::string position_date =
-                    trade_ngin::core::format_utc_date(positions[0].last_update);
-
-                // Phase 5 §5b: parameterized date binding.
-                const std::string delete_query =
-                    "DELETE FROM " + table_name + " WHERE DATE(last_update) = $1";
-                txn.exec(delete_query, pqxx::params{position_date});
-            }
+            // E2-F5: FAIL, do not "recover" by deleting more.
+            //
+            // This used to fall back to `DELETE FROM <table> WHERE DATE(last_update) = $1`
+            // -- unscoped across EVERY strategy and EVERY portfolio -- and then INSERT and
+            // commit in the same transaction, so the damage committed. The scoped delete
+            // directly above carries the comment "CRITICAL: Must filter by BOTH strategy_id
+            // and strategy_name, otherwise positions from other strategies with the same
+            // combined strategy_id will be deleted!", and this handler did exactly that,
+            // and also dropped the portfolio filter.
+            //
+            // The premise was that the only way to get here is missing strategy_id /
+            // strategy_name columns. That is false: pqxx throws on ANY SQL error --
+            // deadlock, serialization failure, type mismatch, a dropped connection. Under
+            // any of those the "recovery" destroys a day of positions for every strategy
+            // and every portfolio in the table.
+            //
+            // A schema that genuinely lacks those columns is a deployment fault to fix
+            // once, not something to silently absorb on every run at the cost of an
+            // unscoped delete. Aborting loses nothing: the transaction is not committed,
+            // so the book on disk is whatever the last good run wrote.
+            ERROR("store_positions failed while deleting existing rows for " + table_name +
+                  ": " + std::string(e.what()));
+            ERROR("Refusing to fall back to an unscoped DELETE across all strategies and "
+                  "portfolios. If " + table_name + " is genuinely missing strategy_id / "
+                  "strategy_name / portfolio_id, fix the schema -- do not let a transient "
+                  "SQL error destroy another book's positions.");
+            return make_error<void>(ErrorCode::DATABASE_ERROR,
+                                    "Failed to delete existing positions for " + table_name +
+                                        ": " + std::string(e.what()),
+                                    "PostgresDatabase");
         }
 
         // Insert new positions using direct SQL like backtest does
