@@ -23,7 +23,7 @@ jobs:
         password: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - name: Run Clang Format Check
         run: |
           echo "Checking code formatting..."
@@ -214,13 +214,13 @@ jobs:
           fi
 
       - name: Upload Linting Report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: linting-report-${{ github.run_number }}
           path: linting/
 
       - name: Upload Linting Summary
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: linting-summary-${{ github.run_number }}
           path: linting/lint_summary_*.txt
@@ -240,7 +240,7 @@ jobs:
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - name: Configure CMake with Coverage
         run: |
           mkdir -p build
@@ -338,7 +338,7 @@ jobs:
 
       - name: Upload Coverage Reports
         if: matrix.build-type == 'Debug'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-reports-${{ github.run_number }}
           path: |
@@ -350,7 +350,7 @@ jobs:
             build/compile_commands.json
 
       - name: Upload Test Results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: test-results-${{ github.run_number }}-${{ matrix.build-type }}
           path: build/Testing/
@@ -361,7 +361,7 @@ jobs:
     needs: build
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Run Security Scan
         run: |
@@ -378,16 +378,16 @@ jobs:
     if: always()
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Download Coverage Reports
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: coverage-reports-${{ github.run_number }}
           path: coverage-reports/
 
       - name: Download Linting Reports
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: linting-report-${{ github.run_number }}
           path: linting-reports/
@@ -411,7 +411,7 @@ jobs:
           fi
 
       - name: Upload Summary Report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: summary-report-${{ github.run_number }}
           path: summary.md
@@ -430,7 +430,7 @@ jobs:
     needs: [lint, build, security-scan]
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
         with:
@@ -523,7 +523,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Fail if a forbidden schema is referenced
         shell: bash
