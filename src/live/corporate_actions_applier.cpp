@@ -78,17 +78,30 @@ std::vector<PositionAdjustment> CorporateActionsApplier::apply(
         // name bought within 14 days after an ex-date lands here. Magnitude scales with the
         // event: 0.62% for that dividend, 2400% for a 25:1 split.
         //
-        // Gated on book_state_known_at_ex_date so a thin or missing position history is NOT
-        // read as "flat" -- that would silently DROP real adjustments, which is the worse
-        // failure. Unknown keeps the old behaviour and the dividend warning below.
-        if (ev.book_state_known_at_ex_date && !(std::abs(ev.qty_at_ex_date) > 1e-9)) {
+        // Decided by BASIS PROVENANCE, not by a quantity, and it runs for EVERY class-1 type.
+        // The predecessor gated on `book_state_known_at_ex_date && qty_at_ex_date == 0`, which
+        // the runner only ever populated inside its DIVIDEND branch -- so the guard was inert
+        // for SPLITS, the case where the magnitude is catastrophic rather than small.
+        //
+        // Only POSITIVE evidence of contamination may skip. UNKNOWN applies, because dropping a
+        // real 25:1 split leaves basis and mark 25x apart, which is strictly worse than the
+        // double-adjustment this is preventing.
+        if (ev.basis_provenance == CorpActionEvent::BasisProvenance::FORMED_AFTER_EX_DATE) {
             WARN("CorporateActionsApplier: skipping " + std::string(type_to_string(ev.type)) +
-                 " for " + ev.symbol + " (ex_date " + ev.ex_date + "): the book is on record as "
-                 "holding nothing in this symbol at the ex-date, so the " +
-                 std::to_string(qty_before) + " shares held now were bought AFTER it, at a price "
-                 "the market had already adjusted. Restating this basis would double-adjust it "
-                 "(E2-F17).");
+                 " for " + ev.symbol + " (ex_date " + ev.ex_date + "): the " +
+                 std::to_string(qty_before) + " shares held now were acquired AFTER the ex-date, "
+                 "at a price the market had already adjusted, so restating this basis would "
+                 "double-adjust it. Evidence: " +
+                 (ev.basis_provenance_evidence.empty() ? std::string("(none recorded)")
+                                                       : ev.basis_provenance_evidence) +
+                 " (E2-F17).");
             continue;
+        }
+        if (ev.basis_provenance == CorpActionEvent::BasisProvenance::UNKNOWN) {
+            WARN("CorporateActionsApplier: basis provenance for " + ev.symbol + " (ex_date " +
+                 ev.ex_date + ", " + std::string(type_to_string(ev.type)) + ") is UNKNOWN; "
+                 "APPLYING, because dropping a real adjustment is worse than a double-adjusted "
+                 "basis. Investigate if this repeats (E2-F17).");
         }
 
         PositionAdjustment adj;

@@ -714,6 +714,38 @@ public:
         const std::string& table_name = "trading.positions");
 
     /**
+     * @brief Latest date this strategy BOUGHT each symbol, on or after `on_or_after`.
+     *
+     * E2-F17 basis provenance. A class-1 corporate action may only restate a cost basis that
+     * was formed BEFORE the ex-date. A fill on run D is priced at close(D-1), so a BUY dated
+     * strictly AFTER the ex-date was struck at a price the market had already adjusted and is
+     * positive evidence that the basis is contaminated.
+     *
+     * A BUY is the only fill that re-forms a long book's cost basis
+     * (base_strategy.cpp on_execution), and this book is long-only -- shorts are refused by the
+     * equity runner -- so BUY side alone is sufficient.
+     *
+     * Symbols with no such BUY are ABSENT from the map. Absence means "no evidence", NEVER
+     * "clean": the caller must resolve it to APPLY, not to skip.
+     *
+     * `on_or_before` is MANDATORY and must be the date of the book being examined (T-1), not
+     * today and never unbounded. On a replay the executions table also holds rows for dates
+     * AFTER the run being processed, so an unbounded query reads the future: it reported
+     * `BUY 2026-07-30` as evidence against a 2026-06-08 ex-date while replaying June, and
+     * skipped a dividend that had to apply.
+     *
+     * @return symbol -> YYYY-MM-DD of the most recent qualifying BUY.
+     */
+    virtual Result<std::unordered_map<std::string, std::string>> get_last_buy_dates(
+        const std::string& strategy_id,
+        const std::string& strategy_name,
+        const std::string& portfolio_id,
+        const std::vector<std::string>& symbols,
+        const std::string& on_or_after,
+        const std::string& on_or_before,
+        const std::string& table_name = "trading.executions");
+
+    /**
      * @brief Raw closes for specific symbols over a date range.
      *
      * Targeted top-up for the corp-action path when a position predates the

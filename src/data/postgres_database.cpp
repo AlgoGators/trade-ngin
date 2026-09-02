@@ -2767,6 +2767,58 @@ PostgresDatabase::get_position_inception_dates(const std::string& strategy_id,
     }
 }
 
+Result<std::unordered_map<std::string, std::string>>
+PostgresDatabase::get_last_buy_dates(const std::string& strategy_id,
+                                     const std::string& strategy_name,
+                                     const std::string& portfolio_id,
+                                     const std::vector<std::string>& symbols,
+                                     const std::string& on_or_after,
+                                     const std::string& on_or_before,
+                                     const std::string& table_name) {
+    using Map = std::unordered_map<std::string, std::string>;
+
+    auto validation = validate_connection();
+    if (validation.is_error()) {
+        return make_error<Map>(validation.error()->code(), validation.error()->what());
+    }
+    if (symbols.empty()) return Result<Map>(Map{});
+
+    // table_name is an internal default (trading.executions), never user input --
+    // same contract as get_position_inception_dates above.
+
+    try {
+        pqxx::work txn(*connection_);
+
+        // BUY only: it is the sole fill that re-forms a long book's weighted cost basis. A SELL
+        // reduces quantity and realizes P&L but leaves average_price untouched, so it carries no
+        // information about the basis frame.
+        auto result = txn.exec(
+            "SELECT symbol, max(date)::text AS last_buy "
+            "FROM " + table_name +
+                " WHERE strategy_id = $1 AND strategy_name = $2 AND portfolio_id = $3 "
+                "  AND symbol = ANY($4) AND side = 'BUY' "
+                "  AND date >= $5 AND date <= $6 "
+                "GROUP BY symbol",
+            pqxx::params{strategy_id, strategy_name, portfolio_id, symbols,
+                         on_or_after, on_or_before});
+
+        Map out;
+        for (const auto& row : result) {
+            if (row["last_buy"].is_null()) continue;
+            out.emplace(row["symbol"].c_str(), row["last_buy"].c_str());
+        }
+
+        txn.commit();
+        return Result<Map>(std::move(out));
+
+    } catch (const std::exception& e) {
+        return make_error<Map>(
+            ErrorCode::DATABASE_ERROR,
+            "Failed to fetch last BUY dates: " + std::string(e.what()),
+            "PostgresDatabase");
+    }
+}
+
 Result<std::unordered_map<std::string, std::map<std::string, double>>>
 PostgresDatabase::get_historical_closes(const std::vector<std::string>& symbols,
                                         const std::string& start_date,

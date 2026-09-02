@@ -1238,24 +1238,64 @@ int main(int argc, char* argv[]) {
                     return p->second.quantity.as_double();
                 };
 
-                // E2-F17: is the book's state at ex_date-1 actually KNOWN? Every run writes a
-                // live_results row whether or not it holds anything (the same evidence E2-F8
-                // uses to tell "flat" from "never ran"), so that row is what turns an empty
-                // position lookup from "unknown" into "verifiably flat". Without it, absent
-                // history would be read as flat and real adjustments would be dropped.
+                // E2-F17 signal S2. The SAME lookup keyed on the ex-date ITSELF, not ex_date-1.
+                // The two dates answer different questions and must not be conflated:
+                //   ex_date - 1  -> who was on the register for the dividend CASH (above)
+                //   end of ex_date -> whether the basis being restated is pre-event
+                // A fill on run E is priced at close(E-1), i.e. pre-event, so a position opened
+                // ON the ex-date run has a clean basis and MUST still be restated. Measuring at
+                // E-1 would call it "flat at the ex-date" and skip a real adjustment.
+                //
+                // Parsed with timegm, NOT mktime. The ex_date-1 lambda above uses
+                // `std::mktime`, which reads the tm as LOCAL time and then formats UTC -- on a
+                // host at a positive UTC offset that lands a day early. That is pre-existing
+                // and out of scope here, but new code must not propagate it.
+                auto parse_ex_date = [](const std::string& d)
+                    -> std::optional<std::chrono::system_clock::time_point> {
+                    std::tm tm{};
+                    std::istringstream ss(d);
+                    ss >> std::get_time(&tm, "%Y-%m-%d");
+                    if (ss.fail()) return std::nullopt;
+                    return std::chrono::system_clock::from_time_t(timegm(&tm));
+                };
+
+                std::unordered_map<std::string, std::unordered_map<std::string, Position>>
+                    positions_at_exdate_cache;
+                auto qty_at_end_of_ex_date = [&](const std::string& symbol,
+                                                 const std::string& ex_date) -> double {
+                    auto cached = positions_at_exdate_cache.find(ex_date);
+                    if (cached == positions_at_exdate_cache.end()) {
+                        auto parsed = parse_ex_date(ex_date);
+                        if (!parsed) return 0.0;
+                        auto r = db->load_positions_by_date(
+                            kEquityStrategyId, kEquityStrategyName,
+                            portfolio_id, *parsed, "trading.positions");
+                        auto& slot = positions_at_exdate_cache[ex_date];
+                        if (r.is_ok()) slot = r.value();
+                        cached = positions_at_exdate_cache.find(ex_date);
+                    }
+                    auto p = cached->second.find(symbol);
+                    if (p == cached->second.end()) return 0.0;
+                    return p->second.quantity.as_double();
+                };
+
+                // E2-F17: is the book's state at the END OF THE EX-DATE actually KNOWN? Every
+                // run writes a live_results row whether or not it holds anything (the same
+                // evidence E2-F8 uses to tell "flat" from "never ran"), so that row is what
+                // turns an empty position lookup from "unknown" into "verifiably flat".
+                // Without it, absent history would be read as flat and real adjustments would
+                // be dropped.
+                //
+                // Keyed on the EX-DATE, not ex_date-1 -- see qty_at_end_of_ex_date above for
+                // why the two dates are not interchangeable.
                 std::unordered_map<std::string, bool> run_on_record_cache;
-                auto book_state_known_at_ex_date = [&](const std::string& ex_date) -> bool {
+                auto run_on_record_at_ex_date = [&](const std::string& ex_date) -> bool {
                     auto cached = run_on_record_cache.find(ex_date);
                     if (cached != run_on_record_cache.end()) return cached->second;
 
                     bool known = false;
-                    std::tm tm{};
-                    std::istringstream ss(ex_date);
-                    ss >> std::get_time(&tm, "%Y-%m-%d");
-                    if (!ss.fail()) {
-                        auto tt = std::mktime(&tm) - 24 * 60 * 60;  // ex_date - 1 day
-                        const std::string prev_str = trade_ngin::core::format_utc_date(
-                            std::chrono::system_clock::from_time_t(tt));
+                    if (auto parsed = parse_ex_date(ex_date)) {
+                        const std::string prev_str = trade_ngin::core::format_utc_date(*parsed);
                         auto r = db->execute_query(
                             "SELECT count(*)::text FROM trading.live_results "
                             "WHERE strategy_id = '" + std::string(kEquityStrategyId) + "'"
@@ -1272,6 +1312,57 @@ int main(int argc, char* argv[]) {
                     run_on_record_cache[ex_date] = known;
                     return known;
                 };
+
+                // E2-F17 signal S1 (primary): the last date this strategy BOUGHT each symbol.
+                // A fill on run D is priced at close(D-1), so a BUY dated strictly AFTER the
+                // ex-date was struck at a price the market had already adjusted -- positive
+                // evidence that the basis now held is post-event and must NOT be restated.
+                // A SELL cannot re-form a long book's basis, so BUY alone is sufficient.
+                //
+                // One batched query for every symbol with an event, floored at the earliest
+                // candidate ex-date so the scan stays small.
+                std::unordered_map<std::string, std::string> last_buy_by_symbol;
+                bool exec_history_readable = false;
+                if (!event_symbols.empty()) {
+                    std::string min_ex_date;
+                    for (const auto& row : rows) {
+                        if (previous_positions.find(row.ticker) == previous_positions.end()) continue;
+                        if (min_ex_date.empty() || row.date_str < min_ex_date) min_ex_date = row.date_str;
+                    }
+                    if (!min_ex_date.empty()) {
+                        // Bounded ABOVE by T-1, the date of the book being restated. Two
+                        // reasons, and the first is not optional:
+                        //
+                        // 1. NO LOOKAHEAD. On a replay, trading.executions also holds rows for
+                        //    dates after the run being processed. Unbounded, this reported
+                        //    "BUY 2026-07-30" as evidence against a 2026-06-08 ex-date while
+                        //    replaying June, and skipped a dividend that had to apply.
+                        //
+                        // 2. IT IS THE RIGHT QUESTION. The applier restates `previous_positions`
+                        //    -- the end-of-T-1 book -- BEFORE today's trading. Fills dated after
+                        //    T-1 have not happened yet at apply time and cannot have touched the
+                        //    basis being restated. Only a fill in (ex_date, T-1] can, which is
+                        //    exactly a LATE apply: the event was deferred or the symbol was
+                        //    unheld when it was first offered, and the book moved in between.
+                        //
+                        // Without the upper bound the rule degenerates for a strategy that
+                        // re-sizes daily: nearly every held name has some later BUY, so nearly
+                        // every real adjustment gets skipped.
+                        const std::string t1_str = trade_ngin::core::format_utc_date(previous_date);
+                        auto lb = db->get_last_buy_dates(kEquityStrategyId, kEquityStrategyName,
+                                                         portfolio_id, event_symbols,
+                                                         min_ex_date, t1_str);
+                        if (lb.is_ok()) {
+                            last_buy_by_symbol = lb.value();
+                            exec_history_readable = true;
+                        } else {
+                            WARN("E2-F17: could not read execution history for basis provenance ("
+                                 + std::string(lb.error()->what()) +
+                                 "). Every event this run resolves to UNKNOWN and will be APPLIED "
+                                 "with a warning rather than skipped.");
+                        }
+                    }
+                }
 
                 std::vector<CorpActionEvent> events;
                 events.reserve(rows.size());
@@ -1405,9 +1496,45 @@ int main(int argc, char* argv[]) {
                         // current qty if the historical positions row is
                         // missing (e.g. first-week catch-up runs).
                         ev.qty_at_ex_date = qty_at_ex_date(row.ticker, row.date_str);
-                        ev.book_state_known_at_ex_date =
-                            book_state_known_at_ex_date(row.date_str);
                     }
+
+                    // E2-F17: basis provenance, resolved for EVERY class-1 type.
+                    //
+                    // THE PLACEMENT IS THE FIX. This previously sat inside the DIVIDEND branch
+                    // above, so splits and ADR splits always reached the applier with the
+                    // default and the guard could never fire on them -- leaving the
+                    // catastrophic case (a 25:1 split restating a post-ex-date basis by 2400%)
+                    // completely unguarded, while the dividend case looked covered.
+                    //
+                    // Only POSITIVE evidence may skip; everything else applies.
+                    {
+                        auto lb = last_buy_by_symbol.find(row.ticker);
+                        const bool bought_after =
+                            lb != last_buy_by_symbol.end() && lb->second > row.date_str;
+
+                        if (bought_after) {
+                            // S1: an actual BUY priced after the event.
+                            ev.basis_provenance =
+                                CorpActionEvent::BasisProvenance::FORMED_AFTER_EX_DATE;
+                            ev.basis_provenance_evidence = "BUY " + lb->second;
+                        } else if (run_on_record_at_ex_date(row.date_str) &&
+                                   !(std::abs(qty_at_end_of_ex_date(row.ticker, row.date_str)) >
+                                     1e-9)) {
+                            // S2: a run is on record for the ex-date and the book held nothing
+                            // in this symbol at the end of it, so whatever is held now was
+                            // acquired later. Covers a book with no execution history.
+                            ev.basis_provenance =
+                                CorpActionEvent::BasisProvenance::FORMED_AFTER_EX_DATE;
+                            ev.basis_provenance_evidence =
+                                "book verifiably flat at end of ex-date " + row.date_str;
+                        } else if (exec_history_readable) {
+                            ev.basis_provenance =
+                                CorpActionEvent::BasisProvenance::FORMED_ON_OR_BEFORE_EX_DATE;
+                        } else {
+                            ev.basis_provenance = CorpActionEvent::BasisProvenance::UNKNOWN;
+                        }
+                    }
+
                     events.push_back(std::move(ev));
                 }
 
@@ -1476,6 +1603,46 @@ int main(int argc, char* argv[]) {
                                   ". The position and the price series are almost certainly in "
                                   "different unit frames. Refusing to trade on it.");
                             return 1;
+                        }
+                    }
+
+                    // E2-F17 / G3 -- THE SAME BOUND, ON THE EVENTS WE REFUSED.
+                    //
+                    // G1 above iterates `adjustments`, i.e. events that WERE applied, so a
+                    // SKIP is invariant-free. That asymmetry is dangerous now that a skip is
+                    // possible for splits: wrongly refusing a real 25:1 leaves basis and mark
+                    // 25x apart, which is strictly worse than the double-adjustment the skip
+                    // exists to prevent, and nothing downstream would notice.
+                    //
+                    // A refusal is a decision, and it is checkable: if declining to restate
+                    // leaves the basis visibly out of frame with the T-1 mark, the refusal was
+                    // wrong. Same bounds and same fail-closed shape as the applied side.
+                    {
+                        std::set<std::string> applied_syms;
+                        for (const auto& adj : adjustments) applied_syms.insert(adj.symbol);
+
+                        for (const auto& ev : events) {
+                            if (applied_syms.count(ev.symbol)) continue;   // it applied
+                            auto pos = previous_positions.find(ev.symbol);
+                            if (pos == previous_positions.end()) continue; // nothing held
+                            auto mk = previous_day_close_prices.find(ev.symbol);
+                            if (mk == previous_day_close_prices.end() || !(mk->second > 0.0)) continue;
+                            const double basis = pos->second.average_price.as_double();
+                            if (!(basis > 0.0)) continue;
+                            if (!(std::abs(pos->second.quantity.as_double()) > 1e-9)) continue;
+
+                            const double basis_to_mark = basis / mk->second;
+                            if (basis_to_mark > 5.0 || basis_to_mark < 0.2) {
+                                ERROR("E2-F17 guard: " + ev.symbol + " carried an unapplied " +
+                                      std::string(CorporateActionsApplier::type_to_string(ev.type)) +
+                                      " (ex_date " + ev.ex_date + ") and its cost basis (" +
+                                      std::to_string(basis) + ") is implausible against the mark (" +
+                                      std::to_string(mk->second) + "), ratio " +
+                                      std::to_string(basis_to_mark) +
+                                      ". Refusing to restate was almost certainly wrong -- the "
+                                      "book is a corporate action out of frame. Refusing to trade.");
+                                return 1;
+                            }
                         }
                     }
 
