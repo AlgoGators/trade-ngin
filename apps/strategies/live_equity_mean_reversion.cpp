@@ -2885,6 +2885,39 @@ int main(int argc, char* argv[]) {
             }
         }
 
+        // E2-F19 (R-3): clear today's position rows for this book BEFORE queueing the
+        // day-T write, unconditionally.
+        //
+        // store_positions is DELETE-then-INSERT keyed on the date of the rows it is
+        // handed, and save_positions_snapshot returns early on an empty book -- so a day
+        // whose day-T write is EMPTY never deletes anything, and whatever rows already
+        // sit on today's date survive as today's book. Two writers put rows there
+        // before this point: the corp-action placeholder stores (dated today, written
+        // even when zero adjustments applied) and, through the loader's timestamp
+        // drift, a T-1 row that has been rewritten four times. Measured on the pre-fix
+        // chain: TMUS closed on 2026-07-07 with no realized row to keep, the
+        // placeholder row (qty 17.6) survived as the 07-07 book, and the runner sold
+        // the same 17.6 shares again every day through 07-27 while booking mark P&L on
+        // stock it no longer held. Scoped exactly like store_positions' own delete.
+        {
+            const std::string clear_today =
+                "DELETE FROM trading.positions WHERE strategy_id = '" +
+                std::string(kEquityStrategyId) + "' AND strategy_name = '" +
+                std::string(kEquityStrategyName) + "' AND portfolio_id = '" + portfolio_id +
+                "' AND DATE(last_update) = '" + today_date_str + "'";
+            auto cleared = db->execute_direct_query(clear_today);
+            if (cleared.is_error()) {
+                ERROR("Failed to clear today's position rows before the day-T write: " +
+                      std::string(cleared.error()->what()) +
+                      ". Refusing to continue: an empty day-T write would leave stale rows "
+                      "as today's book.");
+                return 1;
+            }
+            INFO("Cleared any existing position rows for " + today_date_str +
+                 " ahead of the day-T write (" + std::to_string(positions_to_save.size()) +
+                 " row(s) queued)");
+        }
+
         if (!positions_to_save.empty()) {
             INFO("Attempting to save " + std::to_string(positions_to_save.size()) + " positions to database");
             DEBUG("Database connection status: " + std::string(db->is_connected() ? "connected" : "disconnected"));
@@ -2893,7 +2926,7 @@ int main(int argc, char* argv[]) {
             results_manager->set_positions(positions_to_save);
             INFO("Queued " + std::to_string(positions_to_save.size()) + " current positions for storage");
         } else {
-            INFO("No positions to save (all positions are zero)");
+            INFO("No positions to save (all positions are zero); today's rows cleared above");
         }
 
         // Compute portfolio-level snapshot metrics using RiskManager on today's state
