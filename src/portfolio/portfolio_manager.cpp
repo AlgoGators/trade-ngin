@@ -1456,6 +1456,15 @@ void PortfolioManager::clear_all_executions() {
     filled_positions_.clear();
 }
 
+int PortfolioManager::register_equity_cost_configs(
+    const std::vector<std::string>& symbols,
+    const std::unordered_map<std::string, std::vector<Bar>>& bars_by_symbol,
+    int adv_lookback_days) {
+    // E2-C9 -- see the header for why both cost managers must be registered.
+    return cost_manager_.register_equity_costs_from_bars(symbols, bars_by_symbol,
+                                                         adv_lookback_days);
+}
+
 void PortfolioManager::update_cost_manager_market_data(const std::string& symbol, double volume,
                                                        double close_price,
                                                        double prev_close_price) {

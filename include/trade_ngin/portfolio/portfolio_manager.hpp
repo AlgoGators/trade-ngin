@@ -214,6 +214,31 @@ public:
                                          double close_price, double prev_close_price);
 
     /**
+     * @brief Register ADV-tiered equity cost configs on THIS manager's cost model. E2-C9.
+     *
+     * PortfolioManager owns its own TransactionCostManager, separate from the one
+     * BacktestCoordinator holds, and the two cost different things:
+     *
+     *   - This one prices the executions PortfolioManager generates, which are what reach
+     *     backtest.executions AND the equity curve (via calculate_period_transaction_costs).
+     *   - The coordinator's prices the re-costed copies that feed the reported METRICS.
+     *
+     * Only the coordinator's was ever registered (bt_equity_mean_reversion.cpp calls
+     * register_equity_costs_from_bars on it), so the stored executions and the equity curve
+     * were priced from the static hardcoded configs while the metrics used ADV-tiered ones --
+     * two different cost bases inside a single backtest run. It stayed invisible because the
+     * equity universe is exactly the eight symbols initialize_default_configs() hardcodes, so
+     * both managers at least had EQUITY configs; only the tier parameters differed.
+     *
+     * Register both, or they disagree. Futures is unaffected: futures roots are pre-registered
+     * in initialize_default_configs() and this is only called from the equity apps.
+     */
+    int register_equity_cost_configs(
+        const std::vector<std::string>& symbols,
+        const std::unordered_map<std::string, std::vector<Bar>>& bars_by_symbol,
+        int adv_lookback_days = 20);
+
+    /**
      * @brief Get all strategies managed by this portfolio
      * @return Vector of strategy interfaces
      */

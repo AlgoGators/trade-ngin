@@ -787,3 +787,31 @@ TEST_F(PortfolioManagerExtendedTest, ProcessWithOptimizationAndRiskBothEnabled) 
 }
 
 }  // namespace portfolio_manager_extended_detail
+
+// E2-C9: PortfolioManager owns a SECOND TransactionCostManager, independent of the one
+// BacktestCoordinator holds. The PM's prices the executions that reach backtest.executions
+// and the equity curve; the coordinator's prices the copies that feed the reported metrics.
+// Only the coordinator's was ever registered, so one backtest run carried two different cost
+// bases -- stored executions from the static hardcoded configs, metrics from ADV-tiered ones.
+//
+// This pins that the accessor actually reaches the PM's own manager. It cannot pin the app
+// wiring (bt_equity_mean_reversion.cpp must call it alongside the coordinator registration);
+// what it catches is the accessor being a no-op or forwarding to the wrong object.
+TEST_F(PortfolioManagerTest, RegisterEquityCostConfigsReachesTheManagersOwnCostModel) {
+    std::unordered_map<std::string, std::vector<Bar>> bars_by_symbol;
+    for (int i = 0; i < 25; ++i) {
+        Bar b;
+        b.symbol = "AAPL";
+        b.timestamp = std::chrono::system_clock::now() - std::chrono::hours(24 * (25 - i));
+        b.open = b.high = b.low = b.close = Decimal(190.0);
+        b.volume = 40'000'000.0;
+        bars_by_symbol["AAPL"].push_back(b);
+    }
+
+    const int registered = manager_->register_equity_cost_configs({"AAPL"}, bars_by_symbol);
+
+    EXPECT_EQ(registered, 1)
+        << "PortfolioManager::register_equity_cost_configs did not register anything. Its own "
+           "cost manager then keeps whatever initialize_default_configs() gave it, while the "
+           "coordinator's uses ADV-tiered configs -- two cost bases in one backtest run.";
+}

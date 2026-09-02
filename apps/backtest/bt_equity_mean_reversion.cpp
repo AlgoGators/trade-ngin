@@ -332,6 +332,11 @@ int main() {
                     coordinator->get_execution_manager()
                         ->get_transaction_cost_manager()
                         .register_equity_costs_from_bars(symbols, bars_by_symbol);
+                    // E2-C9: PortfolioManager owns a SECOND, independent cost manager, and
+                    // it is the one whose numbers reach backtest.executions and the equity
+                    // curve -- the coordinator's only feeds the reported metrics. Registering
+                    // just one left a single run carrying two different cost bases.
+                    portfolio->register_equity_cost_configs(symbols, bars_by_symbol);
                 } else {
                     WARN("Failed to convert warmup bars: " +
                          std::string(warmup_bars_result.error()->what()) +
