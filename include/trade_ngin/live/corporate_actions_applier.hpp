@@ -16,7 +16,12 @@ namespace trade_ngin {
  * Phase 4 plan -- those need basis-cost reallocation logic beyond per-symbol
  * scalar adjustment.
  */
-enum class CorpActionType { SPLIT, ADR_SPLIT, DIVIDEND, UNKNOWN };
+// E2-F13: TERMINATION is a class-3 lifecycle event (delisting / acquisition), not a
+// price-restating class-1 event like SPLIT or DIVIDEND. It is in this enum solely so a
+// termination can be written to trading.corp_action_applied and deduped like any other
+// applied event -- before this, terminations were recorded NOWHERE and left no audit trail.
+// The applier itself never produces one; CorporateActionsLifecycle does.
+enum class CorpActionType { SPLIT, ADR_SPLIT, DIVIDEND, TERMINATION, UNKNOWN };
 
 /**
  * @brief One corporate-action event to apply.

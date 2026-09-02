@@ -383,3 +383,72 @@ TEST(CorpActionClass3, EventForAnUnheldSymbolIsANoOp) {
     EXPECT_EQ(positions.size(), 1u);
     EXPECT_DOUBLE_EQ(positions["HELD"].quantity.as_double(), 10.0);
 }
+
+// ===========================================================================
+// E2-F13: TERMINATION round-trips through the dedup record.
+//
+// Class-3 lifecycle events (delisting / acquisition) were recorded NOWHERE. audit_log.record()
+// was called only from the class-1 applier block, so a termination left no row in
+// trading.corp_action_applied -- no audit trail, and nothing to stop a replay re-applying it.
+// Class-1 events have been deduped since the dedup table landed; class 3 never was.
+//
+// The dedup key is (symbol, event_date, type) and the type is persisted as a STRING, so the
+// enum <-> string round trip is what makes a recorded termination findable again. If
+// type_from_type_string does not know "TERMINATION" it silently degrades to UNKNOWN, the key
+// no longer matches, and the dedup protection evaporates without any error.
+// ===========================================================================
+
+TEST(CorpActionTypeRoundTrip, TerminationSurvivesTheStringRoundTrip) {
+    const char* s = CorporateActionsApplier::type_to_string(CorpActionType::TERMINATION);
+    EXPECT_STREQ(s, "TERMINATION");
+
+    EXPECT_EQ(CorporateActionsApplier::type_from_type_string(s), CorpActionType::TERMINATION)
+        << "A recorded TERMINATION does not round-trip, so its dedup key will not match on the "
+           "next run and the event can be applied twice.";
+}
+
+TEST(CorpActionTypeRoundTrip, ExistingTypesAreUnaffectedByTheNewValue) {
+    // Adding an enum value must not disturb the values already persisted in
+    // trading.corp_action_applied.
+    for (auto t : {CorpActionType::SPLIT, CorpActionType::ADR_SPLIT, CorpActionType::DIVIDEND,
+                   CorpActionType::UNKNOWN}) {
+        EXPECT_EQ(CorporateActionsApplier::type_from_type_string(
+                      CorporateActionsApplier::type_to_string(t)),
+                  t)
+            << "An existing corp-action type stopped round-tripping when TERMINATION was added.";
+    }
+}
+
+TEST(CorpActionTypeRoundTrip, UnknownStringsStillDegradeToUnknown) {
+    EXPECT_EQ(CorporateActionsApplier::type_from_type_string("NOT_A_TYPE"),
+              CorpActionType::UNKNOWN)
+        << "An unrecognised type string must degrade to UNKNOWN so an older binary reading a "
+           "newer row fails safe rather than mis-classifying it.";
+}
+
+// The applier must not try to price-restate a lifecycle event. TERMINATION exists in the enum
+// only so class-3 events can be recorded and deduped; CorporateActionsLifecycle applies them.
+TEST(CorpActionTypeRoundTrip, ApplierSkipsTerminationRatherThanRestatingPrice) {
+    std::unordered_map<std::string, Position> positions;
+    Position p;
+    p.symbol = "DEAD";
+    p.quantity = Quantity(10.0);
+    p.average_price = Decimal(100.0);
+    positions["DEAD"] = p;
+
+    CorpActionEvent ev;
+    ev.symbol = "DEAD";
+    ev.ex_date = "2026-04-09";
+    ev.type = CorpActionType::TERMINATION;
+    ev.value = 50.0;  // would be read as a split factor if the applier mishandled it
+
+    auto adjustments = CorporateActionsApplier::apply(positions, {ev});
+
+    EXPECT_TRUE(adjustments.empty())
+        << "The applier produced an adjustment for a TERMINATION. Class-3 events belong to "
+           "CorporateActionsLifecycle; treating one as price-restating would multiply the "
+           "quantity by the exit price.";
+    EXPECT_DOUBLE_EQ(static_cast<double>(positions["DEAD"].quantity), 10.0)
+        << "The applier mutated a position on a TERMINATION event.";
+    EXPECT_DOUBLE_EQ(static_cast<double>(positions["DEAD"].average_price), 100.0);
+}

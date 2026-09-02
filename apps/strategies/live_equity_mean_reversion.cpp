@@ -836,9 +836,39 @@ int main(int argc, char* argv[]) {
             previous_positions;
 
         // Executions synthesised from corporate actions (terminations), merged into the
-        // day's executions after execute_day_t so their realized P&L reaches live_results
-        // and the equity curve, and so a broker statement has a counterpart (E2-F11).
+        // day's executions after execute_day_t so a broker statement has a counterpart.
+        //
+        // E2-F12 (comment correction): this used to claim the executions are what carry the
+        // realized P&L into live_results and the equity curve. That was FALSE.
+        // live_results.daily_realized_pnl has never been derived from executions -- it comes
+        // from the day-T aggregate and the T-1 finalization -- so appending an execution gave
+        // the corp-action delta no route into any aggregate at all. The row said 122.00 and
+        // live_results said 0.00.
+        //
+        // The execution row is still worth emitting: it is the broker-reconcilable
+        // counterpart, and without it a liquidation appears on a statement with nothing in
+        // trading.executions to match. But it is NOT the P&L path. That is
+        // corp_action_realized_total below (E2-F7).
         std::vector<ExecutionReport> corp_action_executions;
+
+        // E2-F7: the realized P&L a termination locks in, summed so it can be folded into
+        // the day's aggregate.
+        //
+        // CorporateActionsLifecycle computes `realized_delta = (exit_price - avg_price) *
+        // qty_before` and writes it onto the position and the adjustment record -- and until
+        // now its ONLY other consumer in the entire tree was a log string. No aggregate read
+        // it, so a terminated holding's gain or loss never reached daily_realized_pnl,
+        // total_pnl, current_portfolio_value or the equity curve.
+        //
+        // It is booked on day T, the ex-date, NOT threaded through finalize_previous_day.
+        // That function writes the T-1 row, so passing the delta to it would book a day-T
+        // cash flow onto the previous day -- exactly the restatement 8a1a96ef removed. It
+        // would also put the T-1 aggregate out of agreement with the T-1 executions and
+        // position rows.
+        //
+        // Booking it here touches NO shared file, so the futures binaries are unchanged by
+        // construction rather than by argument.
+        double corp_action_realized_total = 0.0;
 
         DEBUG("Previous date used for lookup: " + std::to_string(std::chrono::system_clock::to_time_t(previous_date)));
         DEBUG("Current date: " + std::to_string(std::chrono::system_clock::to_time_t(now)));
@@ -1566,6 +1596,10 @@ int main(int argc, char* argv[]) {
                 if (adj.outcome != LifecycleOutcome::EXITED_AT_FINAL_CLOSE) continue;
                 if (std::abs(adj.quantity_before) < 1e-9 || !(adj.exit_price > 0.0)) continue;
 
+                // E2-F7: the P&L route. Gated on the same conditions as the execution row so
+                // the two can never disagree about which events were recognised.
+                corp_action_realized_total += adj.realized_delta;
+
                 ExecutionReport ca_exec;
                 ca_exec.order_id = "CORPACTION_" + adj.symbol + "_" + adj.event_date;
                 ca_exec.exec_id  = "CA_" + adj.symbol + "_" + adj.event_date + "_EXIT";
@@ -1599,17 +1633,100 @@ int main(int argc, char* argv[]) {
                     p.last_update = now;
                     lifecycle_positions.push_back(std::move(p));
                 }
+
+                // E2-F13: record class-3 events in the audit/dedup log.
+                //
+                // audit_log.record() was called ONLY from the class-1 applier block, so a
+                // termination left no row in trading.corp_action_applied at all -- no audit
+                // trail, and nothing to stop a replay re-applying it. Class-1 events have
+                // been deduped since the dedup table landed; class 3 never was.
+                //
+                // LifecycleAdjustment and PositionAdjustment are different records, so the
+                // fields are mapped explicitly. event_value carries the exit price (the
+                // event's defining parameter for a termination, as the split factor or
+                // $/share is for class 1) and ratio_change stays 1.0 because a termination
+                // restates no price.
+                //
+                // The dedup key is (symbol, event_date, type), and TERMINATION is a new type
+                // value, so these rows cannot collide with existing SPLIT/DIVIDEND keys.
+                // Its own instance, following the div_log precedent below. Safe because the
+                // class-1 audit_log is long out of scope by now -- the header's "concurrent
+                // instances not supported" warning is about a save() race between two LIVE
+                // objects, and these are strictly sequential.
+                CorporateActionsAuditLog lifecycle_audit(ca_state_dir, db,
+                                                         portfolio_id,
+                                                         "LIVE_EQUITY_MEAN_REVERSION",
+                                                         "EQUITY_MEAN_REVERSION");
+                auto lc_loaded = lifecycle_audit.load();
+                if (lc_loaded.is_error()) {
+                    // Fail closed, matching the class-1 block: a dedup record that cannot be
+                    // read cannot be extended safely, and writing on top of an unknown state
+                    // risks re-applying a termination on the next run.
+                    ERROR("Cannot read the corp-action dedup record for lifecycle events: " +
+                          std::string(lc_loaded.error()->what()));
+                    return 1;
+                }
+
+                std::size_t recorded = 0;
+                for (const auto& adj : lifecycle_log) {
+                    if (adj.outcome != LifecycleOutcome::EXITED_AT_FINAL_CLOSE &&
+                        adj.outcome != LifecycleOutcome::CONVERTED_TO_CONTRA) {
+                        continue;  // nothing was applied; nothing to dedup against
+                    }
+                    PositionAdjustment rec;
+                    rec.symbol = adj.symbol;
+                    rec.event_date = adj.event_date;
+                    rec.type = CorpActionType::TERMINATION;
+                    rec.quantity_before = adj.quantity_before;
+                    rec.quantity_after = adj.quantity_after;
+                    rec.avg_price_before = 0.0;
+                    rec.avg_price_after = 0.0;
+                    rec.event_value = adj.exit_price;
+                    rec.ratio_change = 1.0;
+                    lifecycle_audit.record(rec);
+                    ++recorded;
+                }
+
+                // Positions and their dedup rows commit as ONE unit, for the same reason the
+                // class-1 block does it: positions committed with the dedup write lost would
+                // leave the next run free to re-apply the event.
+                auto lc_unit = db->begin_unit_of_work();
+                if (lc_unit.is_error()) {
+                    ERROR("Cannot open a unit of work for lifecycle persistence: " +
+                          std::string(lc_unit.error()->what()));
+                    return 1;
+                }
+                DbTransaction& lc_txn = *lc_unit.value();
+
                 auto store_lc = db->store_positions(
-                    lifecycle_positions,
+                    lc_txn, lifecycle_positions,
                     kEquityStrategyId, kEquityStrategyName,
                     portfolio_id, "trading.positions");
                 if (store_lc.is_error()) {
                     ERROR("Failed to persist lifecycle-adjusted positions: " +
                           std::string(store_lc.error()->what()));
+                    return 1;  // lc_txn rolls back on scope exit
+                }
+
+                if (recorded > 0) {
+                    auto save_lc = lifecycle_audit.save_in(lc_txn);
+                    if (save_lc.is_error()) {
+                        ERROR("Failed to persist lifecycle dedup records: " +
+                              std::string(save_lc.error()->what()));
+                        return 1;  // lc_txn rolls back on scope exit
+                    }
+                }
+
+                auto lc_commit = lc_txn.commit();
+                if (lc_commit.is_error()) {
+                    ERROR("Failed to commit lifecycle adjustments: " +
+                          std::string(lc_commit.error()->what()));
                     return 1;
                 }
+
                 INFO("Persisted " + std::to_string(lifecycle_log.size()) +
-                     " lifecycle adjustment(s) to trading.positions");
+                     " lifecycle adjustment(s) to trading.positions, " +
+                     std::to_string(recorded) + " dedup record(s)");
             }
         }
 
@@ -1945,7 +2062,30 @@ int main(int argc, char* argv[]) {
 
         // Feed executions back to strategy for cost basis tracking.
         // BaseStrategy::on_execution() maintains weighted average_price and realized_pnl.
+        //
+        // E2-F11: corporate-action exits are EXCLUDED. They are synthetic accounting entries,
+        // not fills the strategy should learn a basis from, and feeding them in corrupts its
+        // book.
+        //
+        // The mechanism: apply_terminations sets pos.quantity = 0 BEFORE the strategy is
+        // seeded from that same map, so by the time on_execution sees the exit the strategy
+        // holds ZERO of the symbol. Its realized branch (base_strategy.cpp:197-199) requires a
+        // position on the opposite side of the fill, so it books nothing -- and then the
+        // `else` at :237-251 treats the SELL as OPENING A SHORT, leaving the strategy holding
+        // a phantom -qty_before position in a delisted symbol at the exit price.
+        //
+        // It is invisible today: this runs after signal generation, and the zero-quantity
+        // filter drops the row before it is persisted. But the strategy carries a fabricated
+        // short for the rest of the process, and anything later that reads positions_ -- a
+        // stop-loss check, a risk aggregate, a second strategy sharing the book -- would see
+        // it. The realized P&L these exits lock in reaches the aggregate through
+        // corp_action_realized_total instead, which is the correct route.
         for (const auto& exec : daily_executions) {
+            if (exec.order_id.rfind("CORPACTION_", 0) == 0) {
+                DEBUG("Skipping on_execution for corp-action exit " + exec.symbol +
+                      " (synthetic entry; realized P&L booked via the day-T aggregate)");
+                continue;
+            }
             auto exec_result = mr_strategy->on_execution(exec);
             if (exec_result.is_error()) {
                 WARN("Failed to process execution for " + exec.symbol + ": " +
@@ -2358,6 +2498,25 @@ int main(int argc, char* argv[]) {
         double daily_realized_pnl = 0.0;
         if (mr_strategy) {
             daily_realized_pnl = mr_strategy->get_metrics().realized_pnl + total_daily_commissions;
+        }
+
+        // E2-F7: add the realized P&L locked in by corporate actions on this ex-date.
+        //
+        // A termination's gain or loss is genuine trade-realized P&L -- the position is gone
+        // and the proceeds are final -- but it never passes through BaseStrategy::on_execution
+        // in a way that books it. apply_terminations sets quantity = 0 BEFORE the strategy is
+        // seeded, so on_execution's realized branch (base_strategy.cpp:197-199, which requires
+        // a position on the opposite side of the fill) is false and computes nothing.
+        // metrics_.realized_pnl above therefore misses it entirely.
+        //
+        // Adding it here puts it in daily_realized_pnl, and from there it flows through the
+        // existing arithmetic into daily_pnl, total_realized_pnl, total_pnl,
+        // current_portfolio_value and the equity curve -- no new column, no second channel,
+        // no cross-day persistence.
+        if (corp_action_realized_total != 0.0) {
+            INFO("Corp-action realized P&L booked into Day T aggregate: $" +
+                 std::to_string(corp_action_realized_total));
+            daily_realized_pnl += corp_action_realized_total;
         }
 
         // daily_unrealized_pnl used to be declared and pinned to 0.0 here as a Day-T placeholder.

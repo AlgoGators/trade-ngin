@@ -11,6 +11,7 @@ const char* CorporateActionsApplier::type_to_string(CorpActionType t) {
         case CorpActionType::SPLIT:     return "SPLIT";
         case CorpActionType::ADR_SPLIT: return "ADR_SPLIT";
         case CorpActionType::DIVIDEND:  return "DIVIDEND";
+        case CorpActionType::TERMINATION: return "TERMINATION";
         case CorpActionType::UNKNOWN:   return "UNKNOWN";
     }
     return "UNKNOWN";
@@ -20,6 +21,7 @@ CorpActionType CorporateActionsApplier::type_from_type_string(const std::string&
     if (type_name == "SPLIT") return CorpActionType::SPLIT;
     if (type_name == "ADR_SPLIT") return CorpActionType::ADR_SPLIT;
     if (type_name == "DIVIDEND") return CorpActionType::DIVIDEND;
+    if (type_name == "TERMINATION") return CorpActionType::TERMINATION;
     return CorpActionType::UNKNOWN;
 }
 
@@ -159,6 +161,13 @@ std::vector<PositionAdjustment> CorporateActionsApplier::apply(
                 adj.ratio_change = ratio;
                 break;
             }
+            case CorpActionType::TERMINATION:
+                // E2-F13: class-3 lifecycle events are CorporateActionsLifecycle's business,
+                // not the applier's. A TERMINATION reaching here means an event was mis-typed
+                // upstream; skip it rather than apply price-restating logic to it.
+                WARN("CorporateActionsApplier: TERMINATION is a lifecycle class, not a "
+                     "price-restating action -- skipping " + ev.symbol + " on " + ev.ex_date);
+                continue;
             case CorpActionType::UNKNOWN:
                 continue;  // handled above
         }
