@@ -78,6 +78,8 @@ set(TEST_SOURCES
     live/test_live_metrics_calculator.cpp
     live/test_live_pnl_manager.cpp
     live/test_finalize_unrealized_policy.cpp
+    live/test_finalize_realized_policy.cpp
+    live/test_realized_row_retention.cpp
     live/test_unrealized_cost_basis.cpp
     live/test_live_data_loader.cpp
     live/test_csv_exporter.cpp

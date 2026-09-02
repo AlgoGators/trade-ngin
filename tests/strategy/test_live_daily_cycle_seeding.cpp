@@ -8,6 +8,8 @@
 
 #include "../core/test_base.hpp"
 #include "../data/test_db_utils.hpp"
+#include "trade_ngin/instruments/instrument_registry.hpp"
+#include "trade_ngin/live/execution_manager.hpp"
 #include "trade_ngin/live/live_daily_cycle.hpp"
 #include "trade_ngin/live/live_pnl_manager.hpp"
 #include "trade_ngin/strategy/mean_reversion.hpp"
@@ -381,4 +383,279 @@ TEST_F(LiveDailyCycleSeedingTest, BacktestAccumulationPathIsUnchanged) {
     ASSERT_TRUE(strategy->on_data(bars).is_ok());
     EXPECT_GT(strategy->get_position("AAPL"), 0.0)
         << "the accumulated holding is held inside the hold band";
+}
+
+// ---------------------------------------------------------------------------
+// E2-F19 / E2-F20: the seeded book must not carry yesterday's realized P&L into
+// today's row.
+//
+// seed_positions() is a wholesale copy, so positions_[sym].realized_pnl started
+// each session at whatever the loaded T-1 row held, and on_execution() added
+// today's fills on top. The persisted day-T row was therefore yesterday's value
+// plus today's trades -- and on a Monday, yesterday's value was Friday's MARK MOVE,
+// because the Saturday and Sunday runs had each finalized Friday (E2-F20).
+//
+// metrics_.realized_pnl is a separate accumulator that seeding never touches; it
+// feeds live_results.daily_realized_pnl and has always been correct. These tests
+// pin that asymmetry: the per-position figure becomes today's flow, the aggregate
+// does not move.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+Position held_with_pnl(const std::string& symbol, double quantity, double average_price,
+                       double realized, double unrealized) {
+    Position pos;
+    pos.symbol = symbol;
+    pos.quantity = Quantity(quantity);
+    pos.average_price = Decimal(average_price);
+    pos.realized_pnl = Decimal(realized);
+    pos.unrealized_pnl = Decimal(unrealized);
+    pos.last_update = std::chrono::system_clock::now();
+    return pos;
+}
+
+ExecutionReport fill(const std::string& symbol, Side side, double qty, double price) {
+    ExecutionReport f;
+    f.order_id = "T_" + symbol;
+    f.exec_id = "T_" + symbol + "_X";
+    f.symbol = symbol;
+    f.side = side;
+    f.filled_quantity = Quantity(qty);
+    f.fill_price = Price(price);
+    f.fill_time = std::chrono::system_clock::now();
+    return f;
+}
+
+}  // namespace
+
+// T-6. Seeding hands the strategy quantity, basis and mark; it does NOT hand it a
+// realized figure. unrealized is asserted at the value on_data re-marks it to --
+// (close - basis) x qty -- which is the stronger claim: the seeded basis reached
+// the mark, so the seed did not zero the basis along with realized.
+TEST_F(LiveDailyCycleSeedingTest, SeedZeroesRealizedAndKeepsBasisAndMark) {
+    auto bars = hold_band_series("AAPL");  // closes at 98.5
+    auto seeded = create_strategy();
+    std::unordered_map<std::string, Position> previous{
+        {"AAPL", held_with_pnl("AAPL", 100.0, 98.0, /*realized*/ -466.969196,
+                               /*unrealized*/ 12.34)}};
+    ASSERT_TRUE(
+        LiveDailyCycle::prepare_strategy_for_signals(*seeded, previous, bars).is_ok());
+
+    const auto& positions = seeded->get_positions();
+    auto it = positions.find("AAPL");
+    ASSERT_NE(it, positions.end());
+    EXPECT_DOUBLE_EQ(it->second.quantity.as_double(), 100.0);
+    EXPECT_DOUBLE_EQ(it->second.average_price.as_double(), 98.0)
+        << "the seeded cost basis must survive: the stop-loss measures from it";
+    EXPECT_NEAR(it->second.unrealized_pnl.as_double(), (98.5 - 98.0) * 100.0, 1e-6)
+        << "unrealized is re-marked from the seeded basis; update_metrics() sums it "
+           "into the drawdown gate, so it must be seeded, not zeroed";
+    EXPECT_DOUBLE_EQ(it->second.realized_pnl.as_double(), 0.0)
+        << "yesterday's realized must not be seeded: the row is a per-day flow "
+           "(E2-F19 route 1)";
+}
+
+// T-7. The day's row is the day's trade, not the day's trade plus the chain.
+// Real TMUS 2026-04-15 numbers: closing SELL 37.515436 @ 190 against a 200.733033
+// basis realizes -402.654413. The map had -466.969196 seeded from the prior row,
+// and stored -869.62 for the day; live_results stored -402.6544. This is the test
+// that would have caught the second reverted attempt.
+TEST_F(LiveDailyCycleSeedingTest, SeededRealizedDoesNotLeakIntoTheDaysFill) {
+    mr_config_.use_stop_loss = false;  // basis 200.73 vs 98.5 closes would fire it
+    strategy_config_.trading_params["TMUS"] = 1.0;
+    strategy_config_.position_limits["TMUS"] = 100000.0;
+
+    const double qty = 37.515436;
+    const double basis = 200.733033;
+    const double exit = 190.0;
+    const double expected = (exit - basis) * qty;  // -402.654413
+
+    auto bars = hold_band_series("TMUS");
+    auto seeded = create_strategy();
+    std::unordered_map<std::string, Position> previous{
+        {"TMUS", held_with_pnl("TMUS", qty, basis, /*realized*/ -466.969196, 0.0)}};
+    ASSERT_TRUE(
+        LiveDailyCycle::prepare_strategy_for_signals(*seeded, previous, bars).is_ok());
+
+    ASSERT_TRUE(seeded->on_execution(fill("TMUS", Side::SELL, qty, exit)).is_ok());
+
+    const auto& positions = seeded->get_positions();
+    auto it = positions.find("TMUS");
+    ASSERT_NE(it, positions.end());
+    EXPECT_NEAR(it->second.realized_pnl.as_double(), expected, 1e-6)
+        << "the per-position realized must be today's fill alone, not the seeded "
+           "chain plus today's fill";
+    EXPECT_DOUBLE_EQ(it->second.quantity.as_double(), 0.0);
+
+    // The control: the aggregate accumulator was never seeded and is unchanged
+    // by this fix. It must equal the same figure in both the old and new world.
+    EXPECT_NEAR(seeded->get_metrics().realized_pnl, expected, 1e-6)
+        << "metrics_.realized_pnl feeds live_results and must not move";
+}
+
+// ---------------------------------------------------------------------------
+// T-12. Three sessions -- open, hold, close -- with the T-1 finalization
+// interposed between them the way the runner does it. Without the interposed
+// finalize the old code also passes, because a day-1 row seeded with realized 0
+// stays 0; the contamination needs the finalizer to have rewritten the row
+// first (F20 Fact B). Every day: sum of per-position realized == the aggregate
+// accumulator + the day's costs, and day 2's row is 0 while day 3's carries the
+// exit.
+// ---------------------------------------------------------------------------
+TEST_F(LiveDailyCycleSeedingTest, ThreeDayFlowWithInterposedFinalization) {
+    mr_config_.use_stop_loss = false;
+    strategy_config_.trading_params["TMUS"] = 1.0;
+    strategy_config_.position_limits["TMUS"] = 100000.0;
+
+    ExecutionManager em;
+    LivePnLManager pnl(100000.0, InstrumentRegistry::instance());
+    const Timestamp now = std::chrono::system_clock::now();
+    auto bars = hold_band_series("TMUS");
+
+    // The "database": what each session loads is what the previous session's
+    // T-1 finalization left behind, not what the previous session wrote.
+    auto finalize_like_a_weekend = [&](const std::unordered_map<std::string, Position>& book,
+                                       double t2, double t1) {
+        std::vector<Position> prev;
+        for (const auto& [_, p] : book) prev.push_back(p);
+        auto r = pnl.finalize_previous_day(prev, {{"TMUS", t1}}, {{"TMUS", t2}}, 100000.0,
+                                           0.0, LivePnLManager::UnrealizedPolicy::MARK_TO_MARKET);
+        EXPECT_TRUE(r.is_ok());
+        auto finalized = r.value().finalized_positions;
+        LiveDailyCycle::restore_loaded_realized(finalized, book);
+        std::unordered_map<std::string, Position> out;
+        for (const auto& p : finalized) out[p.symbol] = p;
+        return out;
+    };
+
+    auto run_day = [&](const std::unordered_map<std::string, Position>& loaded,
+                       double target_qty, double t1_close) {
+        auto strat = create_strategy();
+        EXPECT_TRUE(
+            LiveDailyCycle::prepare_strategy_for_signals(*strat, loaded, bars).is_ok());
+
+        std::unordered_map<std::string, Position> positions;
+        Position target;
+        target.symbol = "TMUS";
+        target.quantity = Quantity(target_qty);
+        target.average_price = Decimal(t1_close);
+        target.last_update = now;
+        positions["TMUS"] = target;
+
+        auto outcome = LiveDailyCycle::execute_day_t(em, positions, loaded,
+                                                     {{"TMUS", t1_close}}, bars, now);
+        EXPECT_TRUE(outcome.is_ok());
+        double costs = 0.0;
+        for (const auto& e : outcome.value().executions) {
+            EXPECT_TRUE(strat->on_execution(e).is_ok());
+            costs += e.total_transaction_costs.as_double();
+        }
+        LiveDailyCycle::resolve_and_apply_basis(positions, strat->get_positions(), loaded,
+                                                outcome.value().execution_prices);
+
+        double row_sum = 0.0;
+        for (const auto& [_, p] : positions) row_sum += p.realized_pnl.as_double();
+        EXPECT_NEAR(row_sum, strat->get_metrics().realized_pnl + costs, 1e-6)
+            << "rows must sum to the aggregate on every day (protocol L5)";
+        return positions;
+    };
+
+    // Day 1: open 10 @ 100.
+    auto day1 = run_day({}, 10.0, 100.0);
+    ASSERT_TRUE(day1.count("TMUS"));
+    EXPECT_DOUBLE_EQ(day1.at("TMUS").realized_pnl.as_double(), 0.0);
+
+    // Weekend: day 1's row is finalized (twice would be the same) before day 2 reads it.
+    auto day1_as_loaded = finalize_like_a_weekend(day1, 100.0, 105.0);
+
+    // Day 2: hold. Nothing traded, so the row must be 0 -- not the 50.0 mark move
+    // the finalizer wrote onto day 1's row.
+    auto day2 = run_day(day1_as_loaded, 10.0, 105.0);
+    ASSERT_TRUE(day2.count("TMUS"));
+    EXPECT_DOUBLE_EQ(day2.at("TMUS").realized_pnl.as_double(), 0.0)
+        << "a held, untraded position realizes nothing today; a mark move leaked "
+           "in through the seed (E2-F20)";
+
+    auto day2_as_loaded = finalize_like_a_weekend(day2, 105.0, 110.0);
+
+    // Day 3: close at 110. The exit realizes 10 x (110 - 100) = 100 -- and it must
+    // be on a row, i.e. the qty-0 entry is not dead.
+    auto day3 = run_day(day2_as_loaded, 0.0, 110.0);
+    ASSERT_TRUE(day3.count("TMUS"));
+    EXPECT_DOUBLE_EQ(day3.at("TMUS").quantity.as_double(), 0.0);
+    EXPECT_NEAR(day3.at("TMUS").realized_pnl.as_double(), 100.0, 1e-6)
+        << "the close-day row carries the exit's realized";
+    EXPECT_FALSE(LiveDailyCycle::is_dead_row(day3.at("TMUS")))
+        << "the day-T write must keep the close-day row (E2-F19 route 3)";
+}
+
+// ---------------------------------------------------------------------------
+// G1 in both shapes. The runner's day-T book comes from the strategy's target
+// map, which covers the configured universe. A held symbol IN the universe gets a
+// qty-0 target and the close-out flows through the ordinary delta path (route 3:
+// the row exists and must not be dropped). A held symbol NOT in the universe --
+// contra-merged, renamed, or de-configured -- gets a close-out from
+// generate_daily_executions' second loop and no row at all (G1: a row must be
+// synthesized).
+// ---------------------------------------------------------------------------
+TEST_F(LiveDailyCycleSeedingTest, CloseOutOfAConfiguredSymbolKeepsItsRow) {
+    ExecutionManager em;
+    const Timestamp now = std::chrono::system_clock::now();
+    auto bars = hold_band_series("MSFT");
+    auto strat = create_strategy();
+    std::unordered_map<std::string, Position> previous{
+        {"MSFT", held_with_pnl("MSFT", 10.0, 100.0, 0.0, 0.0)}};
+    ASSERT_TRUE(LiveDailyCycle::prepare_strategy_for_signals(*strat, previous, bars).is_ok());
+
+    std::unordered_map<std::string, Position> positions;
+    Position target;
+    target.symbol = "MSFT";
+    target.quantity = Quantity(0.0);
+    target.last_update = now;
+    positions["MSFT"] = target;
+
+    auto outcome = LiveDailyCycle::execute_day_t(em, positions, previous, {{"MSFT", 110.0}},
+                                                 bars, now);
+    ASSERT_TRUE(outcome.is_ok());
+    ASSERT_EQ(outcome.value().executions.size(), 1u);
+    ASSERT_TRUE(strat->on_execution(outcome.value().executions.front()).is_ok());
+    LiveDailyCycle::resolve_and_apply_basis(positions, strat->get_positions(), previous,
+                                            outcome.value().execution_prices);
+
+    ASSERT_TRUE(positions.count("MSFT"));
+    EXPECT_NEAR(positions.at("MSFT").realized_pnl.as_double(), 100.0, 1e-6);
+    EXPECT_FALSE(LiveDailyCycle::is_dead_row(positions.at("MSFT")));
+}
+
+TEST_F(LiveDailyCycleSeedingTest, CloseOutOfAnUnconfiguredSymbolGetsARow) {
+    ExecutionManager em;
+    const Timestamp now = std::chrono::system_clock::now();
+    auto bars = hold_band_series("MSFT");
+    auto strat = create_strategy();
+    std::unordered_map<std::string, Position> previous{
+        {"MSFT", held_with_pnl("MSFT", 10.0, 100.0, 0.0, 0.0)}};
+    ASSERT_TRUE(LiveDailyCycle::prepare_strategy_for_signals(*strat, previous, bars).is_ok());
+
+    // MSFT has left the universe: no target entry at all.
+    std::unordered_map<std::string, Position> positions;
+
+    auto outcome = LiveDailyCycle::execute_day_t(em, positions, previous, {{"MSFT", 110.0}},
+                                                 bars, now);
+    ASSERT_TRUE(outcome.is_ok());
+    ASSERT_EQ(outcome.value().executions.size(), 1u)
+        << "generate_daily_executions must close out a held symbol absent from targets";
+    EXPECT_EQ(outcome.value().executions.front().side, Side::SELL);
+    ASSERT_TRUE(strat->on_execution(outcome.value().executions.front()).is_ok());
+    LiveDailyCycle::resolve_and_apply_basis(positions, strat->get_positions(), previous,
+                                            outcome.value().execution_prices);
+    EXPECT_FALSE(positions.count("MSFT")) << "precondition: no row exists yet for the exit";
+
+    auto added = LiveDailyCycle::add_rowless_exits(positions, strat->get_positions(), now);
+
+    ASSERT_EQ(added.size(), 1u);
+    ASSERT_TRUE(positions.count("MSFT")) << "the exit's realized needs a row (G1)";
+    EXPECT_NEAR(positions.at("MSFT").realized_pnl.as_double(), 100.0, 1e-6);
+    EXPECT_DOUBLE_EQ(positions.at("MSFT").quantity.as_double(), 0.0);
+    EXPECT_FALSE(LiveDailyCycle::is_dead_row(positions.at("MSFT")));
 }

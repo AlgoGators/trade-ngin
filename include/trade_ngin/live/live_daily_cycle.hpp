@@ -221,6 +221,94 @@ public:
         std::sort(unresolved.begin(), unresolved.end());
         return unresolved;
     }
+
+    // -----------------------------------------------------------------------
+    // trading.positions.daily_realized_pnl -- the row-level realized column.
+    //
+    // DEFINITION. The P&L this position realized on this row's date, gross of
+    // transaction costs, under the runner's own accounting model. It is a FLOW:
+    // summing it over dates gives the position's realized P&L over that span.
+    // daily_unrealized_pnl beside it is a LEVEL and must never be summed over
+    // dates.
+    //
+    //   * Settled book (futures, UnrealizedPolicy::SETTLED): the day's settlement
+    //     move qty x (close(D) - close(D-1)) x point_value, written by the T-1
+    //     finalization. The futures runners do not use the helpers below.
+    //   * Cash book (equities, MARK_TO_MARKET): that day's TRADE-realized from
+    //     that date's fills, plus realized locked in by a corporate action on
+    //     that date. Written on the day itself and never revised.
+    //
+    // The helpers below are the equity runner's contract with that definition.
+    // Each is a pure function so the rule can be pinned by a unit test rather
+    // than only by a database replay (E2-F19 / E2-F20).
+    // -----------------------------------------------------------------------
+
+    /** Tolerance below which a quantity or a realized figure counts as zero. */
+    static constexpr double kRowTolerance = 1e-10;
+
+    /**
+     * @brief Whether a position row carries nothing worth persisting.
+     *
+     * Phase 0 stub: today's rule -- a row is dropped on quantity alone.
+     */
+    static bool is_dead_row(const Position& position, double tol = kRowTolerance) {
+        return std::abs(position.quantity.as_double()) <= tol;
+    }
+
+    /**
+     * @brief Partition a loaded book into open rows and closed rows.
+     *
+     * Everything downstream of the load (corporate actions, seeding, execution,
+     * basis resolution, the run-gap guard) is written against a book of held
+     * positions. Closed rows exist only to carry a realized figure on the date
+     * the position closed; they are re-appended to that date's T-1 write set
+     * and go nowhere else.
+     */
+    static void split_open_and_closed(
+        const std::unordered_map<std::string, Position>& loaded,
+        std::unordered_map<std::string, Position>& open,
+        std::unordered_map<std::string, Position>& closed,
+        double tol = kRowTolerance) {
+        open.clear();
+        closed.clear();
+        for (const auto& [symbol, position] : loaded) {
+            if (std::abs(position.quantity.as_double()) <= tol) {
+                closed[symbol] = position;
+            } else {
+                open[symbol] = position;
+            }
+        }
+    }
+
+    /**
+     * @brief Put the LOADED T-1 realized figure back on each finalized T-1 row.
+     *
+     * Phase 0 stub: identity -- the finalizer's output is persisted as-is.
+     */
+    static void restore_loaded_realized(
+        std::vector<Position>& finalized,
+        const std::unordered_map<std::string, Position>& loaded) {
+        (void)finalized;
+        (void)loaded;
+    }
+
+    /**
+     * @brief Give a row to a symbol the strategy realized P&L on that has no
+     *        entry in the day-T book.
+     *
+     * Phase 0 stub: no-op.
+     */
+    static std::vector<std::string> add_rowless_exits(
+        std::unordered_map<std::string, Position>& positions,
+        const std::unordered_map<std::string, Position>& strategy_positions,
+        const Timestamp& now,
+        double tol = kRowTolerance) {
+        (void)positions;
+        (void)strategy_positions;
+        (void)now;
+        (void)tol;
+        return {};
+    }
 };
 
 }  // namespace trade_ngin
