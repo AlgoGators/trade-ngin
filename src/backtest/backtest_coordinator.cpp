@@ -787,19 +787,32 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                                 cost_basis = static_cast<double>(held->second.average_price);
                             }
                         }
-                        // Keep the stored row self-consistent: a reader recomputing
-                        // qty * (close - average_price) from backtest.final_positions must
-                        // get the unrealized_pnl we wrote. Leaving average_price as a mark
-                        // while measuring unrealized against a basis is what made the two
-                        // disagree.
+                        // DELIBERATELY NOT WRITTEN BACK: `updated_pos.average_price` keeps
+                        // whatever the target position carried. The basis is used ONLY to
+                        // measure unrealized, just above.
                         //
-                        // Deliberately gated on the accounting method rather than relying on
-                        // TrendFollowingStrategy::on_execution being a no-op
-                        // (trend_following.cpp:103-115, which never populates positions_).
-                        // That is true today, but futures must be untouched here by
-                        // CONSTRUCTION, not by a property of another class that a future
-                        // edit could quietly change.
-                        updated_pos.average_price = Decimal(cost_basis);
+                        // Writing the basis into average_price looks right -- it would make
+                        // the stored row self-consistent, so a reader recomputing
+                        // qty * (close - average_price) would reproduce unrealized_pnl. It is
+                        // wrong, and measurably so. This position goes to
+                        // PortfolioManager::update_strategy_position() -> current_positions,
+                        // and RiskManager reads average_price off those as a MARK to size
+                        // notional and leverage (risk_manager.cpp:64, :236, :243). On a book
+                        // holding gains the basis sits below the mark, so leverage is
+                        // understated, less risk scaling is applied, and positions come out
+                        // bigger.
+                        //
+                        // NOTE ON EVIDENCE: an equity-backtest sizing shift of 1.29x-1.75x was
+                        // observed in the same run this was written in, and initially blamed on
+                        // this line. Reverting it did NOT restore the baseline, so this is NOT
+                        // the cause of that shift -- the reasoning below stands on the code
+                        // path alone, not on a measurement.
+                        //
+                        // This is exactly the ambiguity docs/AVERAGE_PRICE_LIFECYCLE.md maps:
+                        // the field carries THREE meanings and risk wants the mark while P&L
+                        // wants the basis. Consuming the basis locally is safe; storing it is
+                        // not. If the stored row must ever be made self-consistent, the basis
+                        // needs its OWN column -- do not reuse this one.
                     }
 
                     // E2-F2: unrealized is gated on the SAME accounting method as
