@@ -1,6 +1,8 @@
 // src/strategy/base_strategy.cpp
 
 #include "trade_ngin/strategy/base_strategy.hpp"
+#include <algorithm>
+#include <cmath>
 #include <iostream>
 #include <sstream>
 #include "trade_ngin/core/logger.hpp"
@@ -197,18 +199,32 @@ Result<void> BaseStrategy::on_execution(const ExecutionReport& report) {
     try {
         auto& pos = positions_[report.symbol];
 
-        // Calculate realized PnL if closing position
+        // Calculate realized PnL if closing position.
+        //
+        // E2-F27 / T-OR.4: realize on the CLOSED quantity, not on the whole fill. A fill that
+        // crosses zero -- long 100, SELL 150 -- closes 100 shares against the existing basis and
+        // OPENS 50 new ones at the fill price. Multiplying the price difference by the full 150
+        // books P&L on 50 shares that were never held (measured: 3000 where the trade made 2000),
+        // and the overstatement is permanent: it lands in pos.realized_pnl and metrics_.realized_pnl,
+        // which live_results and trading.positions.daily_realized_pnl are built from.
+        //
+        // Latent rather than live today only because MeanReversionStrategy cannot flip in a single
+        // bar and TF/TFF/TFS override on_execution; an optimizer-driven QP_FLIP/RISK_SCALE_FLIP on
+        // any non-overriding strategy reaches this path.
         if ((pos.quantity > 0 && report.side == Side::SELL) ||
             (pos.quantity < 0 && report.side == Side::BUY)) {
+            const double closed_quantity =
+                std::min(std::abs(static_cast<double>(pos.quantity)),
+                         static_cast<double>(report.filled_quantity));
             double realized_pnl = 0.0;
             if (report.side == Side::SELL) {
                 realized_pnl = (static_cast<double>(report.fill_price) -
                                 static_cast<double>(pos.average_price)) *
-                               static_cast<double>(report.filled_quantity);
+                               closed_quantity;
             } else {
                 realized_pnl = (static_cast<double>(pos.average_price) -
                                 static_cast<double>(report.fill_price)) *
-                               static_cast<double>(report.filled_quantity);
+                               closed_quantity;
             }
 
             pos.realized_pnl += Decimal(realized_pnl);
