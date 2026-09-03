@@ -185,3 +185,64 @@ TEST_F(CorpActionQueryBoundsDbTest, TextComparisonSelectsTheSameSetACastWould) {
         EXPECT_EQ(std::string(cast_rows[i][2].c_str()), std::string(text_rows[i][2].c_str()));
     }
 }
+
+// ──────────────────────────────────────────────────────────────────────────
+// G6-5 -- the UPPER bound is what keeps future-dated rows out of a run.
+//
+// equities_data.corporate_action carries rows dated in the future: SBDS has a
+// tickerchangeto/from pair on 2027-07-18 (contra DTCB), placeholders the vendor
+// emits ahead of an announced change. Every reader passes the run's as-of date
+// as the end bound, so they are invisible today. Nothing pinned that. If the
+// end bound is ever widened -- a "load everything, filter later" refactor, a
+// bulk backfill -- a 2026 run would act on a 2027 rename.
+// ──────────────────────────────────────────────────────────────────────────
+
+TEST_F(CorpActionQueryBoundsDbTest, FutureDatedRowsAreExcludedByTheEndBound) {
+    const auto tickerchange = vendor_labels_for_class(CorpActionClass::SERIES_CONTINUITY);
+    ASSERT_FALSE(tickerchange.empty());
+
+    // A run bounded at its own as-of date sees nothing.
+    auto bounded = db_->get_corporate_actions({"SBDS"}, "2020-01-01", "2026-09-03", tickerchange);
+    ASSERT_TRUE(bounded.is_ok()) << bounded.error()->what();
+    for (const auto& r : bounded.value()) {
+        EXPECT_LE(r.date_str, "2026-09-03")
+            << "a row dated after the run leaked past the end bound: " << r.ticker << " "
+            << r.date_str << " " << r.action;
+    }
+
+    // The rows are really there -- widening the bound returns them, which is what
+    // makes the assertion above a bound and not an empty table.
+    auto widened = db_->get_corporate_actions({"SBDS"}, "2020-01-01", "2027-12-31", tickerchange);
+    ASSERT_TRUE(widened.is_ok()) << widened.error()->what();
+    size_t future_rows = 0;
+    for (const auto& r : widened.value()) {
+        if (r.date_str > "2026-09-03") ++future_rows;
+    }
+    EXPECT_EQ(future_rows, 2u)
+        << "SBDS's 2027-07-18 tickerchangeto/from pair is the fixture this pin rests on; "
+           "if the data changed, re-pick a future-dated symbol rather than deleting the test";
+    EXPECT_GT(widened.value().size(), bounded.value().size())
+        << "the two bounds must not return the same set, or the bound is doing nothing";
+}
+
+// The same statement one layer down, independent of the accessor: the bound is a
+// property of the query, and a lexicographic upper bound on ISO text orders the
+// same way a date bound does across the year boundary the future rows sit past.
+TEST_F(CorpActionQueryBoundsDbTest, TheFutureRowsExistAndAreDatedBeyondAnyRun) {
+    pqxx::connection c(conn_string_);
+    pqxx::work w(c);
+    auto rows = w.exec(
+        "SELECT date, action FROM equities_data.corporate_action "
+        "WHERE ticker = 'SBDS' AND date > '2026-12-31' ORDER BY date, action");
+    const auto max_real = w.exec(
+        "SELECT max(date) FROM equities_data.corporate_action "
+        "WHERE action NOT IN ('tickerchangeto','tickerchangefrom')")[0][0].c_str();
+    w.commit();
+
+    ASSERT_EQ(rows.size(), 2u);
+    EXPECT_EQ(std::string(rows[0][0].c_str()), "2027-07-18");
+    EXPECT_EQ(std::string(rows[1][0].c_str()), "2027-07-18");
+    EXPECT_LT(std::string(max_real), "2027-01-01")
+        << "only the tickerchange placeholders are future-dated; if a real event ever is, "
+           "every reader's as-of bound becomes load-bearing for more than renames";
+}
