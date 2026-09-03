@@ -10,6 +10,7 @@
 
 #include "trade_ngin/core/error.hpp"
 #include "trade_ngin/core/holiday_checker.hpp"
+#include "trade_ngin/core/time_utils.hpp"
 #include "trade_ngin/live/corporate_actions_lifecycle.hpp"
 #include "trade_ngin/live/execution_manager.hpp"
 #include "trade_ngin/live/execution_price_resolver.hpp"
@@ -197,6 +198,78 @@ public:
         }
         universe.insert(universe.end(), additions.begin(), additions.end());
         return universe;
+    }
+
+    /** @brief What the E2-F43 feed check found. */
+    struct FeedIngestionCheck {
+        /** One entry per symbol that should have ingested a bar and did not, with the
+         *  reason spelled out ready for an ERROR line. */
+        std::vector<std::string> not_ingested;
+        size_t verified{0};   ///< symbols whose last_update IS the newest loaded bar
+        size_t no_bars{0};    ///< symbols with no bar at all in the window (not a failure here)
+    };
+
+    /**
+     * @brief Did the strategy actually ingest the bars this run loaded? (E2-F43)
+     *
+     * `PortfolioManager::process_market_data` LOGS an `on_data` error and then reads
+     * `get_target_positions()` off un-updated instrument data. For a strategy whose state
+     * starts empty every session -- which every live process is -- that yields ZERO targets
+     * for every symbol, and zero targets against a held book is a full-book SELL, not a
+     * no-op. Until E2-F28 collapsed the double feed, the removed first feed returned that
+     * error to the runner and the run exited 1; nothing checks it now.
+     *
+     * The test is exact rather than approximate because it can be: `on_data` stamps the
+     * bar's own timestamp on the instrument, so after a successful feed the strategy's
+     * `last_update` for a symbol IS the newest bar loaded for that symbol. Anything else
+     * means the feed did not happen, happened partially, or happened against a different
+     * set of bars than the one the rest of the day is priced from.
+     *
+     * A symbol with NO bars in the window is not this check's business: that is a data gap
+     * and the runner's T-1 price checks own it. It is counted, not failed, so the caller can
+     * tell "everything was verified" from "there was nothing to verify".
+     *
+     * @param universe the effective universe (config plus successors of held names)
+     * @param bars every bar loaded this run, any order
+     * @param strategy_last_update symbol -> the strategy's own last_update; a symbol ABSENT
+     *        from this map has no instrument data at all, which is itself a failure
+     */
+    static FeedIngestionCheck verify_strategy_ingested_bars(
+        const std::vector<std::string>& universe, const std::vector<Bar>& bars,
+        const std::unordered_map<std::string, Timestamp>& strategy_last_update) {
+        std::unordered_map<std::string, Timestamp> newest_bar;
+        for (const auto& bar : bars) {
+            auto it = newest_bar.find(bar.symbol);
+            if (it == newest_bar.end() || bar.timestamp > it->second) {
+                newest_bar[bar.symbol] = bar.timestamp;
+            }
+        }
+
+        FeedIngestionCheck out;
+        for (const auto& symbol : universe) {
+            auto nb = newest_bar.find(symbol);
+            if (nb == newest_bar.end()) {
+                ++out.no_bars;
+                continue;
+            }
+            auto lu = strategy_last_update.find(symbol);
+            if (lu == strategy_last_update.end()) {
+                out.not_ingested.push_back(
+                    symbol +
+                    " (no instrument data: the strategy was never initialized for a symbol "
+                    "in the effective universe)");
+                continue;
+            }
+            if (lu->second != nb->second) {
+                out.not_ingested.push_back(symbol + " (strategy last_update " +
+                                           core::format_utc_datetime(lu->second) +
+                                           ", newest loaded bar " +
+                                           core::format_utc_datetime(nb->second) + ")");
+                continue;
+            }
+            ++out.verified;
+        }
+        return out;
     }
 
     /** What one day's execution step did, beyond the fills themselves. */

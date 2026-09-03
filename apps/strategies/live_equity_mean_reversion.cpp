@@ -2897,6 +2897,66 @@ int main(int argc, char* argv[]) {
             }
             INFO("Portfolio processing completed");
 
+            // E2-F43 (BA-17): prove the strategy ACTUALLY INGESTED today's bars.
+            //
+            // PortfolioManager::process_market_data (portfolio_manager.cpp:217-222) calls
+            // strategy->on_data(data), and when that returns an error it LOGS the error and
+            // carries straight on to get_target_positions() against un-updated instrument
+            // data. For MeanReversion that yields the previous cycle's targets -- or, from a
+            // process that starts with an empty instrument_data_ every session, ZERO targets
+            // for every symbol. Zero targets on a held book is not "no change": it is a
+            // full-book SELL, generated from a strategy that never saw a price.
+            //
+            // Until E2-F28 the first of the two feeds returned that error to the runner and
+            // the run exited 1. Collapsing to the single feed removed the last caller that
+            // checked, so the failure mode became silent. It is unreachable on valid bars
+            // today (start() precedes this, and MeanReversion::on_data has no failing branch
+            // once RUNNING), which is exactly why it needs an assertion rather than a hope:
+            // one added throw, one strategy without on_data's early-return contract, and the
+            // book is liquidated with an ERROR line in the log and exit code 0.
+            //
+            // The test is per symbol and exact: MeanReversionStrategy::on_data stamps
+            // inst_data.last_update = bar.timestamp for every bar it accepts, so after a
+            // successful feed each symbol's last_update IS the newest bar this run loaded for
+            // it. A symbol with no bars at all is NOT this check's business -- it is a data
+            // gap, reported by the T-1 price checks below -- so it is skipped and counted.
+            {
+                std::unordered_map<std::string, Timestamp> strategy_last_update;
+                for (const auto& symbol : symbols) {
+                    const auto* inst = mr_strategy->get_instrument_data(symbol);
+                    if (inst != nullptr) strategy_last_update[symbol] = inst->last_update;
+                }
+
+                const auto feed = LiveDailyCycle::verify_strategy_ingested_bars(
+                    symbols, all_bars, strategy_last_update);
+
+                if (!feed.not_ingested.empty()) {
+                    for (const auto& detail : feed.not_ingested) {
+                        ERROR("FEED ASSERTION: the strategy did not ingest the loaded bars "
+                              "for " + detail);
+                    }
+                    ERROR("Refusing to trade on a strategy that did not see this run's "
+                          "prices. get_target_positions() would return stale or empty "
+                          "targets, and an empty target map on a held book is a full-book "
+                          "SELL, not a no-op (E2-F43). Nothing has been written for today.");
+                    return 1;
+                }
+
+                if (feed.verified == 0) {
+                    ERROR("FEED ASSERTION: not one symbol in the effective universe of " +
+                          std::to_string(symbols.size()) +
+                          " could be verified against a loaded bar, so the check is vacuous "
+                          "and proves nothing about what the strategy saw. Refusing to trade "
+                          "(E2-F43).");
+                    return 1;
+                }
+
+                INFO("FEED ASSERTION: strategy ingested the newest loaded bar for " +
+                     std::to_string(feed.verified) + "/" + std::to_string(symbols.size()) +
+                     " symbol(s) in the effective universe (" + std::to_string(feed.no_bars) +
+                     " carry no bars in the window and are left to the price checks below)");
+            }
+
             // Get portfolio positions (post risk-management)
             INFO("Retrieving portfolio positions...");
             positions = portfolio->get_portfolio_positions();
