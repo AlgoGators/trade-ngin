@@ -102,6 +102,7 @@ set(TEST_SOURCES
     strategy/test_volatility_size_1_nan_guard.cpp
     strategy/test_stale_unrealized_pnl_zero_avg_price.cpp
     strategy/test_live_daily_cycle_seeding.cpp
+    strategy/test_penny_stock_lifecycle.cpp
     statistics/test_normalizer.cpp
     statistics/test_pca.cpp
     statistics/test_adf.cpp
