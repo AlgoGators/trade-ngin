@@ -19,11 +19,16 @@ dual-portfolio workflow:
    results without mixing them into production attribution.
 8. `008_strategy_config.sql` — delivered by PR #60; stores versioned strategy
    overrides and run manifests without colliding with the portfolio migrations.
+9. `009_books_and_membership.sql` — delivered on the `qt-platform-preview`
+   branch; declares books as first-class rows, lets a strategy belong to
+   several, and adds the append-only book-change audit. Numbered 009 because
+   PR #60 already holds 008 on its own branch; both are meant for `main`.
 
 The safe release sequence is: merge PR #55 and PR #56; apply 002–004 from PR
 #55, then 005 from PR #56, then 006–007 from PR #55; deploy the combined binary
 only after the schema is current. Apply 008 from PR #60 before enabling
-database-backed strategy overrides. Run each `test_*.sh` migration test against
+database-backed strategy overrides, and 009 before deploying an AlgoLens that
+has the Books tab (it no longer creates these tables itself). Run each `test_*.sh` migration test against
 disposable PostgreSQL before production rollout. Rollback scripts intentionally
 refuse operations that would discard populated attribution streams.
 

@@ -86,7 +86,7 @@ COMMENT ON TABLE trading.strategy_book_memberships IS
 -- Every existing strategy joins the book it already had. Without this the
 -- platform would report every book empty the moment membership is read.
 INSERT INTO trading.strategy_book_memberships (strategy_id, portfolio_id, added_by)
-SELECT id, portfolio_id, 'migration-008'
+SELECT id, portfolio_id, 'migration-009'
 FROM trading.strategy_registry
 ON CONFLICT (strategy_id, portfolio_id) DO NOTHING;
 

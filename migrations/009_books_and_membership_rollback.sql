@@ -1,9 +1,9 @@
--- Rollback for 008_books_and_membership.sql
+-- Rollback for 009_books_and_membership.sql
 --
--- Drops the three tables 008 created. strategy_registry.portfolio_id is
+-- Drops the three tables 009 created. strategy_registry.portfolio_id is
 -- untouched throughout -- it was never migrated away from, so reverting leaves
 -- every strategy in the book it names and the platform reads exactly as it did
--- before 008.
+-- before 009.
 --
 -- The audit rows in trading.portfolio_assignments are destroyed by this. That
 -- is the one irreversible part: the rules on the table refuse DELETE, but DROP
