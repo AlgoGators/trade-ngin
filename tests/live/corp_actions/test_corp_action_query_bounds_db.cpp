@@ -246,3 +246,213 @@ TEST_F(CorpActionQueryBoundsDbTest, TheFutureRowsExistAndAreDatedBeyondAnyRun) {
         << "only the tickerchange placeholders are future-dated; if a real event ever is, "
            "every reader's as-of bound becomes load-bearing for more than renames";
 }
+
+
+// ──────────────────────────────────────────────────────────────────────────
+// V4-1 -- the LEN/Millrose hole.
+//
+// Class-1 (price-restating) effects are sourced PER BAR: the applier reads
+// ohlcv_1d.split_factor and ohlcv_1d.div_cash via get_per_bar_corporate_actions,
+// never corporate_action.value. equities_data.corporate_action is consulted only
+// for class-2 renames and class-3 deal terms. So a class-1 row whose bar carries
+// no move is applied by NOTHING -- no error, no WARN, no dedup row, no deferral.
+// The position carries an unrestated cost basis across a real event, forever.
+//
+// LEN 2025-02-07 is that shape: corporate_action holds `spinoff` MRP 0.5 and
+// `spinoffdividend` 11.495, while the LEN bar for that day carries split_factor 1
+// and div_cash 0 -- and the close fell 127.25 -> 121.94.
+//
+// Two distinct shapes come out of the same join and must not be conflated:
+//
+//   (a) a bar EXISTS on the ex-date and is flat  -- V4-1. Nothing downstream can
+//       ever notice, because the applier only sees bars and this bar says
+//       "nothing happened". This is the failing assertion below.
+//   (b) NO bar exists on the ex-date -- the applier has no input and the runner
+//       already says so out loud ("No price history exists for held symbol(s)")
+//       and leaves the event unapplied for a later run to pick up. Not silent,
+//       and not this test's subject; what IS pinned is that this shape only ever
+//       happens to dividends. A missing bar on a split or spinoff date would mean
+//       a share count that never adjusts.
+// ──────────────────────────────────────────────────────────────────────────
+
+namespace {
+
+// Bars carry split_factor/div_cash reliably over the era a live book can reach
+// (this book's positions start 2026-04-01). Before 2020 the rows are dominated
+// by ticker-reuse artefacts -- DD's 2018-19 dividends belong to DowDuPont, whose
+// history now lives under DD1 -- which say nothing about the applier.
+constexpr const char* kBarEraFloor = "2020-01-01";
+
+// (ticker, date, action) triples KNOWN to be silent and accepted. The allowlist
+// is the point of the test: a corporate action nothing applies is tolerable only
+// once somebody has looked at it and written down why.
+const std::set<std::vector<std::string>>& allowlisted_silent_class1() {
+    static const std::set<std::vector<std::string>> a = {
+        // The Millrose (MRP) spin-off. Tiingo encoded it in neither split_factor
+        // nor div_cash on the LEN bar, so the class-1 applier cannot see it at
+        // all. Receipt of the child is E4 NEW-5(B); until that lands, LEN is not
+        // in the traded universe and this row is inert. Both vendor labels for
+        // the one event are listed -- corporate_action carries a `spinoff` row
+        // (ratio 0.5) and a `spinoffdividend` row (11.495) for the same date.
+        {"LEN", "2025-02-07", "spinoff"},
+        {"LEN", "2025-02-07", "spinoffdividend"},
+    };
+    return a;
+}
+
+// The symbols a live equity run can reach: every symbol named by an equity
+// portfolio config on this machine, plus the symbols this tripwire exists to
+// keep watching. LEN is not in the configured book -- it is here because it is
+// the proven instance of the failure, and dropping it would make the test
+// green by looking away.
+std::vector<std::string> tripwire_universe() {
+    namespace fs = std::filesystem;
+    std::set<std::string> symbols = {"LEN"};
+
+    fs::path dir = fs::current_path();
+    for (int i = 0; i < 8 && !dir.empty(); ++i) {
+        bool found_any = false;
+        for (const char* rel : {"config/portfolios/equity_mr/portfolio.json",
+                                "config_template/portfolios/equity_mr/portfolio.json"}) {
+            fs::path candidate = dir / rel;
+            if (!fs::exists(candidate)) continue;
+            found_any = true;
+            try {
+                std::ifstream in(candidate);
+                nlohmann::json j = nlohmann::json::parse(in);
+                for (const auto& [name, def] : j.at("strategies").items()) {
+                    (void)name;
+                    if (!def.contains("symbols")) continue;
+                    for (const auto& s : def.at("symbols")) symbols.insert(s.get<std::string>());
+                }
+            } catch (const std::exception&) {
+                // A malformed config must not silently shrink the scan set; the
+                // size assertion in the test catches that.
+            }
+        }
+        if (found_any) break;
+        dir = dir.parent_path();
+    }
+    return std::vector<std::string>(symbols.begin(), symbols.end());
+}
+
+struct SilentClass1Row {
+    std::string ticker, date, action;
+    bool has_bar = false;
+    double split_factor = 1.0;
+    double div_cash = 0.0;
+};
+
+std::vector<SilentClass1Row> scan_silent_class1(const std::string& conn,
+                                                const std::vector<std::string>& universe) {
+    pqxx::connection c(conn);
+    pqxx::work w(c);
+    auto rows = w.exec(
+        "SELECT ca.ticker, ca.date, ca.action, "
+        "       (b.symbol IS NOT NULL) AS has_bar, "
+        "       COALESCE(b.split_factor, 1) AS split_factor, "
+        "       COALESCE(b.div_cash, 0) AS div_cash "
+        "FROM equities_data.corporate_action ca "
+        "LEFT JOIN equities_data.ohlcv_1d b "
+        "       ON b.symbol = ca.ticker AND b.time::date = ca.date::date "
+        "WHERE ca.ticker = ANY($1) AND ca.action = ANY($2) AND ca.date >= $3 "
+        "ORDER BY ca.date, ca.ticker, ca.action",
+        pqxx::params{universe, vendor_labels_for_class(CorpActionClass::PRICE_RESTATING),
+                     std::string(kBarEraFloor)});
+    w.commit();
+
+    std::vector<SilentClass1Row> out;
+    for (const auto& r : rows) {
+        SilentClass1Row s;
+        s.ticker = r["ticker"].c_str();
+        s.date = r["date"].c_str();
+        s.action = r["action"].c_str();
+        s.has_bar = r["has_bar"].as<bool>();
+        s.split_factor = r["split_factor"].as<double>();
+        s.div_cash = r["div_cash"].as<double>();
+        if (s.has_bar && (s.split_factor != 1.0 || s.div_cash != 0.0)) continue;  // applied
+        out.push_back(std::move(s));
+    }
+    return out;
+}
+
+}  // namespace
+
+// (a) The silent no-op. A bar exists, the applier reads it, and it says nothing
+// happened.
+TEST_F(CorpActionQueryBoundsDbTest, NoSilentlyUnappliedClass1RowInTheLiveUniverse) {
+    const auto universe = tripwire_universe();
+    ASSERT_GE(universe.size(), 5u)
+        << "no equity portfolio config was found; scanning one symbol proves nothing";
+
+    const auto silent = scan_silent_class1(conn_string_, universe);
+
+    std::vector<std::string> unexplained;
+    for (const auto& s : silent) {
+        if (!s.has_bar) continue;  // shape (b), pinned by the next test
+        if (allowlisted_silent_class1().count({s.ticker, s.date, s.action})) continue;
+        unexplained.push_back(s.ticker + " " + s.date + " " + s.action +
+                              " (bar present, split_factor=" + std::to_string(s.split_factor) +
+                              " div_cash=" + std::to_string(s.div_cash) + ")");
+    }
+
+    std::string detail;
+    for (const auto& u : unexplained) detail += "\n    " + u;
+    EXPECT_TRUE(unexplained.empty())
+        << unexplained.size()
+        << " class-1 corporate_action row(s) have a bar on the ex-date that carries no "
+           "move, so the applier is a silent no-op and the cost basis is never restated:"
+        << detail
+        << "\n  Either the bar data is wrong (fix the feed) or the row is genuinely "
+           "inapplicable (add it to allowlisted_silent_class1 with the reason).";
+}
+
+// The allowlist must never become a rubber stamp: every entry has to name a row
+// that is really there and really silent. An entry that stops matching means the
+// data moved and the exemption is now hiding something else.
+TEST_F(CorpActionQueryBoundsDbTest, EveryAllowlistedSilentRowStillExistsAndIsStillSilent) {
+    ASSERT_FALSE(allowlisted_silent_class1().empty())
+        << "an empty allowlist makes the tripwire above prove nothing about LEN";
+
+    const auto silent = scan_silent_class1(conn_string_, tripwire_universe());
+    std::set<std::vector<std::string>> observed;
+    for (const auto& s : silent) {
+        if (s.has_bar) observed.insert({s.ticker, s.date, s.action});
+    }
+    for (const auto& entry : allowlisted_silent_class1()) {
+        EXPECT_EQ(observed.count(entry), 1u)
+            << "allowlisted " << entry[0] << " " << entry[1] << " " << entry[2]
+            << " is no longer a silent class-1 row -- remove the exemption rather than "
+               "leaving it to cover a future one";
+    }
+}
+
+// (b) The other shape: no bar at all on the ex-date. The runner is loud about
+// this one and retries it, so it is not V4-1 -- but it must stay confined to
+// dividends. A split or spinoff whose ex-date has no bar means a share count
+// that never adjusts, which no later run can repair.
+TEST_F(CorpActionQueryBoundsDbTest, AMissingBarOnAClass1DateIsOnlyEverADividend) {
+    const auto silent = scan_silent_class1(conn_string_, tripwire_universe());
+
+    std::vector<std::string> quantity_changing;
+    size_t missing_bar_dividends = 0;
+    for (const auto& s : silent) {
+        if (s.has_bar) continue;
+        if (s.action == "dividend") {
+            ++missing_bar_dividends;
+            continue;
+        }
+        quantity_changing.push_back(s.ticker + " " + s.date + " " + s.action);
+    }
+
+    std::string detail;
+    for (const auto& q : quantity_changing) detail += "\n    " + q;
+    EXPECT_TRUE(quantity_changing.empty())
+        << "a quantity-changing class-1 event has no bar on its ex-date, so the share "
+           "count is never adjusted and no later run can repair it:"
+        << detail;
+
+    // Recorded, not asserted to be zero: these are real and are why the runner's
+    // "No price history exists for held symbol(s)" ERROR is load-bearing.
+    RecordProperty("missing_bar_dividends", static_cast<int>(missing_bar_dividends));
+}
