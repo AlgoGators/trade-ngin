@@ -772,6 +772,17 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                                                      : PnLAccountingMethod::REALIZED_ONLY;
                     if (method == PnLAccountingMethod::REALIZED_ONLY) {
                         updated_pos.realized_pnl = Decimal(pnl_result.daily_pnl);
+                    } else {
+                        // E2-F19: trading.positions.daily_realized_pnl is a per-bar FLOW.
+                        // The strategy's own record is a running total over the whole
+                        // backtest; persist the increment since the previous bar so the
+                        // stored rows mean the same thing live rows do (and sum correctly
+                        // over dates). The strategy's in-memory total is untouched.
+                        const std::string key = strategy_id + "|" + symbol;
+                        const double cumulative = static_cast<double>(pos.realized_pnl);
+                        double& last = last_cumulative_realized_[key];
+                        updated_pos.realized_pnl = Decimal(cumulative - last);
+                        last = cumulative;
                     }
                     // E2-F8: prefer the strategy's fill-maintained basis over the target
                     // position's average_price, which for mean reversion is the day's close

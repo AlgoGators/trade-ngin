@@ -95,6 +95,10 @@ private:
     // CSV exporter for portfolio backtest
     std::unique_ptr<BacktestCSVExporter> csv_exporter_;
     std::unordered_map<std::string, Position> portfolio_previous_positions_;
+    /// E2-F19: the strategy's cumulative realized per (strategy|symbol) at the last bar,
+    /// so a cash-book position row can be written as that bar's realized FLOW -- the same
+    /// definition the live equity runner persists -- rather than the running total.
+    std::unordered_map<std::string, double> last_cumulative_realized_;
 
     // Optional components for portfolio backtest
     std::shared_ptr<RiskManager> risk_manager_;
