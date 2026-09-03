@@ -20,22 +20,9 @@ const char* CorporateActionsLifecycle::outcome_to_string(LifecycleOutcome o) {
     return "SKIPPED_NO_POSITION";
 }
 
-std::vector<LifecycleAdjustment> CorporateActionsLifecycle::apply_renames(
-    std::unordered_map<std::string, Position>& positions,
-    const std::vector<TickerAlias>& aliases,
-    const std::string& as_of_date,
-    const std::unordered_map<std::string, std::string>& position_inception) {
-
-    std::vector<LifecycleAdjustment> log;
-
-    // Group by historical ticker, ascending by effective_until. ISO YYYY-MM-DD
-    // compares lexicographically, so a plain sort orders the eras.
-    //
-    // An alias with no effective_until cannot be era-bounded, and class 2 fails
-    // narrow: it is dropped rather than applied unconditionally. That is the same
-    // rule the dedup mirror uses, and it matters because an unbounded alias is
-    // exactly the shape that re-keys a currently-trading ticker.
-    std::unordered_map<std::string, std::vector<std::pair<std::string, std::string>>> renames;
+CorporateActionsLifecycle::RenameMap CorporateActionsLifecycle::build_rename_map(
+    const std::vector<TickerAlias>& aliases) {
+    RenameMap renames;
     for (const auto& a : aliases) {
         if (a.historical_ticker.empty() || a.current_symbol.empty()) continue;
         if (a.historical_ticker == a.current_symbol) continue;
@@ -46,28 +33,51 @@ std::vector<LifecycleAdjustment> CorporateActionsLifecycle::apply_renames(
         }
         renames[a.historical_ticker].emplace_back(a.effective_until, a.current_symbol);
     }
-    if (renames.empty()) return log;
     for (auto& entry : renames) {
         std::sort(entry.second.begin(), entry.second.end());
     }
+    return renames;
+}
 
-    // The successor a ticker had at `date`: the first rename on or after it.
-    // A date later than every rename maps NOWHERE -- the ticker belongs to
-    // whoever holds it now, not to the old company.
-    //
-    // The compare is inclusive on purpose. effective_until conventions differ by
-    // a day between curated rows (day-after) and backfilled rows (source date),
-    // so on the boundary day `<=` errs toward NOT applying a backfilled rename.
-    // That is the safe direction: the rename is simply retried next run.
-    auto successor_at = [&renames](const std::string& sym, const std::string& date)
-        -> std::pair<std::string, std::string> {  // (effective_until, current_symbol)
-        auto it = renames.find(sym);
-        if (it == renames.end()) return {};
-        for (const auto& candidate : it->second) {
-            if (date <= candidate.first) return candidate;
-        }
-        return {};
-    };
+std::pair<std::string, std::string> CorporateActionsLifecycle::successor_at(
+    const RenameMap& renames, const std::string& symbol, const std::string& date) {
+    auto it = renames.find(symbol);
+    if (it == renames.end()) return {};
+    for (const auto& candidate : it->second) {
+        if (date <= candidate.first) return candidate;
+    }
+    return {};
+}
+
+std::vector<std::string> CorporateActionsLifecycle::rename_chain(
+    const RenameMap& renames, const std::string& symbol, const std::string& holding_start,
+    const std::string& as_of_date) {
+    std::vector<std::string> chain;
+    if (holding_start.empty()) return chain;
+    std::string sym = symbol;
+    for (int hop = 0; hop < 8; ++hop) {
+        auto [effective_until, successor] = successor_at(renames, sym, holding_start);
+        if (successor.empty() || successor == sym) break;
+        // The rename must also have already happened as of this run.
+        if (!as_of_date.empty() && as_of_date <= effective_until) break;
+        chain.push_back(successor);
+        sym = successor;
+    }
+    return chain;
+}
+
+std::vector<LifecycleAdjustment> CorporateActionsLifecycle::apply_renames(
+    std::unordered_map<std::string, Position>& positions,
+    const std::vector<TickerAlias>& aliases,
+    const std::string& as_of_date,
+    const std::unordered_map<std::string, std::string>& position_inception) {
+
+    std::vector<LifecycleAdjustment> log;
+
+    // One rename map, shared with LiveDailyCycle::effective_universe so the universe
+    // the run loads bars for and the re-keying done here cannot drift apart (E2-F34).
+    const RenameMap renames = build_rename_map(aliases);
+    if (renames.empty()) return log;
 
     // Snapshot the keys: the loop below erases from and inserts into `positions`.
     std::vector<std::string> held;
@@ -96,7 +106,7 @@ std::vector<LifecycleAdjustment> CorporateActionsLifecycle::apply_renames(
             auto old_it = positions.find(sym);
             if (old_it == positions.end()) break;  // already merged away
 
-            auto [effective_until, successor] = successor_at(sym, inception);
+            auto [effective_until, successor] = successor_at(renames, sym, inception);
             if (successor.empty() || successor == sym) break;
 
             // The rename must also have already happened as of this run.

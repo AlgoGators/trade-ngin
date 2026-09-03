@@ -2795,6 +2795,67 @@ PostgresDatabase::get_position_inception_dates(const std::string& strategy_id,
 }
 
 Result<std::unordered_map<std::string, std::string>>
+PostgresDatabase::get_current_holding_start_dates(const std::string& strategy_id,
+                                                  const std::string& strategy_name,
+                                                  const std::string& portfolio_id,
+                                                  const std::vector<std::string>& symbols,
+                                                  const std::string& table_name) {
+    using Map = std::unordered_map<std::string, std::string>;
+
+    auto validation = validate_connection();
+    if (validation.is_error()) {
+        return make_error<Map>(validation.error()->code(), validation.error()->what());
+    }
+    if (symbols.empty()) return Result<Map>(Map{});
+
+    // table_name is an internal default (trading.positions), never user input --
+    // same contract as load_positions_by_date, which interpolates it likewise.
+
+    try {
+        pqxx::work txn(*connection_);
+
+        // The start of the holding we hold NOW: the earliest non-zero row that is
+        // NEWER than the most recent flat row for the same key. A close writes exactly
+        // one quantity-0 row on its own date (E2-F19), so that row is the break between
+        // a previous holding and this one. No flat row => never closed => this equals
+        // min(date), the lifetime inception.
+        //
+        // Deliberately NOT the same question as get_position_inception_dates. That one
+        // fails wide for the class-1 price window; this one is the class-2 rename era
+        // and must fail narrow (BA-2).
+        auto result = txn.exec(
+            "SELECT symbol, min(date)::text AS holding_start "
+            "FROM " + table_name + " p "
+                " WHERE strategy_id = $1 AND strategy_name = $2 AND portfolio_id = $3 "
+                "  AND symbol = ANY($4) AND quantity <> 0 "
+                "  AND date > COALESCE(("
+                "        SELECT max(z.date) FROM " + table_name + " z "
+                "         WHERE z.strategy_id = p.strategy_id "
+                "           AND z.strategy_name = p.strategy_name "
+                "           AND z.portfolio_id = p.portfolio_id "
+                "           AND z.symbol = p.symbol AND z.quantity = 0), "
+                "      DATE '1900-01-01') "
+                "GROUP BY symbol",
+            pqxx::params{strategy_id, strategy_name, portfolio_id, symbols});
+
+        Map out;
+        for (const auto& row : result) {
+            if (row["holding_start"].is_null()) continue;
+            out.emplace(row["symbol"].c_str(), row["holding_start"].c_str());
+        }
+
+        txn.commit();
+        return Result<Map>(std::move(out));
+
+    } catch (const std::exception& e) {
+        return make_error<Map>(
+            ErrorCode::DATABASE_ERROR,
+            "Failed to fetch current holding start dates: " + std::string(e.what()),
+            "PostgresDatabase");
+    }
+}
+
+Result<std::unordered_map<std::string, std::string>>
 PostgresDatabase::get_last_buy_dates(const std::string& strategy_id,
                                      const std::string& strategy_name,
                                      const std::string& portfolio_id,

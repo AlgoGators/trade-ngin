@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "trade_ngin/core/error.hpp"
+#include "trade_ngin/live/corporate_actions_lifecycle.hpp"
 #include "trade_ngin/live/execution_manager.hpp"
 #include "trade_ngin/live/execution_price_resolver.hpp"
 #include "trade_ngin/live/live_pnl_manager.hpp"
@@ -92,6 +93,64 @@ public:
             position.realized_pnl = Decimal(0.0);
         }
         return strategy.seed_positions(seed_book);
+    }
+
+    /**
+     * @brief The symbols this run must load data for: config plus the successors
+     *        of anything currently held.
+     *
+     * The universe used to be fixed from config before the previous day's book was
+     * even read, while `apply_renames` ran ~1,500 lines later. A held position whose
+     * successor is not in config therefore got no bars, no instrument, no cost config
+     * and no target: the day-T pass reported "Missing T-1 price for symbol with a
+     * non-zero position", `execute_day_t` rule 3 rolled the target back to the carried
+     * quantity, and the position was carried again the next session and the one after
+     * -- an unpriceable zombie, persisted under the new key, that no amount of
+     * re-running clears (E2-F34 / E3 F-4). `add_rowless_exits` does not rescue it: its
+     * own contract says a symbol that left the universe is "still closed out", and that
+     * is only true when a price exists.
+     *
+     * So the book has to be known BEFORE the universe is finalized. This is the pure
+     * part of that ordering: given what is held and the alias table, say which extra
+     * tickers the run has to be able to price.
+     *
+     * The era test is the SAME one apply_renames applies -- same rename map, same
+     * as-of guard, same fail-narrow rule -- via CorporateActionsLifecycle::rename_chain,
+     * so the universe cannot admit a rename the re-keying will refuse, or miss one it
+     * will perform.
+     *
+     * @param holding_start symbol -> YYYY-MM-DD the CURRENT holding began. Never the
+     *        lifetime min(date): a ticker closed in 2021 and re-bought in 2026 would
+     *        satisfy the era test for the 2021 alias and the universe would grow a dead
+     *        symbol (BA-2 / C-3 D1). A symbol absent here contributes nothing.
+     * @return `config_symbols` in their configured order, followed by the successors
+     *         that were not already configured, sorted. Deterministic across runs.
+     */
+    static std::vector<std::string> effective_universe(
+        const std::vector<std::string>& config_symbols,
+        const std::unordered_map<std::string, Position>& previous_positions,
+        const std::vector<TickerAlias>& aliases,
+        const std::string& as_of_date,
+        const std::unordered_map<std::string, std::string>& holding_start) {
+
+        std::vector<std::string> universe = config_symbols;
+        std::set<std::string> known(config_symbols.begin(), config_symbols.end());
+
+        const auto renames = CorporateActionsLifecycle::build_rename_map(aliases);
+        if (renames.empty()) return universe;
+
+        std::set<std::string> additions;
+        for (const auto& [symbol, position] : previous_positions) {
+            if (position.quantity.as_double() == 0.0) continue;
+            auto start_it = holding_start.find(symbol);
+            if (start_it == holding_start.end() || start_it->second.empty()) continue;
+            for (const auto& successor : CorporateActionsLifecycle::rename_chain(
+                     renames, symbol, start_it->second, as_of_date)) {
+                if (known.insert(successor).second) additions.insert(successor);
+            }
+        }
+        universe.insert(universe.end(), additions.begin(), additions.end());
+        return universe;
     }
 
     /** What one day's execution step did, beyond the fills themselves. */

@@ -731,6 +731,36 @@ public:
         const std::string& table_name = "trading.positions");
 
     /**
+     * @brief Date the CURRENT holding of each symbol began -- the class-2 era input.
+     *
+     * `get_position_inception_dates` is `min(date)` over all history and fails WIDE on
+     * purpose, which is right for the class-1 price window and wrong for the rename era
+     * test. Tickers get reused. A strategy that held META (Facebook) in 2021, closed it,
+     * and re-bought META (Meta Platforms) in 2026 has a lifetime inception of 2021, which
+     * satisfies `inception <= effective_until` for our own META -> METV backfill
+     * (effective_until 2022-01-31) and re-keys a live 100-share position onto a symbol
+     * with no bars at all. Class 2 must ask a narrower question: when did the holding we
+     * hold RIGHT NOW start? (BA-2 / C-3 D1.)
+     *
+     * A holding starts after the most recent flat row. A closed position keeps exactly one
+     * row -- quantity 0 on the day it closed (E2-F19, `LiveDailyCycle::is_dead_row`) -- so
+     * that row is the break. Absent such a row the position was never closed and this
+     * equals the lifetime inception.
+     *
+     * Direction of error: too LATE is safe (the rename is skipped and retried next run);
+     * too EARLY re-keys a live holding, which is silent and permanent. This errs late.
+     *
+     * @return symbol -> YYYY-MM-DD the current holding began. Symbols with no non-zero
+     *         row after the last flat row are ABSENT, and class 2 skips them.
+     */
+    virtual Result<std::unordered_map<std::string, std::string>> get_current_holding_start_dates(
+        const std::string& strategy_id,
+        const std::string& strategy_name,
+        const std::string& portfolio_id,
+        const std::vector<std::string>& symbols,
+        const std::string& table_name = "trading.positions");
+
+    /**
      * @brief Latest date this strategy BOUGHT each symbol, on or after `on_or_after`.
      *
      * E2-F17 basis provenance. A class-1 corporate action may only restate a cost basis that
