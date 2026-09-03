@@ -207,3 +207,22 @@ TEST_F(DeleteStaleExecutionsScopeTest, DeleteThenReinsertSucceedsForTheSameKey) 
            "idempotency (protocol 3f) and the replay-the-missed-day remedy for a run gap.";
     EXPECT_EQ(count_for(kPortfolioA), 1) << "Re-insert should leave exactly one row, not two.";
 }
+
+// F-C: the cleanup is keyed on order_id, strategy_name and portfolio -- never on the
+// calendar date of execution_time. A run at 19:00 EDT stores a Monday-UTC instant; a re-run
+// at 21:00 EDT asked for "Tuesday" and never matched it, so the re-run duplicated the row.
+TEST_F(DeleteStaleExecutionsScopeTest, CleanupIgnoresTheCalendarDateOfExecutionTime) {
+    std::vector<ExecutionReport> execs{make_exec("F4PROBE")};
+    ASSERT_FALSE(
+        db_->store_executions(execs, kStrategyId, kStrategyName, kPortfolioA, "trading.executions")
+            .is_error());
+    ASSERT_EQ(count_for(kPortfolioA), 1);
+
+    // Ask with a date that is NOT the execution's UTC date: the row must still go.
+    auto del = db_->delete_stale_executions({kSharedOrderId}, date_at(2026, 5, 5), kStrategyName,
+                                            kPortfolioA, "trading.executions");
+    ASSERT_FALSE(del.is_error()) << del.error()->what();
+    EXPECT_EQ(count_for(kPortfolioA), 0)
+        << "a deterministic order_id already carries its date; a wall-clock date predicate "
+           "only ever caused duplicates across the 20:00 EDT boundary";
+}

@@ -51,16 +51,19 @@ Result<void> PostgresDatabase::delete_stale_executions(const std::vector<std::st
 
         // E2-F4: scoped by portfolio_id. Without it this reaches across books -- order_id
         // is portfolio-independent and TREND_FOLLOWING runs in both. See the header.
+        // F-C: no calendar-date predicate. order_id is deterministic and already carries
+        // the trading date (DAILY_<symbol>_<yyyymmdd>, CORPACTION_<symbol>_<ex_date>), while
+        // execution_time is a wall-clock instant: a run at 19:00 EDT stores Monday UTC and a
+        // re-run at 21:00 EDT asked for Tuesday UTC, so the first run's rows never matched
+        // and the re-run inserted duplicates. Scoping by portfolio and strategy_name stays.
+        (void)date;
         std::string query = "DELETE FROM " + table_name +
-                            " WHERE DATE(execution_time) = $1 "
-                            " AND strategy_name = $2 "
-                            " AND portfolio_id = $3 "
+                            " WHERE strategy_name = $1 "
+                            " AND portfolio_id = $2 "
                             " AND order_id IN (" +
                             in_list + ")";
 
-        // Execute delete for the specified date (YYYY-MM-DD)
-        txn.exec(query, pqxx::params{format_timestamp(date).substr(0, 10), strategy_name,
-                                     portfolio_id});
+        txn.exec(query, pqxx::params{strategy_name, portfolio_id});
 
         txn.commit();
 
