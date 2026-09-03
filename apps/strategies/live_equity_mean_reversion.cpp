@@ -1876,7 +1876,21 @@ int main(int argc, char* argv[]) {
             std::vector<TerminationEvent> terminations;
             std::unordered_map<std::string, TerminationEvent*> by_symbol;
 
-            auto delist_result = db->get_delisting_dates(symbols);
+            // BA-8: bound the read by the same 90-day termination lookback this
+            // block already uses. delisting_date is keyed on the ticker and the
+            // reader takes max() over all history, so without a floor a reused
+            // ticker inherits a dead company's row (HPC 2008-11-24, MER
+            // 2008-12-31) and exits a live position at a stale price. The
+            // bars-contradict guard below cannot cover it alone:
+            // delisting_is_stale() is false when last_bar is EMPTY, which is
+            // precisely the symbol that stopped printing.
+            //
+            // Direction: missing an old termination leaves a dead position
+            // carried, which is loud (the "Missing T-1 price" path). Acting on a
+            // stale one closes a live position, which is silent and wrong. The
+            // 90-day bound is this block's own definition of "in window".
+            auto delist_result =
+                db->get_delisting_dates(symbols, std::string(lifecycle_start_buf));
             if (delist_result.is_error()) {
                 WARN("Failed to fetch delisting dates: " +
                      std::string(delist_result.error()->what()) +

@@ -183,3 +183,58 @@ TEST_F(DenominatorRangeDbTest, EqualEndpointsReturnAtMostOneDay) {
         EXPECT_LE(by_date.size(), 1u);
     }
 }
+
+// ──────────────────────────────────────────────────────────────────────────
+// BA-8 / C-1 D12 -- get_delisting_dates must not hand a 2026 run a 2008 row.
+//
+// delisting_date is keyed on the TICKER and the reader takes max() over the
+// symbol's entire history, so a reused ticker inherits the dead company's
+// delisting. The runner's bars-contradict guard needs a bar to contradict with:
+// delisting_is_stale() is false when last_bar_date is empty, which is exactly
+// the symbol that stopped printing. The floor closes it at the source.
+//
+// Read-only against real rows. HPC and MER are real delistings in this database
+// (2008-11-24 and 2008-12-31), which is what makes the bound worth asserting.
+// ──────────────────────────────────────────────────────────────────────────
+class DelistingFloorDbTest : public DenominatorRangeDbTest {};
+
+TEST_F(DelistingFloorDbTest, DateFloorExcludesADecadeOldDelisting) {
+    const std::vector<std::string> tickers{"HPC", "MER"};
+
+    // No floor: the historical rows come back, which is the pre-BA-8 behaviour
+    // and the input the runner used to act on.
+    auto unbounded = db_->get_delisting_dates(tickers);
+    ASSERT_TRUE(unbounded.is_ok()) << unbounded.error()->what();
+    ASSERT_EQ(unbounded.value().size(), 2u)
+        << "both tickers must actually carry a delisting row, or this test proves nothing";
+    EXPECT_EQ(unbounded.value().at("HPC"), "2008-11-24");
+    EXPECT_EQ(unbounded.value().at("MER"), "2008-12-31");
+
+    // With a floor a 2026 run cannot see them at all.
+    auto bounded = db_->get_delisting_dates(tickers, "2026-06-01");
+    ASSERT_TRUE(bounded.is_ok()) << bounded.error()->what();
+    EXPECT_TRUE(bounded.value().empty())
+        << "a delisting 18 years before the run date must not reach a live book";
+
+    // The floor is INCLUSIVE, so a delisting exactly on the bound survives.
+    auto on_bound = db_->get_delisting_dates({"HPC"}, "2008-11-24");
+    ASSERT_TRUE(on_bound.is_ok()) << on_bound.error()->what();
+    ASSERT_EQ(on_bound.value().size(), 1u) << "the bound is inclusive";
+    EXPECT_EQ(on_bound.value().at("HPC"), "2008-11-24");
+
+    // One day later excludes it, pinning the boundary rather than the direction only.
+    auto past_bound = db_->get_delisting_dates({"HPC"}, "2008-11-25");
+    ASSERT_TRUE(past_bound.is_ok()) << past_bound.error()->what();
+    EXPECT_TRUE(past_bound.value().empty());
+}
+
+TEST_F(DelistingFloorDbTest, EmptyFloorPreservesTheUnboundedRead) {
+    // The default argument must be behaviour-preserving: any caller that passes
+    // nothing gets exactly what it got before.
+    auto with_empty = db_->get_delisting_dates({"MER"}, "");
+    auto defaulted = db_->get_delisting_dates({"MER"});
+    ASSERT_TRUE(with_empty.is_ok() && defaulted.is_ok());
+    EXPECT_EQ(with_empty.value(), defaulted.value());
+    ASSERT_EQ(defaulted.value().size(), 1u);
+    EXPECT_EQ(defaulted.value().at("MER"), "2008-12-31");
+}

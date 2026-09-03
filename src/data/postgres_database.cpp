@@ -2637,7 +2637,8 @@ PostgresDatabase::get_ticker_aliases() {
 }
 
 Result<std::unordered_map<std::string, std::string>>
-PostgresDatabase::get_delisting_dates(const std::vector<std::string>& tickers) {
+PostgresDatabase::get_delisting_dates(const std::vector<std::string>& tickers,
+                                     const std::string& from_date) {
     using Map = std::unordered_map<std::string, std::string>;
 
     auto validation = validate_connection();
@@ -2655,12 +2656,34 @@ PostgresDatabase::get_delisting_dates(const std::vector<std::string>& tickers) {
         // idx_ohlcv_1d_delisting (migration 003) covers the IS NOT NULL
         // predicate, which is what took this from 14.1 s to 1.9 s at 852
         // symbols.
-        auto result = txn.exec(
-            "SELECT symbol, max(delisting_date)::text AS delisting_date "
-            "FROM equities_data.ohlcv_1d "
-            "WHERE symbol = ANY($1) AND delisting_date IS NOT NULL "
-            "GROUP BY symbol",
-            pqxx::params{tickers});
+        // BA-8: bound the row by date. Without a floor this returns
+        // max(delisting_date) over the symbol's ENTIRE history, so a reused
+        // ticker inherits a dead company's delisting (HPC 2008-11-24, MER
+        // 2008-12-31) and a held position is exited at a stale price. The
+        // runner's bars-contradict guard cannot cover this on its own:
+        // delisting_is_stale() is false when last_bar_date is empty, which is
+        // exactly the symbol that stopped printing.
+        //
+        // Compared as text -- delisting_date is a date column and the bound is
+        // ISO, which orders lexicographically; cast the bound, not the column,
+        // so the partial index idx_ohlcv_1d_delisting still applies.
+        pqxx::result result;
+        if (from_date.empty()) {
+            result = txn.exec(
+                "SELECT symbol, max(delisting_date)::text AS delisting_date "
+                "FROM equities_data.ohlcv_1d "
+                "WHERE symbol = ANY($1) AND delisting_date IS NOT NULL "
+                "GROUP BY symbol",
+                pqxx::params{tickers});
+        } else {
+            result = txn.exec(
+                "SELECT symbol, max(delisting_date)::text AS delisting_date "
+                "FROM equities_data.ohlcv_1d "
+                "WHERE symbol = ANY($1) AND delisting_date IS NOT NULL "
+                "  AND delisting_date >= $2::date "
+                "GROUP BY symbol",
+                pqxx::params{tickers, from_date});
+        }
 
         Map out;
         for (const auto& row : result) {

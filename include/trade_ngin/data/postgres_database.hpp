@@ -666,10 +666,24 @@ public:
      * From equities_data.ohlcv_1d.delisting_date, which is maintained
      * independently of the frozen corporate_action feed.
      *
-     * @return symbol -> YYYY-MM-DD for symbols carrying a delisting date.
+     * @param tickers   Symbols to look up.
+     * @param from_date Inclusive YYYY-MM-DD floor; a delisting older than this
+     *        is not returned. Empty means no floor (the pre-BA-8 behaviour).
+     *
+     * BA-8 / C-1 D12: delisting_date is keyed on the TICKER, and this reads
+     * `max(delisting_date)` over the symbol's whole history, so a reused ticker
+     * inherits the dead company's row -- HPC carries 2008-11-24, MER 2008-12-31.
+     * Acting on one exits a live position at a stale price. The runner has a
+     * bars-contradict guard, but that guard needs a bar: `delisting_is_stale`
+     * returns false when `last_bar_date` is EMPTY, so a held symbol with no bar
+     * in the load window is still terminated on a decade-old row. A floor closes
+     * that at the source -- a 2008 delisting has no business reaching a 2026 run.
+     *
+     * @return symbol -> YYYY-MM-DD for symbols carrying a delisting date at or
+     *         after `from_date`.
      */
     virtual Result<std::unordered_map<std::string, std::string>> get_delisting_dates(
-        const std::vector<std::string>& tickers);
+        const std::vector<std::string>& tickers, const std::string& from_date = "");
 
     /**
      * @brief Earliest date each symbol was held (non-zero) by this strategy.
