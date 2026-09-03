@@ -64,7 +64,8 @@ Exceptions, and only these:
 
 | exception | shape | tolerance |
 |---|---|---|
-| **Spinoffs**, until E2-F31 lands | the book holds `q × F` phantom PARENT shares and no child at all, because Tiingo encodes the distribution in `split_factor` | none — this is a defect, not a tolerance |
+| **Spinoffs the terms feed can see** (E2-F31, landed `be604beb`) | parent quantity is now correct and the child is received; under the default `spinoff_child_policy = liquidate_at_first_close` the child is sold at its first close, so the book holds none of it while a broker statement shows the receipt and the sale — reconcile against the two `CORPACTION_<child>_<ex_date>` executions, not against the position | quantity exact on the parent; the child appears only in `trading.executions` |
+| **Spinoffs the terms feed cannot see** — after 2025-08-29, or a child with no price series | the event is refused whole and logged as `SPINOFF NOT APPLIED`: parent quantity is correct, but its basis is PRE-spinoff against a POST-spinoff price series and the child is absent | none — this is a data gap, not a tolerance; the run says so every time |
 | **Split fractions** | the book keeps a fractional share; the broker pays cash in lieu | `\|Δq\| < 1` share, AND a CIL execution must exist for `Δq × mark` |
 
 A quantity difference outside those two is a defect. Do not tolerate it.
