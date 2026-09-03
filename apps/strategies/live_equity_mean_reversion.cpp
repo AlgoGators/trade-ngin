@@ -1808,6 +1808,35 @@ int main(int argc, char* argv[]) {
                                 continue;
                             }
 
+                            // E2-F17, unchanged in force. Suppressing the class-1 event also
+                            // removes it from the applier's provenance gate, so the SAME test
+                            // has to run here: this path divides the parent's basis by F just
+                            // as a split does, and restating a basis formed AFTER the ex-date
+                            // double-adjusts it. Only POSITIVE evidence may skip; UNKNOWN
+                            // applies, because dropping a real distribution is worse.
+                            {
+                                auto lbuy = last_buy_by_symbol.find(row.ticker);
+                                const bool bought_after = lbuy != last_buy_by_symbol.end() &&
+                                                          lbuy->second > row.date_str;
+                                const bool verifiably_flat =
+                                    run_on_record_at_ex_date(row.date_str) &&
+                                    !(std::abs(qty_at_end_of_ex_date(row.ticker,
+                                                                     row.date_str)) > 1e-9);
+                                if (bought_after || verifiably_flat) {
+                                    WARN("Skipping SPINOFF for " + row.ticker + " -> " + child +
+                                         " (ex_date " + row.date_str +
+                                         "): the shares held now were acquired AFTER the "
+                                         "ex-date, at a price the market had already adjusted, "
+                                         "so this book received no child shares and its basis "
+                                         "must not be restated. Evidence: " +
+                                         (bought_after ? "BUY " + lbuy->second
+                                                       : "book verifiably flat at end of "
+                                                         "ex-date " + row.date_str) +
+                                         " (E2-F17).");
+                                    continue;
+                                }
+                            }
+
                             // F -- the factor the price series restates the parent by. Taken
                             // from the SAME column the applier would have taken it from, so
                             // parent basis and parent marks stay in one frame; only the
