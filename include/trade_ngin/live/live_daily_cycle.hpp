@@ -316,19 +316,21 @@ public:
     /**
      * @brief Put the LOADED T-1 realized figure back on each finalized T-1 row.
      *
-     * LivePnLManager::finalize_previous_day writes the settlement move
-     * qty x (close(T-1) - close(T-2)) into every finalized row's realized_pnl. Under
-     * SETTLED that is the day's realized. Under MARK_TO_MARKET it is a mark, and
-     * writing it over the trade realized the day's own run recorded is how the
-     * column came to hold price moves; on a weekend it is written three times.
+     * History: LivePnLManager::finalize_previous_day used to write the settlement
+     * move qty x (close(T-1) - close(T-2)) into every finalized row's realized_pnl
+     * regardless of policy. Under SETTLED that is the day's realized; under
+     * MARK_TO_MARKET it is a mark, and writing it over the trade realized the day's
+     * own run recorded is how the column came to hold price moves (three times over
+     * a weekend). Since R-1 (af1bf2c6) the finalizer itself keeps the row's realized
+     * under MARK_TO_MARKET, so this helper is belt and braces on that path.
      *
-     * The row the day-T write produced already holds the correct per-day figure
-     * (seeded from zero, accumulated from that day's fills), so the T-1 rewrite
-     * carries it through unchanged. The finalizer's aggregate fields --
+     * It still matters for one case: select_finalization_book may finalize a symbol
+     * from the RESTATED book (a deferred class-1 event covering T-1, E2-F16), and the
+     * restated entry's realized is not what T-1's own run wrote. Restoring from the
+     * pre-action loaded snapshot keeps the T-1 row's realized equal to the figure
+     * the day itself persisted. The finalizer's aggregate fields --
      * finalized_daily_pnl, position_realized_pnl, finalized_unrealized_pnl -- are
-     * not touched, so yesterday_total_pnl and total_unrealized_pnl stay as they
-     * are. The shared finalizer is not edited: the futures runners persist its rows
-     * directly and must keep the settlement move.
+     * not touched, so yesterday_total_pnl and total_unrealized_pnl stay as they are.
      *
      * A finalized row with no loaded counterpart cannot carry a loaded realized; it
      * gets 0 rather than the mark move.
