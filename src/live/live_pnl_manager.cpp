@@ -326,6 +326,22 @@ double LivePnLManager::get_point_value(const std::string& symbol) const {
         }
     }
 
+    // E2-F38 / BA-7: the fallback table below is a SUBSTRING match over futures
+    // contract codes, so it must only be consulted for futures. Real equity
+    // tickers collide with it: AAPL contains "PL" (platinum, 50), LEN contains
+    // "LE" (live cattle, 40000), ZM is soybean meal (100), UBER contains "UB"
+    // (ultra T-bond, 1000), HES contains "ES" (5). Every one of those is a P&L
+    // report wrong by orders of magnitude on a position that merely failed to
+    // register.
+    //
+    // A share is a share: one unit, point value 1.0. There is nothing to guess.
+    if (asset_type_ != AssetType::FUTURE) {
+        WARN("No registry entry for " + symbol + "; it is not a futures symbol, so its "
+             "point value is 1.0. The futures fallback table is a substring match and "
+             "would have guessed a contract multiplier for it.");
+        return 1.0;
+    }
+
     // Fall back to known values if registry lookup fails
     double fallback = get_fallback_multiplier(base_symbol);
     if (fallback > 0) {

@@ -541,6 +541,14 @@ int main(int argc, char* argv[]) {
         auto* results_manager = coordinator->get_results_manager();
         auto* price_manager = coordinator->get_price_manager();
         auto* pnl_manager = coordinator->get_pnl_manager();
+        // E2-F38 / BA-7: this is an equity book. Tell the PnL manager so, because a
+        // symbol that misses the InstrumentRegistry otherwise falls through to a
+        // SUBSTRING match over futures contract codes -- AAPL matches "PL" (platinum,
+        // 50), LEN matches "LE" (live cattle, 40000). The futures runners pass nothing
+        // and keep the fallback table.
+        if (pnl_manager) {
+            pnl_manager->set_asset_type(AssetType::EQUITY);
+        }
 
         // Create Phase 3 managers
         INFO("Creating ExecutionManager and MarginManager for Phase 3");
