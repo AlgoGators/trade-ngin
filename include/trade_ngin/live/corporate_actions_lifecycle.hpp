@@ -117,6 +117,50 @@ struct SpinoffBarColumns {
 
     /** True when the bar carries both columns -- the E2-F47 shape, worth naming in a log. */
     bool carries_both_columns() const { return has_split && has_dividend; }
+
+    /**
+     * @brief The part of the bar's step that is a REVERSE SPLIT, not the distribution.
+     *
+     * E2-F48. A `split_factor < 1` on a spinoff ex-date is a reverse split that happened on
+     * the same day as the spinoff -- HLT's 1-for-3 on 2017-01-04, LDOS's 1-for-4 on
+     * 2013-09-30, DD's 1-for-3 on 2019-06-03 -- and it is a genuine SHARE COUNT change,
+     * which a distribution never is. Reading it as the spinoff's own factor makes
+     * `1 - 1/F` negative, so the child is allocated a NEGATIVE cost basis, and it suppresses
+     * a real split that used to apply correctly before the spinoff path existed at all.
+     *
+     * A `split_factor > 1` on a spinoff ex-date is NOT treated as a forward split: on all
+     * five such bars in this database (ABT, BX, K, MET, RTX) the vendor is encoding part of
+     * the distribution in that column and the holder's share count did not change. That is
+     * verified against the adjusted series, not assumed -- see total_factor(). A genuine
+     * forward split coincident with a spinoff would fall outside this rule; none exists here.
+     */
+    double reverse_split_factor() const {
+        const double f = split_step();
+        return f < 1.0 ? f : 1.0;
+    }
+
+    /** True when a coincident reverse split has to be applied as an ordinary class-1 split. */
+    bool has_reverse_split() const { return reverse_split_factor() < 1.0; }
+
+    /**
+     * @brief The distribution's own factor: the bar's step with the reverse split taken out.
+     *
+     * This is what the parent's cost basis is divided by when the child is delivered. The
+     * reverse split then divides it again through the class-1 path, and the two together
+     * reproduce total_factor() exactly, which is the step the price series took.
+     */
+    double spinoff_factor() const { return total_factor() / reverse_split_factor(); }
+
+    /**
+     * @brief Is there a distribution left once the reverse split is accounted for?
+     *
+     * DD 2019-06-03 is the case that makes this necessary: split_factor 0.33333, div_cash 0,
+     * and the vendor's adjusted series takes exactly the split and prices NO distribution
+     * into DD at all. Routing that as a spinoff would hand CTVA a zero cost basis and book
+     * its entire first close as realized gain. There is nothing to distribute from, so the
+     * bar is refused as a spinoff and its split applies as the ordinary class-1 split it is.
+     */
+    bool routes_a_spinoff() const { return spinoff_factor() > 1.0 + 1e-9; }
 };
 
 struct SpinoffEvent {

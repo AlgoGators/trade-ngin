@@ -72,20 +72,32 @@ std::vector<LifecycleAdjustment> CorporateActionsLifecycle::apply_spinoffs(
             continue;
         }
 
-        // F must be a real restatement (> 1 for a distribution) and r a real ratio. Neither
-        // is ever inferred from magnitude -- both arrive from named columns -- so a bad value
-        // here is a data fault, not a judgement call, and it must not be worked around.
+        // F must be a real restatement and r a real ratio. Neither is ever inferred from
+        // magnitude -- both arrive from named columns -- so a bad value here is a data
+        // fault, not a judgement call, and it must not be worked around.
+        //
+        // E2-F48: the test is `F > 1`, which is what this comment always said and what the
+        // arithmetic below requires; the code tested `F > 0`. A distribution takes value OUT
+        // of the parent, so the factor the price series steps by is strictly greater than 1
+        // and `1 - 1/F` -- the fraction of the basis that leaves -- is strictly positive.
+        // An F below 1 is a REVERSE SPLIT that fell on the spinoff's ex-date (DD 2019-06-03
+        // with CTVA, HLT 2017-01-04, LDOS 2013-09-30). Accepting it made `1 - 1/F` negative
+        // and handed the child a NEGATIVE cost basis, while suppressing a real split that
+        // applied correctly before this path existed. The caller decomposes the bar and
+        // sends the reverse split to class 1; this guard is the backstop.
         const double F = ev.parent_restatement_factor;
         const double r = ev.child_ratio;
-        if (!(F > 0.0) || !std::isfinite(F) || !(r > 0.0) || !std::isfinite(r) ||
+        if (!(F > 1.0) || !std::isfinite(F) || !(r > 0.0) || !std::isfinite(r) ||
             ev.child.empty() || ev.child == ev.parent) {
             adj.outcome = LifecycleOutcome::SKIPPED_NO_CHILD_PRICE;
             WARN("Corp action SPINOFF " + ev.parent + " -> " + ev.child + " (" + ev.ex_date +
                  "): unusable terms (restatement factor " + std::to_string(F) +
                  ", child ratio " + std::to_string(r) +
-                 ") -- NOTHING applied. The parent is left untouched and the caller must also "
-                 "suppress the class-1 event, or the encoded factor mints phantom parent "
-                 "shares (E2-F31).");
+                 ") -- NOTHING applied. A distribution's factor is strictly greater than 1; "
+                 "a factor at or below 1 is a reverse split on the same ex-date and belongs "
+                 "to the class-1 path, not here (E2-F48). The parent is left untouched and "
+                 "the caller must decide which of the bar's columns the class-1 path still "
+                 "applies (E2-F31).");
             log.push_back(std::move(adj));
             continue;
         }
@@ -114,6 +126,25 @@ std::vector<LifecycleAdjustment> CorporateActionsLifecycle::apply_spinoffs(
         // The value that LEFT the parent, per parent share, spread over the child shares it
         // was distributed into. Exact complement of B/F, so total basis is conserved.
         const double child_basis = basis > 0.0 ? (basis * (1.0 - 1.0 / F)) / r : 0.0;
+
+        // E2-F48: never a negative basis on either side. `F > 1` above makes this
+        // unreachable -- which is exactly why it is asserted rather than assumed. A negative
+        // child basis is not a small error: under liquidate_at_first_close the child's whole
+        // first close PLUS the negative basis is booked as realized gain on the parent's row,
+        // and the number is persisted into trading.positions and live_results in one step.
+        if (!(parent_basis_after >= 0.0) || !(child_basis >= 0.0) ||
+            !std::isfinite(parent_basis_after) || !std::isfinite(child_basis)) {
+            adj.outcome = LifecycleOutcome::SKIPPED_NO_CHILD_PRICE;
+            WARN("Corp action SPINOFF " + ev.parent + " -> " + ev.child + " (" + ev.ex_date +
+                 "): the allocation produced a negative or non-finite basis (parent " +
+                 std::to_string(parent_basis_after) + ", child " +
+                 std::to_string(child_basis) + ") from basis " + std::to_string(basis) +
+                 ", factor " + std::to_string(F) + ", ratio " + std::to_string(r) +
+                 ". NOTHING is applied -- a negative cost basis books the child's entire "
+                 "first close, and more, as realized gain (E2-F48).");
+            log.push_back(std::move(adj));
+            continue;
+        }
         const double child_qty_exact = qty * r;
         const double child_qty_whole = std::floor(child_qty_exact);
         const double child_fraction = child_qty_exact - child_qty_whole;

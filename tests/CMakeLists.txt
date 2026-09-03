@@ -52,6 +52,7 @@ set(TEST_SOURCES
     live/corp_actions/test_broker_frame_db.cpp
     live/corp_actions/test_spinoff_receipt.cpp
     live/corp_actions/test_spinoff_bar_routing.cpp
+    live/corp_actions/test_spinoff_reverse_split.cpp
     live/test_live_metrics_includes_dividend_income.cpp
     live/test_daily_pnl_identity.cpp
     live/test_trading_days_anchor.cpp

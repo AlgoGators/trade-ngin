@@ -1799,6 +1799,39 @@ int main(int argc, char* argv[]) {
                             c_on > 0.0 ? c_on : close_before(row.ticker, row.date_str);
                     }
                 }
+                // E2-F48 (BA-21): announce the decomposition of every spinoff bar before
+                // anything is routed, so the log says which rule was applied to which bar.
+                for (const auto& [key, col] : spinoff_bar_columns) {
+                    if (col.has_reverse_split()) {
+                        WARN("Spinoff bar carries a coincident REVERSE SPLIT: " + key.first +
+                             " on " + key.second + " has split_factor " +
+                             std::to_string(col.split_factor) +
+                             " (< 1), which is a real share-count change and NOT the "
+                             "distribution's factor. It is routed to the class-1 applier "
+                             "exactly as it was before the spinoff path existed; the "
+                             "distribution keeps the rest of the bar's step, " +
+                             std::to_string(col.total_factor()) + " / " +
+                             std::to_string(col.reverse_split_factor()) + " = " +
+                             std::to_string(col.spinoff_factor()) + " (E2-F48).");
+                    }
+                    if (!col.routes_a_spinoff()) {
+                        WARN("SPINOFF REFUSED for " + key.first + " on " + key.second +
+                             ": once the coincident reverse split (" +
+                             std::to_string(col.reverse_split_factor()) +
+                             ") is taken out of the bar's step (" +
+                             std::to_string(col.total_factor()) +
+                             ") there is no distribution factor left (" +
+                             std::to_string(col.spinoff_factor()) +
+                             " <= 1), so the price series priced NO value out of the parent "
+                             "and there is nothing to allocate to the child. Delivering it "
+                             "anyway would give the child a zero or negative cost basis and "
+                             "book its whole first close as realized gain. Every class-1 row "
+                             "on this bar is applied as it was before the spinoff path "
+                             "existed; the child is NOT delivered and this book holds none "
+                             "of it. No dedup row is written -- it retries every run "
+                             "(E2-F48).");
+                    }
+                }
                 for (const auto& [key, col] : spinoff_bar_columns) {
                     if (!col.carries_both_columns()) continue;
                     WARN("Spinoff bar carries BOTH class-1 columns: " + key.first +
@@ -1819,6 +1852,15 @@ int main(int argc, char* argv[]) {
                 // its contribution is already inside total_factor() above.
                 std::set<std::pair<std::string, std::string>> spinoff_routed_in_batch;
 
+                // E2-F48: the reverse-split factor the class-1 applier is still going to
+                // apply to a spinoff parent AFTER the distribution has restated it. The
+                // spinoff runs first (the children come off the PRE-split share count), so
+                // between the two the parent's basis is in an intermediate frame and the
+                // G1 basis-vs-mark bound below has to know that or it fires on a correct
+                // restatement: HLT's basis lands at B/1.422 while its mark is already
+                // post-1-for-3, a ratio of 0.33 against a bound of 0.2.
+                std::unordered_map<std::string, double> pending_class1_split_factor;
+
                 std::vector<SpinoffEvent> spinoff_events;
                 std::vector<CorpActionEvent> events;
                 events.reserve(rows.size());
@@ -1834,7 +1876,28 @@ int main(int argc, char* argv[]) {
                     // be one decision: applying both would restate the parent twice.
                     {
                         auto sp = spinoff_terms.find({row.ticker, row.date_str});
-                        if (sp != spinoff_terms.end()) {
+                        const auto bar_it =
+                            spinoff_bar_columns.find({row.ticker, row.date_str});
+                        const bool is_spinoff_bar = sp != spinoff_terms.end() &&
+                                                    bar_it != spinoff_bar_columns.end();
+
+                        // E2-F48: which rows of a spinoff bar still belong to class 1.
+                        //
+                        //  - a REVERSE split row always does: it is a share-count change the
+                        //    distribution does not make, and it applied correctly before the
+                        //    spinoff path existed;
+                        //  - EVERY row does when the bar has no distribution factor left
+                        //    once the reverse split is taken out (DD 2019-06-03 / CTVA),
+                        //    which is the refusal announced above.
+                        //
+                        // Anything else is the distribution and is routed away below.
+                        const bool row_stays_class1 =
+                            is_spinoff_bar &&
+                            (!bar_it->second.routes_a_spinoff() ||
+                             ((row.action == "split" || row.action == "adrratiosplit") &&
+                              bar_it->second.has_reverse_split()));
+
+                        if (is_spinoff_bar && !row_stays_class1) {
                             const std::string& child = sp->second.first;
                             const double r = sp->second.second;
 
@@ -1909,9 +1972,16 @@ int main(int argc, char* argv[]) {
                             // across the bar (measured on all eight real cases -- see
                             // SpinoffBarColumns). Same columns, same denominators, same
                             // frame; only the INTERPRETATION changes.
-                            const auto& bar_columns =
-                                spinoff_bar_columns[{row.ticker, row.date_str}];
-                            const double F = bar_columns.total_factor();
+                            //
+                            // E2-F48: with the coincident reverse split, if any, taken back
+                            // out -- that part is a share-count change and goes to class 1.
+                            // The two together reproduce total_factor() exactly.
+                            const auto& bar_columns = bar_it->second;
+                            const double F = bar_columns.spinoff_factor();
+                            if (bar_columns.has_reverse_split()) {
+                                pending_class1_split_factor[row.ticker] =
+                                    bar_columns.reverse_split_factor();
+                            }
 
                             SpinoffEvent sev;
                             sev.parent = row.ticker;
@@ -2221,9 +2291,20 @@ int main(int argc, char* argv[]) {
                         // nothing downstream would notice.
                         {
                             auto mk = previous_day_close_prices.find(adj.symbol);
+                            double pending_split = 1.0;
+                            {
+                                auto ps = pending_class1_split_factor.find(adj.symbol);
+                                if (ps != pending_class1_split_factor.end() &&
+                                    ps->second > 0.0)
+                                    pending_split = ps->second;
+                            }
                             if (mk != previous_day_close_prices.end() && mk->second > 0.0 &&
                                 adj.avg_price_after > 0.0) {
-                                const double basis_to_mark = adj.avg_price_after / mk->second;
+                                // E2-F48: compare the basis the parent will hold once the
+                                // coincident reverse split has ALSO been applied, which is
+                                // the frame the mark is already in.
+                                const double basis_to_mark =
+                                    (adj.avg_price_after / pending_split) / mk->second;
                                 if (basis_to_mark > 5.0 || basis_to_mark < 0.2) {
                                     ERROR("E2-F15 guard: after the SPINOFF of " +
                                           adj.child_symbol + " from " + adj.symbol +
@@ -2234,6 +2315,11 @@ int main(int argc, char* argv[]) {
                                           std::to_string(basis_to_mark) +
                                           ". The restatement factor " +
                                           std::to_string(adj.ratio_change) +
+                                          (pending_split != 1.0
+                                               ? " (with the coincident class-1 split " +
+                                                     std::to_string(pending_split) +
+                                                     " still to be applied)"
+                                               : std::string()) +
                                           " and the price series disagree. Refusing to trade.");
                                     return 1;
                                 }
