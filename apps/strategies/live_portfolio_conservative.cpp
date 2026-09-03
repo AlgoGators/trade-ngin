@@ -224,7 +224,11 @@ int main(int argc, char* argv[]) {
         // Sort strategy names for deterministic combined ID (Tier 2)
         std::sort(strategy_names.begin(), strategy_names.end());
 
-        // Generate combined strategy_id: LIVE_<sorted_names_joined_by_&>
+        // Generate combined strategy_id: LIVE_<sorted_names_joined_by_underscore>.
+        // NEW-2: this line said "&" while the loop below has joined with "_" since
+        // a88085ec, and "&" was never the separator in tree. The orphaned "&"-keyed
+        // rows in the DB come from an out-of-tree binary; no runner can read them back
+        // because the id is matched exactly.
         std::string combined_strategy_id = "LIVE_";
         for (size_t i = 0; i < strategy_names.size(); ++i) {
             if (i > 0)
