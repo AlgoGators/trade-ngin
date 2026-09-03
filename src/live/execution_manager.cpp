@@ -153,14 +153,16 @@ ExecutionReport ExecutionManager::generate_execution(
     exec.filled_quantity = std::abs(quantity_change);
     exec.fill_time = timestamp;
 
-    double abs_quantity = exec.filled_quantity.as_double();
-
     // TransactionCostManager is the single source of truth.
     // Keep fill_price as pure reference price (no embedded slippage).
     exec.fill_price = market_price;
 
+    // E2-F29: pass the SIGNED quantity. TransactionCostManager takes |qty| for every cost
+    // term except the SEC/TAF regulatory fees, which are sell-side only and are gated on
+    // `quantity < 0`. Passing |quantity_change| made that gate unreachable, so a config with
+    // apply_regulatory_fees charged a sell exactly what it charged a buy.
     auto cost_result = cost_manager_->calculate_costs(
-        symbol, abs_quantity, market_price);
+        symbol, quantity_change, market_price);
 
     exec.commissions_fees = Decimal(cost_result.commissions_fees);
     exec.implicit_price_impact = Decimal(cost_result.implicit_price_impact);

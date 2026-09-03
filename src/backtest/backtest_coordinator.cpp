@@ -641,7 +641,13 @@ Result<void> BacktestCoordinator::process_portfolio_day(
 
                 // TransactionCostManager is the single source of truth.
                 double ref_price = static_cast<double>(exec.fill_price);
+                // E2-F29: sign the quantity from the report's side. filled_quantity is always
+                // positive, so passing it raw made the sell-side-only SEC/TAF gate
+                // (`quantity < 0`) unreachable; every other cost term takes |qty|.
                 double qty = static_cast<double>(exec.filled_quantity);
+                if (exec.side == Side::SELL) {
+                    qty = -qty;
+                }
 
                 auto cost_result =
                     execution_manager_->get_transaction_cost_manager().calculate_costs(

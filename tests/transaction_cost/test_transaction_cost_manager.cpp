@@ -601,3 +601,36 @@ TEST(MarketDataUpdate, ValidPrevCloseRecordsBothVolumeAndReturn) {
     EXPECT_GT(tcm.get_annual_volatility("ZS"), 0.0)
         << "A genuine prior close must still produce a return observation.";
 }
+
+// ──────────────────────────────────────────────────────────────────────────
+// E2-F29: regulatory fees are keyed on the SIGN of quantity. A negative
+// quantity is a sell and carries SEC + TAF; a positive one does not; and the
+// fees stay off entirely on a config that does not enable them (IBKR Fixed).
+// ──────────────────────────────────────────────────────────────────────────
+TEST(RegulatoryFeesTest, NegativeQuantityIsTheSellSideAndCarriesSecAndTaf) {
+    TransactionCostManager tcm{TransactionCostManager::Config{}};
+    AssetCostConfig cfg;
+    cfg.symbol = "TIERD";
+    cfg.asset_type = AssetType::EQUITY;
+    cfg.commission_per_unit = 0.0035;
+    cfg.min_commission_per_order = 0.35;
+    cfg.max_commission_per_order = 1e9;
+    cfg.apply_regulatory_fees = true;
+    tcm.register_asset_config(cfg);
+
+    const double qty = 1000.0, px = 50.0;
+    auto buy = tcm.calculate_costs("TIERD", +qty, px, 1e6, 1.0, AssetType::EQUITY);
+    auto sell = tcm.calculate_costs("TIERD", -qty, px, 1e6, 1.0, AssetType::EQUITY);
+    const double sec_fee = (qty * px / 1e6) * cfg.sec_fee_per_million;
+    const double taf = std::min(qty * cfg.finra_taf_per_share, cfg.finra_taf_cap_per_trade);
+    EXPECT_NEAR(sell.commissions_fees - buy.commissions_fees, sec_fee + taf, 1e-9);
+
+    AssetCostConfig fixed = cfg;
+    fixed.symbol = "FIXED";
+    fixed.apply_regulatory_fees = false;
+    tcm.register_asset_config(fixed);
+    auto fbuy = tcm.calculate_costs("FIXED", +qty, px, 1e6, 1.0, AssetType::EQUITY);
+    auto fsell = tcm.calculate_costs("FIXED", -qty, px, 1e6, 1.0, AssetType::EQUITY);
+    EXPECT_DOUBLE_EQ(fsell.commissions_fees, fbuy.commissions_fees)
+        << "IBKR Fixed is all-inclusive: no separate regulatory fee on either side";
+}

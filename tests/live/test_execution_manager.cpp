@@ -279,3 +279,48 @@ TEST_F(ExecutionManagerTest, DefaultPolicyIsMarkFallbackSoFuturesCallersAreUnaff
     EXPECT_DOUBLE_EQ(defaulted.value()[0].fill_price.as_double(),
                      explicit_mark.value()[0].fill_price.as_double());
 }
+
+// ============================================================================
+// E2-F29: SEC/TAF regulatory fees must reach a SELL fill.
+//
+// TransactionCostManager gates the fees on `quantity < 0`; the live caller passed
+// |quantity| for both sides, so on a config with apply_regulatory_fees the sell
+// side was charged exactly what the buy side was. SELL cost - BUY cost must equal
+// sec_fee + taf for the same clip.
+// ============================================================================
+TEST_F(ExecutionManagerTest, SellSideCarriesRegulatoryFeesWhenConfigured) {
+    ExecutionManager em;
+    transaction_cost::AssetCostConfig cfg;
+    cfg.symbol = "TIERD";
+    cfg.asset_type = AssetType::EQUITY;
+    cfg.commission_per_unit = 0.0035;
+    cfg.min_commission_per_order = 0.35;
+    cfg.max_commission_per_order = 1e9;
+    cfg.apply_regulatory_fees = true;
+    cfg.sec_fee_per_million = 20.60;
+    cfg.finra_taf_per_share = 0.000195;
+    cfg.finra_taf_cap_per_trade = 9.79;
+    em.get_transaction_cost_manager().register_asset_config(cfg);
+
+    const double qty = 1000.0, px = 50.0;
+    std::unordered_map<std::string, double> prices{{"TIERD", px}};
+    std::unordered_map<std::string, Position> flat;
+    std::unordered_map<std::string, Position> held{{"TIERD", make_position("TIERD", qty, px)}};
+
+    auto buy = em.generate_daily_executions(held, flat, prices, std::chrono::system_clock::now());
+    auto sell = em.generate_daily_executions(flat, held, prices, std::chrono::system_clock::now());
+    ASSERT_TRUE(buy.is_ok() && sell.is_ok());
+    ASSERT_EQ(buy.value().size(), 1u);
+    ASSERT_EQ(sell.value().size(), 1u);
+    ASSERT_EQ(buy.value()[0].side, Side::BUY);
+    ASSERT_EQ(sell.value()[0].side, Side::SELL);
+
+    const double sec_fee = (qty * px / 1e6) * cfg.sec_fee_per_million;   // 1.03
+    const double taf = std::min(qty * cfg.finra_taf_per_share, cfg.finra_taf_cap_per_trade);  // 0.195
+    EXPECT_NEAR(sell.value()[0].commissions_fees.as_double() - buy.value()[0].commissions_fees.as_double(),
+                sec_fee + taf, 1e-9)
+        << "SELL must carry SEC + TAF on top of the BUY-side commission";
+    EXPECT_NEAR(sell.value()[0].total_transaction_costs.as_double() -
+                    buy.value()[0].total_transaction_costs.as_double(),
+                sec_fee + taf, 1e-9);
+}
