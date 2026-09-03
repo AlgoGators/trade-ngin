@@ -162,3 +162,105 @@ TEST(FeedFreshness, TheCountIsTheSameOnAnyHostTimezone) {
     EXPECT_EQ(newyork, 65);
     EXPECT_EQ(utc, 65);
 }
+
+// ──────────────────────────────────────────────────────────────────────────
+// E3 "mktime sites" -- the two CALENDAR-DATE parses in the equity runner.
+//
+// apps/strategies/live_equity_mean_reversion.cpp:96 turns the CLI argument
+// (`YYYY-MM-DD`) into the run's target_date, and :1337 turns an ex-date into
+// ex_date-1 for load_positions_by_date. Both went through std::mktime, which
+// reads the broken-down date as LOCAL midnight. Everything downstream then
+// formats it back with gmtime (format_utc_date / safe_gmtime), so on a host at
+// a POSITIVE UTC offset the whole run silently moves to the previous day: the
+// date key written to trading.positions, the T-1 lookup, the dedup ex-date
+// comparison. A New York host hides it (local midnight is 05:00 UTC, same day).
+// ──────────────────────────────────────────────────────────────────────────
+
+#include <iomanip>
+#include <sstream>
+
+TEST(TimeUtilsParse, CliDateRoundTripsOnAPositiveOffsetHost) {
+    ForceTimezone tz("Asia/Tokyo");
+    std::chrono::system_clock::time_point tp;
+    ASSERT_TRUE(parse_utc_date("2026-08-06", tp));
+    EXPECT_EQ(format_utc_date(tp), "2026-08-06")
+        << "the run date the operator asked for must survive the parse";
+    EXPECT_EQ(format_utc_datetime(tp), "2026-08-06 00:00:00")
+        << "a calendar date is UTC midnight, not local midnight";
+}
+
+// The defect this replaces, pinned so the reason the helper exists cannot be
+// argued away later. This is the exact expression that was at :96 and :1337.
+TEST(TimeUtilsParse, MktimeIsTheThingThatWasWrong) {
+    ForceTimezone tz("Asia/Tokyo");
+    std::tm tm = {};
+    std::istringstream ss("2026-08-06");
+    ss >> std::get_time(&tm, "%Y-%m-%d");
+    ASSERT_FALSE(ss.fail());
+    const auto mktime_tp = std::chrono::system_clock::from_time_t(std::mktime(&tm));
+    EXPECT_EQ(format_utc_date(mktime_tp), "2026-08-05")
+        << "if this ever says 2026-08-06 the host zone changed, not the code";
+
+    std::chrono::system_clock::time_point fixed;
+    ASSERT_TRUE(parse_utc_date("2026-08-06", fixed));
+    EXPECT_NE(mktime_tp, fixed) << "the two parses must not be confused for each other";
+}
+
+// New York is where this ran, and where it looks fine -- that is why the two
+// sites survived six months of daily runs.
+TEST(TimeUtilsParse, ANewYorkHostAgreesWithTokyoOnlyAfterTheFix) {
+    std::string tokyo, newyork, utc;
+    {
+        ForceTimezone tz("Asia/Tokyo");
+        std::chrono::system_clock::time_point tp;
+        ASSERT_TRUE(parse_utc_date("2026-04-06", tp));
+        tokyo = format_utc_date(tp);
+    }
+    {
+        ForceTimezone tz("America/New_York");
+        std::chrono::system_clock::time_point tp;
+        ASSERT_TRUE(parse_utc_date("2026-04-06", tp));
+        newyork = format_utc_date(tp);
+    }
+    {
+        ForceTimezone tz("UTC");
+        std::chrono::system_clock::time_point tp;
+        ASSERT_TRUE(parse_utc_date("2026-04-06", tp));
+        utc = format_utc_date(tp);
+    }
+    EXPECT_EQ(tokyo, "2026-04-06");
+    EXPECT_EQ(newyork, "2026-04-06");
+    EXPECT_EQ(utc, "2026-04-06");
+}
+
+// ex_date - 1, the :1337 site. Subtracting a day from a UTC-midnight point is
+// exact; subtracting it from a LOCAL-midnight point inherits the same shift and
+// then asks the database for the wrong day's book.
+TEST(TimeUtilsParse, ExDateMinusOneIsExactOnAPositiveOffsetHost) {
+    ForceTimezone tz("Asia/Tokyo");
+    std::chrono::system_clock::time_point ex;
+    ASSERT_TRUE(parse_utc_date("2026-04-06", ex));
+    const auto prior = std::chrono::system_clock::from_time_t(
+        std::chrono::system_clock::to_time_t(ex) - 24 * 60 * 60);
+    EXPECT_EQ(format_utc_date(prior), "2026-04-05");
+
+    // Across a month boundary, and across the US DST switch (2026-03-08), where
+    // a local-midnight arithmetic also drifts by an hour.
+    std::chrono::system_clock::time_point first;
+    ASSERT_TRUE(parse_utc_date("2026-03-09", first));
+    const auto before = std::chrono::system_clock::from_time_t(
+        std::chrono::system_clock::to_time_t(first) - 24 * 60 * 60);
+    EXPECT_EQ(format_utc_date(before), "2026-03-08");
+}
+
+TEST(TimeUtilsParse, MalformedCalendarDateIsRejected) {
+    std::chrono::system_clock::time_point tp;
+    EXPECT_FALSE(parse_utc_date("", tp));
+    EXPECT_FALSE(parse_utc_date("not a date", tp));
+    EXPECT_FALSE(parse_utc_date("2026-13-01", tp)) << "month 13 must not roll into 2027";
+    EXPECT_FALSE(parse_utc_date("2026-00-10", tp));
+    EXPECT_FALSE(parse_utc_date("2026-04-00", tp));
+    // A full timestamp is NOT silently truncated to its date -- callers that
+    // want that must say so with parse_utc_datetime.
+    EXPECT_FALSE(parse_utc_date("2026-04-06 05:00:00+00", tp));
+}

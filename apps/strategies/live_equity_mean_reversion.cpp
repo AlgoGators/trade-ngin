@@ -88,12 +88,13 @@ int main(int argc, char* argv[]) {
                 continue;
             }
 
-            // Try to parse as date
-            std::tm tm = {};
-            std::istringstream ss(arg);
-            ss >> std::get_time(&tm, "%Y-%m-%d");
-            if (!ss.fail()) {
-                target_date = std::chrono::system_clock::from_time_t(std::mktime(&tm));
+            // Try to parse as date. UTC midnight, not local midnight: every
+            // consumer of target_date formats it back through gmtime, so a
+            // std::mktime parse moves the entire run to the previous day on any
+            // host at a positive UTC offset (E3 mktime sites).
+            std::chrono::system_clock::time_point parsed_date;
+            if (core::parse_utc_date(arg, parsed_date)) {
+                target_date = parsed_date;
                 use_override_date = true;
                 std::cout << "Running for historical date: " << arg << std::endl;
             } else if (arg != "--send-email") {
@@ -1330,11 +1331,14 @@ int main(int argc, char* argv[]) {
                                           const std::string& ex_date) -> double {
                     auto cached = positions_at_date_cache.find(ex_date);
                     if (cached == positions_at_date_cache.end()) {
-                        std::tm tm{};
-                        std::istringstream ss(ex_date);
-                        ss >> std::get_time(&tm, "%Y-%m-%d");
-                        if (ss.fail()) return 0.0;
-                        auto tt = std::mktime(&tm) - 24 * 60 * 60;  // ex_date - 1 day
+                        // UTC midnight, then minus one day. Parsed with
+                        // parse_utc_date, NOT std::mktime: mktime reads the
+                        // ex-date as LOCAL midnight, so on a host at a positive
+                        // UTC offset this asked for the book two days before the
+                        // ex-date instead of one (E3 mktime sites).
+                        std::chrono::system_clock::time_point ex_tp;
+                        if (!core::parse_utc_date(ex_date, ex_tp)) return 0.0;
+                        auto tt = std::chrono::system_clock::to_time_t(ex_tp) - 24 * 60 * 60;
                         auto tp = std::chrono::system_clock::from_time_t(tt);
                         auto r = db->load_positions_by_date(
                             kEquityStrategyId, kEquityStrategyName,
@@ -1356,17 +1360,14 @@ int main(int argc, char* argv[]) {
                 // ON the ex-date run has a clean basis and MUST still be restated. Measuring at
                 // E-1 would call it "flat at the ex-date" and skip a real adjustment.
                 //
-                // Parsed with timegm, NOT mktime. The ex_date-1 lambda above uses
-                // `std::mktime`, which reads the tm as LOCAL time and then formats UTC -- on a
-                // host at a positive UTC offset that lands a day early. That is pre-existing
-                // and out of scope here, but new code must not propagate it.
+                // Parsed as UTC midnight, NOT with `std::mktime`, which reads the tm as LOCAL
+                // time and then formats UTC -- on a host at a positive UTC offset that lands
+                // a day early. The ex_date-1 lambda above now goes through the same helper.
                 auto parse_ex_date = [](const std::string& d)
                     -> std::optional<std::chrono::system_clock::time_point> {
-                    std::tm tm{};
-                    std::istringstream ss(d);
-                    ss >> std::get_time(&tm, "%Y-%m-%d");
-                    if (ss.fail()) return std::nullopt;
-                    return std::chrono::system_clock::from_time_t(timegm(&tm));
+                    std::chrono::system_clock::time_point tp;
+                    if (!core::parse_utc_date(d, tp)) return std::nullopt;
+                    return tp;
                 };
 
                 std::unordered_map<std::string, std::unordered_map<std::string, Position>>
