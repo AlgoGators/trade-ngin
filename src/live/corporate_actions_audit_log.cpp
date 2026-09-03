@@ -50,14 +50,16 @@ bool CorporateActionsAuditLog::migrate_state_file_to_db() {
         r.symbol = std::get<0>(key);
         r.ex_date = std::get<1>(key);
         r.action_type = CorporateActionsApplier::type_to_string(std::get<2>(key));
-        // Dividend detail attaches where the file carried it.
-        for (const auto& de : file_log.dividend_events_) {
-            if (de.symbol == r.symbol && de.ex_date == r.ex_date) {
-                r.qty_held = de.qty_held;
-                r.dividend_per_share = de.dividend_per_share;
-                r.total_cash = de.total_cash;
-                break;
-            }
+        // Dividend detail attaches where the file carried it -- and ONLY to a
+        // dividend. E2-F39 / BA-15: this used to match on (symbol, ex_date) alone,
+        // so a SPLIT sharing an ex-date with a DIVIDEND inherited the dividend's
+        // cash and cumulative dividend income counted it twice.
+        if (const auto* de = dividend_detail_for(r.symbol, r.ex_date,
+                                                 std::get<2>(key),
+                                                 file_log.dividend_events_)) {
+            r.qty_held = de->qty_held;
+            r.dividend_per_share = de->dividend_per_share;
+            r.total_cash = de->total_cash;
         }
         rows.push_back(std::move(r));
     }

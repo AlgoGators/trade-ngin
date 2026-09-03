@@ -171,8 +171,14 @@ public:
 
     const std::string& state_dir() const { return state_dir_; }
 
-private:
-    using AppliedKey = std::tuple<std::string, std::string, CorpActionType>;
+    /**
+     * @brief Dividend detail as the legacy state file carried it.
+     *
+     * Public because `dividend_detail_for` below takes and returns it, and that
+     * rule has to be testable without a database (E2-F39 / BA-15). Note there is
+     * no action_type here: every entry in this list IS a dividend, which is
+     * precisely why the import needs the type passed in alongside.
+     */
     struct DividendEvent {
         std::string symbol;
         std::string ex_date;
@@ -180,6 +186,39 @@ private:
         double dividend_per_share{0.0};
         double total_cash{0.0};
     };
+
+    /**
+     * @brief Which legacy dividend detail belongs to an applied event, if any.
+     *
+     * E2-F39 / BA-15. The legacy state file records applied events keyed on
+     * (symbol, ex_date, action_type) but carries dividend detail keyed only on
+     * (symbol, ex_date) -- DividendEvent has no action_type, because every entry
+     * in it IS a dividend. The import matched on (symbol, ex_date) alone, so when
+     * a symbol had a SPLIT and a DIVIDEND on the SAME ex-date, the SPLIT row also
+     * inherited the dividend's qty_held, dividend_per_share and total_cash. The
+     * cash then appears twice in cumulative dividend income: once on the dividend
+     * row, once on the split row that never paid anything.
+     *
+     * Returns nullptr when the event is not a dividend, or when no detail matches.
+     *
+     * Static and public so the rule is testable without a database: the import it
+     * serves runs inside migrate_state_file_to_db(), which requires a live
+     * connection and a file on disk.
+     */
+    static const DividendEvent* dividend_detail_for(
+        const std::string& symbol, const std::string& ex_date, CorpActionType type,
+        const std::vector<DividendEvent>& events) {
+        // A split, an ADR split or a termination pays no dividend. Only a
+        // DIVIDEND event may carry dividend detail.
+        if (type != CorpActionType::DIVIDEND) return nullptr;
+        for (const auto& de : events) {
+            if (de.symbol == symbol && de.ex_date == ex_date) return &de;
+        }
+        return nullptr;
+    }
+
+private:
+    using AppliedKey = std::tuple<std::string, std::string, CorpActionType>;
 
     std::string state_dir_;
     std::set<AppliedKey> applied_;

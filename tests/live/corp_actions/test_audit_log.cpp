@@ -819,3 +819,90 @@ TEST(CorpActionsUltrareviewFixes, AtomicSaveOverwritesStaleTempFile) {
 }
 
 }  // namespace audit_ex_date_cash
+
+// ──────────────────────────────────────────────────────────────────────────
+// E2-F39 / BA-15 -- the legacy state-file import must key dividend detail on
+// the ACTION TYPE too, not just (symbol, ex_date).
+//
+// The file records applied events as (symbol, ex_date, action_type) but carries
+// dividend detail as (symbol, ex_date) only -- DividendEvent has no type field,
+// because everything in that list IS a dividend. The import matched on the pair
+// alone, so a SPLIT sharing an ex-date with a DIVIDEND inherited the dividend's
+// qty_held / dividend_per_share / total_cash. The same cash then shows up twice
+// in cumulative dividend income: on the dividend row that paid it and on the
+// split row that paid nothing.
+//
+// Same-day split-and-dividend is not exotic: a company declaring a split
+// commonly sets its ex-date to a dividend ex-date so the two settle together.
+// ──────────────────────────────────────────────────────────────────────────
+
+using trade_ngin::CorpActionType;
+using trade_ngin::CorporateActionsAuditLog;
+using DividendEvent = CorporateActionsAuditLog::DividendEvent;
+
+TEST(LegacyImportDividendDetail, ASplitSharingAnExDateDoesNotInheritTheDividendCash) {
+    const std::vector<DividendEvent> events{
+        {"AAPL", "2026-08-10", /*qty*/ 250.0, /*dps*/ 0.24, /*cash*/ 60.0}};
+
+    // The dividend gets its detail.
+    const auto* div = CorporateActionsAuditLog::dividend_detail_for(
+        "AAPL", "2026-08-10", CorpActionType::DIVIDEND, events);
+    ASSERT_NE(div, nullptr) << "a dividend must still receive its own detail";
+    EXPECT_DOUBLE_EQ(div->total_cash, 60.0);
+    EXPECT_DOUBLE_EQ(div->qty_held, 250.0);
+    EXPECT_DOUBLE_EQ(div->dividend_per_share, 0.24);
+
+    // The split on the SAME symbol and SAME ex-date gets nothing.
+    EXPECT_EQ(CorporateActionsAuditLog::dividend_detail_for(
+                  "AAPL", "2026-08-10", CorpActionType::SPLIT, events),
+              nullptr)
+        << "a split pays no dividend; inheriting 60.0 here double-counts the cash";
+
+    // Neither do the other non-paying classes.
+    EXPECT_EQ(CorporateActionsAuditLog::dividend_detail_for(
+                  "AAPL", "2026-08-10", CorpActionType::ADR_SPLIT, events),
+              nullptr);
+    EXPECT_EQ(CorporateActionsAuditLog::dividend_detail_for(
+                  "AAPL", "2026-08-10", CorpActionType::TERMINATION, events),
+              nullptr);
+    EXPECT_EQ(CorporateActionsAuditLog::dividend_detail_for(
+                  "AAPL", "2026-08-10", CorpActionType::UNKNOWN, events),
+              nullptr);
+}
+
+TEST(LegacyImportDividendDetail, DetailStillMatchesOnSymbolAndExDate) {
+    const std::vector<DividendEvent> events{
+        {"AAPL", "2026-08-10", 250.0, 0.24, 60.0},
+        {"MSFT", "2026-08-10", 80.0, 0.75, 60.0},   // same cash, different symbol
+        {"AAPL", "2026-05-11", 250.0, 0.24, 60.0},  // same symbol, different date
+    };
+
+    const auto* a = CorporateActionsAuditLog::dividend_detail_for(
+        "AAPL", "2026-08-10", CorpActionType::DIVIDEND, events);
+    ASSERT_NE(a, nullptr);
+    EXPECT_EQ(a->symbol, "AAPL");
+    EXPECT_EQ(a->ex_date, "2026-08-10");
+    EXPECT_DOUBLE_EQ(a->qty_held, 250.0);
+
+    const auto* m = CorporateActionsAuditLog::dividend_detail_for(
+        "MSFT", "2026-08-10", CorpActionType::DIVIDEND, events);
+    ASSERT_NE(m, nullptr);
+    EXPECT_DOUBLE_EQ(m->dividend_per_share, 0.75) << "the right row, not the first one";
+
+    // A dividend with no detail in the file is not an error -- it simply carries none.
+    EXPECT_EQ(CorporateActionsAuditLog::dividend_detail_for(
+                  "TMUS", "2026-08-10", CorpActionType::DIVIDEND, events),
+              nullptr);
+    EXPECT_EQ(CorporateActionsAuditLog::dividend_detail_for(
+                  "AAPL", "2026-08-11", CorpActionType::DIVIDEND, events),
+              nullptr);
+}
+
+TEST(LegacyImportDividendDetail, AnEmptyDetailListYieldsNothingForAnyType) {
+    const std::vector<DividendEvent> none;
+    for (auto t : {CorpActionType::DIVIDEND, CorpActionType::SPLIT,
+                   CorpActionType::ADR_SPLIT, CorpActionType::TERMINATION}) {
+        EXPECT_EQ(CorporateActionsAuditLog::dividend_detail_for("AAPL", "2026-08-10", t, none),
+                  nullptr);
+    }
+}
