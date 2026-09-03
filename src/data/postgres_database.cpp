@@ -2455,15 +2455,24 @@ PostgresDatabase::get_corporate_actions(
 
         // Parameter arrays rather than concatenated IN-lists: at the full
         // 852-symbol universe the string form built a 5 kB literal per call.
-        // equities_data.corporate_action stores dates as text, so the column
-        // still needs a cast; the index on (ticker, date) carries the ticker
-        // side, which is what makes this bounded.
+        //
+        // G6-4: equities_data.corporate_action stores `date` as TEXT, and this
+        // compared it as `date::date BETWEEN $3::date AND $4::date`. The cast
+        // is evaluated per row and throws on the first value that is not a
+        // parseable date, taking the whole query -- and the run -- with it; it
+        // also makes the predicate non-sargable, so the (ticker, date) index
+        // covers only the ticker side. Every value in the column is a 10-char
+        // ISO-8601 date (verified: 0 of 627,169 rows fail
+        // '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'), and ISO-8601 sorts lexicographically,
+        // so a plain text comparison selects exactly the same rows, index-native
+        // and with no cast to fail. The ISO precondition is pinned by
+        // tests/live/corp_actions/test_corp_action_query_bounds_db.cpp.
         const std::string query =
             "SELECT date, action, ticker, value, contraticker, contraname, name "
             "FROM equities_data.corporate_action "
             "WHERE ticker = ANY($1) "
             "  AND action = ANY($2) "
-            "  AND date::date BETWEEN $3::date AND $4::date "
+            "  AND date >= $3 AND date <= $4 "
             "ORDER BY date, ticker, action";
 
         auto result = txn.exec(query, pqxx::params{tickers, actions, start_date, end_date});
