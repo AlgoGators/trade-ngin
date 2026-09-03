@@ -419,3 +419,141 @@ TEST(ConversionUtilsSafeGet, NullColumnReturnsError) {
 }
 
 }  // namespace conversion_utils_safe_get_detail
+
+// ──────────────────────────────────────────────────────────────────────────
+// E2-F37 / BA-14 -- safe_get_int64 and temporal columns.
+//
+// The canonical schema stores dates as TimestampArray, but
+// convert_generic_to_arrow may surface the same column as utf8 or int64
+// depending on the source -- which is exactly why LiveDataLoader routes
+// timestamps through safe_get_int64. There was no TIMESTAMP case, so such a
+// column hit `default` and errored; and when it arrived as text,
+// std::stoll("2026-09-02 00:00:00") returned 2026, a silent plausible-looking
+// integer that is not a timestamp in any unit.
+// ──────────────────────────────────────────────────────────────────────────
+namespace {
+
+using conversion_utils_safe_get_detail::make_string_column;
+using conversion_utils_safe_get_detail::make_timestamp_column;
+
+std::shared_ptr<arrow::ChunkedArray> make_timestamp_column_us(int64_t micros) {
+    arrow::TimestampBuilder b(arrow::timestamp(arrow::TimeUnit::MICRO),
+                              arrow::default_memory_pool());
+    EXPECT_TRUE(b.Append(micros).ok());
+    std::shared_ptr<arrow::Array> arr;
+    EXPECT_TRUE(b.Finish(&arr).ok());
+    return std::make_shared<arrow::ChunkedArray>(arr);
+}
+
+std::shared_ptr<arrow::ChunkedArray> make_date32_column(int32_t days) {
+    arrow::Date32Builder b;
+    EXPECT_TRUE(b.Append(days).ok());
+    std::shared_ptr<arrow::Array> arr;
+    EXPECT_TRUE(b.Finish(&arr).ok());
+    return std::make_shared<arrow::ChunkedArray>(arr);
+}
+
+std::shared_ptr<arrow::ChunkedArray> make_date64_column(int64_t millis) {
+    arrow::Date64Builder b;
+    EXPECT_TRUE(b.Append(millis).ok());
+    std::shared_ptr<arrow::Array> arr;
+    EXPECT_TRUE(b.Finish(&arr).ok());
+    return std::make_shared<arrow::ChunkedArray>(arr);
+}
+
+}  // namespace
+
+// A TIMESTAMP column yields its stored value in its own unit -- the same number
+// an int64 column holding that value would have given, which is what
+// LiveDataLoader::load_previous_day_data already reads as microseconds.
+TEST(ConversionUtilsSafeGet, Int64FromTimestampMicrosecondsReturnsTheStoredValue) {
+    // 2026-09-02 00:00:00 UTC in microseconds.
+    const int64_t micros = 1788307200LL * 1000000LL;
+    auto col = make_timestamp_column_us(micros);
+    auto r = DataConversionUtils::safe_get_int64(col, 0, "date");
+    ASSERT_TRUE(r.is_ok()) << r.error()->what();
+    EXPECT_EQ(r.value(), micros);
+}
+
+// Seconds-unit timestamps are equally accepted; the unit is the column's, and
+// this test states that plainly so nobody reads it as normalisation.
+TEST(ConversionUtilsSafeGet, Int64FromTimestampSecondsReturnsSecondsNotMicroseconds) {
+    auto col = make_timestamp_column();  // TimeUnit::SECOND, 1700000000
+    auto r = DataConversionUtils::safe_get_int64(col, 0, "ts");
+    ASSERT_TRUE(r.is_ok()) << r.error()->what();
+    EXPECT_EQ(r.value(), 1700000000)
+        << "the value comes back in the COLUMN's unit; safe_get_int64 does not normalise";
+}
+
+TEST(ConversionUtilsSafeGet, Int64FromDate32IsDaysAndDate64IsMilliseconds) {
+    auto d32 = make_date32_column(20698);  // 2026-09-02
+    auto r32 = DataConversionUtils::safe_get_int64(d32, 0, "date");
+    ASSERT_TRUE(r32.is_ok()) << r32.error()->what();
+    EXPECT_EQ(r32.value(), 20698) << "Date32 is days since the epoch";
+
+    auto d64 = make_date64_column(1788307200LL * 1000LL);
+    auto r64 = DataConversionUtils::safe_get_int64(d64, 0, "date");
+    ASSERT_TRUE(r64.is_ok()) << r64.error()->what();
+    EXPECT_EQ(r64.value(), 1788307200LL * 1000LL) << "Date64 is milliseconds since the epoch";
+}
+
+// The silent-wrong-answer this item exists to close.
+TEST(ConversionUtilsSafeGet, Int64FromDatetimeStringIsNotTheYear) {
+    auto col = make_string_column({"2026-09-02 00:00:00"});
+    auto r = DataConversionUtils::safe_get_int64(col, 0, "date");
+    ASSERT_TRUE(r.is_ok()) << r.error()->what();
+    EXPECT_NE(r.value(), 2026)
+        << "std::stoll stops at the first '-' and used to return the YEAR as if it "
+           "were a timestamp";
+    EXPECT_EQ(r.value(), 1788307200LL * 1000000LL)
+        << "a textual datetime comes back as microseconds since the epoch";
+}
+
+TEST(ConversionUtilsSafeGet, Int64FromDateOnlyStringIsMidnightUtc) {
+    auto col = make_string_column({"2026-09-02"});
+    auto r = DataConversionUtils::safe_get_int64(col, 0, "date");
+    ASSERT_TRUE(r.is_ok()) << r.error()->what();
+    EXPECT_EQ(r.value(), 1788307200LL * 1000000LL);
+
+    // The 'T' separator is accepted too -- the same instant.
+    auto iso = make_string_column({"2026-09-02T00:00:00"});
+    auto r_iso = DataConversionUtils::safe_get_int64(iso, 0, "date");
+    ASSERT_TRUE(r_iso.is_ok()) << r_iso.error()->what();
+    EXPECT_EQ(r_iso.value(), r.value());
+}
+
+// UTC, not the host zone: a stored timestamptz is already a UTC instant, so
+// timegm is required. mktime on a New York host shifts this by five hours.
+TEST(ConversionUtilsSafeGet, Int64FromDatetimeStringIsUtcOnAnyHost) {
+    auto col = make_string_column({"2026-09-02 00:00:00"});
+
+    const char* saved = std::getenv("TZ");
+    setenv("TZ", "America/New_York", 1);
+    tzset();
+    auto r = DataConversionUtils::safe_get_int64(col, 0, "date");
+    if (saved) setenv("TZ", saved, 1); else unsetenv("TZ");
+    tzset();
+
+    ASSERT_TRUE(r.is_ok()) << r.error()->what();
+    EXPECT_EQ(r.value(), 1788307200LL * 1000000LL)
+        << "a UTC instant must not be re-interpreted in the host zone (E2-F22)";
+}
+
+// Integer strings are unchanged -- every existing caller relies on this.
+TEST(ConversionUtilsSafeGet, Int64FromIntegerStringIsStillParsed) {
+    EXPECT_EQ(DataConversionUtils::safe_get_int64(make_string_column({"42"}), 0, "n").value(), 42);
+    EXPECT_EQ(DataConversionUtils::safe_get_int64(make_string_column({"-7"}), 0, "n").value(), -7);
+    // Surrounding whitespace is still an integer.
+    EXPECT_EQ(DataConversionUtils::safe_get_int64(make_string_column({" 13 "}), 0, "n").value(), 13);
+}
+
+// Anything that is neither an integer nor a datetime must ERROR, never return a
+// partial parse.
+TEST(ConversionUtilsSafeGet, Int64FromUnparseableStringErrorsRatherThanTruncating) {
+    for (const char* bad : {"12abc", "abc", "", "2026-13-45", "2026-09-02 99:99:99",
+                            "2026-09-02 00:00"}) {
+        auto r = DataConversionUtils::safe_get_int64(make_string_column({bad}), 0, "n");
+        EXPECT_TRUE(r.is_error()) << "'" << bad << "' must not parse to anything";
+        if (r.is_error()) EXPECT_EQ(r.error()->code(), ErrorCode::CONVERSION_ERROR);
+    }
+}
