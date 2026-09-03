@@ -468,3 +468,186 @@ TEST_F(HolidayPathResolutionTest, ConstructorAcceptsResolvedPath) {
     std::error_code ec;
     std::filesystem::remove(tmp, ec);
 }
+
+// ──────────────────────────────────────────────────────────────────────────
+// Time frame -- the candidate must be tested in the frame it is returned in.
+// (E2-F45, 2026-09-03.)
+//
+// find_previous_trading_day used to test each candidate with safe_localtime and
+// return the raw candidate, which every caller then formatted with gmtime. The
+// two frames only agree when the candidate's local and UTC calendar dates are
+// the same day. Since 95679ea2 the equity runner's run date is UTC MIDNIGHT, so
+// on any negative-offset host the candidate's local date is the day BEFORE its
+// UTC date: the walk validated day D-1 and handed back day D. Measured on the
+// 2026-06-15 replay (America/New_York): Monday resolved its previous trading day
+// to Saturday 2026-06-13, so no T-1 close existed, the Day T-1 finalization was
+// refused, and every day-T row was marked from the widened fallback instead.
+//
+// These pin BOTH frames on purpose. UTC midnight is what the equity runner
+// passes; local midnight is what live_portfolio.cpp:60 and
+// live_portfolio_conservative.cpp:61 still pass (std::mktime, E2-F42). Both must
+// resolve to the same calendar date, or fixing the equity path would move the
+// futures path.
+// ──────────────────────────────────────────────────────────────────────────
+
+namespace {
+
+std::chrono::system_clock::time_point utc_midnight(int y, int m, int d) {
+    std::tm tm{};
+    tm.tm_year = y - 1900;
+    tm.tm_mon = m - 1;
+    tm.tm_mday = d;
+    return std::chrono::system_clock::from_time_t(timegm(&tm));
+}
+
+// The frame the two futures runners still parse their CLI date in.
+std::chrono::system_clock::time_point local_midnight(int y, int m, int d) {
+    std::tm tm{};
+    tm.tm_year = y - 1900;
+    tm.tm_mon = m - 1;
+    tm.tm_mday = d;
+    tm.tm_isdst = -1;
+    return std::chrono::system_clock::from_time_t(std::mktime(&tm));
+}
+
+// The frame every caller reads the answer in: format_ymd_utc, gmtime_r, and the
+// SQL date the row is keyed on.
+std::string ymd_utc(std::chrono::system_clock::time_point tp) {
+    auto t = std::chrono::system_clock::to_time_t(tp);
+    std::tm tm{};
+    gmtime_r(&t, &tm);
+    char buf[11];
+    std::strftime(buf, sizeof(buf), "%Y-%m-%d", &tm);
+    return std::string(buf);
+}
+
+class PreviousTradingDayFrameTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        // Pinned to a negative-offset zone: that is where UTC midnight and local
+        // midnight fall on different calendar days, and it is the zone the book
+        // actually runs in.
+        if (const char* tz = std::getenv("TZ")) {
+            had_tz_ = true;
+            saved_tz_ = tz;
+        }
+        setenv("TZ", "America/New_York", 1);
+        tzset();
+
+        path_ = shipped_calendar_path();
+        if (path_.empty()) {
+            GTEST_SKIP() << "shipped holidays.json not reachable from cwd";
+        }
+    }
+
+    void TearDown() override {
+        if (had_tz_) {
+            setenv("TZ", saved_tz_.c_str(), 1);
+        } else {
+            unsetenv("TZ");
+        }
+        tzset();
+    }
+
+    bool had_tz_ = false;
+    std::string saved_tz_;
+    std::string path_;
+};
+
+}  // namespace
+
+// The fixture's own inputs, asserted before anything rests on them: without
+// these two holidays the 06-22 and 04-06 cases would pass for the wrong reason.
+TEST_F(PreviousTradingDayFrameTest, CalendarCoversTheDatesTheseTestsRestOn) {
+    HolidayChecker checker(path_);
+    ASSERT_TRUE(checker.loaded());
+    ASSERT_TRUE(checker.covers_date("2026-06-15"));
+    EXPECT_TRUE(checker.is_holiday("2026-06-19")) << "Juneteenth 2026";
+    EXPECT_TRUE(checker.is_holiday("2026-04-03")) << "Good Friday 2026";
+}
+
+// The regression. A UTC-midnight run date -- what the equity runner has passed
+// since 95679ea2 -- must resolve to the real previous trading day, not to the
+// weekend or holiday one calendar day later.
+TEST_F(PreviousTradingDayFrameTest, UtcMidnightRunDateResolvesTheTrueTradingDay) {
+    HolidayChecker checker(path_);
+    ASSERT_TRUE(checker.loaded());
+
+    struct Case { int y, m, d; const char* expected; const char* why; };
+    const Case cases[] = {
+        {2026, 6, 15, "2026-06-12", "Monday -> Friday"},
+        {2026, 6, 16, "2026-06-15", "Tuesday -> Monday"},
+        {2026, 6, 22, "2026-06-18", "Monday, and 06-19 is Juneteenth -> Thursday"},
+        {2026, 4,  6, "2026-04-02", "Monday, and 04-03 is Good Friday -> Thursday"},
+        {2026, 6, 20, "2026-06-18", "Saturday, and 06-19 is Juneteenth -> Thursday"},
+    };
+
+    for (const auto& c : cases) {
+        auto prev = checker.find_previous_trading_day(utc_midnight(c.y, c.m, c.d));
+        ASSERT_TRUE(prev.has_value()) << c.why;
+        EXPECT_EQ(ymd_utc(*prev), c.expected)
+            << "UTC-midnight " << c.y << "-" << c.m << "-" << c.d << ": " << c.why;
+    }
+}
+
+// Futures preservation. The two futures runners still parse their CLI date with
+// std::mktime, i.e. local midnight (E2-F42). Testing the candidate in UTC must
+// not move their answer: on this zone a local-midnight date lands at 04:00/05:00Z
+// on the SAME calendar day, so the walk sees the same days either way.
+TEST_F(PreviousTradingDayFrameTest, LocalMidnightRunDateResolvesTheSameCalendarDate) {
+    HolidayChecker checker(path_);
+    ASSERT_TRUE(checker.loaded());
+
+    struct Case { int y, m, d; const char* expected; };
+    const Case cases[] = {
+        {2026, 6, 15, "2026-06-12"},
+        {2026, 6, 16, "2026-06-15"},
+        {2026, 6, 22, "2026-06-18"},
+        {2026, 4,  6, "2026-04-02"},
+        {2026, 6, 20, "2026-06-18"},
+    };
+
+    for (const auto& c : cases) {
+        auto prev = checker.find_previous_trading_day(local_midnight(c.y, c.m, c.d));
+        ASSERT_TRUE(prev.has_value());
+        EXPECT_EQ(ymd_utc(*prev), c.expected)
+            << "local-midnight " << c.y << "-" << c.m << "-" << c.d
+            << " must resolve to the same calendar date as the UTC-midnight form";
+    }
+}
+
+// The two frames agree with each other, stated directly: this is the property
+// that lets the equity path be fixed without a futures regression run.
+TEST_F(PreviousTradingDayFrameTest, BothRunDateFramesAgreeAcrossAFullWeek) {
+    HolidayChecker checker(path_);
+    ASSERT_TRUE(checker.loaded());
+
+    for (int day = 15; day <= 26; ++day) {
+        auto from_utc = checker.find_previous_trading_day(utc_midnight(2026, 6, day));
+        auto from_local = checker.find_previous_trading_day(local_midnight(2026, 6, day));
+        ASSERT_TRUE(from_utc.has_value()) << "2026-06-" << day;
+        ASSERT_TRUE(from_local.has_value()) << "2026-06-" << day;
+        EXPECT_EQ(ymd_utc(*from_utc), ymd_utc(*from_local))
+            << "the two run-date frames disagree on 2026-06-" << day;
+    }
+}
+
+// The answer is never a day the market was shut -- the property the name of the
+// function promises, and the one the replay found violated.
+TEST_F(PreviousTradingDayFrameTest, TheAnswerIsNeverAClosedDay) {
+    HolidayChecker checker(path_);
+    ASSERT_TRUE(checker.loaded());
+
+    for (int day = 1; day <= 30; ++day) {
+        auto prev = checker.find_previous_trading_day(utc_midnight(2026, 6, day));
+        ASSERT_TRUE(prev.has_value()) << "2026-06-" << day;
+        const std::string answer = ymd_utc(*prev);
+
+        auto t = std::chrono::system_clock::to_time_t(*prev);
+        std::tm tm{};
+        gmtime_r(&t, &tm);
+        EXPECT_NE(tm.tm_wday, 0) << answer << " is a Sunday";
+        EXPECT_NE(tm.tm_wday, 6) << answer << " is a Saturday";
+        EXPECT_FALSE(checker.is_holiday(answer)) << answer << " is a market holiday";
+    }
+}
