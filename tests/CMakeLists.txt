@@ -9,6 +9,7 @@ set(TEST_SOURCES
     core/test_config_version.cpp
     core/test_config_base.cpp
     core/test_holiday_checker.cpp
+    core/test_email_positions_table.cpp
     core/test_run_id_generator.cpp
     core/test_config_loader.cpp
     data/test_db_utils.cpp
