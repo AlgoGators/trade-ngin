@@ -18,6 +18,7 @@
 #include <unordered_map>
 #include <vector>
 #include "trade_ngin/core/types.hpp"
+#include "trade_ngin/live/corp_action_window.hpp"
 #include "trade_ngin/live/corporate_actions_applier.hpp"
 #include <ctime>
 #include <string>
@@ -283,12 +284,26 @@ TEST(CorpActionFrameConsistency, DividendBasisRescaleMatchesPriceSeriesFactor) {
     ev.ex_date = "2026-08-10";
     ev.type = CorpActionType::DIVIDEND;
     ev.value = dividend;
-    ev.close_at_ex_date = close_on_ex;  // ex-date close, per the fix
+    // BA-5 / C-1 D1: the ex-date close is SELECTED here from the same bar series the
+    // price-adjustment factors were computed from, rather than being assigned the
+    // already-correct literal. Handing the applier `close_on_ex` by name made the
+    // fixture supply the fix, so the test could not distinguish the corrected frame
+    // from the old one -- it asserted an equality it had itself arranged.
+    ev.close_at_ex_date = bars[1].close;  // the bar the dividend goes ex on
+    ASSERT_DOUBLE_EQ(ev.close_at_ex_date, close_on_ex) << "sanity: bars[1] IS the ex-date bar";
 
     const auto adjustments = CorporateActionsApplier::apply(positions, {ev});
     ASSERT_EQ(adjustments.size(), 1u);
 
+    // The adjustment record must report the same ratio it applied, so a reader of the
+    // audit log and the position row cannot disagree about what happened.
+    EXPECT_NEAR(adjustments[0].ratio_change, 1.0 + dividend / bars[1].close, 1e-9);
+
     const double basis_factor = positions["AAPL"].average_price.as_double() / 90.0;
+
+    // Pinned against the rule itself, computed here from the event fields alone. This
+    // is what catches the two frames drifting TOGETHER.
+    EXPECT_NEAR(basis_factor, 1.0 / (1.0 + dividend / bars[1].close), 1e-8);
 
     // The two must scale by the same amount. Decimal carries 8 decimal places,
     // so compare at that resolution rather than machine epsilon.
@@ -299,23 +314,48 @@ TEST(CorpActionFrameConsistency, DividendBasisRescaleMatchesPriceSeriesFactor) {
 }
 
 TEST(CorpActionFrameConsistency, UsingThePriorDaysCloseWouldDriftFromThePriceSeries) {
-    // Guards the specific regression: reverting the denominator to close[T-1]
-    // must visibly disagree with the price series. If this ever stops failing
-    // to differ, the two frames have been silently re-coupled by accident.
+    // BA-5 / C-1 D1: this used to compute `wrong_factor` and `price_series_factor`
+    // from two local expressions and assert they differed. Both were arithmetic on
+    // literals declared three lines above -- no repository code was involved, so it
+    // could not fail however the applier changed. It now drives the APPLIER with each
+    // denominator and asserts which one lands in the price series' frame.
     const double close_before_ex = 101.00;
     const double close_on_ex = 100.00;
     const double dividend = 0.50;
+    const double basis = 90.0;
 
     std::vector<market_data_utils::AdjustmentBar> bars = {
         {close_before_ex, 0.0, 1.0}, {close_on_ex, dividend, 1.0}, {100.75, 0.0, 1.0}};
     const double price_series_factor =
         market_data_utils::compute_backward_adjustment_factors(bars)[0];
 
-    const double wrong_ratio = 1.0 + dividend / close_before_ex;  // the old denominator
-    const double wrong_factor = 1.0 / wrong_ratio;
+    // Run the real applier twice, changing ONLY the close it is handed.
+    auto basis_after = [&](double close_used) {
+        std::unordered_map<std::string, Position> positions;
+        positions["AAPL"] = make_position("AAPL", 100.0, basis);
+        CorpActionEvent ev;
+        ev.symbol = "AAPL";
+        ev.ex_date = "2026-08-10";
+        ev.type = CorpActionType::DIVIDEND;
+        ev.value = dividend;
+        ev.close_at_ex_date = close_used;
+        const auto adj = CorporateActionsApplier::apply(positions, {ev});
+        EXPECT_EQ(adj.size(), 1u);
+        return positions["AAPL"].average_price.as_double();
+    };
 
-    EXPECT_GT(std::abs(wrong_factor - price_series_factor), 1e-9)
-        << "close[T-1] and close[ex-date] must not be interchangeable here";
+    const double with_ex_date_close = basis_after(close_on_ex);
+    const double with_prior_close = basis_after(close_before_ex);
+
+    // The ex-date close is the price series' own denominator, so only it agrees.
+    EXPECT_NEAR(with_ex_date_close / basis, price_series_factor, 1e-8)
+        << "the ex-date close must put the basis in the price series' frame";
+    EXPECT_GT(std::abs(with_prior_close / basis - price_series_factor), 1e-9)
+        << "close[T-1] and close[ex-date] must not be interchangeable in the applier";
+
+    // And the applier's rule is exactly 1 + d/close, measured independently of it.
+    EXPECT_NEAR(with_ex_date_close, basis / (1.0 + dividend / close_on_ex), 1e-8);
+    EXPECT_NEAR(with_prior_close, basis / (1.0 + dividend / close_before_ex), 1e-8);
 }
 
 // Date keys are built from UTC instants. On the deployed image
@@ -323,6 +363,12 @@ TEST(CorpActionFrameConsistency, UsingThePriorDaysCloseWouldDriftFromThePriceSer
 // PREVIOUS day, which shifted every corp-action key and the trading date the
 // run writes under. This pins UTC rendering regardless of the host's zone.
 TEST(CorpActionFrameConsistency, DateKeysAreUtcRegardlessOfHostTimezone) {
+    // BA-5 / C-1 D1: this used to declare its OWN gmtime_r+strftime lambda and assert
+    // that the lambda was timezone-independent. That tests libc, not this repository:
+    // every date-key site could have been reverted to localtime and the test would
+    // still pass. It now exercises format_ymd_utc, the primitive the corp-action
+    // window and the runner's date keys actually go through.
+    //
     // 2026-08-10 00:00:00 UTC.
     std::tm utc{};
     utc.tm_year = 126;
@@ -330,20 +376,12 @@ TEST(CorpActionFrameConsistency, DateKeysAreUtcRegardlessOfHostTimezone) {
     utc.tm_mday = 10;
     const std::time_t t = timegm(&utc);
 
-    auto render = [](std::time_t when) {
-        std::tm out{};
-        gmtime_r(&when, &out);
-        char buf[11];
-        std::strftime(buf, sizeof(buf), "%Y-%m-%d", &out);
-        return std::string(buf);
-    };
-
-    const std::string before = render(t);
+    const std::string before = format_ymd_utc(t);
 
     const char* saved_tz = std::getenv("TZ");
     setenv("TZ", "America/New_York", 1);
     tzset();
-    const std::string under_eastern = render(t);
+    const std::string under_eastern = format_ymd_utc(t);
     if (saved_tz) {
         setenv("TZ", saved_tz, 1);
     } else {
@@ -355,6 +393,10 @@ TEST(CorpActionFrameConsistency, DateKeysAreUtcRegardlessOfHostTimezone) {
     EXPECT_EQ(under_eastern, "2026-08-10")
         << "date keys must not shift with the host timezone; localtime here "
            "would yield 2026-08-09 and mis-key every corp-action lookup";
+
+    // The round trip the window derivation depends on: a formatted key must parse
+    // back to the instant it came from.
+    EXPECT_EQ(parse_ymd_utc(format_ymd_utc(t)), t);
 }
 
 }  // namespace applier_frame
