@@ -1041,18 +1041,39 @@ int main(int argc, char* argv[]) {
             auto inception_result = db->get_position_inception_dates(
                 kEquityStrategyId, kEquityStrategyName,
                 portfolio_id, held_symbols);
+            //
+            // BA-9: "the read failed" and "the read succeeded but cannot account for
+            // this holding" are the SAME epistemic state for class 1, and both must
+            // fail wide. Only is_error() used to widen, so a successful read that
+            // returned no row for a held symbol contributed nothing to the derivation
+            // and left the window at its 14-day floor -- the same silent narrowing
+            // this derivation replaced, reached by a different route.
+            const std::string bulk_start_ymd = format_ymd_utc(bulk_start_t);
             if (inception_result.is_error()) {
                 WARN("Could not read position inception dates (" +
                      std::string(inception_result.error()->what()) +
                      ") -- falling back to the full " +
                      std::to_string(max_lookback_days) + "-day price window");
-                for (const auto& sym : held_symbols) {
-                    inception_dates[sym] = format_ymd_utc(bulk_start_t);
-                }
+                inception_dates =
+                    inception_with_unknowns_widened(held_symbols, {}, bulk_start_ymd);
             } else {
-                inception_dates = inception_result.value();
+                inception_dates = inception_with_unknowns_widened(
+                    held_symbols, inception_result.value(), bulk_start_ymd);
                 inception_raw = inception_result.value();
                 inception_read_ok = true;
+
+                // Class 2 (renames) deliberately keeps the RAW map: it fails NARROW,
+                // and a bulk-start sentinel would satisfy `inception <= effective_until`
+                // for any recent alias, which is the era test's own failure mode.
+                const auto unexplained =
+                    held_symbols_without_inception(held_symbols, inception_result.value());
+                for (const auto& sym : unexplained) {
+                    WARN("No inception row for held symbol " + sym +
+                         " -- widening its class-1 price window to the bulk edge " +
+                         bulk_start_ymd +
+                         " rather than letting it sit at the floor. Class-2 renames "
+                         "still skip it, which is the correct direction for them.");
+                }
             }
 
             const auto window = derive_corp_action_window(

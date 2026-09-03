@@ -216,3 +216,99 @@ TEST(CorpActionWindowDerivation, DeepHoldingIsReportedAsTheSource) {
     ASSERT_EQ(w.deep_symbols.size(), 1u);
     EXPECT_EQ(w.deep_symbols[0], "OLD");
 }
+
+// ──────────────────────────────────────────────────────────────────────────
+// BA-9 / C-1 D13 -- an inception read that SUCCEEDS but does not answer for a
+// held symbol.
+//
+// Only is_error() used to widen the window. A successful read that returned no
+// row for a held symbol (or for none of them) fell straight through, contributed
+// nothing to the derivation, and left the window at its 14-day floor -- the same
+// silent narrowing this whole derivation exists to prevent, reached by a
+// different route. Class 1 fails WIDE by design: an unknown inception must reach
+// the bulk edge, because under-applying a price rescale is the permanent error.
+// ──────────────────────────────────────────────────────────────────────────
+
+TEST(CorpActionInceptionUnknowns, HeldSymbolWithNoRowGetsTheBulkEdgeNotTheFloor) {
+    const std::string bulk_start = "2024-09-01";
+    const std::vector<std::string> held{"AAPL", "MSFT"};
+    // The read answered for AAPL only -- MSFT is held but unexplained.
+    const std::unordered_map<std::string, std::string> read{{"AAPL", "2026-08-29"}};
+
+    const auto filled = inception_with_unknowns_widened(held, read, bulk_start);
+
+    ASSERT_EQ(filled.size(), 2u) << "every held symbol must carry a date";
+    EXPECT_EQ(filled.at("AAPL"), "2026-08-29") << "a real answer is never overwritten";
+    EXPECT_EQ(filled.at("MSFT"), bulk_start)
+        << "unknown inception fails WIDE: an unexplained holding reaches the bulk edge";
+
+    // And the window that follows must actually be widened by it.
+    const std::time_t today = parse_ymd_utc("2026-08-31");
+    const auto w = derive_corp_action_window(today, 14, 730, filled);
+    EXPECT_EQ(w.source, CorpActionWindowSource::Inception)
+        << "a held symbol with no inception row must not leave the window at the floor";
+    EXPECT_EQ(w.source_symbol, "MSFT");
+    EXPECT_EQ(w.start, parse_ymd_utc(bulk_start));
+}
+
+TEST(CorpActionInceptionUnknowns, EmptyReadWithHeldSymbolsWidensEveryOneOfThem) {
+    const std::string bulk_start = "2024-09-01";
+    const std::vector<std::string> held{"AAPL", "MSFT", "TMUS"};
+    const std::unordered_map<std::string, std::string> read;  // ok, but zero rows
+
+    const auto filled = inception_with_unknowns_widened(held, read, bulk_start);
+
+    ASSERT_EQ(filled.size(), 3u);
+    for (const auto& sym : held) {
+        EXPECT_EQ(filled.at(sym), bulk_start) << sym << " is held and unexplained";
+    }
+    EXPECT_EQ(held_symbols_without_inception(held, read).size(), 3u);
+}
+
+// A malformed date is indistinguishable from no answer: derive_corp_action_window
+// skips anything that will not parse, so leaving it in place would narrow the
+// window exactly as a missing row does.
+TEST(CorpActionInceptionUnknowns, UnparseableDateIsTreatedAsUnknown) {
+    const std::string bulk_start = "2024-09-01";
+    const std::vector<std::string> held{"AAPL"};
+    const std::unordered_map<std::string, std::string> read{{"AAPL", "not-a-date"}};
+
+    const auto filled = inception_with_unknowns_widened(held, read, bulk_start);
+
+    EXPECT_EQ(filled.at("AAPL"), bulk_start);
+    const auto missing = held_symbols_without_inception(held, read);
+    ASSERT_EQ(missing.size(), 1u);
+    EXPECT_EQ(missing[0], "AAPL");
+}
+
+// Nothing held is not an anomaly -- the floor is the right answer, and no
+// symbol should be invented.
+TEST(CorpActionInceptionUnknowns, NoHoldingsLeavesTheWindowAtTheFloor) {
+    const std::vector<std::string> held;
+    const std::unordered_map<std::string, std::string> read;
+
+    const auto filled = inception_with_unknowns_widened(held, read, "2024-09-01");
+    EXPECT_TRUE(filled.empty());
+    EXPECT_TRUE(held_symbols_without_inception(held, read).empty());
+
+    const std::time_t today = parse_ymd_utc("2026-08-31");
+    const auto w = derive_corp_action_window(today, 14, 730, filled);
+    EXPECT_EQ(w.source, CorpActionWindowSource::Floor);
+}
+
+// The read's own answers are authoritative when present: this must not become a
+// blanket widening that discards real inception dates.
+TEST(CorpActionInceptionUnknowns, FullyAnsweredReadIsPassedThroughUnchanged) {
+    const std::vector<std::string> held{"AAPL", "MSFT"};
+    const std::unordered_map<std::string, std::string> read{
+        {"AAPL", "2026-08-29"}, {"MSFT", "2026-08-30"}};
+
+    const auto filled = inception_with_unknowns_widened(held, read, "2024-09-01");
+    EXPECT_EQ(filled.at("AAPL"), "2026-08-29");
+    EXPECT_EQ(filled.at("MSFT"), "2026-08-30");
+    EXPECT_TRUE(held_symbols_without_inception(held, read).empty());
+
+    const std::time_t today = parse_ymd_utc("2026-08-31");
+    const auto w = derive_corp_action_window(today, 14, 730, filled);
+    EXPECT_EQ(w.source, CorpActionWindowSource::Floor) << "both holdings are inside the floor";
+}
