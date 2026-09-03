@@ -3744,24 +3744,11 @@ int main(int argc, char* argv[]) {
         // placeholder row (qty 17.6) survived as the 07-07 book, and the runner sold
         // the same 17.6 shares again every day through 07-27 while booking mark P&L on
         // stock it no longer held. Scoped exactly like store_positions' own delete.
-        {
-            const std::string clear_today =
-                "DELETE FROM trading.positions WHERE strategy_id = '" +
-                std::string(kEquityStrategyId) + "' AND strategy_name = '" +
-                std::string(kEquityStrategyName) + "' AND portfolio_id = '" + portfolio_id +
-                "' AND DATE(last_update) = '" + today_date_str + "'";
-            auto cleared = db->execute_direct_query(clear_today);
-            if (cleared.is_error()) {
-                ERROR("Failed to clear today's position rows before the day-T write: " +
-                      std::string(cleared.error()->what()) +
-                      ". Refusing to continue: an empty day-T write would leave stale rows "
-                      "as today's book.");
-                return 1;
-            }
-            INFO("Cleared any existing position rows for " + today_date_str +
-                 " ahead of the day-T write (" + std::to_string(positions_to_save.size()) +
-                 " row(s) queued)");
-        }
+        // E2-F44 (BA-18): the DELETE itself now runs immediately before the write it
+        // protects, NOT here. Both in-run L5 identities are fatal, and both used to fire
+        // AFTER this statement had already removed today's rows -- so a violated identity
+        // left the day EMPTY as well as unwritten. Moved down; see the comment at the
+        // clear-then-write site further below.
 
         if (!positions_to_save.empty()) {
             INFO("Attempting to save " + std::to_string(positions_to_save.size()) + " positions to database");
@@ -3921,6 +3908,23 @@ int main(int argc, char* argv[]) {
                       std::to_string(residual) + ". Per-symbol rows:" +
                       (breakdown.empty() ? std::string(" <none>") : breakdown) +
                       ". Refusing to persist a day whose rows do not sum to its aggregate.");
+                // E2-F44 (BA-18): say what this exit leaves behind, because "the run failed"
+                // and "the database is unchanged" are not the same statement.
+                ERROR("STATE AT THIS EXIT (" + today_date_str + "): NOTHING has been written "
+                      "for day T -- its position rows are untouched (the clear-then-write "
+                      "pair runs later), and live_results, equity_curve, executions and "
+                      "signals for today are never written on this path. ALREADY WRITTEN and "
+                      "NOT rolled back: trading.positions for T-1 (" +
+                      core::format_utc_date(previous_date) +
+                      ", the finalization at close(T-1)), any trading.corp_action_applied "
+                      "dedup rows this run committed with their day-T placeholder positions, "
+                      "and the stale-execution DELETE for today's order ids. RECOVERY: fix "
+                      "the cause and re-run THIS SAME DATE, which re-finalizes T-1 and "
+                      "rewrites day T. If the re-run will not take, reset the book WINDOWED "
+                      "from " + today_date_str + " -- positions, live_results, equity_curve, "
+                      "executions, signals AND corp_action_applied together (replay rule 7) "
+                      "-- and replay forward from there. Never leave this date and run the "
+                      "next one (replay rule 8).");
                 return 1;
             }
             INFO("L5 realized identity holds: rows " + std::to_string(row_realized_sum) +
@@ -4754,6 +4758,26 @@ int main(int argc, char* argv[]) {
                       std::to_string(residual) + ". Per-symbol rows:" +
                       (breakdown.empty() ? std::string(" <none>") : breakdown) +
                       ". Refusing to persist a day whose rows do not sum to its aggregate.");
+                // E2-F44 (BA-18). This exit is later than the realized one and leaves more
+                // behind: the whole Day T-1 finalization has run by now.
+                ERROR("STATE AT THIS EXIT (" + today_date_str + "): NOTHING has been written "
+                      "for day T -- its position rows are untouched (the clear-then-write "
+                      "pair runs later), and live_results, equity_curve, executions and "
+                      "signals for today are never written on this path. ALREADY WRITTEN and "
+                      "NOT rolled back: trading.positions, trading.live_results AND "
+                      "trading.equity_curve for T-1 (" +
+                      core::format_utc_date(previous_date) +
+                      ") -- the full finalization, including the T-1 mark, the historical "
+                      "metrics block and the T-1 equity point -- plus any "
+                      "trading.corp_action_applied dedup rows this run committed with their "
+                      "day-T placeholder positions, and the stale-execution DELETE for "
+                      "today's order ids. RECOVERY: fix the cause and re-run THIS SAME DATE, "
+                      "which re-finalizes T-1 and rewrites day T. If the re-run will not "
+                      "take, reset the book WINDOWED from " + today_date_str +
+                      " -- positions, live_results, equity_curve, executions, signals AND "
+                      "corp_action_applied together (replay rule 7) -- and replay forward "
+                      "from there. Never leave this date and run the next one (replay "
+                      "rule 8).");
                 return 1;
             } else {
                 INFO("L5 unrealized identity holds: rows " +
@@ -5214,6 +5238,49 @@ int main(int argc, char* argv[]) {
         // Store equity curve and save all results to database
         // Use the new LiveResultsManager - save all results at once
         INFO("Saving all live trading results using LiveResultsManager...");
+
+        // E2-F19 (R-3): clear today's position rows for this book, unconditionally, in the
+        // same breath as the write.
+        //
+        // store_positions is DELETE-then-INSERT keyed on the date of the rows it is handed,
+        // and save_positions_snapshot returns early on an empty book -- so a day whose day-T
+        // write is EMPTY never deletes anything, and whatever rows already sit on today's
+        // date survive as today's book. Two writers put rows there before this point: the
+        // corp-action placeholder stores (dated today, written even when zero adjustments
+        // applied) and, through the loader's timestamp drift, a T-1 row that has been
+        // rewritten four times. Measured on the pre-fix chain: TMUS closed on 2026-07-07
+        // with no realized row to keep, the placeholder row (qty 17.6) survived as the
+        // 07-07 book, and the runner sold the same 17.6 shares again every day through
+        // 07-27 while booking mark P&L on stock it no longer held. Scoped exactly like
+        // store_positions' own delete.
+        //
+        // E2-F44 (BA-18): it sits HERE, not up with the day-T row build where it used to,
+        // because the only thing that must precede the INSERT is this DELETE -- while three
+        // fatal checks and the whole Day T-1 finalization sat between the two. Deleting
+        // today's rows and then exiting 1 on an identity violation left the day both empty
+        // and unwritten, which is strictly worse than leaving the previous run's rows in
+        // place for the re-run to overwrite. Nothing between the old site and this one reads
+        // or writes trading.positions for today: delete_stale_data() inside
+        // save_all_results covers live_results, equity_curve and executions but explicitly
+        // NOT positions, which is why this statement exists at all.
+        {
+            const std::string clear_today =
+                "DELETE FROM trading.positions WHERE strategy_id = '" +
+                std::string(kEquityStrategyId) + "' AND strategy_name = '" +
+                std::string(kEquityStrategyName) + "' AND portfolio_id = '" + portfolio_id +
+                "' AND DATE(last_update) = '" + today_date_str + "'";
+            auto cleared = db->execute_direct_query(clear_today);
+            if (cleared.is_error()) {
+                ERROR("Failed to clear today's position rows before the day-T write: " +
+                      std::string(cleared.error()->what()) +
+                      ". Refusing to continue: an empty day-T write would leave stale rows "
+                      "as today's book.");
+                return 1;
+            }
+            INFO("Cleared any existing position rows for " + today_date_str +
+                 " ahead of the day-T write (" + std::to_string(positions_to_save.size()) +
+                 " row(s) queued)");
+        }
 
         bool persist_failed = false;
         auto save_result = results_manager->save_all_results("LIVE_EQUITY_MEAN_REVERSION", now);

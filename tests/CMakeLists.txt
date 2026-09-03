@@ -71,6 +71,7 @@ set(TEST_SOURCES
     live/test_effective_universe.cpp
     live/test_live_daily_cycle_carry_forward.cpp
     live/test_feed_ingestion_assertion.cpp
+    live/test_day_t_write_ordering.cpp
     data/test_current_holding_start_db.cpp
     instruments/test_equity_margin_cash_regt.cpp
     instruments/test_futures_margin_overload.cpp
