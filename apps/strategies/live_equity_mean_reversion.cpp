@@ -3064,6 +3064,35 @@ int main(int argc, char* argv[]) {
         // Save positions to database with daily PnL values
         INFO("Saving positions to database with daily PnL...");
 
+        // E2-F35 / BA-4: the row and the aggregate must be marked from the SAME map.
+        //
+        // resolve_and_apply_basis marks positions[*] from exec_outcome.execution_prices --
+        // the T-1 closes PLUS any widened substitute -- and live_results sums those marks.
+        // The loop below recomputed each row's unrealized from previous_day_close_prices
+        // alone, which by definition has NO entry for a widened symbol: that symbol's row
+        // came out 0 while the aggregate did not. The in-run L5 assert reconciles realized
+        // only, so the split was silent, and it fires precisely on the thin/halted names
+        // the widening exists for. Rule 6 in AVERAGE_PRICE_LIFECYCLE.md says marks and
+        // fills come from one map; this is that map.
+        //
+        // On a non-trading day execute_day_t never runs and execution_prices is empty, so
+        // this is exactly previous_day_close_prices and the carry-forward path is byte for
+        // byte what it was.
+        const auto day_t_marks = LiveDailyCycle::day_t_mark_prices(
+            previous_day_close_prices, exec_outcome.execution_prices);
+        {
+            size_t substituted = 0;
+            for (const auto& [sym, price] : day_t_marks) {
+                auto t1 = previous_day_close_prices.find(sym);
+                if (t1 == previous_day_close_prices.end() || t1->second != price) ++substituted;
+            }
+            if (substituted > 0) {
+                INFO("BASIS TRACE | row marks | " + std::to_string(substituted) +
+                     " symbol(s) marked from the execution price map rather than the T-1 "
+                     "close map, matching what the aggregate was marked at (E2-F35)");
+            }
+        }
+
         std::vector<trade_ngin::Position> positions_to_save;
         positions_to_save.reserve(positions.size());
 
@@ -3114,14 +3143,15 @@ int main(int argc, char* argv[]) {
             // guard; that case persists 0, as before.
             if (position.quantity.as_double() != 0.0) {
                 double current_price = 0.0;
-                auto price_it = previous_day_close_prices.find(symbol);
-                if (price_it != previous_day_close_prices.end()) {
+                auto price_it = day_t_marks.find(symbol);
+                if (price_it != day_t_marks.end()) {
                     current_price = price_it->second;
                 }
-                // Same rule the live_results aggregate uses, so the row and the total
-                // cannot disagree. Equities are point_value 1. The mark check stays here
-                // because current_price is 0.0 when the symbol has no T-1 close, and
-                // measuring against 0 would book the whole notional as a gain.
+                // Same rule AND the same price map the live_results aggregate uses, so the
+                // row and the total cannot disagree (E2-F35). Equities are point_value 1.
+                // The mark check stays here because current_price is 0.0 when the symbol
+                // has no close at all, and measuring against 0 would book the whole
+                // notional as a gain.
                 validated_position.unrealized_pnl =
                     current_price > 0.0
                         ? Decimal(LivePnLManager::unrealized_from_cost_basis(
@@ -4052,6 +4082,67 @@ int main(int argc, char* argv[]) {
                  std::to_string(previous_total_unrealized_pnl) +
                  ") rather than recomputing it from an unmarked book");
             total_unrealized_pnl = previous_total_unrealized_pnl;
+        }
+
+        // BA-4: protocol L5's UNREALIZED clause, asserted inside the run.
+        //
+        // The realized clause above has been checked since E2-F19 (R5); unrealized had
+        // nothing, which is how E2-F35 survived -- a widened symbol's row was 0 while the
+        // aggregate was not, and no assertion in the run could see it. Both sides are now
+        // computed from one basis and one mark map (`day_t_marks`), so on a trading day
+        // this is an identity and a violation means a row was dropped, double-counted or
+        // marked from somewhere else.
+        //
+        // A non-trading day is NOT an identity and is not treated as one. The aggregate
+        // there is the PREVIOUS row's stored figure, read back from a numeric column that
+        // rounds to 4 decimals, while the rows are recomputed against the T-1 close. The
+        // two agree because nothing moved (measured over the whole book on 2026-09-03:
+        // 74 days, 0 residuals above 1e-4, max 4.9e-5), but they agree by circumstance
+        // rather than by construction, so the closed-day check WARNs at a tolerance that
+        // covers the stored rounding instead of killing a run over it.
+        {
+            double row_unrealized_sum = 0.0;
+            std::string breakdown;
+            for (const auto& p : positions_to_save) {
+                const double u = static_cast<double>(p.unrealized_pnl);
+                row_unrealized_sum += u;
+                if (std::abs(u) > LiveDailyCycle::kRowTolerance) {
+                    breakdown += " " + p.symbol + "=" + std::to_string(u);
+                }
+            }
+            const double residual = row_unrealized_sum - total_unrealized_pnl;
+            if (today_is_non_trading) {
+                if (std::abs(residual) > 1e-2) {
+                    WARN("L5 unrealized identity: carried aggregate (" +
+                         std::to_string(total_unrealized_pnl) + ") differs from the sum of "
+                         "the rows written today (" + std::to_string(row_unrealized_sum) +
+                         "), residual " + std::to_string(residual) +
+                         ". On a closed day the aggregate is the previous row's stored "
+                         "figure and the rows are re-marked at the same close, so a "
+                         "difference beyond stored rounding means the book moved on a day "
+                         "the market was shut. Per-symbol rows:" +
+                         (breakdown.empty() ? std::string(" <none>") : breakdown));
+                } else {
+                    INFO("L5 unrealized identity holds on a closed day: rows " +
+                         std::to_string(row_unrealized_sum) + " ~= carried aggregate " +
+                         std::to_string(total_unrealized_pnl) + " (residual " +
+                         std::to_string(residual) + ")");
+                }
+            } else if (std::abs(residual) > 1e-4) {
+                ERROR("L5 unrealized identity VIOLATED: sum of "
+                      "positions.daily_unrealized_pnl (" + std::to_string(row_unrealized_sum) +
+                      ") != live_results.total_unrealized_pnl (" +
+                      std::to_string(total_unrealized_pnl) + "), residual " +
+                      std::to_string(residual) + ". Per-symbol rows:" +
+                      (breakdown.empty() ? std::string(" <none>") : breakdown) +
+                      ". Refusing to persist a day whose rows do not sum to its aggregate.");
+                return 1;
+            } else {
+                INFO("L5 unrealized identity holds: rows " +
+                     std::to_string(row_unrealized_sum) + " == aggregate " +
+                     std::to_string(total_unrealized_pnl) + " (residual " +
+                     std::to_string(residual) + ")");
+            }
         }
 
         // E2-F1: cumulative TRADE-realized, gross. Read from the previous row and extended by

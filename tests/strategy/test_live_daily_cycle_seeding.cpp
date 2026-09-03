@@ -699,3 +699,84 @@ TEST_F(LiveDailyCycleSeedingTest, LiveDayFeedsEachBarExactlyOnce) {
         << "ADV EMA advanced " << data->volume_sample_count << " times for "
         << bars.size() << " bars";
 }
+
+// ---------------------------------------------------------------------------
+// E2-F35 / BA-4 -- the row and the aggregate mark from ONE map
+// ---------------------------------------------------------------------------
+
+// The regression, stated as the two sides of the identity. THIN has no T-1 close;
+// execute_day_t widens to an older real session and both fills and marks it there.
+// The aggregate (summed over `positions` after resolve_and_apply_basis) therefore
+// carries THIN's mark, while the day-T row loop used to recompute from the T-1 close
+// map -- which does not contain THIN at all -- and wrote 0. Same book, two answers.
+TEST_F(LiveDailyCycleSeedingTest, RowAndAggregateMarkAWidenedSymbolIdentically) {
+    const auto now = std::chrono::system_clock::now();
+
+    // T-1 closes: AAPL printed, THIN did not.
+    const std::unordered_map<std::string, double> t1_closes{{"AAPL", 110.0}};
+    // What execute_day_t actually priced with: the T-1 closes plus THIN's widened close.
+    const std::unordered_map<std::string, double> execution_prices{{"AAPL", 110.0},
+                                                                   {"THIN", 50.0}};
+
+    std::unordered_map<std::string, Position> previous;
+    previous["AAPL"] = held_long("AAPL", 10.0, 100.0);
+    previous["THIN"] = held_long("THIN", 20.0, 40.0);
+    auto positions = previous;
+
+    LiveDailyCycle::resolve_and_apply_basis(positions, {}, previous, execution_prices);
+
+    double aggregate = 0.0;
+    for (const auto& [symbol, pos] : positions) aggregate += pos.unrealized_pnl.as_double();
+    EXPECT_NEAR(aggregate, 10.0 * (110.0 - 100.0) + 20.0 * (50.0 - 40.0), 1e-9);
+
+    // What the day-T row loop writes, marked from the map the fix hands it.
+    const auto marks = LiveDailyCycle::day_t_mark_prices(t1_closes, execution_prices);
+    double rows = 0.0;
+    for (const auto& [symbol, pos] : positions) {
+        auto mark = marks.find(symbol);
+        const double price = mark != marks.end() ? mark->second : 0.0;
+        if (price > 0.0) {
+            rows += LivePnLManager::unrealized_from_cost_basis(
+                pos.quantity.as_double(), pos.average_price.as_double(), price);
+        }
+    }
+    EXPECT_NEAR(rows, aggregate, 1e-9)
+        << "the row sum and the aggregate must mark from the same map (E2-F35)";
+
+    // And the shape of the defect, for the record: the un-widened map drops THIN's mark.
+    double rows_from_t1_only = 0.0;
+    for (const auto& [symbol, pos] : positions) {
+        auto mark = t1_closes.find(symbol);
+        if (mark != t1_closes.end() && mark->second > 0.0) {
+            rows_from_t1_only += LivePnLManager::unrealized_from_cost_basis(
+                pos.quantity.as_double(), pos.average_price.as_double(), mark->second);
+        }
+    }
+    EXPECT_NEAR(aggregate - rows_from_t1_only, 200.0, 1e-9)
+        << "characterizing E2-F35: a widened symbol's row was 0 while the aggregate "
+           "carried its mark";
+}
+
+// The closed-day path must be untouched. execute_day_t is skipped on a non-trading day,
+// so execution_prices is empty and the marks are exactly the T-1 closes.
+TEST_F(LiveDailyCycleSeedingTest, EmptyExecutionPricesLeaveTheT1CloseMapAlone) {
+    const std::unordered_map<std::string, double> t1_closes{{"AAPL", 110.0}, {"MSFT", 300.0}};
+    EXPECT_EQ(LiveDailyCycle::day_t_mark_prices(t1_closes, {}), t1_closes);
+}
+
+// A present T-1 close is not overwritten by a different value unless the execution
+// path actually priced there -- and when it did, the execution price is the truth,
+// because that is what the fill was struck at.
+TEST_F(LiveDailyCycleSeedingTest, ExecutionPriceWinsAndNonPositiveSubstitutesAreIgnored) {
+    const std::unordered_map<std::string, double> t1_closes{{"AAPL", 110.0}, {"MSFT", 300.0}};
+    const std::unordered_map<std::string, double> execution_prices{
+        {"AAPL", 111.5}, {"DEAD", 0.0}, {"NEG", -3.0}};
+
+    const auto marks = LiveDailyCycle::day_t_mark_prices(t1_closes, execution_prices);
+
+    EXPECT_DOUBLE_EQ(marks.at("AAPL"), 111.5);
+    EXPECT_DOUBLE_EQ(marks.at("MSFT"), 300.0);
+    EXPECT_EQ(marks.count("DEAD"), 0u)
+        << "a zero mark books the whole notional as a gain; absent is the right answer";
+    EXPECT_EQ(marks.count("NEG"), 0u);
+}

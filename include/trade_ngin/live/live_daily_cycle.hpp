@@ -314,6 +314,33 @@ public:
         return unresolved;
     }
 
+    /**
+     * @brief The prices the day-T rows must be marked at.
+     *
+     * One map, so a position row and the live_results aggregate cannot disagree about
+     * what a symbol was worth. `resolve_and_apply_basis` marks from the execution price
+     * map -- T-1 closes plus any widened substitute -- and the aggregate sums those
+     * marks; the row loop used to recompute from the T-1 close map alone, which has no
+     * entry for a widened symbol at all. That symbol's `daily_unrealized_pnl` was
+     * therefore written as 0 while the aggregate carried its real mark, and the in-run
+     * L5 assertion covers realized only, so nothing saw it (E2-F35 / BA-4). It fires on
+     * exactly the halted and thin names the widening exists to rescue.
+     *
+     * An EMPTY `execution_prices` -- the closed-day path, where execute_day_t never runs
+     * -- returns `t1_closes` unchanged, so the carry-forward day is untouched.
+     * Non-positive substitutes are ignored: absent is a better answer than zero, because
+     * a zero mark books the whole notional as a gain.
+     */
+    static std::unordered_map<std::string, double> day_t_mark_prices(
+        const std::unordered_map<std::string, double>& t1_closes,
+        const std::unordered_map<std::string, double>& execution_prices) {
+        std::unordered_map<std::string, double> marks = t1_closes;
+        for (const auto& [symbol, price] : execution_prices) {
+            if (price > 0.0) marks[symbol] = price;
+        }
+        return marks;
+    }
+
     // -----------------------------------------------------------------------
     // trading.positions.daily_realized_pnl -- the row-level realized column.
     //
