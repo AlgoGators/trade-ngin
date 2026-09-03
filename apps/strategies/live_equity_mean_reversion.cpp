@@ -1766,6 +1766,59 @@ int main(int argc, char* argv[]) {
                     }
                 }
 
+                // ---- E2-F47 (BA-20): one BAR, one routing -------------------------
+                //
+                // get_per_bar_corporate_actions emits a bar's split_factor and its div_cash
+                // as two separate rows carrying the same (ticker, ex_date), and seven real
+                // spinoff bars in this database carry both. Matching each row against the
+                // terms key on its own routed the same distribution TWICE: two SpinoffEvents
+                // for one bar, the child delivered twice and its realized booked twice.
+                //
+                // Collect the bar's columns first, so the routing below is per BAR rather
+                // than per row, and so the parent's restatement factor is the product the
+                // price series actually took across the whole bar instead of one column of
+                // it. The comment that used to sit at the apply site -- "which no row in
+                // this database does" -- was simply wrong; the seven are named in
+                // SpinoffBarColumns.
+                std::map<std::pair<std::string, std::string>, SpinoffBarColumns>
+                    spinoff_bar_columns;
+                for (const auto& row : rows) {
+                    if (spinoff_terms.find({row.ticker, row.date_str}) == spinoff_terms.end())
+                        continue;
+                    auto& col = spinoff_bar_columns[{row.ticker, row.date_str}];
+                    if (row.action == "split" || row.action == "adrratiosplit") {
+                        col.has_split = true;
+                        col.split_factor = row.value;
+                    } else if (row.action == "dividend") {
+                        col.has_dividend = true;
+                        col.dividend_cash = row.value;
+                    }
+                    if (!(col.close_at_ex_date > 0.0)) {
+                        const double c_on = close_on(row.ticker, row.date_str);
+                        col.close_at_ex_date =
+                            c_on > 0.0 ? c_on : close_before(row.ticker, row.date_str);
+                    }
+                }
+                for (const auto& [key, col] : spinoff_bar_columns) {
+                    if (!col.carries_both_columns()) continue;
+                    WARN("Spinoff bar carries BOTH class-1 columns: " + key.first +
+                         " on " + key.second + " has split_factor " +
+                         std::to_string(col.split_factor) + " AND div_cash " +
+                         std::to_string(col.dividend_cash) + " (close " +
+                         std::to_string(col.close_at_ex_date) +
+                         "). The per-bar feed emits those as two rows on the same "
+                         "(ticker, ex_date); they are ONE event and are routed once. The "
+                         "factor the parent's price series took across the bar is the "
+                         "product " + std::to_string(col.split_step()) + " x " +
+                         std::to_string(col.dividend_factor()) + " = " +
+                         std::to_string(col.total_factor()) + " (E2-F47).");
+                }
+
+                // The (ticker, ex_date) keys already routed to the spinoff handler this
+                // batch. A second per-bar row for a key that has been routed is DROPPED --
+                // its contribution is already inside total_factor() above.
+                std::set<std::pair<std::string, std::string>> spinoff_routed_in_batch;
+
                 std::vector<SpinoffEvent> spinoff_events;
                 std::vector<CorpActionEvent> events;
                 events.reserve(rows.size());
@@ -1784,6 +1837,15 @@ int main(int argc, char* argv[]) {
                         if (sp != spinoff_terms.end()) {
                             const std::string& child = sp->second.first;
                             const double r = sp->second.second;
+
+                            // E2-F47: the bar was routed by an earlier row of the same bar.
+                            // Drop this one -- its column is already inside the factor that
+                            // routing used -- and keep it suppressed from the class-1 path,
+                            // which is what routing the bar means.
+                            if (!spinoff_routed_in_batch.insert({row.ticker, row.date_str})
+                                     .second) {
+                                continue;
+                            }
 
                             if (previous_positions.find(row.ticker) == previous_positions.end())
                                 continue;
@@ -1838,19 +1900,18 @@ int main(int argc, char* argv[]) {
                                 }
                             }
 
-                            // F -- the factor the price series restates the parent by. Taken
-                            // from the SAME column the applier would have taken it from, so
-                            // parent basis and parent marks stay in one frame; only the
-                            // INTERPRETATION changes.
-                            double F = 0.0;
-                            if (row.action == "split" || row.action == "adrratiosplit") {
-                                F = row.value;
-                            } else if (row.action == "dividend") {
-                                const double c_ex = close_on(row.ticker, row.date_str) > 0.0
-                                                        ? close_on(row.ticker, row.date_str)
-                                                        : close_before(row.ticker, row.date_str);
-                                if (c_ex > 0.0) F = 1.0 + row.value / c_ex;
-                            }
+                            // F -- the factor the price series restates the parent by.
+                            //
+                            // E2-F47: taken from the WHOLE BAR, not from the one row that
+                            // happened to be reached first. It is the product of what the
+                            // class-1 path would have applied to each of the bar's columns,
+                            // which is exactly the step the vendor's adjusted series takes
+                            // across the bar (measured on all eight real cases -- see
+                            // SpinoffBarColumns). Same columns, same denominators, same
+                            // frame; only the INTERPRETATION changes.
+                            const auto& bar_columns =
+                                spinoff_bar_columns[{row.ticker, row.date_str}];
+                            const double F = bar_columns.total_factor();
 
                             SpinoffEvent sev;
                             sev.parent = row.ticker;
@@ -2039,11 +2100,20 @@ int main(int argc, char* argv[]) {
 
                 // ---- E2-F31: spinoffs, BEFORE the class-1 applier ----
                 //
-                // Ordering matters only when a symbol carries a spinoff AND an ordinary
-                // class-1 event on the same ex-date, which no row in this database does.
+                // Ordering matters whenever a symbol carries a spinoff AND a class-1 event
+                // on the same ex-date, and it is NOT true that "no row in this database
+                // does" -- the comment that used to stand here. Eight bars do: HLT
+                // 2017-01-04, K 2023-10-02, MET 2017-08-07, LDOS 2013-09-30, RTX
+                // 2020-04-03, ABT 2004-05-03, BX 2015-10-01 all carry split_factor AND
+                // div_cash on the spinoff ex-date, and DD 2019-06-03 carries a coincident
+                // reverse split (E2-F47, E2-F48).
+                //
                 // Spinoffs go first because they are the event that decides WHAT is held:
-                // an ordinary dividend applying afterwards then rescales the correct,
-                // already-restated parent basis rather than a basis about to be split.
+                // the children are distributed on the share count held BEFORE any
+                // coincident split (HLT distributed 0.6 PK and 0.33333 HGV per PRE-reverse-
+                // split share, then did the 1-for-3), and an ordinary dividend applying
+                // afterwards rescales the correct, already-restated parent basis rather
+                // than a basis about to be split.
                 std::vector<LifecycleAdjustment> spinoff_log;
                 if (!spinoff_events.empty()) {
                     const auto policy = spinoff_child_policy_from_string(

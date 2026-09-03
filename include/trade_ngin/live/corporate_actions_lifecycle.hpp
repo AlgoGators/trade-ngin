@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cmath>
+
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -59,6 +61,64 @@ struct TerminationEvent {
  * equities_data.corporate_action, whose `value` IS the child ratio (verified 5/5:
  * GE/GEV 0.25, WDC/SNDK 0.33333, FTV/RAL 0.33333, LEN/MRP 0.5, MMM/SOLV 0.25).
  */
+/**
+ * @brief The class-1 columns one spinoff ex-date bar carries, and the factor they amount to.
+ *
+ * `get_per_bar_corporate_actions` emits a bar's `split_factor` and its `div_cash` as TWO
+ * rows (postgres_database.cpp:2599-2626), and both carry the same (ticker, ex_date). Seven
+ * real bars in this database carry both -- HLT 2017-01-04, K 2023-10-02, MET 2017-08-07,
+ * LDOS 2013-09-30, RTX 2020-04-03, ABT 2004-05-03, BX 2015-10-01 -- and every one of them is
+ * a spinoff ex-date. Matching each row against the terms key separately routes the SAME
+ * distribution twice: the child is delivered twice and its realized P&L booked twice
+ * (E2-F47).
+ *
+ * The bar is one event. This collects its columns so it can be routed once, and computes the
+ * factor the parent's ADJUSTED price series actually took across it -- the product of what
+ * the class-1 path would have applied row by row, `split_factor x (1 + div_cash/close)`.
+ *
+ * That product is not a derivation, it is a measurement. Taking
+ * `(adjusted_close/close)` on the ex-date bar over the same ratio on the bar before it gives
+ * the step the vendor's own adjusted series took, and it equals this product on all eight
+ * real cases (the seven above plus DD 2019-06-03, split-only):
+ *
+ *   ABT  measured 1.142569  product 1.142509      RTX  measured 2.0116284 product 2.0116303
+ *   BX   measured 1.0379078 product 1.0379642     LDOS measured 0.3672580 product 0.3672829
+ *   K    measured 1.1395329 product 1.1394486     HLT  measured 0.4739751 product 0.4740230
+ *   MET  measured 1.2576932 product 1.2577127     DD   measured 0.3332989 product 0.3333333
+ *
+ * (The residual is close-column precision: the vendor rounds `adjusted_close` to 10 digits.)
+ */
+struct SpinoffBarColumns {
+    bool has_split{false};
+    double split_factor{1.0};      ///< the bar's `split_factor` column
+    bool has_dividend{false};
+    double dividend_cash{0.0};     ///< the bar's `div_cash` column, raw dollars
+    /** The close the dividend factor divides by: the ex-date close, or the last one before
+     *  it. The SAME denominator the class-1 applier uses, so basis and marks stay in frame. */
+    double close_at_ex_date{0.0};
+
+    /** `1 + d/c`, or exactly 1.0 when there is no dividend row or no usable close. */
+    double dividend_factor() const {
+        if (!has_dividend) return 1.0;
+        if (!(close_at_ex_date > 0.0) || !std::isfinite(close_at_ex_date)) return 1.0;
+        if (!(dividend_cash > 0.0) || !std::isfinite(dividend_cash)) return 1.0;
+        return 1.0 + dividend_cash / close_at_ex_date;
+    }
+
+    /** `split_factor`, or exactly 1.0 when there is no split row or the value is unusable. */
+    double split_step() const {
+        if (!has_split) return 1.0;
+        if (!(split_factor > 0.0) || !std::isfinite(split_factor)) return 1.0;
+        return split_factor;
+    }
+
+    /** The whole step the parent's price series took across this bar. */
+    double total_factor() const { return split_step() * dividend_factor(); }
+
+    /** True when the bar carries both columns -- the E2-F47 shape, worth naming in a log. */
+    bool carries_both_columns() const { return has_split && has_dividend; }
+};
+
 struct SpinoffEvent {
     std::string parent;
     std::string child;
