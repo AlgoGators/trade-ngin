@@ -43,6 +43,63 @@ struct TerminationEvent {
 };
 
 /**
+ * @brief Class-1-encoded event that is really a SPINOFF (E2-F31).
+ *
+ * A spinoff is not a price restatement of one symbol. The parent distributes shares of a
+ * NEW company: the parent's price series steps down by the value distributed, the holder
+ * keeps every parent share, and receives `child_ratio` child shares per parent share plus
+ * cash in lieu of the fraction. Nothing in the per-bar columns says any of that -- Tiingo
+ * encodes the step as `split_factor` (FTV 2025-06-30: 1.327) or as `div_cash` (MMM
+ * 2024-04-01: 17.3875) or as nothing at all (LEN 2025-02-07), so the applier reads it as a
+ * split and mints 32.7 phantom parent shares, or as a dividend and books income that never
+ * arrived. The CHILD, which is the whole point of the event, is never created.
+ *
+ * The ratio is not inferred from the magnitude of the step -- that is exactly the provenance
+ * rule E2-F9 exists to enforce. It comes from the `spinoff` row in
+ * equities_data.corporate_action, whose `value` IS the child ratio (verified 5/5:
+ * GE/GEV 0.25, WDC/SNDK 0.33333, FTV/RAL 0.33333, LEN/MRP 0.5, MMM/SOLV 0.25).
+ */
+struct SpinoffEvent {
+    std::string parent;
+    std::string child;
+    std::string ex_date;             ///< YYYY-MM-DD
+    /**
+     * F -- the factor the PRICE SERIES restates the parent by, and therefore the factor
+     * the parent's cost basis must be divided by to stay in frame with its marks. It is
+     * the split_factor on the ex-date bar for a split-encoded spinoff, and
+     * `1 + div_cash / close_at_ex_date` for a dividend-encoded one: the same number the
+     * applier would have computed, taken from the same place, used correctly.
+     */
+    double parent_restatement_factor{1.0};
+    double child_ratio{0.0};         ///< r -- child shares per parent share held
+    /**
+     * The child's first REAL close on or after the ex-date. Required: it prices the
+     * cash-in-lieu of the fractional share and, under LIQUIDATE_AT_FIRST_CLOSE, the whole
+     * child position. A child with no bars at all (RAL and MRP both have zero rows in
+     * equities_data.ohlcv_1d) leaves this 0 and the event is REFUSED rather than guessed.
+     */
+    double child_first_close{0.0};
+};
+
+/**
+ * @brief What to do with a child the strategy cannot trade.
+ *
+ * A spinoff hands you a company you never chose to own, and usually one that is not in the
+ * configured universe. Holding it makes an F-4 orphan: no bars are loaded for it, so the
+ * next run reports "Missing T-1 price for symbol with a non-zero position" and rolls the
+ * target back forever. The default therefore sells it at the first close, which is what an
+ * index-tracking mandate does and what a discretionary holder usually does within days.
+ */
+enum class SpinoffChildPolicy {
+    LIQUIDATE_AT_FIRST_CLOSE,  ///< default: book the child, sell it at its first close
+    HOLD                       ///< keep it; only safe when the child IS in the universe
+};
+
+/** @brief Parse the `spinoff_child_policy` config string. Unknown text -> the default. */
+SpinoffChildPolicy spinoff_child_policy_from_string(const std::string& s);
+const char* spinoff_child_policy_to_string(SpinoffChildPolicy p);
+
+/**
  * @brief What the lifecycle handler did to one position.
  */
 enum class LifecycleOutcome {
@@ -50,7 +107,10 @@ enum class LifecycleOutcome {
     CONVERTED_TO_CONTRA,    ///< terms available -> rolled into the successor symbol
     RENAMED,                ///< class 2: position re-keyed to the current symbol
     SKIPPED_NO_POSITION,    ///< event for a symbol we do not hold
-    SKIPPED_NO_PRICE        ///< exit required but no final close available
+    SKIPPED_NO_PRICE,       ///< exit required but no final close available
+    SPUN_OFF_CHILD_HELD,    ///< E2-F31: parent restated, child position created and kept
+    SPUN_OFF_CHILD_SOLD,    ///< E2-F31: parent restated, child created and sold at first close
+    SKIPPED_NO_CHILD_PRICE  ///< E2-F31: the child has no close, so NOTHING was applied
 };
 
 /**
@@ -67,6 +127,17 @@ struct LifecycleAdjustment {
     double exit_price{0.0};       ///< final close used for the exit (0 if none)
     double realized_delta{0.0};   ///< cash P&L booked by an exit
     std::string contra_ticker;    ///< populated on CONVERTED_TO_CONTRA
+
+    // ---- E2-F31 spinoff detail (zero on every other outcome) ----
+    std::string child_symbol;        ///< the spun-off company
+    double avg_price_before{0.0};    ///< parent basis before the restatement
+    double avg_price_after{0.0};     ///< parent basis after: B / F
+    double ratio_change{1.0};        ///< F, the parent restatement factor
+    double child_quantity{0.0};      ///< floor(q * r) -- whole shares delivered
+    double child_avg_price{0.0};     ///< B (1 - 1/F) / r -- the FMV allocation
+    double child_fractional{0.0};    ///< q*r - floor(q*r), paid as cash in lieu
+    double cash_in_lieu{0.0};        ///< child_fractional * child_first_close
+    double child_first_close{0.0};   ///< the price CIL and any liquidation struck at
 };
 
 /**
@@ -188,6 +259,52 @@ public:
         const std::vector<TerminationEvent>& events,
         const std::unordered_map<std::string, double>& final_closes,
         const std::string& feed_last_date = "");
+
+    /**
+     * @brief E2-F31 -- receive the child of a spinoff instead of mangling the parent.
+     *
+     * Pure, in place, and cross-symbol, which is why it lives here and not in the applier:
+     * a spinoff changes WHAT is held.
+     *
+     * **The arithmetic, and why it conserves basis exactly.** Total cost basis cannot be
+     * created or destroyed by a distribution, so with `q` parent shares at basis `B`:
+     *
+     *     parent: q unchanged,  B_parent = B / F
+     *     child:  q * r shares, B_child  = B (1 - 1/F) / r
+     *
+     *     q*B/F  +  q*r * B(1-1/F)/r  ==  q*B                (exactly, for any F > 1, r > 0)
+     *
+     * `B/F` is the same restatement the adjusted price series applies to the parent, so
+     * returns stay continuous across the ex-date -- the E2-F15 frame rule, honoured rather
+     * than worked around. `B(1-1/F)/r` is the fair-value allocation the vendor already
+     * computed for us: the fraction of value that LEFT the parent, spread over the shares
+     * that received it.
+     *
+     * **Fractional shares.** A holder receives whole child shares and cash for the rest, so
+     * the child position is `floor(q*r)` and the remainder is sold at `child_first_close`.
+     * The CIL realizes `frac * (child_first_close - B_child)` -- against the child's OWN
+     * basis, not the parent's, because those shares were child shares from the instant of
+     * distribution. The caller books it as a `CORPACTION_<child>_<ex_date>` execution, the
+     * pattern corp-action exits already use, so it is visible to a broker reconciliation.
+     *
+     * **A child with no close is REFUSED, not guessed.** Both real 2025 children in this
+     * database (RAL, MRP) have zero rows in equities_data.ohlcv_1d. With no price there is
+     * no CIL, no liquidation and no mark, and inventing one from the parent's basis would
+     * fabricate a cash figure. The event is skipped whole -- the parent is left exactly as
+     * it was -- and the CALLER must then also suppress the class-1 event, because letting
+     * the split_factor through is the 132.7-phantom-share defect. Nothing is recorded, so
+     * the next run reconsiders it once the child's bars exist.
+     *
+     * @param policy  what to do with the child. LIQUIDATE_AT_FIRST_CLOSE (the default)
+     *                books the child and immediately sells it at `child_first_close`,
+     *                realizing against `B_child`; HOLD keeps it, which strands an
+     *                unpriceable position unless the child is in the universe (F-4).
+     * @return one LifecycleAdjustment per event that had a held parent.
+     */
+    static std::vector<LifecycleAdjustment> apply_spinoffs(
+        std::unordered_map<std::string, Position>& positions,
+        const std::vector<SpinoffEvent>& events,
+        SpinoffChildPolicy policy = SpinoffChildPolicy::LIQUIDATE_AT_FIRST_CLOSE);
 
     /**
      * @brief Is a `delisting_date` contradicted by the symbol's own bars?

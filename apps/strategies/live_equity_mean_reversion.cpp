@@ -1671,6 +1671,101 @@ int main(int argc, char* argv[]) {
                     }
                 }
 
+                // ================= E2-F31: which of these rows are really SPINOFFS =========
+                //
+                // A spinoff arrives in the per-bar columns wearing somebody else's clothes.
+                // Tiingo puts the parent's price step in `split_factor` (FTV 2025-06-30 =
+                // 1.327), or in `div_cash` (MMM 2024-04-01 = 17.3875), or nowhere at all
+                // (LEN 2025-02-07). Read as what it looks like, the first mints 32.7 phantom
+                // FTV shares and the second books $1,738.75 of income that never arrived --
+                // and in every case the CHILD, the entire point of the event, is never
+                // created.
+                //
+                // The only trustworthy statement that a row IS a spinoff, and of how many
+                // child shares it pays, is the `spinoff` row in
+                // equities_data.corporate_action -- ticker = parent, contraticker = child,
+                // value = child shares per parent share. Verified 5/5 against the real
+                // distributions (GE/GEV 0.25, WDC/SNDK 0.33333, FTV/RAL 0.33333, LEN/MRP 0.5,
+                // MMM/SOLV 0.25). NEVER inferred from the magnitude of the step: that is
+                // exactly the provenance rule E2-F9 exists to enforce, and a 1.327 split
+                // factor is perfectly plausible as a real split.
+                //
+                // This table is frozen after 2025-08-29, so a spinoff AFTER that date is not
+                // detectable at all and still takes the mangling path. That is data-blocked,
+                // not code-blocked, and the tripwire for it is E2-F41's class-1-row check.
+                std::map<std::pair<std::string, std::string>, std::pair<std::string, double>>
+                    spinoff_terms;
+                {
+                    auto spin = db->get_corporate_actions(symbols, std::string(start_buf),
+                                                          std::string(today_buf), {"spinoff"});
+                    if (spin.is_error()) {
+                        // Fail LOUD and fail CLOSED downstream: without the terms every
+                        // spinoff in the window is indistinguishable from a split, and the
+                        // per-bar row would be applied as one.
+                        ERROR("Could not read spinoff deal terms (" +
+                              std::string(spin.error()->what()) +
+                              ") -- any spinoff in this window will be MISREAD as a split or a "
+                              "dividend by the class-1 applier (E2-F31). Refusing to apply "
+                              "corporate actions this run; re-run once the database is "
+                              "reachable.");
+                        return 1;
+                    }
+                    for (const auto& row : spin.value()) {
+                        if (row.contra_ticker.empty() || row.contra_ticker == "N/A") continue;
+                        if (row.contra_ticker == row.ticker) continue;
+                        if (!(row.value > 0.0) || !std::isfinite(row.value)) continue;
+                        spinoff_terms[{row.ticker, row.date_str}] = {row.contra_ticker,
+                                                                     row.value};
+                    }
+                    if (!spinoff_terms.empty()) {
+                        INFO("Spinoff deal terms in window: " +
+                             std::to_string(spinoff_terms.size()) +
+                             " (parent, ex-date) pair(s) carry a child ratio");
+                    }
+                }
+
+                // The child's first REAL close on or after the ex-date. It prices the cash in
+                // lieu of the fractional share and, under liquidate_at_first_close, the whole
+                // child position. One read for every child we might receive.
+                //
+                // Both real 2025 children in this database (RAL, MRP) have ZERO rows in
+                // equities_data.ohlcv_1d, so this map is legitimately empty for them and the
+                // handler refuses the event rather than guessing a price.
+                std::unordered_map<std::string, std::pair<std::string, double>>
+                    child_first_close;  // child -> (date, close)
+                {
+                    std::vector<std::string> children;
+                    std::string earliest_ex;
+                    for (const auto& row : rows) {
+                        auto sp = spinoff_terms.find({row.ticker, row.date_str});
+                        if (sp == spinoff_terms.end()) continue;
+                        if (previous_positions.find(row.ticker) == previous_positions.end())
+                            continue;
+                        children.push_back(sp->second.first);
+                        if (earliest_ex.empty() || row.date_str < earliest_ex)
+                            earliest_ex = row.date_str;
+                    }
+                    if (!children.empty()) {
+                        auto ch = db->get_historical_closes(children, earliest_ex,
+                                                            std::string(today_buf));
+                        if (ch.is_ok()) {
+                            for (const auto& [sym, series] : ch.value()) {
+                                for (const auto& [d, close] : series) {  // std::map: ascending
+                                    if (close > 0.0 && std::isfinite(close)) {
+                                        child_first_close[sym] = {d, close};
+                                        break;
+                                    }
+                                }
+                            }
+                        } else {
+                            WARN("Could not load spinoff child closes (" +
+                                 std::string(ch.error()->what()) +
+                                 ") -- affected spinoffs are refused, not guessed.");
+                        }
+                    }
+                }
+
+                std::vector<SpinoffEvent> spinoff_events;
                 std::vector<CorpActionEvent> events;
                 events.reserve(rows.size());
                 // Intra-batch dedup (ultrareview bug_037): if the same
@@ -1680,6 +1775,73 @@ int main(int argc, char* argv[]) {
                 // must guard locally so we don't double-apply within one run.
                 std::set<std::tuple<std::string, std::string, CorpActionType>> seen_in_batch;
                 for (const auto& row : rows) {
+                    // E2-F31: a spinoff is routed AWAY from the applier and the class-1 event
+                    // is SUPPRESSED. Letting it through is the defect itself, and the two must
+                    // be one decision: applying both would restate the parent twice.
+                    {
+                        auto sp = spinoff_terms.find({row.ticker, row.date_str});
+                        if (sp != spinoff_terms.end()) {
+                            const std::string& child = sp->second.first;
+                            const double r = sp->second.second;
+
+                            if (previous_positions.find(row.ticker) == previous_positions.end())
+                                continue;
+                            if (audit_log.is_applied(row.ticker, row.date_str,
+                                                     CorpActionType::SPINOFF))
+                                continue;
+
+                            // Same horizon gate as class 1, for the same reason: the parent's
+                            // basis is divided by F, and F is the step the PRICE SERIES takes
+                            // on the ex-date bar. Restating before that bar is loaded leaves
+                            // basis and marks in different frames (E2-F15).
+                            auto lb = last_bar_date.find(row.ticker);
+                            if (lb == last_bar_date.end() || row.date_str > lb->second) {
+                                WARN("Deferring SPINOFF for " + row.ticker + " -> " + child +
+                                     " (ex_date " + row.date_str +
+                                     "): its loaded price series ends " +
+                                     (lb == last_bar_date.end()
+                                          ? std::string("nowhere")
+                                          : lb->second) +
+                                     ", so the parent bars are still in PRE-event units "
+                                     "(E2-F15). No dedup row is written; it applies on the "
+                                     "next run once the ex-date bar is in the window.");
+                                continue;
+                            }
+
+                            // F -- the factor the price series restates the parent by. Taken
+                            // from the SAME column the applier would have taken it from, so
+                            // parent basis and parent marks stay in one frame; only the
+                            // INTERPRETATION changes.
+                            double F = 0.0;
+                            if (row.action == "split" || row.action == "adrratiosplit") {
+                                F = row.value;
+                            } else if (row.action == "dividend") {
+                                const double c_ex = close_on(row.ticker, row.date_str) > 0.0
+                                                        ? close_on(row.ticker, row.date_str)
+                                                        : close_before(row.ticker, row.date_str);
+                                if (c_ex > 0.0) F = 1.0 + row.value / c_ex;
+                            }
+
+                            SpinoffEvent sev;
+                            sev.parent = row.ticker;
+                            sev.child = child;
+                            sev.ex_date = row.date_str;
+                            sev.parent_restatement_factor = F;
+                            sev.child_ratio = r;
+                            auto cf = child_first_close.find(child);
+                            if (cf != child_first_close.end()) {
+                                sev.child_first_close = cf->second.second;
+                                INFO("Spinoff child price | " + child +
+                                     " first close after ex-date " + row.date_str + " is " +
+                                     std::to_string(cf->second.second) + " from " +
+                                     cf->second.first);
+                            }
+                            spinoff_events.push_back(std::move(sev));
+                            // SUPPRESSED: no CorpActionEvent is built for this row.
+                            continue;
+                        }
+                    }
+
                     CorpActionType type = CorporateActionsApplier::type_from_action_string(row.action);
                     if (type == CorpActionType::UNKNOWN) continue;
                     if (audit_log.is_applied(row.ticker, row.date_str, type)) continue;
@@ -1845,7 +2007,175 @@ int main(int argc, char* argv[]) {
                     events.push_back(std::move(ev));
                 }
 
-                if (!events.empty()) {
+                // ---- E2-F31: spinoffs, BEFORE the class-1 applier ----
+                //
+                // Ordering matters only when a symbol carries a spinoff AND an ordinary
+                // class-1 event on the same ex-date, which no row in this database does.
+                // Spinoffs go first because they are the event that decides WHAT is held:
+                // an ordinary dividend applying afterwards then rescales the correct,
+                // already-restated parent basis rather than a basis about to be split.
+                std::vector<LifecycleAdjustment> spinoff_log;
+                if (!spinoff_events.empty()) {
+                    const auto policy = spinoff_child_policy_from_string(
+                        app_config.live.spinoff_child_policy);
+                    INFO("Applying " + std::to_string(spinoff_events.size()) +
+                         " SPINOFF event(s); spinoff_child_policy=" +
+                         std::string(spinoff_child_policy_to_string(policy)));
+                    spinoff_log = CorporateActionsLifecycle::apply_spinoffs(
+                        previous_positions, spinoff_events, policy);
+
+                    for (const auto& adj : spinoff_log) {
+                        if (adj.outcome == LifecycleOutcome::SKIPPED_NO_CHILD_PRICE) {
+                            // The class-1 event for this row was ALREADY suppressed, which is
+                            // the point: the parent keeps its real share count instead of
+                            // gaining phantom ones. Say plainly what the book now holds, so
+                            // this is never mistaken for a clean run.
+                            WARN("SPINOFF NOT APPLIED and its class-1 event SUPPRESSED: " +
+                                 adj.symbol + " -> " + adj.child_symbol + " (" +
+                                 adj.event_date + "). The book therefore carries " +
+                                 adj.symbol + " at a PRE-spinoff cost basis (" +
+                                 std::to_string(adj.avg_price_before) +
+                                 ") against a POST-spinoff price series, and holds none of " +
+                                 adj.child_symbol +
+                                 ". Unrealized P&L on this name is overstated as a loss by "
+                                 "the distributed value until the child's price series "
+                                 "exists. No dedup row is written -- it retries every run.");
+                            continue;
+                        }
+                        if (adj.outcome != LifecycleOutcome::SPUN_OFF_CHILD_HELD &&
+                            adj.outcome != LifecycleOutcome::SPUN_OFF_CHILD_SOLD) {
+                            continue;
+                        }
+
+                        // The realized figure -- cash in lieu, plus the disposal under
+                        // liquidate_at_first_close -- reaches live_results and the equity
+                        // curve by the same route a termination's does (E2-F7/E2-F11). It is
+                        // booked against the PARENT's row: the child has no position row of
+                        // its own under the default policy, and attributing it there instead
+                        // would be a row for a holding the book never carried.
+                        if (adj.realized_delta != 0.0) {
+                            corp_action_realized_total += adj.realized_delta;
+                            corp_action_realized_by_symbol[adj.symbol] += adj.realized_delta;
+                        }
+
+                        // The receipt, then the disposal. Two executions, deterministic ids
+                        // (symbol + ex-date, never a clock) so a replay of the same date
+                        // regenerates the same rows and the re-insert overwrites rather than
+                        // duplicates -- the CORPACTION_ pattern the exits already use.
+                        //
+                        // A broker statement shows exactly these two lines. Without them the
+                        // child arrives and leaves the book with nothing to reconcile against.
+                        const double received = adj.child_quantity + adj.child_fractional;
+                        if (received > 1e-9 && adj.child_avg_price > 0.0) {
+                            ExecutionReport recv;
+                            recv.order_id = "CORPACTION_" + adj.child_symbol + "_" +
+                                            adj.event_date;
+                            recv.exec_id = "CA_" + adj.child_symbol + "_" + adj.event_date +
+                                           "_RECEIPT";
+                            recv.symbol = adj.child_symbol;
+                            recv.side = Side::BUY;
+                            recv.filled_quantity = Quantity(received);
+                            // Priced at the ALLOCATED basis, not at the market: the shares
+                            // were not bought, they were distributed, and booking them at the
+                            // first close would fabricate a gain on receipt.
+                            recv.fill_price = Price(adj.child_avg_price);
+                            recv.fill_time = now;
+                            recv.commissions_fees = Decimal(0.0);
+                            recv.implicit_price_impact = Decimal(0.0);
+                            recv.slippage_market_impact = Decimal(0.0);
+                            recv.total_transaction_costs = Decimal(0.0);
+                            recv.is_partial = false;
+                            corp_action_executions.push_back(recv);
+                        }
+
+                        const double disposed =
+                            adj.outcome == LifecycleOutcome::SPUN_OFF_CHILD_SOLD
+                                ? adj.child_quantity + adj.child_fractional
+                                : adj.child_fractional;   // HOLD: only the fraction is sold
+                        if (disposed > 1e-9 && adj.child_first_close > 0.0) {
+                            ExecutionReport disp;
+                            disp.order_id = "CORPACTION_" + adj.child_symbol + "_" +
+                                            adj.event_date;
+                            disp.exec_id = "CA_" + adj.child_symbol + "_" + adj.event_date +
+                                           (adj.outcome == LifecycleOutcome::SPUN_OFF_CHILD_SOLD
+                                                ? "_DISPOSAL"
+                                                : "_CIL");
+                            disp.symbol = adj.child_symbol;
+                            disp.side = Side::SELL;
+                            disp.filled_quantity = Quantity(disposed);
+                            disp.fill_price = Price(adj.child_first_close);
+                            disp.fill_time = now;
+                            disp.commissions_fees = Decimal(0.0);
+                            disp.implicit_price_impact = Decimal(0.0);
+                            disp.slippage_market_impact = Decimal(0.0);
+                            disp.total_transaction_costs = Decimal(0.0);
+                            disp.is_partial = false;
+                            corp_action_executions.push_back(disp);
+                        }
+
+                        // E2-F15 / G1, applied to the spinoff parent for the same reason it
+                        // is applied to a split: the basis was divided by F and the price
+                        // series was too, so after the restatement basis and mark must be in
+                        // one frame. A wrong F -- a mis-encoded step, a terms row on the
+                        // wrong date -- would otherwise restate the parent silently and
+                        // nothing downstream would notice.
+                        {
+                            auto mk = previous_day_close_prices.find(adj.symbol);
+                            if (mk != previous_day_close_prices.end() && mk->second > 0.0 &&
+                                adj.avg_price_after > 0.0) {
+                                const double basis_to_mark = adj.avg_price_after / mk->second;
+                                if (basis_to_mark > 5.0 || basis_to_mark < 0.2) {
+                                    ERROR("E2-F15 guard: after the SPINOFF of " +
+                                          adj.child_symbol + " from " + adj.symbol +
+                                          " the parent cost basis (" +
+                                          std::to_string(adj.avg_price_after) +
+                                          ") is implausible against the mark (" +
+                                          std::to_string(mk->second) + "), ratio " +
+                                          std::to_string(basis_to_mark) +
+                                          ". The restatement factor " +
+                                          std::to_string(adj.ratio_change) +
+                                          " and the price series disagree. Refusing to trade.");
+                                    return 1;
+                                }
+                            }
+                        }
+
+                        // The parent's own basis moved, so the frame it is now in must be
+                        // stamped on the dedup ledger like any other class-1 restatement.
+                        applied_class1_ex_date[adj.symbol] =
+                            std::max(applied_class1_ex_date[adj.symbol], adj.event_date);
+
+                        // Two dedup rows, parent and child, so a replay cannot re-distribute.
+                        PositionAdjustment parent_row;
+                        parent_row.symbol = adj.symbol;
+                        parent_row.event_date = adj.event_date;
+                        parent_row.type = CorpActionType::SPINOFF;
+                        parent_row.quantity_before = adj.quantity_before;
+                        parent_row.quantity_after = adj.quantity_after;
+                        parent_row.avg_price_before = adj.avg_price_before;
+                        parent_row.avg_price_after = adj.avg_price_after;
+                        parent_row.event_value = adj.ratio_change;
+                        parent_row.ratio_change = adj.ratio_change;   // F, the basis divisor
+                        audit_log.record(parent_row);
+
+                        PositionAdjustment child_row;
+                        child_row.symbol = adj.child_symbol;
+                        child_row.event_date = adj.event_date;
+                        child_row.type = CorpActionType::SPINOFF;
+                        child_row.quantity_before = 0.0;
+                        child_row.quantity_after = adj.child_quantity;
+                        child_row.avg_price_before = 0.0;
+                        child_row.avg_price_after = adj.child_avg_price;
+                        child_row.event_value = adj.child_first_close;
+                        // The child's basis was CREATED here, not restated from anything, so
+                        // there is no factor that inverts it. 1.0 is the honest value: the
+                        // broker frame and the book frame agree on a basis nothing adjusted.
+                        child_row.ratio_change = 1.0;
+                        audit_log.record(child_row);
+                    }
+                }
+
+                if (!events.empty() || !spinoff_log.empty()) {
                     auto adjustments = CorporateActionsApplier::apply(previous_positions, events);
                     for (const auto& adj : adjustments) {
                         INFO("Applied " + std::string(CorporateActionsApplier::type_to_string(adj.type)) +
@@ -1990,7 +2320,20 @@ int main(int argc, char* argv[]) {
                     // placeholder rows this block writes are dated today and carry the
                     // loaded book; writing them with zero adjustments was what let a
                     // stale book survive an empty day-T write (E2-F24).
-                    if (!adjustments.empty()) {
+                    //
+                    // E2-F31: an APPLIED spinoff moves the parent's basis and its realized
+                    // figure, so it counts as an adjustment for this purpose exactly as a
+                    // split does. A REFUSED one (SKIPPED_NO_CHILD_PRICE) moved nothing and
+                    // must not drag a placeholder write in behind it.
+                    bool spinoff_mutated = false;
+                    for (const auto& adj : spinoff_log) {
+                        if (adj.outcome == LifecycleOutcome::SPUN_OFF_CHILD_HELD ||
+                            adj.outcome == LifecycleOutcome::SPUN_OFF_CHILD_SOLD) {
+                            spinoff_mutated = true;
+                            break;
+                        }
+                    }
+                    if (!adjustments.empty() || spinoff_mutated) {
                     // Persist corrected positions back so future runs (and
                     // tomorrow's load_positions_by_date) pick up the adjusted state.
                     // Stamp last_update = now (ultrareview bug_007): the date-keyed
