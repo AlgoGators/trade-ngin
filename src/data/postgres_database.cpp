@@ -2912,7 +2912,11 @@ PostgresDatabase::load_applied_corp_actions(const std::string& portfolio_id,
             "SELECT symbol, action_type, ex_date::text AS ex_date, "
             "COALESCE(qty_held, 0) AS qty_held, "
             "COALESCE(dividend_per_share, 0) AS dividend_per_share, "
-            "COALESCE(total_cash, 0) AS total_cash "
+            "COALESCE(total_cash, 0) AS total_cash, "
+            // E2-F23 / migration 005. Empty string for a legacy row, which the
+            // caller reads as "unknown" and accepts -- refusing every row written
+            // before the column existed would make the next run unstartable.
+            "COALESCE(run_date::text, '') AS run_date "
             "FROM trading.corp_action_applied "
             "WHERE portfolio_id = $1 AND strategy_id = $2 AND strategy_name = $3",
             portfolio_id, strategy_id, strategy_name);
@@ -2927,6 +2931,7 @@ PostgresDatabase::load_applied_corp_actions(const std::string& portfolio_id,
             r.qty_held = row["qty_held"].as<double>();
             r.dividend_per_share = row["dividend_per_share"].as<double>();
             r.total_cash = row["total_cash"].as<double>();
+            r.run_date = row["run_date"].c_str();
             out.push_back(std::move(r));
         }
 
@@ -2995,15 +3000,21 @@ Result<void> PostgresDatabase::store_applied_corp_actions_in(
         // authoritative one. A repeated run must not rewrite qty_held with a
         // post-adjustment quantity.
         for (const auto& r : rows) {
+            // run_date is the writing pass's OWN as-of date (E2-F23, migration
+            // 005), not now(): a replay of 2026-04-07 executed tonight must stamp
+            // 2026-04-07, or a later chain's rows would look like an earlier
+            // chain's and the detector would never fire. Empty stores NULL rather
+            // than an epoch date, so an unstamped row stays honestly unknown.
             txn.exec_params(
                 "INSERT INTO trading.corp_action_applied "
                 "(portfolio_id, strategy_id, strategy_name, symbol, action_type, "
-                " ex_date, qty_held, dividend_per_share, total_cash) "
-                "VALUES ($1, $2, $3, $4, $5, $6::date, $7, $8, $9) "
+                " ex_date, qty_held, dividend_per_share, total_cash, run_date) "
+                "VALUES ($1, $2, $3, $4, $5, $6::date, $7, $8, $9, "
+                "        NULLIF($10, '')::date) "
                 "ON CONFLICT (portfolio_id, strategy_id, strategy_name, symbol, "
                 "             action_type, ex_date) DO NOTHING",
                 portfolio_id, strategy_id, strategy_name, r.symbol, r.action_type,
-                r.ex_date, r.qty_held, r.dividend_per_share, r.total_cash);
+                r.ex_date, r.qty_held, r.dividend_per_share, r.total_cash, r.run_date);
         }
         return Result<void>();
 

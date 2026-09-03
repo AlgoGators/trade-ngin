@@ -97,6 +97,46 @@ public:
     Result<bool> load();
 
     /**
+     * @brief The run's own as-of date, which every row this pass writes is stamped
+     *        with and which load() refuses to run behind.
+     *
+     * E2-F23 (audit option C-prime). A live run is correct exactly when the dedup
+     * rows and the T-1 position row come from the SAME pass. Reset the book but
+     * not this table and it is not: the event is skipped as "already applied"
+     * against a T-1 row that predates it, T-1 is finalized in the wrong frame, and
+     * nothing notices -- the G3 basis/mark guard only inspects events that were
+     * APPLIED, and a deduped event never enters that list. Measured: BKNG 25:1,
+     * ex-date 2026-04-06, re-run of 2026-04-07 over an un-reset dedup table,
+     * -4,824 of phantom unrealized P&L.
+     *
+     * The existing ex-date detector cannot see that case (2026-04-06 is safely in
+     * the past) and `applied_at` cannot either (an earlier chain always has an
+     * earlier wall clock). The run date of the writing pass is the only value that
+     * separates an earlier pass from a later one.
+     *
+     * Pass the runner's as-of date -- the replay date, NOT today's wall clock -- or
+     * a replay of 2026-04-07 executed tonight would stamp tonight and every later
+     * chain would look stale. Leaving it empty disables both the stamping and the
+     * check, which is the pre-005 behaviour and what the file-backed tests use.
+     */
+    enum class RunDateCheck {
+        /// Stamp writes AND refuse to load behind a later pass's rows.
+        Enforce,
+        /// Stamp writes only. For a SECOND log opened later in the same run: this
+        /// run's own rows are already committed by then, so enforcing would make
+        /// the run refuse itself.
+        StampOnly
+    };
+
+    void set_run_date(std::string run_date_ymd,
+                      RunDateCheck check = RunDateCheck::Enforce) {
+        run_date_ = std::move(run_date_ymd);
+        enforce_run_date_ = (check == RunDateCheck::Enforce);
+    }
+
+    const std::string& run_date() const { return run_date_; }
+
+    /**
      * @brief Has this (symbol, ex_date, action) tuple already been applied?
      */
     /**
@@ -230,6 +270,10 @@ private:
     std::string portfolio_id_;
     std::string strategy_id_;
     std::string strategy_name_;
+    // The run's as-of date (E2-F23). Empty disables stamping and the staleness
+    // check; see set_run_date.
+    std::string run_date_;
+    bool enforce_run_date_{true};
     // Rows recorded since the last save(), so save() writes a delta rather
     // than re-inserting the whole lifetime set on every run.
     mutable std::vector<PostgresDatabase::AppliedCorpActionRow> pending_;

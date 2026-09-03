@@ -61,6 +61,10 @@ bool CorporateActionsAuditLog::migrate_state_file_to_db() {
             r.dividend_per_share = de->dividend_per_share;
             r.total_cash = de->total_cash;
         }
+        // Deliberately NOT stamped with this run's date: these events were applied
+        // by some earlier pass whose run date is unrecoverable from the file. NULL
+        // is the honest value, and it is accepted as "unknown" by the check below
+        // -- stamping today would make the very next run refuse to start.
         rows.push_back(std::move(r));
     }
 
@@ -112,6 +116,55 @@ Result<bool> CorporateActionsAuditLog::load() {
                 return make_error<bool>(ErrorCode::DATABASE_ERROR,
                                         "re-read after legacy import failed: " +
                                             std::string(existing.error()->what()),
+                                        "CorporateActionsAuditLog");
+            }
+        }
+
+        // E2-F23 (audit option C-prime). A row stamped with a run date on or after
+        // this run's was written by a LATER pass over this book. Honouring it skips
+        // an event whose effect is NOT in the T-1 position row this run just
+        // loaded, so T-1 is finalized in the wrong frame and the position is marked
+        // against a basis that never moved -- the E2-F16 phantom, measured at
+        // -4,824 on BKNG. No guard downstream can see it: skipped events never
+        // reach the basis/mark bound, which only inspects events that were applied.
+        //
+        // Detection only, deliberately. Deleting the rows automatically is correct
+        // ONLY when the book was also reset, which this process cannot verify, and
+        // it converts today's accidentally-correct plain re-run of a deferred-apply
+        // day into a silent double-apply for any event under 5x. The remedy is the
+        // protocol: reset trading.corp_action_applied together with positions,
+        // live_results, equity_curve and executions from the replay start date,
+        // then replay in order.
+        //
+        // Legacy rows carry no run_date and are accepted -- NULL means unknown, and
+        // refusing them would make the first run after migration 005 unstartable.
+        if (!run_date_.empty() && enforce_run_date_) {
+            std::vector<std::string> stale;
+            for (const auto& r : existing.value()) {
+                if (!r.run_date.empty() && r.run_date >= run_date_) {
+                    stale.push_back(r.symbol + " " + r.action_type + " ex " + r.ex_date +
+                                    " written by the run of " + r.run_date);
+                }
+            }
+            if (!stale.empty()) {
+                std::string detail;
+                for (size_t i = 0; i < stale.size() && i < 20; ++i) {
+                    detail += (i ? "; " : "") + stale[i];
+                }
+                if (stale.size() > 20) {
+                    detail += "; and " + std::to_string(stale.size() - 20) + " more";
+                }
+                const std::string msg =
+                    std::to_string(stale.size()) +
+                    " corp-action dedup row(s) were written by a LATER pass over this book "
+                    "(run date on or after " + run_date_ + "): " + detail +
+                    ". Trusting them would skip events whose effect is not in the T-1 "
+                    "position row and finalize it in the wrong frame (E2-F23/E2-F16). "
+                    "Refusing to run: reset trading.corp_action_applied for this portfolio "
+                    "TOGETHER with the book (positions, live_results, equity_curve, "
+                    "executions) from the replay start date, then replay in order.";
+                ERROR("CorporateActionsAuditLog: " + msg);
+                return make_error<bool>(ErrorCode::INVALID_ARGUMENT, msg,
                                         "CorporateActionsAuditLog");
             }
         }
@@ -263,6 +316,9 @@ void CorporateActionsAuditLog::record(const PositionAdjustment& adj) {
         row.symbol = adj.symbol;
         row.ex_date = adj.event_date;
         row.action_type = CorporateActionsApplier::type_to_string(adj.type);
+        // E2-F23 / migration 005: the pass's own as-of date, so a later pass's
+        // rows are distinguishable from an earlier pass's. Empty stores NULL.
+        row.run_date = run_date_;
         if (adj.type == CorpActionType::DIVIDEND) {
             row.qty_held = adj.quantity_after;
             row.dividend_per_share = adj.event_value;

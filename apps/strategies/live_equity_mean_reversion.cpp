@@ -1256,6 +1256,11 @@ int main(int argc, char* argv[]) {
                           "them. Refusing to adjust positions.");
                     return 1;
                 }
+                // E2-F23: the run's OWN as-of date, not the wall clock. Every dedup
+                // row this pass writes is stamped with it, and load() refuses to run
+                // behind a row a LATER pass wrote -- the case the ex-date detector
+                // below cannot see, because that row's ex-date is in the past.
+                audit_log.set_run_date(today_date_str);
                 auto dedup_loaded = audit_log.load();
                 if (dedup_loaded.is_error()) {
                     // Abort rather than adjust positions against an unknown
@@ -2239,6 +2244,12 @@ int main(int argc, char* argv[]) {
                                                          portfolio_id,
                                                          "LIVE_EQUITY_MEAN_REVERSION",
                                                          "EQUITY_MEAN_REVERSION");
+                // Stamp only, not enforce: the class-1 block above already committed
+                // THIS run's dedup rows, all stamped with today's date, so enforcing
+                // here would make the run refuse its own output (E2-F23). The check
+                // belongs on the first load of the run, which is where it is.
+                lifecycle_audit.set_run_date(as_of_date,
+                                             CorporateActionsAuditLog::RunDateCheck::StampOnly);
                 auto lc_loaded = lifecycle_audit.load();
                 if (lc_loaded.is_error()) {
                     // Fail closed, matching the class-1 block: a dedup record that cannot be

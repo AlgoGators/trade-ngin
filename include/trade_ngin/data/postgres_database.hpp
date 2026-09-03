@@ -795,6 +795,18 @@ public:
         double qty_held{0.0};
         double dividend_per_share{0.0};
         double total_cash{0.0};
+        /**
+         * Run date of the pass that wrote the row (E2-F23, migration 005).
+         * YYYY-MM-DD, or "" for a legacy row written before the column existed.
+         *
+         * NOT part of the natural key. It exists so a run can tell whether the
+         * dedup rows it is about to trust came from an EARLIER pass or a LATER
+         * one -- the ex-date cannot, because the measured failure (BKNG, ex-date
+         * 2026-04-06, re-run of 04-07 over an un-reset dedup table) has an
+         * ex-date safely in the past, and `applied_at` cannot, because an earlier
+         * chain always carries an earlier wall clock.
+         */
+        std::string run_date;
     };
 
     /**
