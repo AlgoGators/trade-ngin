@@ -2340,17 +2340,22 @@ int main(int argc, char* argv[]) {
             INFO("Non-trading day: carried " + std::to_string(positions.size()) +
                  " position(s) forward without generating signals.");
         } else {
-            INFO("Seeding strategy with previous-day book and generating signals...");
+            INFO("Seeding strategy with previous-day book...");
             auto strat_prewarm = LiveDailyCycle::prepare_strategy_for_signals(
-                *mr_strategy, previous_positions, all_bars);
+                *mr_strategy, previous_positions);
             if (strat_prewarm.is_error()) {
-                std::cerr << "Failed to preprocess data in strategy: "
+                std::cerr << "Failed to seed strategy positions: "
                           << strat_prewarm.error()->what() << std::endl;
                 return 1;
             }
 
-            // Process data through portfolio pipeline (risk; optimization is off for MR)
-            INFO("Processing data through portfolio manager (risk)...");
+            // Process data through portfolio pipeline (risk; optimization is off for MR).
+            //
+            // E2-F28: this is the ONE place the strategy is fed. process_market_data
+            // calls strategy->on_data(all_bars) itself; seeding above deliberately does
+            // not, because MeanReversion appends every bar it is given and a second pass
+            // over the same vector doubled the price history and the ADV EMA.
+            INFO("Processing data through portfolio manager (feeds the strategy once; risk)...");
             auto port_process_result = portfolio->process_market_data(all_bars);
             if (port_process_result.is_error()) {
                 std::cerr << "Failed to process data in portfolio manager: "

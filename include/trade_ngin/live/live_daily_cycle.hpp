@@ -27,8 +27,22 @@ namespace trade_ngin {
 class LiveDailyCycle {
 public:
     /**
-     * @brief Put a live strategy into the state signal generation assumes,
-     *        then generate the day's signals.
+     * @brief Put a live strategy into the state signal generation assumes.
+     *
+     * Seeding ONLY. This used to call on_data(bars) as well, and the caller then
+     * ran PortfolioManager::process_market_data over the same vector, which calls
+     * on_data() again (portfolio_manager.cpp). MeanReversionStrategy::on_data
+     * appends unconditionally -- price_history.push_back and volume_sample_count++
+     * per bar -- so every live session fed each bar twice: the history ran to its
+     * trim cap rather than the bar count and the ADV EMA advanced over a series
+     * twice as long as the one that traded, which is what the fractional-share
+     * eligibility gate reads. A backtest feeds each bar once, so live and backtest
+     * could not agree on the same data by construction (E2-F28 / E3 NEW-6).
+     *
+     * The feed belongs to the portfolio manager, which is the component that then
+     * reads the targets. Fixing it here rather than in portfolio_manager.cpp is
+     * deliberate: that file is on the futures path, and removing a feed there would
+     * change what the trend strategies see.
      *
      * A live runner is a fresh process every session: BaseStrategy::positions_
      * starts empty and on_execution() -- its only writer -- does not run until
@@ -50,12 +64,10 @@ public:
      *        have been applied. Order matters here too: splits restate quantity
      *        and dividends restate cost basis, so seeding the pre-adjustment
      *        snapshot would anchor the strategy to a book that no longer exists.
-     * @param bars The day's market data.
      */
     static Result<void> prepare_strategy_for_signals(
         BaseStrategy& strategy,
-        const std::unordered_map<std::string, Position>& previous_positions,
-        const std::vector<Bar>& bars) {
+        const std::unordered_map<std::string, Position>& previous_positions) {
         // E2-F19 / E2-F20: seed quantity, basis and mark -- never yesterday's realized.
         //
         // BaseStrategy::seed_positions is a wholesale copy and on_execution() adds to
@@ -79,9 +91,7 @@ public:
         for (auto& [symbol, position] : seed_book) {
             position.realized_pnl = Decimal(0.0);
         }
-        auto seeded = strategy.seed_positions(seed_book);
-        if (seeded.is_error()) return seeded;
-        return strategy.on_data(bars);
+        return strategy.seed_positions(seed_book);
     }
 
     /** What one day's execution step did, beyond the fills themselves. */
