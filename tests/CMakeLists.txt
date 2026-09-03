@@ -80,6 +80,7 @@ set(TEST_SOURCES
     storage/test_live_results_manager.cpp
     storage/test_live_results_key_roundtrip_db.cpp
     live/test_live_historical_metrics.cpp
+    live/test_live_historical_metrics_columns.cpp
     live/test_live_price_manager.cpp
     live/test_live_trading_coordinator_keying.cpp
     live/test_execution_manager.cpp

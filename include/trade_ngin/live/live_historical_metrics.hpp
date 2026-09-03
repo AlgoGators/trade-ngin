@@ -1,5 +1,7 @@
 #pragma once
 
+#include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace trade_ngin {
@@ -74,6 +76,29 @@ private:
                                                           double target = 0.0);
     static double calculate_max_drawdown_from_equity(const std::vector<double>& equity_values);
 };
+
+/**
+ * @brief The since-inception block as `trading.live_results` columns (E2-F33).
+ *
+ * One definition of "which columns ARE the historical-metrics block", so the two sites that
+ * write it -- the Day T-1 UPDATE and the day-T INSERT -- cannot drift apart and drop a
+ * column on one path only. Fifteen columns in total, every one of which was NULL on every
+ * equity row before E2-F33.
+ *
+ * `volatility` is DELIBERATELY ABSENT from both maps even though `HistoricalMetrics` carries
+ * it. The equity runner has always written the portfolio-VaR proxy into that column and the
+ * chain gate compares it; the futures runner overwrites it with this return volatility.
+ * Reconciling the two is a reporting decision, not part of filling in NULLs, and until it is
+ * taken this helper must not move the column. The return volatility is logged instead.
+ *
+ * `total_trades` and `flat_days` are absent because `trading.live_results` has no such
+ * columns; flat_days is `total_days - winning_days - losing_days` on read.
+ */
+std::unordered_map<std::string, double> historical_metrics_double_columns(
+    const HistoricalMetrics& m);
+
+/** @brief The integer half of the same block: winning_days, losing_days, total_days. */
+std::unordered_map<std::string, int> historical_metrics_int_columns(const HistoricalMetrics& m);
 
 }  // namespace trade_ngin
 

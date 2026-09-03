@@ -36,6 +36,7 @@
 #include "trade_ngin/storage/live_results_manager.hpp"
 #include "trade_ngin/live/live_data_loader.hpp"
 #include "trade_ngin/live/live_metrics_calculator.hpp"
+#include "trade_ngin/live/live_historical_metrics.hpp"
 #include "trade_ngin/live/live_trading_coordinator.hpp"
 #include "trade_ngin/live/live_price_manager.hpp"
 #include "trade_ngin/live/execution_price_resolver.hpp"
@@ -4332,6 +4333,130 @@ int main(int argc, char* argv[]) {
                 }
             }
 
+            // ================= E2-F33: the since-inception metrics block ==============
+            //
+            // Fifteen columns on trading.live_results were NULL on every equity row ever
+            // written (22/22 on this book, 126/126 on the drift audit's), because this
+            // runner never called LiveHistoricalMetricsCalculator at all while both futures
+            // runners have called it for T-1 and for day T since they were written
+            // (live_portfolio_conservative.cpp:2283-2380 is the block this mirrors).
+            //
+            // Same calculator, same four history loads, same override of total_days with the
+            // authoritative get_trading_days() count -- the only differences are the strategy
+            // id and the E2-F32-corrected trading-days figure this runner already computed
+            // above, which is the denominator the annualized return in the same row used.
+            //
+            // NOT included, deliberately: `volatility`. The futures runner overwrites it with
+            // the return volatility computed here; this runner has always written the
+            // portfolio-VaR proxy into it, and changing that would move a column the chain
+            // gate compares. The return volatility is logged on the HIST_METRICS line instead
+            // so the sharpe denominator is visible, and reconciling the two is a separate
+            // decision (reported to the lead).
+            //
+            // Failure here is a WARN, not a fatal: every trading decision for T-1 is already
+            // made and persisted by this point, and these columns are reporting. That is the
+            // same choice the futures runners make at the identical site.
+            try {
+                HistoricalMetrics yesterday_hist_metrics;
+
+                if (data_loader && data_loader->is_connected()) {
+                    auto returns_hist_res = data_loader->load_daily_returns_history(
+                        kEquityStrategyId, portfolio_id, previous_date);
+                    auto pnl_hist_res = data_loader->load_daily_pnl_history(
+                        kEquityStrategyId, portfolio_id, previous_date);
+                    auto equity_hist_res = data_loader->load_equity_curve_history(
+                        kEquityStrategyId, portfolio_id, previous_date);
+                    auto trades_hist_res = data_loader->load_total_trades_count(
+                        kEquityStrategyId, portfolio_id, previous_date);
+
+                    std::vector<double> returns_hist;
+                    std::vector<double> pnl_hist;
+                    std::vector<double> equity_hist;
+                    int total_trades_hist = 0;
+
+                    if (returns_hist_res.is_ok()) returns_hist = returns_hist_res.value();
+                    if (pnl_hist_res.is_ok()) pnl_hist = pnl_hist_res.value();
+                    if (equity_hist_res.is_ok()) equity_hist = equity_hist_res.value();
+                    if (trades_hist_res.is_ok()) total_trades_hist = trades_hist_res.value();
+
+                    LiveHistoricalMetricsCalculator hist_calc;
+                    // daily_return is stored in PERCENT (the T-1 UPDATE above multiplies by
+                    // 100.0), so the series arrives in percent and must NOT be scaled again --
+                    // the futures runner carries the same note after a 100x volatility bug.
+                    yesterday_hist_metrics =
+                        hist_calc.calculate(returns_hist, pnl_hist, equity_hist,
+                                            yesterday_total_return_annualized,
+                                            total_trades_hist);
+
+                    // total_days is the authoritative trading-day count for T-1 -- the same
+                    // E2-F32-corrected figure that annualized the return written into this
+                    // row -- not the number of live_results rows, which includes weekends.
+                    yesterday_hist_metrics.total_days = trading_days_count;
+                    if (trading_days_count > 0) {
+                        yesterday_hist_metrics.win_rate =
+                            static_cast<double>(yesterday_hist_metrics.winning_days) /
+                            static_cast<double>(trading_days_count) * 100.0;
+                    }
+
+                    INFO("HIST_METRICS [Day T-1] " + yesterday_date_str +
+                         ": return_volatility=" +
+                         std::to_string(yesterday_hist_metrics.volatility) +
+                         " downside_deviation=" +
+                         std::to_string(yesterday_hist_metrics.downside_deviation) +
+                         " sharpe=" + std::to_string(yesterday_hist_metrics.sharpe_ratio) +
+                         " sortino=" + std::to_string(yesterday_hist_metrics.sortino_ratio) +
+                         " max_drawdown=" +
+                         std::to_string(yesterday_hist_metrics.max_drawdown) +
+                         " winning_days=" +
+                         std::to_string(yesterday_hist_metrics.winning_days) +
+                         " losing_days=" + std::to_string(yesterday_hist_metrics.losing_days) +
+                         " total_days=" + std::to_string(yesterday_hist_metrics.total_days) +
+                         " win_rate=" + std::to_string(yesterday_hist_metrics.win_rate) +
+                         " avg_win=" + std::to_string(yesterday_hist_metrics.avg_win) +
+                         " avg_loss=" + std::to_string(yesterday_hist_metrics.avg_loss) +
+                         " best_day=" + std::to_string(yesterday_hist_metrics.best_day) +
+                         " worst_day=" + std::to_string(yesterday_hist_metrics.worst_day) +
+                         " gross_profit=" +
+                         std::to_string(yesterday_hist_metrics.gross_profit) +
+                         " gross_loss=" + std::to_string(yesterday_hist_metrics.gross_loss) +
+                         " profit_factor=" +
+                         std::to_string(yesterday_hist_metrics.profit_factor) +
+                         " (returns n=" + std::to_string(returns_hist.size()) +
+                         ", equity n=" + std::to_string(equity_hist.size()) +
+                         ", executions=" + std::to_string(total_trades_hist) + ")");
+
+                    // One definition of the block, shared with the day-T write below, so a
+                    // column can never be written on one path and forgotten on the other.
+                    // update_live_results takes doubles only, so the three integer columns
+                    // are widened here; they are whole numbers by construction.
+                    auto metric_updates =
+                        historical_metrics_double_columns(yesterday_hist_metrics);
+                    for (const auto& [column, value] :
+                         historical_metrics_int_columns(yesterday_hist_metrics)) {
+                        metric_updates[column] = static_cast<double>(value);
+                    }
+
+                    auto yesterday_metrics_manager = std::make_unique<LiveResultsManager>(
+                        db, true, kEquityStrategyId, portfolio_id, kEquityStrategyName);
+                    auto update_metrics_result =
+                        yesterday_metrics_manager->update_live_results(previous_date,
+                                                                       metric_updates);
+                    if (update_metrics_result.is_error()) {
+                        WARN("Failed to update Day T-1 historical performance metrics: " +
+                             std::string(update_metrics_result.error()->what()));
+                    } else {
+                        INFO("Successfully updated Day T-1 historical performance metrics in "
+                             "trading.live_results");
+                    }
+                } else {
+                    WARN("LiveDataLoader not available or not connected; skipping the Day T-1 "
+                         "historical metrics update (E2-F33).");
+                }
+            } catch (const std::exception& e) {
+                WARN("Exception while updating Day T-1 historical performance metrics: " +
+                     std::string(e.what()));
+            }
+
             // Load updated metrics from database for email - MUST do this AFTER the UPDATE
             try {
                 std::string metrics_query =
@@ -4766,25 +4891,21 @@ int main(int argc, char* argv[]) {
             // Calculate current date for results (use override date if specified)
             auto current_date = now;
             
-            // Use the calculated returns from above
-            double sharpe_ratio = 0.0;  // Would need historical data to calculate
-            double sortino_ratio = 0.0; // Would need historical data to calculate
-            double max_drawdown = 0.0;  // Would need historical data to calculate
-            double calmar_ratio = 0.0;  // Would need historical data to calculate
+            // E2-F33: the thirteen `= 0.0; // Would need historical data to calculate`
+            // placeholders that stood here are gone, along with the claim in their comments.
+            // The history they said was unavailable is four SELECTs away and both futures
+            // runners have loaded it since they were written; they were never written to a
+            // column, which is why the block read NULL rather than zero. What replaces them
+            // is `historical_metrics` above.
+            //
+            // `volatility` is NOT one of them. It has always carried the portfolio-VaR proxy
+            // set just below, the chain gate compares that column, and the return volatility
+            // is a different quantity -- it is logged on the HIST_METRICS line instead.
             double volatility = 0.0;
-            int total_trades = 0;       // No trades in daily position generation
-            double win_rate = 0.0;      // No trades in daily position generation
-            double profit_factor = 0.0; // No trades in daily position generation
-            double avg_win = 0.0;       // No trades in daily position generation
-            double avg_loss = 0.0;      // No trades in daily position generation
-            double max_win = 0.0;       // No trades in daily position generation
-            double max_loss = 0.0;      // No trades in daily position generation
-            double avg_holding_period = 0.0; // No trades in daily position generation
             double var_95 = 0.0;
             double cvar_95 = 0.0;
             double beta = 0.0;
             double correlation = 0.0;
-            double downside_volatility = 0.0;
             
             // Get volatility from risk evaluation if available
             if (risk_eval.is_ok()) {
@@ -4863,6 +4984,86 @@ int main(int argc, char* argv[]) {
                 total_dividend_income = div_log.total_cumulative_dividend_income();
             }
 
+            // ================= E2-F33: the same block for day T ========================
+            //
+            // The T-1 pass above repairs yesterday's row once its mark is final. Today's row
+            // is INSERTed below and would stay NULL until tomorrow's run -- and the LAST day
+            // of any replay never gets a tomorrow, so "every row carries the block" needs
+            // this too. Mirrors live_portfolio_conservative.cpp:2743-2830.
+            //
+            // History is loaded as of previous_date (fully finalized days only) and today's
+            // own figures are appended, so the series ends with a day-T value that is
+            // consistent with the columns written in the same statement.
+            HistoricalMetrics historical_metrics;
+            try {
+                if (data_loader && data_loader->is_connected()) {
+                    auto returns_hist_res = data_loader->load_daily_returns_history(
+                        kEquityStrategyId, portfolio_id, previous_date);
+                    auto pnl_hist_res = data_loader->load_daily_pnl_history(
+                        kEquityStrategyId, portfolio_id, previous_date);
+                    auto equity_hist_res = data_loader->load_equity_curve_history(
+                        kEquityStrategyId, portfolio_id, previous_date);
+                    auto trades_hist_res = data_loader->load_total_trades_count(
+                        kEquityStrategyId, portfolio_id, now);
+
+                    std::vector<double> returns_hist;
+                    std::vector<double> pnl_hist;
+                    std::vector<double> equity_hist;
+                    int total_trades_hist = 0;
+
+                    if (returns_hist_res.is_ok()) returns_hist = returns_hist_res.value();
+                    if (pnl_hist_res.is_ok()) pnl_hist = pnl_hist_res.value();
+                    if (equity_hist_res.is_ok()) equity_hist = equity_hist_res.value();
+                    if (trades_hist_res.is_ok()) total_trades_hist = trades_hist_res.value();
+
+                    // Already in percent on both sides (the stored column and daily_return
+                    // here), so appended as-is. Do NOT scale.
+                    returns_hist.push_back(daily_return);
+                    pnl_hist.push_back(daily_pnl);
+                    equity_hist.push_back(current_portfolio_value);
+
+                    LiveHistoricalMetricsCalculator hist_calc;
+                    historical_metrics =
+                        hist_calc.calculate(returns_hist, pnl_hist, equity_hist,
+                                            total_return_annualized, total_trades_hist);
+
+                    historical_metrics.total_days = trading_days_count;
+                    if (trading_days_count > 0) {
+                        historical_metrics.win_rate =
+                            static_cast<double>(historical_metrics.winning_days) /
+                            static_cast<double>(trading_days_count) * 100.0;
+                    }
+
+                    INFO("HIST_METRICS [Day T]: return_volatility=" +
+                         std::to_string(historical_metrics.volatility) +
+                         " downside_deviation=" +
+                         std::to_string(historical_metrics.downside_deviation) +
+                         " sharpe=" + std::to_string(historical_metrics.sharpe_ratio) +
+                         " sortino=" + std::to_string(historical_metrics.sortino_ratio) +
+                         " max_drawdown=" + std::to_string(historical_metrics.max_drawdown) +
+                         " winning_days=" + std::to_string(historical_metrics.winning_days) +
+                         " losing_days=" + std::to_string(historical_metrics.losing_days) +
+                         " total_days=" + std::to_string(historical_metrics.total_days) +
+                         " win_rate=" + std::to_string(historical_metrics.win_rate) +
+                         " avg_win=" + std::to_string(historical_metrics.avg_win) +
+                         " avg_loss=" + std::to_string(historical_metrics.avg_loss) +
+                         " best_day=" + std::to_string(historical_metrics.best_day) +
+                         " worst_day=" + std::to_string(historical_metrics.worst_day) +
+                         " gross_profit=" + std::to_string(historical_metrics.gross_profit) +
+                         " gross_loss=" + std::to_string(historical_metrics.gross_loss) +
+                         " profit_factor=" + std::to_string(historical_metrics.profit_factor) +
+                         " (returns n=" + std::to_string(returns_hist.size()) +
+                         ", equity n=" + std::to_string(equity_hist.size()) +
+                         ", executions=" + std::to_string(total_trades_hist) + ")");
+                } else {
+                    WARN("LiveDataLoader not available or not connected; the day-T historical "
+                         "performance metrics stay at their defaults (E2-F33).");
+                }
+            } catch (const std::exception& e) {
+                WARN("Exception while calculating day-T historical performance metrics: " +
+                     std::string(e.what()));
+            }
+
             // Prepare metrics maps
             std::unordered_map<std::string, double> double_metrics = {
                 {"total_cumulative_return", total_cumulative_return_pct},
@@ -4902,6 +5103,18 @@ int main(int argc, char* argv[]) {
             std::unordered_map<std::string, int> int_metrics = {
                 {"active_positions", active_positions}
             };
+
+            // E2-F33: the same fifteen columns the Day T-1 UPDATE writes, from the same
+            // helper. `volatility` stays as set above (the portfolio-VaR proxy) -- the
+            // helper deliberately does not carry it.
+            for (const auto& [column, value] :
+                 historical_metrics_double_columns(historical_metrics)) {
+                double_metrics[column] = value;
+            }
+            for (const auto& [column, value] :
+                 historical_metrics_int_columns(historical_metrics)) {
+                int_metrics[column] = value;
+            }
 
             // Set all metrics at once
             results_manager->set_metrics(double_metrics, int_metrics);
