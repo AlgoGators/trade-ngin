@@ -146,6 +146,7 @@ set(TRADE_NGIN_SOURCES
     src/live/corporate_actions_classification.cpp
     src/live/corporate_actions_lifecycle.cpp
     src/live/corporate_actions_audit_log.cpp
+    src/live/broker_frame.cpp
     src/statistics/utils/statistics_utils.cpp
     src/statistics/transformers/normalizer.cpp
     src/statistics/transformers/pca.cpp

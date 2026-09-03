@@ -26,6 +26,7 @@
 #include "trade_ngin/live/data_freshness.hpp"
 #include "trade_ngin/live/corp_action_feed_status.hpp"
 #include "trade_ngin/live/trading_days_anchor.hpp"
+#include "trade_ngin/live/broker_frame.hpp"
 #include "trade_ngin/live/corporate_actions_audit_log.hpp"
 #include "trade_ngin/live/live_daily_cycle.hpp"
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
@@ -1860,6 +1861,39 @@ int main(int argc, char* argv[]) {
                     for (const auto& adj : adjustments) {
                         auto& slot = applied_class1_ex_date[adj.symbol];
                         if (slot.empty() || adj.event_date > slot) slot = adj.event_date;
+                    }
+
+                    // F-8 (docs/BROKER_BASIS_RECONCILIATION.md). The basis this run just
+                    // wrote is in the ADJUSTED frame; a broker statement is not. State both
+                    // numbers on the day the gap is created, so a reconciliation does not
+                    // have to reconstruct the chain from ohlcv_1d months later -- and so the
+                    // operator can see, from the log alone, that a dividend moved the book's
+                    // basis and would not have moved the broker's.
+                    for (const auto& adj : adjustments) {
+                        const auto chain = audit_log.basis_chain(adj.symbol);
+                        const double raw =
+                            broker_frame::raw_basis(adj.avg_price_after, chain);
+                        size_t dividends = 0;
+                        for (const auto& ev : chain) {
+                            if (broker_frame::is_dividend(ev)) ++dividends;
+                        }
+                        if (broker_frame::basis_is_known(raw)) {
+                            INFO("F-8 basis frames | " + adj.symbol +
+                                 " adjusted=" + std::to_string(adj.avg_price_after) +
+                                 " raw-equivalent=" + std::to_string(raw) + " (" +
+                                 std::to_string(dividends) + " dividend event(s) in the "
+                                 "chain of " + std::to_string(chain.size()) + ")");
+                        } else {
+                            WARN("F-8 basis frames | " + adj.symbol + " adjusted=" +
+                                 std::to_string(adj.avg_price_after) +
+                                 " raw-equivalent=UNKNOWN: the applied chain of " +
+                                 std::to_string(chain.size()) +
+                                 " event(s) contains one whose basis_ratio was never "
+                                 "recorded (a dedup row written before migration 006), so "
+                                 "the adjusted basis cannot be inverted from the ledger. "
+                                 "Recompute it from the raw ex-date closes in "
+                                 "equities_data.ohlcv_1d before reconciling this symbol.");
+                        }
                     }
 
                     // E2-F15 / G1 -- THE INVARIANT THAT WOULD HAVE CAUGHT THIS.

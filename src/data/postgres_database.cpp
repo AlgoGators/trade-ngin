@@ -2977,7 +2977,13 @@ PostgresDatabase::load_applied_corp_actions(const std::string& portfolio_id,
             // E2-F23 / migration 005. Empty string for a legacy row, which the
             // caller reads as "unknown" and accepts -- refusing every row written
             // before the column existed would make the next run unstartable.
-            "COALESCE(run_date::text, '') AS run_date "
+            "COALESCE(run_date::text, '') AS run_date, "
+            // F-8 / migration 006. NULL means the ratio was never recorded, which
+            // is NOT the same as "the event moved no basis" -- the two are
+            // separated here rather than collapsed into a 1.0 the caller cannot
+            // tell from a real one.
+            "basis_ratio IS NOT NULL AS basis_ratio_known, "
+            "COALESCE(basis_ratio, 1) AS basis_ratio "
             "FROM trading.corp_action_applied "
             "WHERE portfolio_id = $1 AND strategy_id = $2 AND strategy_name = $3",
             portfolio_id, strategy_id, strategy_name);
@@ -2993,6 +2999,8 @@ PostgresDatabase::load_applied_corp_actions(const std::string& portfolio_id,
             r.dividend_per_share = row["dividend_per_share"].as<double>();
             r.total_cash = row["total_cash"].as<double>();
             r.run_date = row["run_date"].c_str();
+            r.basis_ratio_known = row["basis_ratio_known"].as<bool>();
+            r.basis_ratio = row["basis_ratio"].as<double>();
             out.push_back(std::move(r));
         }
 
@@ -3069,13 +3077,19 @@ Result<void> PostgresDatabase::store_applied_corp_actions_in(
             txn.exec_params(
                 "INSERT INTO trading.corp_action_applied "
                 "(portfolio_id, strategy_id, strategy_name, symbol, action_type, "
-                " ex_date, qty_held, dividend_per_share, total_cash, run_date) "
+                " ex_date, qty_held, dividend_per_share, total_cash, run_date, "
+                " basis_ratio) "
                 "VALUES ($1, $2, $3, $4, $5, $6::date, $7, $8, $9, "
-                "        NULLIF($10, '')::date) "
+                "        NULLIF($10, '')::date, $11) "
                 "ON CONFLICT (portfolio_id, strategy_id, strategy_name, symbol, "
                 "             action_type, ex_date) DO NOTHING",
                 portfolio_id, strategy_id, strategy_name, r.symbol, r.action_type,
-                r.ex_date, r.qty_held, r.dividend_per_share, r.total_cash, r.run_date);
+                r.ex_date, r.qty_held, r.dividend_per_share, r.total_cash, r.run_date,
+                // F-8 / migration 006: NULL when the caller had no ratio to record
+                // (a TERMINATION restates nothing), so an absent ratio stays
+                // honestly absent rather than becoming an identity factor.
+                r.basis_ratio_known ? std::optional<double>(r.basis_ratio)
+                                    : std::optional<double>());
         }
         return Result<void>();
 

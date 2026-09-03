@@ -48,6 +48,8 @@ set(TEST_SOURCES
     live/corp_actions/test_corp_action_query_bounds_db.cpp
     live/corp_actions/test_audit_log.cpp
     live/corp_actions/test_income.cpp
+    live/corp_actions/test_broker_frame.cpp
+    live/corp_actions/test_broker_frame_db.cpp
     live/test_live_metrics_includes_dividend_income.cpp
     live/test_daily_pnl_identity.cpp
     live/test_trading_days_anchor.cpp

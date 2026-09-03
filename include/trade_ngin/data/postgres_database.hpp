@@ -837,6 +837,20 @@ public:
          * chain always carries an earlier wall clock.
          */
         std::string run_date;
+        /**
+         * The factor this event divided the cost basis by (F-8, migration 006):
+         * F for a SPLIT/ADR_SPLIT, 1 + d/c for a DIVIDEND, i.e.
+         * PositionAdjustment.ratio_change. Multiplying
+         * trading.positions.average_price by the product of these over a holding
+         * recovers the BROKER-frame basis, which a dividend never moves.
+         *
+         * `basis_ratio_known` false means the stored value was NULL -- a row
+         * written before 006, or a TERMINATION, which restates nothing. NULL is
+         * UNKNOWN and NOT 1.0: treating it as 1.0 reports an adjusted basis as
+         * broker-equivalent. Reconciliation only; not part of the natural key.
+         */
+        double basis_ratio{1.0};
+        bool basis_ratio_known{false};
     };
 
     /**
