@@ -184,14 +184,6 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
             for (const auto& bar : symbol_bars) {
                 instrument_data.price_history.push_back(static_cast<double>(bar.close));
 
-                // STICKY_DEBUG: Trace on_data push for MBT
-                if (symbol == "MBT.v.0") {
-                    INFO("STICKY_DEBUG_ONDATA: symbol=" + symbol + " bar.close=" +
-                         std::to_string(static_cast<double>(bar.close)) + " price_history.size()=" +
-                         std::to_string(instrument_data.price_history.size()) + " bar.timestamp=" +
-                         std::to_string(std::chrono::system_clock::to_time_t(bar.timestamp)));
-                }
-
                 // MEMORY FIX: Limit price history to maximum needed lookback
                 if (instrument_data.price_history.size() > trend_config_.max_history_size) {
                     instrument_data.price_history.pop_front();
@@ -635,17 +627,6 @@ std::unordered_map<std::string, Position> TrendFollowingStrategy::get_target_pos
 
         pos.last_update = instrument_data.last_update;
         target_positions[symbol] = pos;
-
-        // STICKY_DEBUG: Trace average_price at get_target_positions stage
-        if (symbol == "MBT.v.0" || symbol == "NQ.v.0") {
-            INFO("STICKY_DEBUG_GTP: symbol=" + symbol + " price_history.size()=" +
-                 std::to_string(instrument_data.price_history.size()) + " price_history.back()=" +
-                 (instrument_data.price_history.empty()
-                      ? "EMPTY"
-                      : std::to_string(instrument_data.price_history.back())) +
-                 " pos.average_price=" + std::to_string(static_cast<double>(pos.average_price)) +
-                 " pos.quantity=" + std::to_string(static_cast<double>(pos.quantity)));
-        }
     }
 
     return target_positions;

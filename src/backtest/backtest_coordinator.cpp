@@ -1115,13 +1115,6 @@ Result<void> BacktestCoordinator::save_daily_positions(std::shared_ptr<Portfolio
             Position pos_with_date = pos;
             pos_with_date.last_update = timestamp;
             positions_vec.push_back(pos_with_date);
-
-            // STICKY_DEBUG: Trace average_price at DB save point
-            if (symbol == "MBT.v.0" || symbol == "NQ.v.0") {
-                INFO("STICKY_DEBUG_SAVE: strategy=" + strategy_id + " symbol=" + symbol +
-                     " avg_price=" + std::to_string(static_cast<double>(pos.average_price)) +
-                     " qty=" + std::to_string(static_cast<double>(pos.quantity)));
-            }
         }
 
         if (!positions_vec.empty()) {

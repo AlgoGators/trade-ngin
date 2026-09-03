@@ -236,16 +236,6 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                         attr_strategy_target[id][sym] = static_cast<double>(pos.quantity);
                     }
 
-                    // STICKY_DEBUG: Trace average_price after get_target_positions
-                    for (const auto& [sym, tpos] : info.target_positions) {
-                        if (sym == "MBT.v.0" || sym == "NQ.v.0") {
-                            INFO("STICKY_DEBUG_TP: strategy=" + id + " symbol=" + sym +
-                                 " avg_price=" +
-                                 std::to_string(static_cast<double>(tpos.average_price)) +
-                                 " qty=" + std::to_string(static_cast<double>(tpos.quantity)));
-                        }
-                    }
-
                     processed_strategies.push_back(id);
 
                 } catch (const std::exception& e) {
@@ -447,15 +437,6 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
             // This ensures get_strategy_positions() returns integer positions, not fractional ones
             for (auto& [id, info] : strategies_) {
                 info.current_positions = info.target_positions;
-
-                // STICKY_DEBUG: Trace average_price after current_positions = target_positions
-                for (const auto& [sym, cpos] : info.current_positions) {
-                    if (sym == "MBT.v.0" || sym == "NQ.v.0") {
-                        INFO("STICKY_DEBUG_CP: strategy=" + id + " symbol=" + sym + " avg_price=" +
-                             std::to_string(static_cast<double>(cpos.average_price)) +
-                             " qty=" + std::to_string(static_cast<double>(cpos.quantity)));
-                    }
-                }
             }
         }
 
