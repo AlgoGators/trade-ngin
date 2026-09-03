@@ -113,6 +113,59 @@ TEST(HolidayCalendarCoverage, MalformedDatesDoNotClaimCoverage) {
     EXPECT_FALSE(checker.covers_date("not-a-date"));
 }
 
+// BA-1 / C-2 D1: a load that throws PART WAY THROUGH must publish nothing.
+//
+// The year key was inserted before that year's entries parsed, and the outer
+// catch returned false without clearing, so a calendar that failed halfway was
+// left marked "covered" with its closures missing. That is worse than an empty
+// calendar: covers_date returns TRUE, the runner's fail-closed guard passes,
+// is_holiday returns false with no warning (the year IS covered), and
+// find_previous_trading_day walks onto a closed day. The guard only ever fired
+// when the load failed TOTALLY.
+TEST(HolidayCalendarCoverage, PartialLoadPublishesNothingRatherThanClaimingCoverage) {
+    // 2025 parses cleanly; 2026's first entry has no "type", so the parse throws
+    // after 2026 has already been inserted into the covered set -- the shape a
+    // hand-edited or truncated calendar actually produces.
+    TempCalendar cal(
+        R"({"2025":[{"date":"2025-01-01","name":"New Year's Day","type":"fixed"}],)"
+        R"("2026":[{"date":"2026-05-25","name":"Memorial Day"},)"
+        R"({"date":"2026-12-25","name":"Christmas Day","type":"fixed"}]})");
+    HolidayChecker checker(cal.path());
+
+    EXPECT_FALSE(checker.loaded())
+        << "a throw part way through the file is a failed load, not a partial success";
+    EXPECT_FALSE(checker.covers_year(2026))
+        << "2026 was inserted before its entries parsed; claiming coverage makes "
+           "is_holiday(\"2026-05-25\") read as \"the market was open\"";
+    EXPECT_FALSE(checker.covers_date("2026-05-26"))
+        << "the runner's fail-closed guard consults covers_date and must fire";
+    EXPECT_FALSE(checker.covers_year(2025))
+        << "all or nothing: a half-applied calendar is not a calendar, so even the "
+           "year that did parse must not be advertised";
+    EXPECT_FALSE(checker.is_holiday("2026-05-25"))
+        << "Memorial Day never loaded; false here means unknown, and covers_date says so";
+}
+
+// The success path still publishes, and says so.
+TEST(HolidayCalendarCoverage, FullLoadReportsLoaded) {
+    TempCalendar cal(R"({"2026":[{"date":"2026-12-25","name":"Christmas Day","type":"fixed"}]})");
+    HolidayChecker checker(cal.path());
+
+    EXPECT_TRUE(checker.loaded());
+    EXPECT_TRUE(checker.covers_year(2026));
+    EXPECT_TRUE(checker.is_holiday("2026-12-25"));
+}
+
+// A file that cannot be opened at all is also a failed load -- the case the
+// original guard did catch, kept so the fix does not narrow it.
+TEST(HolidayCalendarCoverage, MissingFileReportsNotLoaded) {
+    HolidayChecker checker("/nonexistent/path/holidays.json");
+
+    EXPECT_FALSE(checker.loaded());
+    EXPECT_FALSE(checker.covers_year(2026));
+    EXPECT_FALSE(checker.covers_date("2026-05-26"));
+}
+
 // The shipped calendar must span the windows we actually run: historical
 // backtests reach back to the start of the equity data, and live needs runway.
 TEST(HolidayCalendarCoverage, ShippedCalendarSpansBacktestHistoryAndRunway) {

@@ -741,6 +741,17 @@ int main(int argc, char* argv[]) {
         // Check if yesterday was a holiday using HolidayChecker
         // Phase 6 §6a: path resolved via HolidayChecker::resolve_holidays_path.
         HolidayChecker holiday_checker(HolidayChecker::resolve_holidays_path());
+        // BA-1: fail closed on a calendar that did not load fully. is_holiday
+        // cannot distinguish "the market was open" from "the calendar is
+        // missing", so a partial load silently turns a closure into a trading
+        // day and the non-trading-day branch below never fires.
+        if (!holiday_checker.loaded()) {
+            std::cerr << "FATAL: market holiday calendar failed to load from "
+                      << HolidayChecker::resolve_holidays_path()
+                      << " - refusing to run. Every date would report as a trading day."
+                      << std::endl;
+            return 1;
+        }
         auto yesterday_for_check = now - std::chrono::hours(24);
         auto yesterday_time_t_check = std::chrono::system_clock::to_time_t(yesterday_for_check);
         std::tm yesterday_tm_check = *std::gmtime(&yesterday_time_t_check);

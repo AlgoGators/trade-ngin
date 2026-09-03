@@ -95,9 +95,23 @@ public:
      */
     explicit HolidayChecker(const std::string& json_path = "holidays.json")
         : json_path_(json_path) {
-        if (!load_holidays()) {
+        loaded_ = load_holidays();
+        if (!loaded_) {
             ERROR("Failed to load holidays from: " + json_path_);
         }
+    }
+
+    /**
+     * @brief Whether the calendar loaded completely.
+     *
+     * False means the file was missing, unreadable, or threw part way through.
+     * A caller whose correctness depends on the calendar must refuse to run on
+     * false rather than proceed: `is_holiday` cannot distinguish "open" from
+     * "never loaded", and a half-loaded file used to advertise coverage it did
+     * not have (BA-1).
+     */
+    bool loaded() const {
+        return loaded_;
     }
 
     /**
@@ -178,7 +192,14 @@ public:
      * @return true if successful, false otherwise
      */
     bool reload() {
-        return load_holidays();
+        // On failure the staged-swap leaves the calendar already in force
+        // untouched, so `loaded_` keeps its previous value rather than
+        // reporting a working calendar as unloaded.
+        if (load_holidays()) {
+            loaded_ = true;
+            return true;
+        }
+        return false;
     }
 
     /**
@@ -224,6 +245,7 @@ private:
     std::string json_path_;
     std::unordered_map<std::string, HolidayInfo> holidays_;
     std::set<int> covered_years_;
+    bool loaded_ = false;
 
     // is_holiday is const and may be called per-bar, so the warn-once state is
     // mutable and guarded. One warning per out-of-range year, not per query.
@@ -252,6 +274,23 @@ private:
      * @return true if successful, false otherwise
      */
     bool load_holidays() {
+        // BA-1: stage into locals and swap only on FULL success.
+        //
+        // This used to clear the live maps up front and fill them in place, and
+        // it inserted each year key BEFORE parsing that year's entries. A file
+        // that threw part way through therefore left the object advertising
+        // coverage for years whose closures were missing -- and the outer catch
+        // returned false without undoing any of it. `covers_date` then answered
+        // true, every fail-closed caller passed, `is_holiday` returned false
+        // with no warning because the year WAS covered, and
+        // `find_previous_trading_day` walked onto a closed day. The guard only
+        // fired when the load failed TOTALLY, which is the easy case.
+        //
+        // Staging also makes a failed reload() non-destructive: the calendar
+        // already in force survives.
+        std::unordered_map<std::string, HolidayInfo> staged_holidays;
+        std::set<int> staged_years;
+
         try {
             std::ifstream file(json_path_);
             if (!file.is_open()) {
@@ -262,41 +301,50 @@ private:
             nlohmann::json j;
             file >> j;
 
-            holidays_.clear();
-            covered_years_.clear();
-
             // Iterate through each year
             for (auto& [year, holidays_array] : j.items()) {
+                int year_number = 0;
                 try {
-                    covered_years_.insert(std::stoi(year));
+                    year_number = std::stoi(year);
                 } catch (const std::exception&) {
-                    WARN("Holiday calendar has a non-numeric year key: " + year);
+                    // A key that is not a year is the whole file's problem, not
+                    // one year's: we cannot tell what range the calendar covers,
+                    // so we refuse the file rather than load part of it.
+                    ERROR("Holiday calendar has a non-numeric year key: " + year);
+                    return false;
                 }
+
                 for (auto& holiday : holidays_array) {
                     HolidayInfo info;
                     info.date = holiday["date"].get<std::string>();
                     info.name = holiday["name"].get<std::string>();
                     info.type = holiday["type"].get<std::string>();
-                    
+
                     if (holiday.contains("day_of_week")) {
                         info.day_of_week = holiday["day_of_week"].get<std::string>();
                     }
-                    
+
                     if (holiday.contains("note")) {
                         info.note = holiday["note"].get<std::string>();
                     }
 
-                    holidays_[info.date] = info;
+                    staged_holidays[info.date] = info;
                 }
+
+                // Only after every entry for the year parsed.
+                staged_years.insert(year_number);
             }
 
-            INFO("Loaded " + std::to_string(holidays_.size()) + " holidays from " + json_path_);
-            return true;
-
         } catch (const std::exception& e) {
-            ERROR("Exception loading holidays: " + std::string(e.what()));
+            ERROR("Exception loading holidays: " + std::string(e.what()) +
+                  " - the calendar was NOT loaded and no coverage is claimed");
             return false;
         }
+
+        holidays_ = std::move(staged_holidays);
+        covered_years_ = std::move(staged_years);
+        INFO("Loaded " + std::to_string(holidays_.size()) + " holidays from " + json_path_);
+        return true;
     }
 };
 

@@ -157,6 +157,18 @@ int main(int argc, char* argv[]) {
         // dev/deploy/system-wide chain).
         auto holiday_checker_ptr = std::make_shared<HolidayChecker>(
             HolidayChecker::resolve_holidays_path());
+        // BA-1: a calendar that did not load fully is fatal, not an ERROR log.
+        // Every downstream use -- the non-trading-day skip, the previous-trading-
+        // day walk, EquityInstrument::is_market_open -- reads "not a holiday"
+        // and "never loaded" as the same value, so proceeding books a day that
+        // did not exist against a T-1 book that was never there.
+        if (!holiday_checker_ptr->loaded()) {
+            std::cerr << "FATAL: market holiday calendar failed to load from "
+                      << HolidayChecker::resolve_holidays_path()
+                      << " - refusing to run. Every date would report as a trading day."
+                      << std::endl;
+            return 1;
+        }
         EquityInstrument::set_holiday_checker(holiday_checker_ptr);
 
         // Setup database connection pool
