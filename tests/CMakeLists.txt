@@ -66,6 +66,7 @@ set(TEST_SOURCES
     core/test_equity_portfolio_namespace.cpp
     live/corp_actions/test_window.cpp
     live/test_effective_universe.cpp
+    live/test_live_daily_cycle_carry_forward.cpp
     data/test_current_holding_start_db.cpp
     instruments/test_equity_margin_cash_regt.cpp
     instruments/test_futures_margin_overload.cpp

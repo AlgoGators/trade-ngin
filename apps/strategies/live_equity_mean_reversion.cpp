@@ -945,12 +945,13 @@ int main(int argc, char* argv[]) {
         }
 
         // Check if today itself is a non-trading day
-        int today_dow = now_tm->tm_wday;
         std::ostringstream today_oss;
         today_oss << std::put_time(now_tm, "%Y-%m-%d");
         std::string today_date_str = today_oss.str();
-        bool today_is_non_trading = (today_dow == 0 || today_dow == 6 ||
-                                     holiday_checker.is_holiday(today_date_str));
+        // T-OR.3: one predicate, in a testable place. This was five inline copies of the
+        // weekend/holiday test and nothing covered any of them.
+        const bool today_is_non_trading =
+            LiveDailyCycle::is_non_trading_day(*now_tm, holiday_checker);
 
         // A closed market does NOT mean "do nothing". You still hold the book over a
         // weekend or holiday even though no new bar exists to signal from, so the day is
@@ -2435,7 +2436,7 @@ int main(int argc, char* argv[]) {
             // Carry the book forward untouched. No bar closed today, so there is nothing
             // to signal from and nothing legitimate to trade against; re-deriving targets
             // from a stale bar would manufacture a weekend trade.
-            positions = previous_positions;
+            positions = LiveDailyCycle::carry_forward(previous_positions);
             INFO("Non-trading day: carried " + std::to_string(positions.size()) +
                  " position(s) forward without generating signals.");
         } else {

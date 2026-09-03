@@ -2,12 +2,14 @@
 #pragma once
 
 #include <algorithm>
+#include <ctime>
 #include <set>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
 #include "trade_ngin/core/error.hpp"
+#include "trade_ngin/core/holiday_checker.hpp"
 #include "trade_ngin/live/corporate_actions_lifecycle.hpp"
 #include "trade_ngin/live/execution_manager.hpp"
 #include "trade_ngin/live/execution_price_resolver.hpp"
@@ -27,6 +29,50 @@ namespace trade_ngin {
  */
 class LiveDailyCycle {
 public:
+    /**
+     * @brief Is the exchange shut on this date?
+     *
+     * The predicate the whole closed-day path branches on, in a named place because it
+     * was five inline copies of `dow == 0 || dow == 6 || is_holiday(...)` in main() and
+     * nothing tested any of them (T-OR.3). A closed market does NOT mean "do nothing":
+     * the book is still held, so the day is processed as a carry-forward -- positions,
+     * live_results and equity_curve written from the previous session, signals and
+     * executions skipped -- which is what the futures runners already do.
+     *
+     * @param utc_tm the date under test, in UTC, with tm_wday populated (gmtime_r does).
+     * @param holidays the loaded calendar. Its own `covers_date` guard is checked by the
+     *        caller before any trading-day arithmetic runs; outside coverage `is_holiday`
+     *        answers false, and a date the calendar cannot speak for must not be silently
+     *        treated as open.
+     */
+    static bool is_non_trading_day(const std::tm& utc_tm, const HolidayChecker& holidays) {
+        if (utc_tm.tm_wday == 0 || utc_tm.tm_wday == 6) return true;
+        std::tm copy = utc_tm;
+        char buf[11];
+        if (std::strftime(buf, sizeof(buf), "%Y-%m-%d", &copy) != 10) {
+            return true;  // undatable: fail closed rather than trade on an unknown day
+        }
+        return holidays.is_holiday(buf);
+    }
+
+    /**
+     * @brief The day-T book on a day the market was shut.
+     *
+     * Quantity, cost basis and mark are the previous session's, unchanged -- no bar
+     * closed, so nothing was traded and nothing was re-marked. Realized is zeroed
+     * because `trading.positions.daily_realized_pnl` is a FLOW and this day realized
+     * nothing; carrying yesterday's figure would make the column a running total under
+     * a name that says daily, which is E2-F19 route 1.
+     */
+    static std::unordered_map<std::string, Position> carry_forward(
+        const std::unordered_map<std::string, Position>& previous_positions) {
+        std::unordered_map<std::string, Position> carried = previous_positions;
+        for (auto& [symbol, position] : carried) {
+            position.realized_pnl = Decimal(0.0);
+        }
+        return carried;
+    }
+
     /**
      * @brief Put a live strategy into the state signal generation assumes.
      *
