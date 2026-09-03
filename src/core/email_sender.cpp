@@ -519,7 +519,9 @@ std::string EmailSender::generate_trading_report_body(
     const std::unordered_map<std::string, Position>& yesterday_positions,
     const std::unordered_map<std::string, double>& yesterday_close_prices,
     const std::unordered_map<std::string, double>& two_days_ago_close_prices,
-    const std::map<std::string, double>& yesterday_daily_metrics) {
+    const std::map<std::string, double>& yesterday_daily_metrics,
+    const std::string& chart_strategy_id,
+    const std::string& chart_portfolio_id) {
     (void)risk_metrics;
     std::ostringstream html;
 
@@ -754,13 +756,13 @@ std::string EmailSender::generate_trading_report_body(
 
     html << "<h2>Charts</h2>\n";
     if (db) {
-        // This overload has no portfolio_name parameter and no production callers; passing
-        // empty portfolio_id means chart queries filter by strategy_id + empty portfolio_id
-        // (returns no rows). Kept compiling for legacy / future use.
-        const std::string chart_portfolio_id_legacy = "";
+        // E2-F11: the caller names the book the charts query. This overload IS used in
+        // production (the live equity runner); with the old hardcoded trend-following
+        // strategy id and empty portfolio every chart query returned no rows.
+        const std::string chart_portfolio_id_legacy = chart_portfolio_id;
         // Generate equity curve chart
         chart_base64_ = ChartGenerator::generate_equity_curve_chart(
-            db, "LIVE_TREND_FOLLOWING", chart_portfolio_id_legacy, 30);
+            db, chart_strategy_id, chart_portfolio_id_legacy, 30);
         if (!chart_base64_.empty()) {
             html << "<h3 style=\"margin-top: 20px; color: #333;\">Equity Curve</h3>\n";
             html << "<div style=\"width: 100%; max-width: 1000px; margin: 20px auto; text-align: "
@@ -775,7 +777,7 @@ std::string EmailSender::generate_trading_report_body(
         if (show_yesterday_pnl) {
             pnl_by_symbol_base64_ =
                 ChartGenerator::generate_pnl_by_symbol_chart(
-                    db, "LIVE_TREND_FOLLOWING", chart_portfolio_id_legacy, date);
+                    db, chart_strategy_id, chart_portfolio_id_legacy, date);
             if (!pnl_by_symbol_base64_.empty()) {
                 html << "<h3 style=\"margin-top: 20px; color: #333;\">Yesterday's PnL by "
                         "Symbol</h3>\n";
@@ -791,7 +793,7 @@ std::string EmailSender::generate_trading_report_body(
         // Generate daily PnL chart
         daily_pnl_base64_ =
             ChartGenerator::generate_daily_pnl_chart(
-                db, "LIVE_TREND_FOLLOWING", chart_portfolio_id_legacy, date, 30);
+                db, chart_strategy_id, chart_portfolio_id_legacy, date, 30);
         if (!daily_pnl_base64_.empty()) {
             html << "<h3 style=\"margin-top: 20px; color: #333;\">Daily PnL (Last 30 Days)</h3>\n";
             html << "<div style=\"width: 100%; max-width: 1000px; margin: 20px auto; text-align: "

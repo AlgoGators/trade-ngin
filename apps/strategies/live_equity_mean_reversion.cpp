@@ -1119,6 +1119,24 @@ int main(int argc, char* argv[]) {
                     INFO("Corp-action dedup record read successfully and is "
                          "empty -- genuine first run for this strategy");
                 }
+                // E2-F23: a dedup row dated on or after today was written by a LATER pass
+                // -- an un-reset replay, or a re-run of a day that applied an event with
+                // today's ex-date. Honouring it would skip the event and finalize T-1 in
+                // the wrong frame (the E2-F16 phantom, measured at -4,824 on BKNG).
+                // A re-run is only valid when the dedup rows and the book come from the
+                // same pass: reset both together, then run.
+                {
+                    const std::string latest_ex = audit_log.latest_applied_ex_date();
+                    if (!latest_ex.empty() && latest_ex >= today_date_str) {
+                        ERROR("Corp-action dedup record holds an entry with ex_date " + latest_ex +
+                              " >= today (" + today_date_str + "). It was written by a later "
+                              "pass over this book. Refusing to run: reset trading.corp_action_applied "
+                              "for this portfolio TOGETHER with the book (positions, live_results, "
+                              "equity_curve, executions) from the replay start date, then replay in "
+                              "order. Never re-run a day after a later day has run.");
+                        return 1;
+                    }
+                }
 
                 // Dividend-denominator closes, keyed (symbol, YYYY-MM-DD).
                 //
@@ -1671,6 +1689,11 @@ int main(int argc, char* argv[]) {
                         }
                     }
 
+                    // E2-F19 cleanup: nothing to persist when no event applied. The
+                    // placeholder rows this block writes are dated today and carry the
+                    // loaded book; writing them with zero adjustments was what let a
+                    // stale book survive an empty day-T write (E2-F24).
+                    if (!adjustments.empty()) {
                     // Persist corrected positions back so future runs (and
                     // tomorrow's load_positions_by_date) pick up the adjusted state.
                     // Stamp last_update = now (ultrareview bug_007): the date-keyed
@@ -1731,6 +1754,9 @@ int main(int argc, char* argv[]) {
                     }
                     INFO("Persisted " + std::to_string(adjustments.size()) +
                          " corp-action adjustments to trading.positions");
+                    } else {
+                        INFO("No class-1 corp-action adjustments applied this run; nothing persisted");
+                    }
                 }
             }
         }
@@ -1747,7 +1773,13 @@ int main(int argc, char* argv[]) {
         // Both change WHAT is held rather than its price, so they run after
         // the class-1 rescale and before target generation. Failures here are
         // non-fatal: the position map is left as-is and the run continues.
-        if (!previous_positions.empty()) {
+        //
+        // E2-F21: gated on a trading day like signals and executions are. A termination
+        // with a weekend ex-date would otherwise emit an execution and book realized P&L
+        // on a day the market was shut. Nothing is recorded on the skip, and the
+        // admission rule (delist_date <= as_of) still admits the event on the next open
+        // session, so Monday books it.
+        if (!today_is_non_trading && !previous_positions.empty()) {
             auto today_t2 = std::chrono::system_clock::to_time_t(now);
             std::tm today_tm2{};
             gmtime_r(&today_t2, &today_tm2);
@@ -4330,7 +4362,12 @@ int main(int argc, char* argv[]) {
                     yesterday_positions_finalized,  // Now populated with yesterday's finalized positions
                     yesterday_exit_prices,  // Day T-1 close prices for yesterday's positions
                     yesterday_entry_prices,  // Day T-2 close prices for yesterday's positions
-                    yesterday_daily_metrics_final  // Yesterday's metrics
+                    yesterday_daily_metrics_final,  // Yesterday's metrics
+                    // E2-F11: the charts query THIS book. The overload used to hardcode the
+                    // trend-following strategy id and an empty portfolio, so every equity
+                    // email rendered empty charts.
+                    std::string(kEquityStrategyId),
+                    portfolio_id
                 );
                 
                 // Send email without CSV attachments (CSV export disabled for mean reversion)

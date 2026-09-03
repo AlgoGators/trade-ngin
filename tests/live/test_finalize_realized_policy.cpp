@@ -212,14 +212,16 @@ TEST_F(FinalizeRealizedPolicyTest, RestoreDoesNotTouchTheAggregate) {
 
 TEST_F(FinalizeRealizedPolicyTest, MissingT1CloseStillRestoresRealized) {
     Book loaded{{kEq, make_row(kEq, kEqQty, kEqBasis, kEqRealized)}};
+    loaded[kEq].unrealized_pnl = Decimal(146.98);  // the last known mark
     auto r = finalize_and_restore(loaded, /*t1*/ {}, {{kEq, kEqT2}});
 
     EXPECT_NEAR(only(r).realized_pnl.as_double(), kEqRealized, 1e-6)
         << "a missing T-1 close must not erase the day's trade realized";
-    // Residual R-2, pinned as ACCEPTED for now: the row's unrealized level is
-    // written as 0 on this branch. Row and aggregate agree (the accumulation is
-    // skipped too), so L5 holds; the level is wrong. Tracked separately.
-    EXPECT_DOUBLE_EQ(only(r).unrealized_pnl.as_double(), 0.0);
+    // R-2: the last known mark is carried, on the row AND in the aggregate. A halted or
+    // unprinted name is still worth its last price; zero made the level vanish for a day
+    // and reappear as a phantom jump.
+    EXPECT_NEAR(only(r).unrealized_pnl.as_double(), 146.98, 1e-6);
+    EXPECT_NEAR(r.finalized_unrealized_pnl, 146.98, 1e-6);
 }
 
 TEST_F(FinalizeRealizedPolicyTest, MissingT2CloseStillRestoresRealized) {
@@ -227,7 +229,11 @@ TEST_F(FinalizeRealizedPolicyTest, MissingT2CloseStillRestoresRealized) {
     auto r = finalize_and_restore(loaded, {{kEq, kEqT1}}, /*t2*/ {{"OTHER", 1.0}});
 
     EXPECT_NEAR(only(r).realized_pnl.as_double(), kEqRealized, 1e-6);
-    EXPECT_DOUBLE_EQ(only(r).unrealized_pnl.as_double(), 0.0);
+    // R-2: a T-1 close exists, so the mark against the cost basis is computable; no
+    // settlement move is reported (T-2 missing), but the level is not zeroed.
+    EXPECT_NEAR(only(r).unrealized_pnl.as_double(), kEqQty * (kEqT1 - kEqBasis), 1e-6);
+    EXPECT_NEAR(r.finalized_unrealized_pnl, kEqQty * (kEqT1 - kEqBasis), 1e-6);
+    EXPECT_DOUBLE_EQ(r.finalized_daily_pnl, 0.0);
 }
 
 // Under SETTLED the degenerate branches keep writing 0 -- the futures pin for T-4.
@@ -308,4 +314,19 @@ TEST_F(FinalizeRealizedPolicyTest, RowWithoutALoadedCounterpartGetsZeroRealized)
     Book loaded;  // nothing loaded for META
     LiveDailyCycle::restore_loaded_realized(finalized, loaded);
     EXPECT_DOUBLE_EQ(finalized.front().realized_pnl.as_double(), 0.0);
+}
+
+// ---------------------------------------------------------------------------
+// R-1: the finalizer itself no longer writes the mark move into realized under
+// MARK_TO_MARKET -- without the runner's restore step. A new caller cannot fall
+// into the trap. The aggregate still carries the move.
+// ---------------------------------------------------------------------------
+TEST_F(FinalizeRealizedPolicyTest, FinalizerAloneKeepsTradeRealizedUnderMarkToMarket) {
+    Book loaded{{kEq, make_row(kEq, kEqQty, kEqBasis, kEqRealized)}};
+    auto r = finalize(loaded, {{kEq, kEqT1}}, {{kEq, kEqT2}},
+                      LivePnLManager::UnrealizedPolicy::MARK_TO_MARKET);
+    EXPECT_NEAR(only(r).realized_pnl.as_double(), kEqRealized, 1e-6)
+        << "no restore was applied: the finalizer must not write the mark move as realized "
+           "on a cash book";
+    EXPECT_NEAR(r.finalized_daily_pnl, kEqMove, 1e-6) << "the aggregate still carries the move";
 }
