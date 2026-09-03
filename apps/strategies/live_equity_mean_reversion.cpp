@@ -2151,15 +2151,41 @@ int main(int argc, char* argv[]) {
                 }
             }
 
+            // E2-F26: ask for the six labels whose row describes the death of its OWN
+            // ticker. `acquisitionof`, `mergerfrom` and `spunofffrom` are the survivor's
+            // row -- the acquirer, the surviving merger party, the spinoff child -- and
+            // this query is keyed on `ticker`, so admitting them builds a TerminationEvent
+            // for a company that is alive. The counterparty rows are not lost information;
+            // they are a different fact (what the CONTRA ticker became) and belong to the
+            // rollover path, which needs a trustworthy ratio it does not have.
             auto terms_result = db->get_corporate_actions(
                 symbols, std::string(lifecycle_start_buf), as_of_date,
-                vendor_labels_for_class(CorpActionClass::TERMINATION));
+                vendor_labels_for_termination_keying(TerminationKeying::ROW_TICKER_TERMINATES));
             if (terms_result.is_error()) {
                 WARN("Failed to fetch TERMINATION deal terms: " +
                      std::string(terms_result.error()->what()));
             } else {
                 for (const auto& row : terms_result.value()) {
                     if (previous_positions.find(row.ticker) == previous_positions.end()) continue;
+                    // The same admission rule again, per row, and not redundant: the
+                    // filter above bounds what the QUERY returns, this bounds what the
+                    // RUN acts on. It also applies the bars-contradict test the delisting
+                    // loop already runs -- a terms row on a ticker still printing after
+                    // its own event date belongs to a prior issuer of that symbol.
+                    auto lb_terms = last_bar_date.find(row.ticker);
+                    const std::string last_bar_terms =
+                        lb_terms == last_bar_date.end() ? std::string() : lb_terms->second;
+                    if (!CorporateActionsLifecycle::terms_row_terminates_its_ticker(
+                            row.action, row.date_str, last_bar_terms)) {
+                        WARN("Ignoring TERMINATION deal-terms row " + row.action + " for " +
+                             row.ticker + " (" + row.date_str + ", bars run to " +
+                             (last_bar_terms.empty() ? std::string("(none loaded)")
+                                                     : last_bar_terms) +
+                             "): it does not describe the termination of this ticker -- "
+                             "either it is the survivor's row (E2-F26) or the bars "
+                             "contradict it. The holding is left untouched.");
+                        continue;
+                    }
                     TerminationEvent ev;
                     ev.symbol = row.ticker;
                     ev.event_date = row.date_str;

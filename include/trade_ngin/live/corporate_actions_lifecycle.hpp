@@ -208,6 +208,39 @@ public:
         return !last_bar_date.empty() && !delist_date.empty() && last_bar_date > delist_date;
     }
 
+    /**
+     * @brief May a deal-terms row become a TerminationEvent for its own ticker?
+     *
+     * The one place the two class-3 hazards are decided together, so the runner's
+     * terms loop and the tests answer the same question (E2-F26):
+     *
+     *  1. **Keying.** `acquisitionof`, `mergerfrom` and `spunofffrom` are the
+     *     SURVIVOR's row -- the acquirer, the surviving merger party, the spinoff
+     *     child. Their `ticker` is alive; `contraticker` is what died. Turning one
+     *     into a TerminationEvent closes a live holding at the T-1 close and books
+     *     realized P&L that never happened. 1,611 + 13 + 78 such rows sit on
+     *     tickers that kept printing 30+ days later.
+     *  2. **Bars contradict the row.** Same test `delisting_is_stale` applies to
+     *     the timing feed, now applied to the terms feed too: a ticker still
+     *     printing after the event date is not the ticker that terminated, it is a
+     *     reused symbol carrying a prior issuer's row.
+     *
+     * A non-class-3 label is refused outright -- only a TERMINATION row builds a
+     * TerminationEvent.
+     *
+     * @param last_bar_date newest loaded bar for the symbol; EMPTY means no bars,
+     *        which is what a real termination looks like and is NOT contradiction.
+     */
+    static bool terms_row_terminates_its_ticker(const std::string& vendor_label,
+                                                const std::string& event_date,
+                                                const std::string& last_bar_date) {
+        if (classify_action(vendor_label) != CorpActionClass::TERMINATION) return false;
+        if (termination_keying(vendor_label) != TerminationKeying::ROW_TICKER_TERMINATES) {
+            return false;
+        }
+        return !delisting_is_stale(event_date, last_bar_date);
+    }
+
     static const char* outcome_to_string(LifecycleOutcome o);
 };
 
