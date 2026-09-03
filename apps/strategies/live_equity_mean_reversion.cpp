@@ -23,6 +23,7 @@
 #include "trade_ngin/live/corporate_actions_classification.hpp"
 #include "trade_ngin/live/corporate_actions_lifecycle.hpp"
 #include "trade_ngin/live/corp_action_window.hpp"
+#include "trade_ngin/live/data_freshness.hpp"
 #include "trade_ngin/live/corporate_actions_audit_log.hpp"
 #include "trade_ngin/live/live_daily_cycle.hpp"
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
@@ -601,20 +602,39 @@ int main(int argc, char* argv[]) {
         // the configured tolerance, the run is on stale data -- WARN in historical-
         // replay mode, ERROR (refuse) in true-live mode. (Computed from the loaded
         // bars rather than a separate query: symbol-scoped and no extra round-trip.)
-        if (!all_bars.empty()) {
-            auto latest_bar = all_bars.front().timestamp;
-            for (const auto& bar : all_bars) {
-                if (bar.timestamp > latest_bar) latest_bar = bar.timestamp;
-            }
-            int tolerance_days = app_config.live.data_staleness_tolerance_days;
-            auto staleness = end_date - latest_bar;
-            long staleness_days =
-                std::chrono::duration_cast<std::chrono::hours>(staleness).count() / 24;
-            if (staleness > std::chrono::hours(24 * tolerance_days)) {
-                std::string msg =
-                    "Equity data is stale: newest loaded bar is " + std::to_string(staleness_days) +
-                    " days older than end_date (tolerance " + std::to_string(tolerance_days) +
-                    " days).";
+        //
+        // BA-12: measured from the STALEST symbol, not the freshest. This used to take
+        // the global max bar timestamp, so one symbol printing today reported the whole
+        // feed current however far behind the other 851 were -- a guard that cannot
+        // fail is not a guard. It also skipped entirely on an empty load and measured
+        // in instants rather than calendar days.
+        {
+            const int tolerance_days = app_config.live.data_staleness_tolerance_days;
+            const std::string as_of_ymd =
+                format_ymd_utc(std::chrono::system_clock::to_time_t(end_date));
+            const auto freshness = assess_feed_freshness(last_bar_date, as_of_ymd);
+
+            if (!freshness.any_data) {
+                // No symbol has a usable bar date. Maximally stale, never neutral.
+                const std::string msg =
+                    "Equity data freshness cannot be established: none of the " +
+                    std::to_string(freshness.symbols) +
+                    " loaded symbols carries a usable bar date as of " + as_of_ymd + ".";
+                if (use_override_date) {
+                    WARN(msg + " Proceeding in historical-replay mode.");
+                } else {
+                    ERROR(msg + " Refusing to run live without a feed. Refresh the OHLCV "
+                                "feed.");
+                    return 1;
+                }
+            } else if (freshness.days_behind > tolerance_days) {
+                const std::string msg =
+                    "Equity data is stale: the stalest of " +
+                    std::to_string(freshness.symbols) + " symbols (" +
+                    freshness.stalest_symbol + ") last printed " + freshness.stalest_date +
+                    ", " + std::to_string(freshness.days_behind) +
+                    " calendar days before " + as_of_ymd + " (tolerance " +
+                    std::to_string(tolerance_days) + " days).";
                 if (use_override_date) {
                     WARN(msg + " Proceeding in historical-replay mode.");
                 } else {
@@ -622,6 +642,12 @@ int main(int argc, char* argv[]) {
                                 "feed or raise live.data_staleness_tolerance_days.");
                     return 1;
                 }
+            } else {
+                INFO("Equity feed freshness: stalest of " +
+                     std::to_string(freshness.symbols) + " symbols (" +
+                     freshness.stalest_symbol + ") at " + freshness.stalest_date + ", " +
+                     std::to_string(freshness.days_behind) + " days behind " + as_of_ymd +
+                     " (tolerance " + std::to_string(tolerance_days) + ").");
             }
         }
 
