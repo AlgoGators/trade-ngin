@@ -152,11 +152,11 @@ number an operator will otherwise spend an afternoon on.
 
 | site | what it checks | status |
 |---|---|---|
-| `src/live/broker_frame.{hpp,cpp}` | pure `raw_basis(adj_basis, applied_dividends)` and `expected_pnl_gap(...)` — the two functions above, with no DB and no I/O | **see §6** |
-| `tests/live/corp_actions/test_broker_frame.cpp` | `RawBasisRecoveredFromAdjustedBasisAndDividendChain`, `PnLGapEqualsDividendTimesBasisDistance` | **see §6** |
-| `tests/live/corp_actions/test_broker_frame_db.cpp` | `AppliedRowCarriesTheRatioNeededToInvertIt` — the `basis_ratio` column exists, is written, and inverts the stored basis | **see §6** |
-| `trading.corp_action_applied.basis_ratio` (migration 006) | the per-event factor, so identity 2 is computable from the ledger alone | **see §6** |
-| the live equity runner, after the class-1 apply | one INFO line per adjusted symbol: `basis adjusted=X raw-equivalent=Y (n events)` | **see §6** |
+| `src/live/broker_frame.{hpp,cpp}` | pure `raw_basis(adj_basis, applied_dividends)` and `expected_pnl_gap(...)` — the two functions above, with no DB and no I/O | LANDED `553ee9d1` |
+| `tests/live/corp_actions/test_broker_frame.cpp` | `RawBasisRecoveredFromAdjustedBasisAndDividendChain`, `PnLGapEqualsDividendTimesBasisDistance` | LANDED `553ee9d1` |
+| `tests/live/corp_actions/test_broker_frame_db.cpp` | `AppliedRowCarriesTheRatioNeededToInvertIt` — the `basis_ratio` column exists, is written, and inverts the stored basis | LANDED `553ee9d1` |
+| `trading.corp_action_applied.basis_ratio` (migration 006) | the per-event factor, so identity 2 is computable from the ledger alone | LANDED `553ee9d1`, applied to `new_algo_data` 2026-09-03 |
+| the live equity runner, after the class-1 apply | one INFO line per adjusted symbol: `F-8 basis frames \| SYM adjusted=X raw-equivalent=Y (n dividend event(s) …)`, and a WARN naming the symbol when a pre-006 row makes the chain uninvertible | LANDED `553ee9d1` |
 
 **Until a broker adapter exists this is a human-run statement compare.** `src/broker` does not
 exist; the "Broker reconciliation / partial fills" row deferred in the completion plan's §3 is
@@ -218,12 +218,23 @@ numbers.
 
 | piece | tier | status |
 |---|---|---|
-| the rule (this document) | Tier 1 | **DONE** 2026-09-03 |
-| `src/live/broker_frame.{hpp,cpp}` | Tier 2 | see the Phase B B-4 report |
-| the three tests | Tier 2 | see the Phase B B-4 report |
-| `basis_ratio` column, migration 006 | Tier 2 | see the Phase B B-4 report |
-| runner log line | Tier 2 | see the Phase B B-4 report |
+| the rule (this document) | Tier 1 | **DONE** 2026-09-03, commit `ad0532d5` |
+| `src/live/broker_frame.{hpp,cpp}` | Tier 2 | **DONE** `553ee9d1` |
+| the three tests | Tier 2 | **DONE** `553ee9d1` (2 pure + 1 DB-gated) |
+| `basis_ratio` column, migration 006 | Tier 2 | **DONE** `553ee9d1`; migration applied to `new_algo_data` 2026-09-03 |
+| runner log line | Tier 2 | **DONE** `553ee9d1` |
+| GOOGL 06-08 / META 06-15 verification replay | Tier 2 | **NOT RUN** — see the note below |
 | broker adapter / automated compare | deferred (§3 of the completion plan) | NOT STARTED, deliberately |
+
+**The GOOGL/META verification replay was not run, and cannot yet prove what it was meant to.**
+Every `trading.corp_action_applied` row that exists today predates migration 006, so
+`basis_ratio` is NULL on all of them and `raw_basis` correctly answers UNKNOWN. The column only
+starts carrying values on dividends applied by a run built after `553ee9d1`. The replay
+therefore belongs to the Phase D end gate, which rebuilds the book from the chain start with
+the new binary: at that point `avg_price × Π basis_ratio` can be compared against the fill price
+in `trading.executions` to 1e-6 relative, exactly as the rule specifies. The mechanism itself is
+proven by `AppliedRowCarriesTheRatioNeededToInvertIt`, which round-trips a real row through the
+real table and inverts a basis with it.
 
 **Migration number:** the E4 audit and `PHASE_B_E3_E4_FIXES.md` both say "migration 005" for
 `basis_ratio`. 005 was taken on 2026-09-03 by `corp_action_applied.run_date` (E2-F23 / F23-C′,
