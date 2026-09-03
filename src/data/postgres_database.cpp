@@ -2048,43 +2048,6 @@ Result<void> PostgresDatabase::store_backtest_signals(
     }
 }
 
-Result<void> PostgresDatabase::store_backtest_metadata(
-    const std::string& run_id, const std::string& name, const std::string& description,
-    const Timestamp& start_date, const Timestamp& end_date, const nlohmann::json& hyperparameters,
-    const std::string& portfolio_id, const std::string& table_name) {
-    auto validation = validate_connection();
-    if (validation.is_error())
-        return validation;
-
-    try {
-        pqxx::work txn(*connection_);
-
-        std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
-
-        std::string query =
-            "INSERT INTO " + table_name +
-            " (run_id, portfolio_id, name, description, start_date, end_date, hyperparameters) "
-            "VALUES ($1, $2, $3, $4, $5, $6, $7) "
-            "ON CONFLICT (run_id) "
-            "DO UPDATE SET portfolio_id = EXCLUDED.portfolio_id, name = EXCLUDED.name, description "
-            "= EXCLUDED.description, "
-            "start_date = EXCLUDED.start_date, end_date = EXCLUDED.end_date, "
-            "hyperparameters = EXCLUDED.hyperparameters";
-
-        txn.exec(query, pqxx::params{run_id, actual_portfolio_id, name, description,
-                        format_timestamp(start_date), format_timestamp(end_date),
-                        hyperparameters.dump()});
-
-        txn.commit();
-        INFO("Successfully stored backtest metadata for run: " + run_id);
-        return Result<void>();
-    } catch (const std::exception& e) {
-        return make_error<void>(ErrorCode::DATABASE_ERROR,
-                                "Failed to store backtest metadata: " + std::string(e.what()),
-                                "PostgresDatabase");
-    }
-}
-
 Result<void> PostgresDatabase::store_backtest_metadata_with_portfolio(
     const std::string& run_id, const std::string& portfolio_run_id, const std::string& strategy_id,
     double strategy_allocation, const nlohmann::json& portfolio_config, const std::string& name,

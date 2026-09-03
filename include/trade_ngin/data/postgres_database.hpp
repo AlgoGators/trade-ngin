@@ -292,23 +292,6 @@ public:
         const std::string& portfolio_id = "BASE_PORTFOLIO",
         const std::string& table_name = "backtest.signals") override;
 
-    /**
-     * @brief Store backtest run metadata
-     * @param run_id Backtest run identifier
-     * @param name Run name
-     * @param description Run description
-     * @param start_date Start date
-     * @param end_date End date
-     * @param hyperparameters JSON configuration
-     * @param table_name Name of the table to insert into
-     * @return Result indicating success or failure
-     */
-    Result<void> store_backtest_metadata(
-        const std::string& run_id, const std::string& name, const std::string& description,
-        const Timestamp& start_date, const Timestamp& end_date,
-        const nlohmann::json& hyperparameters, const std::string& portfolio_id = "BASE_PORTFOLIO",
-        const std::string& table_name = "backtest.run_metadata") override;
-
     // Multi-strategy version: store metadata with portfolio_run_id, strategy_allocation,
     // portfolio_config
     virtual Result<void> store_backtest_metadata_with_portfolio(
