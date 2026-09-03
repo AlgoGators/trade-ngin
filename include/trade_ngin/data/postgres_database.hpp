@@ -626,6 +626,26 @@ public:
         const std::vector<std::string>& actions = {"split", "dividend", "adrratiosplit"});
 
     /**
+     * @brief Last date present in equities_data.corporate_action.
+     *
+     * E4 item 3. The deal-terms feed's stop date used to be a compiled-in
+     * constant (`kCorpActionTableFrozenAfter`) quoted in every termination WARN.
+     * A constant cannot notice a revived subscription: after a backfill the
+     * message keeps naming the old date until someone rebuilds, and the operator
+     * gets no signal that the dormant rollover path just went live. Measuring it
+     * makes the log line true by construction.
+     *
+     * Future-dated placeholder rows are excluded: the table carries tickerchange
+     * rows dated 2027-07-18, and a bare max() would report a feed running two
+     * years ahead of the run.
+     *
+     * @param as_of_date Inclusive upper bound, YYYY-MM-DD. Empty means no bound.
+     * @return YYYY-MM-DD, or "" when the table holds no row at or before the
+     *         bound. An unreachable database is an error, never "".
+     */
+    Result<std::string> get_corp_action_feed_last_date(const std::string& as_of_date = "");
+
+    /**
      * @brief PRICE_RESTATING events sourced from the live per-bar columns.
      *
      * equities_data.ohlcv_1d carries div_cash and split_factor on the bar the

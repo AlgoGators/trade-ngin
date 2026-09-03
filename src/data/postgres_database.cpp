@@ -2511,6 +2511,39 @@ PostgresDatabase::get_corporate_actions(
     }
 }
 
+Result<std::string> PostgresDatabase::get_corp_action_feed_last_date(
+    const std::string& as_of_date) {
+
+    auto validation = validate_connection();
+    if (validation.is_error()) {
+        return make_error<std::string>(validation.error()->code(), validation.error()->what());
+    }
+
+    try {
+        pqxx::work txn(*connection_);
+        // Text comparison for the same reason get_corporate_actions uses one:
+        // the column is TEXT holding ISO-8601, so max() and the bound are both
+        // lexicographic and index-friendly, and no row can throw on a cast.
+        pqxx::result r =
+            as_of_date.empty()
+                ? txn.exec("SELECT COALESCE(max(date), '') FROM equities_data.corporate_action")
+                : txn.exec_params(
+                      "SELECT COALESCE(max(date), '') FROM equities_data.corporate_action "
+                      "WHERE date <= $1",
+                      as_of_date);
+        std::string last;
+        if (!r.empty() && !r[0][0].is_null()) last = r[0][0].c_str();
+        txn.commit();
+        return Result<std::string>(std::move(last));
+
+    } catch (const std::exception& e) {
+        return make_error<std::string>(
+            ErrorCode::DATABASE_ERROR,
+            "Failed to read the corporate-action feed's last row date: " + std::string(e.what()),
+            "PostgresDatabase");
+    }
+}
+
 Result<std::vector<PostgresDatabase::CorpActionRow>>
 PostgresDatabase::get_per_bar_corporate_actions(
     const std::vector<std::string>& tickers,

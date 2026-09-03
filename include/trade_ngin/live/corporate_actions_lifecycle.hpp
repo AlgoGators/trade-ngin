@@ -134,10 +134,19 @@ public:
      *
      * @param final_closes Last traded price per symbol; required for exits.
      */
+    /**
+     * @param feed_last_date MEASURED last row date of
+     *        equities_data.corporate_action, YYYY-MM-DD. Quoted in the "no deal
+     *        terms" WARNs so the operator reads what the database actually holds
+     *        rather than a date compiled into the binary (E4 item 3). Empty
+     *        falls back to `kCorpActionTableFrozenAfter`, which is what every
+     *        caller got before the measurement existed.
+     */
     static std::vector<LifecycleAdjustment> apply_terminations(
         std::unordered_map<std::string, Position>& positions,
         const std::vector<TerminationEvent>& events,
-        const std::unordered_map<std::string, double>& final_closes);
+        const std::unordered_map<std::string, double>& final_closes,
+        const std::string& feed_last_date = "");
 
     /**
      * @brief Is a `delisting_date` contradicted by the symbol's own bars?

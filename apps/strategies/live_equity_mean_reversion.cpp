@@ -24,6 +24,7 @@
 #include "trade_ngin/live/corporate_actions_lifecycle.hpp"
 #include "trade_ngin/live/corp_action_window.hpp"
 #include "trade_ngin/live/data_freshness.hpp"
+#include "trade_ngin/live/corp_action_feed_status.hpp"
 #include "trade_ngin/live/corporate_actions_audit_log.hpp"
 #include "trade_ngin/live/live_daily_cycle.hpp"
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
@@ -609,6 +610,36 @@ int main(int argc, char* argv[]) {
         // feed current however far behind the other 851 were -- a guard that cannot
         // fail is not a guard. It also skipped entirely on an empty load and measured
         // in instants rather than calendar days.
+        // Deal-terms feed freshness -- the OTHER feed, and a different question.
+        // equities_data.corporate_action supplies class-3 deal terms and class-2
+        // renames, and it stopped receiving events in 2025. That fact used to be a
+        // constant compiled into the binary and quoted in every termination WARN, so
+        // a restarted subscription would have gone unannounced and the WARNs would
+        // have kept naming a date that was no longer true (E4 item 3). Measure it,
+        // say it out loud once per run, and hand it to the handler that quotes it.
+        std::string corp_action_feed_last_date;
+        {
+            const std::string as_of_ymd =
+                format_ymd_utc(std::chrono::system_clock::to_time_t(end_date));
+            auto feed_max = db->get_corp_action_feed_last_date(as_of_ymd);
+            if (feed_max.is_error()) {
+                WARN("Could not measure the corporate-action deal-terms feed: " +
+                     std::string(feed_max.error()->what()) +
+                     " -- termination WARNs will quote the compiled-in date instead.");
+            } else {
+                corp_action_feed_last_date = feed_max.value();
+            }
+            const auto feed = assess_corp_action_feed(corp_action_feed_last_date, as_of_ymd);
+            INFO(describe_corp_action_feed(feed));
+            if (feed.revived_since_build) {
+                WARN("The corporate-action deal-terms feed has rows after " +
+                     std::string(kCorpActionTableFrozenAfter) +
+                     ", the date this binary was built against. Deal-terms rollover and "
+                     "survivor-keyed TERMINATION rows are now reachable; confirm E4 "
+                     "NEW-5(A) has landed before running this book at universe scale.");
+            }
+        }
+
         {
             const int tolerance_days = app_config.live.data_staleness_tolerance_days;
             const std::string as_of_ymd =
@@ -2045,7 +2076,8 @@ int main(int argc, char* argv[]) {
                 }
 
                 auto exits = CorporateActionsLifecycle::apply_terminations(
-                    previous_positions, terminations, final_closes);
+                    previous_positions, terminations, final_closes,
+                    corp_action_feed_last_date);
                 lifecycle_log.insert(lifecycle_log.end(), exits.begin(), exits.end());
             }
 

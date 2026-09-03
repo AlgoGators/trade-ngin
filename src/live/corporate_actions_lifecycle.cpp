@@ -156,7 +156,13 @@ std::vector<LifecycleAdjustment> CorporateActionsLifecycle::apply_renames(
 std::vector<LifecycleAdjustment> CorporateActionsLifecycle::apply_terminations(
     std::unordered_map<std::string, Position>& positions,
     const std::vector<TerminationEvent>& events,
-    const std::unordered_map<std::string, double>& final_closes) {
+    const std::unordered_map<std::string, double>& final_closes,
+    const std::string& feed_last_date) {
+
+    // The date the WARNs quote. Measured by the caller; the compiled-in constant
+    // is only the fallback for a caller that could not read the table.
+    const std::string feed_through =
+        feed_last_date.empty() ? std::string(kCorpActionTableFrozenAfter) : feed_last_date;
 
     std::vector<LifecycleAdjustment> log;
     log.reserve(events.size());
@@ -279,8 +285,8 @@ std::vector<LifecycleAdjustment> CorporateActionsLifecycle::apply_terminations(
             !std::isfinite(price_it->second)) {
             adj.outcome = LifecycleOutcome::SKIPPED_NO_PRICE;
             WARN("Corp action TERMINATION/" + ev.vendor_label + " for " + ev.symbol +
-                 " on " + ev.event_date + ": no deal terms (corporate_action feed frozen "
-                 "after " + std::string(kCorpActionTableFrozenAfter) +
+                 " on " + ev.event_date +
+                 ": no deal terms (corporate_action feed last row " + feed_through +
                  ") AND no final close available -- position left untouched, "
                  "operator review required");
             log.push_back(std::move(adj));
@@ -301,8 +307,8 @@ std::vector<LifecycleAdjustment> CorporateActionsLifecycle::apply_terminations(
         adj.realized_delta = realized_delta;
 
         WARN("Corp action TERMINATION/" + ev.vendor_label + " for " + ev.symbol +
-             " on " + ev.event_date + ": deal terms unavailable (corporate_action feed "
-             "frozen after " + std::string(kCorpActionTableFrozenAfter) +
+             " on " + ev.event_date +
+             ": deal terms unavailable (corporate_action feed last row " + feed_through +
              ") -- exiting " + std::to_string(qty_before) + " shares at final close " +
              std::to_string(exit_price) + " (realized " + std::to_string(realized_delta) +
              "). Correct for a cash deal; a stock-for-stock deal would instead roll into "

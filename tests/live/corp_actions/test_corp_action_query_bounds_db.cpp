@@ -456,3 +456,55 @@ TEST_F(CorpActionQueryBoundsDbTest, AMissingBarOnAClass1DateIsOnlyEverADividend)
     // "No price history exists for held symbol(s)" ERROR is load-bearing.
     RecordProperty("missing_bar_dividends", static_cast<int>(missing_bar_dividends));
 }
+
+// ──────────────────────────────────────────────────────────────────────────
+// E4 item 3 -- against the real table.
+//
+// The pure tests in test_effect_classes.cpp pin what the status says for a given
+// measurement. This one pins that a measurement HAPPENS: the reported date has
+// to equal what the server holds, which a literal cannot do once the feed moves.
+// ──────────────────────────────────────────────────────────────────────────
+
+#include "trade_ngin/live/corp_action_feed_status.hpp"
+
+TEST_F(CorpActionQueryBoundsDbTest, FrozenAfterDateIsMeasuredNotHardcoded) {
+    const std::string as_of = "2026-09-03";
+
+    auto measured = db_->get_corp_action_feed_last_date(as_of);
+    ASSERT_TRUE(measured.is_ok()) << measured.error()->what();
+
+    // Independently derived, not read back from the same accessor.
+    pqxx::connection c(conn_string_);
+    pqxx::work w(c);
+    const std::string expected =
+        w.exec_params("SELECT COALESCE(max(date), '') FROM equities_data.corporate_action "
+                      "WHERE date <= $1",
+                      as_of)[0][0]
+            .c_str();
+    w.commit();
+
+    ASSERT_FALSE(expected.empty()) << "the table is empty; this proves nothing";
+    EXPECT_EQ(measured.value(), expected)
+        << "the reported last-row date is not what the table holds -- a literal cannot "
+           "track a revived feed";
+
+    // The audit's assertion: it is at least as new as the compiled-in date, and
+    // the accessor is the thing that would move if the feed were backfilled.
+    EXPECT_GE(measured.value(), std::string(kCorpActionTableFrozenAfter))
+        << "the feed appears to have LOST rows since " << kCorpActionTableFrozenAfter
+        << "; that is a data incident, not a code defect";
+
+    const auto status = assess_corp_action_feed(measured.value(), as_of);
+    EXPECT_TRUE(status.measured);
+    EXPECT_EQ(status.frozen, expected < as_of);
+
+    // The upper bound matters: the table carries tickerchange placeholders dated
+    // 2027-07-18, and an unbounded max() would report a feed running ahead of the
+    // run -- which would make `frozen` false and the WARN text nonsense.
+    auto unbounded = db_->get_corp_action_feed_last_date();
+    ASSERT_TRUE(unbounded.is_ok()) << unbounded.error()->what();
+    EXPECT_GT(unbounded.value(), measured.value())
+        << "the future-dated rows are what the as-of bound exists to exclude";
+    EXPECT_FALSE(assess_corp_action_feed(unbounded.value(), as_of).frozen)
+        << "and this is the wrong answer the bound prevents";
+}
