@@ -778,12 +778,11 @@ Result<std::unordered_map<std::string, Position>> PostgresDatabase::load_positio
             try {
                 // Try to parse as timestamp
                 std::string last_update_str = row[5].as<std::string>();
-                std::tm tm = {};
-                std::istringstream ss(last_update_str);
-                ss >> std::get_time(&tm, "%Y-%m-%d %H:%M:%S");
-                if (!ss.fail()) {
-                    auto time_c = std::mktime(&tm);
-                    last_update = std::chrono::system_clock::from_time_t(time_c);
+                // E2-F22: the column is timestamptz read from a UTC session; parse it as
+                // UTC. std::mktime here treated it as host-local time and drifted every
+                // loaded row +5 h, which the T-1 rewrite then persisted.
+                if (trade_ngin::core::parse_utc_datetime(last_update_str, last_update)) {
+                    // parsed
                 } else {
                     // Fall back to current time if parsing fails
                     WARN("Failed to parse timestamp: " + last_update_str + ", using current time");

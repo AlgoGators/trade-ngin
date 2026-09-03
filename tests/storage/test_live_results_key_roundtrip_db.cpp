@@ -181,3 +181,35 @@ TEST_F(LiveResultsKeyRoundTripTest, ThePreFixKeyFindsNothing) {
     EXPECT_TRUE(wrong_portfolio.value().empty())
         << "the row landed on the futures book instead of the configured portfolio";
 }
+
+// E2-F22: what is loaded must equal what was stored, and re-storing the loaded book must be
+// a fixed point -- no +5 h per pass, no migration onto the next date after four passes.
+TEST_F(LiveResultsKeyRoundTripTest, LoadedTimestampEqualsStoredAndRewritesDoNotMigrate) {
+    Position p = make_position("AAPL", 10.0, 100.0);
+    // 18:00 UTC on the 16th (date_at is UTC noon); a drifted parse (+5 h per
+    // pass) would walk it across midnight within the five passes below.
+    p.last_update = date_at(2026, 3, 16) + std::chrono::hours(6);  // 18:00 UTC
+    ASSERT_FALSE(db_->store_positions({p}, kScratchStrategyId, kScratchStrategyName,
+                                      kScratchPortfolio, "trading.positions").is_error());
+
+    for (int pass = 0; pass < 5; ++pass) {
+        auto loaded = db_->load_positions_by_date(kScratchStrategyId, kScratchStrategyName,
+                                                  kScratchPortfolio, date_at(2026, 3, 16),
+                                                  "trading.positions");
+        ASSERT_TRUE(loaded.is_ok()) << loaded.error()->what();
+        ASSERT_EQ(loaded.value().count("AAPL"), 1u) << "pass " << pass << ": row lost";
+        const auto& row = loaded.value().at("AAPL");
+        EXPECT_EQ(row.last_update, p.last_update)
+            << "pass " << pass << ": loaded timestamp drifted from the stored instant";
+        std::vector<Position> again{row};
+        ASSERT_FALSE(db_->store_positions(again, kScratchStrategyId, kScratchStrategyName,
+                                          kScratchPortfolio, "trading.positions").is_error());
+    }
+
+    auto next_day = db_->load_positions_by_date(kScratchStrategyId, kScratchStrategyName,
+                                                kScratchPortfolio, date_at(2026, 3, 17),
+                                                "trading.positions");
+    ASSERT_TRUE(next_day.is_ok());
+    EXPECT_TRUE(next_day.value().empty())
+        << "five rewrites must never put a 2026-03-16 row onto 2026-03-17";
+}
