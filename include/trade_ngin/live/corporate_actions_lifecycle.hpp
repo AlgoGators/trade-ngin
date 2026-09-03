@@ -163,26 +163,43 @@ struct SpinoffBarColumns {
     bool routes_a_spinoff() const { return spinoff_factor() > 1.0 + 1e-9; }
 };
 
+/**
+ * @brief One company distributed by a spinoff, with the terms that price it.
+ *
+ * E2-F49: a spinoff is not one child. RTX 2020-04-03 distributed OTIS (0.5) AND CARR (1.0);
+ * HLT 2017-01-04 distributed PK (0.6) AND HGV (0.33333). Fifteen (parent, ex-date) pairs in
+ * `equities_data.corporate_action` carry more than one `spinoff` row, and the routing map
+ * was keyed on (ticker, date) with a scalar value, so the last row read silently overwrote
+ * every earlier one: one arbitrary child was delivered and the rest were never created.
+ */
+struct SpinoffChildTerms {
+    std::string symbol;
+    double ratio{0.0};  ///< r_i -- child shares per parent share held, from `spinoff.value`
+    /**
+     * P_i -- the child's first REAL close on or after the ex-date. Required: it prices the
+     * cash in lieu of the fractional share, prices the whole child position under
+     * LIQUIDATE_AT_FIRST_CLOSE, and is the weight in the relative-FMV allocation of the
+     * parent's basis. A child with no bars at all (RAL and MRP both have zero rows in
+     * equities_data.ohlcv_1d) leaves this 0 and the WHOLE event is refused rather than
+     * guessed -- an allocation computed over a subset of the children is not an allocation.
+     */
+    double first_close{0.0};
+};
+
 struct SpinoffEvent {
     std::string parent;
-    std::string child;
     std::string ex_date;             ///< YYYY-MM-DD
     /**
-     * F -- the factor the PRICE SERIES restates the parent by, and therefore the factor
-     * the parent's cost basis must be divided by to stay in frame with its marks. It is
-     * the split_factor on the ex-date bar for a split-encoded spinoff, and
-     * `1 + div_cash / close_at_ex_date` for a dividend-encoded one: the same number the
-     * applier would have computed, taken from the same place, used correctly.
+     * F -- the factor the PRICE SERIES restates the parent by, and therefore the factor the
+     * parent's cost basis must be divided by to stay in frame with its marks. It is the
+     * DISTRIBUTION's own factor: the whole step the bar took (`split_factor x
+     * (1 + div_cash/close)`, SpinoffBarColumns::total_factor) with any coincident reverse
+     * split divided back out, because that part is a share-count change the class-1 applier
+     * owns (E2-F47, E2-F48). Strictly greater than 1 for a real distribution.
      */
     double parent_restatement_factor{1.0};
-    double child_ratio{0.0};         ///< r -- child shares per parent share held
-    /**
-     * The child's first REAL close on or after the ex-date. Required: it prices the
-     * cash-in-lieu of the fractional share and, under LIQUIDATE_AT_FIRST_CLOSE, the whole
-     * child position. A child with no bars at all (RAL and MRP both have zero rows in
-     * equities_data.ohlcv_1d) leaves this 0 and the event is REFUSED rather than guessed.
-     */
-    double child_first_close{0.0};
+    /** Every child the (parent, ex-date) pair delivers. Never just the last one read. */
+    std::vector<SpinoffChildTerms> children;
 };
 
 /**
@@ -218,6 +235,31 @@ enum class LifecycleOutcome {
 };
 
 /**
+ * @brief What one child of a spinoff actually received.
+ *
+ * The basis is a RELATIVE-FAIR-MARKET-VALUE allocation of the value that left the parent:
+ *
+ *     pool per parent share = B (1 - 1/F)          the complement of B/F, so nothing is lost
+ *     w_i                   = r_i * P_i            child i's value per parent share
+ *     basis per child share = pool * P_i / sum(w)
+ *
+ * With one child this is exactly `B (1 - 1/F) / r`, the formula E2-F31 shipped with, so the
+ * single-child cases are unmoved. With several it is the rule a US holder's own basis
+ * allocation follows, and it conserves cost basis over the parent and EVERY child:
+ * `sum_i r_i * basis_i == pool`, identically.
+ */
+struct SpinoffChildDelivery {
+    std::string symbol;
+    double ratio{0.0};          ///< r_i
+    double quantity{0.0};       ///< floor(q * r_i) -- whole shares delivered
+    double avg_price{0.0};      ///< the allocated basis, per child share
+    double fractional{0.0};     ///< q*r_i - floor(q*r_i), paid as cash in lieu
+    double cash_in_lieu{0.0};   ///< fractional * first_close
+    double first_close{0.0};    ///< P_i -- the price CIL and any liquidation struck at
+    double realized_delta{0.0}; ///< CIL, plus the disposal under LIQUIDATE_AT_FIRST_CLOSE
+};
+
+/**
  * @brief Auditable record of a lifecycle adjustment.
  */
 struct LifecycleAdjustment {
@@ -232,16 +274,23 @@ struct LifecycleAdjustment {
     double realized_delta{0.0};   ///< cash P&L booked by an exit
     std::string contra_ticker;    ///< populated on CONVERTED_TO_CONTRA
 
-    // ---- E2-F31 spinoff detail (zero on every other outcome) ----
-    std::string child_symbol;        ///< the spun-off company
+    // ---- E2-F31 spinoff detail (empty / zero on every other outcome) ----
     double avg_price_before{0.0};    ///< parent basis before the restatement
     double avg_price_after{0.0};     ///< parent basis after: B / F
     double ratio_change{1.0};        ///< F, the parent restatement factor
-    double child_quantity{0.0};      ///< floor(q * r) -- whole shares delivered
-    double child_avg_price{0.0};     ///< B (1 - 1/F) / r -- the FMV allocation
-    double child_fractional{0.0};    ///< q*r - floor(q*r), paid as cash in lieu
-    double cash_in_lieu{0.0};        ///< child_fractional * child_first_close
-    double child_first_close{0.0};   ///< the price CIL and any liquidation struck at
+    /** One entry per child delivered (E2-F49). Empty on a refusal and on every other
+     *  outcome; the refusal WARNs name the children from the event, not from here. */
+    std::vector<SpinoffChildDelivery> children;
+
+    /** "PK, HGV" -- for log lines that name what the event delivered. */
+    std::string children_joined() const {
+        std::string out;
+        for (const auto& c : children) {
+            if (!out.empty()) out += ", ";
+            out += c.symbol;
+        }
+        return out;
+    }
 };
 
 /**

@@ -123,11 +123,9 @@ TEST(SpinoffReverseSplit, ApplySpinoffsRefusesAFactorAtOrBelowOneRatherThanGoing
 
     SpinoffEvent ev;
     ev.parent = "DD";
-    ev.child = "CTVA";
     ev.ex_date = "2019-06-03";
     ev.parent_restatement_factor = 0.33333333;  // the reverse split, mis-read as the spinoff
-    ev.child_ratio = 0.33333;
-    ev.child_first_close = 26.0;
+    ev.children.push_back({"CTVA", 0.33333, 26.0});
 
     auto log = CorporateActionsLifecycle::apply_spinoffs(
         positions, {ev}, SpinoffChildPolicy::LIQUIDATE_AT_FIRST_CLOSE);
@@ -157,17 +155,16 @@ TEST(SpinoffReverseSplit, ADistributionFactorJustAboveOneIsStillApplied) {
 
     SpinoffEvent ev;
     ev.parent = "PAR";
-    ev.child = "CHI";
     ev.ex_date = "2020-01-02";
     ev.parent_restatement_factor = 1.0001;
-    ev.child_ratio = 0.01;
-    ev.child_first_close = 1.0;
+    ev.children.push_back({"CHI", 0.01, 1.0});
 
     auto log = CorporateActionsLifecycle::apply_spinoffs(positions, {ev},
                                                         SpinoffChildPolicy::HOLD);
     ASSERT_EQ(log.size(), 1u);
     EXPECT_EQ(log[0].outcome, LifecycleOutcome::SPUN_OFF_CHILD_HELD);
-    EXPECT_GT(log[0].child_avg_price, 0.0);
+    ASSERT_EQ(log[0].children.size(), 1u);
+    EXPECT_GT(log[0].children[0].avg_price, 0.0);
     EXPECT_NEAR(positions["PAR"].average_price.as_double(), 100.0 / 1.0001, 1e-7);
 }
 
@@ -177,11 +174,9 @@ TEST(SpinoffReverseSplit, ExactlyOneIsRefusedBecauseNothingLeftTheParent) {
 
     SpinoffEvent ev;
     ev.parent = "PAR";
-    ev.child = "CHI";
     ev.ex_date = "2020-01-02";
     ev.parent_restatement_factor = 1.0;
-    ev.child_ratio = 0.5;
-    ev.child_first_close = 10.0;
+    ev.children.push_back({"CHI", 0.5, 10.0});
 
     auto log = CorporateActionsLifecycle::apply_spinoffs(
         positions, {ev}, SpinoffChildPolicy::LIQUIDATE_AT_FIRST_CLOSE);
@@ -206,11 +201,9 @@ TEST(SpinoffReverseSplit, TheDecomposedHLTBarConservesBasisAcrossBothLegs) {
 
     SpinoffEvent ev;
     ev.parent = "HLT";
-    ev.child = "PK";
     ev.ex_date = "2017-01-04";
     ev.parent_restatement_factor = F_spin;
-    ev.child_ratio = r;
-    ev.child_first_close = 27.0;
+    ev.children.push_back({"PK", r, 27.0});
 
     auto log = CorporateActionsLifecycle::apply_spinoffs(positions, {ev},
                                                         SpinoffChildPolicy::HOLD);

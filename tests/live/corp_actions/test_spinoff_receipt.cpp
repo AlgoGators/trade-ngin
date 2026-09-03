@@ -44,14 +44,15 @@ Position held(const std::string& symbol, double qty, double avg, double realized
     return p;
 }
 
-SpinoffEvent ftv_ral() {
+// E2-F49: children are a VECTOR now. This helper keeps the single-child shape the E4 audit
+// specified, so every number below is still the one B-4 hand-checked -- the relative-FMV
+// allocation reduces to B(1-1/F)/r exactly when there is one child.
+SpinoffEvent ftv_ral(double ratio = 0.33333, double first_close = 53.0) {
     SpinoffEvent ev;
     ev.parent = "FTV";
-    ev.child = "RAL";
     ev.ex_date = "2025-06-30";
     ev.parent_restatement_factor = 1.327;  // the real split_factor on the FTV ex-date bar
-    ev.child_ratio = 0.33333;              // the real corporate_action.spinoff value
-    ev.child_first_close = 53.0;
+    ev.children.push_back({"RAL", ratio, first_close});
     return ev;
 }
 
@@ -89,7 +90,8 @@ TEST(CorpActionSpinoff, RevivedSpinoffTermsCreateTheChildPositionWithNoCodeChang
         ASSERT_EQ(log.size(), 1u);
         EXPECT_EQ(log[0].outcome, LifecycleOutcome::SPUN_OFF_CHILD_HELD);
         EXPECT_EQ(log[0].symbol, "FTV");
-        EXPECT_EQ(log[0].child_symbol, "RAL");
+        ASSERT_EQ(log[0].children.size(), 1u);
+        EXPECT_EQ(log[0].children[0].symbol, "RAL");
 
         // The parent keeps every share. This is the whole defect: today it would hold 132.7.
         EXPECT_DOUBLE_EQ(positions["FTV"].quantity.as_double(), 100.0);
@@ -101,8 +103,8 @@ TEST(CorpActionSpinoff, RevivedSpinoffTermsCreateTheChildPositionWithNoCodeChang
 
         // Cash in lieu of the 0.333 fractional share, struck at the child's first close and
         // realized against the CHILD's basis -- those shares were never parent shares.
-        EXPECT_NEAR(log[0].child_fractional, 0.333, 1e-9);
-        EXPECT_NEAR(log[0].cash_in_lieu, 0.333 * 53.0, 1e-9);
+        EXPECT_NEAR(log[0].children[0].fractional, 0.333, 1e-9);
+        EXPECT_NEAR(log[0].children[0].cash_in_lieu, 0.333 * 53.0, 1e-9);
         EXPECT_NEAR(log[0].realized_delta, cil_realized, 1e-9);
         EXPECT_NEAR(positions["FTV"].realized_pnl.as_double(), cil_realized, kDecimalQuantum);
 
@@ -144,9 +146,7 @@ TEST(CorpActionSpinoff, RevivedSpinoffTermsCreateTheChildPositionWithNoCodeChang
     {
         std::unordered_map<std::string, Position> positions;
         positions["FTV"] = held("FTV", q, B);
-        auto ev = ftv_ral();
-        ev.child_ratio = 0.5;                         // 50 whole shares, no fraction
-        ev.child_first_close = B * (1.0 - 1.0 / F) / 0.5;
+        auto ev = ftv_ral(0.5, B * (1.0 - 1.0 / F) / 0.5);  // 50 whole shares, no fraction
 
         auto log = CorporateActionsLifecycle::apply_spinoffs(positions, {ev});
         ASSERT_EQ(log.size(), 1u);
@@ -165,21 +165,20 @@ TEST(CorpActionSpinoff, RevivedSpinoffTermsCreateTheChildPositionWithNoCodeChang
 
         SpinoffEvent ev;
         ev.parent = "MMM";
-        ev.child = "SOLV";
         ev.ex_date = "2024-04-01";
         ev.parent_restatement_factor = F_mmm;
-        ev.child_ratio = 0.25;
-        ev.child_first_close = 69.10;   // SOLV's real close on the ex-date
+        ev.children.push_back({"SOLV", 0.25, 69.10});  // SOLV's real close on the ex-date
 
         auto log = CorporateActionsLifecycle::apply_spinoffs(positions, {ev});
         ASSERT_EQ(log.size(), 1u);
         EXPECT_EQ(log[0].outcome, LifecycleOutcome::SPUN_OFF_CHILD_SOLD);
         EXPECT_DOUBLE_EQ(positions["MMM"].quantity.as_double(), 100.0);
         EXPECT_NEAR(positions["MMM"].average_price.as_double(), 89.515530, 1e-6);
-        EXPECT_NEAR(log[0].child_avg_price, 66.217880, 1e-6);
-        EXPECT_DOUBLE_EQ(log[0].child_quantity, 25.0);
-        EXPECT_DOUBLE_EQ(log[0].child_fractional, 0.0);   // 100 * 0.25 is exact
-        EXPECT_DOUBLE_EQ(log[0].cash_in_lieu, 0.0);
+        ASSERT_EQ(log[0].children.size(), 1u);
+        EXPECT_NEAR(log[0].children[0].avg_price, 66.217880, 1e-6);
+        EXPECT_DOUBLE_EQ(log[0].children[0].quantity, 25.0);
+        EXPECT_DOUBLE_EQ(log[0].children[0].fractional, 0.0);   // 100 * 0.25 is exact
+        EXPECT_DOUBLE_EQ(log[0].children[0].cash_in_lieu, 0.0);
         EXPECT_NEAR(log[0].realized_delta, 72.052992, 1e-6);
     }
 }
@@ -192,8 +191,7 @@ TEST(CorpActionSpinoff, AChildWithNoCloseIsRefusedRatherThanGuessed) {
     std::unordered_map<std::string, Position> positions;
     positions["FTV"] = held("FTV", 100.0, 70.0, /*realized=*/12.5);
 
-    auto ev = ftv_ral();
-    ev.child_first_close = 0.0;
+    auto ev = ftv_ral(0.33333, 0.0);
 
     auto log = CorporateActionsLifecycle::apply_spinoffs(positions, {ev});
 
@@ -209,8 +207,7 @@ TEST(CorpActionSpinoff, AChildWithNoCloseIsRefusedRatherThanGuessed) {
     for (auto bad : {0.0, -1.0}) {
         std::unordered_map<std::string, Position> p2;
         p2["FTV"] = held("FTV", 100.0, 70.0);
-        auto e2 = ftv_ral();
-        e2.child_ratio = bad;
+        auto e2 = ftv_ral(bad, 53.0);
         auto l2 = CorporateActionsLifecycle::apply_spinoffs(p2, {e2});
         ASSERT_EQ(l2.size(), 1u);
         EXPECT_EQ(l2[0].outcome, LifecycleOutcome::SKIPPED_NO_CHILD_PRICE);

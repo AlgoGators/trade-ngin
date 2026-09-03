@@ -1694,7 +1694,15 @@ int main(int argc, char* argv[]) {
                 // This table is frozen after 2025-08-29, so a spinoff AFTER that date is not
                 // detectable at all and still takes the mangling path. That is data-blocked,
                 // not code-blocked, and the tripwire for it is E2-F41's class-1-row check.
-                std::map<std::pair<std::string, std::string>, std::pair<std::string, double>>
+                //
+                // E2-F49: a VECTOR per key, not a scalar. Fifteen (parent, ex-date) pairs in
+                // this table carry more than one `spinoff` row -- RTX 2020-04-03 delivers
+                // OTIS 0.5 AND CARR 1.0, HLT 2017-01-04 delivers PK 0.6 AND HGV 0.33333 --
+                // and a map to one (child, ratio) let the last row read overwrite every
+                // earlier one, so one arbitrary child was delivered and the rest were never
+                // created at all.
+                std::map<std::pair<std::string, std::string>,
+                         std::vector<std::pair<std::string, double>>>
                     spinoff_terms;
                 {
                     auto spin = db->get_corporate_actions(symbols, std::string(start_buf),
@@ -1715,13 +1723,34 @@ int main(int argc, char* argv[]) {
                         if (row.contra_ticker.empty() || row.contra_ticker == "N/A") continue;
                         if (row.contra_ticker == row.ticker) continue;
                         if (!(row.value > 0.0) || !std::isfinite(row.value)) continue;
-                        spinoff_terms[{row.ticker, row.date_str}] = {row.contra_ticker,
-                                                                     row.value};
+                        auto& terms = spinoff_terms[{row.ticker, row.date_str}];
+                        // Guard the feed against a duplicate row for the same child; the
+                        // ratio is the vendor's and the first one read stands.
+                        bool already = false;
+                        for (const auto& t : terms) {
+                            if (t.first == row.contra_ticker) already = true;
+                        }
+                        if (!already) terms.emplace_back(row.contra_ticker, row.value);
                     }
                     if (!spinoff_terms.empty()) {
+                        size_t child_rows = 0;
+                        for (const auto& [key, terms] : spinoff_terms)
+                            child_rows += terms.size();
                         INFO("Spinoff deal terms in window: " +
                              std::to_string(spinoff_terms.size()) +
-                             " (parent, ex-date) pair(s) carry a child ratio");
+                             " (parent, ex-date) pair(s) carrying " +
+                             std::to_string(child_rows) + " child ratio(s)");
+                        for (const auto& [key, terms] : spinoff_terms) {
+                            if (terms.size() < 2) continue;
+                            std::string joined;
+                            for (const auto& t : terms) {
+                                if (!joined.empty()) joined += ", ";
+                                joined += t.first + " x" + std::to_string(t.second);
+                            }
+                            INFO("Spinoff deal terms | " + key.first + " on " + key.second +
+                                 " delivers " + std::to_string(terms.size()) +
+                                 " children: " + joined + " (E2-F49)");
+                        }
                     }
                 }
 
@@ -1742,7 +1771,9 @@ int main(int argc, char* argv[]) {
                         if (sp == spinoff_terms.end()) continue;
                         if (previous_positions.find(row.ticker) == previous_positions.end())
                             continue;
-                        children.push_back(sp->second.first);
+                        // E2-F49: EVERY child of the pair, not the one the map happened to
+                        // keep. A close missing for any one of them refuses the whole event.
+                        for (const auto& t : sp->second) children.push_back(t.first);
                         if (earliest_ex.empty() || row.date_str < earliest_ex)
                             earliest_ex = row.date_str;
                     }
@@ -1898,8 +1929,14 @@ int main(int argc, char* argv[]) {
                               bar_it->second.has_reverse_split()));
 
                         if (is_spinoff_bar && !row_stays_class1) {
-                            const std::string& child = sp->second.first;
-                            const double r = sp->second.second;
+                            // E2-F49: every child of this (parent, ex-date), never one of
+                            // them. `children_label` is only for the log lines below.
+                            const auto& child_terms = sp->second;
+                            std::string children_label;
+                            for (const auto& t : child_terms) {
+                                if (!children_label.empty()) children_label += ", ";
+                                children_label += t.first;
+                            }
 
                             // E2-F47: the bar was routed by an earlier row of the same bar.
                             // Drop this one -- its column is already inside the factor that
@@ -1922,7 +1959,7 @@ int main(int argc, char* argv[]) {
                             // basis and marks in different frames (E2-F15).
                             auto lb = last_bar_date.find(row.ticker);
                             if (lb == last_bar_date.end() || row.date_str > lb->second) {
-                                WARN("Deferring SPINOFF for " + row.ticker + " -> " + child +
+                                WARN("Deferring SPINOFF for " + row.ticker + " -> " + children_label +
                                      " (ex_date " + row.date_str +
                                      "): its loaded price series ends " +
                                      (lb == last_bar_date.end()
@@ -1949,7 +1986,7 @@ int main(int argc, char* argv[]) {
                                     !(std::abs(qty_at_end_of_ex_date(row.ticker,
                                                                      row.date_str)) > 1e-9);
                                 if (bought_after || verifiably_flat) {
-                                    WARN("Skipping SPINOFF for " + row.ticker + " -> " + child +
+                                    WARN("Skipping SPINOFF for " + row.ticker + " -> " + children_label +
                                          " (ex_date " + row.date_str +
                                          "): the shares held now were acquired AFTER the "
                                          "ex-date, at a price the market had already adjusted, "
@@ -1985,17 +2022,28 @@ int main(int argc, char* argv[]) {
 
                             SpinoffEvent sev;
                             sev.parent = row.ticker;
-                            sev.child = child;
                             sev.ex_date = row.date_str;
                             sev.parent_restatement_factor = F;
-                            sev.child_ratio = r;
-                            auto cf = child_first_close.find(child);
-                            if (cf != child_first_close.end()) {
-                                sev.child_first_close = cf->second.second;
-                                INFO("Spinoff child price | " + child +
-                                     " first close after ex-date " + row.date_str + " is " +
-                                     std::to_string(cf->second.second) + " from " +
-                                     cf->second.first);
+                            for (const auto& t : child_terms) {
+                                SpinoffChildTerms ct;
+                                ct.symbol = t.first;
+                                ct.ratio = t.second;
+                                auto cf = child_first_close.find(t.first);
+                                if (cf != child_first_close.end()) {
+                                    ct.first_close = cf->second.second;
+                                    INFO("Spinoff child price | " + t.first +
+                                         " first close after ex-date " + row.date_str +
+                                         " is " + std::to_string(cf->second.second) +
+                                         " from " + cf->second.first);
+                                } else {
+                                    WARN("Spinoff child price | " + t.first +
+                                         " has NO close on or after ex-date " + row.date_str +
+                                         ", so the whole " + row.ticker +
+                                         " distribution cannot be allocated and is refused: "
+                                         "an allocation computed over a subset of the "
+                                         "children is not an allocation (E2-F49).");
+                                }
+                                sev.children.push_back(std::move(ct));
                             }
                             spinoff_events.push_back(std::move(sev));
                             // SUPPRESSED: no CorpActionEvent is built for this row.
@@ -2200,16 +2248,17 @@ int main(int argc, char* argv[]) {
                             // the point: the parent keeps its real share count instead of
                             // gaining phantom ones. Say plainly what the book now holds, so
                             // this is never mistaken for a clean run.
-                            WARN("SPINOFF NOT APPLIED and its class-1 event SUPPRESSED: " +
-                                 adj.symbol + " -> " + adj.child_symbol + " (" +
-                                 adj.event_date + "). The book therefore carries " +
-                                 adj.symbol + " at a PRE-spinoff cost basis (" +
+                            WARN("SPINOFF NOT APPLIED and its class-1 distribution rows "
+                                 "SUPPRESSED: " + adj.symbol + " (" + adj.event_date +
+                                 "). The book therefore carries " + adj.symbol +
+                                 " at a PRE-spinoff cost basis (" +
                                  std::to_string(adj.avg_price_before) +
-                                 ") against a POST-spinoff price series, and holds none of " +
-                                 adj.child_symbol +
-                                 ". Unrealized P&L on this name is overstated as a loss by "
-                                 "the distributed value until the child's price series "
-                                 "exists. No dedup row is written -- it retries every run.");
+                                 ") against a POST-spinoff price series, and holds none of "
+                                 "the children. Unrealized P&L on this name is overstated as "
+                                 "a loss by the distributed value until the child price "
+                                 "series exist. No dedup row is written -- it retries every "
+                                 "run. (A coincident reverse split, if the bar carried one, "
+                                 "was NOT suppressed and applied through class 1.)");
                             continue;
                         }
                         if (adj.outcome != LifecycleOutcome::SPUN_OFF_CHILD_HELD &&
@@ -2228,59 +2277,65 @@ int main(int argc, char* argv[]) {
                             corp_action_realized_by_symbol[adj.symbol] += adj.realized_delta;
                         }
 
-                        // The receipt, then the disposal. Two executions, deterministic ids
-                        // (symbol + ex-date, never a clock) so a replay of the same date
-                        // regenerates the same rows and the re-insert overwrites rather than
-                        // duplicates -- the CORPACTION_ pattern the exits already use.
+                        // The receipt, then the disposal, FOR EVERY CHILD. Two executions
+                        // each, deterministic ids (symbol + ex-date, never a clock) so a
+                        // replay of the same date regenerates the same rows and the
+                        // re-insert overwrites rather than duplicates -- the CORPACTION_
+                        // pattern the exits already use.
                         //
-                        // A broker statement shows exactly these two lines. Without them the
-                        // child arrives and leaves the book with nothing to reconcile against.
-                        const double received = adj.child_quantity + adj.child_fractional;
-                        if (received > 1e-9 && adj.child_avg_price > 0.0) {
-                            ExecutionReport recv;
-                            recv.order_id = "CORPACTION_" + adj.child_symbol + "_" +
-                                            adj.event_date;
-                            recv.exec_id = "CA_" + adj.child_symbol + "_" + adj.event_date +
-                                           "_RECEIPT";
-                            recv.symbol = adj.child_symbol;
-                            recv.side = Side::BUY;
-                            recv.filled_quantity = Quantity(received);
-                            // Priced at the ALLOCATED basis, not at the market: the shares
-                            // were not bought, they were distributed, and booking them at the
-                            // first close would fabricate a gain on receipt.
-                            recv.fill_price = Price(adj.child_avg_price);
-                            recv.fill_time = now;
-                            recv.commissions_fees = Decimal(0.0);
-                            recv.implicit_price_impact = Decimal(0.0);
-                            recv.slippage_market_impact = Decimal(0.0);
-                            recv.total_transaction_costs = Decimal(0.0);
-                            recv.is_partial = false;
-                            corp_action_executions.push_back(recv);
-                        }
+                        // A broker statement shows exactly these lines. Without them a child
+                        // arrives and leaves the book with nothing to reconcile against.
+                        // E2-F49: the loop is what makes RTX -> OTIS + CARR and
+                        // HLT -> PK + HGV produce two receipts rather than one.
+                        for (const auto& child : adj.children) {
+                            const double received = child.quantity + child.fractional;
+                            if (received > 1e-9 && child.avg_price > 0.0) {
+                                ExecutionReport recv;
+                                recv.order_id =
+                                    "CORPACTION_" + child.symbol + "_" + adj.event_date;
+                                recv.exec_id =
+                                    "CA_" + child.symbol + "_" + adj.event_date + "_RECEIPT";
+                                recv.symbol = child.symbol;
+                                recv.side = Side::BUY;
+                                recv.filled_quantity = Quantity(received);
+                                // Priced at the ALLOCATED basis, not at the market: the
+                                // shares were not bought, they were distributed, and booking
+                                // them at the first close would fabricate a gain on receipt.
+                                recv.fill_price = Price(child.avg_price);
+                                recv.fill_time = now;
+                                recv.commissions_fees = Decimal(0.0);
+                                recv.implicit_price_impact = Decimal(0.0);
+                                recv.slippage_market_impact = Decimal(0.0);
+                                recv.total_transaction_costs = Decimal(0.0);
+                                recv.is_partial = false;
+                                corp_action_executions.push_back(recv);
+                            }
 
-                        const double disposed =
-                            adj.outcome == LifecycleOutcome::SPUN_OFF_CHILD_SOLD
-                                ? adj.child_quantity + adj.child_fractional
-                                : adj.child_fractional;   // HOLD: only the fraction is sold
-                        if (disposed > 1e-9 && adj.child_first_close > 0.0) {
-                            ExecutionReport disp;
-                            disp.order_id = "CORPACTION_" + adj.child_symbol + "_" +
-                                            adj.event_date;
-                            disp.exec_id = "CA_" + adj.child_symbol + "_" + adj.event_date +
-                                           (adj.outcome == LifecycleOutcome::SPUN_OFF_CHILD_SOLD
-                                                ? "_DISPOSAL"
-                                                : "_CIL");
-                            disp.symbol = adj.child_symbol;
-                            disp.side = Side::SELL;
-                            disp.filled_quantity = Quantity(disposed);
-                            disp.fill_price = Price(adj.child_first_close);
-                            disp.fill_time = now;
-                            disp.commissions_fees = Decimal(0.0);
-                            disp.implicit_price_impact = Decimal(0.0);
-                            disp.slippage_market_impact = Decimal(0.0);
-                            disp.total_transaction_costs = Decimal(0.0);
-                            disp.is_partial = false;
-                            corp_action_executions.push_back(disp);
+                            const double disposed =
+                                adj.outcome == LifecycleOutcome::SPUN_OFF_CHILD_SOLD
+                                    ? child.quantity + child.fractional
+                                    : child.fractional;   // HOLD: only the fraction is sold
+                            if (disposed > 1e-9 && child.first_close > 0.0) {
+                                ExecutionReport disp;
+                                disp.order_id =
+                                    "CORPACTION_" + child.symbol + "_" + adj.event_date;
+                                disp.exec_id =
+                                    "CA_" + child.symbol + "_" + adj.event_date +
+                                    (adj.outcome == LifecycleOutcome::SPUN_OFF_CHILD_SOLD
+                                         ? "_DISPOSAL"
+                                         : "_CIL");
+                                disp.symbol = child.symbol;
+                                disp.side = Side::SELL;
+                                disp.filled_quantity = Quantity(disposed);
+                                disp.fill_price = Price(child.first_close);
+                                disp.fill_time = now;
+                                disp.commissions_fees = Decimal(0.0);
+                                disp.implicit_price_impact = Decimal(0.0);
+                                disp.slippage_market_impact = Decimal(0.0);
+                                disp.total_transaction_costs = Decimal(0.0);
+                                disp.is_partial = false;
+                                corp_action_executions.push_back(disp);
+                            }
                         }
 
                         // E2-F15 / G1, applied to the spinoff parent for the same reason it
@@ -2306,8 +2361,8 @@ int main(int argc, char* argv[]) {
                                 const double basis_to_mark =
                                     (adj.avg_price_after / pending_split) / mk->second;
                                 if (basis_to_mark > 5.0 || basis_to_mark < 0.2) {
-                                    ERROR("E2-F15 guard: after the SPINOFF of " +
-                                          adj.child_symbol + " from " + adj.symbol +
+                                    ERROR("E2-F15 guard: after the SPINOFF of {" +
+                                          adj.children_joined() + "} from " + adj.symbol +
                                           " the parent cost basis (" +
                                           std::to_string(adj.avg_price_after) +
                                           ") is implausible against the mark (" +
@@ -2344,20 +2399,26 @@ int main(int argc, char* argv[]) {
                         parent_row.ratio_change = adj.ratio_change;   // F, the basis divisor
                         audit_log.record(parent_row);
 
-                        PositionAdjustment child_row;
-                        child_row.symbol = adj.child_symbol;
-                        child_row.event_date = adj.event_date;
-                        child_row.type = CorpActionType::SPINOFF;
-                        child_row.quantity_before = 0.0;
-                        child_row.quantity_after = adj.child_quantity;
-                        child_row.avg_price_before = 0.0;
-                        child_row.avg_price_after = adj.child_avg_price;
-                        child_row.event_value = adj.child_first_close;
-                        // The child's basis was CREATED here, not restated from anything, so
-                        // there is no factor that inverts it. 1.0 is the honest value: the
-                        // broker frame and the book frame agree on a basis nothing adjusted.
-                        child_row.ratio_change = 1.0;
-                        audit_log.record(child_row);
+                        // E2-F49: one dedup row PER CHILD, so a replay cannot
+                        // re-distribute any of them and the ledger names every company the
+                        // book actually received.
+                        for (const auto& child : adj.children) {
+                            PositionAdjustment child_row;
+                            child_row.symbol = child.symbol;
+                            child_row.event_date = adj.event_date;
+                            child_row.type = CorpActionType::SPINOFF;
+                            child_row.quantity_before = 0.0;
+                            child_row.quantity_after = child.quantity;
+                            child_row.avg_price_before = 0.0;
+                            child_row.avg_price_after = child.avg_price;
+                            child_row.event_value = child.first_close;
+                            // The child's basis was CREATED here, not restated from
+                            // anything, so there is no factor that inverts it. 1.0 is the
+                            // honest value: the broker frame and the book frame agree on a
+                            // basis nothing adjusted.
+                            child_row.ratio_change = 1.0;
+                            audit_log.record(child_row);
+                        }
                     }
                 }
 
