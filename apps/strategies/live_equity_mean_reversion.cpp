@@ -1963,8 +1963,20 @@ int main(int argc, char* argv[]) {
                 // that would train a reader to skim past the real ones. The row loop below
                 // already skips a non-held ticker outright, so nothing here can ever be
                 // routed for one; the honest thing is silence.
+                //
+                // BA-27: gate on a NON-ZERO quantity, not on mere presence in the map.
+                // `previous_positions` can carry a symbol at quantity 0, and a closed
+                // position holds nothing to distribute -- announcing a spinoff decomposition
+                // for one is the same false alarm as announcing it for a symbol the book
+                // never held. `apply_spinoffs` already refuses a zero quantity outright, so
+                // the announcement was the only thing that spoke.
+                auto book_holds = [&previous_positions](const std::string& symbol) {
+                    auto it = previous_positions.find(symbol);
+                    return it != previous_positions.end() &&
+                           std::abs(it->second.quantity.as_double()) > 1e-9;
+                };
                 for (const auto& [key, col] : spinoff_bar_columns) {
-                    if (previous_positions.find(key.first) == previous_positions.end()) continue;
+                    if (!book_holds(key.first)) continue;
                     // E2-F51: a split_factor ABOVE 1 on a spinoff ex-date is folded into the
                     // distribution's own factor rather than applied as a share-count change,
                     // and until now that decision was taken in silence. It is the right
@@ -2000,6 +2012,40 @@ int main(int argc, char* argv[]) {
                              std::to_string(col.reverse_split_factor()) + " = " +
                              std::to_string(col.spinoff_factor()) + " (E2-F48).");
                     }
+                    // BA-26: the bar's DIVIDEND row may already have been applied as an
+                    // ordinary class-1 dividend by an earlier run.
+                    //
+                    // The terms feed lags the price feed. A run that saw the div_cash row
+                    // before `equities_data.corporate_action` carried the matching `spinoff`
+                    // row had no way to know it was a distribution: it applied it as a
+                    // dividend, divided the basis by 1 + d/c, and wrote the dedup row. A
+                    // later run with the terms in hand would route the SAME bar to the
+                    // spinoff handler and divide by 1 + d/c a SECOND time -- the routing
+                    // checks is_applied(SPINOFF) and is_applied(SPLIT|ADR_SPLIT) but never
+                    // is_applied(DIVIDEND), so nothing stopped it.
+                    //
+                    // The book is already wrong at this point and no arithmetic here can put
+                    // it right: the basis was restated by the wrong factor and the child was
+                    // never delivered. Inventing a correction would guess at a share count
+                    // and a first close nobody recorded. Refuse the routing, say exactly what
+                    // happened, and leave it to a human.
+                    if (audit_log.is_applied(key.first, key.second,
+                                             CorpActionType::DIVIDEND)) {
+                        WARN("SPINOFF REFUSED -- ALREADY APPLIED AS A DIVIDEND: " + key.first +
+                             " on " + key.second +
+                             ". An earlier run applied this bar's div_cash row as an ordinary "
+                             "class-1 dividend (the deal-terms row that identifies it as a "
+                             "distribution arrived later) and wrote its dedup row, so the "
+                             "cost basis has ALREADY been divided by " +
+                             std::to_string(col.dividend_factor()) +
+                             ". Routing it as a spinoff now would divide by that a SECOND "
+                             "time and deliver a child against a twice-restated basis. "
+                             "NOTHING is applied. The book currently holds " + key.first +
+                             " at a dividend-restated basis and none of its children; that "
+                             "cannot be repaired from the ledger -- the share count and the "
+                             "child's first close at the time were never recorded -- so it "
+                             "needs a manual restatement (BA-26).");
+                    }
                     if (!col.routes_a_spinoff()) {
                         WARN("SPINOFF REFUSED for " + key.first + " on " + key.second +
                              ": once the coincident reverse split (" +
@@ -2019,7 +2065,7 @@ int main(int argc, char* argv[]) {
                     }
                 }
                 for (const auto& [key, col] : spinoff_bar_columns) {
-                    if (previous_positions.find(key.first) == previous_positions.end()) continue;
+                    if (!book_holds(key.first)) continue;   // BA-27
                     if (!col.carries_both_columns()) continue;
                     WARN("Spinoff bar carries BOTH class-1 columns: " + key.first +
                          " on " + key.second + " has split_factor " +
@@ -2078,9 +2124,18 @@ int main(int argc, char* argv[]) {
                         //    which is the refusal announced above.
                         //
                         // Anything else is the distribution and is routed away below.
+                        // BA-26: a bar whose dividend row an earlier run already applied
+                        // as class 1 must not be routed at all -- see the WARN in the
+                        // announcement pass. Its rows stay where they are; the class-1 path's
+                        // own dedup check skips the dividend it already applied, so nothing
+                        // is applied twice by leaving them there.
+                        const bool dividend_already_applied =
+                            is_spinoff_bar && audit_log.is_applied(row.ticker, row.date_str,
+                                                                   CorpActionType::DIVIDEND);
                         const bool row_stays_class1 =
                             is_spinoff_bar &&
-                            (!bar_it->second.routes_a_spinoff() ||
+                            (dividend_already_applied ||
+                             !bar_it->second.routes_a_spinoff() ||
                              ((row.action == "split" || row.action == "adrratiosplit") &&
                               bar_it->second.has_reverse_split()));
 

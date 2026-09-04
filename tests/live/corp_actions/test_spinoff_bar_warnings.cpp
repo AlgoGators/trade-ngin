@@ -141,13 +141,24 @@ TEST(SpinoffBarWarnings, TheRunnerAnnouncesOnlyBarsWhoseParentIsHeld) {
     if (src.empty()) GTEST_SKIP() << "runner source not found from the test working directory";
 
     const size_t loops = count_of(src, "for (const auto& [key, col] : spinoff_bar_columns)");
-    const size_t gates = count_of(src, "previous_positions.find(key.first) == previous_positions.end()");
+    const size_t gates = count_of(src, "if (!book_holds(key.first)) continue;");
     ASSERT_GT(loops, 0u) << "the spinoff pre-pass announcement loops are gone entirely";
     EXPECT_EQ(gates, loops)
         << "every loop that announces a spinoff bar must skip a parent the book does not hold: "
            "close_by_symbol_date is fetched for held symbols only, so every factor in those "
            "lines is computed from a close of 0.0 for a non-held name, and the REFUSED line in "
            "particular reports a refusal that never had anything to refuse";
+
+    // BA-27: and "holds" means a NON-ZERO quantity. `previous_positions` can carry a symbol
+    // at quantity 0; a closed position has nothing to distribute, and apply_spinoffs refuses
+    // it outright, so the announcement was the only thing that spoke about it.
+    EXPECT_NE(src.find("auto book_holds = [&previous_positions](const std::string& symbol)"),
+              std::string::npos);
+    const auto holds_at = src.find("auto book_holds =");
+    ASSERT_NE(holds_at, std::string::npos);
+    const std::string holds_body = src.substr(holds_at, 400);
+    EXPECT_NE(holds_body.find("quantity.as_double()) > 1e-9"), std::string::npos)
+        << "book_holds must require a non-zero quantity, not mere presence in the map (BA-27)";
 
     // And the forward-split announcement exists and is driven by the predicate, not by an
     // inline comparison that can drift from it.
