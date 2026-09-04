@@ -169,9 +169,23 @@ struct SpinoffBarColumns {
 
     AlreadyAppliedGap already_applied_gap(bool dividend_applied, bool split_applied) const {
         AlreadyAppliedGap gap;
+        // Measure against the SPINOFF-specific restatement, not the bar's whole step.
+        //
+        // A coincident REVERSE split (`split_factor < 1`: HLT 2017-01-04, LDOS 2013-09-30,
+        // DD 2019-06-03) is a genuine share-count change that the class-1 path applies on its
+        // own account (E2-F48 / b11bdea8). It is therefore not part of what the spinoff owes
+        // the basis, and it must not appear in a "short by" figure: with only the DIVIDEND
+        // dedup present, total_factor()/dividend_factor() IS that reverse-split step -- a
+        // number below 1 -- and reporting it told the operator the basis was short by
+        // something class-1 was about to apply anyway.
+        //
+        // spinoff_factor() == total_factor() / reverse_split_factor(), so this is the bar's
+        // step with any reverse split taken back out. A `split_factor` ABOVE 1 stays in, since
+        // on a spinoff bar that column is distribution rather than a share-count change.
+        const double target = spinoff_factor();
         const double applied = (dividend_applied ? dividend_factor() : 1.0) *
-                               (split_applied ? split_step() : 1.0);
-        gap.basis_short_by = applied > 0.0 ? total_factor() / applied : 1.0;
+                               (split_applied && split_step() > 1.0 ? split_step() : 1.0);
+        gap.basis_short_by = applied > 0.0 ? target / applied : 1.0;
         gap.basis_correct = std::abs(gap.basis_short_by - 1.0) < 1e-9;
         gap.shares_inflated_by =
             (split_applied && split_step() > 1.0) ? split_step() : 1.0;

@@ -313,3 +313,60 @@ TEST(SpinoffDividendDoubleApply, ADividendOnlyBarLeavesNothingShort) {
     EXPECT_NEAR(gap.basis_short_by, 1.0, 1e-12);
     EXPECT_DOUBLE_EQ(gap.shares_inflated_by, 1.0);
 }
+
+// ---------------------------------------------------------------------------
+// B-viii, second shape: a coincident REVERSE split must not be reported as a basis shortfall.
+//
+// With only the DIVIDEND dedup present on a bar that also carries a reverse split,
+// total_factor()/dividend_factor() is the reverse-split step -- a number BELOW 1 -- and the
+// WARN called it "the parent is additionally short by a factor of 0.333333". It is not: a
+// reverse split is a real share-count change and the class-1 path applies it itself
+// (E2-F48 / b11bdea8). The operator was being pointed at a restatement that was about to
+// happen anyway.
+// ---------------------------------------------------------------------------
+
+TEST(SpinoffDividendDoubleApply, AReverseSplitIsNotABasisShortfall) {
+    // HLT 2017-01-04 shape: 1-for-3 reverse split on the spinoff ex-date, plus a dividend row.
+    SpinoffBarColumns col;
+    col.has_dividend = true;
+    col.dividend_cash = 1.0;
+    col.close_at_ex_date = 50.0;
+    col.has_split = true;
+    col.split_factor = 0.3333;
+
+    const auto gap = col.already_applied_gap(/*dividend_applied=*/true, /*split_applied=*/false);
+
+    EXPECT_TRUE(gap.basis_correct)
+        << "the reverse split is class-1's job, so nothing about the basis is outstanding";
+    EXPECT_NEAR(gap.basis_short_by, 1.0, 1e-9)
+        << "reporting 0.3333 here told the operator to divide by a factor class-1 applies";
+    EXPECT_DOUBLE_EQ(gap.shares_inflated_by, 1.0);
+}
+
+TEST(SpinoffDividendDoubleApply, AForwardSplitStillIsABasisShortfall) {
+    // The other shape must be unchanged: a split_factor ABOVE 1 on a spinoff bar is part of
+    // the distribution, so if the earlier run did not apply it the basis really is short by it.
+    SpinoffBarColumns col;
+    col.has_dividend = true;
+    col.dividend_cash = 2.31;
+    col.close_at_ex_date = 51.0;
+    col.has_split = true;
+    col.split_factor = 2.0116;
+
+    const auto gap = col.already_applied_gap(/*dividend_applied=*/true, /*split_applied=*/false);
+    EXPECT_FALSE(gap.basis_correct);
+    EXPECT_NEAR(gap.basis_short_by, 2.0116, 1e-9);
+}
+
+TEST(SpinoffDividendDoubleApply, AReverseSplitAlreadyAppliedIsAlsoNotAShortfall) {
+    SpinoffBarColumns col;
+    col.has_dividend = true;
+    col.dividend_cash = 1.0;
+    col.close_at_ex_date = 50.0;
+    col.has_split = true;
+    col.split_factor = 0.3333;
+
+    const auto gap = col.already_applied_gap(true, true);
+    EXPECT_TRUE(gap.basis_correct);
+    EXPECT_DOUBLE_EQ(gap.shares_inflated_by, 1.0);
+}
