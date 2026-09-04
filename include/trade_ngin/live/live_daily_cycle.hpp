@@ -2,12 +2,15 @@
 #pragma once
 
 #include <algorithm>
+#include <ctime>
 #include <set>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
 #include "trade_ngin/core/error.hpp"
+#include "trade_ngin/core/holiday_checker.hpp"
+#include "trade_ngin/live/corporate_actions_lifecycle.hpp"
 #include "trade_ngin/live/execution_manager.hpp"
 #include "trade_ngin/live/execution_price_resolver.hpp"
 #include "trade_ngin/live/live_pnl_manager.hpp"
@@ -27,8 +30,66 @@ namespace trade_ngin {
 class LiveDailyCycle {
 public:
     /**
-     * @brief Put a live strategy into the state signal generation assumes,
-     *        then generate the day's signals.
+     * @brief Is the exchange shut on this date?
+     *
+     * The predicate the whole closed-day path branches on, in a named place because it
+     * was five inline copies of `dow == 0 || dow == 6 || is_holiday(...)` in main() and
+     * nothing tested any of them (T-OR.3). A closed market does NOT mean "do nothing":
+     * the book is still held, so the day is processed as a carry-forward -- positions,
+     * live_results and equity_curve written from the previous session, signals and
+     * executions skipped -- which is what the futures runners already do.
+     *
+     * @param utc_tm the date under test, in UTC, with tm_wday populated (gmtime_r does).
+     * @param holidays the loaded calendar. Its own `covers_date` guard is checked by the
+     *        caller before any trading-day arithmetic runs; outside coverage `is_holiday`
+     *        answers false, and a date the calendar cannot speak for must not be silently
+     *        treated as open.
+     */
+    static bool is_non_trading_day(const std::tm& utc_tm, const HolidayChecker& holidays) {
+        if (utc_tm.tm_wday == 0 || utc_tm.tm_wday == 6) return true;
+        std::tm copy = utc_tm;
+        char buf[11];
+        if (std::strftime(buf, sizeof(buf), "%Y-%m-%d", &copy) != 10) {
+            return true;  // undatable: fail closed rather than trade on an unknown day
+        }
+        return holidays.is_holiday(buf);
+    }
+
+    /**
+     * @brief The day-T book on a day the market was shut.
+     *
+     * Quantity, cost basis and mark are the previous session's, unchanged -- no bar
+     * closed, so nothing was traded and nothing was re-marked. Realized is zeroed
+     * because `trading.positions.daily_realized_pnl` is a FLOW and this day realized
+     * nothing; carrying yesterday's figure would make the column a running total under
+     * a name that says daily, which is E2-F19 route 1.
+     */
+    static std::unordered_map<std::string, Position> carry_forward(
+        const std::unordered_map<std::string, Position>& previous_positions) {
+        std::unordered_map<std::string, Position> carried = previous_positions;
+        for (auto& [symbol, position] : carried) {
+            position.realized_pnl = Decimal(0.0);
+        }
+        return carried;
+    }
+
+    /**
+     * @brief Put a live strategy into the state signal generation assumes.
+     *
+     * Seeding ONLY. This used to call on_data(bars) as well, and the caller then
+     * ran PortfolioManager::process_market_data over the same vector, which calls
+     * on_data() again (portfolio_manager.cpp). MeanReversionStrategy::on_data
+     * appends unconditionally -- price_history.push_back and volume_sample_count++
+     * per bar -- so every live session fed each bar twice: the history ran to its
+     * trim cap rather than the bar count and the ADV EMA advanced over a series
+     * twice as long as the one that traded, which is what the fractional-share
+     * eligibility gate reads. A backtest feeds each bar once, so live and backtest
+     * could not agree on the same data by construction (E2-F28 / E3 NEW-6).
+     *
+     * The feed belongs to the portfolio manager, which is the component that then
+     * reads the targets. Fixing it here rather than in portfolio_manager.cpp is
+     * deliberate: that file is on the futures path, and removing a feed there would
+     * change what the trend strategies see.
      *
      * A live runner is a fresh process every session: BaseStrategy::positions_
      * starts empty and on_execution() -- its only writer -- does not run until
@@ -50,12 +111,10 @@ public:
      *        have been applied. Order matters here too: splits restate quantity
      *        and dividends restate cost basis, so seeding the pre-adjustment
      *        snapshot would anchor the strategy to a book that no longer exists.
-     * @param bars The day's market data.
      */
     static Result<void> prepare_strategy_for_signals(
         BaseStrategy& strategy,
-        const std::unordered_map<std::string, Position>& previous_positions,
-        const std::vector<Bar>& bars) {
+        const std::unordered_map<std::string, Position>& previous_positions) {
         // E2-F19 / E2-F20: seed quantity, basis and mark -- never yesterday's realized.
         //
         // BaseStrategy::seed_positions is a wholesale copy and on_execution() adds to
@@ -79,9 +138,65 @@ public:
         for (auto& [symbol, position] : seed_book) {
             position.realized_pnl = Decimal(0.0);
         }
-        auto seeded = strategy.seed_positions(seed_book);
-        if (seeded.is_error()) return seeded;
-        return strategy.on_data(bars);
+        return strategy.seed_positions(seed_book);
+    }
+
+    /**
+     * @brief The symbols this run must load data for: config plus the successors
+     *        of anything currently held.
+     *
+     * The universe used to be fixed from config before the previous day's book was
+     * even read, while `apply_renames` ran ~1,500 lines later. A held position whose
+     * successor is not in config therefore got no bars, no instrument, no cost config
+     * and no target: the day-T pass reported "Missing T-1 price for symbol with a
+     * non-zero position", `execute_day_t` rule 3 rolled the target back to the carried
+     * quantity, and the position was carried again the next session and the one after
+     * -- an unpriceable zombie, persisted under the new key, that no amount of
+     * re-running clears (E2-F34 / E3 F-4). `add_rowless_exits` does not rescue it: its
+     * own contract says a symbol that left the universe is "still closed out", and that
+     * is only true when a price exists.
+     *
+     * So the book has to be known BEFORE the universe is finalized. This is the pure
+     * part of that ordering: given what is held and the alias table, say which extra
+     * tickers the run has to be able to price.
+     *
+     * The era test is the SAME one apply_renames applies -- same rename map, same
+     * as-of guard, same fail-narrow rule -- via CorporateActionsLifecycle::rename_chain,
+     * so the universe cannot admit a rename the re-keying will refuse, or miss one it
+     * will perform.
+     *
+     * @param holding_start symbol -> YYYY-MM-DD the CURRENT holding began. Never the
+     *        lifetime min(date): a ticker closed in 2021 and re-bought in 2026 would
+     *        satisfy the era test for the 2021 alias and the universe would grow a dead
+     *        symbol (BA-2 / C-3 D1). A symbol absent here contributes nothing.
+     * @return `config_symbols` in their configured order, followed by the successors
+     *         that were not already configured, sorted. Deterministic across runs.
+     */
+    static std::vector<std::string> effective_universe(
+        const std::vector<std::string>& config_symbols,
+        const std::unordered_map<std::string, Position>& previous_positions,
+        const std::vector<TickerAlias>& aliases,
+        const std::string& as_of_date,
+        const std::unordered_map<std::string, std::string>& holding_start) {
+
+        std::vector<std::string> universe = config_symbols;
+        std::set<std::string> known(config_symbols.begin(), config_symbols.end());
+
+        const auto renames = CorporateActionsLifecycle::build_rename_map(aliases);
+        if (renames.empty()) return universe;
+
+        std::set<std::string> additions;
+        for (const auto& [symbol, position] : previous_positions) {
+            if (position.quantity.as_double() == 0.0) continue;
+            auto start_it = holding_start.find(symbol);
+            if (start_it == holding_start.end() || start_it->second.empty()) continue;
+            for (const auto& successor : CorporateActionsLifecycle::rename_chain(
+                     renames, symbol, start_it->second, as_of_date)) {
+                if (known.insert(successor).second) additions.insert(successor);
+            }
+        }
+        universe.insert(universe.end(), additions.begin(), additions.end());
+        return universe;
     }
 
     /** What one day's execution step did, beyond the fills themselves. */
@@ -243,6 +358,33 @@ public:
 
         std::sort(unresolved.begin(), unresolved.end());
         return unresolved;
+    }
+
+    /**
+     * @brief The prices the day-T rows must be marked at.
+     *
+     * One map, so a position row and the live_results aggregate cannot disagree about
+     * what a symbol was worth. `resolve_and_apply_basis` marks from the execution price
+     * map -- T-1 closes plus any widened substitute -- and the aggregate sums those
+     * marks; the row loop used to recompute from the T-1 close map alone, which has no
+     * entry for a widened symbol at all. That symbol's `daily_unrealized_pnl` was
+     * therefore written as 0 while the aggregate carried its real mark, and the in-run
+     * L5 assertion covers realized only, so nothing saw it (E2-F35 / BA-4). It fires on
+     * exactly the halted and thin names the widening exists to rescue.
+     *
+     * An EMPTY `execution_prices` -- the closed-day path, where execute_day_t never runs
+     * -- returns `t1_closes` unchanged, so the carry-forward day is untouched.
+     * Non-positive substitutes are ignored: absent is a better answer than zero, because
+     * a zero mark books the whole notional as a gain.
+     */
+    static std::unordered_map<std::string, double> day_t_mark_prices(
+        const std::unordered_map<std::string, double>& t1_closes,
+        const std::unordered_map<std::string, double>& execution_prices) {
+        std::unordered_map<std::string, double> marks = t1_closes;
+        for (const auto& [symbol, price] : execution_prices) {
+            if (price > 0.0) marks[symbol] = price;
+        }
+        return marks;
     }
 
     // -----------------------------------------------------------------------

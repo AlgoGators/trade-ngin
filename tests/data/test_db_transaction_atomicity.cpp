@@ -33,6 +33,7 @@
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "../core/test_base.hpp"
@@ -288,6 +289,84 @@ TEST_F(DbTransactionAtomicityTest, CommitTwiceIsRejectedRatherThanRepeated) {
                     .is_ok());
     ASSERT_TRUE(txn.commit().is_ok());
     EXPECT_TRUE(txn.commit().is_error()) << "a second commit must be refused, not repeated";
+}
+
+// ---------------------------------------------------------------------------
+// E2-F23 / migration 005 -- run_date must survive the round trip.
+//
+// The column is what lets a run tell an EARLIER pass's dedup rows from a LATER
+// pass's. The pure tests in tests/live/corp_actions/test_audit_log.cpp pin the
+// refusal logic against a fake; this pins that the value actually reaches the
+// server and comes back, which is the half a fake cannot prove -- and that a
+// legacy NULL comes back as "unknown" rather than as an epoch date.
+// ---------------------------------------------------------------------------
+
+TEST_F(DbTransactionAtomicityTest, RunDateRoundTripsAndNullStaysUnknown) {
+    // Stamped row.
+    auto stamped = make_applied_row("AAPL", "2026-04-06");
+    stamped.action_type = "SPLIT";
+    stamped.run_date = "2026-04-07";
+
+    // Legacy row: no run_date, which must store NULL rather than an epoch date.
+    auto legacy = make_applied_row("MSFT", "2026-04-06");
+    legacy.action_type = "SPLIT";
+
+    ASSERT_TRUE(db_->store_applied_corp_actions(kScratchPortfolio, kScratchStrategyId,
+                                                kScratchStrategyName, {stamped, legacy})
+                    .is_ok());
+    ASSERT_EQ(dedup_row_count(), 2);
+
+    auto loaded = db_->load_applied_corp_actions(kScratchPortfolio, kScratchStrategyId,
+                                                 kScratchStrategyName);
+    ASSERT_TRUE(loaded.is_ok()) << loaded.error()->what();
+    ASSERT_EQ(loaded.value().size(), 2u);
+
+    std::unordered_map<std::string, std::string> run_date_by_symbol;
+    for (const auto& r : loaded.value()) run_date_by_symbol[r.symbol] = r.run_date;
+
+    EXPECT_EQ(run_date_by_symbol["AAPL"], "2026-04-07")
+        << "the writing pass's run date must survive the round trip verbatim";
+    EXPECT_TRUE(run_date_by_symbol["MSFT"].empty())
+        << "an unstamped row must read back as unknown, not as 1970-01-01 -- an epoch "
+           "date would be < every run date and silently pass the staleness check while "
+           "claiming to have been checked";
+
+    // And the server really holds NULL, not an empty string coerced into a date.
+    EXPECT_EQ(scalar(std::string("SELECT count(*) FROM trading.corp_action_applied "
+                                 "WHERE portfolio_id = '") + kScratchPortfolio +
+                     "' AND run_date IS NULL"),
+              1);
+    EXPECT_EQ(scalar(std::string("SELECT count(*) FROM trading.corp_action_applied "
+                                 "WHERE portfolio_id = '") + kScratchPortfolio +
+                     "' AND run_date = DATE '2026-04-07'"),
+              1);
+}
+
+// The column is additive: a row written with no run_date is byte-identical to
+// what the pre-005 code wrote, so an existing dedup record keeps deduping.
+TEST_F(DbTransactionAtomicityTest, AnUnstampedWriteStillDedupsOnTheNaturalKey) {
+    auto row = make_applied_row("NVDA", "2026-04-06");
+    row.action_type = "SPLIT";
+
+    ASSERT_TRUE(db_->store_applied_corp_actions(kScratchPortfolio, kScratchStrategyId,
+                                                kScratchStrategyName, {row})
+                    .is_ok());
+    // Same natural key, different run_date: ON CONFLICT DO NOTHING, so the first
+    // write stays authoritative and no second row appears. run_date is NOT part
+    // of the key -- keying on it would let the same event re-apply every day
+    // (audit option D1).
+    auto restamped = row;
+    restamped.run_date = "2026-04-09";
+    ASSERT_TRUE(db_->store_applied_corp_actions(kScratchPortfolio, kScratchStrategyId,
+                                                kScratchStrategyName, {restamped})
+                    .is_ok());
+
+    EXPECT_EQ(dedup_row_count(), 1) << "run_date must not widen the natural key";
+    EXPECT_EQ(scalar(std::string("SELECT count(*) FROM trading.corp_action_applied "
+                                 "WHERE portfolio_id = '") + kScratchPortfolio +
+                     "' AND run_date IS NULL"),
+              1)
+        << "and the first write stays authoritative, exactly as qty_held does";
 }
 
 }  // namespace

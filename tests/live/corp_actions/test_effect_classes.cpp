@@ -452,3 +452,88 @@ TEST(CorpActionTypeRoundTrip, ApplierSkipsTerminationRatherThanRestatingPrice) {
         << "The applier mutated a position on a TERMINATION event.";
     EXPECT_DOUBLE_EQ(static_cast<double>(positions["DEAD"].average_price), 100.0);
 }
+
+// ──────────────────────────────────────────────────────────────────────────
+// E4 item 3 -- the deal-terms feed's stop date is MEASURED, not compiled in.
+//
+// kCorpActionTableFrozenAfter used to be quoted verbatim in every "no deal
+// terms" WARN as though it were current fact. It is a fact about the DATABASE:
+// the day the vendor subscription restarts and the ACTIONS ingest backfills,
+// the constant is wrong and the log keeps asserting it until somebody rebuilds
+// -- and nobody is told that the dormant rollover path just went live.
+// ──────────────────────────────────────────────────────────────────────────
+
+#include "trade_ngin/live/corp_action_feed_status.hpp"
+
+TEST(CorpActionFeedStatus, AMeasuredDateReplacesTheConstant) {
+    // A feed that has been backfilled past the build-time constant.
+    const auto s = assess_corp_action_feed("2026-08-31", "2026-09-03");
+    EXPECT_TRUE(s.measured);
+    EXPECT_EQ(s.last_row_date, "2026-08-31");
+    EXPECT_NE(s.last_row_date, std::string(kCorpActionTableFrozenAfter))
+        << "the reported date must come from the database, not from the binary";
+    EXPECT_TRUE(s.revived_since_build)
+        << "a feed with rows after the build-time date has been revived, and the "
+           "operator has to be told before the deal-terms path starts acting";
+    EXPECT_TRUE(s.frozen) << "still short of the run date, so 'frozen' is still true";
+    EXPECT_NE(describe_corp_action_feed(s).find("2026-08-31"), std::string::npos);
+    EXPECT_NE(describe_corp_action_feed(s).find("REVIVED"), std::string::npos);
+}
+
+TEST(CorpActionFeedStatus, TodaysMeasurementReproducesTheConstantWithoutBeingIt) {
+    // What the live table says today. Same value as the constant -- and that is
+    // the point: it is reported because it was read, not because it was typed.
+    const auto s = assess_corp_action_feed("2025-08-29", "2026-09-03");
+    EXPECT_TRUE(s.measured);
+    EXPECT_FALSE(s.revived_since_build);
+    EXPECT_TRUE(s.frozen);
+    EXPECT_EQ(describe_corp_action_feed(s),
+              "deal-terms feed last row 2025-08-29, frozen: yes");
+}
+
+TEST(CorpActionFeedStatus, AFeedCurrentToTheRunDateIsNotFrozen) {
+    const auto s = assess_corp_action_feed("2026-09-03", "2026-09-03");
+    EXPECT_TRUE(s.measured);
+    EXPECT_FALSE(s.frozen) << "a row on the run date means the feed has not stopped";
+    EXPECT_EQ(describe_corp_action_feed(s).find("frozen: no") == std::string::npos, false);
+}
+
+TEST(CorpActionFeedStatus, AFailedMeasurementFallsBackAndSaysSo) {
+    const auto s = assess_corp_action_feed("", "2026-09-03");
+    EXPECT_FALSE(s.measured);
+    EXPECT_EQ(s.last_row_date, std::string(kCorpActionTableFrozenAfter))
+        << "an unreadable table must degrade to the old behaviour, not to a blank date";
+    EXPECT_FALSE(s.revived_since_build);
+    EXPECT_NE(describe_corp_action_feed(s).find("NOT MEASURED"), std::string::npos)
+        << "a fallen-back date must not be presented as a measurement";
+}
+
+// The WARN text the handler emits now carries the measured date. Passing it is
+// what makes the message true; passing nothing preserves the old text exactly,
+// so a caller that could not measure is no worse off than before.
+TEST(CorpActionClass3, TerminationWarnsQuoteTheMeasuredFeedDate) {
+    std::unordered_map<std::string, Position> positions;
+    positions["GONE"] = make_position("GONE", 40.0, 25.0);
+    std::unordered_map<std::string, double> final_closes = {{"GONE", 20.0}};
+
+    auto log = CorporateActionsLifecycle::apply_terminations(
+        positions, {termination("GONE", "2026-04-09", "delisted")}, final_closes,
+        "2026-08-31");
+
+    // The measured date changes only the message, never the arithmetic: the exit
+    // is still at the final close and the realized delta is unchanged.
+    ASSERT_EQ(log.size(), 1u);
+    EXPECT_EQ(log[0].outcome, LifecycleOutcome::EXITED_AT_FINAL_CLOSE);
+    EXPECT_DOUBLE_EQ(log[0].exit_price, 20.0);
+    EXPECT_DOUBLE_EQ(log[0].realized_delta, (20.0 - 25.0) * 40.0);
+    EXPECT_DOUBLE_EQ(positions["GONE"].quantity.as_double(), 0.0);
+
+    // And the default argument leaves every existing caller byte-identical.
+    std::unordered_map<std::string, Position> same;
+    same["GONE"] = make_position("GONE", 40.0, 25.0);
+    auto log_default = CorporateActionsLifecycle::apply_terminations(
+        same, {termination("GONE", "2026-04-09", "delisted")}, final_closes);
+    ASSERT_EQ(log_default.size(), 1u);
+    EXPECT_EQ(log_default[0].outcome, log[0].outcome);
+    EXPECT_DOUBLE_EQ(log_default[0].realized_delta, log[0].realized_delta);
+}

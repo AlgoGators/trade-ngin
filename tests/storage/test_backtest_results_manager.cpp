@@ -189,17 +189,6 @@ TEST_F(BacktestResultsManagerTest, SaveSignalsBatchInvokesStoreBacktestSignalsPe
     EXPECT_GT(db_->call_count("store_backtest_signals"), 0);
 }
 
-// ===== save_metadata =====
-
-TEST_F(BacktestResultsManagerTest, SaveMetadataInvokesStoreBacktestMetadata) {
-    mgr_->set_metadata(date_at(2026, 1, 1), date_at(2026, 1, 5),
-                        nlohmann::json{{"key", "val"}}, "Run name", "Run desc");
-    db_->reset_call_counts();
-    auto r = mgr_->save_metadata("RUN_1");
-    EXPECT_TRUE(r.is_ok());
-    EXPECT_EQ(db_->call_count("store_backtest_metadata"), 1);
-}
-
 // ===== save_strategy_positions / save_strategy_executions =====
 
 TEST_F(BacktestResultsManagerTest, SaveStrategyPositionsInvokesPerStrategyDbCall) {

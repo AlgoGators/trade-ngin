@@ -241,7 +241,38 @@ public:
      */
     double get_point_value(const std::string& symbol) const;
 
+    /**
+     * @brief Which asset class this manager's unregistered symbols belong to.
+     *
+     * Only consulted when a symbol is NOT in the InstrumentRegistry. There the
+     * point value has to be guessed, and `get_fallback_multiplier` guesses with
+     * a SUBSTRING match over a futures table -- so a real equity ticker that
+     * happens to contain a contract code inherits that contract's multiplier:
+     * LEN matches "LE" (live cattle, 40000), ZM matches "ZM" (soybean meal,
+     * 100), UBER matches "UB" (ultra T-bond, 1000), HES matches "ES" (5).
+     * A 40000x point value on an equity position is not a rounding error, it is
+     * a P&L report off by four orders of magnitude (E2-F38 / BA-7).
+     *
+     * The default is FUTURE so a caller that says nothing keeps exactly the
+     * behaviour the futures runners have today -- the same convention as
+     * UnrealizedPolicy above. The equity runner sets EQUITY once at startup.
+     *
+     * Latent rather than live for the configured book: all ten equities are
+     * registered, so the registry answers and the fallback is never reached.
+     * It arms at universe scale, where any name not in the registry gets a
+     * guess instead of an answer.
+     */
+    void set_asset_type(AssetType asset_type) {
+        asset_type_ = asset_type;
+    }
+
+    AssetType asset_type() const {
+        return asset_type_;
+    }
+
 private:
+    AssetType asset_type_ = AssetType::FUTURE;
+
     /**
      * Get fallback multiplier for known symbols
      * These are calculated as: minimum_price_fluctuation / tick_size

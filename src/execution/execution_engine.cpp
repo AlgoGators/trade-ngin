@@ -997,7 +997,13 @@ double ExecutionEngine::calculate_transaction_costs(const ExecutionReport& execu
     tc_config.explicit_fee_per_contract = config.explicit_fee_per_contract;
     transaction_cost::TransactionCostManager cost_manager(tc_config);
 
+    // E2-F29: sign the quantity from the report's side. filled_quantity is always positive, so
+    // passing it raw made the sell-side-only SEC/TAF gate (`quantity < 0`) unreachable; every
+    // other cost term takes |qty|.
     double qty = static_cast<double>(execution.filled_quantity);
+    if (execution.side == Side::SELL) {
+        qty = -qty;
+    }
     double price = static_cast<double>(execution.fill_price);
 
     auto cost_result = cost_manager.calculate_costs(execution.symbol, qty, price);

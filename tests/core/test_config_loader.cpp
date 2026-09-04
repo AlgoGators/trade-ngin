@@ -425,3 +425,71 @@ TEST_F(ConfigLoaderTest, DeepMergeReplacesNonObjectsWithoutRecursion) {
     EXPECT_EQ(target["x"].size(), 1u);
     EXPECT_EQ(target["x"][0], 4);
 }
+
+// ──────────────────────────────────────────────────────────────────────────
+// BA-11 / C-1 C5 (T2.9) -- the staleness bounds must be CONFIGURABLE, not
+// hardcoded defaults that only look configurable.
+//
+// LiveSpecificConfig has read both keys from JSON all along, but
+// config_template/defaults.json declared only data_staleness_tolerance_days and
+// the config the runners actually load declared NEITHER, so the value in force
+// was always the struct default. The template is the tracked artefact a fresh
+// checkout copies, so a key missing there is a key nobody can set.
+// ──────────────────────────────────────────────────────────────────────────
+
+TEST(LiveStalenessConfig, BothBoundsRoundTripThroughJson) {
+    LiveSpecificConfig c;
+    // The documented defaults: 4 absorbs a weekend plus a holiday; 5 covers a
+    // three-day weekend plus a further holiday.
+    EXPECT_EQ(c.data_staleness_tolerance_days, 4);
+    EXPECT_EQ(c.execution_price_max_staleness_days, 5);
+
+    c.from_json(nlohmann::json{{"data_staleness_tolerance_days", 9},
+                               {"execution_price_max_staleness_days", 11}});
+    EXPECT_EQ(c.data_staleness_tolerance_days, 9) << "the configured value must win";
+    EXPECT_EQ(c.execution_price_max_staleness_days, 11);
+
+    const auto j = c.to_json();
+    EXPECT_EQ(j.at("data_staleness_tolerance_days").get<int>(), 9);
+    EXPECT_EQ(j.at("execution_price_max_staleness_days").get<int>(), 11);
+}
+
+TEST(LiveStalenessConfig, OmittedKeysKeepTheDocumentedDefaults) {
+    LiveSpecificConfig c;
+    c.from_json(nlohmann::json{{"historical_days", 730}});
+    EXPECT_EQ(c.data_staleness_tolerance_days, 4) << "default unchanged (BA-11)";
+    EXPECT_EQ(c.execution_price_max_staleness_days, 5) << "default unchanged (BA-11)";
+}
+
+// The drift pin. This is what C-1 C5 actually found: the struct grew a field and
+// the tracked template did not, so the knob existed in code and nowhere an
+// operator could reach it. Asserting the template declares every key the struct
+// serialises catches the next one automatically.
+TEST(LiveStalenessConfig, TrackedTemplateDeclaresEveryLiveKeyTheStructSerialises) {
+    namespace fs = std::filesystem;
+    fs::path dir = fs::current_path();
+    fs::path found;
+    for (int i = 0; i < 8 && !dir.empty(); ++i) {
+        if (fs::exists(dir / "config_template" / "defaults.json")) {
+            found = dir / "config_template" / "defaults.json";
+            break;
+        }
+        dir = dir.parent_path();
+    }
+    if (found.empty()) GTEST_SKIP() << "config_template/defaults.json not reachable";
+
+    std::ifstream in(found);
+    const nlohmann::json tmpl = nlohmann::json::parse(in);
+    ASSERT_TRUE(tmpl.contains("live")) << "the template must carry a live block";
+    const auto& live = tmpl.at("live");
+
+    // Bound to a local: to_json() returns by value and items() holds a reference
+    // into it, so iterating the temporary directly reads freed memory.
+    const nlohmann::json serialised = LiveSpecificConfig{}.to_json();
+    for (const auto& [key, _] : serialised.items()) {
+        EXPECT_TRUE(live.contains(key))
+            << "config_template/defaults.json omits live." << key
+            << " -- the struct reads it but no operator can set it, so the hardcoded "
+               "default is silently in force (C-1 C5 / T2.9)";
+    }
+}

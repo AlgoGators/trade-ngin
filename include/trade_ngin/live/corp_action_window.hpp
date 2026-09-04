@@ -94,6 +94,63 @@ inline CorpActionWindow derive_corp_action_window(
     return w;
 }
 
+/**
+ * @brief Fill in an inception date for every held symbol the read did not answer for.
+ *
+ * BA-9 / C-1 D13. `get_position_inception_dates` returns one row per symbol that
+ * has EVER been held non-zero under this (strategy, portfolio) triple. A held
+ * symbol absent from that result is not "established recently" -- it is
+ * "established at a date this run cannot determine", which is the same epistemic
+ * state as a failed read. Only `is_error()` used to widen the window, so a
+ * successful read that answered for none of the held symbols, or for only some,
+ * silently contributed nothing and left the window at its `min_days` floor.
+ *
+ * That is the exact shape of the regression this derivation replaced: a 14-day
+ * window that dropped 8 of the 9 dividends the configured universe saw. The rule
+ * for class 1 is stated in the runner and does not change here -- under-applying a
+ * price rescale is the PERMANENT error, so an unknown inception fails WIDE, to the
+ * bulk edge. Over-fetching only costs query time; `trading.corp_action_applied`
+ * rejects an event that was already applied.
+ *
+ * A malformed date is treated as missing for the same reason: `derive_corp_action_window`
+ * skips anything that will not parse, so leaving it in place is indistinguishable
+ * from having no answer at all.
+ *
+ * @param held_symbols     Symbols held non-zero going into today.
+ * @param read             What the inception read returned (possibly partial or empty).
+ * @param bulk_start_ymd   The bulk price load's lower bound, YYYY-MM-DD.
+ * @return One entry per held symbol: the read's date where usable, else bulk_start_ymd.
+ */
+inline std::unordered_map<std::string, std::string> inception_with_unknowns_widened(
+    const std::vector<std::string>& held_symbols,
+    const std::unordered_map<std::string, std::string>& read,
+    const std::string& bulk_start_ymd) {
+    std::unordered_map<std::string, std::string> out;
+    out.reserve(held_symbols.size());
+    for (const auto& sym : held_symbols) {
+        auto it = read.find(sym);
+        if (it != read.end() && parse_ymd_utc(it->second) > 0) {
+            out[sym] = it->second;
+        } else {
+            out[sym] = bulk_start_ymd;
+        }
+    }
+    return out;
+}
+
+/// Symbols held but not answered for by the inception read -- reported so a
+/// widened window says WHY it widened rather than only that it did.
+inline std::vector<std::string> held_symbols_without_inception(
+    const std::vector<std::string>& held_symbols,
+    const std::unordered_map<std::string, std::string>& read) {
+    std::vector<std::string> missing;
+    for (const auto& sym : held_symbols) {
+        auto it = read.find(sym);
+        if (it == read.end() || parse_ymd_utc(it->second) <= 0) missing.push_back(sym);
+    }
+    return missing;
+}
+
 /// Format a UTC instant as YYYY-MM-DD (bar keys are UTC, never localtime).
 inline std::string format_ymd_utc(std::time_t t) {
     std::tm tm{};

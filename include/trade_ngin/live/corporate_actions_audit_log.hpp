@@ -97,6 +97,46 @@ public:
     Result<bool> load();
 
     /**
+     * @brief The run's own as-of date, which every row this pass writes is stamped
+     *        with and which load() refuses to run behind.
+     *
+     * E2-F23 (audit option C-prime). A live run is correct exactly when the dedup
+     * rows and the T-1 position row come from the SAME pass. Reset the book but
+     * not this table and it is not: the event is skipped as "already applied"
+     * against a T-1 row that predates it, T-1 is finalized in the wrong frame, and
+     * nothing notices -- the G3 basis/mark guard only inspects events that were
+     * APPLIED, and a deduped event never enters that list. Measured: BKNG 25:1,
+     * ex-date 2026-04-06, re-run of 2026-04-07 over an un-reset dedup table,
+     * -4,824 of phantom unrealized P&L.
+     *
+     * The existing ex-date detector cannot see that case (2026-04-06 is safely in
+     * the past) and `applied_at` cannot either (an earlier chain always has an
+     * earlier wall clock). The run date of the writing pass is the only value that
+     * separates an earlier pass from a later one.
+     *
+     * Pass the runner's as-of date -- the replay date, NOT today's wall clock -- or
+     * a replay of 2026-04-07 executed tonight would stamp tonight and every later
+     * chain would look stale. Leaving it empty disables both the stamping and the
+     * check, which is the pre-005 behaviour and what the file-backed tests use.
+     */
+    enum class RunDateCheck {
+        /// Stamp writes AND refuse to load behind a later pass's rows.
+        Enforce,
+        /// Stamp writes only. For a SECOND log opened later in the same run: this
+        /// run's own rows are already committed by then, so enforcing would make
+        /// the run refuse itself.
+        StampOnly
+    };
+
+    void set_run_date(std::string run_date_ymd,
+                      RunDateCheck check = RunDateCheck::Enforce) {
+        run_date_ = std::move(run_date_ymd);
+        enforce_run_date_ = (check == RunDateCheck::Enforce);
+    }
+
+    const std::string& run_date() const { return run_date_; }
+
+    /**
      * @brief Has this (symbol, ex_date, action) tuple already been applied?
      */
     /**
@@ -171,8 +211,14 @@ public:
 
     const std::string& state_dir() const { return state_dir_; }
 
-private:
-    using AppliedKey = std::tuple<std::string, std::string, CorpActionType>;
+    /**
+     * @brief Dividend detail as the legacy state file carried it.
+     *
+     * Public because `dividend_detail_for` below takes and returns it, and that
+     * rule has to be testable without a database (E2-F39 / BA-15). Note there is
+     * no action_type here: every entry in this list IS a dividend, which is
+     * precisely why the import needs the type passed in alongside.
+     */
     struct DividendEvent {
         std::string symbol;
         std::string ex_date;
@@ -180,6 +226,39 @@ private:
         double dividend_per_share{0.0};
         double total_cash{0.0};
     };
+
+    /**
+     * @brief Which legacy dividend detail belongs to an applied event, if any.
+     *
+     * E2-F39 / BA-15. The legacy state file records applied events keyed on
+     * (symbol, ex_date, action_type) but carries dividend detail keyed only on
+     * (symbol, ex_date) -- DividendEvent has no action_type, because every entry
+     * in it IS a dividend. The import matched on (symbol, ex_date) alone, so when
+     * a symbol had a SPLIT and a DIVIDEND on the SAME ex-date, the SPLIT row also
+     * inherited the dividend's qty_held, dividend_per_share and total_cash. The
+     * cash then appears twice in cumulative dividend income: once on the dividend
+     * row, once on the split row that never paid anything.
+     *
+     * Returns nullptr when the event is not a dividend, or when no detail matches.
+     *
+     * Static and public so the rule is testable without a database: the import it
+     * serves runs inside migrate_state_file_to_db(), which requires a live
+     * connection and a file on disk.
+     */
+    static const DividendEvent* dividend_detail_for(
+        const std::string& symbol, const std::string& ex_date, CorpActionType type,
+        const std::vector<DividendEvent>& events) {
+        // A split, an ADR split or a termination pays no dividend. Only a
+        // DIVIDEND event may carry dividend detail.
+        if (type != CorpActionType::DIVIDEND) return nullptr;
+        for (const auto& de : events) {
+            if (de.symbol == symbol && de.ex_date == ex_date) return &de;
+        }
+        return nullptr;
+    }
+
+private:
+    using AppliedKey = std::tuple<std::string, std::string, CorpActionType>;
 
     std::string state_dir_;
     std::set<AppliedKey> applied_;
@@ -191,6 +270,10 @@ private:
     std::string portfolio_id_;
     std::string strategy_id_;
     std::string strategy_name_;
+    // The run's as-of date (E2-F23). Empty disables stamping and the staleness
+    // check; see set_run_date.
+    std::string run_date_;
+    bool enforce_run_date_{true};
     // Rows recorded since the last save(), so save() writes a delta rather
     // than re-inserting the whole lifetime set on every run.
     mutable std::vector<PostgresDatabase::AppliedCorpActionRow> pending_;

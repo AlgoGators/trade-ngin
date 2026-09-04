@@ -537,3 +537,63 @@ TEST_F(PnLAccountingBranchTest, AccessorIsStableAcrossCalls) {
 }
 
 }  // namespace pnl_accounting_branch_detail
+
+// ============================================================================
+// E2-F27 / T-OR.4: a fill that crosses zero realizes on the CLOSED quantity only.
+//
+// Long 100 @ 150, SELL 150 @ 170: 100 shares close (realized 100 x 20 = 2000)
+// and the remaining 50 open a new short at the fill price. Realizing on the
+// full 150 (3000) books P&L on 50 shares that were never held. Mirror for the
+// short side. TF/TFF/TFS override on_execution; MR and any non-overriding
+// strategy hit this path on an optimizer-driven flip.
+// ============================================================================
+TEST_F(BaseStrategyTest, OnExecution_FlipRealizesOnlyTheClosedQuantity_Long) {
+    auto db = std::make_shared<MockPostgresDatabase>();
+    StrategyConfig config;
+    auto strategy = createRunningStrategy(config, db);
+
+    ASSERT_TRUE(strategy->on_execution(createExecution(Side::BUY, "AAPL", 100, 150.0)).is_ok());
+    ASSERT_TRUE(strategy->on_execution(createExecution(Side::SELL, "AAPL", 150, 170.0)).is_ok());
+
+    const auto& pos = strategy->get_positions().at("AAPL");
+    EXPECT_DOUBLE_EQ(pos.realized_pnl.as_double(), 2000.0)
+        << "realized must be (170-150) x the 100 shares that closed, not x 150";
+    EXPECT_DOUBLE_EQ(strategy->get_metrics().realized_pnl, 2000.0);
+    EXPECT_DOUBLE_EQ(pos.quantity.as_double(), -50.0);
+    EXPECT_DOUBLE_EQ(pos.average_price.as_double(), 170.0)
+        << "the 50-share remainder opens at the fill price";
+}
+
+TEST_F(BaseStrategyTest, OnExecution_FlipRealizesOnlyTheClosedQuantity_Short) {
+    auto db = std::make_shared<MockPostgresDatabase>();
+    StrategyConfig config;
+    auto strategy = createRunningStrategy(config, db);
+
+    ASSERT_TRUE(strategy->on_execution(createExecution(Side::SELL, "AAPL", 100, 150.0)).is_ok());
+    ASSERT_TRUE(strategy->on_execution(createExecution(Side::BUY, "AAPL", 150, 130.0)).is_ok());
+
+    const auto& pos = strategy->get_positions().at("AAPL");
+    EXPECT_DOUBLE_EQ(pos.realized_pnl.as_double(), 2000.0)
+        << "realized must be (150-130) x the 100 shares that covered, not x 150";
+    EXPECT_DOUBLE_EQ(strategy->get_metrics().realized_pnl, 2000.0);
+    EXPECT_DOUBLE_EQ(pos.quantity.as_double(), 50.0);
+    EXPECT_DOUBLE_EQ(pos.average_price.as_double(), 130.0)
+        << "the 50-share remainder opens at the fill price";
+}
+
+// An exact close (qty == fill) and a partial close are unchanged by the fix.
+TEST_F(BaseStrategyTest, OnExecution_ExactAndPartialCloseRealizeOnTheFill) {
+    auto db = std::make_shared<MockPostgresDatabase>();
+    StrategyConfig config;
+    auto strategy = createRunningStrategy(config, db);
+
+    ASSERT_TRUE(strategy->on_execution(createExecution(Side::BUY, "AAPL", 100, 150.0)).is_ok());
+    ASSERT_TRUE(strategy->on_execution(createExecution(Side::SELL, "AAPL", 40, 160.0)).is_ok());
+    EXPECT_DOUBLE_EQ(strategy->get_positions().at("AAPL").realized_pnl.as_double(), 400.0);
+    EXPECT_DOUBLE_EQ(strategy->get_positions().at("AAPL").quantity.as_double(), 60.0);
+    EXPECT_DOUBLE_EQ(strategy->get_positions().at("AAPL").average_price.as_double(), 150.0);
+
+    ASSERT_TRUE(strategy->on_execution(createExecution(Side::SELL, "AAPL", 60, 170.0)).is_ok());
+    EXPECT_DOUBLE_EQ(strategy->get_positions().at("AAPL").realized_pnl.as_double(), 400.0 + 1200.0);
+    EXPECT_DOUBLE_EQ(strategy->get_positions().at("AAPL").quantity.as_double(), 0.0);
+}

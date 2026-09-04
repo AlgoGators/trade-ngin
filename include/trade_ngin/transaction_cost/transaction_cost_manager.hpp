@@ -77,7 +77,10 @@ public:
      * @brief Calculate all transaction costs for an execution
      *
      * @param symbol Instrument symbol
-     * @param quantity Trade quantity (signed; absolute value used)
+     * @param quantity Trade quantity. MUST be signed: negative is a sell. Every cost term
+     *        takes |quantity| EXCEPT the SEC/TAF regulatory fees, which are sell-side only
+     *        and are gated on `quantity < 0`. Passing an absolute value silently drops them
+     *        (E2-F29).
      * @param reference_price Fill price (previous day close)
      * @return Detailed cost breakdown
      *
@@ -96,7 +99,8 @@ public:
      * Use this overload when you want to provide ADV/volatility externally.
      *
      * @param symbol Instrument symbol
-     * @param quantity Trade quantity (signed; absolute value used)
+     * @param quantity Trade quantity. MUST be signed: negative is a sell. See the overload
+     *        above -- the sign is load-bearing for the SEC/TAF regulatory fees (E2-F29).
      * @param reference_price Fill price
      * @param adv Average daily volume
      * @param volatility_multiplier Volatility regime multiplier (0.8-1.5)

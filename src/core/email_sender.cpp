@@ -1082,17 +1082,53 @@ std::string EmailSender::format_positions_table(
                 // long / 150% short) and futures get total dollars (now
                 // multiplied internally by FuturesInstrument's new override).
                 const double signed_qty = position.quantity.as_double();
-                const double price_for_margin = position.average_price.as_double();
-                double total_initial_margin =
-                    instrument->get_margin_requirement(price_for_margin, signed_qty);
-                if (total_initial_margin <= 0) {
-                    ERROR("CRITICAL: Invalid margin requirement " +
-                          std::to_string(total_initial_margin) + " for " + lookup_sym +
-                          " (price=" + std::to_string(price_for_margin) +
-                          ", qty=" + std::to_string(signed_qty) + ")");
-                    throw std::runtime_error("Invalid margin requirement for: " + lookup_sym);
+
+                // D9 / BA-16: margin is priced from a MARK, not a cost basis.
+                //
+                // This read average_price only. On the equity path that column is a
+                // cost basis, and 0 is its documented "no basis known" value
+                // (AVERAGE_PRICE_LIFECYCLE rule 5) -- reachable for a held position
+                // whose basis could not be resolved, which the runner already reports
+                // as an ERROR. get_margin_requirement(0, qty) then returns 0, this
+                // threw, and the bare `throw;` below aborted the WHOLE daily email:
+                // one unpriceable row and nobody gets a report at all.
+                //
+                // Margin asks what the position is worth now, so the current close is
+                // the right input and average_price is the fallback -- the same
+                // preference the notional/market-price block below already applies.
+                double price_for_margin = 0.0;
+                auto margin_price_it = current_prices.find(symbol);
+                if (margin_price_it != current_prices.end() && margin_price_it->second > 0.0) {
+                    price_for_margin = margin_price_it->second;
+                } else if (position.average_price.as_double() > 0.0) {
+                    price_for_margin = position.average_price.as_double();
                 }
-                total_margin_posted += total_initial_margin;
+
+                if (price_for_margin <= 0.0) {
+                    // Neither a close nor a basis. Report it and leave this row out of
+                    // the margin total; the email still goes out, and the row still
+                    // appears with the figures that ARE known.
+                    WARN("Daily email: no usable price for " + lookup_sym +
+                         " (quantity " + std::to_string(signed_qty) +
+                         ", no current close and average_price is 0) -- excluded from the "
+                         "margin total. The email is still sent; margin posted is "
+                         "understated by this position.");
+                } else {
+                    double total_initial_margin =
+                        instrument->get_margin_requirement(price_for_margin, signed_qty);
+                    if (total_initial_margin <= 0) {
+                        // A positive price that still yields no margin is an instrument
+                        // configuration problem, not a missing-data problem. Report it
+                        // and carry on rather than suppressing the whole report.
+                        WARN("Daily email: instrument " + lookup_sym +
+                             " returned margin " + std::to_string(total_initial_margin) +
+                             " for price=" + std::to_string(price_for_margin) +
+                             ", qty=" + std::to_string(signed_qty) +
+                             " -- excluded from the margin total.");
+                    } else {
+                        total_margin_posted += total_initial_margin;
+                    }
+                }
 
             } catch (const std::exception& e) {
                 ERROR("CRITICAL: Failed to get instrument data for " + position.symbol + ": " +

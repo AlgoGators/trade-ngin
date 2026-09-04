@@ -14,6 +14,7 @@
 
 #include <gtest/gtest.h>
 #include <memory>
+#include <type_traits>
 #include <unordered_map>
 #include <vector>
 
@@ -77,10 +78,21 @@ TEST(UnrealizedCostBasis, AHeldPositionDoesNotMeasureAsZero) {
 }
 
 TEST(UnrealizedCostBasis, RowAndAggregateAgreeOnTheSameInputs) {
-    // The invariant F-D restores: what the runner writes per row equals what the manager
-    // reports in the aggregate, because they are the same function on the same fields.
+    // The invariant F-D restores: what the runner writes per row equals what the MANAGER
+    // reports in its aggregate.
+    //
+    // BA-3 / C-3 D2(b): this test used to accumulate BOTH sides from
+    // unrealized_from_cost_basis itself, differing only by point_value defaulted versus
+    // passed as 1.0. That is a tautology -- it compared the helper to itself and never
+    // read a single manager output, so it would have passed even if the aggregate had
+    // stopped using the helper entirely, which is the exact drift the commit claims to
+    // prevent. It now reads get_current_snapshot(), and pins both sides against an
+    // independently computed figure so they cannot drift TOGETHER either.
     auto& registry = InstrumentRegistry::instance();
     LivePnLManager mgr(500000.0, registry);
+    // An equity book: one share is one unit. Stated explicitly because the manager's
+    // default is FUTURE, where an unregistered AAPL would pick up a contract multiplier.
+    mgr.set_asset_type(AssetType::EQUITY);
 
     std::vector<Position> positions = {at_basis("AAPL", 250.0, 188.25),
                                        at_basis("MSFT", -80.0, 410.00)};
@@ -89,28 +101,73 @@ TEST(UnrealizedCostBasis, RowAndAggregateAgreeOnTheSameInputs) {
 
     ASSERT_TRUE(mgr.calculate_position_pnls(positions, current, previous).is_ok());
 
+    // Computed here from the position fields alone, with no reference to the code under
+    // test. If the row rule and the aggregate rule both changed in the same direction,
+    // this is what still catches it.
+    const double expected = 250.0 * (194.10 - 188.25) + (-80.0) * (402.50 - 410.00);
+    ASSERT_NE(expected, 0.0) << "the fixture must have real unrealized P&L to compare";
+
+    // Side 1: the manager's OWN aggregate, the number live_results carries.
+    auto snapshot = mgr.get_current_snapshot();
+    ASSERT_TRUE(snapshot.is_ok());
+    const double aggregate = snapshot.value().unrealized_pnl;
+
+    // Side 2: what the equity runner persists per row, at the point value the manager
+    // itself resolved for each symbol -- not a hard-coded 1.0 standing in for it.
     double row_total = 0.0;
     for (const auto& p : positions) {
-        // Exactly what the equity runner now persists per row.
         row_total += LivePnLManager::unrealized_from_cost_basis(
-            p.quantity.as_double(), static_cast<double>(p.average_price), current.at(p.symbol));
+            p.quantity.as_double(), static_cast<double>(p.average_price),
+            current.at(p.symbol), mgr.get_point_value(p.symbol));
     }
-    EXPECT_NE(row_total, 0.0) << "the fixture must actually have unrealized P&L to compare";
 
-    double aggregate = 0.0;
-    for (const auto& p : positions) {
-        aggregate += LivePnLManager::unrealized_from_cost_basis(
-            p.quantity.as_double(), static_cast<double>(p.average_price), current.at(p.symbol),
-            /*point_value=*/1.0);
-    }
-    EXPECT_NEAR(row_total, aggregate, 1e-9);
+    EXPECT_NEAR(aggregate, expected, 1e-9)
+        << "the manager's aggregate must be the cost-basis measurement, not something else";
+    EXPECT_NEAR(row_total, expected, 1e-9) << "so must the per-row figure";
+    EXPECT_NEAR(aggregate, row_total, 1e-9)
+        << "row and aggregate are the same measurement on the same inputs (F-D)";
 }
 
+// BA-3 / C-3 D2(a): an ACTUAL compile-time pin on the struct's shape.
+//
+// This test used to claim "if a member named entry_price comes back, this file stops
+// compiling at the line above" while its body only asserted that two unrelated members
+// were 0.0. Nothing referenced entry_price, so nothing could stop compiling: restoring
+// the field AND reverting the runner to the always-zero persistence left the file
+// building and the suite green. The claim is now enforced by a detector rather than
+// asserted in a comment.
+namespace {
+
+template <typename T, typename = void>
+struct has_entry_price : std::false_type {};
+
+template <typename T>
+struct has_entry_price<T, std::void_t<decltype(std::declval<T&>().entry_price)>>
+    : std::true_type {};
+
+// The pin. Reintroducing MeanReversionInstrumentData::entry_price fails the BUILD here,
+// which is the only place that can catch it before it silently reports 0 again: the
+// field had no writer anywhere in the tree, so every persisted row read 0 while the
+// aggregate reported otherwise.
+static_assert(!has_entry_price<MeanReversionInstrumentData>::value,
+              "MeanReversionInstrumentData::entry_price is back. It is a cost-basis field "
+              "on per-instrument scratch data with no writer, which is what made every "
+              "persisted trading.positions.unrealized_pnl 0 while live_results disagreed "
+              "(F-D). Cost basis lives on Position::average_price, whose sole writer is "
+              "BaseStrategy::on_execution -- see docs/AVERAGE_PRICE_LIFECYCLE.md.");
+
+}  // namespace
+
 TEST(UnrealizedCostBasis, InstrumentDataCarriesNoCostBasisField) {
-    // Guards the regression's root: cost basis must not be reintroduced onto the
-    // strategy's per-instrument scratch data, where nothing writes it. If a member named
-    // entry_price comes back, this file stops compiling at the line above rather than
-    // silently reporting 0 again.
+    // The static_assert above is the real guard; this makes the intent visible in the
+    // test log and fails loudly rather than only at build time.
+    EXPECT_FALSE(has_entry_price<MeanReversionInstrumentData>::value)
+        << "cost basis must not be reintroduced onto the strategy's scratch data";
+
+    // A cost basis has exactly one home, and it is not here.
+    EXPECT_TRUE(has_entry_price<Position>::value == false)
+        << "Position carries average_price, never entry_price";
+
     MeanReversionInstrumentData d;
     EXPECT_DOUBLE_EQ(d.target_position, 0.0);
     EXPECT_DOUBLE_EQ(d.current_price, 0.0);

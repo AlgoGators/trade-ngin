@@ -189,3 +189,27 @@ TEST_F(BacktestExecutionManagerTest, GetTransactionCostManagerReturnsLiveReferen
     // Reading via the manager wrapper should now see the same data.
     EXPECT_GT(manager_->get_adv("ES"), 0.0);
 }
+
+// E2-F29: the backtest execution path must also charge SEC/TAF on the sell side only.
+TEST_F(BacktestExecutionManagerTest, SellSideCarriesRegulatoryFeesWhenConfigured) {
+    transaction_cost::AssetCostConfig cfg;
+    cfg.symbol = "TIERD";
+    cfg.asset_type = AssetType::EQUITY;
+    cfg.commission_per_unit = 0.0035;
+    cfg.min_commission_per_order = 0.35;
+    cfg.max_commission_per_order = 1e9;
+    cfg.apply_regulatory_fees = true;
+    manager_->get_transaction_cost_manager().register_asset_config(cfg);
+
+    const double qty = 1000.0, px = 50.0;
+    auto buy = manager_->generate_execution("TIERD", +qty, px, ts_);
+    auto sell = manager_->generate_execution("TIERD", -qty, px, ts_);
+    ASSERT_EQ(buy.side, Side::BUY);
+    ASSERT_EQ(sell.side, Side::SELL);
+
+    const double sec_fee = (qty * px / 1e6) * cfg.sec_fee_per_million;
+    const double taf = std::min(qty * cfg.finra_taf_per_share, cfg.finra_taf_cap_per_trade);
+    EXPECT_NEAR(sell.commissions_fees.as_double() - buy.commissions_fees.as_double(),
+                sec_fee + taf, 1e-9)
+        << "SELL must carry SEC + TAF on top of the BUY-side commission";
+}

@@ -65,11 +65,23 @@ const char* corp_action_class_to_string(CorpActionClass c);
 const std::vector<std::string>& vendor_labels_for_class(CorpActionClass c);
 
 /**
- * @brief Last date on which equities_data.corporate_action received events.
+ * @brief FALLBACK ONLY: the date equities_data.corporate_action was last seen
+ *        receiving events, as of the commit that wrote this line.
  *
- * The feed stopped here; anything after this date is not in that table. The
- * TERMINATION deal-terms path queries it anyway (finding nothing today) so a
- * revived feed activates the handler with no code change.
+ * NOT the answer to "is the feed frozen" -- that is a fact about the database,
+ * and the runner MEASURES it (`PostgresDatabase::get_corp_action_feed_last_date`,
+ * `assess_corp_action_feed` in live/corp_action_feed_status.hpp) and logs it at
+ * startup. A compiled-in date cannot notice a restarted subscription: after a
+ * backfill every WARN quoting it asserts something false until somebody
+ * rebuilds, and nothing tells the operator the dormant deal-terms path just went
+ * live.
+ *
+ * This constant survives for two jobs only: the fallback when the measurement
+ * itself failed, and the reference point that lets the startup line say the feed
+ * has MOVED since the build. Do not read it as current fact.
+ *
+ * The TERMINATION deal-terms path queries the table regardless (finding nothing
+ * today) so a revived feed activates the handler with no code change.
  */
 inline constexpr const char* kCorpActionTableFrozenAfter = "2025-08-29";
 

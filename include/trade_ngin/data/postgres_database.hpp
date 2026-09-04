@@ -292,23 +292,6 @@ public:
         const std::string& portfolio_id = "BASE_PORTFOLIO",
         const std::string& table_name = "backtest.signals") override;
 
-    /**
-     * @brief Store backtest run metadata
-     * @param run_id Backtest run identifier
-     * @param name Run name
-     * @param description Run description
-     * @param start_date Start date
-     * @param end_date End date
-     * @param hyperparameters JSON configuration
-     * @param table_name Name of the table to insert into
-     * @return Result indicating success or failure
-     */
-    Result<void> store_backtest_metadata(
-        const std::string& run_id, const std::string& name, const std::string& description,
-        const Timestamp& start_date, const Timestamp& end_date,
-        const nlohmann::json& hyperparameters, const std::string& portfolio_id = "BASE_PORTFOLIO",
-        const std::string& table_name = "backtest.run_metadata") override;
-
     // Multi-strategy version: store metadata with portfolio_run_id, strategy_allocation,
     // portfolio_config
     virtual Result<void> store_backtest_metadata_with_portfolio(
@@ -643,6 +626,26 @@ public:
         const std::vector<std::string>& actions = {"split", "dividend", "adrratiosplit"});
 
     /**
+     * @brief Last date present in equities_data.corporate_action.
+     *
+     * E4 item 3. The deal-terms feed's stop date used to be a compiled-in
+     * constant (`kCorpActionTableFrozenAfter`) quoted in every termination WARN.
+     * A constant cannot notice a revived subscription: after a backfill the
+     * message keeps naming the old date until someone rebuilds, and the operator
+     * gets no signal that the dormant rollover path just went live. Measuring it
+     * makes the log line true by construction.
+     *
+     * Future-dated placeholder rows are excluded: the table carries tickerchange
+     * rows dated 2027-07-18, and a bare max() would report a feed running two
+     * years ahead of the run.
+     *
+     * @param as_of_date Inclusive upper bound, YYYY-MM-DD. Empty means no bound.
+     * @return YYYY-MM-DD, or "" when the table holds no row at or before the
+     *         bound. An unreachable database is an error, never "".
+     */
+    Result<std::string> get_corp_action_feed_last_date(const std::string& as_of_date = "");
+
+    /**
      * @brief PRICE_RESTATING events sourced from the live per-bar columns.
      *
      * equities_data.ohlcv_1d carries div_cash and split_factor on the bar the
@@ -683,10 +686,24 @@ public:
      * From equities_data.ohlcv_1d.delisting_date, which is maintained
      * independently of the frozen corporate_action feed.
      *
-     * @return symbol -> YYYY-MM-DD for symbols carrying a delisting date.
+     * @param tickers   Symbols to look up.
+     * @param from_date Inclusive YYYY-MM-DD floor; a delisting older than this
+     *        is not returned. Empty means no floor (the pre-BA-8 behaviour).
+     *
+     * BA-8 / C-1 D12: delisting_date is keyed on the TICKER, and this reads
+     * `max(delisting_date)` over the symbol's whole history, so a reused ticker
+     * inherits the dead company's row -- HPC carries 2008-11-24, MER 2008-12-31.
+     * Acting on one exits a live position at a stale price. The runner has a
+     * bars-contradict guard, but that guard needs a bar: `delisting_is_stale`
+     * returns false when `last_bar_date` is EMPTY, so a held symbol with no bar
+     * in the load window is still terminated on a decade-old row. A floor closes
+     * that at the source -- a 2008 delisting has no business reaching a 2026 run.
+     *
+     * @return symbol -> YYYY-MM-DD for symbols carrying a delisting date at or
+     *         after `from_date`.
      */
     virtual Result<std::unordered_map<std::string, std::string>> get_delisting_dates(
-        const std::vector<std::string>& tickers);
+        const std::vector<std::string>& tickers, const std::string& from_date = "");
 
     /**
      * @brief Earliest date each symbol was held (non-zero) by this strategy.
@@ -707,6 +724,36 @@ public:
      *         with no history are absent.
      */
     virtual Result<std::unordered_map<std::string, std::string>> get_position_inception_dates(
+        const std::string& strategy_id,
+        const std::string& strategy_name,
+        const std::string& portfolio_id,
+        const std::vector<std::string>& symbols,
+        const std::string& table_name = "trading.positions");
+
+    /**
+     * @brief Date the CURRENT holding of each symbol began -- the class-2 era input.
+     *
+     * `get_position_inception_dates` is `min(date)` over all history and fails WIDE on
+     * purpose, which is right for the class-1 price window and wrong for the rename era
+     * test. Tickers get reused. A strategy that held META (Facebook) in 2021, closed it,
+     * and re-bought META (Meta Platforms) in 2026 has a lifetime inception of 2021, which
+     * satisfies `inception <= effective_until` for our own META -> METV backfill
+     * (effective_until 2022-01-31) and re-keys a live 100-share position onto a symbol
+     * with no bars at all. Class 2 must ask a narrower question: when did the holding we
+     * hold RIGHT NOW start? (BA-2 / C-3 D1.)
+     *
+     * A holding starts after the most recent flat row. A closed position keeps exactly one
+     * row -- quantity 0 on the day it closed (E2-F19, `LiveDailyCycle::is_dead_row`) -- so
+     * that row is the break. Absent such a row the position was never closed and this
+     * equals the lifetime inception.
+     *
+     * Direction of error: too LATE is safe (the rename is skipped and retried next run);
+     * too EARLY re-keys a live holding, which is silent and permanent. This errs late.
+     *
+     * @return symbol -> YYYY-MM-DD the current holding began. Symbols with no non-zero
+     *         row after the last flat row are ABSENT, and class 2 skips them.
+     */
+    virtual Result<std::unordered_map<std::string, std::string>> get_current_holding_start_dates(
         const std::string& strategy_id,
         const std::string& strategy_name,
         const std::string& portfolio_id,
@@ -778,6 +825,18 @@ public:
         double qty_held{0.0};
         double dividend_per_share{0.0};
         double total_cash{0.0};
+        /**
+         * Run date of the pass that wrote the row (E2-F23, migration 005).
+         * YYYY-MM-DD, or "" for a legacy row written before the column existed.
+         *
+         * NOT part of the natural key. It exists so a run can tell whether the
+         * dedup rows it is about to trust came from an EARLIER pass or a LATER
+         * one -- the ex-date cannot, because the measured failure (BKNG, ex-date
+         * 2026-04-06, re-run of 04-07 over an un-reset dedup table) has an
+         * ex-date safely in the past, and `applied_at` cannot, because an earlier
+         * chain always carries an earlier wall clock.
+         */
+        std::string run_date;
     };
 
     /**

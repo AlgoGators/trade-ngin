@@ -9,6 +9,7 @@ set(TEST_SOURCES
     core/test_config_version.cpp
     core/test_config_base.cpp
     core/test_holiday_checker.cpp
+    core/test_email_positions_table.cpp
     core/test_run_id_generator.cpp
     core/test_config_loader.cpp
     data/test_db_utils.cpp
@@ -44,10 +45,12 @@ set(TEST_SOURCES
     live/corp_actions/test_rename_eras.cpp
     live/corp_actions/test_denominator_frame.cpp
     live/corp_actions/test_denominator_range_db.cpp
+    live/corp_actions/test_corp_action_query_bounds_db.cpp
     live/corp_actions/test_audit_log.cpp
     live/corp_actions/test_income.cpp
     live/test_live_metrics_includes_dividend_income.cpp
     live/test_daily_pnl_identity.cpp
+    live/test_trading_days_anchor.cpp
     backtest/test_slippage_model.cpp
     backtest/test_backtest_execution_manager.cpp
     backtest/test_backtest_price_manager.cpp
@@ -62,6 +65,9 @@ set(TEST_SOURCES
     portfolio/test_portfolio_manager.cpp
     core/test_equity_portfolio_namespace.cpp
     live/corp_actions/test_window.cpp
+    live/test_effective_universe.cpp
+    live/test_live_daily_cycle_carry_forward.cpp
+    data/test_current_holding_start_db.cpp
     instruments/test_equity_margin_cash_regt.cpp
     instruments/test_futures_margin_overload.cpp
     portfolio/test_portfolio_aggregation.cpp
@@ -96,6 +102,7 @@ set(TEST_SOURCES
     strategy/test_volatility_size_1_nan_guard.cpp
     strategy/test_stale_unrealized_pnl_zero_avg_price.cpp
     strategy/test_live_daily_cycle_seeding.cpp
+    strategy/test_penny_stock_lifecycle.cpp
     statistics/test_normalizer.cpp
     statistics/test_pca.cpp
     statistics/test_adf.cpp

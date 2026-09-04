@@ -23,6 +23,9 @@
 #include "trade_ngin/live/corporate_actions_classification.hpp"
 #include "trade_ngin/live/corporate_actions_lifecycle.hpp"
 #include "trade_ngin/live/corp_action_window.hpp"
+#include "trade_ngin/live/data_freshness.hpp"
+#include "trade_ngin/live/corp_action_feed_status.hpp"
+#include "trade_ngin/live/trading_days_anchor.hpp"
 #include "trade_ngin/live/corporate_actions_audit_log.hpp"
 #include "trade_ngin/live/live_daily_cycle.hpp"
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
@@ -87,12 +90,13 @@ int main(int argc, char* argv[]) {
                 continue;
             }
 
-            // Try to parse as date
-            std::tm tm = {};
-            std::istringstream ss(arg);
-            ss >> std::get_time(&tm, "%Y-%m-%d");
-            if (!ss.fail()) {
-                target_date = std::chrono::system_clock::from_time_t(std::mktime(&tm));
+            // Try to parse as date. UTC midnight, not local midnight: every
+            // consumer of target_date formats it back through gmtime, so a
+            // std::mktime parse moves the entire run to the previous day on any
+            // host at a positive UTC offset (E3 mktime sites).
+            std::chrono::system_clock::time_point parsed_date;
+            if (core::parse_utc_date(arg, parsed_date)) {
+                target_date = parsed_date;
                 use_override_date = true;
                 std::cout << "Running for historical date: " << arg << std::endl;
             } else if (arg != "--send-email") {
@@ -157,6 +161,18 @@ int main(int argc, char* argv[]) {
         // dev/deploy/system-wide chain).
         auto holiday_checker_ptr = std::make_shared<HolidayChecker>(
             HolidayChecker::resolve_holidays_path());
+        // BA-1: a calendar that did not load fully is fatal, not an ERROR log.
+        // Every downstream use -- the non-trading-day skip, the previous-trading-
+        // day walk, EquityInstrument::is_market_open -- reads "not a holiday"
+        // and "never loaded" as the same value, so proceeding books a day that
+        // did not exist against a T-1 book that was never there.
+        if (!holiday_checker_ptr->loaded()) {
+            std::cerr << "FATAL: market holiday calendar failed to load from "
+                      << HolidayChecker::resolve_holidays_path()
+                      << " - refusing to run. Every date would report as a trading day."
+                      << std::endl;
+            return 1;
+        }
         EquityInstrument::set_holiday_checker(holiday_checker_ptr);
 
         // Setup database connection pool
@@ -276,6 +292,147 @@ int main(int argc, char* argv[]) {
         if (symbols.empty()) {
             ERROR("No equity symbols found");
             return 1;
+        }
+
+        // Moved above instrument registration for E2-F34: the effective universe below
+        // needs the previous trading day so it can read the book before the universe is
+        // fixed. Nothing between here and the price-manager update consumes
+        // `previous_date`, so the move is order-preserving for every other consumer.
+        // ========================================
+        // NON-TRADING DAY DETECTION
+        // Find the actual previous trading day (skip weekends and holidays)
+        // Mirrors the logic in live_portfolio.cpp for futures
+        // ========================================
+        const HolidayChecker& holiday_checker = *holiday_checker_ptr;
+
+        // The calendar covers a finite range of years. Outside it every date
+        // reports as a non-holiday because the answer is unknown, which would
+        // silently make find_previous_trading_day land on a closed day and
+        // return an empty previous-day book -- skipping corp actions and
+        // mis-stating PnL with no visible symptom. Fail closed instead.
+        {
+            char cov_buf[11];
+            std::tm cov_tm{};
+            auto cov_t = std::chrono::system_clock::to_time_t(now);
+            gmtime_r(&cov_t, &cov_tm);
+            std::strftime(cov_buf, sizeof(cov_buf), "%Y-%m-%d", &cov_tm);
+            if (!holiday_checker.covers_date(cov_buf)) {
+                ERROR("Holiday calendar does not cover " + std::string(cov_buf) +
+                      " (loaded: " + holiday_checker.coverage_description() +
+                      "). Trading-day arithmetic would treat market closures as "
+                      "open days. Extend the calendar via "
+                      "scripts/generate_market_holidays.py before running this date.");
+                return 1;
+            }
+        }
+
+        // Find the most recent trading day strictly before `now`. Walks back
+        // up to 14 days to cover worst-case US closure stacks (Christmas-week
+        // holidays + weekends, or 9/11-style multi-day exchange closures).
+        // Fails closed if exhausted rather than silently using a stale date.
+        auto prev_day_opt = holiday_checker.find_previous_trading_day(now);
+        if (!prev_day_opt.has_value()) {
+            ERROR("Failed to find a previous trading day within lookback bound. "
+                  "Holiday calendar may be misconfigured or stale. Aborting.");
+            return 1;
+        }
+        auto previous_date = *prev_day_opt;
+
+        // ========================================
+        // EFFECTIVE UNIVERSE (E2-F34 / F-4) -- finalized AFTER the book is known
+        // ========================================
+        // The universe used to be config and nothing else, fixed here, while
+        // apply_renames ran ~1,500 lines below. A held position whose successor is not
+        // in config therefore got no instrument, no bars, no cost config and no target:
+        // the day-T pass logged "Missing T-1 price for symbol with a non-zero position",
+        // execute_day_t rule 3 rolled its target back to the carried quantity, and the
+        // same thing happened again the next session -- an unpriceable zombie carried
+        // forever under a key nothing can price. So the book has to be read first.
+        //
+        // This read is deliberately separate from (and earlier than) the authoritative
+        // load below: it exists only to answer "what else must this run be able to
+        // price". Everything it produces -- the alias table and the current-holding
+        // start dates -- is reused by the class-2 block later in the run, so the
+        // universe and the re-keying cannot disagree about which renames apply.
+        std::vector<TickerAlias> ticker_aliases;
+        bool ticker_aliases_ok = false;
+        std::unordered_map<std::string, std::string> holding_start_dates;
+        bool holding_start_read_ok = false;
+        {
+            const std::string as_of_ymd_universe =
+                format_ymd_utc(std::chrono::system_clock::to_time_t(now));
+
+            std::unordered_map<std::string, Position> seed_held;
+            auto seed_book = db->load_positions_by_date(kEquityStrategyId, kEquityStrategyName,
+                                                       portfolio_id, previous_date,
+                                                       "trading.positions");
+            if (seed_book.is_ok()) {
+                std::unordered_map<std::string, Position> seed_closed;
+                LiveDailyCycle::split_open_and_closed(seed_book.value(), seed_held, seed_closed);
+            } else {
+                INFO("No previous-day book for the universe check (first run or no data): " +
+                     std::string(seed_book.error()->what()));
+            }
+
+            auto alias_result = db->get_ticker_aliases();
+            if (alias_result.is_error()) {
+                WARN("Failed to fetch ticker aliases: " +
+                     std::string(alias_result.error()->what()) +
+                     " -- the universe stays as configured and SERIES_CONTINUITY handling "
+                     "is skipped this run");
+            } else {
+                ticker_aliases.reserve(alias_result.value().size());
+                for (const auto& row : alias_result.value()) {
+                    ticker_aliases.push_back(TickerAlias{row.historical_ticker,
+                                                         row.current_symbol,
+                                                         row.effective_until, row.note});
+                }
+                ticker_aliases_ok = true;
+            }
+
+            if (!seed_held.empty()) {
+                std::vector<std::string> held_syms;
+                held_syms.reserve(seed_held.size());
+                for (const auto& [sym, pos] : seed_held) held_syms.push_back(sym);
+
+                // BA-2 / C-3 D1: the class-2 era test needs the start of the CURRENT
+                // holding, not the lifetime min(date) class 1 uses. A ticker closed years
+                // ago and re-bought last month otherwise satisfies the era test for an
+                // alias from the previous issuer's lifetime and gets re-keyed onto a
+                // symbol with no bars. Measured on this book on 2026-09-03: META's
+                // lifetime inception is 2026-06-11, its current holding began 2026-07-31.
+                auto holding_start = db->get_current_holding_start_dates(
+                    kEquityStrategyId, kEquityStrategyName, portfolio_id, held_syms);
+                if (holding_start.is_error()) {
+                    WARN("Could not read current-holding start dates (" +
+                         std::string(holding_start.error()->what()) +
+                         ") -- SERIES_CONTINUITY handling is skipped this run "
+                         "(fail-narrow) and the universe stays as configured");
+                } else {
+                    holding_start_dates = holding_start.value();
+                    holding_start_read_ok = true;
+                }
+            }
+
+            if (ticker_aliases_ok && holding_start_read_ok && !seed_held.empty()) {
+                const auto extended = LiveDailyCycle::effective_universe(
+                    symbols, seed_held, ticker_aliases, as_of_ymd_universe,
+                    holding_start_dates);
+                if (extended.size() != symbols.size()) {
+                    std::string added;
+                    for (size_t i = symbols.size(); i < extended.size(); ++i) {
+                        added += (added.empty() ? "" : ", ") + extended[i];
+                    }
+                    WARN("Effective universe extended beyond config for held positions "
+                         "whose ticker has been renamed: " + added +
+                         ". Without this the renamed holding would have no bars, no "
+                         "instrument and no target, and would be carried unpriceable "
+                         "forever (E2-F34).");
+                    symbols = extended;
+                }
+            }
+            INFO("Effective universe: " + std::to_string(symbols.size()) +
+                 " symbol(s) (config plus successors of held positions)");
         }
 
         // Register equity instruments. Pass the exchange JSON path so per-symbol
@@ -529,6 +686,14 @@ int main(int argc, char* argv[]) {
         auto* results_manager = coordinator->get_results_manager();
         auto* price_manager = coordinator->get_price_manager();
         auto* pnl_manager = coordinator->get_pnl_manager();
+        // E2-F38 / BA-7: this is an equity book. Tell the PnL manager so, because a
+        // symbol that misses the InstrumentRegistry otherwise falls through to a
+        // SUBSTRING match over futures contract codes -- AAPL matches "PL" (platinum,
+        // 50), LEN matches "LE" (live cattle, 40000). The futures runners pass nothing
+        // and keep the fallback table.
+        if (pnl_manager) {
+            pnl_manager->set_asset_type(AssetType::EQUITY);
+        }
 
         // Create Phase 3 managers
         INFO("Creating ExecutionManager and MarginManager for Phase 3");
@@ -581,20 +746,127 @@ int main(int argc, char* argv[]) {
         // the configured tolerance, the run is on stale data -- WARN in historical-
         // replay mode, ERROR (refuse) in true-live mode. (Computed from the loaded
         // bars rather than a separate query: symbol-scoped and no extra round-trip.)
-        if (!all_bars.empty()) {
-            auto latest_bar = all_bars.front().timestamp;
-            for (const auto& bar : all_bars) {
-                if (bar.timestamp > latest_bar) latest_bar = bar.timestamp;
+        //
+        // BA-12: measured from the STALEST symbol, not the freshest. This used to take
+        // the global max bar timestamp, so one symbol printing today reported the whole
+        // feed current however far behind the other 851 were -- a guard that cannot
+        // fail is not a guard. It also skipped entirely on an empty load and measured
+        // in instants rather than calendar days.
+        // Annualization anchor (E2-F32). trading.get_trading_days() takes its start
+        // date from strategy_trading_days_metadata and only falls back to MIN(date)
+        // over live_results when NO row exists -- so a metadata row dated after the
+        // book's own first day is worse than no row at all, and the function cannot
+        // notice because it stops looking the moment it finds one. Measured on this
+        // book: anchor 2026-07-24 against a book starting 2026-04-01 gave 1 trading
+        // day for 115 of 126 rows and annualized -3.5 % into -1674 % on 07-27. The
+        // run exited 0 and stored it.
+        //
+        // The check is one comparison the function cannot make. On a mismatch the
+        // correct anchor is the book's own first day, and the count below is computed
+        // from it rather than taken from the function.
+        std::string trading_days_anchor_override;
+        {
+            auto anchor_q = db->execute_query(
+                "SELECT COALESCE(MIN(live_start_date)::text, '') "
+                "FROM trading.strategy_trading_days_metadata "
+                "WHERE strategy_id = '" + std::string(kEquityStrategyId) + "'"
+                " AND portfolio_id = '" + portfolio_id + "'");
+            auto first_q = db->execute_query(
+                "SELECT COALESCE(MIN(date)::text, '') FROM trading.live_results "
+                "WHERE strategy_id = '" + std::string(kEquityStrategyId) + "'"
+                " AND portfolio_id = '" + portfolio_id + "'");
+
+            auto first_cell = [](const Result<std::shared_ptr<arrow::Table>>& r) -> std::string {
+                if (r.is_error() || !r.value() || r.value()->num_rows() == 0) return {};
+                auto col = std::static_pointer_cast<arrow::StringArray>(
+                    r.value()->column(0)->chunk(0));
+                if (!col || col->length() == 0 || col->IsNull(0)) return {};
+                return std::string(col->GetView(0));
+            };
+
+            if (anchor_q.is_error() || first_q.is_error()) {
+                WARN("Could not check the annualization anchor for " + portfolio_id +
+                     "; total_annualized_return is reported as the DB function computes it.");
+            } else {
+                const auto anchor = assess_trading_days_anchor(first_cell(anchor_q),
+                                                               first_cell(first_q));
+                if (anchor.anchor_is_late) {
+                    trading_days_anchor_override = anchor.effective_anchor;
+                    WARN("Annualization anchor is LATER than the book it annualizes: "
+                         "strategy_trading_days_metadata.live_start_date = " +
+                         anchor.metadata_anchor + " but live_results for " + portfolio_id +
+                         " start " + anchor.earliest_result +
+                         ". trading.get_trading_days would return 1 for every date before "
+                         "the anchor and explode total_annualized_return just after it "
+                         "(E2-F32). Using " + anchor.effective_anchor +
+                         " for this run; seed the metadata row to that date, or delete it "
+                         "so the MIN(date) fallback applies.");
+                } else {
+                    INFO("Annualization anchor " +
+                         (anchor.effective_anchor.empty() ? std::string("(none yet)")
+                                                          : anchor.effective_anchor) +
+                         " is consistent with the book for " + portfolio_id);
+                }
             }
-            int tolerance_days = app_config.live.data_staleness_tolerance_days;
-            auto staleness = end_date - latest_bar;
-            long staleness_days =
-                std::chrono::duration_cast<std::chrono::hours>(staleness).count() / 24;
-            if (staleness > std::chrono::hours(24 * tolerance_days)) {
-                std::string msg =
-                    "Equity data is stale: newest loaded bar is " + std::to_string(staleness_days) +
-                    " days older than end_date (tolerance " + std::to_string(tolerance_days) +
-                    " days).";
+        }
+
+        // Deal-terms feed freshness -- the OTHER feed, and a different question.
+        // equities_data.corporate_action supplies class-3 deal terms and class-2
+        // renames, and it stopped receiving events in 2025. That fact used to be a
+        // constant compiled into the binary and quoted in every termination WARN, so
+        // a restarted subscription would have gone unannounced and the WARNs would
+        // have kept naming a date that was no longer true (E4 item 3). Measure it,
+        // say it out loud once per run, and hand it to the handler that quotes it.
+        std::string corp_action_feed_last_date;
+        {
+            const std::string as_of_ymd =
+                format_ymd_utc(std::chrono::system_clock::to_time_t(end_date));
+            auto feed_max = db->get_corp_action_feed_last_date(as_of_ymd);
+            if (feed_max.is_error()) {
+                WARN("Could not measure the corporate-action deal-terms feed: " +
+                     std::string(feed_max.error()->what()) +
+                     " -- termination WARNs will quote the compiled-in date instead.");
+            } else {
+                corp_action_feed_last_date = feed_max.value();
+            }
+            const auto feed = assess_corp_action_feed(corp_action_feed_last_date, as_of_ymd);
+            INFO(describe_corp_action_feed(feed));
+            if (feed.revived_since_build) {
+                WARN("The corporate-action deal-terms feed has rows after " +
+                     std::string(kCorpActionTableFrozenAfter) +
+                     ", the date this binary was built against. Deal-terms rollover and "
+                     "survivor-keyed TERMINATION rows are now reachable; confirm E4 "
+                     "NEW-5(A) has landed before running this book at universe scale.");
+            }
+        }
+
+        {
+            const int tolerance_days = app_config.live.data_staleness_tolerance_days;
+            const std::string as_of_ymd =
+                format_ymd_utc(std::chrono::system_clock::to_time_t(end_date));
+            const auto freshness = assess_feed_freshness(last_bar_date, as_of_ymd);
+
+            if (!freshness.any_data) {
+                // No symbol has a usable bar date. Maximally stale, never neutral.
+                const std::string msg =
+                    "Equity data freshness cannot be established: none of the " +
+                    std::to_string(freshness.symbols) +
+                    " loaded symbols carries a usable bar date as of " + as_of_ymd + ".";
+                if (use_override_date) {
+                    WARN(msg + " Proceeding in historical-replay mode.");
+                } else {
+                    ERROR(msg + " Refusing to run live without a feed. Refresh the OHLCV "
+                                "feed.");
+                    return 1;
+                }
+            } else if (freshness.days_behind > tolerance_days) {
+                const std::string msg =
+                    "Equity data is stale: the stalest of " +
+                    std::to_string(freshness.symbols) + " symbols (" +
+                    freshness.stalest_symbol + ") last printed " + freshness.stalest_date +
+                    ", " + std::to_string(freshness.days_behind) +
+                    " calendar days before " + as_of_ymd + " (tolerance " +
+                    std::to_string(tolerance_days) + " days).";
                 if (use_override_date) {
                     WARN(msg + " Proceeding in historical-replay mode.");
                 } else {
@@ -602,6 +874,12 @@ int main(int argc, char* argv[]) {
                                 "feed or raise live.data_staleness_tolerance_days.");
                     return 1;
                 }
+            } else {
+                INFO("Equity feed freshness: stalest of " +
+                     std::to_string(freshness.symbols) + " symbols (" +
+                     freshness.stalest_symbol + ") at " + freshness.stalest_date + ", " +
+                     std::to_string(freshness.days_behind) + " days behind " + as_of_ymd +
+                     " (tolerance " + std::to_string(tolerance_days) + ").");
             }
         }
 
@@ -634,45 +912,6 @@ int main(int argc, char* argv[]) {
                 .register_equity_costs_from_bars(symbols, bars_by_symbol);
         }
 
-        // ========================================
-        // NON-TRADING DAY DETECTION
-        // Find the actual previous trading day (skip weekends and holidays)
-        // Mirrors the logic in live_portfolio.cpp for futures
-        // ========================================
-        const HolidayChecker& holiday_checker = *holiday_checker_ptr;
-
-        // The calendar covers a finite range of years. Outside it every date
-        // reports as a non-holiday because the answer is unknown, which would
-        // silently make find_previous_trading_day land on a closed day and
-        // return an empty previous-day book -- skipping corp actions and
-        // mis-stating PnL with no visible symptom. Fail closed instead.
-        {
-            char cov_buf[11];
-            std::tm cov_tm{};
-            auto cov_t = std::chrono::system_clock::to_time_t(now);
-            gmtime_r(&cov_t, &cov_tm);
-            std::strftime(cov_buf, sizeof(cov_buf), "%Y-%m-%d", &cov_tm);
-            if (!holiday_checker.covers_date(cov_buf)) {
-                ERROR("Holiday calendar does not cover " + std::string(cov_buf) +
-                      " (loaded: " + holiday_checker.coverage_description() +
-                      "). Trading-day arithmetic would treat market closures as "
-                      "open days. Extend the calendar via "
-                      "scripts/generate_market_holidays.py before running this date.");
-                return 1;
-            }
-        }
-
-        // Find the most recent trading day strictly before `now`. Walks back
-        // up to 14 days to cover worst-case US closure stacks (Christmas-week
-        // holidays + weekends, or 9/11-style multi-day exchange closures).
-        // Fails closed if exhausted rather than silently using a stale date.
-        auto prev_day_opt = holiday_checker.find_previous_trading_day(now);
-        if (!prev_day_opt.has_value()) {
-            ERROR("Failed to find a previous trading day within lookback bound. "
-                  "Holiday calendar may be misconfigured or stale. Aborting.");
-            return 1;
-        }
-        auto previous_date = *prev_day_opt;
 
         // E2-F14: extract T-1/T-2 prices keyed on the trading day we just resolved, NOT on
         // `now - 24h`.
@@ -706,12 +945,13 @@ int main(int argc, char* argv[]) {
         }
 
         // Check if today itself is a non-trading day
-        int today_dow = now_tm->tm_wday;
         std::ostringstream today_oss;
         today_oss << std::put_time(now_tm, "%Y-%m-%d");
         std::string today_date_str = today_oss.str();
-        bool today_is_non_trading = (today_dow == 0 || today_dow == 6 ||
-                                     holiday_checker.is_holiday(today_date_str));
+        // T-OR.3: one predicate, in a testable place. This was five inline copies of the
+        // weekend/holiday test and nothing covered any of them.
+        const bool today_is_non_trading =
+            LiveDailyCycle::is_non_trading_day(*now_tm, holiday_checker);
 
         // A closed market does NOT mean "do nothing". You still hold the book over a
         // weekend or holiday even though no new bar exists to signal from, so the day is
@@ -953,12 +1193,10 @@ int main(int argc, char* argv[]) {
         // Adjustments land BEFORE the strategy generates today's targets.
         // See docs/CORP_ACTIONS_DATA_BOUNDARY.md. Closes audit §1.12, §1.15.
         // ========================================
-        // Position inception, read once in the class-1 block below and consumed by
-        // BOTH corp-action blocks -- which need OPPOSITE failure semantics, so the raw
-        // result is carried out here rather than the class-1 fallback map.
-        // See the read site for why class 2 must never see that fallback.
-        std::unordered_map<std::string, std::string> inception_raw;
-        bool inception_read_ok = false;
+        // Position inception is read in the class-1 block below and is CLASS 1's alone:
+        // it is min(date) over all history and fails wide, which is right for a price
+        // window and wrong for an era test. Class 2 reads its own dates -- the start of
+        // the CURRENT holding, up with the effective universe (BA-2).
 
         if (!previous_positions.empty()) {
             // Lookback is DERIVED FROM POSITION HISTORY, never a fixed
@@ -1021,18 +1259,38 @@ int main(int argc, char* argv[]) {
             auto inception_result = db->get_position_inception_dates(
                 kEquityStrategyId, kEquityStrategyName,
                 portfolio_id, held_symbols);
+            //
+            // BA-9: "the read failed" and "the read succeeded but cannot account for
+            // this holding" are the SAME epistemic state for class 1, and both must
+            // fail wide. Only is_error() used to widen, so a successful read that
+            // returned no row for a held symbol contributed nothing to the derivation
+            // and left the window at its 14-day floor -- the same silent narrowing
+            // this derivation replaced, reached by a different route.
+            const std::string bulk_start_ymd = format_ymd_utc(bulk_start_t);
             if (inception_result.is_error()) {
                 WARN("Could not read position inception dates (" +
                      std::string(inception_result.error()->what()) +
                      ") -- falling back to the full " +
                      std::to_string(max_lookback_days) + "-day price window");
-                for (const auto& sym : held_symbols) {
-                    inception_dates[sym] = format_ymd_utc(bulk_start_t);
-                }
+                inception_dates =
+                    inception_with_unknowns_widened(held_symbols, {}, bulk_start_ymd);
             } else {
-                inception_dates = inception_result.value();
-                inception_raw = inception_result.value();
-                inception_read_ok = true;
+                inception_dates = inception_with_unknowns_widened(
+                    held_symbols, inception_result.value(), bulk_start_ymd);
+
+                // This map is class 1's only. Class 2 never sees it: a bulk-start
+                // sentinel would satisfy `inception <= effective_until` for any recent
+                // alias, and even the un-widened min(date) is a previous holding's date
+                // for a reused ticker (BA-2).
+                const auto unexplained =
+                    held_symbols_without_inception(held_symbols, inception_result.value());
+                for (const auto& sym : unexplained) {
+                    WARN("No inception row for held symbol " + sym +
+                         " -- widening its class-1 price window to the bulk edge " +
+                         bulk_start_ymd +
+                         " rather than letting it sit at the floor. Class-2 renames "
+                         "still skip it, which is the correct direction for them.");
+                }
             }
 
             const auto window = derive_corp_action_window(
@@ -1098,6 +1356,11 @@ int main(int argc, char* argv[]) {
                           "them. Refusing to adjust positions.");
                     return 1;
                 }
+                // E2-F23: the run's OWN as-of date, not the wall clock. Every dedup
+                // row this pass writes is stamped with it, and load() refuses to run
+                // behind a row a LATER pass wrote -- the case the ex-date detector
+                // below cannot see, because that row's ex-date is in the past.
+                audit_log.set_run_date(today_date_str);
                 auto dedup_loaded = audit_log.load();
                 if (dedup_loaded.is_error()) {
                     // Abort rather than adjust positions against an unknown
@@ -1263,11 +1526,14 @@ int main(int argc, char* argv[]) {
                                           const std::string& ex_date) -> double {
                     auto cached = positions_at_date_cache.find(ex_date);
                     if (cached == positions_at_date_cache.end()) {
-                        std::tm tm{};
-                        std::istringstream ss(ex_date);
-                        ss >> std::get_time(&tm, "%Y-%m-%d");
-                        if (ss.fail()) return 0.0;
-                        auto tt = std::mktime(&tm) - 24 * 60 * 60;  // ex_date - 1 day
+                        // UTC midnight, then minus one day. Parsed with
+                        // parse_utc_date, NOT std::mktime: mktime reads the
+                        // ex-date as LOCAL midnight, so on a host at a positive
+                        // UTC offset this asked for the book two days before the
+                        // ex-date instead of one (E3 mktime sites).
+                        std::chrono::system_clock::time_point ex_tp;
+                        if (!core::parse_utc_date(ex_date, ex_tp)) return 0.0;
+                        auto tt = std::chrono::system_clock::to_time_t(ex_tp) - 24 * 60 * 60;
                         auto tp = std::chrono::system_clock::from_time_t(tt);
                         auto r = db->load_positions_by_date(
                             kEquityStrategyId, kEquityStrategyName,
@@ -1289,17 +1555,14 @@ int main(int argc, char* argv[]) {
                 // ON the ex-date run has a clean basis and MUST still be restated. Measuring at
                 // E-1 would call it "flat at the ex-date" and skip a real adjustment.
                 //
-                // Parsed with timegm, NOT mktime. The ex_date-1 lambda above uses
-                // `std::mktime`, which reads the tm as LOCAL time and then formats UTC -- on a
-                // host at a positive UTC offset that lands a day early. That is pre-existing
-                // and out of scope here, but new code must not propagate it.
+                // Parsed as UTC midnight, NOT with `std::mktime`, which reads the tm as LOCAL
+                // time and then formats UTC -- on a host at a positive UTC offset that lands
+                // a day early. The ex_date-1 lambda above now goes through the same helper.
                 auto parse_ex_date = [](const std::string& d)
                     -> std::optional<std::chrono::system_clock::time_point> {
-                    std::tm tm{};
-                    std::istringstream ss(d);
-                    ss >> std::get_time(&tm, "%Y-%m-%d");
-                    if (ss.fail()) return std::nullopt;
-                    return std::chrono::system_clock::from_time_t(timegm(&tm));
+                    std::chrono::system_clock::time_point tp;
+                    if (!core::parse_utc_date(d, tp)) return std::nullopt;
+                    return tp;
                 };
 
                 std::unordered_map<std::string, std::unordered_map<std::string, Position>>
@@ -1801,29 +2064,29 @@ int main(int argc, char* argv[]) {
             // executions below so they reach live_results and the equity curve (E2-F11).
 
             // Class 2: re-key positions still held under a superseded ticker.
-            auto alias_result = db->get_ticker_aliases();
-            if (alias_result.is_error()) {
-                WARN("Failed to fetch ticker aliases: " +
-                     std::string(alias_result.error()->what()) +
-                     " -- skipping SERIES_CONTINUITY handling");
+            //
+            // The alias table and the era dates were read once, up with the effective
+            // universe (E2-F34), and are reused here on purpose: the universe this run
+            // loaded bars for was computed from exactly these inputs, so a rename this
+            // block performs is one the run can price.
+            //
+            // BA-2 / C-3 D1: the era input is the start of the CURRENT holding, NOT the
+            // lifetime min(date) the class-1 window uses. Feeding class 1's answer in
+            // here re-applies a rename from a previous issuer's lifetime to a position
+            // re-opened under the reused ticker, moving a live holding onto a symbol
+            // with no bars -- the precise failure the era test exists to prevent.
+            if (!ticker_aliases_ok) {
+                WARN("Ticker aliases unavailable -- skipping SERIES_CONTINUITY handling");
+            } else if (!holding_start_read_ok) {
+                // Fail narrow. A skipped rename is retried next run; a rename
+                // applied against a guessed era re-keys a live holding onto a
+                // symbol that may have no prices at all.
+                WARN("Current-holding start dates unavailable -- skipping SERIES_CONTINUITY "
+                     "handling this run rather than applying renames unbounded");
             } else {
-                std::vector<TickerAlias> aliases;
-                aliases.reserve(alias_result.value().size());
-                for (const auto& row : alias_result.value()) {
-                    aliases.push_back(TickerAlias{row.historical_ticker, row.current_symbol,
-                                                  row.effective_until, row.note});
-                }
-                if (!inception_read_ok) {
-                    // Fail narrow. A skipped rename is retried next run; a rename
-                    // applied against a guessed era re-keys a live holding onto a
-                    // symbol that may have no prices at all.
-                    WARN("Position inception dates unavailable -- skipping SERIES_CONTINUITY "
-                         "handling this run rather than applying renames unbounded");
-                } else {
-                    auto renames = CorporateActionsLifecycle::apply_renames(
-                        previous_positions, aliases, as_of_date, inception_raw);
-                    lifecycle_log.insert(lifecycle_log.end(), renames.begin(), renames.end());
-                }
+                auto renames = CorporateActionsLifecycle::apply_renames(
+                    previous_positions, ticker_aliases, as_of_date, holding_start_dates);
+                lifecycle_log.insert(lifecycle_log.end(), renames.begin(), renames.end());
             }
 
             // Class 3: build termination events from the two available
@@ -1835,7 +2098,21 @@ int main(int argc, char* argv[]) {
             std::vector<TerminationEvent> terminations;
             std::unordered_map<std::string, TerminationEvent*> by_symbol;
 
-            auto delist_result = db->get_delisting_dates(symbols);
+            // BA-8: bound the read by the same 90-day termination lookback this
+            // block already uses. delisting_date is keyed on the ticker and the
+            // reader takes max() over all history, so without a floor a reused
+            // ticker inherits a dead company's row (HPC 2008-11-24, MER
+            // 2008-12-31) and exits a live position at a stale price. The
+            // bars-contradict guard below cannot cover it alone:
+            // delisting_is_stale() is false when last_bar is EMPTY, which is
+            // precisely the symbol that stopped printing.
+            //
+            // Direction: missing an old termination leaves a dead position
+            // carried, which is loud (the "Missing T-1 price" path). Acting on a
+            // stale one closes a live position, which is silent and wrong. The
+            // 90-day bound is this block's own definition of "in window".
+            auto delist_result =
+                db->get_delisting_dates(symbols, std::string(lifecycle_start_buf));
             if (delist_result.is_error()) {
                 WARN("Failed to fetch delisting dates: " +
                      std::string(delist_result.error()->what()) +
@@ -1963,7 +2240,8 @@ int main(int argc, char* argv[]) {
                 }
 
                 auto exits = CorporateActionsLifecycle::apply_terminations(
-                    previous_positions, terminations, final_closes);
+                    previous_positions, terminations, final_closes,
+                    corp_action_feed_last_date);
                 lifecycle_log.insert(lifecycle_log.end(), exits.begin(), exits.end());
             }
 
@@ -2066,6 +2344,12 @@ int main(int argc, char* argv[]) {
                                                          portfolio_id,
                                                          "LIVE_EQUITY_MEAN_REVERSION",
                                                          "EQUITY_MEAN_REVERSION");
+                // Stamp only, not enforce: the class-1 block above already committed
+                // THIS run's dedup rows, all stamped with today's date, so enforcing
+                // here would make the run refuse its own output (E2-F23). The check
+                // belongs on the first load of the run, which is where it is.
+                lifecycle_audit.set_run_date(as_of_date,
+                                             CorporateActionsAuditLog::RunDateCheck::StampOnly);
                 auto lc_loaded = lifecycle_audit.load();
                 if (lc_loaded.is_error()) {
                     // Fail closed, matching the class-1 block: a dedup record that cannot be
@@ -2152,21 +2436,26 @@ int main(int argc, char* argv[]) {
             // Carry the book forward untouched. No bar closed today, so there is nothing
             // to signal from and nothing legitimate to trade against; re-deriving targets
             // from a stale bar would manufacture a weekend trade.
-            positions = previous_positions;
+            positions = LiveDailyCycle::carry_forward(previous_positions);
             INFO("Non-trading day: carried " + std::to_string(positions.size()) +
                  " position(s) forward without generating signals.");
         } else {
-            INFO("Seeding strategy with previous-day book and generating signals...");
+            INFO("Seeding strategy with previous-day book...");
             auto strat_prewarm = LiveDailyCycle::prepare_strategy_for_signals(
-                *mr_strategy, previous_positions, all_bars);
+                *mr_strategy, previous_positions);
             if (strat_prewarm.is_error()) {
-                std::cerr << "Failed to preprocess data in strategy: "
+                std::cerr << "Failed to seed strategy positions: "
                           << strat_prewarm.error()->what() << std::endl;
                 return 1;
             }
 
-            // Process data through portfolio pipeline (risk; optimization is off for MR)
-            INFO("Processing data through portfolio manager (risk)...");
+            // Process data through portfolio pipeline (risk; optimization is off for MR).
+            //
+            // E2-F28: this is the ONE place the strategy is fed. process_market_data
+            // calls strategy->on_data(all_bars) itself; seeding above deliberately does
+            // not, because MeanReversion appends every bar it is given and a second pass
+            // over the same vector doubled the price history and the ADV EMA.
+            INFO("Processing data through portfolio manager (feeds the strategy once; risk)...");
             auto port_process_result = portfolio->process_market_data(all_bars);
             if (port_process_result.is_error()) {
                 std::cerr << "Failed to process data in portfolio manager: "
@@ -2775,6 +3064,36 @@ int main(int argc, char* argv[]) {
 
         // Save positions to database with daily PnL values
         INFO("Saving positions to database with daily PnL...");
+
+        // E2-F35 / BA-4: the row and the aggregate must be marked from the SAME map.
+        //
+        // resolve_and_apply_basis marks positions[*] from exec_outcome.execution_prices --
+        // the T-1 closes PLUS any widened substitute -- and live_results sums those marks.
+        // The loop below recomputed each row's unrealized from previous_day_close_prices
+        // alone, which by definition has NO entry for a widened symbol: that symbol's row
+        // came out 0 while the aggregate did not. The in-run L5 assert reconciles realized
+        // only, so the split was silent, and it fires precisely on the thin/halted names
+        // the widening exists for. Rule 6 in AVERAGE_PRICE_LIFECYCLE.md says marks and
+        // fills come from one map; this is that map.
+        //
+        // On a non-trading day execute_day_t never runs and execution_prices is empty, so
+        // this is exactly previous_day_close_prices and the carry-forward path is byte for
+        // byte what it was.
+        const auto day_t_marks = LiveDailyCycle::day_t_mark_prices(
+            previous_day_close_prices, exec_outcome.execution_prices);
+        {
+            size_t substituted = 0;
+            for (const auto& [sym, price] : day_t_marks) {
+                auto t1 = previous_day_close_prices.find(sym);
+                if (t1 == previous_day_close_prices.end() || t1->second != price) ++substituted;
+            }
+            if (substituted > 0) {
+                INFO("BASIS TRACE | row marks | " + std::to_string(substituted) +
+                     " symbol(s) marked from the execution price map rather than the T-1 "
+                     "close map, matching what the aggregate was marked at (E2-F35)");
+            }
+        }
+
         std::vector<trade_ngin::Position> positions_to_save;
         positions_to_save.reserve(positions.size());
 
@@ -2825,14 +3144,15 @@ int main(int argc, char* argv[]) {
             // guard; that case persists 0, as before.
             if (position.quantity.as_double() != 0.0) {
                 double current_price = 0.0;
-                auto price_it = previous_day_close_prices.find(symbol);
-                if (price_it != previous_day_close_prices.end()) {
+                auto price_it = day_t_marks.find(symbol);
+                if (price_it != day_t_marks.end()) {
                     current_price = price_it->second;
                 }
-                // Same rule the live_results aggregate uses, so the row and the total
-                // cannot disagree. Equities are point_value 1. The mark check stays here
-                // because current_price is 0.0 when the symbol has no T-1 close, and
-                // measuring against 0 would book the whole notional as a gain.
+                // Same rule AND the same price map the live_results aggregate uses, so the
+                // row and the total cannot disagree (E2-F35). Equities are point_value 1.
+                // The mark check stays here because current_price is 0.0 when the symbol
+                // has no close at all, and measuring against 0 would book the whole
+                // notional as a gain.
                 validated_position.unrealized_pnl =
                     current_price > 0.0
                         ? Decimal(LivePnLManager::unrealized_from_cost_basis(
@@ -3330,6 +3650,18 @@ int main(int argc, char* argv[]) {
                             INFO("Trading days for yesterday (" + yesterday_date_str + "): " + std::to_string(trading_days_count));
                         }
                     }
+                    // E2-F32: the function anchored to a metadata row that post-dates
+                    // the book, so recompute from the book's own first day. Same
+                    // formula the function uses, different start date.
+                    if (!trading_days_anchor_override.empty()) {
+                        const int corrected = trading_days_from_anchor(
+                            trading_days_anchor_override, yesterday_date_str);
+                        WARN("Trading days for yesterday (" + yesterday_date_str +
+                             ") corrected from " + std::to_string(trading_days_count) +
+                             " to " + std::to_string(corrected) + " (anchor " +
+                             trading_days_anchor_override + ", E2-F32)");
+                        trading_days_count = corrected;
+                    }
                 } else {
                     WARN("Could not call get_trading_days function: " + std::string(trading_days_result.error()->what()));
                 }
@@ -3753,6 +4085,67 @@ int main(int argc, char* argv[]) {
             total_unrealized_pnl = previous_total_unrealized_pnl;
         }
 
+        // BA-4: protocol L5's UNREALIZED clause, asserted inside the run.
+        //
+        // The realized clause above has been checked since E2-F19 (R5); unrealized had
+        // nothing, which is how E2-F35 survived -- a widened symbol's row was 0 while the
+        // aggregate was not, and no assertion in the run could see it. Both sides are now
+        // computed from one basis and one mark map (`day_t_marks`), so on a trading day
+        // this is an identity and a violation means a row was dropped, double-counted or
+        // marked from somewhere else.
+        //
+        // A non-trading day is NOT an identity and is not treated as one. The aggregate
+        // there is the PREVIOUS row's stored figure, read back from a numeric column that
+        // rounds to 4 decimals, while the rows are recomputed against the T-1 close. The
+        // two agree because nothing moved (measured over the whole book on 2026-09-03:
+        // 74 days, 0 residuals above 1e-4, max 4.9e-5), but they agree by circumstance
+        // rather than by construction, so the closed-day check WARNs at a tolerance that
+        // covers the stored rounding instead of killing a run over it.
+        {
+            double row_unrealized_sum = 0.0;
+            std::string breakdown;
+            for (const auto& p : positions_to_save) {
+                const double u = static_cast<double>(p.unrealized_pnl);
+                row_unrealized_sum += u;
+                if (std::abs(u) > LiveDailyCycle::kRowTolerance) {
+                    breakdown += " " + p.symbol + "=" + std::to_string(u);
+                }
+            }
+            const double residual = row_unrealized_sum - total_unrealized_pnl;
+            if (today_is_non_trading) {
+                if (std::abs(residual) > 1e-2) {
+                    WARN("L5 unrealized identity: carried aggregate (" +
+                         std::to_string(total_unrealized_pnl) + ") differs from the sum of "
+                         "the rows written today (" + std::to_string(row_unrealized_sum) +
+                         "), residual " + std::to_string(residual) +
+                         ". On a closed day the aggregate is the previous row's stored "
+                         "figure and the rows are re-marked at the same close, so a "
+                         "difference beyond stored rounding means the book moved on a day "
+                         "the market was shut. Per-symbol rows:" +
+                         (breakdown.empty() ? std::string(" <none>") : breakdown));
+                } else {
+                    INFO("L5 unrealized identity holds on a closed day: rows " +
+                         std::to_string(row_unrealized_sum) + " ~= carried aggregate " +
+                         std::to_string(total_unrealized_pnl) + " (residual " +
+                         std::to_string(residual) + ")");
+                }
+            } else if (std::abs(residual) > 1e-4) {
+                ERROR("L5 unrealized identity VIOLATED: sum of "
+                      "positions.daily_unrealized_pnl (" + std::to_string(row_unrealized_sum) +
+                      ") != live_results.total_unrealized_pnl (" +
+                      std::to_string(total_unrealized_pnl) + "), residual " +
+                      std::to_string(residual) + ". Per-symbol rows:" +
+                      (breakdown.empty() ? std::string(" <none>") : breakdown) +
+                      ". Refusing to persist a day whose rows do not sum to its aggregate.");
+                return 1;
+            } else {
+                INFO("L5 unrealized identity holds: rows " +
+                     std::to_string(row_unrealized_sum) + " == aggregate " +
+                     std::to_string(total_unrealized_pnl) + " (residual " +
+                     std::to_string(residual) + ")");
+            }
+        }
+
         // E2-F1: cumulative TRADE-realized, gross. Read from the previous row and extended by
         // today's realized rather than derived from a total_pnl accumulator.
         //
@@ -3842,6 +4235,16 @@ int main(int argc, char* argv[]) {
                         trading_days_count = std::max<int>(1, std::stoi(arr->GetString(0)));
                         INFO("Trading days for today (" + now_date_str + "): " + std::to_string(trading_days_count));
                     }
+                }
+                // E2-F32, as above: correct the ANCHOR, not the formula.
+                if (!trading_days_anchor_override.empty()) {
+                    const int corrected =
+                        trading_days_from_anchor(trading_days_anchor_override, now_date_str);
+                    WARN("Trading days for today (" + now_date_str + ") corrected from " +
+                         std::to_string(trading_days_count) + " to " +
+                         std::to_string(corrected) + " (anchor " +
+                         trading_days_anchor_override + ", E2-F32)");
+                    trading_days_count = corrected;
                 }
             } else {
                 WARN("Could not call get_trading_days function: " + std::string(trading_days_result.error()->what()));

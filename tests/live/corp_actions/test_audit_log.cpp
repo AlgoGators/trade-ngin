@@ -819,3 +819,259 @@ TEST(CorpActionsUltrareviewFixes, AtomicSaveOverwritesStaleTempFile) {
 }
 
 }  // namespace audit_ex_date_cash
+
+// ──────────────────────────────────────────────────────────────────────────
+// E2-F39 / BA-15 -- the legacy state-file import must key dividend detail on
+// the ACTION TYPE too, not just (symbol, ex_date).
+//
+// The file records applied events as (symbol, ex_date, action_type) but carries
+// dividend detail as (symbol, ex_date) only -- DividendEvent has no type field,
+// because everything in that list IS a dividend. The import matched on the pair
+// alone, so a SPLIT sharing an ex-date with a DIVIDEND inherited the dividend's
+// qty_held / dividend_per_share / total_cash. The same cash then shows up twice
+// in cumulative dividend income: on the dividend row that paid it and on the
+// split row that paid nothing.
+//
+// Same-day split-and-dividend is not exotic: a company declaring a split
+// commonly sets its ex-date to a dividend ex-date so the two settle together.
+// ──────────────────────────────────────────────────────────────────────────
+
+using trade_ngin::CorpActionType;
+using trade_ngin::CorporateActionsAuditLog;
+using DividendEvent = CorporateActionsAuditLog::DividendEvent;
+
+TEST(LegacyImportDividendDetail, ASplitSharingAnExDateDoesNotInheritTheDividendCash) {
+    const std::vector<DividendEvent> events{
+        {"AAPL", "2026-08-10", /*qty*/ 250.0, /*dps*/ 0.24, /*cash*/ 60.0}};
+
+    // The dividend gets its detail.
+    const auto* div = CorporateActionsAuditLog::dividend_detail_for(
+        "AAPL", "2026-08-10", CorpActionType::DIVIDEND, events);
+    ASSERT_NE(div, nullptr) << "a dividend must still receive its own detail";
+    EXPECT_DOUBLE_EQ(div->total_cash, 60.0);
+    EXPECT_DOUBLE_EQ(div->qty_held, 250.0);
+    EXPECT_DOUBLE_EQ(div->dividend_per_share, 0.24);
+
+    // The split on the SAME symbol and SAME ex-date gets nothing.
+    EXPECT_EQ(CorporateActionsAuditLog::dividend_detail_for(
+                  "AAPL", "2026-08-10", CorpActionType::SPLIT, events),
+              nullptr)
+        << "a split pays no dividend; inheriting 60.0 here double-counts the cash";
+
+    // Neither do the other non-paying classes.
+    EXPECT_EQ(CorporateActionsAuditLog::dividend_detail_for(
+                  "AAPL", "2026-08-10", CorpActionType::ADR_SPLIT, events),
+              nullptr);
+    EXPECT_EQ(CorporateActionsAuditLog::dividend_detail_for(
+                  "AAPL", "2026-08-10", CorpActionType::TERMINATION, events),
+              nullptr);
+    EXPECT_EQ(CorporateActionsAuditLog::dividend_detail_for(
+                  "AAPL", "2026-08-10", CorpActionType::UNKNOWN, events),
+              nullptr);
+}
+
+TEST(LegacyImportDividendDetail, DetailStillMatchesOnSymbolAndExDate) {
+    const std::vector<DividendEvent> events{
+        {"AAPL", "2026-08-10", 250.0, 0.24, 60.0},
+        {"MSFT", "2026-08-10", 80.0, 0.75, 60.0},   // same cash, different symbol
+        {"AAPL", "2026-05-11", 250.0, 0.24, 60.0},  // same symbol, different date
+    };
+
+    const auto* a = CorporateActionsAuditLog::dividend_detail_for(
+        "AAPL", "2026-08-10", CorpActionType::DIVIDEND, events);
+    ASSERT_NE(a, nullptr);
+    EXPECT_EQ(a->symbol, "AAPL");
+    EXPECT_EQ(a->ex_date, "2026-08-10");
+    EXPECT_DOUBLE_EQ(a->qty_held, 250.0);
+
+    const auto* m = CorporateActionsAuditLog::dividend_detail_for(
+        "MSFT", "2026-08-10", CorpActionType::DIVIDEND, events);
+    ASSERT_NE(m, nullptr);
+    EXPECT_DOUBLE_EQ(m->dividend_per_share, 0.75) << "the right row, not the first one";
+
+    // A dividend with no detail in the file is not an error -- it simply carries none.
+    EXPECT_EQ(CorporateActionsAuditLog::dividend_detail_for(
+                  "TMUS", "2026-08-10", CorpActionType::DIVIDEND, events),
+              nullptr);
+    EXPECT_EQ(CorporateActionsAuditLog::dividend_detail_for(
+                  "AAPL", "2026-08-11", CorpActionType::DIVIDEND, events),
+              nullptr);
+}
+
+TEST(LegacyImportDividendDetail, AnEmptyDetailListYieldsNothingForAnyType) {
+    const std::vector<DividendEvent> none;
+    for (auto t : {CorpActionType::DIVIDEND, CorpActionType::SPLIT,
+                   CorpActionType::ADR_SPLIT, CorpActionType::TERMINATION}) {
+        EXPECT_EQ(CorporateActionsAuditLog::dividend_detail_for("AAPL", "2026-08-10", t, none),
+                  nullptr);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// E2-F23 (audit option C-prime) -- dedup rows from a LATER pass must stop the run.
+//
+// A live run is correct exactly when the dedup rows and the T-1 position row come
+// from the SAME pass. Reset the book but not trading.corp_action_applied and it is
+// not: the event is skipped as "already applied" against a T-1 row that predates
+// it, T-1 is finalized in the wrong frame, and the position is marked against a
+// basis that never moved. Measured: BKNG 25:1, ex-date 2026-04-06, re-run of
+// 2026-04-07 over an un-reset dedup table, -4,824 of phantom unrealized P&L.
+//
+// Nothing downstream can catch it. The G3 basis/mark bound only inspects events
+// that were APPLIED, and a deduped event never enters that list. The existing
+// ex_date >= today detector cannot see it either: 2026-04-06 is safely in the
+// past. `applied_at` cannot, because an earlier chain always carries an earlier
+// wall clock. The RUN DATE of the writing pass is the only value that separates
+// an earlier pass from a later one.
+// ---------------------------------------------------------------------------
+
+namespace audit_run_date {
+
+using namespace trade_ngin;
+using audit_dedup::FakeDedupDatabase;
+using audit_dedup::make_temp_state_dir;
+
+namespace {
+
+PositionAdjustment split_adjustment(const std::string& symbol, const std::string& ex_date,
+                                    double factor) {
+    PositionAdjustment adj;
+    adj.symbol = symbol;
+    adj.event_date = ex_date;
+    adj.type = CorpActionType::SPLIT;
+    adj.event_value = factor;
+    return adj;
+}
+
+}  // namespace
+
+TEST(CorpActionRunDateGuard, ARowFromALaterPassRefusesTheRun) {
+    const auto state_dir = make_temp_state_dir("rundate_later");
+    auto db = std::make_shared<FakeDedupDatabase>();
+
+    // Pass 1 runs 2026-04-07 and applies the split, stamping its own run date.
+    {
+        CorporateActionsAuditLog first(state_dir.string(), db, "EQUITY_MR_PORTFOLIO",
+                                       "LIVE_EQUITY_MEAN_REVERSION", "EQUITY_MEAN_REVERSION");
+        first.set_run_date("2026-04-07");
+        ASSERT_FALSE(first.load().is_error());
+        first.record(split_adjustment("BKNG", "2026-04-06", 25.0));
+        ASSERT_TRUE(first.save());
+    }
+
+    // The book is re-seeded and 2026-04-07 is replayed, but the dedup table was
+    // not reset. This is the measured F23 case, and it must not start.
+    CorporateActionsAuditLog rerun(state_dir.string(), db, "EQUITY_MR_PORTFOLIO",
+                                   "LIVE_EQUITY_MEAN_REVERSION", "EQUITY_MEAN_REVERSION");
+    rerun.set_run_date("2026-04-07");
+    auto loaded = rerun.load();
+    ASSERT_TRUE(loaded.is_error())
+        << "a dedup row written by the run of 2026-04-07 must stop a second run of "
+           "2026-04-07: the T-1 book it would be trusted against is a different pass's";
+    const std::string what = loaded.error()->what();
+    EXPECT_NE(what.find("BKNG"), std::string::npos) << "the message must name the stale rows";
+    EXPECT_NE(what.find("2026-04-06"), std::string::npos) << "and their ex-dates";
+    EXPECT_NE(what.find("2026-04-07"), std::string::npos) << "and the run date that wrote them";
+
+    // The ex-date detector could never have caught this one.
+    EXPECT_LT(std::string("2026-04-06"), std::string("2026-04-07"))
+        << "the ex-date is in the past, which is why run_date is the load-bearing column";
+
+    // And a run of a LATER date, whose T-1 book really is this pass's output, is
+    // unaffected -- the guard must not block ordinary forward progress.
+    CorporateActionsAuditLog next_day(state_dir.string(), db, "EQUITY_MR_PORTFOLIO",
+                                      "LIVE_EQUITY_MEAN_REVERSION", "EQUITY_MEAN_REVERSION");
+    next_day.set_run_date("2026-04-08");
+    auto ok = next_day.load();
+    ASSERT_FALSE(ok.is_error()) << "forward-only running must stay unblocked";
+    EXPECT_TRUE(ok.value());
+    EXPECT_TRUE(next_day.is_applied("BKNG", "2026-04-06", CorpActionType::SPLIT));
+
+    std::filesystem::remove_all(state_dir);
+}
+
+TEST(CorpActionRunDateGuard, LegacyRowsWithNoRunDatePass) {
+    const auto state_dir = make_temp_state_dir("rundate_legacy");
+    auto db = std::make_shared<FakeDedupDatabase>();
+
+    // A row written before migration 005: no run date, so nothing is known about
+    // which pass wrote it. Refusing it would make the first run after the
+    // migration unstartable, on a table that is append-only and years old.
+    {
+        CorporateActionsAuditLog legacy(state_dir.string(), db, "EQUITY_MR_PORTFOLIO",
+                                        "LIVE_EQUITY_MEAN_REVERSION", "EQUITY_MEAN_REVERSION");
+        // No set_run_date: this is exactly the pre-005 write path.
+        ASSERT_FALSE(legacy.load().is_error());
+        legacy.record(split_adjustment("BKNG", "2026-04-06", 25.0));
+        ASSERT_TRUE(legacy.save());
+    }
+
+    CorporateActionsAuditLog after(state_dir.string(), db, "EQUITY_MR_PORTFOLIO",
+                                   "LIVE_EQUITY_MEAN_REVERSION", "EQUITY_MEAN_REVERSION");
+    after.set_run_date("2026-04-07");
+    auto loaded = after.load();
+    ASSERT_FALSE(loaded.is_error())
+        << "a NULL run_date means UNKNOWN, and unknown must not block the run";
+    EXPECT_TRUE(loaded.value());
+    EXPECT_TRUE(after.is_applied("BKNG", "2026-04-06", CorpActionType::SPLIT))
+        << "and the legacy row still dedups, or the migration would re-apply history";
+
+    std::filesystem::remove_all(state_dir);
+}
+
+TEST(CorpActionRunDateGuard, StampOnlyLetsASecondLogInTheSameRunProceed) {
+    // The class-3 lifecycle log opens AFTER the class-1 block has committed this
+    // run's rows. Enforcing there would make the run refuse its own output.
+    const auto state_dir = make_temp_state_dir("rundate_stamponly");
+    auto db = std::make_shared<FakeDedupDatabase>();
+
+    CorporateActionsAuditLog class1(state_dir.string(), db, "EQUITY_MR_PORTFOLIO",
+                                    "LIVE_EQUITY_MEAN_REVERSION", "EQUITY_MEAN_REVERSION");
+    class1.set_run_date("2026-04-07");
+    ASSERT_FALSE(class1.load().is_error());
+    class1.record(split_adjustment("BKNG", "2026-04-06", 25.0));
+    ASSERT_TRUE(class1.save());
+
+    CorporateActionsAuditLog class3(state_dir.string(), db, "EQUITY_MR_PORTFOLIO",
+                                    "LIVE_EQUITY_MEAN_REVERSION", "EQUITY_MEAN_REVERSION");
+    class3.set_run_date("2026-04-07",
+                        CorporateActionsAuditLog::RunDateCheck::StampOnly);
+    auto loaded = class3.load();
+    ASSERT_FALSE(loaded.is_error())
+        << "the same run's own rows must not be mistaken for a later pass's";
+
+    // Enforce on the same state is the failing case -- which is what proves the
+    // mode is doing something rather than being decoration.
+    CorporateActionsAuditLog enforcing(state_dir.string(), db, "EQUITY_MR_PORTFOLIO",
+                                       "LIVE_EQUITY_MEAN_REVERSION", "EQUITY_MEAN_REVERSION");
+    enforcing.set_run_date("2026-04-07");
+    EXPECT_TRUE(enforcing.load().is_error());
+
+    std::filesystem::remove_all(state_dir);
+}
+
+TEST(CorpActionRunDateGuard, AnUnstampedRunNeitherStampsNorChecks) {
+    // Pre-005 behaviour is preserved exactly for any caller that sets no run date:
+    // rows are written with no stamp and no load is ever refused. This is what the
+    // file-backed tests and every other caller rely on.
+    const auto state_dir = make_temp_state_dir("rundate_none");
+    auto db = std::make_shared<FakeDedupDatabase>();
+
+    CorporateActionsAuditLog stamped(state_dir.string(), db, "EQUITY_MR_PORTFOLIO",
+                                     "LIVE_EQUITY_MEAN_REVERSION", "EQUITY_MEAN_REVERSION");
+    stamped.set_run_date("2026-04-07");
+    ASSERT_FALSE(stamped.load().is_error());
+    stamped.record(split_adjustment("BKNG", "2026-04-06", 25.0));
+    ASSERT_TRUE(stamped.save());
+
+    CorporateActionsAuditLog unstamped(state_dir.string(), db, "EQUITY_MR_PORTFOLIO",
+                                       "LIVE_EQUITY_MEAN_REVERSION", "EQUITY_MEAN_REVERSION");
+    auto loaded = unstamped.load();
+    EXPECT_FALSE(loaded.is_error())
+        << "a caller that sets no run date must behave exactly as it did before 005";
+    EXPECT_TRUE(unstamped.is_applied("BKNG", "2026-04-06", CorpActionType::SPLIT));
+
+    std::filesystem::remove_all(state_dir);
+}
+
+}  // namespace audit_run_date
