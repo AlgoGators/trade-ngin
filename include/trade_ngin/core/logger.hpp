@@ -93,12 +93,18 @@ struct LoggerConfig : public ConfigBase {
     bool include_level{true};                   // Include log level in logs
     size_t max_file_size{50 * 1024 * 1024};     // Max log file size (50MB)
     /**
-     * Maximum number of log files to keep -- counting only files this logger owns, i.e.
-     * whose name begins with `filename_prefix` and which sit in this session's own
+     * Maximum number of log files to keep -- counting only files this logger WROTE, i.e.
+     * those named exactly `<filename_prefix>_YYYYMMDD_HHMMSS_partN.log` in this session's own
      * directory (drift-F). Rotation used to delete the oldest file of ANY name in
-     * `log_directory`, so with four runners sharing `logs/` a futures session evicted the
+     * `log_directory`, so with nine prefixes sharing `logs/` a futures session evicted the
      * equity session's evidence and vice versa; the budget was global where the retention
      * question is per runner.
+     *
+     * The match is the whole filename, not `starts_with(filename_prefix)`: the prefixes NEST.
+     * `live_trend` is a prefix of `live_trend_conservative` and `bt_portfolio` of
+     * `bt_portfolio_conservative`, so a "begins with" test left the two futures books sharing
+     * one budget and the base runner deleting the conservative runner's logs. It also means
+     * retention never removes a file this logger did not write.
      */
     size_t max_files{10};
 

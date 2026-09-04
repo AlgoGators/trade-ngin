@@ -15,6 +15,10 @@
 //
 // Both changes are default-preserving: an empty `log_subdirectory` reproduces the old path,
 // and a directory containing one prefix behaves exactly as it did.
+//
+// B-5d adds the third mechanism, which B-5b's fix left open: the prefixes NEST, so scoping
+// retention to "begins with the prefix" still had `live_trend` counting and deleting
+// `live_trend_conservative`'s files. Ownership is now the whole filename shape.
 
 #include <gtest/gtest.h>
 
@@ -100,6 +104,90 @@ TEST(LoggerRetention, RotationNeverDeletesAnotherRunnersLogs) {
     EXPECT_TRUE(contains(after, "bt_equity_mr_20260101_000002_part1.log"));
     EXPECT_TRUE(contains(after, "some_operators_notes.txt"))
         << "retention deleted a file this logger does not own";
+}
+
+// The prefixes NEST, and "begins with" is not ownership.
+//
+// `live_trend` is a prefix of `live_trend_conservative`; `bt_portfolio` of
+// `bt_portfolio_conservative`. B-5b scoped retention to files whose name STARTS WITH the
+// logger's prefix, which fixed the equity-versus-futures eviction and left the two futures
+// books sharing one budget: every `live_portfolio` run counted -- and deleted -- the
+// conservative runner's logs. The conservative runner is the production futures book, so the
+// half of the pair whose evidence was still being destroyed was the one that matters most.
+TEST(LoggerRetention, ABaseRunnerDoesNotEvictItsConservativeNamesake) {
+    TempLogDir dir;
+    // Four conservative logs, well over the base runner's budget of 3, and one of the base
+    // runner's own so the directory is not trivially foreign.
+    const std::vector<std::string> conservative = {
+        "live_trend_conservative_20260101_000000_part1.log",
+        "live_trend_conservative_20260101_000001_part1.log",
+        "live_trend_conservative_20260101_000002_part1.log",
+        "live_trend_conservative_20260101_000003_part1.log"};
+    for (const auto& n : conservative) touch(dir.path() / n);
+    touch(dir.path() / "live_trend_20260101_000004_part1.log");
+
+    Logger::instance().initialize(file_config(dir.path(), "live_trend"));
+    INFO("the base futures runner starts a session");
+
+    const auto after = names_in(dir.path());
+    for (const auto& n : conservative) {
+        EXPECT_TRUE(contains(after, n))
+            << "live_trend retention deleted " << n
+            << " -- `live_trend` is a PREFIX of `live_trend_conservative`, so a "
+               "starts-with test hands the two futures books one shared budget and lets the "
+               "base runner destroy the production book's evidence";
+    }
+}
+
+// The same pair the other way round, and the backtest pair too. A conservative session must
+// not evict the base runner either -- the nesting only runs one way, but the ownership test
+// has to be exact in both directions or the fix is half a fix.
+TEST(LoggerRetention, NeitherHalfOfANestedPrefixPairTouchesTheOther) {
+    TempLogDir dir;
+    const std::vector<std::string> base = {"bt_portfolio_20260101_000000_part1.log",
+                                           "bt_portfolio_20260101_000001_part1.log",
+                                           "bt_portfolio_20260101_000002_part1.log",
+                                           "bt_portfolio_20260101_000003_part1.log"};
+    for (const auto& n : base) touch(dir.path() / n);
+
+    Logger::instance().initialize(file_config(dir.path(), "bt_portfolio_conservative"));
+    INFO("the conservative backtest starts a session");
+
+    const auto after = names_in(dir.path());
+    for (const auto& n : base) {
+        EXPECT_TRUE(contains(after, n)) << "bt_portfolio_conservative deleted " << n;
+    }
+    // And its own file was created despite four foreign ones already sitting there.
+    bool wrote_its_own = false;
+    for (const auto& n : after) {
+        if (n.rfind("bt_portfolio_conservative_", 0) == 0) wrote_its_own = true;
+    }
+    EXPECT_TRUE(wrote_its_own);
+}
+
+// Ownership is the whole filename, not a separator. Retention only ever removes files this
+// logger actually wrote, so operator notes and anything under an older naming scheme survive.
+TEST(LoggerRetention, OnlyFilesMatchingThisLoggersOwnFilenameShapeAreCounted) {
+    TempLogDir dir;
+    const std::vector<std::string> not_ours = {
+        "live_trend_notes.txt",                          // an operator's file
+        "live_trend_20260101.log",                       // no time, no part
+        "live_trend_20260101_000000.log",                // no part
+        "live_trend_2026011_000000_part1.log",           // seven-digit date
+        "live_trend_20260101_000000_part.log",           // no part number
+        "live_trend_20260101_000000_part1.log.bak",      // trailing junk
+        "live_trend_conservative_20260101_000000_part1.log"};
+    for (const auto& n : not_ours) touch(dir.path() / n);
+
+    Logger::instance().initialize(file_config(dir.path(), "live_trend"));
+    INFO("a session that must delete none of them");
+
+    const auto after = names_in(dir.path());
+    for (const auto& n : not_ours) {
+        EXPECT_TRUE(contains(after, n)) << "retention deleted a file it did not write: " << n;
+    }
+    // Seven foreign files plus this session's one.
+    EXPECT_EQ(after.size(), not_ours.size() + 1);
 }
 
 TEST(LoggerRetention, ItsOwnFilesAreStillCappedAtMaxFiles) {
