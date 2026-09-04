@@ -3869,9 +3869,17 @@ int main(int argc, char* argv[]) {
             auto prev_it = previous_positions.find(symbol);
             double carried =
                 prev_it != previous_positions.end() ? prev_it->second.quantity.as_double() : 0.0;
+            auto mark_it = exec_outcome.carried_marks.find(symbol);
+            const std::string carried_mark =
+                mark_it != exec_outcome.carried_marks.end()
+                    ? " (unpriced, no execution); mark carried at " +
+                          std::to_string(mark_it->second) +
+                          " so the row and the aggregate agree on one level (B-iv)"
+                    : " (unpriced, no execution); NO mark could be carried -- the row "
+                      "implies none, so it is written unmarked";
             ERROR("BASIS TRACE | rolled back | " + symbol +
                   " day-T target discarded, book restored to carried quantity " +
-                  std::to_string(carried) + " (unpriced, no execution)");
+                  std::to_string(carried) + carried_mark);
         }
 
         // Feed executions back to strategy for cost basis tracking.
@@ -4141,8 +4149,13 @@ int main(int argc, char* argv[]) {
         // On a non-trading day execute_day_t never runs and execution_prices is empty, so
         // this is exactly previous_day_close_prices and the carry-forward path is byte for
         // byte what it was.
+        // B-iv: `carried_marks` carries the level a rolled-back holding was last valued
+        // at. Without it that symbol's row is marked 0 while the aggregate carries the
+        // T-1 level the rollback copied, and the fatal in-run unrealized identity aborts
+        // a day in which nothing was wrong.
         const auto day_t_marks = LiveDailyCycle::day_t_mark_prices(
-            previous_day_close_prices, exec_outcome.execution_prices);
+            previous_day_close_prices, exec_outcome.execution_prices,
+            exec_outcome.carried_marks);
         {
             size_t substituted = 0;
             for (const auto& [sym, price] : day_t_marks) {

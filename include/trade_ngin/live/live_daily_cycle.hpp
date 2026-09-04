@@ -319,6 +319,15 @@ public:
          * the executions is how a log-versus-DB disagreement starts.
          */
         std::unordered_map<std::string, double> execution_prices;
+        /**
+         * B-iv: the level a rolled-back holding is carried at. A symbol with no close
+         * within the staleness bound has no entry in `execution_prices` OR `t1_closes`,
+         * so its day-T row would be marked 0 while the aggregate carries the T-1 level
+         * the rollback copied -- and the fatal in-run unrealized identity then aborts a
+         * day in which nothing was actually wrong. Overlaid onto the mark map by
+         * day_t_mark_prices so row and aggregate are computed from one level.
+         */
+        std::unordered_map<std::string, double> carried_marks;
     };
 
     /**
@@ -391,6 +400,12 @@ public:
                 prev_it->second.quantity.as_double() != 0.0) {
                 positions[symbol] = prev_it->second;
                 positions[symbol].last_update = now;
+                // B-iv: the copy above brings the T-1 row's stored unrealized -- a LEVEL --
+                // into the day-T aggregate. Carry the level's MARK too, so the row is
+                // written against the same number instead of 0. Same policy as R-2 on the
+                // finalizer side: an unprinted symbol keeps its last mark.
+                const double mark = carried_mark_from_row(prev_it->second);
+                if (mark > 0.0) outcome.carried_marks[symbol] = mark;
             } else {
                 positions.erase(symbol);
             }
@@ -483,12 +498,36 @@ public:
      */
     static std::unordered_map<std::string, double> day_t_mark_prices(
         const std::unordered_map<std::string, double>& t1_closes,
-        const std::unordered_map<std::string, double>& execution_prices) {
+        const std::unordered_map<std::string, double>& execution_prices,
+        const std::unordered_map<std::string, double>& carried_marks = {}) {
         std::unordered_map<std::string, double> marks = t1_closes;
+        // B-iv: a rolled-back holding first, so a real execution price still wins below.
+        // It did not trade, so it has no execution price; this is the only level it has.
+        for (const auto& [symbol, price] : carried_marks) {
+            if (price > 0.0) marks[symbol] = price;
+        }
         for (const auto& [symbol, price] : execution_prices) {
             if (price > 0.0) marks[symbol] = price;
         }
         return marks;
+    }
+
+    /**
+     * @brief The mark a carried row was last valued at, recovered from the row itself.
+     *
+     * B-iv. `unrealized = qty * (mark - basis)`, so `mark = basis + unrealized / qty`.
+     * Recovered from the row because a rolled-back symbol has no price series to read --
+     * that absence is why it was rolled back. Returns 0 ("no mark") when the row cannot
+     * imply one: a flat row, or one with no basis. Absent is a better answer than zero,
+     * because a zero mark books the whole notional as a gain.
+     */
+    static double carried_mark_from_row(const Position& row) {
+        const double qty = row.quantity.as_double();
+        const double basis = row.average_price.as_double();
+        if (std::abs(qty) < 1e-9 || !(basis > 0.0)) return 0.0;
+        const double mark = basis + row.unrealized_pnl.as_double() / qty;
+        if (!std::isfinite(mark) || !(mark > 0.0)) return 0.0;
+        return mark;
     }
 
     // -----------------------------------------------------------------------
