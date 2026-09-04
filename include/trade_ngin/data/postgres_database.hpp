@@ -476,10 +476,18 @@ public:
      * @param table_name Name of the positions table
      * @return Result indicating success or failure
      */
+    /**
+     * @param keep_closed_rows E2-F54. Default false preserves the historical filter:
+     *        every zero-quantity row is dropped. Cash books (MIXED / UNREALIZED_ONLY)
+     *        pass true so a position closed to zero keeps the row carrying that bar's
+     *        realized flow -- the live is_dead_row rule. Futures backtests leave it false
+     *        and store exactly the rows they always did.
+     */
     virtual Result<void> store_backtest_positions(
         const std::vector<Position>& positions, const std::string& run_id,
         const std::string& portfolio_id = "BASE_PORTFOLIO",
-        const std::string& table_name = "backtest.final_positions");
+        const std::string& table_name = "backtest.final_positions",
+        bool keep_closed_rows = false);
 
     // Multi-strategy version: store positions with strategy_id
     virtual Result<void> store_backtest_positions_with_strategy(

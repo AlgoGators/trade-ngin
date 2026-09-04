@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cmath>
+
 #include "trade_ngin/live/pnl_manager_base.hpp"
 #include "trade_ngin/core/types.hpp"
 #include "trade_ngin/strategy/types.hpp"  // PnLAccountingMethod (E2-F2)
@@ -159,6 +161,62 @@ public:
         if (method == PnLAccountingMethod::REALIZED_ONLY) return 0.0;
         if (quantity == 0.0 || average_price <= 0.0) return 0.0;
         return quantity * (mark_price - average_price) * point_value;
+    }
+
+    /**
+     * @brief The stored row's per-bar realized FLOW, and whether the row survives.
+     *
+     * E2-F54. `backtest.final_positions.realized_pnl` is a FLOW -- what this position
+     * realized on THIS bar's date -- exactly as `trading.positions.daily_realized_pnl` is
+     * live (E2-F19, docs/AVERAGE_PRICE_LIFECYCLE.md). The strategy's own record is a
+     * running total over the whole backtest, so the row is the increment since the
+     * previous bar.
+     *
+     * Two ordering constraints are why this is a named function rather than three lines
+     * inside the bar loop:
+     *
+     *   1. `cumulative` MUST be read from the strategy's fill-maintained holdings
+     *      (BaseStrategy::get_positions(), written by on_execution), NOT from the target
+     *      snapshot the loop iterates. The target copy is taken before on_execution runs,
+     *      so a sale on bar D would otherwise land on D+1.
+     *
+     *   2. This MUST be called before any flat-row skip. A full close is the bar with the
+     *      largest realized and a quantity of zero; skipping it first strands the exit's
+     *      P&L until the symbol is re-entered, or loses it entirely.
+     *
+     * @param quantity            Signed position quantity AFTER this bar's fills.
+     * @param cumulative_from_fills The strategy's running realized total for this symbol.
+     * @param last_cumulative     In/out: the value at the previous bar. Advanced here.
+     *                            Cleared by BacktestCoordinator::reset_portfolio_state();
+     *                            an uncleared ledger opens the next portfolio's first bar
+     *                            with the previous book's total and reports a difference.
+     * @param tol                 Dead-row tolerance, matching LiveDailyCycle::is_dead_row.
+     */
+    struct RealizedRow {
+        double flow = 0.0;   ///< what realized_pnl on this row must carry
+        bool keep = false;   ///< false => dead row, do not write or persist it
+    };
+
+    static RealizedRow realized_row_for_bar(double quantity,
+                                            double cumulative_from_fills,
+                                            double& last_cumulative,
+                                            double tol = 1e-8) {
+        RealizedRow row;
+        row.flow = cumulative_from_fills - last_cumulative;
+        last_cumulative = cumulative_from_fills;
+        row.keep = !is_dead_row(quantity, row.flow, tol);
+        return row;
+    }
+
+    /**
+     * @brief The live dead-row rule, restated for the backtest.
+     *
+     * LiveDailyCycle::is_dead_row: a row dies only when it has NEITHER quantity NOR
+     * realized. A position closed to zero that realized something keeps its row for that
+     * date, so the exit's P&L has somewhere to live and the flows sum to the cumulative.
+     */
+    static bool is_dead_row(double quantity, double realized, double tol = 1e-8) {
+        return std::abs(quantity) <= tol && std::abs(realized) <= tol;
     }
 
     /**

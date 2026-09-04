@@ -736,12 +736,62 @@ Result<void> BacktestCoordinator::process_portfolio_day(
         }
 
         for (const auto& [strategy_id, positions_map] : strategy_positions) {
+            // E2-F54: the accounting method decides whether this strategy's rows carry a
+            // realized FLOW at all. Everything added below is gated on it, so futures
+            // (REALIZED_ONLY) take exactly the path they took before.
+            auto strategy_method_it = pnl_method_by_strategy.find(strategy_id);
+            const PnLAccountingMethod strategy_method =
+                (strategy_method_it != pnl_method_by_strategy.end())
+                    ? strategy_method_it->second
+                    : PnLAccountingMethod::REALIZED_ONLY;
+
             for (const auto& [symbol, pos] : positions_map) {
                 double qty = static_cast<double>(pos.quantity);
 
-                // Skip zero quantity positions
-                if (std::abs(qty) < 1e-8)
+                // E2-F54 (a)+(b): compute the bar's realized FLOW and advance the ledger
+                // BEFORE the flat-row skip, from the FILL-maintained record rather than
+                // the target snapshot this loop iterates. `pos` was copied before
+                // on_execution ran (~40 lines above), so `pos.realized_pnl` is realized
+                // through YESTERDAY's fills -- reading it here puts a sale on the next
+                // bar. And a full close IS a flat row, so skipping first strands the
+                // exit's realized. Read BacktestPnLManager::realized_row_for_bar.
+                BacktestPnLManager::RealizedRow realized_row;
+                if (strategy_method != PnLAccountingMethod::REALIZED_ONLY) {
+                    double cumulative = static_cast<double>(pos.realized_pnl);
+                    auto flow_it = fill_positions_by_strategy.find(strategy_id);
+                    if (flow_it != fill_positions_by_strategy.end() && flow_it->second) {
+                        auto held = flow_it->second->find(symbol);
+                        if (held != flow_it->second->end()) {
+                            cumulative = static_cast<double>(held->second.realized_pnl);
+                        }
+                    }
+                    realized_row = BacktestPnLManager::realized_row_for_bar(
+                        qty, cumulative, last_cumulative_realized_[strategy_id + "|" + symbol]);
+                }
+
+                // Skip zero quantity positions -- unless this is the close-day row and it
+                // realized something (E2-F54 (c): the live is_dead_row rule). Futures are
+                // unaffected: under REALIZED_ONLY this is the original unconditional skip.
+                if (std::abs(qty) < 1e-8) {
+                    if (strategy_method == PnLAccountingMethod::REALIZED_ONLY ||
+                        !realized_row.keep) {
+                        continue;
+                    }
+                    // The exit's P&L needs somewhere to live. AVERAGE_PRICE_LIFECYCLE
+                    // rule 5: a closed row carries no basis and no mark.
+                    Position closed_row = pos;
+                    closed_row.quantity = Decimal(0.0);
+                    closed_row.average_price = Decimal(0.0);
+                    closed_row.unrealized_pnl = Decimal(0.0);
+                    closed_row.realized_pnl = Decimal(realized_row.flow);
+                    auto closed_update =
+                        portfolio->update_strategy_position(strategy_id, symbol, closed_row);
+                    if (closed_update.is_error()) {
+                        WARN("Failed to write close-day row for " + symbol + ": " +
+                             std::string(closed_update.error()->what()));
+                    }
                     continue;
+                }
 
                 // Get current close price
                 auto curr_it = current_close_prices.find(symbol);
@@ -779,16 +829,11 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                     if (method == PnLAccountingMethod::REALIZED_ONLY) {
                         updated_pos.realized_pnl = Decimal(pnl_result.daily_pnl);
                     } else {
-                        // E2-F19: trading.positions.daily_realized_pnl is a per-bar FLOW.
-                        // The strategy's own record is a running total over the whole
-                        // backtest; persist the increment since the previous bar so the
-                        // stored rows mean the same thing live rows do (and sum correctly
-                        // over dates). The strategy's in-memory total is untouched.
-                        const std::string key = strategy_id + "|" + symbol;
-                        const double cumulative = static_cast<double>(pos.realized_pnl);
-                        double& last = last_cumulative_realized_[key];
-                        updated_pos.realized_pnl = Decimal(cumulative - last);
-                        last = cumulative;
+                        // E2-F19 / E2-F54: this row's realized_pnl is a per-bar FLOW, and
+                        // it was already computed above -- before the flat-row skip and
+                        // from the fill-maintained record. Do not recompute it here from
+                        // `pos`, which is the pre-fill target snapshot.
+                        updated_pos.realized_pnl = Decimal(realized_row.flow);
                     }
                     // E2-F8: prefer the strategy's fill-maintained basis over the target
                     // position's average_price, which for mean reversion is the day's close
@@ -1091,6 +1136,9 @@ void BacktestCoordinator::reset_portfolio_state() {
     portfolio_previous_bars_.clear();
     current_run_id_.clear();
     portfolio_previous_positions_.clear();
+    // E2-F54 (c): without this, a second portfolio backtest in the same process opens with
+    // the previous book's cumulative realized and reports its first bar as a difference.
+    last_cumulative_realized_.clear();
     csv_exporter_.reset();
 }
 
@@ -1123,10 +1171,25 @@ Result<void> BacktestCoordinator::save_daily_positions(std::shared_ptr<Portfolio
             positions_vec.push_back(pos_with_date);
         }
 
+        // E2-F54: a cash book keeps the close-day row so the exit's realized flow has a
+        // date to live on. Futures (REALIZED_ONLY) keep the historical filter, which drops
+        // every zero-quantity row, so their stored rows are unchanged.
+        bool keep_closed_rows = false;
+        for (const auto& s : portfolio->get_strategies()) {
+            if (auto bs = std::dynamic_pointer_cast<BaseStrategy>(s)) {
+                if (bs->get_metadata().id == strategy_id) {
+                    keep_closed_rows =
+                        bs->get_pnl_accounting().method != PnLAccountingMethod::REALIZED_ONLY;
+                    break;
+                }
+            }
+        }
+
         if (!positions_vec.empty()) {
             std::string composite_run_id = run_id + "|" + strategy_id;
             auto save_result = db_->store_backtest_positions(
-                positions_vec, composite_run_id, config_.portfolio_id, "backtest.final_positions");
+                positions_vec, composite_run_id, config_.portfolio_id, "backtest.final_positions",
+                keep_closed_rows);
 
             if (save_result.is_error()) {
                 WARN("Failed to save daily positions for strategy " + strategy_id +
