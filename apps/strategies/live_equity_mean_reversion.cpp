@@ -2015,9 +2015,58 @@ int main(int argc, char* argv[]) {
                             // The two together reproduce total_factor() exactly.
                             const auto& bar_columns = bar_it->second;
                             const double F = bar_columns.spinoff_factor();
-                            if (bar_columns.has_reverse_split()) {
+
+                            // E2-F50: has the coincident reverse split ALREADY been applied?
+                            //
+                            // A refused distribution writes no dedup row, so it retries every
+                            // run -- but the reverse split it was decomposed from is NOT
+                            // refused with it: that half goes to class 1, applies, and IS
+                            // dedup'd. The moment the child price series appears, the retry
+                            // therefore runs against a book that has already been split, and
+                            // two things silently go wrong:
+                            //
+                            //  1. the vendor's ratio is child shares per PRE-split parent
+                            //     share (HLT distributed 0.6 PK and 0.33333 HGV against the
+                            //     330 M shares outstanding before its 1-for-3, not after), so
+                            //     applying it to the post-split 33.33 shares delivers 20 PK
+                            //     instead of 60 -- a third of the entitlement, silently;
+                            //  2. `pending_class1_split_factor` would be set from the bar even
+                            //     though nothing is pending any more, and the G1 basis-vs-mark
+                            //     bound would divide an already-post-split basis by 0.3333 a
+                            //     second time -- a 3x error in the guard that exists to catch
+                            //     3x errors.
+                            //
+                            // Rescaling the ratios by 1/F_split fixes both and is exact, not
+                            // approximate: q_post = q_pre * F_split and r_post = r / F_split,
+                            // so q_post * r_post == q_pre * r -- the same children, the same
+                            // counts. The basis follows too, because B_post = B_pre / F_split
+                            // makes the pool and the FMV weights scale together and cancel, so
+                            // the retry lands on exactly the book a same-run apply would have.
+                            const auto frame = bar_columns.retry_frame(
+                                audit_log.is_applied(row.ticker, row.date_str,
+                                                     CorpActionType::SPLIT) ||
+                                audit_log.is_applied(row.ticker, row.date_str,
+                                                     CorpActionType::ADR_SPLIT));
+                            const double ratio_scale = frame.child_ratio_scale;
+                            if (frame.pending_split_factor != 1.0) {
+                                // Still pending: class 1 applies it after this block, so the
+                                // children come off the PRE-split count and the G1 bound has
+                                // to know a division is still to come (E2-F48).
                                 pending_class1_split_factor[row.ticker] =
-                                    bar_columns.reverse_split_factor();
+                                    frame.pending_split_factor;
+                            }
+                            if (frame.split_already_applied) {
+                                WARN("Spinoff retry on an ALREADY-SPLIT book: " + row.ticker +
+                                     " (ex_date " + row.date_str +
+                                     ") -- the coincident reverse split " +
+                                     std::to_string(bar_columns.reverse_split_factor()) +
+                                     " was applied and dedup'd by an earlier run (the "
+                                     "distribution was refused then and writes no dedup row of "
+                                     "its own, so it retries). The vendor's ratios are per "
+                                     "PRE-split share, so they are scaled by " +
+                                     std::to_string(ratio_scale) +
+                                     " to the post-split share count, and no class-1 split is "
+                                     "pending for the basis-vs-mark bound (E2-F50).");
                             }
 
                             SpinoffEvent sev;
@@ -2027,7 +2076,7 @@ int main(int argc, char* argv[]) {
                             for (const auto& t : child_terms) {
                                 SpinoffChildTerms ct;
                                 ct.symbol = t.first;
-                                ct.ratio = t.second;
+                                ct.ratio = t.second * ratio_scale;
                                 auto cf = child_first_close.find(t.first);
                                 if (cf != child_first_close.end()) {
                                     ct.first_close = cf->second.second;

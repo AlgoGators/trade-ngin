@@ -152,6 +152,48 @@ struct SpinoffBarColumns {
     double spinoff_factor() const { return total_factor() / reverse_split_factor(); }
 
     /**
+     * @brief How a spinoff bar must be routed given what has ALREADY been applied (E2-F50).
+     *
+     * A refused distribution writes no dedup row and retries every run; the reverse split it
+     * was decomposed from is not refused with it, applies through class 1, and IS dedup'd. So
+     * a retry — the moment a missing child price series appears — runs against a book that has
+     * already been split, and the two facts the routing depends on both flip.
+     */
+    struct RetryFrame {
+        /** Multiply the vendor's ratios (child shares per PRE-split parent share) by this. */
+        double child_ratio_scale{1.0};
+        /** What class 1 has still to apply to the parent; 1.0 when nothing is pending. */
+        double pending_split_factor{1.0};
+        bool split_already_applied{false};
+    };
+
+    /**
+     * @brief The routing frame for this bar.
+     *
+     * @param coincident_split_already_applied did an earlier run apply and dedup the bar's
+     *        class-1 split? (`audit_log.is_applied(ticker, ex_date, SPLIT|ADR_SPLIT)`)
+     *
+     * When it has: the held quantity is already `q_pre * F_split`, so the ratios are scaled by
+     * `1/F_split` and `q_post * r_post == q_pre * r` exactly — the same children, the same
+     * counts, and (because the basis scaled by the same factor, so the pool and the FMV
+     * weights cancel) the same allocated bases. Nothing is pending for the basis-vs-mark bound.
+     *
+     * When it has not — the ordinary same-run path — the ratios stand as the vendor wrote them
+     * and the bound is told a division is still to come (E2-F48).
+     */
+    RetryFrame retry_frame(bool coincident_split_already_applied) const {
+        RetryFrame f;
+        if (!has_reverse_split()) return f;
+        if (coincident_split_already_applied) {
+            f.split_already_applied = true;
+            f.child_ratio_scale = 1.0 / reverse_split_factor();
+        } else {
+            f.pending_split_factor = reverse_split_factor();
+        }
+        return f;
+    }
+
+    /**
      * @brief Is there a distribution left once the reverse split is accounted for?
      *
      * DD 2019-06-03 is the case that makes this necessary: split_factor 0.33333, div_cash 0,
