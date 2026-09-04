@@ -78,11 +78,29 @@ struct LoggerConfig : public ConfigBase {
     LogLevel min_level{LogLevel::INFO};  // Minimum level to log
     LogDestination destination{LogDestination::CONSOLE};
     std::string log_directory{"logs"};          // Directory for log files
+    /**
+     * Optional sub-directory of `log_directory` for this session's files (drift-F).
+     *
+     * EMPTY by default, which is exactly the previous behaviour. A replay sets it to the
+     * date being replayed, so `logs/2026-04-17/` holds that date's run and the retention
+     * budget below is spent per date instead of globally: a 126-day chain used to leave
+     * eight files behind and every dividend-applying run in the middle of it was
+     * unreconcilable after the fact.
+     */
+    std::string log_subdirectory{};
     std::string filename_prefix{"trade_ngin"};  // Prefix for log files
     bool include_timestamp{true};               // Include timestamp in logs
     bool include_level{true};                   // Include log level in logs
     size_t max_file_size{50 * 1024 * 1024};     // Max log file size (50MB)
-    size_t max_files{10};                       // Maximum number of log files to keep
+    /**
+     * Maximum number of log files to keep -- counting only files this logger owns, i.e.
+     * whose name begins with `filename_prefix` and which sit in this session's own
+     * directory (drift-F). Rotation used to delete the oldest file of ANY name in
+     * `log_directory`, so with four runners sharing `logs/` a futures session evicted the
+     * equity session's evidence and vice versa; the budget was global where the retention
+     * question is per runner.
+     */
+    size_t max_files{10};
 
     // Configuration metadata
     std::string version{"1.0.0"};  // Configuration version
@@ -93,6 +111,7 @@ struct LoggerConfig : public ConfigBase {
         j["min_level"] = level_to_string(min_level);
         j["destination"] = log_destination_to_string(destination);
         j["log_directory"] = log_directory;
+        j["log_subdirectory"] = log_subdirectory;
         j["filename_prefix"] = filename_prefix;
         j["include_timestamp"] = include_timestamp;
         j["include_level"] = include_level;
@@ -130,6 +149,8 @@ struct LoggerConfig : public ConfigBase {
         }
         if (j.contains("log_directory"))
             log_directory = j.at("log_directory").get<std::string>();
+        if (j.contains("log_subdirectory"))
+            log_subdirectory = j.at("log_subdirectory").get<std::string>();
         if (j.contains("filename_prefix"))
             filename_prefix = j.at("filename_prefix").get<std::string>();
         if (j.contains("include_timestamp"))

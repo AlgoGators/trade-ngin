@@ -123,6 +123,17 @@ int main(int argc, char* argv[]) {
         logger_config.min_level = LogLevel::INFO;
         logger_config.destination = LogDestination::BOTH;
         logger_config.log_directory = "logs";
+        // drift-F: a REPLAY keeps its logs under the date it replayed.
+        //
+        // Retention is 10 files per prefix per directory. A 126-day chain therefore left
+        // eight logs behind and evicted the other 118 -- including every dividend-applying
+        // run and the holiday case, which are exactly the days E2's log-vs-DB reconciliation
+        // needs to read afterwards. A real-time run keeps the flat `logs/` path it always
+        // had (empty subdirectory); a dated run gets `logs/<YYYY-MM-DD>/`, so each replayed
+        // date has its own budget and no date can evict another.
+        if (use_override_date) {
+            logger_config.log_subdirectory = core::format_utc_date(target_date);
+        }
         logger_config.filename_prefix = "live_equity_mr";
         logger.initialize(logger_config);
 
@@ -339,6 +350,23 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         auto previous_date = *prev_day_opt;
+
+        // drift-F: say which day was resolved, out loud, once.
+        //
+        // Everything the day depends on hangs off this one value -- which book is loaded,
+        // which close finalizes it, which frame the corp-action gates compare against -- and
+        // until now it was only inferable from downstream lines. E2-F45 was a wrong answer
+        // here that survived a full chain because nothing printed it: `find_previous_trading_day`
+        // tested each candidate in local time and returned the UTC one, so every Monday,
+        // Tuesday, Saturday and post-holiday run silently finalized against a closed day.
+        INFO("Resolved previous trading day = " + core::format_utc_date(previous_date) +
+             " for run date " + core::format_utc_date(now) +
+             " (calendar covers " + std::to_string(holiday_checker.coverage_years()) +
+             " year(s); walked back " +
+             std::to_string(static_cast<long long>(
+                 std::chrono::duration_cast<std::chrono::hours>(now - previous_date).count() /
+                 24)) +
+             " calendar day(s))");
 
         // ========================================
         // EFFECTIVE UNIVERSE (E2-F34 / F-4) -- finalized AFTER the book is known
