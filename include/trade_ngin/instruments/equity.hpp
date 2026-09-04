@@ -78,6 +78,17 @@ struct EquitySpec {
 /**
  * @brief Equity instrument implementation
  */
+/**
+ * @brief Does this exchange use the US equities calendar this build ships?
+ *
+ * Phase 6 §6b. Exposed because it is the only observable half of the exchange dispatch:
+ * `is_market_open` returns true for a US exchange during trading hours EITHER WAY, which is
+ * why the pins that shipped with 4210ab14 passed with the dispatch reverted (C-5 §9-A3).
+ * The dispatch is visible only where the two branches disagree -- a non-US exchange on a
+ * weekend or a US holiday, where it fails OPEN rather than applying NYSE rules.
+ */
+bool is_us_equities_exchange(const std::string& exchange);
+
 class EquityInstrument : public Instrument {
 public:
     /**

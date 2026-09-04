@@ -43,11 +43,15 @@ namespace {
 // avoid silently using NYSE rules for a non-US listing (which the audit
 // flagged), we fail-open WITH a WARN that fires once per unique exchange so
 // the operator sees the gap without log spam.
+}  // namespace
+
 bool is_us_equities_exchange(const std::string& exchange) {
     return exchange.empty() ||  // unspecified defaults to US
            exchange == "NYSE" || exchange == "NASDAQ" ||
            exchange == "ARCA" || exchange == "AMEX" || exchange == "BATS";
 }
+
+namespace {
 
 void warn_unknown_exchange_once(const std::string& exchange) {
     static std::mutex m;
