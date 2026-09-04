@@ -1832,7 +1832,43 @@ int main(int argc, char* argv[]) {
                 }
                 // E2-F48 (BA-21): announce the decomposition of every spinoff bar before
                 // anything is routed, so the log says which rule was applied to which bar.
+                //
+                // HELD SYMBOLS ONLY. `close_by_symbol_date` is loaded for symbols that both
+                // have an event in the window AND are in the book (`event_symbols` filters on
+                // previous_positions), so for a configured-but-not-held name every close is
+                // 0.0, `dividend_factor()` falls back to exactly 1, and a dividend-encoded
+                // spinoff therefore looks like a bar with no distribution factor left. That
+                // produced a "SPINOFF REFUSED ... nothing to allocate" WARN about a book
+                // position that does not exist, with numbers derived from a close that was
+                // never fetched -- a false alarm on the loudest line in the block, and one
+                // that would train a reader to skim past the real ones. The row loop below
+                // already skips a non-held ticker outright, so nothing here can ever be
+                // routed for one; the honest thing is silence.
                 for (const auto& [key, col] : spinoff_bar_columns) {
+                    if (previous_positions.find(key.first) == previous_positions.end()) continue;
+                    // E2-F51: a split_factor ABOVE 1 on a spinoff ex-date is folded into the
+                    // distribution's own factor rather than applied as a share-count change,
+                    // and until now that decision was taken in silence. It is the right
+                    // decision -- on all five such bars in this database (ABT 2004-05-03, BX
+                    // 2015-10-01, K 2023-10-02, MET 2017-08-07, RTX 2020-04-03) the vendor is
+                    // encoding part of the distribution in that column and the holder's share
+                    // count did not move, which is verified against the adjusted series in
+                    // SpinoffBarColumns -- but it is a judgement the log has to state, because
+                    // a genuine forward split coincident with a spinoff would fall outside it
+                    // and the only way anyone would notice is a share count that did not grow.
+                    if (col.folds_a_forward_split()) {
+                        WARN("Spinoff bar carries a split_factor ABOVE 1: " + key.first +
+                             " on " + key.second + " has split_factor " +
+                             std::to_string(col.split_factor) +
+                             ", which is read as PART OF THE DISTRIBUTION and folded into the "
+                             "restatement factor (" + std::to_string(col.spinoff_factor()) +
+                             "), NOT applied as a share-count change -- the parent keeps its "
+                             "quantity. That is what the vendor means on every such bar in "
+                             "this database, verified against adjusted_close on both sides of "
+                             "the bar. If this ticker really did split forward on its spinoff "
+                             "ex-date, the share count is now wrong and this line is the only "
+                             "warning of it (E2-F51).");
+                    }
                     if (col.has_reverse_split()) {
                         WARN("Spinoff bar carries a coincident REVERSE SPLIT: " + key.first +
                              " on " + key.second + " has split_factor " +
@@ -1864,6 +1900,7 @@ int main(int argc, char* argv[]) {
                     }
                 }
                 for (const auto& [key, col] : spinoff_bar_columns) {
+                    if (previous_positions.find(key.first) == previous_positions.end()) continue;
                     if (!col.carries_both_columns()) continue;
                     WARN("Spinoff bar carries BOTH class-1 columns: " + key.first +
                          " on " + key.second + " has split_factor " +

@@ -143,6 +143,21 @@ struct SpinoffBarColumns {
     bool has_reverse_split() const { return reverse_split_factor() < 1.0; }
 
     /**
+     * @brief Is a split_factor ABOVE 1 being folded into the distribution's factor? (E2-F51)
+     *
+     * The silent half of the E2-F48 rule. A `split_factor < 1` is separated out as a real
+     * reverse split; a `split_factor > 1` is NOT — it stays inside `spinoff_factor()` and the
+     * parent's share count does not move. That is correct on all five such bars in this
+     * database (ABT, BX, K, MET, RTX: the vendor encodes part of the distribution there and no
+     * holder's share count changed, verified against the adjusted series in total_factor()),
+     * but it is a judgement rather than a fact about the column, and a genuine forward split
+     * coincident with a spinoff would fall outside it with no symptom except a share count
+     * that failed to grow. The runner WARNs whenever this is true so the decision is on the
+     * record.
+     */
+    bool folds_a_forward_split() const { return has_split && split_step() > 1.0; }
+
+    /**
      * @brief The distribution's own factor: the bar's step with the reverse split taken out.
      *
      * This is what the parent's cost basis is divided by when the child is delivered. The
