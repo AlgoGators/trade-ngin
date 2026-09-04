@@ -17,7 +17,7 @@ EquitySpec make_spec() {
     s.commission_per_share = 0.005;
     s.is_etf = false;
     s.is_marginable = true;
-    s.margin_requirement = 0.5;
+    s.account_mode = EquityAccountMode::REG_T;  // Reg T long = 50% of notional
     s.sector = "Technology";
     s.industry = "Software";
     s.trading_hours = "09:30-16:00";
@@ -39,7 +39,10 @@ TEST_F(EquityInstrumentTest, ConstructorAndAccessors) {
     EXPECT_DOUBLE_EQ(eq.get_tick_size(), 0.01);
     EXPECT_DOUBLE_EQ(eq.get_commission_per_contract(), 0.005 * 100.0);
     EXPECT_DOUBLE_EQ(eq.get_point_value(), 1.0);
-    EXPECT_DOUBLE_EQ(eq.get_margin_requirement(), 0.5);
+    // No-arg overload is a deliberate 0.0 sentinel (callers must pass price/qty);
+    // Reg T long posts 50% of notional via the real overload.
+    EXPECT_DOUBLE_EQ(eq.get_margin_requirement(), 0.0);
+    EXPECT_DOUBLE_EQ(eq.get_margin_requirement(100.0, 10.0), 0.5 * 100.0 * 10.0);
     EXPECT_EQ(eq.get_trading_hours(), "09:30-16:00");
     EXPECT_DOUBLE_EQ(eq.get_lot_size(), 100.0);
     EXPECT_FALSE(eq.is_etf());

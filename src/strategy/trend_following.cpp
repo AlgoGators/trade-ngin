@@ -223,6 +223,9 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
             bars_by_symbol[bar.symbol].push_back(bar);
         }
 
+        // Cache weights once per on_data() call to avoid repeated DB queries
+        auto cached_weights = get_weights();
+
         // Process each symbol for signal generation
         for (const auto& [symbol, symbol_bars] : bars_by_symbol) {
             auto& instrument_data = instrument_data_[symbol];
@@ -348,10 +351,11 @@ Result<void> TrendFollowingStrategy::on_data(const std::vector<Bar>& data) {
                         lookup_symbol = "MYM";
                     }
 
-                    // Get weight
-                    const auto& weights = get_weights();
-                    if (weights.count(lookup_symbol) > 0) {
-                        instrument_data.weight = weights.at(lookup_symbol);
+                    // Get weight from the per-call hoisted copy (get_weights() itself
+                    // caches internally; hoisting avoids a map copy per symbol)
+                    auto weight_it = cached_weights.find(lookup_symbol);
+                    if (weight_it != cached_weights.end()) {
+                        instrument_data.weight = weight_it->second;
                     } else {
                         WARN("Weight not found for " + symbol);
                     }

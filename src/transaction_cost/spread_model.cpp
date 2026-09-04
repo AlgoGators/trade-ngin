@@ -1,5 +1,6 @@
 #include "trade_ngin/transaction_cost/spread_model.hpp"
 
+#include <cmath>
 #include <numeric>
 #include <stdexcept>
 
@@ -18,6 +19,15 @@ double SpreadModel::calculate_spread_price_impact(
 
     // Clamp to min/max bounds
     spread_ticks = std::clamp(spread_ticks, config.min_spread_ticks, config.max_spread_ticks);
+
+    // For equities, the minimum tick is the binding constraint for quoted spreads.
+    // Standard NMS stocks (>= $1.00): min 1 tick ($0.01)
+    // Tick-constrained stocks (TWAQS <= $0.015, Nov 2025 Rule 612): 0.5 tick ($0.005)
+    // Sub-dollar stocks (< $1.00): tick_size = $0.0001
+    if (config.asset_type == AssetType::EQUITY) {
+        double min_ticks = config.tick_constrained ? 0.5 : 1.0;
+        spread_ticks = std::max(spread_ticks, min_ticks);
+    }
 
     // Spread cost (one-way) in price units per contract.
     // Default multiplier=0.5 models crossing half the quoted spread.
@@ -83,6 +93,22 @@ double SpreadModel::get_volatility_multiplier(const std::string& symbol) const {
     // Convert deque to vector for calculation
     std::vector<double> returns(it->second.begin(), it->second.end());
     return calculate_volatility_multiplier(returns);
+}
+
+double SpreadModel::get_annual_volatility(const std::string& symbol) const {
+    auto it = symbol_log_returns_.find(symbol);
+    if (it == symbol_log_returns_.end() || it->second.size() < 2) {
+        // 25% fallback matches the borrow-fee baseline divisor in
+        // TransactionCostManager::calculate_overnight_borrow_fees, so an
+        // unobserved symbol yields vol_multiplier of exactly 1.0.
+        return 0.25;
+    }
+
+    std::vector<double> returns(it->second.begin(), it->second.end());
+    const double mean = compute_mean(returns);
+    const double sigma = compute_stdev(returns, mean);
+    // Annualize assuming daily log returns (252 trading days).
+    return sigma * std::sqrt(252.0);
 }
 
 void SpreadModel::clear_symbol_data(const std::string& symbol) {

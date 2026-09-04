@@ -1,6 +1,11 @@
 #include "trade_ngin/transaction_cost/transaction_cost_manager.hpp"
 
+#include <algorithm>
 #include <cmath>
+
+#include "trade_ngin/core/logger.hpp"
+#include "trade_ngin/instruments/equity.hpp"
+#include "trade_ngin/instruments/instrument_registry.hpp"
 
 namespace trade_ngin {
 namespace transaction_cost {
@@ -14,7 +19,8 @@ TransactionCostManager::TransactionCostManager(const Config& config)
 TransactionCostResult TransactionCostManager::calculate_costs(
     const std::string& symbol,
     double quantity,
-    double reference_price) const {
+    double reference_price,
+    AssetType asset_type) const {
 
     // Get internally tracked ADV and volatility multiplier
     double adv = impact_model_.get_adv(symbol);
@@ -31,7 +37,7 @@ TransactionCostResult TransactionCostManager::calculate_costs(
         vol_mult = 1.0;  // Neutral volatility
     }
 
-    return calculate_costs(symbol, quantity, reference_price, adv, vol_mult);
+    return calculate_costs(symbol, quantity, reference_price, adv, vol_mult, asset_type);
 }
 
 TransactionCostResult TransactionCostManager::calculate_costs(
@@ -39,19 +45,49 @@ TransactionCostResult TransactionCostManager::calculate_costs(
     double quantity,
     double reference_price,
     double adv,
-    double volatility_multiplier) const {
+    double volatility_multiplier,
+    AssetType asset_type) const {
 
     TransactionCostResult result;
 
     // Ensure quantity is absolute
     double abs_qty = std::abs(quantity);
 
-    // Get asset configuration
-    AssetCostConfig asset_config = asset_configs_.get_config(symbol);
+    // Get asset configuration. asset_type is consulted only when the symbol
+    // has no registered config -- it routes the fallback to the equity
+    // default ($0.005/share, $1 min) instead of the futures default
+    // ($1.50/share, point_value=100). Closes audit §1.1 dispatch dead-end.
+    AssetCostConfig asset_config = asset_configs_.get_config(symbol, asset_type);
 
-    // 1. Calculate explicit costs
-    // commissions_fees = |qty| * fee_per_contract
-    result.commissions_fees = abs_qty * config_.explicit_fee_per_contract;
+    // 1. Calculate explicit costs (commissions)
+    if (asset_config.commission_per_unit >= 0.0) {
+        // Per-asset commission (e.g., equities: $0.005/share with min/max per order)
+        double raw_commission = abs_qty * asset_config.commission_per_unit;
+        double effective_max;
+        if (asset_config.max_commission_pct >= 0.0) {
+            // Percentage-based cap: e.g., 0.5% of trade value (IBKR Tiered)
+            // IBKR Fixed uses 1.0% -- configurable via max_commission_pct
+            effective_max = asset_config.max_commission_pct * abs_qty * reference_price;
+        } else {
+            effective_max = asset_config.max_commission_per_order;
+        }
+        result.commissions_fees = std::max(asset_config.min_commission_per_order,
+                                           std::min(effective_max, raw_commission));
+    } else {
+        // Global fee per contract (futures default)
+        result.commissions_fees = abs_qty * config_.explicit_fee_per_contract;
+    }
+
+    // 1b. Regulatory fees (equity sell-side only)
+    if (asset_config.apply_regulatory_fees && quantity < 0) {
+        double trade_value = abs_qty * reference_price;
+        // SEC Transaction Fee (sell-side only)
+        double sec_fee = (trade_value / 1000000.0) * asset_config.sec_fee_per_million;
+        // FINRA TAF (sell-side only, capped per trade)
+        double taf = std::min(abs_qty * asset_config.finra_taf_per_share,
+                              asset_config.finra_taf_cap_per_trade);
+        result.commissions_fees += sec_fee + taf;
+    }
 
     // 2. Calculate spread cost (in price units per contract)
     result.spread_price_impact = spread_model_.calculate_spread_price_impact(
@@ -91,8 +127,7 @@ void TransactionCostManager::update_market_data(
     // Calculate log return and update for volatility
     if (prev_close_price > 0.0 && close_price > 0.0) {
         double log_return = std::log(close_price / prev_close_price);
-        // Note: spread_model_ is mutable for this operation
-        const_cast<SpreadModel&>(spread_model_).update_log_returns(symbol, log_return);
+        spread_model_.update_log_returns(symbol, log_return);
     }
 }
 
@@ -104,6 +139,10 @@ double TransactionCostManager::get_volatility_multiplier(const std::string& symb
     return spread_model_.get_volatility_multiplier(symbol);
 }
 
+double TransactionCostManager::get_annual_volatility(const std::string& symbol) const {
+    return spread_model_.get_annual_volatility(symbol);
+}
+
 AssetCostConfig TransactionCostManager::get_asset_config(const std::string& symbol) const {
     return asset_configs_.get_config(symbol);
 }
@@ -112,9 +151,151 @@ void TransactionCostManager::register_asset_config(const AssetCostConfig& config
     asset_configs_.register_config(config);
 }
 
+int TransactionCostManager::register_equity_costs_from_bars(
+    const std::vector<std::string>& symbols,
+    const std::unordered_map<std::string, std::vector<Bar>>& bars_by_symbol,
+    int adv_lookback_days) {
+
+    if (adv_lookback_days < 1) {
+        adv_lookback_days = 1;
+    }
+
+    int registered = 0;
+    for (const auto& symbol : symbols) {
+        auto it = bars_by_symbol.find(symbol);
+        if (it == bars_by_symbol.end() || it->second.empty()) {
+            WARN("register_equity_costs_from_bars: no bars for " + symbol +
+                 " -- skipping (will use equity default if traded)");
+            continue;
+        }
+
+        const auto& bars = it->second;
+        const size_t n = std::min(static_cast<size_t>(adv_lookback_days), bars.size());
+        const size_t start_idx = bars.size() - n;
+
+        double volume_sum = 0.0;
+        for (size_t i = start_idx; i < bars.size(); ++i) {
+            volume_sum += bars[i].volume;
+        }
+        const double adv = volume_sum / static_cast<double>(n);
+
+        if (adv <= 0.0) {
+            WARN("register_equity_costs_from_bars: zero ADV for " + symbol +
+                 " over " + std::to_string(n) + " bars -- skipping");
+            continue;
+        }
+
+        const double price = bars.back().close.as_double();
+        AssetCostConfig config = AssetCostConfigRegistry::get_tiered_equity_config(price, adv);
+        config.symbol = symbol;
+        asset_configs_.register_config(config);
+        ++registered;
+    }
+
+    INFO("Registered " + std::to_string(registered) + " equity cost configs (tiered by ADV, " +
+         std::to_string(adv_lookback_days) + "-day lookback)");
+    return registered;
+}
+
 void TransactionCostManager::clear_all_data() {
-    const_cast<SpreadModel&>(spread_model_).clear_all();
-    const_cast<ImpactModel&>(impact_model_).clear_all();
+    spread_model_.clear_all();
+    impact_model_.clear_all();
+}
+
+namespace {
+
+// Audit §3.2 risk scoring: count high-risk flags and map to annual base
+// borrow rate. Dollar-volume substitutes for market cap (audit fallback).
+double base_rate_from_flags(int flag_count) {
+    if (flag_count <= 0) return 0.0025;   //  25 bps -- ETB / liquid stocks
+    if (flag_count == 1) return 0.0050;   //  50 bps -- one tilt away from clean
+    if (flag_count == 2) return 0.0150;   // 150 bps -- borderline HTB
+    return 0.0500;                        // 500 bps -- HTB+ proxy
+}
+
+}  // namespace
+
+std::unordered_map<std::string, double>
+TransactionCostManager::calculate_overnight_borrow_fees(
+    const std::unordered_map<std::string, Position>& positions,
+    const std::unordered_map<std::string, double>& current_prices,
+    const InstrumentRegistry& registry) const {
+
+    std::unordered_map<std::string, double> fees;
+
+    for (const auto& [symbol, position] : positions) {
+        const double qty = position.quantity.as_double();
+        if (qty >= 0.0) {
+            continue;  // Only shorts accrue borrow fees.
+        }
+
+        auto equity = registry.get_equity_instrument(symbol);
+        if (!equity) {
+            // Non-equity (e.g., short futures) doesn't pay equity borrow fees.
+            continue;
+        }
+
+        // Resolve current price.
+        double price = 0.0;
+        auto price_it = current_prices.find(symbol);
+        if (price_it != current_prices.end()) {
+            price = price_it->second;
+        } else {
+            price = position.average_price.as_double();
+            WARN("calculate_overnight_borrow_fees: no current price for " +
+                 symbol + ", using avg_price " + std::to_string(price));
+        }
+        if (price <= 0.0) {
+            WARN("calculate_overnight_borrow_fees: non-positive price for " +
+                 symbol + ", skipping");
+            continue;
+        }
+
+        const double short_position_value = std::abs(qty) * price;
+        const auto& spec = equity->get_spec();
+        double annual_rate;
+
+        if (spec.borrow_rate_override >= 0.0) {
+            // Broker-provided rate or test override; formula bypassed.
+            annual_rate = spec.borrow_rate_override;
+        } else {
+            // Multi-factor scoring per audit §3.2.
+            int flag_count = 0;
+
+            // Dollar-volume signal: ADV × price. <$5M/day flags as high risk.
+            const double adv = impact_model_.get_adv(symbol);
+            const double dollar_volume = adv * price;
+            if (dollar_volume > 0.0 && dollar_volume < 5'000'000.0) {
+                ++flag_count;
+            }
+
+            // Price-level signal: penny / micro-cap risk.
+            if (price < 5.0) {
+                ++flag_count;
+            }
+
+            // HTB override: explicit is_easy_to_borrow=false forces high tier.
+            if (!spec.is_easy_to_borrow) {
+                ++flag_count;
+            }
+
+            const double base = base_rate_from_flags(flag_count);
+
+            // Volatility multiplier: clamp(annual_vol / 0.25, 1.0, 3.0).
+            const double annual_vol = spread_model_.get_annual_volatility(symbol);
+            double vol_mult = annual_vol / 0.25;
+            if (vol_mult < 1.0) vol_mult = 1.0;
+            if (vol_mult > 3.0) vol_mult = 3.0;
+
+            annual_rate = base * vol_mult;
+        }
+
+        // Daily fee charged per overnight position held.
+        const double daily_fee = annual_rate * short_position_value / 365.0;
+        fees[symbol] = daily_fee;
+    }
+
+    return fees;
 }
 
 }  // namespace transaction_cost

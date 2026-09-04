@@ -8,6 +8,7 @@
 #include <sstream>
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/core/types.hpp"
+#include "trade_ngin/data/conversion_utils.hpp"
 
 namespace trade_ngin {
 
@@ -255,9 +256,16 @@ Result<void> LiveResultsManager::save_equity_curve(const Timestamp& date) {
         auto prev_result = db_->execute_query(get_prev_equity_query);
         if (prev_result.is_ok() && prev_result.value()->num_rows() > 0) {
             auto table = prev_result.value();
-            auto array = std::static_pointer_cast<arrow::DoubleArray>(table->column(0)->chunk(0));
-            equity_to_save = array->Value(0);
-            INFO("Using previous equity value: " + std::to_string(equity_to_save));
+            // Phase 6 §1.17a: type-aware Arrow access.
+            auto r = DataConversionUtils::safe_get_double(table->column(0), 0, "equity");
+            if (r.is_ok()) {
+                equity_to_save = r.value();
+                INFO("Using previous equity value: " + std::to_string(equity_to_save));
+            } else {
+                ERROR("Cannot save equity curve: failed to read previous equity (" +
+                      std::string(r.error()->what()) + ")");
+                return Result<void>();
+            }
         } else {
             ERROR("Cannot save equity curve: equity is invalid (" +
                   std::to_string(current_equity_) + ") and no previous valid value found");

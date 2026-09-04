@@ -191,3 +191,41 @@ TEST_F(BacktestDataLoaderTest, PriceStatisticsMissingSymbolReturnsZeros) {
     EXPECT_DOUBLE_EQ(stats["max_price"], 0.0);
     EXPECT_DOUBLE_EQ(stats["price_range_pct"], 0.0);
 }
+
+TEST_F(BacktestDataLoaderTest, OptionsAssetClassRejectedUpfront) {
+    // Options market data is not yet ingested by data-ngin.
+    // The rejection must happen early with a clear error message,
+    // not silently query an unknown_data schema that does not exist.
+    BacktestDataLoader loader(db_);
+    auto config = make_config();
+    config.asset_class = AssetClass::OPTIONS;  // Change to OPTIONS
+    auto result = loader.load_market_data(config);
+    ASSERT_TRUE(result.is_error()) << "Options should be rejected";
+    EXPECT_EQ(result.error()->code(), ErrorCode::MARKET_DATA_ERROR);
+    std::string msg = result.error()->what();
+    EXPECT_NE(msg.find("data-ngin"), std::string::npos)
+        << "Error message should mention data-ngin";
+    EXPECT_NE(msg.find("not yet ingested"), std::string::npos)
+        << "Error message should clarify options are not ingested";
+}
+
+TEST_F(BacktestDataLoaderTest, OptionsAssetClassErrorIncludesRoadmapReference) {
+    // Ensure the OPTIONS rejection error message includes the roadmap reference (data-ngin#39).
+    // This provides users with actionable next steps.
+    BacktestDataLoader loader(db_);
+    auto config = make_config();
+    config.asset_class = AssetClass::OPTIONS;
+    auto result = loader.load_market_data(config);
+
+    ASSERT_TRUE(result.is_error());
+    EXPECT_EQ(result.error()->code(), ErrorCode::MARKET_DATA_ERROR);
+    std::string msg = result.error()->what();
+
+    // Verify all expected clauses are present in the error message
+    EXPECT_NE(msg.find("Options"), std::string::npos)
+        << "Error should mention 'Options'";
+    EXPECT_NE(msg.find("market data"), std::string::npos)
+        << "Error should mention 'market data'";
+    EXPECT_NE(msg.find("data-ngin#39"), std::string::npos)
+        << "Error should reference data-ngin#39 roadmap";
+}

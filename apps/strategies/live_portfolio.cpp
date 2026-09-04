@@ -730,7 +730,8 @@ int main(int argc, char* argv[]) {
         bool is_sunday = (day_of_week == 0);
 
         // Check if yesterday was a holiday using HolidayChecker
-        HolidayChecker holiday_checker("include/trade_ngin/core/holidays.json");
+        // Phase 6 §6a: path resolved via HolidayChecker::resolve_holidays_path.
+        HolidayChecker holiday_checker(HolidayChecker::resolve_holidays_path());
         auto yesterday_for_check = now - std::chrono::hours(24);
         auto yesterday_time_t_check = std::chrono::system_clock::to_time_t(yesterday_for_check);
         std::tm yesterday_tm_check = *std::gmtime(&yesterday_time_t_check);
