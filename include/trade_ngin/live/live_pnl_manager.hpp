@@ -36,6 +36,35 @@ public:
         : PnLManagerBase(initial_capital), registry_(registry) {}
 
     /**
+     * @brief Unrealized P&L of one position against its own cost basis.
+     *
+     * The single rule for "what is this position worth versus what it cost", shared by
+     * the live_results aggregate this manager produces and the per-row
+     * trading.positions.unrealized_pnl the equity runner persists. It is a named
+     * function because those two used to disagree: the aggregate was computed from
+     * Position::average_price while the persisted row read
+     * MeanReversionInstrumentData::entry_price, a field with no writer anywhere in the
+     * tree. It was therefore always 0.0, so every persisted row said 0 while the
+     * aggregate said otherwise -- a guaranteed log-versus-DB mismatch on any day with
+     * open positions.
+     *
+     * Returns 0.0 when there is no basis to measure against: a zero quantity, or an
+     * average_price not yet set (on_execution is its sole writer, so a fill that has not
+     * been processed yet leaves it at 0).
+     *
+     * It deliberately does NOT screen mark_price. That is the caller's business and the
+     * two callers differ: this manager skips a position whose price is absent, while the
+     * equity runner defaults a missing close to 0.0 and must check it itself. Folding an
+     * `mark_price > 0` guard in here would have quietly changed what the futures path
+     * reports for a present-but-zero mark, which is outside this fix's scope.
+     */
+    static double unrealized_from_cost_basis(double quantity, double average_price,
+                                             double mark_price, double point_value = 1.0) {
+        if (quantity == 0.0 || average_price <= 0.0) return 0.0;
+        return quantity * (mark_price - average_price) * point_value;
+    }
+
+    /**
      * Finalization result structure for Day T-1
      */
     struct FinalizationResult {

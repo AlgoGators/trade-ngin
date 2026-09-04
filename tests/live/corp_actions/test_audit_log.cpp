@@ -697,7 +697,7 @@ CorpActionEvent dividend_event(const std::string& symbol,
     ev.ex_date = date;
     ev.type = CorpActionType::DIVIDEND;
     ev.value = per_share;
-    ev.close_t_minus_1 = close_tm1;
+    ev.close_at_ex_date = close_tm1;
     ev.qty_at_ex_date = qty_at_ex;
     return ev;
 }

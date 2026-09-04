@@ -43,7 +43,8 @@ Result<void> LiveTradingCoordinator::initialize() {
 
         // Initialize LiveResultsManager
         results_manager_ = std::make_unique<LiveResultsManager>(
-            db_, config_.store_results, config_.strategy_id, config_.portfolio_id);
+            db_, config_.store_results, config_.strategy_id, config_.portfolio_id,
+            config_.strategy_name);
 
         // Initialize LivePriceManager
         price_manager_ = std::make_unique<LivePriceManager>(db_);

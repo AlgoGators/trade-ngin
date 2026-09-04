@@ -103,4 +103,35 @@ inline std::string format_ymd_utc(std::time_t t) {
     return std::string(buf);
 }
 
+/// Date range for a `get_historical_closes` read. Both ends are INCLUSIVE: the query
+/// is `time >= start AND time < end + 1 day`, so start == end fetches exactly one day.
+struct CloseFetchRange {
+    std::string start;  ///< YYYY-MM-DD, inclusive
+    std::string end;    ///< YYYY-MM-DD, inclusive
+
+    /// False when the range degenerates to a single day -- the FIX-2 failure shape.
+    bool spans_more_than_one_day() const { return start < end; }
+};
+
+/**
+ * @brief Date range for the corp-action denominator closes.
+ *
+ * The denominator needs a raw close AT each in-window ex-date, so the read must
+ * cover the whole window -- including the deep holdings, which is what makes the
+ * window wide in the first place.
+ *
+ * This exists as a named function because getting it wrong is silent. The
+ * previous code topped the deep holdings up separately over
+ * `[deep_start, window.start)`, and `w.start` EQUALS `w.deep_start` whenever
+ * `deep_symbols` is non-empty -- the globally-oldest inception is itself always a
+ * deep symbol, so whatever pushes `deep_start` back pushes `start` back with it.
+ * Since `get_historical_closes` treats both ends inclusively, that range fetched
+ * exactly one day, and a holding older than the bulk load silently got its
+ * denominator from the wrong end of its history. One range over the whole window
+ * has no such seam.
+ */
+inline CloseFetchRange denominator_fetch_range(const CorpActionWindow& w, std::time_t today_t) {
+    return CloseFetchRange{format_ymd_utc(w.start), format_ymd_utc(today_t)};
+}
+
 }  // namespace trade_ngin

@@ -1,6 +1,9 @@
 #include "trade_ngin/live/corporate_actions_lifecycle.hpp"
 
+#include <algorithm>
 #include <cmath>
+#include <utility>
+#include <vector>
 
 #include "trade_ngin/core/logger.hpp"
 
@@ -20,70 +23,131 @@ const char* CorporateActionsLifecycle::outcome_to_string(LifecycleOutcome o) {
 std::vector<LifecycleAdjustment> CorporateActionsLifecycle::apply_renames(
     std::unordered_map<std::string, Position>& positions,
     const std::vector<TickerAlias>& aliases,
-    const std::string& as_of_date) {
+    const std::string& as_of_date,
+    const std::unordered_map<std::string, std::string>& position_inception) {
 
     std::vector<LifecycleAdjustment> log;
 
-    for (const auto& alias : aliases) {
-        if (alias.historical_ticker.empty() || alias.current_symbol.empty()) continue;
-        if (alias.historical_ticker == alias.current_symbol) continue;
-
-        // The rename is only in effect once we are past effective_until (the
-        // last date the old ticker was valid). An empty effective_until means
-        // open-ended: treat the rename as already in force.
-        if (!alias.effective_until.empty() && !as_of_date.empty() &&
-            as_of_date <= alias.effective_until) {
-            continue;  // YYYY-MM-DD sorts lexicographically
+    // Group by historical ticker, ascending by effective_until. ISO YYYY-MM-DD
+    // compares lexicographically, so a plain sort orders the eras.
+    //
+    // An alias with no effective_until cannot be era-bounded, and class 2 fails
+    // narrow: it is dropped rather than applied unconditionally. That is the same
+    // rule the dedup mirror uses, and it matters because an unbounded alias is
+    // exactly the shape that re-keys a currently-trading ticker.
+    std::unordered_map<std::string, std::vector<std::pair<std::string, std::string>>> renames;
+    for (const auto& a : aliases) {
+        if (a.historical_ticker.empty() || a.current_symbol.empty()) continue;
+        if (a.historical_ticker == a.current_symbol) continue;
+        if (a.effective_until.empty()) {
+            WARN("Corp action SERIES_CONTINUITY: alias " + a.historical_ticker + " -> " +
+                 a.current_symbol + " has no effective_until; cannot era-bound it, skipping");
+            continue;
         }
+        renames[a.historical_ticker].emplace_back(a.effective_until, a.current_symbol);
+    }
+    if (renames.empty()) return log;
+    for (auto& entry : renames) {
+        std::sort(entry.second.begin(), entry.second.end());
+    }
 
-        auto old_it = positions.find(alias.historical_ticker);
-        if (old_it == positions.end()) continue;  // not held under the old key
+    // The successor a ticker had at `date`: the first rename on or after it.
+    // A date later than every rename maps NOWHERE -- the ticker belongs to
+    // whoever holds it now, not to the old company.
+    //
+    // The compare is inclusive on purpose. effective_until conventions differ by
+    // a day between curated rows (day-after) and backfilled rows (source date),
+    // so on the boundary day `<=` errs toward NOT applying a backfilled rename.
+    // That is the safe direction: the rename is simply retried next run.
+    auto successor_at = [&renames](const std::string& sym, const std::string& date)
+        -> std::pair<std::string, std::string> {  // (effective_until, current_symbol)
+        auto it = renames.find(sym);
+        if (it == renames.end()) return {};
+        for (const auto& candidate : it->second) {
+            if (date <= candidate.first) return candidate;
+        }
+        return {};
+    };
 
-        LifecycleAdjustment adj;
-        adj.symbol = alias.historical_ticker;
-        adj.event_date = alias.effective_until;
-        adj.vendor_label = "tickerchangeto";
-        adj.action_class = CorpActionClass::SERIES_CONTINUITY;
-        adj.outcome = LifecycleOutcome::RENAMED;
-        adj.quantity_before = old_it->second.quantity.as_double();
-        adj.contra_ticker = alias.current_symbol;
+    // Snapshot the keys: the loop below erases from and inserts into `positions`.
+    std::vector<std::string> held;
+    held.reserve(positions.size());
+    for (const auto& entry : positions) held.push_back(entry.first);
+    std::sort(held.begin(), held.end());  // deterministic order across runs
 
-        auto new_it = positions.find(alias.current_symbol);
-        if (new_it == positions.end()) {
-            // Simple re-key: same holding, new name. Cost basis untouched --
-            // a rename is not an economic event.
-            Position moved = old_it->second;
-            moved.symbol = alias.current_symbol;
-            positions.erase(old_it);
-            positions.emplace(alias.current_symbol, std::move(moved));
-            adj.quantity_after = adj.quantity_before;
-        } else {
-            // Both keys present: the same holding recorded twice across the
-            // rename boundary. Merge into the current symbol with a
-            // quantity-weighted average cost so neither leg's basis is lost.
-            Position& dest = new_it->second;
-            const double q_old = adj.quantity_before;
-            const double q_new = dest.quantity.as_double();
-            const double p_old = old_it->second.average_price.as_double();
-            const double p_new = dest.average_price.as_double();
-            const double q_sum = q_old + q_new;
+    for (const auto& original : held) {
+        if (renames.find(original) == renames.end()) continue;  // nothing maps this ticker
 
-            if (std::abs(q_sum) > 1e-9) {
-                dest.average_price = Decimal((q_old * p_old + q_new * p_new) / q_sum);
+        auto inception_it = position_inception.find(original);
+        if (inception_it == position_inception.end() || inception_it->second.empty()) {
+            // Should not happen -- inceptions come from the same positions table --
+            // but without one there is no era to test, and guessing re-keys a live
+            // holding onto a dead symbol.
+            WARN("Corp action SERIES_CONTINUITY: no inception date for held symbol " +
+                 original + "; skipping its renames this run (fail-narrow)");
+            continue;
+        }
+        const std::string& inception = inception_it->second;
+
+        // Follow the chain (A->B->C) at the SAME inception, bounded so a cyclic
+        // alias map cannot spin.
+        std::string sym = original;
+        for (int hop = 0; hop < 8; ++hop) {
+            auto old_it = positions.find(sym);
+            if (old_it == positions.end()) break;  // already merged away
+
+            auto [effective_until, successor] = successor_at(sym, inception);
+            if (successor.empty() || successor == sym) break;
+
+            // The rename must also have already happened as of this run.
+            if (!as_of_date.empty() && as_of_date <= effective_until) break;
+
+            LifecycleAdjustment adj;
+            adj.symbol = sym;
+            adj.event_date = effective_until;
+            adj.vendor_label = "tickerchangeto";
+            adj.action_class = CorpActionClass::SERIES_CONTINUITY;
+            adj.outcome = LifecycleOutcome::RENAMED;
+            adj.quantity_before = old_it->second.quantity.as_double();
+            adj.contra_ticker = successor;
+
+            auto new_it = positions.find(successor);
+            if (new_it == positions.end()) {
+                // Simple re-key: same holding, new name. Cost basis untouched --
+                // a rename is not an economic event.
+                Position moved = old_it->second;
+                moved.symbol = successor;
+                positions.erase(old_it);
+                positions.emplace(successor, std::move(moved));
+                adj.quantity_after = adj.quantity_before;
+            } else {
+                // Both keys present: the same holding recorded twice across the
+                // rename boundary. Merge into the current symbol with a
+                // quantity-weighted average cost so neither leg's basis is lost.
+                Position& dest = new_it->second;
+                const double q_old = adj.quantity_before;
+                const double q_new = dest.quantity.as_double();
+                const double p_old = old_it->second.average_price.as_double();
+                const double p_new = dest.average_price.as_double();
+                const double q_sum = q_old + q_new;
+
+                if (std::abs(q_sum) > 1e-9) {
+                    dest.average_price = Decimal((q_old * p_old + q_new * p_new) / q_sum);
+                }
+                dest.quantity = Quantity(q_sum);
+                dest.realized_pnl = Decimal(dest.realized_pnl.as_double() +
+                                            old_it->second.realized_pnl.as_double());
+                positions.erase(old_it);
+                adj.quantity_after = q_sum;
             }
-            dest.quantity = Quantity(q_sum);
-            dest.realized_pnl = Decimal(dest.realized_pnl.as_double() +
-                                        old_it->second.realized_pnl.as_double());
-            positions.erase(old_it);
-            adj.quantity_after = q_sum;
-        }
 
-        INFO("Corp action SERIES_CONTINUITY: " + alias.historical_ticker + " -> " +
-             alias.current_symbol + " (effective_until " +
-             (alias.effective_until.empty() ? std::string("open") : alias.effective_until) +
-             "), qty " + std::to_string(adj.quantity_before) + " -> " +
-             std::to_string(adj.quantity_after));
-        log.push_back(std::move(adj));
+            INFO("Corp action SERIES_CONTINUITY: " + sym + " -> " + successor +
+                 " (effective_until " + effective_until + ", position inception " + inception +
+                 "), qty " + std::to_string(adj.quantity_before) + " -> " +
+                 std::to_string(adj.quantity_after));
+            log.push_back(std::move(adj));
+            sym = successor;
+        }
     }
 
     return log;

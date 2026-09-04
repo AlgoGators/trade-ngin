@@ -182,3 +182,133 @@ TEST_F(LiveResultsManagerTest, NotConnectedDbCausesError) {
     auto r = mgr_->save_positions_snapshot(date_at(2026, 3, 15));
     EXPECT_TRUE(r.is_error());
 }
+
+// ===================== FIX-0: storage key threading =====================
+//
+// Live rows are keyed (strategy_id, strategy_name, portfolio_id). Before FIX-0
+// ResultsManagerBase passed strategy_id_ for BOTH id and name, and the equity runner
+// never set portfolio_id, so the coordinator's BASE_PORTFOLIO default (the futures
+// book) went on the row. Two of three key columns differed from what every read used,
+// which is why run N+1 loaded an empty book. These tests pin all three columns at the
+// DB-call boundary in both shapes: the equity shape (distinct name) and the futures
+// shape (empty name, which must still write id-as-name byte-for-byte).
+
+class LiveResultsManagerKeyTest : public TestBase {
+protected:
+    void SetUp() override {
+        TestBase::SetUp();
+        db_ = std::make_shared<MockPostgresDatabase>("mock://testdb");
+        ASSERT_TRUE(db_->connect().is_ok());
+    }
+    std::unique_ptr<LiveResultsManager> make_mgr(const std::string& strategy_id,
+                                                 const std::string& portfolio_id,
+                                                 const std::string& strategy_name) {
+        return std::make_unique<LiveResultsManager>(db_, /*store_enabled=*/true, strategy_id,
+                                                    portfolio_id, strategy_name);
+    }
+    std::shared_ptr<MockPostgresDatabase> db_;
+};
+
+TEST_F(LiveResultsManagerKeyTest, PositionsWriteUnderDistinctStrategyName) {
+    auto mgr = make_mgr("LIVE_EQUITY_MEAN_REVERSION", "EQUITY_PORTFOLIO",
+                        "EQUITY_MEAN_REVERSION");
+    mgr->set_positions({make_pos("AAPL", 5.0)});
+    ASSERT_TRUE(mgr->save_positions_snapshot(date_at(2026, 3, 15)).is_ok());
+
+    auto key = db_->last_key("store_positions");
+    EXPECT_EQ(key.strategy_id, "LIVE_EQUITY_MEAN_REVERSION");
+    // Pre-FIX-0 this was "LIVE_EQUITY_MEAN_REVERSION" — strategy_id_ was passed twice.
+    EXPECT_EQ(key.strategy_name, "EQUITY_MEAN_REVERSION");
+    EXPECT_EQ(key.portfolio_id, "EQUITY_PORTFOLIO");
+}
+
+TEST_F(LiveResultsManagerKeyTest, ExecutionsAndSignalsShareThePositionsKey) {
+    auto mgr = make_mgr("LIVE_EQUITY_MEAN_REVERSION", "EQUITY_PORTFOLIO",
+                        "EQUITY_MEAN_REVERSION");
+    mgr->set_positions({make_pos("AAPL", 5.0)});
+    mgr->set_executions({make_exec("AAPL", 5.0, 190.0)});
+    mgr->set_signals({{"AAPL", 0.5}});
+    ASSERT_TRUE(mgr->save_positions_snapshot(date_at(2026, 3, 15)).is_ok());
+    ASSERT_TRUE(mgr->save_executions_batch(date_at(2026, 3, 15)).is_ok());
+    ASSERT_TRUE(mgr->save_signals_snapshot(date_at(2026, 3, 15)).is_ok());
+
+    auto pos = db_->last_key("store_positions");
+    auto exe = db_->last_key("store_executions");
+    auto sig = db_->last_key("store_signals");
+    // A row written under a key its siblings do not share is a row no read reassembles.
+    EXPECT_EQ(exe.strategy_id, pos.strategy_id);
+    EXPECT_EQ(exe.strategy_name, pos.strategy_name);
+    EXPECT_EQ(exe.portfolio_id, pos.portfolio_id);
+    EXPECT_EQ(sig.strategy_id, pos.strategy_id);
+    EXPECT_EQ(sig.strategy_name, pos.strategy_name);
+    EXPECT_EQ(sig.portfolio_id, pos.portfolio_id);
+}
+
+TEST_F(LiveResultsManagerKeyTest, EmptyStrategyNameFallsBackToStrategyIdForFutures) {
+    // Inverse pin: the futures runners never set strategy_name, and their existing rows
+    // are keyed (strategy_id, strategy_id, portfolio_id). FIX-0 must not move them.
+    auto mgr = make_mgr("LIVE_TREND_FOLLOWING", "BASE_PORTFOLIO", "");
+    mgr->set_positions({make_pos("ES", 5.0)});
+    ASSERT_TRUE(mgr->save_positions_snapshot(date_at(2026, 3, 15)).is_ok());
+
+    auto key = db_->last_key("store_positions");
+    EXPECT_EQ(key.strategy_id, "LIVE_TREND_FOLLOWING");
+    EXPECT_EQ(key.strategy_name, "LIVE_TREND_FOLLOWING");
+    EXPECT_EQ(key.portfolio_id, "BASE_PORTFOLIO");
+    EXPECT_EQ(mgr->get_strategy_name(), "LIVE_TREND_FOLLOWING");
+}
+
+TEST_F(LiveResultsManagerKeyTest, DefaultedStrategyNameArgPreservesFuturesKey) {
+    // Same pin via the 4-arg call shape the futures code actually compiles against.
+    LiveResultsManager mgr(db_, /*store_enabled=*/true, "LIVE_TREND_FOLLOWING",
+                           "BASE_PORTFOLIO");
+    EXPECT_EQ(mgr.get_strategy_name(), "LIVE_TREND_FOLLOWING");
+}
+
+// ===================== F-J: save_all_results failure propagation =====================
+
+TEST_F(LiveResultsManagerKeyTest, SaveAllResultsReportsAFailedTableInsteadOfExitingClean) {
+    auto mgr = make_mgr("LIVE_EQUITY_MEAN_REVERSION", "EQUITY_PORTFOLIO",
+                        "EQUITY_MEAN_REVERSION");
+    mgr->set_positions({make_pos("AAPL", 5.0)});
+    mgr->set_metrics({{"total_return", 0.05}}, {{"trades", 1}});
+    mgr->set_config(nlohmann::json{});
+    db_->fail_on_call("store_live_results_complete");
+
+    auto r = mgr->save_all_results("RUN_1", date_at(2026, 3, 15));
+    // Pre-F-J every per-table error was logged and swallowed, so this returned ok and the
+    // runner exited 0 with trading.live_results missing.
+    ASSERT_TRUE(r.is_error());
+    EXPECT_EQ(r.error()->code(), ErrorCode::DATABASE_ERROR);
+    EXPECT_NE(std::string(r.error()->what()).find("live_results"), std::string::npos);
+}
+
+TEST_F(LiveResultsManagerKeyTest, SaveAllResultsStillAttemptsLaterTablesAfterAFailure) {
+    auto mgr = make_mgr("LIVE_EQUITY_MEAN_REVERSION", "EQUITY_PORTFOLIO",
+                        "EQUITY_MEAN_REVERSION");
+    mgr->set_positions({make_pos("AAPL", 5.0)});
+    mgr->set_metrics({{"total_return", 0.05}}, {});
+    mgr->set_config(nlohmann::json{});
+    mgr->set_equity(1'050'000.0);
+    db_->fail_on_call("store_live_results_complete");
+    db_->reset_call_counts();
+
+    auto r = mgr->save_all_results("RUN_1", date_at(2026, 3, 15));
+    EXPECT_TRUE(r.is_error());
+    // Failing table 5 must not cost us table 6: reporting the failure is not aborting.
+    EXPECT_EQ(db_->call_count("store_trading_equity_curve"), 1);
+    EXPECT_GT(db_->call_count("store_positions"), 0);
+}
+
+TEST_F(LiveResultsManagerKeyTest, SaveAllResultsSucceedsWhenEveryTableWrites) {
+    auto mgr = make_mgr("LIVE_EQUITY_MEAN_REVERSION", "EQUITY_PORTFOLIO",
+                        "EQUITY_MEAN_REVERSION");
+    mgr->set_positions({make_pos("AAPL", 5.0)});
+    mgr->set_executions({make_exec("AAPL", 5.0, 190.0)});
+    mgr->set_signals({{"AAPL", 0.5}});
+    mgr->set_metrics({{"total_return", 0.05}}, {});
+    mgr->set_config(nlohmann::json{});
+    mgr->set_equity(1'050'000.0);
+
+    EXPECT_TRUE(mgr->save_all_results("RUN_1", date_at(2026, 3, 15)).is_ok());
+}

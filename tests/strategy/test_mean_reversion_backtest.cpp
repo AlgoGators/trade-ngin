@@ -280,12 +280,21 @@ TEST_F(MeanReversionBacktestTest, EntryPriceClearedOnClose) {
     auto result = strategy_->on_data(test_data);
     ASSERT_TRUE(result.is_ok());
 
-    // After mean reversion completes, entry price should be cleared if position is flat
+    // Cost basis lives on Position::average_price, not on the instrument data. This
+    // previously asserted MeanReversionInstrumentData::entry_price == 0, which passed
+    // vacuously: that field had no writer anywhere, so it was always 0 whatever the
+    // position did. Assert the real invariant against the field on_execution maintains.
     auto inst_data = strategy_->get_instrument_data("AAPL");
     ASSERT_NE(inst_data, nullptr);
     if (std::abs(inst_data->target_position) < 1e-6) {
-        EXPECT_NEAR(inst_data->entry_price, 0.0, 1e-6)
-            << "Entry price should be cleared when position is closed";
+        const auto& positions = strategy_->get_positions();
+        auto it = positions.find("AAPL");
+        if (it != positions.end()) {
+            EXPECT_NEAR(it->second.quantity.as_double(), 0.0, 1e-6)
+                << "a flat target should leave no quantity behind";
+            EXPECT_NEAR(static_cast<double>(it->second.average_price), 0.0, 1e-6)
+                << "cost basis should be cleared when the position is closed";
+        }
     }
 }
 

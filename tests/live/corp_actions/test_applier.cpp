@@ -67,7 +67,7 @@ CorpActionEvent dividend_event(const std::string& symbol, const std::string& dat
     ev.ex_date = date;
     ev.type = CorpActionType::DIVIDEND;
     ev.value = per_share;
-    ev.close_t_minus_1 = close_tm1;
+    ev.close_at_ex_date = close_tm1;
     return ev;
 }
 
@@ -283,7 +283,7 @@ TEST(CorpActionFrameConsistency, DividendBasisRescaleMatchesPriceSeriesFactor) {
     ev.ex_date = "2026-08-10";
     ev.type = CorpActionType::DIVIDEND;
     ev.value = dividend;
-    ev.close_t_minus_1 = close_on_ex;  // ex-date close, per the fix
+    ev.close_at_ex_date = close_on_ex;  // ex-date close, per the fix
 
     const auto adjustments = CorporateActionsApplier::apply(positions, {ev});
     ASSERT_EQ(adjustments.size(), 1u);
@@ -376,7 +376,7 @@ using namespace trade_ngin;
 // net price change. Provider uses backward (retroactive) closeadj
 // adjustment, so each dividend rescales the closeadj curve. Pre-fix, the
 // stored avg_price never updated, accumulating ~4% understatement of return.
-// Post-fix, the avg_price /= (1 + d/close_t_minus_1) rescaling per
+// Post-fix, the avg_price /= (1 + d/close_at_ex_date) rescaling per
 // dividend keeps the avg_price in the same closeadj frame as bar.close,
 // so MTM correctly reflects total return.
 //
@@ -404,7 +404,7 @@ TEST(CorpActionsLongHoldTotalReturnTest, FourQuarterlyDividendsCaptureTotalRetur
         ev.ex_date = "2025-" + std::to_string(3 * (q + 1)) + "-15";
         ev.type = CorpActionType::DIVIDEND;
         ev.value = 1.00;
-        ev.close_t_minus_1 = 100.0;
+        ev.close_at_ex_date = 100.0;
         events.push_back(ev);
     }
 
@@ -474,7 +474,7 @@ CorpActionEvent dividend_event(const std::string& symbol,
     ev.ex_date = date;
     ev.type = CorpActionType::DIVIDEND;
     ev.value = per_share;
-    ev.close_t_minus_1 = close_tm1;
+    ev.close_at_ex_date = close_tm1;
     ev.qty_at_ex_date = qty_at_ex;
     return ev;
 }

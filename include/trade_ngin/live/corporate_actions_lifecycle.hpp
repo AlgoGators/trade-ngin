@@ -90,11 +90,35 @@ public:
      * Aliases are a curated subset, not the full rename history: an unmapped
      * historical ticker simply stays as-is, which is the pre-existing
      * behaviour and never loses a position.
+     *
+     * **Renames are era-bound by position inception.** Tickers get reused: our
+     * own backfill maps META -> METV (effective_until 2022-01-31), but META has
+     * been Meta Platforms since, with 3,589 bars through 2026-08-28 while METV
+     * has none. Applying that alias to a position opened in 2026 re-keys a live
+     * holding onto a symbol with no prices. 131 historical tickers in the live
+     * alias table are still actively trading, and 33 carry two or more
+     * successors, so a map keyed on historical_ticker alone also picks an
+     * arbitrary winner. `position_inception` supplies, per symbol, the date the
+     * holding was ESTABLISHED; an alias applies only if that date falls in its
+     * era (`inception <= effective_until`), resolved exactly the way the dedup
+     * mirror resolves events (`corporate_actions_audit_log.cpp`). A position
+     * newer than every rename for its ticker gets none -- the ticker belongs to
+     * whoever holds it now.
+     *
+     * Class 2 fails NARROW, unlike the class-1 window: a symbol with no
+     * inception entry, or an alias with no `effective_until` to bound an era
+     * with, is skipped with a WARN. A skipped rename is retried next run; a
+     * wrong re-key is silent corruption. Never pass class-1's fail-wide
+     * bulk-start sentinel dates in here -- a sentinel two years back satisfies
+     * the era test for any recent alias and reintroduces the bug.
+     *
+     * @param position_inception symbol -> YYYY-MM-DD the holding was established.
      */
     static std::vector<LifecycleAdjustment> apply_renames(
         std::unordered_map<std::string, Position>& positions,
         const std::vector<TickerAlias>& aliases,
-        const std::string& as_of_date);
+        const std::string& as_of_date,
+        const std::unordered_map<std::string, std::string>& position_inception);
 
     /**
      * @brief Class 3 -- terminate or transform holdings.
@@ -114,6 +138,25 @@ public:
         std::unordered_map<std::string, Position>& positions,
         const std::vector<TerminationEvent>& events,
         const std::unordered_map<std::string, double>& final_closes);
+
+    /**
+     * @brief Is a `delisting_date` contradicted by the symbol's own bars?
+     *
+     * The same hazard the rename era test defuses, one class over: delisting_date
+     * is keyed on the ticker, so a reused ticker inherits the dead company's row.
+     * Acting on it exits a live position at a stale price -- the class-3 mirror of
+     * re-keying META onto METV. A symbol still printing bars after its claimed
+     * delisting is plainly not delisted, so the row belongs to a prior issuer and
+     * the termination must be dropped.
+     *
+     * Both dates are ISO YYYY-MM-DD and compare lexicographically. An empty
+     * `last_bar_date` (no bars loaded for the symbol) is NOT contradiction: it is
+     * exactly what a real delisting looks like, so the termination stands.
+     */
+    static bool delisting_is_stale(const std::string& delist_date,
+                                   const std::string& last_bar_date) {
+        return !last_bar_date.empty() && !delist_date.empty() && last_bar_date > delist_date;
+    }
 
     static const char* outcome_to_string(LifecycleOutcome o);
 };
