@@ -9,11 +9,17 @@
 //
 // The wiring itself is only provable by a replay (protocol §7). What IS unit-provable, and
 // what these tests pin, is the CONTRACT the two write sites share: exactly which columns
-// constitute the block, that both sites take them from one definition rather than from two
-// hand-written maps that can drift, and -- the one that would silently move a compared
-// column -- that `volatility` is NOT in it. The equity runner writes the portfolio-VaR proxy
-// into `volatility`; the futures runner overwrites it with the return volatility. Filling in
-// NULLs must not change a column that already carries a value.
+// constitute the block, and that both sites take them from one definition rather than from
+// two hand-written maps that can drift.
+//
+// D3 (2026-09-03) -- `volatility` joined the block. It was held out when E2-F33 landed
+// because the equity runner wrote `portfolio_var x 100` there, the ex-ante instrument-mix
+// sigma, and filling in NULLs must not move a compared column. The lead then ruled that one
+// column may not mean two things on two books: both futures runners store the REALISED
+// annualised return volatility in `volatility` and keep the ex-ante sigma in `portfolio_var`,
+// so equities do the same. The tests below now pin the OPPOSITE of what they pinned before --
+// that the figure reaching the column is the calculator's, not the risk engine's -- and the
+// last one does it on the real 2026-04-20 series.
 
 #include <gtest/gtest.h>
 
@@ -55,7 +61,7 @@ HistoricalMetrics distinct_metrics() {
 
 }  // namespace
 
-TEST(HistoricalMetricsColumns, TheBlockIsExactlyTheFifteenColumnsThatWereNull) {
+TEST(HistoricalMetricsColumns, TheBlockIsTheFifteenNullColumnsPlusVolatility) {
     const auto m = distinct_metrics();
     const auto doubles = historical_metrics_double_columns(m);
     const auto ints = historical_metrics_int_columns(m);
@@ -65,31 +71,82 @@ TEST(HistoricalMetricsColumns, TheBlockIsExactlyTheFifteenColumnsThatWereNull) {
     for (const auto& [k, v] : ints) keys.insert(k);
 
     const std::set<std::string> expected = {
-        "sharpe_ratio", "sortino_ratio", "max_drawdown", "downside_deviation",
-        "win_rate",     "avg_win",       "avg_loss",     "profit_factor",
-        "best_day",     "worst_day",     "gross_profit", "gross_loss",
-        "winning_days", "losing_days",   "total_days"};
+        "volatility",   "sharpe_ratio",  "sortino_ratio", "max_drawdown",
+        "downside_deviation", "win_rate", "avg_win",      "avg_loss",
+        "profit_factor", "best_day",     "worst_day",     "gross_profit",
+        "gross_loss",   "winning_days",  "losing_days",   "total_days"};
 
     EXPECT_EQ(keys, expected)
-        << "the set of columns the equity runner fills in changed; every one of these was "
-           "NULL on every equity live_results row before E2-F33, and both write sites (the "
-           "Day T-1 UPDATE and the day-T INSERT) take the set from here";
-    EXPECT_EQ(doubles.size(), 12u);
+        << "the set of columns the equity runner fills in changed; fifteen of these were "
+           "NULL on every equity live_results row before E2-F33 and `volatility` carried the "
+           "wrong quantity until D3, and both write sites (the Day T-1 UPDATE and the day-T "
+           "INSERT) take the set from here";
+    EXPECT_EQ(doubles.size(), 13u);
     EXPECT_EQ(ints.size(), 3u);
 }
 
-TEST(HistoricalMetricsColumns, VolatilityIsDeliberatelyNotInTheBlock) {
-    const auto doubles = historical_metrics_double_columns(distinct_metrics());
-    EXPECT_EQ(doubles.count("volatility"), 0u)
-        << "trading.live_results.volatility already carries the portfolio-VaR proxy on every "
-           "equity row and the chain gate compares it. HistoricalMetrics::volatility is the "
-           "annualized RETURN volatility -- a different quantity. Putting it in this map "
-           "silently moves a populated column while claiming to fill in NULLs.";
-    // The same reasoning, one column over: these two have no place on the table at all.
+TEST(HistoricalMetricsColumns, VolatilityIsTheCalculatorsFigureAndNotTheRiskEngines) {
+    const auto m = distinct_metrics();
+    const auto doubles = historical_metrics_double_columns(m);
+
+    ASSERT_EQ(doubles.count("volatility"), 1u)
+        << "D3: trading.live_results.volatility carries the REALISED annualised return "
+           "volatility on both futures books, and equities must not mean something else by "
+           "the same column";
+    EXPECT_DOUBLE_EQ(doubles.at("volatility"), m.volatility)
+        << "the column must carry HistoricalMetrics::volatility -- the calculator's figure -- "
+           "and not risk_eval.portfolio_var * 100, the ex-ante instrument-mix sigma";
+
+    // `portfolio_var`, `var_95` and `cvar_95` are NOT this block's business: they keep the
+    // ex-ante figure, which is what the risk gate reads.
+    EXPECT_EQ(doubles.count("portfolio_var"), 0u);
+    EXPECT_EQ(doubles.count("var_95"), 0u);
+    EXPECT_EQ(doubles.count("cvar_95"), 0u);
+
+    // These two have no place on the table at all.
     EXPECT_EQ(doubles.count("total_trades"), 0u);
     EXPECT_EQ(doubles.count("flat_days"), 0u);
-    EXPECT_EQ(historical_metrics_int_columns(distinct_metrics()).count("total_trades"), 0u);
-    EXPECT_EQ(historical_metrics_int_columns(distinct_metrics()).count("flat_days"), 0u);
+    EXPECT_EQ(historical_metrics_int_columns(m).count("total_trades"), 0u);
+    EXPECT_EQ(historical_metrics_int_columns(m).count("flat_days"), 0u);
+}
+
+// The real 2026-04-20 row of EQUITY_MR_PORTFOLIO, from
+// reports/LEAD_B5A_METRICS_DECISIONS.md: 20 stored daily returns in percent, five of them the
+// zeros of the pre-trading carry rows. This is the fixture the decision was taken on, so it is
+// the fixture the column is pinned against.
+TEST(HistoricalMetricsColumns, TheRealAprilTwentiethRowCarriesZeroPointEightNotTwentyTwo) {
+    const std::vector<double> returns_pct = {
+        0.0,       0.0,       0.0,       0.0,       0.0,       -0.092948, 0.063900,
+        -0.096632, -0.004166, -0.065039, 0.0,       0.0,       -0.124015, -0.091636,
+        -0.001935, 0.0,       0.075430,  0.0,       0.0,       -0.044904};
+    ASSERT_EQ(returns_pct.size(), 20u);
+
+    // The annualised return stored on that row, and the ex-ante sigma the column used to hold.
+    const double stored_annualized_return = -4.702;
+    const double ex_ante_portfolio_var_x100 = 21.8934;
+
+    LiveHistoricalMetricsCalculator calc;
+    const auto m = calc.calculate(returns_pct, /*pnl*/ {}, /*equity*/ {},
+                                  stored_annualized_return, /*executions*/ 3);
+
+    // Population std of the twenty returns, times sqrt(252). Hand-computed in the decisions
+    // doc as 0.797689; the fixture's rounded returns give 0.7976864.
+    EXPECT_NEAR(m.volatility, 0.797689, 1e-5);
+
+    const auto doubles = historical_metrics_double_columns(m);
+    EXPECT_NEAR(doubles.at("volatility"), 0.797689, 1e-5)
+        << "the column is the calculator's realised return volatility";
+    EXPECT_GT(std::abs(doubles.at("volatility") - ex_ante_portfolio_var_x100), 20.0)
+        << "if this is ~21.89 the runner is still writing risk_eval.portfolio_var * 100 -- the "
+           "ex-ante sigma of a one-stock book, which on 2026-04-15/16 was 0.0000 because the "
+           "book was flat, and which ignores the fact that the book was 5 % invested";
+
+    // And the point of the change: sharpe is now reproducible from the row it sits on.
+    EXPECT_NEAR(doubles.at("sharpe_ratio"), stored_annualized_return / m.volatility, 1e-12);
+    EXPECT_NEAR(doubles.at("sharpe_ratio"), -5.894563, 1e-4)
+        << "the stored 2026-04-20 sharpe_ratio";
+    EXPECT_NEAR(doubles.at("downside_deviation"), 1.229913, 1e-5)
+        << "the stored 2026-04-20 downside_deviation, from the same series";
 }
 
 TEST(HistoricalMetricsColumns, EveryColumnCarriesItsOwnMemberAndNotItsNeighbours) {

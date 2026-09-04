@@ -85,11 +85,17 @@ private:
  * column on one path only. Fifteen columns in total, every one of which was NULL on every
  * equity row before E2-F33.
  *
- * `volatility` is DELIBERATELY ABSENT from both maps even though `HistoricalMetrics` carries
- * it. The equity runner has always written the portfolio-VaR proxy into that column and the
- * chain gate compares it; the futures runner overwrites it with this return volatility.
- * Reconciling the two is a reporting decision, not part of filling in NULLs, and until it is
- * taken this helper must not move the column. The return volatility is logged instead.
+ * `volatility` IS one of them (D3, 2026-09-03). It was held out when the block first landed
+ * because the equity runner wrote `portfolio_var x 100` -- the ex-ante instrument-mix sigma --
+ * into that column and the chain gate compared it, so filling in NULLs must not have moved it.
+ * The lead then ruled the two books may not carry two meanings in one column: both futures
+ * runners store the REALISED annualised return volatility here and keep the ex-ante sigma in
+ * `portfolio_var`, and equities now do the same. It also makes `sharpe_ratio` reproducible
+ * from the row it is written on -- `sharpe = total_annualized_return / volatility` -- which it
+ * was not while the denominator lived nowhere.
+ *
+ * `portfolio_var`, `var_95` and `cvar_95` are untouched: the ex-ante sigma still feeds the risk
+ * gate and nothing is lost.
  *
  * `total_trades` and `flat_days` are absent because `trading.live_results` has no such
  * columns; flat_days is `total_days - winning_days - losing_days` on read.

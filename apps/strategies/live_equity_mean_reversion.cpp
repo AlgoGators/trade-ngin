@@ -4627,12 +4627,12 @@ int main(int argc, char* argv[]) {
             // id and the E2-F32-corrected trading-days figure this runner already computed
             // above, which is the denominator the annualized return in the same row used.
             //
-            // NOT included, deliberately: `volatility`. The futures runner overwrites it with
-            // the return volatility computed here; this runner has always written the
-            // portfolio-VaR proxy into it, and changing that would move a column the chain
-            // gate compares. The return volatility is logged on the HIST_METRICS line instead
-            // so the sharpe denominator is visible, and reconciling the two is a separate
-            // decision (reported to the lead).
+            // Included since D3: `volatility`. Both futures runners write
+            // `{"volatility", yesterday_hist_metrics.volatility}` into this same T-1 update;
+            // the equity runner used to leave the ex-ante `portfolio_var x 100` standing here,
+            // so the column meant one thing on one book and another on the other, and the
+            // sharpe ratio written beside it could not be reproduced from it. `portfolio_var`
+            // is untouched and still carries the ex-ante figure.
             //
             // Failure here is a WARN, not a fatal: every trading decision for T-1 is already
             // made and persisted by this point, and these columns are reporting. That is the
@@ -5199,19 +5199,30 @@ int main(int argc, char* argv[]) {
             // column, which is why the block read NULL rather than zero. What replaces them
             // is `historical_metrics` above.
             //
-            // `volatility` is NOT one of them. It has always carried the portfolio-VaR proxy
-            // set just below, the chain gate compares that column, and the return volatility
-            // is a different quantity -- it is logged on the HIST_METRICS line instead.
+            // `volatility` IS one of them now (D3). It used to be assigned
+            // `risk_eval.portfolio_var * 100` here -- the ex-ante instrument-mix sigma
+            // sqrt(w'Sigma w), with w normalised to GROSS exposure. On a one-stock book that is
+            // simply that stock's own annualised sigma (24.65 % for TMUS, 21.87 % for ABT, 0
+            // when the book is flat): it ignores leverage -- the book was 5 % invested -- and
+            // says nothing about the account's returns, so `sharpe_ratio` could not be
+            // reproduced from the row it was written on (-4.70 / 21.89 = -0.21, not -5.89).
+            //
+            // Both futures runners store the REALISED annualised return volatility in this
+            // column and keep the ex-ante sigma in `portfolio_var`
+            // (live_portfolio_conservative.cpp, `volatility = historical_metrics.volatility`
+            // after the calculate() call, and `{"portfolio_var", portfolio_var}` beside it).
+            // One column may not mean two things on two books. `portfolio_var`, `var_95` and
+            // `cvar_95` keep the ex-ante figure unchanged -- the risk gate reads it and nothing
+            // is lost.
             double volatility = 0.0;
             double var_95 = 0.0;
             double cvar_95 = 0.0;
             double beta = 0.0;
             double correlation = 0.0;
             
-            // Get volatility from risk evaluation if available
+            // The ex-ante risk figures. NOT volatility any more -- see above.
             if (risk_eval.is_ok()) {
                 const auto& r = risk_eval.value();
-                volatility = r.portfolio_var * 100.0; // Convert to percentage
                 var_95 = r.portfolio_var * 100.0;     // Use portfolio VaR as proxy
                 cvar_95 = r.portfolio_var * 100.0;    // Use portfolio VaR as proxy (no CVaR available)
                 beta = 0.0;                           // No beta available in RiskResult
@@ -5328,6 +5339,13 @@ int main(int argc, char* argv[]) {
                         hist_calc.calculate(returns_hist, pnl_hist, equity_hist,
                                             total_return_annualized, total_trades_hist);
 
+                    // D3: keep the `volatility` local aligned with the return-volatility
+                    // definition, the same line live_portfolio_conservative.cpp carries after
+                    // its own calculate(). The metric map below takes the column from the
+                    // shared helper, so this is belt and braces -- but the local is what the
+                    // email and the console report read.
+                    volatility = historical_metrics.volatility;
+
                     historical_metrics.total_days = trading_days_count;
                     if (trading_days_count > 0) {
                         historical_metrics.win_rate =
@@ -5405,9 +5423,10 @@ int main(int argc, char* argv[]) {
                 {"active_positions", active_positions}
             };
 
-            // E2-F33: the same fifteen columns the Day T-1 UPDATE writes, from the same
-            // helper. `volatility` stays as set above (the portfolio-VaR proxy) -- the
-            // helper deliberately does not carry it.
+            // E2-F33: the same columns the Day T-1 UPDATE writes, from the same helper --
+            // sixteen since D3 folded `volatility` in. The helper's entry overwrites the
+            // literal `{"volatility", volatility}` above with the identical figure, because
+            // the local was assigned from the same `historical_metrics` after calculate().
             for (const auto& [column, value] :
                  historical_metrics_double_columns(historical_metrics)) {
                 double_metrics[column] = value;

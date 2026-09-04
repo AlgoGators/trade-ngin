@@ -181,6 +181,7 @@ HistoricalMetrics LiveHistoricalMetricsCalculator::calculate(
 std::unordered_map<std::string, double> historical_metrics_double_columns(
     const HistoricalMetrics& m) {
     return {
+        {"volatility", m.volatility},
         {"sharpe_ratio", m.sharpe_ratio},
         {"sortino_ratio", m.sortino_ratio},
         {"max_drawdown", m.max_drawdown},
