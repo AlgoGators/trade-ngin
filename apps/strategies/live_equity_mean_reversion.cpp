@@ -2568,7 +2568,8 @@ int main(int argc, char* argv[]) {
                         previous_positions, spinoff_events, policy);
 
                     for (const auto& adj : spinoff_log) {
-                        if (adj.outcome == LifecycleOutcome::SKIPPED_NO_CHILD_PRICE) {
+                        if (adj.outcome == LifecycleOutcome::SKIPPED_NO_CHILD_PRICE ||
+                            adj.outcome == LifecycleOutcome::SKIPPED_NO_PARENT_BASIS) {
                             // The class-1 event for this row was ALREADY suppressed, which is
                             // the point: the parent keeps its real share count instead of
                             // gaining phantom ones. Say plainly what the book now holds, so

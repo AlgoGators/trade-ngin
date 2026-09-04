@@ -78,6 +78,37 @@ std::vector<LifecycleAdjustment> CorporateActionsLifecycle::apply_spinoffs(
             continue;
         }
 
+        // B-iii: a spinoff cannot be allocated off a basis the book does not have.
+        //
+        // Every basis expression below is written `basis > 0.0 ? ... : 0.0`, so a parent
+        // whose average_price is 0 produces parent_basis_after = 0 and pool_per_share = 0,
+        // hence a child basis of 0. `allocation_sane` rejects only NEGATIVE and non-finite
+        // values, and zero is neither -- so the event proceeded and, under the default
+        // liquidate_at_first_close, booked `quantity * first_close` as pure realized gain
+        // while the runner's receipt BUY (gated on child_avg_price > 0) was suppressed:
+        // a disposal in trading.executions with no matching acquisition.
+        //
+        // average_price == 0 is the shape a position is PERSISTED in when its basis could
+        // not be resolved (AVERAGE_PRICE_LIFECYCLE rule 5 and the rule-5 residual, which
+        // writes 0 with a BASIS TRACE | UNRESOLVED error). That is precisely the book a
+        // corporate action must not be applied to. Refuse it whole, the same shape as the
+        // E2-F17 provenance skip: no dedup row, so the event is retried next run once the
+        // basis is repaired rather than being silently consumed.
+        if (!(basis > 0.0)) {
+            adj.outcome = LifecycleOutcome::SKIPPED_NO_PARENT_BASIS;
+            WARN("Corp action SPINOFF " + ev.parent + " (" + ev.ex_date +
+                 "): the parent holds " + std::to_string(qty) +
+                 " shares at cost basis " + std::to_string(basis) +
+                 ", which is not a known basis. Allocating from it would give every child a "
+                 "basis of ZERO and book their entire market value as realized gain, with "
+                 "the receipt suppressed and only the disposal recorded. NOTHING is applied "
+                 "and NO dedup row is written -- repair the position's cost basis (see "
+                 "BASIS TRACE | UNRESOLVED for " + ev.parent +
+                 ") and the event will be retried on the next run.");
+            log.push_back(std::move(adj));
+            continue;
+        }
+
         // F must be a real restatement and every r a real ratio. Neither is ever inferred
         // from magnitude -- both arrive from named columns -- so a bad value here is a data
         // fault, not a judgement call, and it must not be worked around.

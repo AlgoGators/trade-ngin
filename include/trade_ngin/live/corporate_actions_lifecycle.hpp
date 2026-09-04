@@ -288,7 +288,11 @@ enum class LifecycleOutcome {
     SKIPPED_NO_PRICE,       ///< exit required but no final close available
     SPUN_OFF_CHILD_HELD,    ///< E2-F31: parent restated, child position created and kept
     SPUN_OFF_CHILD_SOLD,    ///< E2-F31: parent restated, child created and sold at first close
-    SKIPPED_NO_CHILD_PRICE  ///< E2-F31: the child has no close, so NOTHING was applied
+    SKIPPED_NO_CHILD_PRICE,  ///< E2-F31: the child has no close, so NOTHING was applied
+    SKIPPED_NO_PARENT_BASIS  ///< B-iii: the parent's cost basis is unknown (<= 0), so the
+                             ///< allocation would hand every child a basis of zero and book
+                             ///< the child's entire market value as realized gain. NOTHING
+                             ///< is applied and no dedup row is written.
 };
 
 /**
