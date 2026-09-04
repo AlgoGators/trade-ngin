@@ -165,9 +165,28 @@ std::vector<LifecycleAdjustment> CorporateActionsLifecycle::apply_spinoffs(
             // basis_i = pool * P_i / sum(r_j P_j); with one child this is pool / r exactly.
             d.avg_price = pool_per_share > 0.0 ? pool_per_share * c.first_close / fmv_total
                                                : 0.0;
+            // BA-25: floor, but not through floating-point dust.
+            //
+            // `qty` is reloaded from `trading.positions.quantity`, which is numeric(20,6).
+            // A retried reverse-split spinoff therefore arrives as 33.333333 rather than the
+            // 33.33333333 the same-run path holds in memory, and 33.333333 x 1.8 is
+            // 59.9999994: floor gives 59 whole shares plus a 0.9999994 "fraction", so the
+            // holder is one share short and the book emits a cash-in-lieu SELL for very
+            // nearly a whole share that no broker ever paid. The same-run path, working from
+            // an unrounded quantity, delivers 60 and no CIL -- so the two paths disagreed
+            // about the same event because of the storage precision between them.
+            //
+            // A real fractional entitlement is nowhere near an integer (100 x 0.33333 is
+            // 33.333, a third of a share out), so rounding to the nearest share when the
+            // exact figure is within 1e-6 of one cannot swallow a genuine fraction: 1e-6 of
+            // a share is four orders of magnitude smaller than the smallest quantity the
+            // column can even represent.
             const double exact = qty * c.ratio;
-            d.quantity = std::floor(exact);
-            d.fractional = exact - d.quantity;
+            const double nearest = std::round(exact);
+            d.quantity = (std::abs(exact - nearest) < 1e-6) ? nearest : std::floor(exact);
+            // Clamp: when the exact figure sat just BELOW an integer, `exact - quantity` is a
+            // tiny negative, and a negative fraction would book a negative cash-in-lieu.
+            d.fractional = std::max(0.0, exact - d.quantity);
             d.cash_in_lieu = d.fractional * c.first_close;
             // The fraction is sold at the child's first close against the CHILD's basis.
             // Those shares were child shares from the instant of distribution, never parent

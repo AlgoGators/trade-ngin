@@ -17,7 +17,7 @@
 // TWO THINGS BREAK if the retry does not notice.
 //   1. `corporate_action.spinoff.value` is child shares per PRE-split parent share (HLT's
 //      0.6 PK is 200 M PK shares over 330 M pre-split HLT shares). Applied to 33.333333 shares
-//      it delivers floor(33.33333333 * 0.6) = 19 PK and 11 HGV -- a third of the entitlement,
+//      it delivers 33.33333333 * 0.6 = 20 PK and 11 HGV -- a third of the entitlement,
 //      with no error anywhere.
 //   2. `pending_class1_split_factor` would still be set from the bar, so the G1 basis-vs-mark
 //      bound would divide an already-post-split basis by 0.3333 a second time: a 3x error
@@ -136,11 +136,13 @@ TEST(SpinoffRetryAfterSplit, TheUnscaledRetryIsTheDefectAndDeliversAThirdOfTheEn
     ASSERT_EQ(log.size(), 1u);
     ASSERT_EQ(log[0].children.size(), 2u);
 
-    // 33.33333333 * 0.6 = 19.999999998, so the floor is NINETEEN, not twenty -- the vendor's
-    // 10-digit split factor makes the defect a share worse than the round arithmetic suggests,
-    // and the missing share is paid out as cash in lieu of a 0.999999998 fraction.
-    EXPECT_DOUBLE_EQ(log[0].children[0].quantity, 19.0) << "PK: floor(33.33333333 * 0.6)";
-    EXPECT_NEAR(log[0].children[0].fractional, 0.999999998, 1e-8);
+    // 33.33333333 * 0.6 = 19.999999998. Under a bare floor that was NINETEEN plus a
+    // 0.999999998 "fraction" -- the defect one share worse still, from floating-point dust
+    // rather than from anything real. BA-25's epsilon removes that artefact from the
+    // measurement, so the unscaled retry now delivers a clean 20: exactly a third of the
+    // sixty the holder is owed, which is the defect this test is about.
+    EXPECT_DOUBLE_EQ(log[0].children[0].quantity, 20.0) << "PK: 33.33333333 * 0.6";
+    EXPECT_NEAR(log[0].children[0].fractional, 0.0, 1e-6);
     EXPECT_DOUBLE_EQ(log[0].children[1].quantity, 11.0) << "HGV: floor(33.33333333 * 0.33333)";
     // A third of what the holder is owed, and nothing anywhere says so.
     EXPECT_NEAR(log[0].children[0].quantity + log[0].children[0].fractional,
@@ -178,6 +180,98 @@ TEST(SpinoffRetryAfterSplit, TheScaledRetryDeliversTheFullEntitlementOnHLTsNumbe
     // Which is the same frame the price series is in: B_pre / total_factor.
     EXPECT_NEAR(positions["HLT"].average_price.as_double(),
                 kBasisPre / hlt_bar().total_factor(), 1e-7);
+}
+
+// BA-25 -- the retry must survive the ROUND TRIP THROUGH THE DATABASE, not only through
+// memory.
+//
+// The test above compares the two paths with quantities the process computed. Production does
+// not: `trading.positions.quantity` is numeric(20,6), so the retry reloads 33.333333, not the
+// 33.33333333 the same-run path holds. 33.333333 x 1.8 = 59.9999994, and a bare floor turns
+// that into 59 whole shares plus a 0.9999994 "fraction" -- the holder is one PK short and the
+// book emits a cash-in-lieu SELL for very nearly a whole share that no broker ever paid.
+// "Exactly the same book" was true in memory and false in the database.
+TEST(SpinoffRetryAfterSplit, ASixDecimalRoundTripStillDeliversSixtyAndNoCashInLieu) {
+    const auto frame = hlt_bar().retry_frame(/*coincident_split_already_applied=*/true);
+
+    // The quantity as trading.positions stores and returns it: six decimal places.
+    const double qty_post = static_cast<double>(Decimal(kQtyPre * kSplit));
+    const double stored = std::round(qty_post * 1e6) / 1e6;
+    ASSERT_NEAR(stored, 33.333333, 1e-9) << "the fixture must be the STORED quantity";
+    ASSERT_LT(stored * (kRatioPK * frame.child_ratio_scale), 60.0)
+        << "the exact product must sit just BELOW 60 or this test does not exercise the "
+           "defect; it is " << stored * (kRatioPK * frame.child_ratio_scale);
+
+    std::unordered_map<std::string, Position> positions;
+    positions["HLT"] = held("HLT", stored, kBasisPre / kSplit);
+
+    auto log = CorporateActionsLifecycle::apply_spinoffs(
+        positions, {hlt_event(frame.child_ratio_scale)}, SpinoffChildPolicy::HOLD);
+    ASSERT_EQ(log.size(), 1u);
+    ASSERT_EQ(log[0].children.size(), 2u);
+
+    EXPECT_DOUBLE_EQ(log[0].children[0].quantity, 60.0)
+        << "PK came back " << log[0].children[0].quantity
+        << ": the six-decimal storage precision cost the holder a share";
+    EXPECT_NEAR(log[0].children[0].fractional, 0.0, 1e-9)
+        << "a fraction of " << log[0].children[0].fractional
+        << " would be sold as cash in lieu of very nearly a whole share";
+    EXPECT_DOUBLE_EQ(log[0].children[0].cash_in_lieu, 0.0);
+    EXPECT_DOUBLE_EQ(log[0].children[0].realized_delta, 0.0)
+        << "no CIL means no realized on the PK leg under HOLD";
+
+    // The delivered position, not just the log line.
+    ASSERT_EQ(positions.count("PK"), 1u);
+    EXPECT_DOUBLE_EQ(positions["PK"].quantity.as_double(), 60.0);
+}
+
+// The other half of the same rule: a GENUINE fraction must still be floored and still be paid
+// out as cash in lieu. 1e-6 of a share is four orders of magnitude below what the column can
+// represent, so the epsilon cannot swallow a real entitlement.
+TEST(SpinoffRetryAfterSplit, AnExactOneThirdIsStillFlooredAndStillPaysCashInLieu) {
+    const auto frame = hlt_bar().retry_frame(/*coincident_split_already_applied=*/true);
+    const double stored = std::round((kQtyPre * kSplit) * 1e6) / 1e6;  // 33.333333
+
+    std::unordered_map<std::string, Position> positions;
+    positions["HLT"] = held("HLT", stored, kBasisPre / kSplit);
+
+    auto log = CorporateActionsLifecycle::apply_spinoffs(
+        positions, {hlt_event(frame.child_ratio_scale)}, SpinoffChildPolicy::HOLD);
+    ASSERT_EQ(log.size(), 1u);
+    ASSERT_EQ(log[0].children.size(), 2u);
+
+    // HGV: 33.333333 x (0.33333/0.3333333333) = 33.3329997..., a third of a share out.
+    const auto& hgv = log[0].children[1];
+    EXPECT_EQ(hgv.symbol, "HGV");
+    EXPECT_DOUBLE_EQ(hgv.quantity, 33.0) << "a real fraction must still floor";
+    EXPECT_GT(hgv.fractional, 0.3);
+    EXPECT_LT(hgv.fractional, 0.4);
+    EXPECT_NEAR(hgv.cash_in_lieu, hgv.fractional * kCloseHGV, 1e-9);
+    EXPECT_GT(hgv.cash_in_lieu, 0.0) << "the fractional share must still be paid out";
+
+    // And the two children came out of ONE call, so the epsilon is per child, not per event.
+    EXPECT_DOUBLE_EQ(log[0].children[0].quantity, 60.0);
+}
+
+// The epsilon must not round a fraction that is merely small-ish. 0.5 shares is not dust.
+TEST(SpinoffRetryAfterSplit, AHalfShareEntitlementIsFlooredNotRounded) {
+    std::unordered_map<std::string, Position> positions;
+    positions["PAR"] = held("PAR", 7.0, 100.0);
+
+    SpinoffEvent ev;
+    ev.parent = "PAR";
+    ev.ex_date = "2020-01-02";
+    ev.parent_restatement_factor = 1.5;
+    ev.children.push_back({"CHI", 0.5, 40.0});  // 7 * 0.5 = 3.5 exactly
+
+    auto log = CorporateActionsLifecycle::apply_spinoffs(positions, {ev},
+                                                        SpinoffChildPolicy::HOLD);
+    ASSERT_EQ(log.size(), 1u);
+    ASSERT_EQ(log[0].children.size(), 1u);
+    EXPECT_DOUBLE_EQ(log[0].children[0].quantity, 3.0)
+        << "std::round would give 4 -- half a share is an entitlement, not dust";
+    EXPECT_NEAR(log[0].children[0].fractional, 0.5, 1e-12);
+    EXPECT_NEAR(log[0].children[0].cash_in_lieu, 0.5 * 40.0, 1e-9);
 }
 
 TEST(SpinoffRetryAfterSplit, TheRetryLandsOnEXACTLYTheBookASameRunApplyWouldHave) {
