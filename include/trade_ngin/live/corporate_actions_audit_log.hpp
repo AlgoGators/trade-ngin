@@ -99,6 +99,23 @@ public:
     /**
      * @brief Has this (symbol, ex_date, action) tuple already been applied?
      */
+    /**
+     * @brief The latest ex-date recorded as applied, "" when none.
+     *
+     * E2-F23: a row whose ex-date is on or after the run date cannot have been
+     * written by an earlier session of a forward-only book -- it came from a later
+     * pass (a replay, or a same-day re-run). A run that sees one must refuse rather
+     * than skip the event and finalize the T-1 book in the wrong frame.
+     */
+    std::string latest_applied_ex_date() const {
+        std::string latest;
+        for (const auto& key : applied_) {
+            const std::string& ex = std::get<1>(key);
+            if (ex > latest) latest = ex;
+        }
+        return latest;
+    }
+
     bool is_applied(const std::string& symbol,
                     const std::string& ex_date,
                     CorpActionType action) const;

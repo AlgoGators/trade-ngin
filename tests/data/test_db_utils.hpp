@@ -381,9 +381,9 @@ public:
 
     Result<void> delete_stale_executions(
         const std::vector<std::string>& order_ids, const Timestamp& date,
-        const std::string& strategy_name,
+        const std::string& strategy_name, const std::string& portfolio_id,
         const std::string& table_name = "trading.executions") override {
-        (void)order_ids; (void)date; (void)strategy_name; (void)table_name;
+        (void)order_ids; (void)date; (void)strategy_name; (void)portfolio_id; (void)table_name;
         return record_call("delete_stale_executions");
     }
 

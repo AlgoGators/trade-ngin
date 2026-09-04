@@ -49,7 +49,26 @@ struct AssetCostConfig {
     double max_commission_per_order = 1e9;  // effectively no cap by default
 
     // Percentage-based commission cap (-1.0 = use flat max_commission_per_order)
-    // IBKR Tiered: 0.5% of trade value; IBKR Fixed: 1.0% of trade value
+    //
+    // E2-C1/C2 -- THE EQUITY SCHEDULE IS IBKR PRO **FIXED**. Do not mix the two tiers.
+    //
+    //   Fixed:  $0.005/share, minimum $1.00/order, maximum **1% of trade value**,
+    //           and ALL-INCLUSIVE of exchange, clearing and regulatory fees.
+    //   Tiered: $0.0005-$0.0035/share (volume-banded), minimum $0.35/order, and fees are
+    //           PASSED THROUGH rather than included.
+    //
+    // Every equity config here sets commission_per_unit = 0.005 and
+    // min_commission_per_order = 1.00 -- both Fixed. The cap was previously 0.005 (0.5%),
+    // which is Tiered's, giving a schedule that took the worse half of each tier. It is now
+    // 0.01, and apply_regulatory_fees is false because Fixed already contains those fees:
+    // charging them separately double-charges.
+    //
+    // The cap is applied AFTER the floor in TransactionCostManager::calculate_costs -- see
+    // the comment there. Reversing that order makes this field dead for any stock above
+    // $0.50, which is how it went unnoticed.
+    //
+    // Switching to Tiered is a three-field change (commission_per_unit -> the tier rate,
+    // min_commission_per_order -> 0.35, apply_regulatory_fees -> true), not a one-field one.
     double max_commission_pct = -1.0;
 
     // Regulatory fees (equity sell-side only)

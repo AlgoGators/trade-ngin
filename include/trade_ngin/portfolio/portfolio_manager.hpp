@@ -36,6 +36,13 @@ struct PortfolioConfig : public ConfigBase {
         0.0};  // Minimum allocation to any strategy (keep as double - it's a ratio)
     bool use_optimization{false};     // Whether to use position optimization
     bool use_risk_management{false};  // Whether to use risk management
+    // Whether a fractional target quantity is a legitimate end state for this
+    // portfolio. Futures trade whole contracts and leave this false, so the
+    // optimizer/risk loop keeps iterating until positions are integral, exactly
+    // as it always has. Equities with fractional shares enabled set it true:
+    // there is nothing to converge to, and re-entering the loop would re-apply
+    // the risk scale to an already-scaled book (see E2-F1).
+    bool allow_fractional_positions{false};
     DynamicOptConfig opt_config;      // Optimization configuration
     RiskConfig risk_config;           // Risk management configuration
 
@@ -61,6 +68,7 @@ struct PortfolioConfig : public ConfigBase {
         j["min_strategy_allocation"] = min_strategy_allocation;
         j["use_optimization"] = use_optimization;
         j["use_risk_management"] = use_risk_management;
+        j["allow_fractional_positions"] = allow_fractional_positions;
         j["opt_config"] = opt_config.to_json();
         j["risk_config"] = risk_config.to_json();
         j["version"] = version;
@@ -83,6 +91,9 @@ struct PortfolioConfig : public ConfigBase {
         }
         if (j.contains("use_risk_management")) {
             use_risk_management = j.at("use_risk_management").get<bool>();
+        }
+        if (j.contains("allow_fractional_positions")) {
+            allow_fractional_positions = j.at("allow_fractional_positions").get<bool>();
         }
         if (j.contains("opt_config"))
             opt_config.from_json(j.at("opt_config"));
@@ -201,6 +212,31 @@ public:
      */
     void update_cost_manager_market_data(const std::string& symbol, double volume,
                                          double close_price, double prev_close_price);
+
+    /**
+     * @brief Register ADV-tiered equity cost configs on THIS manager's cost model. E2-C9.
+     *
+     * PortfolioManager owns its own TransactionCostManager, separate from the one
+     * BacktestCoordinator holds, and the two cost different things:
+     *
+     *   - This one prices the executions PortfolioManager generates, which are what reach
+     *     backtest.executions AND the equity curve (via calculate_period_transaction_costs).
+     *   - The coordinator's prices the re-costed copies that feed the reported METRICS.
+     *
+     * Only the coordinator's was ever registered (bt_equity_mean_reversion.cpp calls
+     * register_equity_costs_from_bars on it), so the stored executions and the equity curve
+     * were priced from the static hardcoded configs while the metrics used ADV-tiered ones --
+     * two different cost bases inside a single backtest run. It stayed invisible because the
+     * equity universe is exactly the eight symbols initialize_default_configs() hardcodes, so
+     * both managers at least had EQUITY configs; only the tier parameters differed.
+     *
+     * Register both, or they disagree. Futures is unaffected: futures roots are pre-registered
+     * in initialize_default_configs() and this is only called from the equity apps.
+     */
+    int register_equity_cost_configs(
+        const std::vector<std::string>& symbols,
+        const std::unordered_map<std::string, std::vector<Bar>>& bars_by_symbol,
+        int adv_lookback_days = 20);
 
     /**
      * @brief Get all strategies managed by this portfolio

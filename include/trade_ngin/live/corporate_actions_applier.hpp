@@ -16,7 +16,12 @@ namespace trade_ngin {
  * Phase 4 plan -- those need basis-cost reallocation logic beyond per-symbol
  * scalar adjustment.
  */
-enum class CorpActionType { SPLIT, ADR_SPLIT, DIVIDEND, UNKNOWN };
+// E2-F13: TERMINATION is a class-3 lifecycle event (delisting / acquisition), not a
+// price-restating class-1 event like SPLIT or DIVIDEND. It is in this enum solely so a
+// termination can be written to trading.corp_action_applied and deduped like any other
+// applied event -- before this, terminations were recorded NOWHERE and left no audit trail.
+// The applier itself never produces one; CorporateActionsLifecycle does.
+enum class CorpActionType { SPLIT, ADR_SPLIT, DIVIDEND, TERMINATION, UNKNOWN };
 
 /**
  * @brief One corporate-action event to apply.
@@ -48,7 +53,38 @@ struct CorpActionEvent {
     // ex-date holding even when running a catch-up apply days later
     // (ultrareview bug_021). Has NO effect on the actual position quantity
     // (dividends never change qty), nor on splits.
+    //
+    // E2-F17: this is the DIVIDEND CASH-FLOW figure ONLY. It is deliberately measured at
+    // `ex_date - 1` and is NOT an eligibility signal -- do not gate whether an event applies
+    // on it. Whether the basis may be restated is `basis_provenance` below, which is measured
+    // at end-of-ex_date. Conflating the two dates is exactly how the first attempt at E2-F17
+    // came to skip positions it should have restated.
     double qty_at_ex_date{0.0};
+
+    // E2-F17 (complete). A class-1 event restates a basis into post-event units. That is
+    // correct iff every share now held was acquired at a price the market had NOT yet
+    // adjusted -- i.e. on a run on or before the ex-date, because a fill on run D is priced
+    // at close(D-1).
+    //
+    // NOTE THE DATE. This is the END OF THE EX-DATE, not `ex_date - 1`. `ex_date - 1` is the
+    // cash-eligibility cutoff for a DIVIDEND and belongs to `qty_at_ex_date` above; using it
+    // here skips a position opened ON the ex-date run, whose basis is priced at close(E-1),
+    // is therefore pre-event, and MUST be restated.
+    //
+    // Tri-state on purpose. The predecessor of this field was a bool, which conflated "the
+    // book was observed flat" with "nothing is known", and could only ever justify a skip by
+    // assuming the second meant the first. Dropping a real 25:1 split is far worse than
+    // double-adjusting a basis, so UNKNOWN must APPLY.
+    enum class BasisProvenance {
+        UNKNOWN,                    ///< could not be established -> APPLY and warn. Never skip.
+        FORMED_ON_OR_BEFORE_EX_DATE,///< basis predates the event -> APPLY.
+        FORMED_AFTER_EX_DATE        ///< positive evidence of contamination -> the only skip.
+    };
+
+    BasisProvenance basis_provenance{BasisProvenance::UNKNOWN};
+    /// Human-readable justification, e.g. "BUY 2026-04-17". Printed in the skip warning so the
+    /// decision is auditable from the log alone.
+    std::string basis_provenance_evidence;
 };
 
 /**

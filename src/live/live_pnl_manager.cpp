@@ -9,7 +9,8 @@ Result<LivePnLManager::FinalizationResult> LivePnLManager::finalize_previous_day
     const std::unordered_map<std::string, double>& t1_close_prices,
     const std::unordered_map<std::string, double>& t2_close_prices,
     double previous_portfolio_value,
-    double commissions) {
+    double commissions,
+    UnrealizedPolicy unrealized_policy) {
 
     FinalizationResult result;
 
@@ -37,16 +38,30 @@ Result<LivePnLManager::FinalizationResult> LivePnLManager::finalize_previous_day
         // T-1 data is REQUIRED - if missing, add position with 0 PnL to maintain continuity
         auto t1_it = t1_close_prices.find(symbol);
         if (t1_it == t1_close_prices.end()) {
-            WARN("No T-1 close price for " + symbol + ", recording position with 0 PnL (no Day T-1 data available)");
-            
-            // Still add this position to database with 0 PnL to maintain position continuity
             Position finalized_pos = position;
-            finalized_pos.realized_pnl = Decimal(0.0);
-            finalized_pos.unrealized_pnl = Decimal(0.0);
             result.position_realized_pnl[symbol] = 0.0;
+            if (unrealized_policy == UnrealizedPolicy::MARK_TO_MARKET) {
+                // E2-F19 R-1 / R-2 (cash book): a symbol with no T-1 print -- a halt, a
+                // thin name, a feed gap -- realized nothing today (its trade flow is what
+                // the day's own run recorded, kept as-is) and is still worth its last
+                // known mark. Writing 0/0 here erased a real level for a day and had it
+                // reappear the next session as a phantom jump in daily unrealized.
+                finalized_pos.realized_pnl = position.realized_pnl;
+                finalized_pos.unrealized_pnl = position.unrealized_pnl;
+                result.finalized_unrealized_pnl += finalized_pos.unrealized_pnl.as_double();
+                WARN("No T-1 close price for " + symbol +
+                     ": carrying its last known mark (unrealized " +
+                     std::to_string(position.unrealized_pnl.as_double()) +
+                     ") and its recorded realized. A symbol missing a print on a trading "
+                     "day is a halt or a feed gap -- investigate if it persists.");
+            } else {
+                WARN("No T-1 close price for " + symbol + ", recording position with 0 PnL (no Day T-1 data available)");
+                // Settled book: no settlement move can be booked without the print.
+                finalized_pos.realized_pnl = Decimal(0.0);
+                finalized_pos.unrealized_pnl = Decimal(0.0);
+            }
             result.finalized_positions.push_back(finalized_pos);
-            
-            INFO("Added " + symbol + " to finalized positions with 0 PnL (position continuity maintained)");
+            INFO("Added " + symbol + " to finalized positions (position continuity maintained)");
             continue;
         }
         double day_t1_close = t1_it->second;
@@ -55,16 +70,27 @@ Result<LivePnLManager::FinalizationResult> LivePnLManager::finalize_previous_day
         // T-2 can fall back to older data if needed (e.g., skip weekends for agriculture futures)
         auto t2_it = t2_close_prices.find(symbol);
         if (t2_it == t2_close_prices.end()) {
-            WARN("No T-2 close price for " + symbol + ", recording position with 0 PnL (T-2 data unavailable)");
-            
-            // Still add this position to database with 0 PnL to maintain position continuity
             Position finalized_pos = position;
-            finalized_pos.realized_pnl = Decimal(0.0);
-            finalized_pos.unrealized_pnl = Decimal(0.0);
             result.position_realized_pnl[symbol] = 0.0;
+            if (unrealized_policy == UnrealizedPolicy::MARK_TO_MARKET) {
+                // Cash book with a T-1 close but no T-2 close: the mark IS computable from
+                // the cost basis, and realized is the day's trade flow (R-1 / R-2).
+                double avg_price = position.average_price.as_double();
+                finalized_pos.realized_pnl = position.realized_pnl;
+                finalized_pos.unrealized_pnl =
+                    (avg_price > 0.0 && quantity != 0.0)
+                        ? Decimal(quantity * (day_t1_close - avg_price) * get_point_value(symbol))
+                        : position.unrealized_pnl;
+                result.finalized_unrealized_pnl += finalized_pos.unrealized_pnl.as_double();
+                WARN("No T-2 close price for " + symbol +
+                     ": no settlement move to report; marked at T-1 against the cost basis.");
+            } else {
+                WARN("No T-2 close price for " + symbol + ", recording position with 0 PnL (T-2 data unavailable)");
+                finalized_pos.realized_pnl = Decimal(0.0);
+                finalized_pos.unrealized_pnl = Decimal(0.0);
+            }
             result.finalized_positions.push_back(finalized_pos);
-            
-            INFO("Added " + symbol + " to finalized positions with 0 PnL (position continuity maintained)");
+            INFO("Added " + symbol + " to finalized positions (position continuity maintained)");
             continue;
         }
         double day_t2_close = t2_it->second;
@@ -94,17 +120,41 @@ Result<LivePnLManager::FinalizationResult> LivePnLManager::finalize_previous_day
         INFO("DEBUG FINALIZATION: Added " + symbol + " PnL=" + std::to_string(yesterday_position_pnl) +
              " to running sum, new total=" + std::to_string(total_finalized_pnl));
 
-        // Create finalized position with realized PnL
+        // Create finalized position with realized PnL.
+        //
+        // E2-F19 R-1: what lands in the ROW's realized_pnl follows the settlement model.
+        // SETTLED (futures): the settlement move IS the day's realized. MARK_TO_MARKET
+        // (equities): the row keeps the trade realized the day's own run recorded; the
+        // move is a mark and belongs in unrealized_pnl below. The aggregate fields
+        // (position_realized_pnl, finalized_daily_pnl) still carry the move in both
+        // models -- that is what the T-1 live_results update and the equity curve read.
         Position finalized_pos = position;
-        finalized_pos.realized_pnl = Decimal(yesterday_position_pnl);
+        finalized_pos.realized_pnl =
+            (unrealized_policy == UnrealizedPolicy::MARK_TO_MARKET)
+                ? position.realized_pnl
+                : Decimal(yesterday_position_pnl);
 
-        // Compute unrealized PnL from cost basis (average_price).
-        // For futures: average_price resets to close after daily settlement, so this is ~0.
-        // For equities: average_price is the weighted average purchase price (cost basis),
-        // so this gives the correct mark-to-market unrealized PnL.
-        double avg_price = position.average_price.as_double();
-        if (avg_price > 0.0 && quantity != 0.0) {
-            finalized_pos.unrealized_pnl = Decimal(quantity * (day_t1_close - avg_price) * point_value);
+        // Unrealized P&L, per the caller's settlement model -- see UnrealizedPolicy.
+        //
+        // SETTLED (futures, the default): the position was entered at close(T-1) and is
+        // being settled here at close(T); that whole move is booked as realized just
+        // above, so there is no unrealized component. Writing one would record the same
+        // settlement move twice, because on a futures row average_price IS day_t2_close
+        // and the expression below reduces exactly to the realized formula (E2-F3).
+        //
+        // MARK_TO_MARKET (equities): average_price is a true weighted cost basis, so the
+        // expression is the genuine unrealized P&L.
+        if (unrealized_policy == UnrealizedPolicy::MARK_TO_MARKET) {
+            double avg_price = position.average_price.as_double();
+            finalized_pos.unrealized_pnl =
+                (avg_price > 0.0 && quantity != 0.0)
+                    ? Decimal(quantity * (day_t1_close - avg_price) * point_value)
+                    : Decimal(0.0);
+            // E2-F1: carry the same figure into the aggregate so the row-sums-to-aggregate
+            // invariant (protocol L5) holds by construction. Deliberately accumulated inside
+            // the MARK_TO_MARKET branch only -- under SETTLED this stays 0.0 for futures
+            // without needing a second guard anywhere.
+            result.finalized_unrealized_pnl += finalized_pos.unrealized_pnl.as_double();
         } else {
             finalized_pos.unrealized_pnl = Decimal(0.0);
         }

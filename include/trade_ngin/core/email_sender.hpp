@@ -87,7 +87,9 @@ public:
         const std::unordered_map<std::string, Position>& yesterday_positions = {},
         const std::unordered_map<std::string, double>& yesterday_close_prices = {},
         const std::unordered_map<std::string, double>& two_days_ago_close_prices = {},
-        const std::map<std::string, double>& yesterday_daily_metrics = {}
+        const std::map<std::string, double>& yesterday_daily_metrics = {},
+        const std::string& chart_strategy_id = "LIVE_TREND_FOLLOWING",
+        const std::string& chart_portfolio_id = ""
     );
 
     /**

@@ -231,7 +231,13 @@ Result<void> PostgresDatabase::store_executions(const std::vector<ExecutionRepor
 
             // Use the date from the first execution's fill_time
             Timestamp date_for_delete = executions.front().fill_time;
-            auto del_result = delete_stale_executions(order_ids, date_for_delete, table_name);
+            // E2-F4: this passed `table_name` into the strategy_name slot -- a 3-arg call
+            // against a 4-arg signature -- so the predicate matched nothing and the
+            // defensive pre-insert cleanup silently deleted zero rows for years. Fixing
+            // the argument order without also scoping by portfolio would have ARMED the
+            // cross-portfolio delete this masked; both land together.
+            auto del_result = delete_stale_executions(order_ids, date_for_delete, strategy_name,
+                                                      portfolio_id, table_name);
             if (del_result.is_error()) {
                 std::cout << "DEBUG: Pre-insert delete_stale_executions failed: "
                           << del_result.error()->what() << std::endl;
@@ -402,23 +408,36 @@ Result<void> PostgresDatabase::store_positions_in(pqxx::work& txn,
                          pqxx::params{strategy_id, strategy_name, portfolio_id, position_date});
             }
         } catch (const std::exception& e) {
-            // If strategy_id/strategy_name columns don't exist, clear all positions for the
-            // position date only
-            WARN(
-                "strategy_id/strategy_name columns may not exist, clearing all positions for "
-                "position date: " +
-                std::string(e.what()));
-
-            if (!positions.empty()) {
-                // Phase 5 §5c: UTC date-string contract.
-                const std::string position_date =
-                    trade_ngin::core::format_utc_date(positions[0].last_update);
-
-                // Phase 5 §5b: parameterized date binding.
-                const std::string delete_query =
-                    "DELETE FROM " + table_name + " WHERE DATE(last_update) = $1";
-                txn.exec(delete_query, pqxx::params{position_date});
-            }
+            // E2-F5: FAIL, do not "recover" by deleting more.
+            //
+            // This used to fall back to `DELETE FROM <table> WHERE DATE(last_update) = $1`
+            // -- unscoped across EVERY strategy and EVERY portfolio -- and then INSERT and
+            // commit in the same transaction, so the damage committed. The scoped delete
+            // directly above carries the comment "CRITICAL: Must filter by BOTH strategy_id
+            // and strategy_name, otherwise positions from other strategies with the same
+            // combined strategy_id will be deleted!", and this handler did exactly that,
+            // and also dropped the portfolio filter.
+            //
+            // The premise was that the only way to get here is missing strategy_id /
+            // strategy_name columns. That is false: pqxx throws on ANY SQL error --
+            // deadlock, serialization failure, type mismatch, a dropped connection. Under
+            // any of those the "recovery" destroys a day of positions for every strategy
+            // and every portfolio in the table.
+            //
+            // A schema that genuinely lacks those columns is a deployment fault to fix
+            // once, not something to silently absorb on every run at the cost of an
+            // unscoped delete. Aborting loses nothing: the transaction is not committed,
+            // so the book on disk is whatever the last good run wrote.
+            ERROR("store_positions failed while deleting existing rows for " + table_name +
+                  ": " + std::string(e.what()));
+            ERROR("Refusing to fall back to an unscoped DELETE across all strategies and "
+                  "portfolios. If " + table_name + " is genuinely missing strategy_id / "
+                  "strategy_name / portfolio_id, fix the schema -- do not let a transient "
+                  "SQL error destroy another book's positions.");
+            return make_error<void>(ErrorCode::DATABASE_ERROR,
+                                    "Failed to delete existing positions for " + table_name +
+                                        ": " + std::string(e.what()),
+                                    "PostgresDatabase");
         }
 
         // Insert new positions using direct SQL like backtest does
@@ -759,12 +778,11 @@ Result<std::unordered_map<std::string, Position>> PostgresDatabase::load_positio
             try {
                 // Try to parse as timestamp
                 std::string last_update_str = row[5].as<std::string>();
-                std::tm tm = {};
-                std::istringstream ss(last_update_str);
-                ss >> std::get_time(&tm, "%Y-%m-%d %H:%M:%S");
-                if (!ss.fail()) {
-                    auto time_c = std::mktime(&tm);
-                    last_update = std::chrono::system_clock::from_time_t(time_c);
+                // E2-F22: the column is timestamptz read from a UTC session; parse it as
+                // UTC. std::mktime here treated it as host-local time and drifted every
+                // loaded row +5 h, which the T-1 rewrite then persisted.
+                if (trade_ngin::core::parse_utc_datetime(last_update_str, last_update)) {
+                    // parsed
                 } else {
                     // Fall back to current time if parsing fails
                     WARN("Failed to parse timestamp: " + last_update_str + ", using current time");
@@ -2744,6 +2762,58 @@ PostgresDatabase::get_position_inception_dates(const std::string& strategy_id,
         return make_error<Map>(
             ErrorCode::DATABASE_ERROR,
             "Failed to fetch position inception dates: " + std::string(e.what()),
+            "PostgresDatabase");
+    }
+}
+
+Result<std::unordered_map<std::string, std::string>>
+PostgresDatabase::get_last_buy_dates(const std::string& strategy_id,
+                                     const std::string& strategy_name,
+                                     const std::string& portfolio_id,
+                                     const std::vector<std::string>& symbols,
+                                     const std::string& on_or_after,
+                                     const std::string& on_or_before,
+                                     const std::string& table_name) {
+    using Map = std::unordered_map<std::string, std::string>;
+
+    auto validation = validate_connection();
+    if (validation.is_error()) {
+        return make_error<Map>(validation.error()->code(), validation.error()->what());
+    }
+    if (symbols.empty()) return Result<Map>(Map{});
+
+    // table_name is an internal default (trading.executions), never user input --
+    // same contract as get_position_inception_dates above.
+
+    try {
+        pqxx::work txn(*connection_);
+
+        // BUY only: it is the sole fill that re-forms a long book's weighted cost basis. A SELL
+        // reduces quantity and realizes P&L but leaves average_price untouched, so it carries no
+        // information about the basis frame.
+        auto result = txn.exec(
+            "SELECT symbol, max(date)::text AS last_buy "
+            "FROM " + table_name +
+                " WHERE strategy_id = $1 AND strategy_name = $2 AND portfolio_id = $3 "
+                "  AND symbol = ANY($4) AND side = 'BUY' "
+                "  AND date >= $5 AND date <= $6 "
+                "GROUP BY symbol",
+            pqxx::params{strategy_id, strategy_name, portfolio_id, symbols,
+                         on_or_after, on_or_before});
+
+        Map out;
+        for (const auto& row : result) {
+            if (row["last_buy"].is_null()) continue;
+            out.emplace(row["symbol"].c_str(), row["last_buy"].c_str());
+        }
+
+        txn.commit();
+        return Result<Map>(std::move(out));
+
+    } catch (const std::exception& e) {
+        return make_error<Map>(
+            ErrorCode::DATABASE_ERROR,
+            "Failed to fetch last BUY dates: " + std::string(e.what()),
             "PostgresDatabase");
     }
 }

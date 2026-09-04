@@ -184,8 +184,51 @@ std::vector<LifecycleAdjustment> CorporateActionsLifecycle::apply_terminations(
             continue;
         }
 
-        const bool terms_usable = ev.has_terms && !ev.contra_ticker.empty() &&
+        // Stock-for-stock rollover is DISABLED. Two independent reasons, both measured
+        // against equities_data.corporate_action (E2-F9):
+        //
+        // 1. `contraticker` carries the sentinel "N/A" on 546,662 rows -- the dominant
+        //    value in the table. An `!empty()` test passes it, and the successor position
+        //    was then keyed on a symbol literally named "N/A", which fails symbol
+        //    validation and aborts the entire run. Any delisting of a held name hit this.
+        //
+        // 2. `ev.ratio` comes from corporate_action.value, which is NOT a share exchange
+        //    ratio. On acquisition rows it averages 2,051 and reaches 133,846.7 -- deal
+        //    values in millions. A real stock-for-stock ratio is ~0.1-3.0. Applying it
+        //    would have turned 40 DFS shares into 40 x 50343.3 = 2,013,732 COF shares at a
+        //    basis of $0.0039, against a real and currently-trading symbol, with nothing to
+        //    catch it. Reason 1 was masking reason 2: fixing the sentinel alone converts a
+        //    loud abort into a silent 50,000x position.
+        //
+        // There is no trustworthy ratio column in this feed, so CONVERTED_TO_CONTRA cannot
+        // be made safe with the data that exists. Every termination therefore exits at the
+        // last real close, which is conservative, correct, and reconcilable with a broker:
+        // the position was held, the symbol stopped trading, the holder is out at the last
+        // price. Re-enabling this requires a verified deal-terms source, not a code change.
+        // Same root cause as NEW-5 (spinoff child-share receipt), which stays data-blocked.
+        const bool contra_is_usable =
+            !ev.contra_ticker.empty() && ev.contra_ticker != "N/A" &&
+            ev.contra_ticker != ev.symbol &&
+            std::all_of(ev.contra_ticker.begin(), ev.contra_ticker.end(),
+                        [](unsigned char c) { return std::isalnum(c) || c == '.' || c == '-'; });
+
+        // The handler still performs the rollover when it is handed genuine terms -- that
+        // capability is deliberately preserved so a revived deal-terms feed activates it
+        // with no code change (tests/live/corp_actions/test_effect_classes.cpp:324).
+        // The protection lives at the CALLER: the runner must not manufacture `has_terms`
+        // and `ratio` out of corporate_action.value, which is a deal value, not a ratio.
+        // Trust is a question of provenance, not of magnitude -- a plausibility band cannot
+        // separate a real 0.5 ratio from a $0.6m deal value, so the judgement belongs where
+        // the source is known.
+        const bool terms_usable = ev.has_terms && contra_is_usable &&
                                   ev.ratio > 0.0 && std::isfinite(ev.ratio);
+
+        if (!terms_usable && ev.has_terms && !contra_is_usable) {
+            WARN("Termination for " + ev.symbol + " (" + ev.event_date +
+                 "): successor '" + ev.contra_ticker +
+                 "' is not a usable ticker (sentinel or malformed) -- exiting at the final "
+                 "close rather than rolling into it (E2-F9).");
+        }
 
         if (terms_usable) {
             // Stock-for-stock: roll into the successor. Cost basis divides by
