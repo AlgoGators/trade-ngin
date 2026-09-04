@@ -2211,11 +2211,18 @@ int main(int argc, char* argv[]) {
                         // different frame than the marks it is compared against
                         // -- a small systematic drift on every dividend.
                         //
-                        // This is a different axis from the deliberate
-                        // raw-dollar / adjusted-close frame mix documented in
-                        // 05-22 §B6, which is preserved: the dividend amount is
+                        // Drift-D: this note used to end "the dividend amount is
                         // still a raw dollar figure and the close is still an
-                        // adjusted one. Only WHICH close changed.
+                        // ADJUSTED one", describing the 05-22 §B6 frame mix as
+                        // preserved. It is not, and has not been since the
+                        // denominator map was rebuilt: `close_by_symbol_date` is
+                        // loaded from ONE raw range read (see the comment above
+                        // its construction), precisely because an adjusted close
+                        // already carries every LATER event in the window and a
+                        // stacked div-then-split batch rescaled a basis by
+                        // 1 + split*d/c instead of 1 + d/c. BOTH sides of the
+                        // ratio are raw now: a raw dividend over a raw ex-date
+                        // close. The frame mix is gone, not preserved.
                         //
                         // Note this was previously masked: with dates formatted
                         // via localtime on a TZ=America/New_York host, keys

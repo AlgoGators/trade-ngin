@@ -234,7 +234,12 @@ Result<void> LiveTradingCoordinator::store_results(const TradingMetrics& metrics
     }
 }
 
-// load_commissions_by_symbol() was deleted as dead code. See header for rationale.
+// Drift-D: the COORDINATOR's load_commissions_by_symbol() wrapper was deleted as dead code.
+// The LiveDataLoader method it wrapped is alive and called every run by
+// live_equity_mean_reversion.cpp, so read this as "the wrapper is gone", not "the function
+// is gone" -- the previous wording said the latter and sent a reader looking for a deletion
+// that never happened. The two futures runners dropped their own calls (the result map was
+// unused there); the equity runner still uses the figures for its per-symbol CSV export.
 
 Result<std::vector<Position>> LiveTradingCoordinator::load_positions_for_export(
     const Timestamp& date) const {
