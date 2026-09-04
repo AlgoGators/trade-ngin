@@ -285,7 +285,15 @@ enum class AssetType { FUTURE, EQUITY, OPTION, FOREX, CRYPTO, NONE };
 
 /**
  * @brief Market data bar structure
- * Represents OHLCV data for any timeframe
+ * Represents OHLCV data for any timeframe.
+ *
+ * Equity convention: for AssetType::EQUITY symbols, the loader at
+ * postgres_database.cpp reads RAW prices plus the per-bar corporate-action
+ * primitives (div_cash, split_factor) and scales OHLC by the backward
+ * cumulative adjustment factor computed in market_data_utils. So for equities
+ * the OHLC stored here is split- AND dividend-adjusted (a continuous
+ * total-return price series), not the raw exchange price. Futures bars carry
+ * raw OHLC.
  */
 struct Bar {
     Timestamp timestamp;
@@ -514,6 +522,8 @@ inline std::string get_schema_name(AssetClass asset_class) {
             return "commodities_data";
         case AssetClass::CRYPTO:
             return "crypto_data";
+        case AssetClass::OPTIONS:
+            return "options_data";
         default:
             return "unknown_data";
     }

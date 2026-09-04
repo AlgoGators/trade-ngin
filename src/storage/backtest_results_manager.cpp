@@ -96,17 +96,11 @@ Result<void> BacktestResultsManager::save_all_results(const std::string& run_id,
         // Non-fatal, continue
     }
 
-    // 6. Save metadata (skip for portfolio runs - we save per-strategy metadata separately)
-    // Portfolio runs are identified by run_id containing '&' (multiple strategies)
-    if (run_id.find('&') == std::string::npos) {
-        result = save_metadata(run_id);
-        if (result.is_error()) {
-            ERROR("Failed to save metadata: " + std::string(result.error()->what()));
-            // Non-fatal
-        }
-    } else {
-        DEBUG("Skipping portfolio-level metadata (using per-strategy metadata instead)");
-    }
+    // Metadata is written per-strategy by BacktestCoordinator::save_portfolio_results_to_db
+    // via save_strategy_metadata() (correct ON CONFLICT (run_id, strategy_id)). A portfolio-level
+    // write here used ON CONFLICT (run_id), which has no matching unique constraint on
+    // backtest.run_metadata, so it logged a non-fatal ERROR on every run and wrote nothing useful.
+    // (save_metadata()/store_backtest_metadata() remain defined for the interface contract.)
 
     INFO("Successfully saved all backtest results for run_id: " + run_id);
     return Result<void>();

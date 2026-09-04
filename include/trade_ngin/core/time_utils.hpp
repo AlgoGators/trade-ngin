@@ -2,6 +2,8 @@
 
 #include <time.h>
 #include <chrono>
+#include <cstdio>
+#include <string>
 
 namespace trade_ngin {
 namespace core {
@@ -50,6 +52,49 @@ inline std::tm* safe_gmtime(const std::time_t* time, std::tm* result) {
     // POSIX
     return gmtime_r(time, result);
 #endif
+}
+
+/**
+ * @brief Format a system_clock time_point as a UTC `YYYY-MM-DD` calendar date.
+ *
+ * Phase 5 §5c -- the data layer's timezone contract is UTC end-to-end. This
+ * helper is the one true way to produce a date-string key from a Timestamp
+ * for use in date-keyed lookups against provider tables. Callers MUST NOT
+ * call `std::gmtime` or `std::put_time` directly -- both are non-thread-safe
+ * and silently locale-dependent.
+ *
+ * Underlying primitive is safe_gmtime (thread-safe on POSIX and Windows).
+ *
+ * @param tp system_clock time point (typically Timestamp = chrono alias)
+ * @return 10-char `YYYY-MM-DD` string in UTC
+ */
+inline std::string format_utc_date(std::chrono::system_clock::time_point tp) {
+    auto t = std::chrono::system_clock::to_time_t(tp);
+    std::tm tm{};
+    if (!safe_gmtime(&t, &tm)) {
+        return std::string("1970-01-01");
+    }
+    char buf[11];
+    std::strftime(buf, sizeof(buf), "%Y-%m-%d", &tm);
+    return std::string(buf);
+}
+
+/**
+ * @brief Format a time_point as a UTC `YYYY-MM-DD HH:MM:SS` timestamp string.
+ *
+ * Phase 6 §6c -- companion to format_utc_date for sites that need a full
+ * timestamp (e.g. SQL INSERT values with second resolution). Same
+ * thread-safety guarantees: routes through safe_gmtime.
+ */
+inline std::string format_utc_datetime(std::chrono::system_clock::time_point tp) {
+    auto t = std::chrono::system_clock::to_time_t(tp);
+    std::tm tm{};
+    if (!safe_gmtime(&t, &tm)) {
+        return std::string("1970-01-01 00:00:00");
+    }
+    char buf[20];
+    std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tm);
+    return std::string(buf);
 }
 
 /**

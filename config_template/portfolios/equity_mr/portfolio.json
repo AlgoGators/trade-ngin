@@ -1,0 +1,26 @@
+{
+  "_description": "EQUITY_MR_PORTFOLIO - Equity mean reversion strategy",
+  "portfolio_id": "EQUITY_MR_PORTFOLIO",
+  "initial_capital": 100000,
+  "reserve_capital_pct": 0.1,
+  "strategies": {
+    "MEAN_REVERSION": {
+      "enabled_backtest": true,
+      "enabled_live": true,
+      "default_allocation": 1.0,
+      "type": "MeanReversionStrategy",
+      "symbols": ["AAPL", "MSFT", "AMZN", "GOOGL", "META", "TMUS", "NSC", "ABT", "ABEV", "ABM"],
+      "config": {
+        "lookback_period": 20,
+        "entry_threshold": 2.0,
+        "exit_threshold": 0.5,
+        "risk_target": 0.15,
+        "position_size": 0.1,
+        "vol_lookback": 20,
+        "use_stop_loss": true,
+        "stop_loss_pct": 0.05,
+        "allow_fractional_shares": true
+      }
+    }
+  }
+}
