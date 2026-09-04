@@ -183,10 +183,15 @@ std::vector<LifecycleAdjustment> CorporateActionsLifecycle::apply_spinoffs(
             // column can even represent.
             const double exact = qty * c.ratio;
             const double nearest = std::round(exact);
-            d.quantity = (std::abs(exact - nearest) < 1e-6) ? nearest : std::floor(exact);
-            // Clamp: when the exact figure sat just BELOW an integer, `exact - quantity` is a
-            // tiny negative, and a negative fraction would book a negative cash-in-lieu.
-            d.fractional = std::max(0.0, exact - d.quantity);
+            const bool is_whole = std::abs(exact - nearest) < 1e-6;
+            d.quantity = is_whole ? nearest : std::floor(exact);
+            // When the entitlement WAS a whole number, the remainder is zero on BOTH sides of
+            // it -- not just below. Clamping a negative to 0 covered `exact` sitting just
+            // under the integer (59.9999994) and left the mirror case standing: an `exact` of
+            // 60.0000004 rounds to 60 and then reports a 4e-7 "fraction", which becomes a
+            // cash-in-lieu SELL of four ten-millionths of a share and a realized figure to
+            // match. Dust either way, and dust that reaches trading.executions.
+            d.fractional = is_whole ? 0.0 : (exact - d.quantity);
             d.cash_in_lieu = d.fractional * c.first_close;
             // The fraction is sold at the child's first close against the CHILD's basis.
             // Those shares were child shares from the instant of distribution, never parent

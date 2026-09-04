@@ -225,6 +225,60 @@ TEST(SpinoffRetryAfterSplit, ASixDecimalRoundTripStillDeliversSixtyAndNoCashInLi
     EXPECT_DOUBLE_EQ(positions["PK"].quantity.as_double(), 60.0);
 }
 
+// The MIRROR of the case above (B-5d). Storage rounds a quantity DOWN for a 100-share holding
+// and UP for a 200-share one, so the exact entitlement lands just ABOVE the integer rather
+// than just below it:
+//
+//     200 pre-split HLT  ->  66.66666665999999 shares, stored as 66.666667
+//     66.666667 x 1.80000000018  =  120.000000612
+//
+// BA-25 rounds that to 120 whole shares, which is right. It then reported the leftover
+// 6.12e-7 as a "fraction": a cash-in-lieu SELL of six ten-millionths of a share, written to
+// trading.executions, with a realized figure to match. The clamp only covered the below-the-
+// integer side; a whole entitlement has no remainder on EITHER side.
+TEST(SpinoffRetryAfterSplit, AnEntitlementJustABOVEAWholeShareBooksNoCashInLieuDust) {
+    const auto frame = hlt_bar().retry_frame(/*coincident_split_already_applied=*/true);
+    const double q_pre = 200.0;
+    const double stored = std::round((q_pre * kSplit) * 1e6) / 1e6;
+    ASSERT_NEAR(stored, 66.666667, 1e-9) << "the fixture must be the STORED quantity";
+
+    const double exact = stored * (kRatioPK * frame.child_ratio_scale);
+    ASSERT_GT(exact, 120.0) << "the exact entitlement must sit just ABOVE the integer or this "
+                               "test is the same case as the one before it; it is " << exact;
+    ASSERT_LT(exact - 120.0, 1e-6);
+
+    std::unordered_map<std::string, Position> positions;
+    positions["HLT"] = held("HLT", stored, kBasisPre / kSplit);
+
+    auto log = CorporateActionsLifecycle::apply_spinoffs(
+        positions, {hlt_event(frame.child_ratio_scale)}, SpinoffChildPolicy::HOLD);
+    ASSERT_EQ(log.size(), 1u);
+    ASSERT_EQ(log[0].children.size(), 2u);
+    const auto& pk = log[0].children[0];
+
+    EXPECT_DOUBLE_EQ(pk.quantity, 120.0);
+    EXPECT_DOUBLE_EQ(pk.fractional, 0.0)
+        << "a whole entitlement has no remainder on either side of the integer; this reported "
+        << pk.fractional;
+    EXPECT_DOUBLE_EQ(pk.cash_in_lieu, 0.0)
+        << "a cash-in-lieu SELL for " << pk.fractional
+        << " of a share would be written to trading.executions";
+    EXPECT_DOUBLE_EQ(pk.realized_delta, 0.0);
+
+    // Under LIQUIDATE the same must hold: the disposal is the whole 120, and the CIL leg
+    // contributes nothing at all rather than a rounding-sized realized figure.
+    std::unordered_map<std::string, Position> sold;
+    sold["HLT"] = held("HLT", stored, kBasisPre / kSplit);
+    auto log2 = CorporateActionsLifecycle::apply_spinoffs(
+        sold, {hlt_event(frame.child_ratio_scale)}, SpinoffChildPolicy::LIQUIDATE_AT_FIRST_CLOSE);
+    ASSERT_EQ(log2.size(), 1u);
+    const auto& pk2 = log2[0].children[0];
+    EXPECT_DOUBLE_EQ(pk2.fractional, 0.0);
+    EXPECT_DOUBLE_EQ(pk2.cash_in_lieu, 0.0);
+    EXPECT_DOUBLE_EQ(pk2.realized_delta, pk2.quantity * (kClosePK - pk2.avg_price))
+        << "the realized must be the disposal alone, with no cash-in-lieu term added to it";
+}
+
 // The other half of the same rule: a GENUINE fraction must still be floored and still be paid
 // out as cash in lieu. 1e-6 of a share is four orders of magnitude below what the column can
 // represent, so the epsilon cannot swallow a real entitlement.
