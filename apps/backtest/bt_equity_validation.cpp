@@ -33,6 +33,7 @@
 #include "trade_ngin/data/postgres_database.hpp"
 #include "trade_ngin/instruments/equity.hpp"
 #include "trade_ngin/instruments/instrument_registry.hpp"
+#include "trade_ngin/strategy/equity_strategy_builder.hpp"
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
 #include "trade_ngin/strategy/mean_reversion.hpp"
 
@@ -165,12 +166,61 @@ int main() {
             WARN("Could not load instruments from DB: " + std::string(load_result.error()->what()));
         }
 
-        // Get equity symbols with the most data coverage
-        // Query the DB to find the 3 symbols with the most bars in the last 6 months
-        // Use well-known tickers that we know have data in the DB
-        // We'll verify they exist and fall back to querying the DB if needed
-        std::vector<std::string> candidate_symbols = {"AAPL", "MSFT", "AMZN", "GOOGL", "META",
-                                                       "TMUS", "NSC", "ABT", "ABEV", "ABM"};
+        // T2.6 / H4: the harness reads the CONFIG, not literals.
+        //
+        // This app existed to check the framework's numbers against an independent
+        // recomputation, and it was doing that against a strategy it had hard-coded rather
+        // than the one the config describes: nine parameter literals below and a ten-name
+        // candidate ticker list here. They happen to equal the config today (verified value
+        // by value), which is exactly what makes it fragile -- change `lookback_period` in
+        // the gitignored config and the validator would keep validating 20 while every other
+        // app used the new number, and it would still print "PASS".
+        //
+        // Same source as bt_equity_mean_reversion.cpp: collect_enabled_equity_strategies over
+        // strategies_config, then build_mean_reversion_config from the entry's own "config"
+        // block. An unknown type or a missing config section is an ERROR there, not a silent
+        // skip, so this app inherits that too.
+        auto strat_entries_result = trade_ngin::apps::collect_enabled_equity_strategies(
+            app_config.strategies_config, "enabled_backtest");
+        if (strat_entries_result.is_error()) {
+            ERROR(std::string(strat_entries_result.error()->what()));
+            return 1;
+        }
+        const auto& strat_entries = strat_entries_result.value();
+
+        // The validation harness runs ONE strategy against a handful of symbols; it is a
+        // numerical check, not a portfolio. Take the first enabled MeanReversion entry and
+        // say which one, so a config with several is not silently reduced to its first.
+        const trade_ngin::apps::EquityStrategyEntry* validation_entry = nullptr;
+        for (const auto& entry : strat_entries) {
+            if (entry.type == "MeanReversionStrategy") { validation_entry = &entry; break; }
+        }
+        if (validation_entry == nullptr) {
+            ERROR("No MeanReversionStrategy enabled for backtest in strategies_config; this "
+                  "validator recomputes mean-reversion arithmetic and has nothing to check.");
+            return 1;
+        }
+        if (strat_entries.size() > 1) {
+            WARN("strategies_config has " + std::to_string(strat_entries.size()) +
+                 " strategies enabled for backtest; this validator checks ONE and is using '" +
+                 validation_entry->id + "'.");
+        }
+        INFO("Validating strategy '" + validation_entry->id + "' (" + validation_entry->type +
+             ") from config");
+
+        // Candidate symbols come from the strategy's own "symbols" list, in config order.
+        // The bar-count filter and the three-symbol cap below are unchanged: this is a
+        // recomputation harness and three series are enough to catch an arithmetic drift.
+        std::vector<std::string> candidate_symbols;
+        if (validation_entry->def.contains("symbols")) {
+            for (const auto& sym : validation_entry->def["symbols"]) {
+                candidate_symbols.push_back(sym.get<std::string>());
+            }
+        }
+        if (candidate_symbols.empty()) {
+            ERROR("Strategy '" + validation_entry->id + "' declares no symbols in config.");
+            return 1;
+        }
         std::vector<std::string> symbols;
 
         INFO("Verifying symbol data availability...");
@@ -178,9 +228,8 @@ int main() {
             if (symbols.size() >= 3) break;
 
             // NOTE: execute_query returns all columns as strings (arrow::utf8).
-            // Symbols come from the hardcoded candidate list above, but quote
-            // them anyway so this never becomes an injection seam if the list
-            // is ever made configurable.
+            // Symbols now come from the CONFIG (T2.6/H4), so the quoting below is
+            // load-bearing rather than defensive: the list is operator-editable.
             std::string check_sql =
                 "SELECT COUNT(*) as cnt FROM equities_data.ohlcv_1d WHERE symbol = " +
                 quote_sql_literal(sym);
@@ -269,18 +318,32 @@ int main() {
 
         std::cout << "Date range: " << ts_to_date_str(start_date) << " to " << ts_to_date_str(end_date) << std::endl;
 
-        // Strategy config — using reasonable defaults
-        double initial_capital = 100000.0;
-        int lookback_period = 20;
-        double entry_threshold = 2.0;
-        double exit_threshold = 0.5;
-        double risk_target = 0.15;
-        double position_size_pct = 0.1;
-        int vol_lookback = 20;
-        double stop_loss_pct = 0.05;
-        double position_limit = 1000.0;
+        // T2.6: every one of these came from a literal. They are the config's values now,
+        // and they are PRINTED, so a config change is visible in the validator's own output
+        // -- which is how this app is verified.
+        const MeanReversionConfig mr_config =
+            trade_ngin::apps::build_mean_reversion_config(validation_entry->def["config"]);
+        const double initial_capital = app_config.initial_capital;
+        const double position_limit = app_config.execution.position_limit_backtest;
+        // Section B's independent recomputation of the SMA, the standard deviation and the
+        // volatility reads these two directly; every other strategy parameter reaches the
+        // strategy through mr_config.
+        const int lookback_period = mr_config.lookback_period;
+        const int vol_lookback = mr_config.vol_lookback;
 
         std::cout << "Initial capital: $" << std::fixed << std::setprecision(0) << initial_capital << std::endl;
+        std::cout << "Strategy parameters (from config, strategy '" << validation_entry->id
+                  << "'): lookback_period=" << mr_config.lookback_period
+                  << " entry_threshold=" << std::setprecision(4) << mr_config.entry_threshold
+                  << " exit_threshold=" << mr_config.exit_threshold
+                  << " risk_target=" << mr_config.risk_target
+                  << " position_size=" << mr_config.position_size
+                  << " vol_lookback=" << mr_config.vol_lookback
+                  << " use_stop_loss=" << (mr_config.use_stop_loss ? "true" : "false")
+                  << " stop_loss_pct=" << mr_config.stop_loss_pct
+                  << " allow_fractional_shares="
+                  << (mr_config.allow_fractional_shares ? "true" : "false")
+                  << " position_limit=" << position_limit << std::endl;
         std::cout << std::endl;
 
         // ====================================================================
@@ -475,17 +538,11 @@ int main() {
         std::cout << "  SECTION B: Strategy Calculation Validation" << std::endl;
         std::cout << "------------------------------------------------------\n" << std::endl;
 
-        // Run the actual backtest
-        MeanReversionConfig mr_config;
-        mr_config.lookback_period = lookback_period;
-        mr_config.entry_threshold = entry_threshold;
-        mr_config.exit_threshold = exit_threshold;
-        mr_config.risk_target = risk_target;
-        mr_config.position_size = position_size_pct;
-        mr_config.vol_lookback = vol_lookback;
-        mr_config.use_stop_loss = true;
-        mr_config.stop_loss_pct = stop_loss_pct;
-        mr_config.allow_fractional_shares = true;
+        // Run the actual backtest. mr_config was built from the config above (T2.6) --
+        // this block used to rebuild it from the same literals a second time, which is how a
+        // config-vs-literal divergence could have appeared in one half of the app and not
+        // the other. `use_stop_loss` and `allow_fractional_shares` were pinned true here
+        // regardless of what the config said; they now follow it.
 
         StrategyConfig strategy_config;
         strategy_config.asset_classes = {AssetClass::EQUITIES};
