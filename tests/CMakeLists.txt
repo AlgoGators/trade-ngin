@@ -113,6 +113,7 @@ set(TEST_SOURCES
     strategy/test_equity_backtest_db_validation.cpp
     strategy/test_equity_pnl_accounting.cpp
     strategy/test_live_bt_signal_consistency.cpp
+    strategy/test_signals_publication.cpp
     strategy/test_volatility_size_1_nan_guard.cpp
     strategy/test_stale_unrealized_pnl_zero_avg_price.cpp
     strategy/test_live_daily_cycle_seeding.cpp
