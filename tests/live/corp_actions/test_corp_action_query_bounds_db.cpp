@@ -234,7 +234,11 @@ TEST_F(CorpActionQueryBoundsDbTest, TheFutureRowsExistAndAreDatedBeyondAnyRun) {
     auto rows = w.exec(
         "SELECT date, action FROM equities_data.corporate_action "
         "WHERE ticker = 'SBDS' AND date > '2026-12-31' ORDER BY date, action");
-    const auto max_real = w.exec(
+    // B-v: `const std::string`, NOT `const auto`. `auto` deduced `const char*` pointing
+    // into the pqxx::result temporary, which was destroyed (and its buffer PQclear'd) at
+    // the end of this statement -- so the comparison three statements below read freed
+    // memory and the assertion was not actually being made. Copy the bytes out.
+    const std::string max_real = w.exec(
         "SELECT max(date) FROM equities_data.corporate_action "
         "WHERE action NOT IN ('tickerchangeto','tickerchangefrom')")[0][0].c_str();
     w.commit();
@@ -242,7 +246,11 @@ TEST_F(CorpActionQueryBoundsDbTest, TheFutureRowsExistAndAreDatedBeyondAnyRun) {
     ASSERT_EQ(rows.size(), 2u);
     EXPECT_EQ(std::string(rows[0][0].c_str()), "2027-07-18");
     EXPECT_EQ(std::string(rows[1][0].c_str()), "2027-07-18");
-    EXPECT_LT(std::string(max_real), "2027-01-01")
+    // The comparison is only meaningful if the value survived the statement that produced
+    // it: a dangling read yields empty or garbage, and "" < "2027-01-01" passes vacuously.
+    ASSERT_EQ(max_real.size(), 10u)
+        << "max(date) must come back as a ten-character ISO date, not a dangling read";
+    EXPECT_LT(max_real, "2027-01-01")
         << "only the tickerchange placeholders are future-dated; if a real event ever is, "
            "every reader's as-of bound becomes load-bearing for more than renames";
 }
