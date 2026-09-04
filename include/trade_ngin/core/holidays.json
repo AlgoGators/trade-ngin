@@ -1,10 +1,1492 @@
 {
+  "2000": [
+    {
+      "date": "2000-01-17",
+      "name": "Martin Luther King, Jr. Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2000-02-21",
+      "name": "Washington's Birthday (Presidents Day)",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2000-04-21",
+      "name": "Good Friday",
+      "day_of_week": "Friday",
+      "type": "moving"
+    },
+    {
+      "date": "2000-05-29",
+      "name": "Memorial Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2000-07-04",
+      "name": "Independence Day",
+      "day_of_week": "Tuesday",
+      "type": "fixed"
+    },
+    {
+      "date": "2000-09-04",
+      "name": "Labor Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2000-11-23",
+      "name": "Thanksgiving Day",
+      "day_of_week": "Thursday",
+      "type": "moving"
+    },
+    {
+      "date": "2000-12-25",
+      "name": "Christmas Day",
+      "day_of_week": "Monday",
+      "type": "fixed"
+    }
+  ],
+  "2001": [
+    {
+      "date": "2001-01-01",
+      "name": "New Year's Day",
+      "day_of_week": "Monday",
+      "type": "fixed"
+    },
+    {
+      "date": "2001-01-15",
+      "name": "Martin Luther King, Jr. Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2001-02-19",
+      "name": "Washington's Birthday (Presidents Day)",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2001-04-13",
+      "name": "Good Friday",
+      "day_of_week": "Friday",
+      "type": "moving"
+    },
+    {
+      "date": "2001-05-28",
+      "name": "Memorial Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2001-07-04",
+      "name": "Independence Day",
+      "day_of_week": "Wednesday",
+      "type": "fixed"
+    },
+    {
+      "date": "2001-09-03",
+      "name": "Labor Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2001-09-11",
+      "name": "Closed - September 11 attacks",
+      "day_of_week": "Tuesday",
+      "type": "ad_hoc",
+      "note": "Unscheduled closure; not rule-derivable"
+    },
+    {
+      "date": "2001-09-12",
+      "name": "Closed - September 11 attacks",
+      "day_of_week": "Wednesday",
+      "type": "ad_hoc",
+      "note": "Unscheduled closure; not rule-derivable"
+    },
+    {
+      "date": "2001-09-13",
+      "name": "Closed - September 11 attacks",
+      "day_of_week": "Thursday",
+      "type": "ad_hoc",
+      "note": "Unscheduled closure; not rule-derivable"
+    },
+    {
+      "date": "2001-09-14",
+      "name": "Closed - September 11 attacks",
+      "day_of_week": "Friday",
+      "type": "ad_hoc",
+      "note": "Unscheduled closure; not rule-derivable"
+    },
+    {
+      "date": "2001-11-22",
+      "name": "Thanksgiving Day",
+      "day_of_week": "Thursday",
+      "type": "moving"
+    },
+    {
+      "date": "2001-12-25",
+      "name": "Christmas Day",
+      "day_of_week": "Tuesday",
+      "type": "fixed"
+    }
+  ],
+  "2002": [
+    {
+      "date": "2002-01-01",
+      "name": "New Year's Day",
+      "day_of_week": "Tuesday",
+      "type": "fixed"
+    },
+    {
+      "date": "2002-01-21",
+      "name": "Martin Luther King, Jr. Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2002-02-18",
+      "name": "Washington's Birthday (Presidents Day)",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2002-03-29",
+      "name": "Good Friday",
+      "day_of_week": "Friday",
+      "type": "moving"
+    },
+    {
+      "date": "2002-05-27",
+      "name": "Memorial Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2002-07-04",
+      "name": "Independence Day",
+      "day_of_week": "Thursday",
+      "type": "fixed"
+    },
+    {
+      "date": "2002-09-02",
+      "name": "Labor Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2002-11-28",
+      "name": "Thanksgiving Day",
+      "day_of_week": "Thursday",
+      "type": "moving"
+    },
+    {
+      "date": "2002-12-25",
+      "name": "Christmas Day",
+      "day_of_week": "Wednesday",
+      "type": "fixed"
+    }
+  ],
+  "2003": [
+    {
+      "date": "2003-01-01",
+      "name": "New Year's Day",
+      "day_of_week": "Wednesday",
+      "type": "fixed"
+    },
+    {
+      "date": "2003-01-20",
+      "name": "Martin Luther King, Jr. Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2003-02-17",
+      "name": "Washington's Birthday (Presidents Day)",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2003-04-18",
+      "name": "Good Friday",
+      "day_of_week": "Friday",
+      "type": "moving"
+    },
+    {
+      "date": "2003-05-26",
+      "name": "Memorial Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2003-07-04",
+      "name": "Independence Day",
+      "day_of_week": "Friday",
+      "type": "fixed"
+    },
+    {
+      "date": "2003-09-01",
+      "name": "Labor Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2003-11-27",
+      "name": "Thanksgiving Day",
+      "day_of_week": "Thursday",
+      "type": "moving"
+    },
+    {
+      "date": "2003-12-25",
+      "name": "Christmas Day",
+      "day_of_week": "Thursday",
+      "type": "fixed"
+    }
+  ],
+  "2004": [
+    {
+      "date": "2004-01-01",
+      "name": "New Year's Day",
+      "day_of_week": "Thursday",
+      "type": "fixed"
+    },
+    {
+      "date": "2004-01-19",
+      "name": "Martin Luther King, Jr. Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2004-02-16",
+      "name": "Washington's Birthday (Presidents Day)",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2004-04-09",
+      "name": "Good Friday",
+      "day_of_week": "Friday",
+      "type": "moving"
+    },
+    {
+      "date": "2004-05-31",
+      "name": "Memorial Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2004-06-11",
+      "name": "National Day of Mourning (Ronald Reagan)",
+      "day_of_week": "Friday",
+      "type": "ad_hoc",
+      "note": "Unscheduled closure; not rule-derivable"
+    },
+    {
+      "date": "2004-07-05",
+      "name": "Independence Day (Observed)",
+      "day_of_week": "Monday",
+      "type": "fixed",
+      "note": "July 4th falls on Sunday, observed Mon"
+    },
+    {
+      "date": "2004-09-06",
+      "name": "Labor Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2004-11-25",
+      "name": "Thanksgiving Day",
+      "day_of_week": "Thursday",
+      "type": "moving"
+    },
+    {
+      "date": "2004-12-24",
+      "name": "Christmas Day (Observed)",
+      "day_of_week": "Friday",
+      "type": "fixed",
+      "note": "December 25th falls on Saturday, observed Fri"
+    }
+  ],
+  "2005": [
+    {
+      "date": "2005-01-17",
+      "name": "Martin Luther King, Jr. Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2005-02-21",
+      "name": "Washington's Birthday (Presidents Day)",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2005-03-25",
+      "name": "Good Friday",
+      "day_of_week": "Friday",
+      "type": "moving"
+    },
+    {
+      "date": "2005-05-30",
+      "name": "Memorial Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2005-07-04",
+      "name": "Independence Day",
+      "day_of_week": "Monday",
+      "type": "fixed"
+    },
+    {
+      "date": "2005-09-05",
+      "name": "Labor Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2005-11-24",
+      "name": "Thanksgiving Day",
+      "day_of_week": "Thursday",
+      "type": "moving"
+    },
+    {
+      "date": "2005-12-26",
+      "name": "Christmas Day (Observed)",
+      "day_of_week": "Monday",
+      "type": "fixed",
+      "note": "December 25th falls on Sunday, observed Mon"
+    }
+  ],
+  "2006": [
+    {
+      "date": "2006-01-02",
+      "name": "New Year's Day (Observed)",
+      "day_of_week": "Monday",
+      "type": "fixed",
+      "note": "January 1st falls on Sunday, observed Monday"
+    },
+    {
+      "date": "2006-01-16",
+      "name": "Martin Luther King, Jr. Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2006-02-20",
+      "name": "Washington's Birthday (Presidents Day)",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2006-04-14",
+      "name": "Good Friday",
+      "day_of_week": "Friday",
+      "type": "moving"
+    },
+    {
+      "date": "2006-05-29",
+      "name": "Memorial Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2006-07-04",
+      "name": "Independence Day",
+      "day_of_week": "Tuesday",
+      "type": "fixed"
+    },
+    {
+      "date": "2006-09-04",
+      "name": "Labor Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2006-11-23",
+      "name": "Thanksgiving Day",
+      "day_of_week": "Thursday",
+      "type": "moving"
+    },
+    {
+      "date": "2006-12-25",
+      "name": "Christmas Day",
+      "day_of_week": "Monday",
+      "type": "fixed"
+    }
+  ],
+  "2007": [
+    {
+      "date": "2007-01-01",
+      "name": "New Year's Day",
+      "day_of_week": "Monday",
+      "type": "fixed"
+    },
+    {
+      "date": "2007-01-02",
+      "name": "National Day of Mourning (Gerald Ford)",
+      "day_of_week": "Tuesday",
+      "type": "ad_hoc",
+      "note": "Unscheduled closure; not rule-derivable"
+    },
+    {
+      "date": "2007-01-15",
+      "name": "Martin Luther King, Jr. Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2007-02-19",
+      "name": "Washington's Birthday (Presidents Day)",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2007-04-06",
+      "name": "Good Friday",
+      "day_of_week": "Friday",
+      "type": "moving"
+    },
+    {
+      "date": "2007-05-28",
+      "name": "Memorial Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2007-07-04",
+      "name": "Independence Day",
+      "day_of_week": "Wednesday",
+      "type": "fixed"
+    },
+    {
+      "date": "2007-09-03",
+      "name": "Labor Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2007-11-22",
+      "name": "Thanksgiving Day",
+      "day_of_week": "Thursday",
+      "type": "moving"
+    },
+    {
+      "date": "2007-12-25",
+      "name": "Christmas Day",
+      "day_of_week": "Tuesday",
+      "type": "fixed"
+    }
+  ],
+  "2008": [
+    {
+      "date": "2008-01-01",
+      "name": "New Year's Day",
+      "day_of_week": "Tuesday",
+      "type": "fixed"
+    },
+    {
+      "date": "2008-01-21",
+      "name": "Martin Luther King, Jr. Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2008-02-18",
+      "name": "Washington's Birthday (Presidents Day)",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2008-03-21",
+      "name": "Good Friday",
+      "day_of_week": "Friday",
+      "type": "moving"
+    },
+    {
+      "date": "2008-05-26",
+      "name": "Memorial Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2008-07-04",
+      "name": "Independence Day",
+      "day_of_week": "Friday",
+      "type": "fixed"
+    },
+    {
+      "date": "2008-09-01",
+      "name": "Labor Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2008-11-27",
+      "name": "Thanksgiving Day",
+      "day_of_week": "Thursday",
+      "type": "moving"
+    },
+    {
+      "date": "2008-12-25",
+      "name": "Christmas Day",
+      "day_of_week": "Thursday",
+      "type": "fixed"
+    }
+  ],
+  "2009": [
+    {
+      "date": "2009-01-01",
+      "name": "New Year's Day",
+      "day_of_week": "Thursday",
+      "type": "fixed"
+    },
+    {
+      "date": "2009-01-19",
+      "name": "Martin Luther King, Jr. Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2009-02-16",
+      "name": "Washington's Birthday (Presidents Day)",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2009-04-10",
+      "name": "Good Friday",
+      "day_of_week": "Friday",
+      "type": "moving"
+    },
+    {
+      "date": "2009-05-25",
+      "name": "Memorial Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2009-07-03",
+      "name": "Independence Day (Observed)",
+      "day_of_week": "Friday",
+      "type": "fixed",
+      "note": "July 4th falls on Saturday, observed Fri"
+    },
+    {
+      "date": "2009-09-07",
+      "name": "Labor Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2009-11-26",
+      "name": "Thanksgiving Day",
+      "day_of_week": "Thursday",
+      "type": "moving"
+    },
+    {
+      "date": "2009-12-25",
+      "name": "Christmas Day",
+      "day_of_week": "Friday",
+      "type": "fixed"
+    }
+  ],
+  "2010": [
+    {
+      "date": "2010-01-01",
+      "name": "New Year's Day",
+      "day_of_week": "Friday",
+      "type": "fixed"
+    },
+    {
+      "date": "2010-01-18",
+      "name": "Martin Luther King, Jr. Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2010-02-15",
+      "name": "Washington's Birthday (Presidents Day)",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2010-04-02",
+      "name": "Good Friday",
+      "day_of_week": "Friday",
+      "type": "moving"
+    },
+    {
+      "date": "2010-05-31",
+      "name": "Memorial Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2010-07-05",
+      "name": "Independence Day (Observed)",
+      "day_of_week": "Monday",
+      "type": "fixed",
+      "note": "July 4th falls on Sunday, observed Mon"
+    },
+    {
+      "date": "2010-09-06",
+      "name": "Labor Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2010-11-25",
+      "name": "Thanksgiving Day",
+      "day_of_week": "Thursday",
+      "type": "moving"
+    },
+    {
+      "date": "2010-12-24",
+      "name": "Christmas Day (Observed)",
+      "day_of_week": "Friday",
+      "type": "fixed",
+      "note": "December 25th falls on Saturday, observed Fri"
+    }
+  ],
+  "2011": [
+    {
+      "date": "2011-01-17",
+      "name": "Martin Luther King, Jr. Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2011-02-21",
+      "name": "Washington's Birthday (Presidents Day)",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2011-04-22",
+      "name": "Good Friday",
+      "day_of_week": "Friday",
+      "type": "moving"
+    },
+    {
+      "date": "2011-05-30",
+      "name": "Memorial Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2011-07-04",
+      "name": "Independence Day",
+      "day_of_week": "Monday",
+      "type": "fixed"
+    },
+    {
+      "date": "2011-09-05",
+      "name": "Labor Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2011-11-24",
+      "name": "Thanksgiving Day",
+      "day_of_week": "Thursday",
+      "type": "moving"
+    },
+    {
+      "date": "2011-12-26",
+      "name": "Christmas Day (Observed)",
+      "day_of_week": "Monday",
+      "type": "fixed",
+      "note": "December 25th falls on Sunday, observed Mon"
+    }
+  ],
+  "2012": [
+    {
+      "date": "2012-01-02",
+      "name": "New Year's Day (Observed)",
+      "day_of_week": "Monday",
+      "type": "fixed",
+      "note": "January 1st falls on Sunday, observed Monday"
+    },
+    {
+      "date": "2012-01-16",
+      "name": "Martin Luther King, Jr. Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2012-02-20",
+      "name": "Washington's Birthday (Presidents Day)",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2012-04-06",
+      "name": "Good Friday",
+      "day_of_week": "Friday",
+      "type": "moving"
+    },
+    {
+      "date": "2012-05-28",
+      "name": "Memorial Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2012-07-04",
+      "name": "Independence Day",
+      "day_of_week": "Wednesday",
+      "type": "fixed"
+    },
+    {
+      "date": "2012-09-03",
+      "name": "Labor Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2012-10-29",
+      "name": "Closed - Hurricane Sandy",
+      "day_of_week": "Monday",
+      "type": "ad_hoc",
+      "note": "Unscheduled closure; not rule-derivable"
+    },
+    {
+      "date": "2012-10-30",
+      "name": "Closed - Hurricane Sandy",
+      "day_of_week": "Tuesday",
+      "type": "ad_hoc",
+      "note": "Unscheduled closure; not rule-derivable"
+    },
+    {
+      "date": "2012-11-22",
+      "name": "Thanksgiving Day",
+      "day_of_week": "Thursday",
+      "type": "moving"
+    },
+    {
+      "date": "2012-12-25",
+      "name": "Christmas Day",
+      "day_of_week": "Tuesday",
+      "type": "fixed"
+    }
+  ],
+  "2013": [
+    {
+      "date": "2013-01-01",
+      "name": "New Year's Day",
+      "day_of_week": "Tuesday",
+      "type": "fixed"
+    },
+    {
+      "date": "2013-01-21",
+      "name": "Martin Luther King, Jr. Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2013-02-18",
+      "name": "Washington's Birthday (Presidents Day)",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2013-03-29",
+      "name": "Good Friday",
+      "day_of_week": "Friday",
+      "type": "moving"
+    },
+    {
+      "date": "2013-05-27",
+      "name": "Memorial Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2013-07-04",
+      "name": "Independence Day",
+      "day_of_week": "Thursday",
+      "type": "fixed"
+    },
+    {
+      "date": "2013-09-02",
+      "name": "Labor Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2013-11-28",
+      "name": "Thanksgiving Day",
+      "day_of_week": "Thursday",
+      "type": "moving"
+    },
+    {
+      "date": "2013-12-25",
+      "name": "Christmas Day",
+      "day_of_week": "Wednesday",
+      "type": "fixed"
+    }
+  ],
+  "2014": [
+    {
+      "date": "2014-01-01",
+      "name": "New Year's Day",
+      "day_of_week": "Wednesday",
+      "type": "fixed"
+    },
+    {
+      "date": "2014-01-20",
+      "name": "Martin Luther King, Jr. Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2014-02-17",
+      "name": "Washington's Birthday (Presidents Day)",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2014-04-18",
+      "name": "Good Friday",
+      "day_of_week": "Friday",
+      "type": "moving"
+    },
+    {
+      "date": "2014-05-26",
+      "name": "Memorial Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2014-07-04",
+      "name": "Independence Day",
+      "day_of_week": "Friday",
+      "type": "fixed"
+    },
+    {
+      "date": "2014-09-01",
+      "name": "Labor Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2014-11-27",
+      "name": "Thanksgiving Day",
+      "day_of_week": "Thursday",
+      "type": "moving"
+    },
+    {
+      "date": "2014-12-25",
+      "name": "Christmas Day",
+      "day_of_week": "Thursday",
+      "type": "fixed"
+    }
+  ],
+  "2015": [
+    {
+      "date": "2015-01-01",
+      "name": "New Year's Day",
+      "day_of_week": "Thursday",
+      "type": "fixed"
+    },
+    {
+      "date": "2015-01-19",
+      "name": "Martin Luther King, Jr. Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2015-02-16",
+      "name": "Washington's Birthday (Presidents Day)",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2015-04-03",
+      "name": "Good Friday",
+      "day_of_week": "Friday",
+      "type": "moving"
+    },
+    {
+      "date": "2015-05-25",
+      "name": "Memorial Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2015-07-03",
+      "name": "Independence Day (Observed)",
+      "day_of_week": "Friday",
+      "type": "fixed",
+      "note": "July 4th falls on Saturday, observed Fri"
+    },
+    {
+      "date": "2015-09-07",
+      "name": "Labor Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2015-11-26",
+      "name": "Thanksgiving Day",
+      "day_of_week": "Thursday",
+      "type": "moving"
+    },
+    {
+      "date": "2015-12-25",
+      "name": "Christmas Day",
+      "day_of_week": "Friday",
+      "type": "fixed"
+    }
+  ],
+  "2016": [
+    {
+      "date": "2016-01-01",
+      "name": "New Year's Day",
+      "day_of_week": "Friday",
+      "type": "fixed"
+    },
+    {
+      "date": "2016-01-18",
+      "name": "Martin Luther King, Jr. Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2016-02-15",
+      "name": "Washington's Birthday (Presidents Day)",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2016-03-25",
+      "name": "Good Friday",
+      "day_of_week": "Friday",
+      "type": "moving"
+    },
+    {
+      "date": "2016-05-30",
+      "name": "Memorial Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2016-07-04",
+      "name": "Independence Day",
+      "day_of_week": "Monday",
+      "type": "fixed"
+    },
+    {
+      "date": "2016-09-05",
+      "name": "Labor Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2016-11-24",
+      "name": "Thanksgiving Day",
+      "day_of_week": "Thursday",
+      "type": "moving"
+    },
+    {
+      "date": "2016-12-26",
+      "name": "Christmas Day (Observed)",
+      "day_of_week": "Monday",
+      "type": "fixed",
+      "note": "December 25th falls on Sunday, observed Mon"
+    }
+  ],
+  "2017": [
+    {
+      "date": "2017-01-02",
+      "name": "New Year's Day (Observed)",
+      "day_of_week": "Monday",
+      "type": "fixed",
+      "note": "January 1st falls on Sunday, observed Monday"
+    },
+    {
+      "date": "2017-01-16",
+      "name": "Martin Luther King, Jr. Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2017-02-20",
+      "name": "Washington's Birthday (Presidents Day)",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2017-04-14",
+      "name": "Good Friday",
+      "day_of_week": "Friday",
+      "type": "moving"
+    },
+    {
+      "date": "2017-05-29",
+      "name": "Memorial Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2017-07-04",
+      "name": "Independence Day",
+      "day_of_week": "Tuesday",
+      "type": "fixed"
+    },
+    {
+      "date": "2017-09-04",
+      "name": "Labor Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2017-11-23",
+      "name": "Thanksgiving Day",
+      "day_of_week": "Thursday",
+      "type": "moving"
+    },
+    {
+      "date": "2017-12-25",
+      "name": "Christmas Day",
+      "day_of_week": "Monday",
+      "type": "fixed"
+    }
+  ],
+  "2018": [
+    {
+      "date": "2018-01-01",
+      "name": "New Year's Day",
+      "day_of_week": "Monday",
+      "type": "fixed"
+    },
+    {
+      "date": "2018-01-15",
+      "name": "Martin Luther King, Jr. Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2018-02-19",
+      "name": "Washington's Birthday (Presidents Day)",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2018-03-30",
+      "name": "Good Friday",
+      "day_of_week": "Friday",
+      "type": "moving"
+    },
+    {
+      "date": "2018-05-28",
+      "name": "Memorial Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2018-07-04",
+      "name": "Independence Day",
+      "day_of_week": "Wednesday",
+      "type": "fixed"
+    },
+    {
+      "date": "2018-09-03",
+      "name": "Labor Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2018-11-22",
+      "name": "Thanksgiving Day",
+      "day_of_week": "Thursday",
+      "type": "moving"
+    },
+    {
+      "date": "2018-12-05",
+      "name": "National Day of Mourning (George H. W. Bush)",
+      "day_of_week": "Wednesday",
+      "type": "ad_hoc",
+      "note": "Unscheduled closure; not rule-derivable"
+    },
+    {
+      "date": "2018-12-25",
+      "name": "Christmas Day",
+      "day_of_week": "Tuesday",
+      "type": "fixed"
+    }
+  ],
+  "2019": [
+    {
+      "date": "2019-01-01",
+      "name": "New Year's Day",
+      "day_of_week": "Tuesday",
+      "type": "fixed"
+    },
+    {
+      "date": "2019-01-21",
+      "name": "Martin Luther King, Jr. Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2019-02-18",
+      "name": "Washington's Birthday (Presidents Day)",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2019-04-19",
+      "name": "Good Friday",
+      "day_of_week": "Friday",
+      "type": "moving"
+    },
+    {
+      "date": "2019-05-27",
+      "name": "Memorial Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2019-07-04",
+      "name": "Independence Day",
+      "day_of_week": "Thursday",
+      "type": "fixed"
+    },
+    {
+      "date": "2019-09-02",
+      "name": "Labor Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2019-11-28",
+      "name": "Thanksgiving Day",
+      "day_of_week": "Thursday",
+      "type": "moving"
+    },
+    {
+      "date": "2019-12-25",
+      "name": "Christmas Day",
+      "day_of_week": "Wednesday",
+      "type": "fixed"
+    }
+  ],
+  "2020": [
+    {
+      "date": "2020-01-01",
+      "name": "New Year's Day",
+      "day_of_week": "Wednesday",
+      "type": "fixed"
+    },
+    {
+      "date": "2020-01-20",
+      "name": "Martin Luther King, Jr. Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2020-02-17",
+      "name": "Washington's Birthday (Presidents Day)",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2020-04-10",
+      "name": "Good Friday",
+      "day_of_week": "Friday",
+      "type": "moving"
+    },
+    {
+      "date": "2020-05-25",
+      "name": "Memorial Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2020-07-03",
+      "name": "Independence Day (Observed)",
+      "day_of_week": "Friday",
+      "type": "fixed",
+      "note": "July 4th falls on Saturday, observed Fri"
+    },
+    {
+      "date": "2020-09-07",
+      "name": "Labor Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2020-11-26",
+      "name": "Thanksgiving Day",
+      "day_of_week": "Thursday",
+      "type": "moving"
+    },
+    {
+      "date": "2020-12-25",
+      "name": "Christmas Day",
+      "day_of_week": "Friday",
+      "type": "fixed"
+    }
+  ],
+  "2021": [
+    {
+      "date": "2021-01-01",
+      "name": "New Year's Day",
+      "day_of_week": "Friday",
+      "type": "fixed"
+    },
+    {
+      "date": "2021-01-18",
+      "name": "Martin Luther King, Jr. Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2021-02-15",
+      "name": "Washington's Birthday (Presidents Day)",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2021-04-02",
+      "name": "Good Friday",
+      "day_of_week": "Friday",
+      "type": "moving"
+    },
+    {
+      "date": "2021-05-31",
+      "name": "Memorial Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2021-07-05",
+      "name": "Independence Day (Observed)",
+      "day_of_week": "Monday",
+      "type": "fixed",
+      "note": "July 4th falls on Sunday, observed Mon"
+    },
+    {
+      "date": "2021-09-06",
+      "name": "Labor Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2021-11-25",
+      "name": "Thanksgiving Day",
+      "day_of_week": "Thursday",
+      "type": "moving"
+    },
+    {
+      "date": "2021-12-24",
+      "name": "Christmas Day (Observed)",
+      "day_of_week": "Friday",
+      "type": "fixed",
+      "note": "December 25th falls on Saturday, observed Fri"
+    }
+  ],
+  "2022": [
+    {
+      "date": "2022-01-17",
+      "name": "Martin Luther King, Jr. Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2022-02-21",
+      "name": "Washington's Birthday (Presidents Day)",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2022-04-15",
+      "name": "Good Friday",
+      "day_of_week": "Friday",
+      "type": "moving"
+    },
+    {
+      "date": "2022-05-30",
+      "name": "Memorial Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2022-06-20",
+      "name": "Juneteenth National Independence Day (Observed)",
+      "day_of_week": "Monday",
+      "type": "fixed",
+      "note": "June 19th falls on Sunday, observed Mon"
+    },
+    {
+      "date": "2022-07-04",
+      "name": "Independence Day",
+      "day_of_week": "Monday",
+      "type": "fixed"
+    },
+    {
+      "date": "2022-09-05",
+      "name": "Labor Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2022-11-24",
+      "name": "Thanksgiving Day",
+      "day_of_week": "Thursday",
+      "type": "moving"
+    },
+    {
+      "date": "2022-12-26",
+      "name": "Christmas Day (Observed)",
+      "day_of_week": "Monday",
+      "type": "fixed",
+      "note": "December 25th falls on Sunday, observed Mon"
+    }
+  ],
+  "2023": [
+    {
+      "date": "2023-01-02",
+      "name": "New Year's Day (Observed)",
+      "day_of_week": "Monday",
+      "type": "fixed",
+      "note": "January 1st falls on Sunday, observed Monday"
+    },
+    {
+      "date": "2023-01-16",
+      "name": "Martin Luther King, Jr. Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2023-02-20",
+      "name": "Washington's Birthday (Presidents Day)",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2023-04-07",
+      "name": "Good Friday",
+      "day_of_week": "Friday",
+      "type": "moving"
+    },
+    {
+      "date": "2023-05-29",
+      "name": "Memorial Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2023-06-19",
+      "name": "Juneteenth National Independence Day",
+      "day_of_week": "Monday",
+      "type": "fixed"
+    },
+    {
+      "date": "2023-07-04",
+      "name": "Independence Day",
+      "day_of_week": "Tuesday",
+      "type": "fixed"
+    },
+    {
+      "date": "2023-09-04",
+      "name": "Labor Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2023-11-23",
+      "name": "Thanksgiving Day",
+      "day_of_week": "Thursday",
+      "type": "moving"
+    },
+    {
+      "date": "2023-12-25",
+      "name": "Christmas Day",
+      "day_of_week": "Monday",
+      "type": "fixed"
+    }
+  ],
+  "2024": [
+    {
+      "date": "2024-01-01",
+      "name": "New Year's Day",
+      "day_of_week": "Monday",
+      "type": "fixed"
+    },
+    {
+      "date": "2024-01-15",
+      "name": "Martin Luther King, Jr. Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2024-02-19",
+      "name": "Washington's Birthday (Presidents Day)",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2024-03-29",
+      "name": "Good Friday",
+      "day_of_week": "Friday",
+      "type": "moving"
+    },
+    {
+      "date": "2024-05-27",
+      "name": "Memorial Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2024-06-19",
+      "name": "Juneteenth National Independence Day",
+      "day_of_week": "Wednesday",
+      "type": "fixed"
+    },
+    {
+      "date": "2024-07-04",
+      "name": "Independence Day",
+      "day_of_week": "Thursday",
+      "type": "fixed"
+    },
+    {
+      "date": "2024-09-02",
+      "name": "Labor Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2024-11-28",
+      "name": "Thanksgiving Day",
+      "day_of_week": "Thursday",
+      "type": "moving"
+    },
+    {
+      "date": "2024-12-25",
+      "name": "Christmas Day",
+      "day_of_week": "Wednesday",
+      "type": "fixed"
+    }
+  ],
   "2025": [
     {
       "date": "2025-01-01",
       "name": "New Year's Day",
       "day_of_week": "Wednesday",
       "type": "fixed"
+    },
+    {
+      "date": "2025-01-09",
+      "name": "National Day of Mourning (Jimmy Carter)",
+      "day_of_week": "Thursday",
+      "type": "ad_hoc",
+      "note": "Unscheduled closure; not rule-derivable"
     },
     {
       "date": "2025-01-20",
@@ -103,7 +1585,7 @@
       "name": "Independence Day (Observed)",
       "day_of_week": "Friday",
       "type": "fixed",
-      "note": "July 4th falls on Saturday, observed Friday"
+      "note": "July 4th falls on Saturday, observed Fri"
     },
     {
       "date": "2026-09-07",
@@ -160,14 +1642,14 @@
       "name": "Juneteenth National Independence Day (Observed)",
       "day_of_week": "Friday",
       "type": "fixed",
-      "note": "June 19th falls on Saturday, observed Friday"
+      "note": "June 19th falls on Saturday, observed Fri"
     },
     {
       "date": "2027-07-05",
       "name": "Independence Day (Observed)",
       "day_of_week": "Monday",
       "type": "fixed",
-      "note": "July 4th falls on Sunday, observed Monday"
+      "note": "July 4th falls on Sunday, observed Mon"
     },
     {
       "date": "2027-09-06",
@@ -186,7 +1668,497 @@
       "name": "Christmas Day (Observed)",
       "day_of_week": "Friday",
       "type": "fixed",
-      "note": "December 25th falls on Saturday, observed Friday"
+      "note": "December 25th falls on Saturday, observed Fri"
+    }
+  ],
+  "2028": [
+    {
+      "date": "2028-01-17",
+      "name": "Martin Luther King, Jr. Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2028-02-21",
+      "name": "Washington's Birthday (Presidents Day)",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2028-04-14",
+      "name": "Good Friday",
+      "day_of_week": "Friday",
+      "type": "moving"
+    },
+    {
+      "date": "2028-05-29",
+      "name": "Memorial Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2028-06-19",
+      "name": "Juneteenth National Independence Day",
+      "day_of_week": "Monday",
+      "type": "fixed"
+    },
+    {
+      "date": "2028-07-04",
+      "name": "Independence Day",
+      "day_of_week": "Tuesday",
+      "type": "fixed"
+    },
+    {
+      "date": "2028-09-04",
+      "name": "Labor Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2028-11-23",
+      "name": "Thanksgiving Day",
+      "day_of_week": "Thursday",
+      "type": "moving"
+    },
+    {
+      "date": "2028-12-25",
+      "name": "Christmas Day",
+      "day_of_week": "Monday",
+      "type": "fixed"
+    }
+  ],
+  "2029": [
+    {
+      "date": "2029-01-01",
+      "name": "New Year's Day",
+      "day_of_week": "Monday",
+      "type": "fixed"
+    },
+    {
+      "date": "2029-01-15",
+      "name": "Martin Luther King, Jr. Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2029-02-19",
+      "name": "Washington's Birthday (Presidents Day)",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2029-03-30",
+      "name": "Good Friday",
+      "day_of_week": "Friday",
+      "type": "moving"
+    },
+    {
+      "date": "2029-05-28",
+      "name": "Memorial Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2029-06-19",
+      "name": "Juneteenth National Independence Day",
+      "day_of_week": "Tuesday",
+      "type": "fixed"
+    },
+    {
+      "date": "2029-07-04",
+      "name": "Independence Day",
+      "day_of_week": "Wednesday",
+      "type": "fixed"
+    },
+    {
+      "date": "2029-09-03",
+      "name": "Labor Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2029-11-22",
+      "name": "Thanksgiving Day",
+      "day_of_week": "Thursday",
+      "type": "moving"
+    },
+    {
+      "date": "2029-12-25",
+      "name": "Christmas Day",
+      "day_of_week": "Tuesday",
+      "type": "fixed"
+    }
+  ],
+  "2030": [
+    {
+      "date": "2030-01-01",
+      "name": "New Year's Day",
+      "day_of_week": "Tuesday",
+      "type": "fixed"
+    },
+    {
+      "date": "2030-01-21",
+      "name": "Martin Luther King, Jr. Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2030-02-18",
+      "name": "Washington's Birthday (Presidents Day)",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2030-04-19",
+      "name": "Good Friday",
+      "day_of_week": "Friday",
+      "type": "moving"
+    },
+    {
+      "date": "2030-05-27",
+      "name": "Memorial Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2030-06-19",
+      "name": "Juneteenth National Independence Day",
+      "day_of_week": "Wednesday",
+      "type": "fixed"
+    },
+    {
+      "date": "2030-07-04",
+      "name": "Independence Day",
+      "day_of_week": "Thursday",
+      "type": "fixed"
+    },
+    {
+      "date": "2030-09-02",
+      "name": "Labor Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2030-11-28",
+      "name": "Thanksgiving Day",
+      "day_of_week": "Thursday",
+      "type": "moving"
+    },
+    {
+      "date": "2030-12-25",
+      "name": "Christmas Day",
+      "day_of_week": "Wednesday",
+      "type": "fixed"
+    }
+  ],
+  "2031": [
+    {
+      "date": "2031-01-01",
+      "name": "New Year's Day",
+      "day_of_week": "Wednesday",
+      "type": "fixed"
+    },
+    {
+      "date": "2031-01-20",
+      "name": "Martin Luther King, Jr. Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2031-02-17",
+      "name": "Washington's Birthday (Presidents Day)",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2031-04-11",
+      "name": "Good Friday",
+      "day_of_week": "Friday",
+      "type": "moving"
+    },
+    {
+      "date": "2031-05-26",
+      "name": "Memorial Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2031-06-19",
+      "name": "Juneteenth National Independence Day",
+      "day_of_week": "Thursday",
+      "type": "fixed"
+    },
+    {
+      "date": "2031-07-04",
+      "name": "Independence Day",
+      "day_of_week": "Friday",
+      "type": "fixed"
+    },
+    {
+      "date": "2031-09-01",
+      "name": "Labor Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2031-11-27",
+      "name": "Thanksgiving Day",
+      "day_of_week": "Thursday",
+      "type": "moving"
+    },
+    {
+      "date": "2031-12-25",
+      "name": "Christmas Day",
+      "day_of_week": "Thursday",
+      "type": "fixed"
+    }
+  ],
+  "2032": [
+    {
+      "date": "2032-01-01",
+      "name": "New Year's Day",
+      "day_of_week": "Thursday",
+      "type": "fixed"
+    },
+    {
+      "date": "2032-01-19",
+      "name": "Martin Luther King, Jr. Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2032-02-16",
+      "name": "Washington's Birthday (Presidents Day)",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2032-03-26",
+      "name": "Good Friday",
+      "day_of_week": "Friday",
+      "type": "moving"
+    },
+    {
+      "date": "2032-05-31",
+      "name": "Memorial Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2032-06-18",
+      "name": "Juneteenth National Independence Day (Observed)",
+      "day_of_week": "Friday",
+      "type": "fixed",
+      "note": "June 19th falls on Saturday, observed Fri"
+    },
+    {
+      "date": "2032-07-05",
+      "name": "Independence Day (Observed)",
+      "day_of_week": "Monday",
+      "type": "fixed",
+      "note": "July 4th falls on Sunday, observed Mon"
+    },
+    {
+      "date": "2032-09-06",
+      "name": "Labor Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2032-11-25",
+      "name": "Thanksgiving Day",
+      "day_of_week": "Thursday",
+      "type": "moving"
+    },
+    {
+      "date": "2032-12-24",
+      "name": "Christmas Day (Observed)",
+      "day_of_week": "Friday",
+      "type": "fixed",
+      "note": "December 25th falls on Saturday, observed Fri"
+    }
+  ],
+  "2033": [
+    {
+      "date": "2033-01-17",
+      "name": "Martin Luther King, Jr. Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2033-02-21",
+      "name": "Washington's Birthday (Presidents Day)",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2033-04-15",
+      "name": "Good Friday",
+      "day_of_week": "Friday",
+      "type": "moving"
+    },
+    {
+      "date": "2033-05-30",
+      "name": "Memorial Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2033-06-20",
+      "name": "Juneteenth National Independence Day (Observed)",
+      "day_of_week": "Monday",
+      "type": "fixed",
+      "note": "June 19th falls on Sunday, observed Mon"
+    },
+    {
+      "date": "2033-07-04",
+      "name": "Independence Day",
+      "day_of_week": "Monday",
+      "type": "fixed"
+    },
+    {
+      "date": "2033-09-05",
+      "name": "Labor Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2033-11-24",
+      "name": "Thanksgiving Day",
+      "day_of_week": "Thursday",
+      "type": "moving"
+    },
+    {
+      "date": "2033-12-26",
+      "name": "Christmas Day (Observed)",
+      "day_of_week": "Monday",
+      "type": "fixed",
+      "note": "December 25th falls on Sunday, observed Mon"
+    }
+  ],
+  "2034": [
+    {
+      "date": "2034-01-02",
+      "name": "New Year's Day (Observed)",
+      "day_of_week": "Monday",
+      "type": "fixed",
+      "note": "January 1st falls on Sunday, observed Monday"
+    },
+    {
+      "date": "2034-01-16",
+      "name": "Martin Luther King, Jr. Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2034-02-20",
+      "name": "Washington's Birthday (Presidents Day)",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2034-04-07",
+      "name": "Good Friday",
+      "day_of_week": "Friday",
+      "type": "moving"
+    },
+    {
+      "date": "2034-05-29",
+      "name": "Memorial Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2034-06-19",
+      "name": "Juneteenth National Independence Day",
+      "day_of_week": "Monday",
+      "type": "fixed"
+    },
+    {
+      "date": "2034-07-04",
+      "name": "Independence Day",
+      "day_of_week": "Tuesday",
+      "type": "fixed"
+    },
+    {
+      "date": "2034-09-04",
+      "name": "Labor Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2034-11-23",
+      "name": "Thanksgiving Day",
+      "day_of_week": "Thursday",
+      "type": "moving"
+    },
+    {
+      "date": "2034-12-25",
+      "name": "Christmas Day",
+      "day_of_week": "Monday",
+      "type": "fixed"
+    }
+  ],
+  "2035": [
+    {
+      "date": "2035-01-01",
+      "name": "New Year's Day",
+      "day_of_week": "Monday",
+      "type": "fixed"
+    },
+    {
+      "date": "2035-01-15",
+      "name": "Martin Luther King, Jr. Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2035-02-19",
+      "name": "Washington's Birthday (Presidents Day)",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2035-03-23",
+      "name": "Good Friday",
+      "day_of_week": "Friday",
+      "type": "moving"
+    },
+    {
+      "date": "2035-05-28",
+      "name": "Memorial Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2035-06-19",
+      "name": "Juneteenth National Independence Day",
+      "day_of_week": "Tuesday",
+      "type": "fixed"
+    },
+    {
+      "date": "2035-07-04",
+      "name": "Independence Day",
+      "day_of_week": "Wednesday",
+      "type": "fixed"
+    },
+    {
+      "date": "2035-09-03",
+      "name": "Labor Day",
+      "day_of_week": "Monday",
+      "type": "moving"
+    },
+    {
+      "date": "2035-11-22",
+      "name": "Thanksgiving Day",
+      "day_of_week": "Thursday",
+      "type": "moving"
+    },
+    {
+      "date": "2035-12-25",
+      "name": "Christmas Day",
+      "day_of_week": "Tuesday",
+      "type": "fixed"
     }
   ]
 }

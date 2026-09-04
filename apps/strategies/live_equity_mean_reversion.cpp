@@ -555,6 +555,27 @@ int main(int argc, char* argv[]) {
         // ========================================
         const HolidayChecker& holiday_checker = *holiday_checker_ptr;
 
+        // The calendar covers a finite range of years. Outside it every date
+        // reports as a non-holiday because the answer is unknown, which would
+        // silently make find_previous_trading_day land on a closed day and
+        // return an empty previous-day book -- skipping corp actions and
+        // mis-stating PnL with no visible symptom. Fail closed instead.
+        {
+            char cov_buf[11];
+            std::tm cov_tm{};
+            auto cov_t = std::chrono::system_clock::to_time_t(now);
+            gmtime_r(&cov_t, &cov_tm);
+            std::strftime(cov_buf, sizeof(cov_buf), "%Y-%m-%d", &cov_tm);
+            if (!holiday_checker.covers_date(cov_buf)) {
+                ERROR("Holiday calendar does not cover " + std::string(cov_buf) +
+                      " (loaded: " + holiday_checker.coverage_description() +
+                      "). Trading-day arithmetic would treat market closures as "
+                      "open days. Extend the calendar via "
+                      "scripts/generate_market_holidays.py before running this date.");
+                return 1;
+            }
+        }
+
         // Find the most recent trading day strictly before `now`. Walks back
         // up to 14 days to cover worst-case US closure stacks (Christmas-week
         // holidays + weekends, or 9/11-style multi-day exchange closures).
