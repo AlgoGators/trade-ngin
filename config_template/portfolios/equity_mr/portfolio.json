@@ -9,7 +9,19 @@
       "enabled_live": true,
       "default_allocation": 1.0,
       "type": "MeanReversionStrategy",
-      "symbols": ["AAPL", "MSFT", "AMZN", "GOOGL", "META", "TMUS", "NSC", "ABT", "ABEV", "ABM"],
+      "_symbols_note": "ABEV and ABM have NO bars in equities_data.ohlcv_1d (data-owner ask DO-ABEV/ABM). The live runner's freshness guard treats a requested symbol with no bars as absent and refuses a bare live run, so the LIVE runtime config keeps the universe the 2026-09 gate proved (BKNG and DD in their place) until those bars exist; swap back here-to-runtime when they do. var_limit lives in risk.json (0.25, proven).",
+      "symbols": [
+        "AAPL",
+        "MSFT",
+        "AMZN",
+        "GOOGL",
+        "META",
+        "TMUS",
+        "NSC",
+        "ABT",
+        "ABEV",
+        "ABM"
+      ],
       "config": {
         "lookback_period": 20,
         "entry_threshold": 2.0,

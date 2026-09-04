@@ -157,7 +157,7 @@ The frozen table holds 12,867 historical ticker-change pairs while `ticker_alias
 
 ## 7. Required database objects — engine dependencies
 
-Any environment running this engine (including the algogators mono repo after migration,
+Any environment running this engine (including the AlgoGators mono repo after migration,
 and any fresh/staging/prod database) MUST have the objects below. They are not optional
 performance tuning: without the indexes the live equity path degrades from ~1 s to ~14 s
 per query at full universe scale, and without the tables the corp-action path cannot

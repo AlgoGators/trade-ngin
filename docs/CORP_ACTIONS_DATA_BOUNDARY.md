@@ -19,7 +19,7 @@ superseded -- see `DATA_SOURCES_OF_TRUTH.md`.
 | Class | Vendor labels | Source | Trustworthy over | Handler |
 |---|---|---|---|---|
 | **PRICE_RESTATING** | split, adrratiosplit, spinoff, spinoffdividend, dividend | `equities_data.ohlcv_1d.div_cash` / `.split_factor` (per bar) | **Complete and current** — full history through the latest bar | `CorporateActionsApplier` |
-| **SERIES_CONTINUITY** | tickerchangefrom, tickerchangeto | `equities_data.ticker_aliases` | **Partial** — 16 curated rows, not the 12,867-row rename history | `CorporateActionsLifecycle::apply_renames` |
+| **SERIES_CONTINUITY** | tickerchangefrom, tickerchangeto | `equities_data.ticker_aliases` | **Partial** — 389 curated rows, not the 12,867-row rename history | `CorporateActionsLifecycle::apply_renames` |
 | **TERMINATION** | mergerfrom/to, acquisitionby/of, delisted, voluntarydelisting, regulatorydelisting, bankruptcyliquidation, spunofffrom | timing: `ohlcv_1d.delisting_date`; terms: `equities_data.corporate_action` | timing **current** (152 symbols, latest 2026-04-09); terms **frozen after 2025-08-29** | `CorporateActionsLifecycle::apply_terminations` |
 | **INFORMATIONAL** | listed, relation, initiated | — | n/a | none — no position effect |
 
@@ -90,7 +90,7 @@ FROM equities_data.ohlcv_1d WHERE time >= now() - interval '60 days';
 SELECT action, max(date) FROM equities_data.corporate_action GROUP BY action ORDER BY 2 DESC;
 
 -- Class 2 coverage is thin.
-SELECT count(*) FROM equities_data.ticker_aliases;                 -- 16
+SELECT count(*) FROM equities_data.ticker_aliases;                 -- 389
 SELECT count(*) FROM equities_data.corporate_action
  WHERE action = 'tickerchangeto';                                  -- 12,867
 ```

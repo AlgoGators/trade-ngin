@@ -1,6 +1,7 @@
 {
   "_description": "Risk configuration for EQUITY_MR_PORTFOLIO",
-  "var_limit": 0.10,
+  "_var_limit_rationale": "0.25 matches CONSERVATIVE_PORTFOLIO. At 0.10 the gate was unsatisfiable: a 10-name long-only equity book has annualized sigma ~0.29, so portfolio_var (0.28-0.38) exceeded the limit on 9 of 10 days and risk_scale sat at 0.39, holding gross leverage to 0.3-3.2 pct of capital. Futures at 0.25 breaches on 4.7 pct of days and runs at ~91 pct of target size. Proven on every chain of the 2026-09 equities gate (E2 finding 02: the gate is scale-invariant, so a single held name with sigma > 0.25 binds it regardless of leverage).",
+  "var_limit": 0.25,
   "jump_risk_limit": 0.08,
   "max_gross_leverage": 1,
   "max_net_leverage": 1,
