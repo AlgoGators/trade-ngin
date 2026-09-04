@@ -52,6 +52,7 @@ set(TEST_SOURCES
     live/corp_actions/test_income.cpp
     live/corp_actions/test_broker_frame.cpp
     live/corp_actions/test_broker_frame_db.cpp
+    live/corp_actions/test_class1_silent_row_announcement.cpp
     live/corp_actions/test_spinoff_zero_basis_parent.cpp
     live/corp_actions/test_spinoff_receipt.cpp
     live/corp_actions/test_spinoff_bar_routing.cpp

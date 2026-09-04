@@ -1849,10 +1849,23 @@ int main(int argc, char* argv[]) {
                             for (const auto& r : rows) {
                                 per_bar_keys.insert({r.ticker, r.date_str});
                             }
-                            size_t silent = 0;
+                            // The decision -- which rows the bars do not carry -- lives in
+                            // class1_rows_the_bars_do_not_carry() so it can be asserted. A
+                            // WARN emitted inside this loop could not be, and the pin this
+                            // announcement shipped with passed with the whole block reverted
+                            // (C-5 §9-A1).
+                            std::vector<std::pair<std::string, std::string>> terms_keys;
+                            terms_keys.reserve(class1_terms.value().size());
                             for (const auto& t : class1_terms.value()) {
-                                if (per_bar_keys.count({t.ticker, t.date_str})) continue;
-                                ++silent;
+                                terms_keys.push_back({t.ticker, t.date_str});
+                            }
+                            const auto silent_keys =
+                                class1_rows_the_bars_do_not_carry(terms_keys, per_bar_keys);
+                            const std::set<std::pair<std::string, std::string>> silent_set(
+                                silent_keys.begin(), silent_keys.end());
+                            const size_t silent = silent_keys.size();
+                            for (const auto& t : class1_terms.value()) {
+                                if (!silent_set.count({t.ticker, t.date_str})) continue;
                                 WARN("Class-1 corporate action NOT VISIBLE to the applier: " +
                                      t.ticker + " " + t.date_str + " " + t.action +
                                      " (value " + std::to_string(t.value) +
