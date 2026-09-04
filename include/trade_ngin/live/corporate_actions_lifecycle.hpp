@@ -143,6 +143,42 @@ struct SpinoffBarColumns {
     bool has_reverse_split() const { return reverse_split_factor() < 1.0; }
 
     /**
+     * @brief What is still wrong after an earlier run applied part of this bar as class-1.
+     *
+     * B-viii. The terms feed lags the price feed, so a run that saw this bar before the
+     * `spinoff` row existed applied its columns as ordinary class-1 events. Which columns it
+     * applied decides what is now wrong, and the two cases need opposite repairs:
+     *
+     *  - DIVIDEND only: the basis was divided by `dividend_factor()`, but the whole step the
+     *    spinoff path takes is `total_factor()`. The basis is SHORT by `split_step()`.
+     *
+     *  - DIVIDEND and SPLIT: the basis was divided by `dividend_factor() * split_step()`,
+     *    which IS `total_factor()`, so the basis is already CORRECT. What is wrong is the
+     *    SHARE COUNT -- a `split_factor` above 1 on a spinoff bar is part of the
+     *    distribution and the holder's shares never moved, so the class-1 split minted
+     *    phantom ones (E2-F31). A `split_factor` below 1 is a genuine reverse split and
+     *    applying it was right, so it inflates nothing.
+     *
+     * In both cases the child was never delivered; that is reported separately.
+     */
+    struct AlreadyAppliedGap {
+        bool basis_correct{true};
+        double basis_short_by{1.0};      ///< divide the basis by this to repair it
+        double shares_inflated_by{1.0};  ///< divide the share count by this to repair it
+    };
+
+    AlreadyAppliedGap already_applied_gap(bool dividend_applied, bool split_applied) const {
+        AlreadyAppliedGap gap;
+        const double applied = (dividend_applied ? dividend_factor() : 1.0) *
+                               (split_applied ? split_step() : 1.0);
+        gap.basis_short_by = applied > 0.0 ? total_factor() / applied : 1.0;
+        gap.basis_correct = std::abs(gap.basis_short_by - 1.0) < 1e-9;
+        gap.shares_inflated_by =
+            (split_applied && split_step() > 1.0) ? split_step() : 1.0;
+        return gap;
+    }
+
+    /**
      * @brief Is a split_factor ABOVE 1 being folded into the distribution's factor? (E2-F51)
      *
      * The silent half of the E2-F48 rule. A `split_factor < 1` is separated out as a real

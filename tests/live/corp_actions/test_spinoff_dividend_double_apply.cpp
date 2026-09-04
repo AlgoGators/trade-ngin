@@ -227,3 +227,89 @@ TEST(SpinoffDividendDoubleApply, AnUnrecordedDividendDoesNotBlockANormalSpinoff)
         << "recording the spinoff must not make the dividend look applied, or every "
            "successfully routed bar would refuse itself on the next run";
 }
+
+// ---------------------------------------------------------------------------
+// B-viii: what is ACTUALLY still wrong when an earlier run applied part of the bar.
+//
+// The BA-26 branch computed `residual = spinoff_factor / dividend_factor` and, whenever
+// that was not 1, told the operator the parent was "additionally short by a factor of
+// <residual>". That is right only when the earlier run applied the DIVIDEND row alone.
+//
+// If it also applied the bar's split_factor row as an ordinary class-1 split -- which is
+// what a pre-spinoff-path run did, and is exactly E2-F31 -- then the basis was divided by
+// dividend_factor AND by split_factor, i.e. by total_factor, which is the whole step the
+// spinoff path would have applied. The basis is therefore ALREADY CORRECT, and what is
+// wrong is the SHARE COUNT: a split_factor above 1 on a spinoff bar is part of the
+// distribution and the holder's share count never moved, so the class-1 split minted
+// phantom shares.
+//
+// Telling the operator the basis is short when the shares are inflated points the repair at
+// the wrong column. The routing never asked is_applied(SPLIT), so it could not tell the two
+// cases apart.
+// ---------------------------------------------------------------------------
+
+TEST(SpinoffDividendDoubleApply, DividendOnlyApplied_TheBasisIsShortByTheSplitStep) {
+    // RTX 2020-04-03: div_cash and split_factor 2.0116 on one bar.
+    SpinoffBarColumns col;
+    col.has_dividend = true;
+    col.dividend_cash = 2.31;
+    col.close_at_ex_date = 51.0;
+    col.has_split = true;
+    col.split_factor = 2.0116;
+
+    const auto gap = col.already_applied_gap(/*dividend_applied=*/true, /*split_applied=*/false);
+
+    EXPECT_FALSE(gap.basis_correct);
+    EXPECT_NEAR(gap.basis_short_by, col.split_step(), 1e-12)
+        << "only the dividend factor was taken out; the split step is still missing";
+    EXPECT_DOUBLE_EQ(gap.shares_inflated_by, 1.0) << "no class-1 split was applied";
+}
+
+TEST(SpinoffDividendDoubleApply, BothApplied_TheBasisIsRightAndTheSHARESAreInflated) {
+    SpinoffBarColumns col;
+    col.has_dividend = true;
+    col.dividend_cash = 2.31;
+    col.close_at_ex_date = 51.0;
+    col.has_split = true;
+    col.split_factor = 2.0116;
+
+    const auto gap = col.already_applied_gap(/*dividend_applied=*/true, /*split_applied=*/true);
+
+    EXPECT_TRUE(gap.basis_correct)
+        << "dividend_factor * split_factor == total_factor, which is the whole step";
+    EXPECT_NEAR(gap.basis_short_by, 1.0, 1e-12);
+    EXPECT_NEAR(gap.shares_inflated_by, 2.0116, 1e-12)
+        << "a split_factor above 1 on a spinoff bar is distribution, not a share-count "
+           "change -- applying it as class-1 minted phantom shares (E2-F31)";
+}
+
+TEST(SpinoffDividendDoubleApply, ARealReverseSplitAppliedAsClass1DoesNotInflateShares) {
+    // HLT 2017-01-04: split_factor 0.3333 IS a genuine 1-for-3 reverse split, and applying
+    // it as a class-1 split is correct -- the share count really did change.
+    SpinoffBarColumns col;
+    col.has_dividend = true;
+    col.dividend_cash = 1.0;
+    col.close_at_ex_date = 50.0;
+    col.has_split = true;
+    col.split_factor = 0.3333;
+
+    const auto gap = col.already_applied_gap(/*dividend_applied=*/true, /*split_applied=*/true);
+
+    EXPECT_TRUE(gap.basis_correct);
+    EXPECT_DOUBLE_EQ(gap.shares_inflated_by, 1.0)
+        << "a reverse split below 1 is a real share-count change, not phantom shares";
+}
+
+TEST(SpinoffDividendDoubleApply, ADividendOnlyBarLeavesNothingShort) {
+    // No split column at all: the dividend factor IS the whole step, so applying the
+    // dividend restated the basis exactly as the spinoff path would have.
+    SpinoffBarColumns col;
+    col.has_dividend = true;
+    col.dividend_cash = 2.31;
+    col.close_at_ex_date = 51.0;
+
+    const auto gap = col.already_applied_gap(true, false);
+    EXPECT_TRUE(gap.basis_correct);
+    EXPECT_NEAR(gap.basis_short_by, 1.0, 1e-12);
+    EXPECT_DOUBLE_EQ(gap.shares_inflated_by, 1.0);
+}

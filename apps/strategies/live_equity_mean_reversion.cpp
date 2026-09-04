@@ -2062,11 +2062,21 @@ int main(int argc, char* argv[]) {
                         // missing. Only a bar that also folds a split_factor above 1 into the
                         // distribution leaves the parent short, by that factor -- named below
                         // when it is there.
-                        const double residual =
-                            col.dividend_factor() > 0.0
-                                ? col.spinoff_factor() / col.dividend_factor()
-                                : 1.0;
-                        const bool parent_basis_is_right = std::abs(residual - 1.0) < 1e-9;
+                        // B-viii: ask the ledger which columns the earlier run applied.
+                        // The routing checked is_applied(DIVIDEND) but never
+                        // is_applied(SPLIT), so it could not tell "the basis is short by
+                        // the split step" from "the basis is right and the SHARES are
+                        // inflated" -- opposite repairs, and it reported the first for
+                        // both.
+                        const bool split_also_applied =
+                            audit_log.is_applied(key.first, key.second,
+                                                 CorpActionType::SPLIT) ||
+                            audit_log.is_applied(key.first, key.second,
+                                                 CorpActionType::ADR_SPLIT);
+                        const auto gap = col.already_applied_gap(/*dividend_applied=*/true,
+                                                                 split_also_applied);
+                        const double residual = gap.basis_short_by;
+                        const bool parent_basis_is_right = gap.basis_correct;
                         std::string children_named;
                         {
                             auto terms = spinoff_terms.find(key);
@@ -2095,10 +2105,21 @@ int main(int argc, char* argv[]) {
                              "value that left the parent's basis went nowhere instead of into "
                              "theirs" +
                              (parent_basis_is_right
-                                  ? std::string(".")
+                                  ? (gap.shares_inflated_by > 1.0
+                                         ? " -- AND the earlier run also applied this bar's "
+                                           "split_factor as an ordinary class-1 SPLIT. On a "
+                                           "spinoff bar that column is part of the "
+                                           "distribution, not a share-count change, so " +
+                                           key.first +
+                                           "'s SHARE COUNT is inflated by a factor of " +
+                                           std::to_string(gap.shares_inflated_by) +
+                                           " (phantom shares, E2-F31). The basis is right; "
+                                           "it is the quantity that needs repairing."
+                                         : std::string("."))
                                   : " -- AND this bar folds a split_factor into the "
-                                    "distribution, so the parent is additionally short by a "
-                                    "factor of " + std::to_string(residual) + ".") +
+                                    "distribution which the earlier run did NOT apply, so "
+                                    "the parent's basis is additionally short by a factor "
+                                    "of " + std::to_string(residual) + ".") +
                              " NOTHING is applied. Delivering the children now would need the "
                              "share count held on the ex-date and each child's first close at "
                              "the time; the dividend row recorded neither and this run does "
