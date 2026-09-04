@@ -157,7 +157,9 @@ TEST_F(EquityPnLAccountingTest, UnknownEquityGetsCorrectDefaults) {
     auto equity_config = registry.get_config("RANDOM_STOCK", AssetType::EQUITY);
     EXPECT_NEAR(equity_config.point_value, 1.0, 1e-6);        // NOT 100.0
     EXPECT_NEAR(equity_config.commission_per_unit, 0.005, 1e-6); // NOT -1.0
-    EXPECT_TRUE(equity_config.apply_regulatory_fees);
+    // E2-C3: IBKR Pro Fixed is all-inclusive of exchange, clearing and regulatory fees, so
+    // SEC/FINRA must NOT be charged separately. True would be correct under Tiered.
+    EXPECT_FALSE(equity_config.apply_regulatory_fees);
 
     // Unknown futures should still get futures defaults
     auto futures_config = registry.get_config("UNKNOWN_FUTURE");
@@ -172,8 +174,13 @@ TEST_F(EquityPnLAccountingTest, KnownEquityGetsExplicitConfig) {
     auto aapl_config = registry.get_config("AAPL");
     EXPECT_NEAR(aapl_config.point_value, 1.0, 1e-6);
     EXPECT_NEAR(aapl_config.commission_per_unit, 0.005, 1e-6);
-    EXPECT_TRUE(aapl_config.apply_regulatory_fees);
-    EXPECT_NEAR(aapl_config.max_commission_pct, 0.005, 1e-6);  // 0.5% cap
+    // E2-C3 / E2-C1: the equity schedule is IBKR Pro FIXED throughout -- $0.005/share,
+    // $1.00 minimum, 1% maximum, fees included. It previously carried Tiered's 0.5% cap on
+    // top of Fixed's rate and minimum, taking the worse half of each tier. Switching to
+    // Tiered is a three-field change (rate -> 0.0005-0.0035, minimum -> 0.35,
+    // apply_regulatory_fees -> true), not a one-field one.
+    EXPECT_FALSE(aapl_config.apply_regulatory_fees);
+    EXPECT_NEAR(aapl_config.max_commission_pct, 0.01, 1e-6);  // 1% cap (Fixed)
 }
 
 TEST_F(EquityPnLAccountingTest, TieredEquityConfig) {
@@ -191,4 +198,97 @@ TEST_F(EquityPnLAccountingTest, TieredEquityConfig) {
     auto penny = AssetCostConfigRegistry::get_tiered_equity_config(0.50, 50000.0);
     EXPECT_NEAR(penny.tick_size, 0.0001, 1e-8);  // Sub-dollar tick size
     EXPECT_NEAR(penny.baseline_spread_ticks, 10.0, 1e-6);
+}
+
+// ===========================================================================
+// E2-F8: the target position carries a MARK, positions_ carries the BASIS.
+//
+// The backtest coordinator's unrealized calculation reads average_price off the
+// positions returned by get_strategy_positions(), which are the strategy's TARGET
+// positions -- and MeanReversionStrategy::get_target_positions() sets
+// `pos.average_price = inst_data.current_price` (mean_reversion.cpp:214), the day's
+// close. Measured against the live DB, the mark implied by day D's stored unrealized
+// equalled day D+1's stored average_price on ~87% of consecutive rows: the column was
+// a one-day mark change, not a position-lifetime unrealized.
+//
+// BaseStrategy::on_execution() is the sole legitimate writer of a volume-weighted cost
+// basis and keeps it in positions_, which get_target_positions() deliberately does not
+// read. The coordinator must therefore prefer positions_ when measuring unrealized.
+//
+// These pin the divergence itself. If someone later "fixes" get_target_positions() to
+// return the basis, the first test fails and points them at the coordinator so the two
+// fixes cannot silently double up. See docs/AVERAGE_PRICE_LIFECYCLE.md for the three
+// meanings of this field and which is in force where.
+// ===========================================================================
+
+TEST_F(EquityPnLAccountingTest, TargetPositionsCarryTheMarkWhileHeldPositionsCarryTheBasis) {
+    strategy_ = std::make_unique<MeanReversionStrategy>("test_basis_vs_mark", strategy_config_,
+                                                        mr_config_, db_);
+    ASSERT_TRUE(strategy_->initialize().is_ok());
+    strategy_->start();
+
+    ExecutionReport fill;
+    fill.symbol = "AAPL";
+    fill.side = Side::BUY;
+    fill.fill_price = 150.0;
+    fill.filled_quantity = 100;
+    fill.fill_time = std::chrono::system_clock::now();
+    fill.total_transaction_costs = 0.0;
+    ASSERT_TRUE(strategy_->on_execution(fill).is_ok());
+
+    // A later bar at a different price.
+    std::vector<Bar> bars = {make_bar("AAPL", 160.0)};
+    ASSERT_TRUE(strategy_->on_data(bars).is_ok());
+
+    // The fill-maintained record holds what the position COST.
+    const auto& held = strategy_->get_positions();
+    auto h = held.find("AAPL");
+    ASSERT_NE(h, held.end());
+    EXPECT_NEAR(static_cast<double>(h->second.average_price), 150.0, 1e-6)
+        << "positions_ must hold the fill-weighted cost basis -- on_execution is its sole "
+           "writer.";
+
+    // The target position holds what it is WORTH. These are different quantities and the
+    // coordinator must not confuse them.
+    auto targets = strategy_->get_target_positions();
+    auto t = targets.find("AAPL");
+    ASSERT_NE(t, targets.end());
+    EXPECT_NEAR(static_cast<double>(t->second.average_price), 160.0, 1e-6)
+        << "get_target_positions() no longer reports the mark. If this was deliberate, the "
+           "basis resolution in BacktestCoordinator (E2-F8) is now redundant and must be "
+           "removed in the same change -- otherwise the two corrections stack.";
+
+    EXPECT_NE(static_cast<double>(h->second.average_price),
+              static_cast<double>(t->second.average_price))
+        << "The mark and the basis have converged, so this fixture no longer exercises the "
+           "divergence it exists to pin.";
+}
+
+TEST_F(EquityPnLAccountingTest, OnExecutionMaintainsVolumeWeightedBasisAcrossFills) {
+    strategy_ = std::make_unique<MeanReversionStrategy>("test_vwap_basis", strategy_config_,
+                                                        mr_config_, db_);
+    ASSERT_TRUE(strategy_->initialize().is_ok());
+    strategy_->start();
+
+    ExecutionReport first;
+    first.symbol = "AAPL";
+    first.side = Side::BUY;
+    first.fill_price = 150.0;
+    first.filled_quantity = 100;
+    first.fill_time = std::chrono::system_clock::now();
+    first.total_transaction_costs = 0.0;
+    ASSERT_TRUE(strategy_->on_execution(first).is_ok());
+
+    ExecutionReport second = first;
+    second.fill_price = 170.0;
+    second.filled_quantity = 100;
+    ASSERT_TRUE(strategy_->on_execution(second).is_ok());
+
+    const auto& held = strategy_->get_positions();
+    auto h = held.find("AAPL");
+    ASSERT_NE(h, held.end());
+    EXPECT_NEAR(static_cast<double>(h->second.quantity), 200.0, 1e-6);
+    EXPECT_NEAR(static_cast<double>(h->second.average_price), 160.0, 1e-6)
+        << "Two 100-share buys at 150 and 170 must give a 160.00 weighted basis. This is "
+           "the value the backtest coordinator now measures unrealized against.";
 }

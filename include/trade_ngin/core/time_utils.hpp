@@ -86,6 +86,35 @@ inline std::string format_utc_date(std::chrono::system_clock::time_point tp) {
  * timestamp (e.g. SQL INSERT values with second resolution). Same
  * thread-safety guarantees: routes through safe_gmtime.
  */
+/**
+ * E2-F22 -- parse a "YYYY-MM-DD HH:MM:SS[.frac][+00]" string that is KNOWN to be UTC
+ * (a timestamptz read back from a UTC session) into a time_point, without letting
+ * the host timezone in. std::mktime interprets the broken-down time as LOCAL, which on
+ * a New York host shifted every loaded position timestamp +5 h and made each T-1
+ * rewrite migrate the row across midnight after four rewrites. Returns false on a
+ * malformed string.
+ */
+inline bool parse_utc_datetime(const std::string& text,
+                               std::chrono::system_clock::time_point& out) {
+    std::tm tm = {};
+    int year = 0, month = 0, day = 0, hour = 0, minute = 0, second = 0;
+    if (std::sscanf(text.c_str(), "%d-%d-%d %d:%d:%d", &year, &month, &day, &hour, &minute,
+                    &second) != 6) {
+        return false;
+    }
+    tm.tm_year = year - 1900;
+    tm.tm_mon = month - 1;
+    tm.tm_mday = day;
+    tm.tm_hour = hour;
+    tm.tm_min = minute;
+    tm.tm_sec = second;
+    tm.tm_isdst = 0;
+    const time_t t = timegm(&tm);
+    if (t == static_cast<time_t>(-1)) return false;
+    out = std::chrono::system_clock::from_time_t(t);
+    return true;
+}
+
 inline std::string format_utc_datetime(std::chrono::system_clock::time_point tp) {
     auto t = std::chrono::system_clock::to_time_t(tp);
     std::tm tm{};

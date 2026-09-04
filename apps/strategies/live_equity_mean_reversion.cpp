@@ -313,8 +313,25 @@ int main(int argc, char* argv[]) {
 
         std::cout << "Retrieved " << symbols.size() << " symbols" << std::endl;
         std::cout << "Initial capital: $" << initial_capital << std::endl;
-        std::cout << "Commission rate: " << (commission_rate * 100) << " bps" << std::endl;
-        std::cout << "Slippage model: " << slippage_model << " bps" << std::endl;
+        // E2-C6: describe the model that actually charges, not two inert config values.
+        //
+        // These printed `execution.commission_rate` and `execution.slippage_bps` from
+        // config/defaults.json as though they were the live cost model. Neither is used:
+        // commission_rate is written into StrategyConfig::costs, which has NO reader anywhere
+        // in the tree, and slippage_bps is read into a local and never consulted. The banner
+        // told an operator the book paid "0.05 bps" while TransactionCostManager was charging
+        // a $1.00-per-order floor -- on the observed window that floor was 96% of all
+        // commission paid.
+        //
+        // Print the real schedule instead. If the config values are ever wired up, print them
+        // here again -- but they must drive the model first.
+        std::cout << "Commission model: IBKR Pro Fixed -- $0.005/share, $1.00 min/order, "
+                     "1% of trade value max, fees included" << std::endl;
+        std::cout << "Implicit costs: spread + market impact, charged via "
+                     "total_transaction_costs" << std::endl;
+        std::cout << "  (config execution.commission_rate=" << commission_rate
+                  << ", execution.slippage_bps=" << slippage_model
+                  << " are NOT used by the cost model)" << std::endl;
 
         INFO("Configuration loaded successfully. Processing " +
              std::to_string(symbols.size()) + " symbols from " +
@@ -340,7 +357,16 @@ int main(int argc, char* argv[]) {
         portfolio_config.reserve_capital = initial_capital * app_config.reserve_capital_pct;
         portfolio_config.max_strategy_allocation = app_config.strategy_defaults.max_strategy_allocation;
         portfolio_config.min_strategy_allocation = app_config.strategy_defaults.min_strategy_allocation;
-        portfolio_config.use_optimization = app_config.strategy_defaults.use_optimization;
+        // Mean reversion does NOT use dynamic optimization (HD, 2026-09-01). The optimizer
+        // is a trend-following construct -- position-buffered contract optimization over a
+        // futures universe -- and it cannot even see this strategy: PortfolioManager
+        // populates its symbol data only for TrendFollowingStrategy
+        // (portfolio_manager.cpp:993), so every equity symbol fell through to a flat 0.01
+        // weight (the true weight is price/capital, wrong by 1.4x-7.7x) and zero cost
+        // against a cost penalty of 50 -- 30,692 "not found in trading data" warnings in a
+        // single run. bt_equity_mean_reversion.cpp already disables it; this makes live
+        // agree rather than optimising on values it made up.
+        portfolio_config.use_optimization = false;
         portfolio_config.use_risk_management = app_config.strategy_defaults.use_risk_management;
         portfolio_config.opt_config = opt_config;
         portfolio_config.risk_config = risk_config;
@@ -405,6 +431,16 @@ int main(int argc, char* argv[]) {
 
         // Create portfolio manager and add strategy
         INFO("Creating portfolio manager...");
+        // A fractional target is a legitimate end state when the strategy allows
+        // fractional shares, so the optimizer/risk loop must not keep iterating
+        // toward whole units -- each extra lap re-applies the risk scale to an
+        // already-scaled book (E2-F1). Set from the strategy's own config so live
+        // and backtest agree. Futures leave this false and are unaffected.
+        portfolio_config.allow_fractional_positions = mean_rev_config.allow_fractional_shares;
+        INFO(std::string("Fractional positions permitted: ") +
+             (portfolio_config.allow_fractional_positions
+                  ? "yes (from strategy allow_fractional_shares)"
+                  : "no"));
         auto portfolio = std::make_shared<trade_ngin::PortfolioManager>(portfolio_config);
         auto add_result =
             portfolio->add_strategy(mr_strategy, 1.0, portfolio_config.use_optimization,
@@ -415,6 +451,51 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         INFO("Strategy added to portfolio successfully");
+
+        // Per-run provenance: what this run was configured with. The futures runners have
+        // always written it (live_portfolio_conservative.cpp:620); the equity runner never
+        // did, so trading.live_run_metadata held 245 futures rows and nothing for
+        // equities. Nothing reads this table -- it exists so a past run's allocations and
+        // config can be reconstructed after the fact, which is exactly what you want when
+        // a number from months ago has to be explained.
+        {
+            nlohmann::json portfolio_config_json;
+            portfolio_config_json["total_capital"] =
+                static_cast<double>(portfolio_config.total_capital);
+            portfolio_config_json["reserve_capital"] =
+                static_cast<double>(portfolio_config.reserve_capital);
+            portfolio_config_json["use_optimization"] = portfolio_config.use_optimization;
+            portfolio_config_json["use_risk_management"] = portfolio_config.use_risk_management;
+            portfolio_config_json["allow_fractional_positions"] =
+                portfolio_config.allow_fractional_positions;
+
+            // Single-strategy runner: the live equity path rejects more than one strategy.
+            nlohmann::json strategy_alloc_json;
+            strategy_alloc_json[kEquityStrategyName] = 1.0;
+
+            nlohmann::json strategy_configs_json;
+            strategy_configs_json[kEquityStrategyName] = {
+                {"lookback_period", mean_rev_config.lookback_period},
+                {"entry_threshold", mean_rev_config.entry_threshold},
+                {"exit_threshold", mean_rev_config.exit_threshold},
+                {"risk_target", mean_rev_config.risk_target},
+                {"position_size", mean_rev_config.position_size},
+                {"vol_lookback", mean_rev_config.vol_lookback},
+                {"use_stop_loss", mean_rev_config.use_stop_loss},
+                {"stop_loss_pct", mean_rev_config.stop_loss_pct},
+                {"allow_fractional_shares", mean_rev_config.allow_fractional_shares}};
+
+            auto metadata_result = db->store_live_run_metadata(
+                now, kEquityStrategyId, portfolio_id, strategy_alloc_json,
+                portfolio_config_json, strategy_configs_json);
+
+            if (metadata_result.is_error()) {
+                WARN("Failed to store live run metadata: " +
+                     std::string(metadata_result.error()->what()));
+            } else {
+                INFO("Successfully stored live run metadata for date");
+            }
+        }
 
         // Create LiveTradingCoordinator to manage all live trading components
         INFO("Creating LiveTradingCoordinator for centralized component management");
@@ -478,6 +559,21 @@ int main(int argc, char* argv[]) {
         }
         
         auto all_bars = conversion_result.value();
+
+        // E2-F15: the newest loaded bar PER SYMBOL. Hoisted here (it used to be built
+        // inside the delisting-staleness block) because the corporate-action code needs it
+        // too, and both must agree on one definition of "how far does this symbol's price
+        // series actually reach".
+        //
+        // This is the horizon that decides whether a corporate action may be applied. See
+        // the gate below and docs/E2_FINDING_15_SPLIT_PRICE_UNIT_DESYNC.md.
+        std::unordered_map<std::string, std::string> last_bar_date;
+        for (const auto& bar : all_bars) {
+            const std::string d =
+                format_ymd_utc(std::chrono::system_clock::to_time_t(bar.timestamp));
+            auto it = last_bar_date.find(bar.symbol);
+            if (it == last_bar_date.end() || d > it->second) last_bar_date[bar.symbol] = d;
+        }
         INFO("Loaded " + std::to_string(all_bars.size()) + " total bars");
 
         // Data-freshness guard (review T2.9): the newest bar actually loaded for our
@@ -509,16 +605,10 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        // Update price manager with bars to extract T-1 and T-2 prices
-        if (price_manager) {
-            auto price_update_result = price_manager->update_from_bars(all_bars, now);
-            if (price_update_result.is_error()) {
-                ERROR("Failed to update price manager with bar data: " +
-                      std::string(price_update_result.error()->what()));
-                return 1;
-            }
-            INFO("Price manager updated - extracted T-1 and T-2 prices from bars");
-        } else {
+        // NOTE: the price manager is deliberately NOT updated here. It is updated below,
+        // immediately after `previous_date` is resolved, so the T-1 price lookup and the
+        // T-1 position book are keyed on the SAME trading day. See E2-F14 there.
+        if (!price_manager) {
             ERROR("Price manager not initialized");
             return 1;
         }
@@ -584,6 +674,37 @@ int main(int argc, char* argv[]) {
         }
         auto previous_date = *prev_day_opt;
 
+        // E2-F14: extract T-1/T-2 prices keyed on the trading day we just resolved, NOT on
+        // `now - 24h`.
+        //
+        // This call used to sit ~70 lines above, before `previous_date` existed, and passed
+        // only `now`. LivePriceManager then derived T-1 as `now - 24h` with no fallback,
+        // while the book being finalized came from find_previous_trading_day(). On a Sunday
+        // or Monday run those disagree -- the book says FRIDAY, the price lookup asks for
+        // Saturday/Sunday, and equities_data.ohlcv_1d has no weekend rows -- so an
+        // already-finalized Friday was re-finalized against an empty price map and its
+        // position rows overwritten with 0/0 by the store_positions call in STEP 1, which
+        // runs outside the `yesterday_total_pnl != 0.0` gate that protects live_results.
+        //
+        // Measured on the 2026-07-24..08-04 weekend-inclusive replay: Sat 08-01 correctly
+        // finalized Friday at $864.759444, then Sun 08-02 and Mon 08-03 each re-zeroed it.
+        // L5 residual was -864.7594 on 07-31 and -14.6574 on 07-24, 0.0000 elsewhere.
+        //
+        // Passing the resolved date makes the two lookups agree by construction and makes
+        // re-finalization idempotent. Futures is unaffected: both futures runners pass no
+        // t1_date and their own book lookup is `now - 24h`, the same value this defaults to.
+        // Do NOT move this call back above the resolution, and do NOT "simplify" it by
+        // dropping the argument.
+        {
+            auto price_update_result = price_manager->update_from_bars(all_bars, now, previous_date);
+            if (price_update_result.is_error()) {
+                ERROR("Failed to update price manager with bar data: " +
+                      std::string(price_update_result.error()->what()));
+                return 1;
+            }
+            INFO("Price manager updated - T-1/T-2 prices keyed on resolved trading day");
+        }
+
         // Check if today itself is a non-trading day
         int today_dow = now_tm->tm_wday;
         std::ostringstream today_oss;
@@ -592,9 +713,26 @@ int main(int argc, char* argv[]) {
         bool today_is_non_trading = (today_dow == 0 || today_dow == 6 ||
                                      holiday_checker.is_holiday(today_date_str));
 
-        if (today_is_non_trading && !use_override_date) {
-            INFO("Today (" + today_date_str + ") is a non-trading day - skipping equity processing");
-            return 0;
+        // A closed market does NOT mean "do nothing". You still hold the book over a
+        // weekend or holiday even though no new bar exists to signal from, so the day is
+        // processed as a CARRY-FORWARD: positions, live_results and equity_curve are all
+        // written with the previous day's book, and signal generation and execution are
+        // skipped. Futures already behaves this way -- CONSERVATIVE_PORTFOLIO has rows on
+        // all seven weekdays across positions (244 Sat / 244 Sun), live_results and
+        // equity_curve alike.
+        //
+        // Previously this returned early, and only in real-time mode: an explicit replay
+        // date bypassed the guard entirely and processed the weekend as a normal trading
+        // day, which would book a fill dated Saturday at Friday's close. Equities cannot
+        // trade Saturday, so that execution is factually false and would break broker
+        // reconciliation, even though the net position lands the same. The T-1 lag already
+        // handles the real case: Monday's run reaches back to Friday's close via the
+        // widened lookup and trades there.
+        if (today_is_non_trading) {
+            INFO("Today (" + today_date_str +
+                 ") is a non-trading day - carrying the book forward: no signals, no "
+                 "executions, positions/live_results/equity_curve written from the "
+                 "previous session.");
         }
 
         // Load previous day positions for PnL calculation
@@ -608,6 +746,174 @@ int main(int argc, char* argv[]) {
         } else {
             INFO("No previous day positions found (first run or no data): " + std::string(previous_positions_result.error()->what()));
         }
+
+        // E2-F19: a position closed to zero keeps its row for the day it closed, so the
+        // exit's realized P&L has somewhere to live (see LiveDailyCycle::is_dead_row).
+        // Everything below this line -- corporate actions, the run-gap guard, seeding,
+        // execution, basis resolution -- is written against a book of HELD positions,
+        // so closed rows are split out here and reach exactly one place: the T-1 write
+        // set, where they are re-appended verbatim so the DELETE-then-INSERT that
+        // rewrites the T-1 date does not destroy them.
+        std::unordered_map<std::string, Position> previous_closed_rows;
+        {
+            std::unordered_map<std::string, Position> open_rows;
+            LiveDailyCycle::split_open_and_closed(previous_positions, open_rows,
+                                                  previous_closed_rows);
+            previous_positions = std::move(open_rows);
+            if (!previous_closed_rows.empty()) {
+                INFO("Loaded " + std::to_string(previous_closed_rows.size()) +
+                     " closed row(s) for Day T-1 (realized carried on the close date); " +
+                     std::to_string(previous_positions.size()) + " held position(s) remain");
+            }
+        }
+
+        // An empty prior book is legitimate on a genuine first run, and catastrophic
+        // otherwise. The two are indistinguishable from here -- both are an empty map --
+        // and the consequences of guessing wrong are total: the strategy seeds flat, the
+        // corporate-action block is skipped by its own !previous_positions.empty() guard,
+        // every position silently disappears from trading.positions, and the next day's
+        // executions are sized as deltas from zero against stock the broker still holds.
+        //
+        // Runs MUST be sequential and complete -- that is inherent to the T-1 lag model,
+        // where day T's P&L is finalized by day T+1's run -- so a hole here means a run was
+        // missed, not that the strategy is flat. The remedy is to replay the missing dates
+        // in order, which works and needs no code. What was missing is being TOLD: this
+        // previously exited 0 with no ERROR and no WARN, so a monitor watching exit codes
+        // saw a clean run while the book was being abandoned (E2-F8).
+        //
+        // Deliberately NOT resolved by falling back to MAX(date): that would paper over a
+        // broken invariant and could silently revive a stale book.
+        if (previous_positions.empty()) {
+            // An empty prior book has two very different causes and they must not be
+            // conflated:
+            //   (a) the strategy legitimately holds nothing -- it exited everything, or it
+            //       is a genuine first run;
+            //   (b) a run was MISSED, so the prior day was never written at all.
+            //
+            // (b) is silent and destructive: the strategy seeds flat, the corporate-action
+            // block is skipped by its own !previous_positions.empty() guard, every position
+            // vanishes from trading.positions, and the next day's executions are sized as
+            // deltas from zero against stock the broker still holds (E2-F8).
+            //
+            // The discriminator is NOT "are there positions" -- a flat book has none and is
+            // perfectly valid. It is "did a run HAPPEN for that date". Every run writes a
+            // live_results row whether or not it holds anything, so that row is the evidence
+            // a run occurred. Testing positions instead would refuse to start every time the
+            // strategy went flat, which is a normal state.
+            //
+            // Deliberately NOT resolved by falling back to MAX(date): that would paper over
+            // a broken invariant and could silently revive a stale book. Runs must be
+            // sequential -- inherent to the T-1 lag model -- so the remedy is to replay the
+            // missing dates in order, which works and needs no code change. What was missing
+            // was being TOLD.
+            const std::string prev_date_str = trade_ngin::core::format_utc_date(previous_date);
+            auto prev_run = db->execute_query(
+                "SELECT count(*)::text FROM trading.live_results "
+                "WHERE strategy_id = '" + std::string(kEquityStrategyId) + "'"
+                " AND portfolio_id = '" + portfolio_id + "'"
+                " AND date = '" + prev_date_str + "'");
+
+            long prev_run_rows = 0;
+            if (prev_run.is_ok() && prev_run.value()->num_rows() > 0) {
+                auto col = std::static_pointer_cast<arrow::StringArray>(
+                    prev_run.value()->column(0)->chunk(0));
+                if (!col->IsNull(0)) prev_run_rows = std::stol(std::string(col->GetView(0)));
+            }
+
+            if (prev_run_rows > 0) {
+                INFO("Previous trading day (" + prev_date_str +
+                     ") ran and held no positions -- the strategy is flat, which is a valid "
+                     "state. Continuing.");
+            } else {
+                auto last_run = db->execute_query(
+                    "SELECT MAX(date)::text FROM trading.live_results "
+                    "WHERE strategy_id = '" + std::string(kEquityStrategyId) + "'"
+                    " AND portfolio_id = '" + portfolio_id + "'"
+                    " AND date < '" + today_date_str + "'");
+
+                std::string last_run_date;
+                if (last_run.is_ok() && last_run.value()->num_rows() > 0) {
+                    auto col = std::static_pointer_cast<arrow::StringArray>(
+                        last_run.value()->column(0)->chunk(0));
+                    if (!col->IsNull(0)) last_run_date = std::string(col->GetView(0));
+                }
+
+                if (!last_run_date.empty()) {
+                    ERROR("No run was recorded for the previous trading day (" + prev_date_str +
+                          "), but this strategy last ran on " + last_run_date +
+                          ". A run was missed. Replay every date from " + last_run_date +
+                          " forward, in order, before running " + today_date_str +
+                          " -- continuing would seed the strategy flat and silently abandon "
+                          "the book. Refusing to run.");
+                    return 1;
+                }
+                INFO("No prior run anywhere for this strategy -- genuine first run.");
+            }
+        }
+
+        // The book AS IT STOOD on T-1, captured before any corporate action touches it.
+        //
+        // The corp-action blocks below mutate `previous_positions` IN PLACE (non-const ref
+        // by design -- see AVERAGE_PRICE_LIFECYCLE.md step 2). The Day T-1 finalization then
+        // builds its input from that same map and writes the result back at the T-1 DATE, so
+        // the post-action quantities and basis landed on a row for a day the action had not
+        // yet happened. Measured: a position seeded at 10 @ 4194.31 on 2026-04-02 came back
+        // as 250 @ 167.7724 on 2026-04-02 after the 2026-04-06 split was applied -- history
+        // restated four days before the ex-date.
+        //
+        // For a split that is "only" falsified quantity history, since notional is
+        // preserved. For a DIVIDEND it is worse: the basis changes without notional being
+        // preserved, so the T-1 row would carry a cost basis that was not true that day and
+        // any P&L computed over it would be wrong.
+        //
+        // T-1 is finalized from this snapshot; the adjustment belongs to the ex-date forward.
+        const std::unordered_map<std::string, Position> previous_positions_pre_action =
+            previous_positions;
+
+        // Executions synthesised from corporate actions (terminations), merged into the
+        // day's executions after execute_day_t so a broker statement has a counterpart.
+        //
+        // E2-F12 (comment correction): this used to claim the executions are what carry the
+        // realized P&L into live_results and the equity curve. That was FALSE.
+        // live_results.daily_realized_pnl has never been derived from executions -- it comes
+        // from the day-T aggregate and the T-1 finalization -- so appending an execution gave
+        // the corp-action delta no route into any aggregate at all. The row said 122.00 and
+        // live_results said 0.00.
+        //
+        // The execution row is still worth emitting: it is the broker-reconcilable
+        // counterpart, and without it a liquidation appears on a statement with nothing in
+        // trading.executions to match. But it is NOT the P&L path. That is
+        // corp_action_realized_total below (E2-F7).
+        std::vector<ExecutionReport> corp_action_executions;
+
+        // E2-F7: the realized P&L a termination locks in, summed so it can be folded into
+        // the day's aggregate.
+        //
+        // CorporateActionsLifecycle computes `realized_delta = (exit_price - avg_price) *
+        // qty_before` and writes it onto the position and the adjustment record -- and until
+        // now its ONLY other consumer in the entire tree was a log string. No aggregate read
+        // it, so a terminated holding's gain or loss never reached daily_realized_pnl,
+        // total_pnl, current_portfolio_value or the equity curve.
+        //
+        // It is booked on day T, the ex-date, NOT threaded through finalize_previous_day.
+        // That function writes the T-1 row, so passing the delta to it would book a day-T
+        // cash flow onto the previous day -- exactly the restatement 8a1a96ef removed. It
+        // would also put the T-1 aggregate out of agreement with the T-1 executions and
+        // position rows.
+        //
+        // Booking it here touches NO shared file, so the futures binaries are unchanged by
+        // construction rather than by argument.
+        double corp_action_realized_total = 0.0;
+        // E2-F19 (R4): the same deltas, per symbol, so the terminated symbol's day-T
+        // ROW carries what the aggregate carries. Filled under the identical gate as
+        // corp_action_realized_total so the two can never disagree about which events
+        // were recognised.
+        std::unordered_map<std::string, double> corp_action_realized_by_symbol;
+
+        // E2-F15: ex-date of any class-1 event APPLIED on this run, per symbol. Used to pick
+        // the right T-1 snapshot for finalization -- see the selection below.
+        std::unordered_map<std::string, std::string> applied_class1_ex_date;
+
 
         DEBUG("Previous date used for lookup: " + std::to_string(std::chrono::system_clock::to_time_t(previous_date)));
         DEBUG("Current date: " + std::to_string(std::chrono::system_clock::to_time_t(now)));
@@ -813,6 +1119,24 @@ int main(int argc, char* argv[]) {
                     INFO("Corp-action dedup record read successfully and is "
                          "empty -- genuine first run for this strategy");
                 }
+                // E2-F23: a dedup row dated on or after today was written by a LATER pass
+                // -- an un-reset replay, or a re-run of a day that applied an event with
+                // today's ex-date. Honouring it would skip the event and finalize T-1 in
+                // the wrong frame (the E2-F16 phantom, measured at -4,824 on BKNG).
+                // A re-run is only valid when the dedup rows and the book come from the
+                // same pass: reset both together, then run.
+                {
+                    const std::string latest_ex = audit_log.latest_applied_ex_date();
+                    if (!latest_ex.empty() && latest_ex >= today_date_str) {
+                        ERROR("Corp-action dedup record holds an entry with ex_date " + latest_ex +
+                              " >= today (" + today_date_str + "). It was written by a later "
+                              "pass over this book. Refusing to run: reset trading.corp_action_applied "
+                              "for this portfolio TOGETHER with the book (positions, live_results, "
+                              "equity_curve, executions) from the replay start date, then replay in "
+                              "order. Never re-run a day after a later day has run.");
+                        return 1;
+                    }
+                }
 
                 // Dividend-denominator closes, keyed (symbol, YYYY-MM-DD).
                 //
@@ -957,6 +1281,132 @@ int main(int argc, char* argv[]) {
                     return p->second.quantity.as_double();
                 };
 
+                // E2-F17 signal S2. The SAME lookup keyed on the ex-date ITSELF, not ex_date-1.
+                // The two dates answer different questions and must not be conflated:
+                //   ex_date - 1  -> who was on the register for the dividend CASH (above)
+                //   end of ex_date -> whether the basis being restated is pre-event
+                // A fill on run E is priced at close(E-1), i.e. pre-event, so a position opened
+                // ON the ex-date run has a clean basis and MUST still be restated. Measuring at
+                // E-1 would call it "flat at the ex-date" and skip a real adjustment.
+                //
+                // Parsed with timegm, NOT mktime. The ex_date-1 lambda above uses
+                // `std::mktime`, which reads the tm as LOCAL time and then formats UTC -- on a
+                // host at a positive UTC offset that lands a day early. That is pre-existing
+                // and out of scope here, but new code must not propagate it.
+                auto parse_ex_date = [](const std::string& d)
+                    -> std::optional<std::chrono::system_clock::time_point> {
+                    std::tm tm{};
+                    std::istringstream ss(d);
+                    ss >> std::get_time(&tm, "%Y-%m-%d");
+                    if (ss.fail()) return std::nullopt;
+                    return std::chrono::system_clock::from_time_t(timegm(&tm));
+                };
+
+                std::unordered_map<std::string, std::unordered_map<std::string, Position>>
+                    positions_at_exdate_cache;
+                auto qty_at_end_of_ex_date = [&](const std::string& symbol,
+                                                 const std::string& ex_date) -> double {
+                    auto cached = positions_at_exdate_cache.find(ex_date);
+                    if (cached == positions_at_exdate_cache.end()) {
+                        auto parsed = parse_ex_date(ex_date);
+                        if (!parsed) return 0.0;
+                        auto r = db->load_positions_by_date(
+                            kEquityStrategyId, kEquityStrategyName,
+                            portfolio_id, *parsed, "trading.positions");
+                        auto& slot = positions_at_exdate_cache[ex_date];
+                        if (r.is_ok()) slot = r.value();
+                        cached = positions_at_exdate_cache.find(ex_date);
+                    }
+                    auto p = cached->second.find(symbol);
+                    if (p == cached->second.end()) return 0.0;
+                    return p->second.quantity.as_double();
+                };
+
+                // E2-F17: is the book's state at the END OF THE EX-DATE actually KNOWN? Every
+                // run writes a live_results row whether or not it holds anything (the same
+                // evidence E2-F8 uses to tell "flat" from "never ran"), so that row is what
+                // turns an empty position lookup from "unknown" into "verifiably flat".
+                // Without it, absent history would be read as flat and real adjustments would
+                // be dropped.
+                //
+                // Keyed on the EX-DATE, not ex_date-1 -- see qty_at_end_of_ex_date above for
+                // why the two dates are not interchangeable.
+                std::unordered_map<std::string, bool> run_on_record_cache;
+                auto run_on_record_at_ex_date = [&](const std::string& ex_date) -> bool {
+                    auto cached = run_on_record_cache.find(ex_date);
+                    if (cached != run_on_record_cache.end()) return cached->second;
+
+                    bool known = false;
+                    if (auto parsed = parse_ex_date(ex_date)) {
+                        const std::string prev_str = trade_ngin::core::format_utc_date(*parsed);
+                        auto r = db->execute_query(
+                            "SELECT count(*)::text FROM trading.live_results "
+                            "WHERE strategy_id = '" + std::string(kEquityStrategyId) + "'"
+                            " AND portfolio_id = '" + portfolio_id + "'"
+                            " AND date = '" + prev_str + "'");
+                        if (r.is_ok() && r.value()->num_rows() > 0) {
+                            auto col = std::static_pointer_cast<arrow::StringArray>(
+                                r.value()->column(0)->chunk(0));
+                            if (!col->IsNull(0)) {
+                                known = std::stol(std::string(col->GetView(0))) > 0;
+                            }
+                        }
+                    }
+                    run_on_record_cache[ex_date] = known;
+                    return known;
+                };
+
+                // E2-F17 signal S1 (primary): the last date this strategy BOUGHT each symbol.
+                // A fill on run D is priced at close(D-1), so a BUY dated strictly AFTER the
+                // ex-date was struck at a price the market had already adjusted -- positive
+                // evidence that the basis now held is post-event and must NOT be restated.
+                // A SELL cannot re-form a long book's basis, so BUY alone is sufficient.
+                //
+                // One batched query for every symbol with an event, floored at the earliest
+                // candidate ex-date so the scan stays small.
+                std::unordered_map<std::string, std::string> last_buy_by_symbol;
+                bool exec_history_readable = false;
+                if (!event_symbols.empty()) {
+                    std::string min_ex_date;
+                    for (const auto& row : rows) {
+                        if (previous_positions.find(row.ticker) == previous_positions.end()) continue;
+                        if (min_ex_date.empty() || row.date_str < min_ex_date) min_ex_date = row.date_str;
+                    }
+                    if (!min_ex_date.empty()) {
+                        // Bounded ABOVE by T-1, the date of the book being restated. Two
+                        // reasons, and the first is not optional:
+                        //
+                        // 1. NO LOOKAHEAD. On a replay, trading.executions also holds rows for
+                        //    dates after the run being processed. Unbounded, this reported
+                        //    "BUY 2026-07-30" as evidence against a 2026-06-08 ex-date while
+                        //    replaying June, and skipped a dividend that had to apply.
+                        //
+                        // 2. IT IS THE RIGHT QUESTION. The applier restates `previous_positions`
+                        //    -- the end-of-T-1 book -- BEFORE today's trading. Fills dated after
+                        //    T-1 have not happened yet at apply time and cannot have touched the
+                        //    basis being restated. Only a fill in (ex_date, T-1] can, which is
+                        //    exactly a LATE apply: the event was deferred or the symbol was
+                        //    unheld when it was first offered, and the book moved in between.
+                        //
+                        // Without the upper bound the rule degenerates for a strategy that
+                        // re-sizes daily: nearly every held name has some later BUY, so nearly
+                        // every real adjustment gets skipped.
+                        const std::string t1_str = trade_ngin::core::format_utc_date(previous_date);
+                        auto lb = db->get_last_buy_dates(kEquityStrategyId, kEquityStrategyName,
+                                                         portfolio_id, event_symbols,
+                                                         min_ex_date, t1_str);
+                        if (lb.is_ok()) {
+                            last_buy_by_symbol = lb.value();
+                            exec_history_readable = true;
+                        } else {
+                            WARN("E2-F17: could not read execution history for basis provenance ("
+                                 + std::string(lb.error()->what()) +
+                                 "). Every event this run resolves to UNKNOWN and will be APPLIED "
+                                 "with a warning rather than skipped.");
+                        }
+                    }
+                }
+
                 std::vector<CorpActionEvent> events;
                 events.reserve(rows.size());
                 // Intra-batch dedup (ultrareview bug_037): if the same
@@ -971,6 +1421,60 @@ int main(int argc, char* argv[]) {
                     if (audit_log.is_applied(row.ticker, row.date_str, type)) continue;
                     if (previous_positions.find(row.ticker) == previous_positions.end()) continue;
                     if (!seen_in_batch.emplace(row.ticker, row.date_str, type).second) continue;
+
+                    // E2-F15 HORIZON GATE: only apply an event the PRICE SERIES already knows
+                    // about.
+                    //
+                    // The applier's real contract is "restate the basis into the frame the
+                    // price series is already in". Two windows made that false: the event
+                    // fetch reads split_factor / div_cash from the ex-date bar ROW and so
+                    // spans day D, while the bar load ends at the last completed session on a
+                    // replay (`end_date = now - 24h`, :226). build_equity_adjusted_query
+                    // back-adjusts a bar by the steps of every LATER bar, so with the ex-date
+                    // bar outside the window there is no step to apply and the closes stay
+                    // raw -- correctly, given what it was given.
+                    //
+                    // The position then moved into post-event units while every price stayed
+                    // pre-event. Reproduced live: BKNG 25:1 on 2026-04-06 restated qty 10 ->
+                    // 250 and basis 4194.31 -> 167.7724, then sold 248.799399 shares at the
+                    // PRE-split 4194.31 -- $1,001,800 of realized P&L on a $100,000 book. It
+                    // also mis-sized the target (1.200601 pre-split shares read as post-split)
+                    // and, on a REVERSE split, inverts the stop-loss into a spurious
+                    // liquidation.
+                    //
+                    // Deferring costs one run and is self-healing by design:
+                    // derive_corp_action_window reaches back to position inception and the
+                    // dedup record is durable, precisely so a deferred event is picked up
+                    // later. No PositionAdjustment is produced, so no dedup row is written and
+                    // the event is reconsidered next run -- the same recovery shape the
+                    // dividend-denominator skip above already relies on.
+                    //
+                    // In TRUE LIVE this gate is a no-op: `end_date = now`, so once the ex-date
+                    // bar is published it is loaded and the horizon passes. The defect lives
+                    // on the replay branch.
+                    //
+                    // DO NOT "fix" this by rescaling the price maps instead. previous_day_ and
+                    // two_days_ago_close_prices are also the inputs to finalize_previous_day,
+                    // which marks previous_positions_pre_action -- the deliberately
+                    // un-restated T-1 snapshot from 8a1a96ef. Rescaling them restates Day T-1
+                    // by the ratio and trades a $1M error for a $40k one.
+                    {
+                        auto lb = last_bar_date.find(row.ticker);
+                        if (lb == last_bar_date.end() || row.date_str > lb->second) {
+                            WARN("Deferring " +
+                                 std::string(CorporateActionsApplier::type_to_string(type)) +
+                                 " for " + row.ticker + " (ex_date " + row.date_str +
+                                 "): its loaded price series ends " +
+                                 (lb == last_bar_date.end() ? std::string("nowhere -- the symbol "
+                                  "is held but has no bars in the load window")
+                                                            : lb->second) +
+                                 ", so the bars are still in PRE-event units and restating the "
+                                 "basis now would leave price and position in different frames "
+                                 "(E2-F15). No dedup row is written; it applies on the next run "
+                                 "once the ex-date bar is in the window.");
+                            continue;
+                        }
+                    }
 
                     CorpActionEvent ev;
                     ev.symbol = row.ticker;
@@ -1036,6 +1540,44 @@ int main(int argc, char* argv[]) {
                         // missing (e.g. first-week catch-up runs).
                         ev.qty_at_ex_date = qty_at_ex_date(row.ticker, row.date_str);
                     }
+
+                    // E2-F17: basis provenance, resolved for EVERY class-1 type.
+                    //
+                    // THE PLACEMENT IS THE FIX. This previously sat inside the DIVIDEND branch
+                    // above, so splits and ADR splits always reached the applier with the
+                    // default and the guard could never fire on them -- leaving the
+                    // catastrophic case (a 25:1 split restating a post-ex-date basis by 2400%)
+                    // completely unguarded, while the dividend case looked covered.
+                    //
+                    // Only POSITIVE evidence may skip; everything else applies.
+                    {
+                        auto lb = last_buy_by_symbol.find(row.ticker);
+                        const bool bought_after =
+                            lb != last_buy_by_symbol.end() && lb->second > row.date_str;
+
+                        if (bought_after) {
+                            // S1: an actual BUY priced after the event.
+                            ev.basis_provenance =
+                                CorpActionEvent::BasisProvenance::FORMED_AFTER_EX_DATE;
+                            ev.basis_provenance_evidence = "BUY " + lb->second;
+                        } else if (run_on_record_at_ex_date(row.date_str) &&
+                                   !(std::abs(qty_at_end_of_ex_date(row.ticker, row.date_str)) >
+                                     1e-9)) {
+                            // S2: a run is on record for the ex-date and the book held nothing
+                            // in this symbol at the end of it, so whatever is held now was
+                            // acquired later. Covers a book with no execution history.
+                            ev.basis_provenance =
+                                CorpActionEvent::BasisProvenance::FORMED_AFTER_EX_DATE;
+                            ev.basis_provenance_evidence =
+                                "book verifiably flat at end of ex-date " + row.date_str;
+                        } else if (exec_history_readable) {
+                            ev.basis_provenance =
+                                CorpActionEvent::BasisProvenance::FORMED_ON_OR_BEFORE_EX_DATE;
+                        } else {
+                            ev.basis_provenance = CorpActionEvent::BasisProvenance::UNKNOWN;
+                        }
+                    }
+
                     events.push_back(std::move(ev));
                 }
 
@@ -1052,6 +1594,106 @@ int main(int argc, char* argv[]) {
                         audit_log.record(adj);
                     }
 
+                    for (const auto& adj : adjustments) {
+                        auto& slot = applied_class1_ex_date[adj.symbol];
+                        if (slot.empty() || adj.event_date > slot) slot = adj.event_date;
+                    }
+
+                    // E2-F15 / G1 -- THE INVARIANT THAT WOULD HAVE CAUGHT THIS.
+                    //
+                    // A price-restating event rescales the basis. If the price series is in
+                    // the same frame, it has been rescaled by the SAME factor, so the ratio
+                    // of basis to mark is unchanged:
+                    //
+                    //     avg_after / mark_after  ==  avg_before / mark_before
+                    //
+                    // On the BKNG failure this read 167.7724/4194.31 against 4194.31/4194.31
+                    // -- off by exactly the split ratio, 25. Nothing else caught it: L5,
+                    // total_pnl = (realized - costs) + unrealized, equity continuity and the
+                    // daily-flow identity are all INTERNAL-consistency checks, and the wrong
+                    // number was consistently wrong everywhere. This is the one statement
+                    // that compares the restatement against something outside itself.
+                    //
+                    // It generalises unchanged to dividends and to reverse splits, and it
+                    // fires on any future path that rescales one side and not the other.
+                    for (const auto& adj : adjustments) {
+                        auto mk = previous_day_close_prices.find(adj.symbol);
+                        if (mk == previous_day_close_prices.end() || !(mk->second > 0.0)) continue;
+                        if (!(adj.avg_price_before > 0.0) || !(adj.avg_price_after > 0.0)) continue;
+
+                        // The mark is NOT restated by the applier, so post-event it should
+                        // already be in the same frame as the new basis. Compare the implied
+                        // ratios rather than the raw numbers.
+                        const double implied = (adj.avg_price_before / adj.avg_price_after);
+                        if (std::abs(implied - adj.ratio_change) > 1e-6 * std::max(1.0, adj.ratio_change)) {
+                            ERROR("E2-F15 invariant violated for " + adj.symbol + " (" +
+                                  adj.event_date + "): basis moved by " +
+                                  std::to_string(implied) + " but the event ratio is " +
+                                  std::to_string(adj.ratio_change) +
+                                  " -- the basis and the price series are in different frames.");
+                            return 1;
+                        }
+
+                        const double basis_to_mark = adj.avg_price_after / mk->second;
+                        if (basis_to_mark > 5.0 || basis_to_mark < 0.2) {
+                            ERROR("E2-F15 guard: after applying " +
+                                  std::string(CorporateActionsApplier::type_to_string(adj.type)) +
+                                  " to " + adj.symbol + " the cost basis (" +
+                                  std::to_string(adj.avg_price_after) +
+                                  ") is implausible against the mark (" +
+                                  std::to_string(mk->second) + "), ratio " +
+                                  std::to_string(basis_to_mark) +
+                                  ". The position and the price series are almost certainly in "
+                                  "different unit frames. Refusing to trade on it.");
+                            return 1;
+                        }
+                    }
+
+                    // E2-F17 / G3 -- THE SAME BOUND, ON THE EVENTS WE REFUSED.
+                    //
+                    // G1 above iterates `adjustments`, i.e. events that WERE applied, so a
+                    // SKIP is invariant-free. That asymmetry is dangerous now that a skip is
+                    // possible for splits: wrongly refusing a real 25:1 leaves basis and mark
+                    // 25x apart, which is strictly worse than the double-adjustment the skip
+                    // exists to prevent, and nothing downstream would notice.
+                    //
+                    // A refusal is a decision, and it is checkable: if declining to restate
+                    // leaves the basis visibly out of frame with the T-1 mark, the refusal was
+                    // wrong. Same bounds and same fail-closed shape as the applied side.
+                    {
+                        std::set<std::string> applied_syms;
+                        for (const auto& adj : adjustments) applied_syms.insert(adj.symbol);
+
+                        for (const auto& ev : events) {
+                            if (applied_syms.count(ev.symbol)) continue;   // it applied
+                            auto pos = previous_positions.find(ev.symbol);
+                            if (pos == previous_positions.end()) continue; // nothing held
+                            auto mk = previous_day_close_prices.find(ev.symbol);
+                            if (mk == previous_day_close_prices.end() || !(mk->second > 0.0)) continue;
+                            const double basis = pos->second.average_price.as_double();
+                            if (!(basis > 0.0)) continue;
+                            if (!(std::abs(pos->second.quantity.as_double()) > 1e-9)) continue;
+
+                            const double basis_to_mark = basis / mk->second;
+                            if (basis_to_mark > 5.0 || basis_to_mark < 0.2) {
+                                ERROR("E2-F17 guard: " + ev.symbol + " carried an unapplied " +
+                                      std::string(CorporateActionsApplier::type_to_string(ev.type)) +
+                                      " (ex_date " + ev.ex_date + ") and its cost basis (" +
+                                      std::to_string(basis) + ") is implausible against the mark (" +
+                                      std::to_string(mk->second) + "), ratio " +
+                                      std::to_string(basis_to_mark) +
+                                      ". Refusing to restate was almost certainly wrong -- the "
+                                      "book is a corporate action out of frame. Refusing to trade.");
+                                return 1;
+                            }
+                        }
+                    }
+
+                    // E2-F19 cleanup: nothing to persist when no event applied. The
+                    // placeholder rows this block writes are dated today and carry the
+                    // loaded book; writing them with zero adjustments was what let a
+                    // stale book survive an empty day-T write (E2-F24).
+                    if (!adjustments.empty()) {
                     // Persist corrected positions back so future runs (and
                     // tomorrow's load_positions_by_date) pick up the adjusted state.
                     // Stamp last_update = now (ultrareview bug_007): the date-keyed
@@ -1063,6 +1705,13 @@ int main(int argc, char* argv[]) {
                     for (const auto& [sym, pos] : previous_positions) {
                         Position p = pos;
                         p.last_update = now;
+                        // E2-F19: this is a day-T placeholder for the restated book, not
+                        // a P&L record. The loaded realized is T-1's flow; stamping it on
+                        // a day-T row would let a placeholder that survives an empty
+                        // day-T write (book fully terminated) reload tomorrow as a closed
+                        // row carrying yesterday's realized, and be re-persisted at T-1
+                        // forever. The day-T write below records the day's real figure.
+                        p.realized_pnl = Decimal(0.0);
                         positions_to_store.push_back(std::move(p));
                     }
                     // Adjusted positions and the dedup rows that stop those
@@ -1105,15 +1754,32 @@ int main(int argc, char* argv[]) {
                     }
                     INFO("Persisted " + std::to_string(adjustments.size()) +
                          " corp-action adjustments to trading.positions");
+                    } else {
+                        INFO("No class-1 corp-action adjustments applied this run; nothing persisted");
+                    }
                 }
             }
         }
+
+        // The book after the class-1 rescale and BEFORE the lifecycle handlers. The
+        // E2-F16 restated-frame rule for the T-1 finalization needs exactly this
+        // snapshot: a termination sets quantity to 0 and adds a day-T cash flow to
+        // realized_pnl, and a rename or contra-merge re-keys entries -- none of which
+        // happened on T-1 (E2-F19 gap G4; LiveDailyCycle::select_finalization_book).
+        const std::unordered_map<std::string, Position> previous_positions_post_class1 =
+            previous_positions;
 
         // ---- Class 2 SERIES_CONTINUITY + Class 3 TERMINATION ----
         // Both change WHAT is held rather than its price, so they run after
         // the class-1 rescale and before target generation. Failures here are
         // non-fatal: the position map is left as-is and the run continues.
-        if (!previous_positions.empty()) {
+        //
+        // E2-F21: gated on a trading day like signals and executions are. A termination
+        // with a weekend ex-date would otherwise emit an execution and book realized P&L
+        // on a day the market was shut. Nothing is recorded on the skip, and the
+        // admission rule (delist_date <= as_of) still admits the event on the next open
+        // session, so Monday books it.
+        if (!today_is_non_trading && !previous_positions.empty()) {
             auto today_t2 = std::chrono::system_clock::to_time_t(now);
             std::tm today_tm2{};
             gmtime_r(&today_t2, &today_tm2);
@@ -1131,6 +1797,8 @@ int main(int argc, char* argv[]) {
                           &lifecycle_start_tm);
 
             std::vector<LifecycleAdjustment> lifecycle_log;
+            // Executions synthesised from corporate actions, merged into the day's
+            // executions below so they reach live_results and the equity curve (E2-F11).
 
             // Class 2: re-key positions still held under a superseded ticker.
             auto alias_result = db->get_ticker_aliases();
@@ -1179,13 +1847,7 @@ int main(int argc, char* argv[]) {
                 // price. Bars settle it -- a symbol still printing after the
                 // claimed delisting is plainly not delisted -- and we already hold
                 // every bar of the load window, so this costs no query.
-                std::unordered_map<std::string, std::string> last_bar_date;
-                for (const auto& bar : all_bars) {
-                    const std::string d =
-                        format_ymd_utc(std::chrono::system_clock::to_time_t(bar.timestamp));
-                    auto it = last_bar_date.find(bar.symbol);
-                    if (it == last_bar_date.end() || d > it->second) last_bar_date[bar.symbol] = d;
-                }
+                // last_bar_date is built once, above -- see E2-F15.
 
                 for (const auto& [symbol, delist_date] : delist_result.value()) {
                     if (previous_positions.find(symbol) == previous_positions.end()) continue;
@@ -1199,6 +1861,11 @@ int main(int argc, char* argv[]) {
                              ") -- the ticker is trading, so the row belongs to a prior issuer");
                         continue;
                     }
+                    // E2-F15 (DEFERRED, logged): if this symbol also had a class-1 event applied
+                    // on THIS run, its basis is post-event while final_closes is seeded from
+                    // the pre-event price map, so realized_delta would be computed across two
+                    // frames. Rare -- it needs a class-1 event and a termination on the same
+                    // run date -- and deferred by HD. See E2_FINDING_15 section 10.
                     TerminationEvent ev;
                     ev.symbol = symbol;
                     ev.event_date = delist_date;
@@ -1221,8 +1888,22 @@ int main(int argc, char* argv[]) {
                     ev.event_date = row.date_str;
                     ev.vendor_label = row.action;
                     ev.contra_ticker = row.contra_ticker;
-                    ev.ratio = row.value;
-                    ev.has_terms = !row.contra_ticker.empty() && row.value > 0.0;
+                    // corporate_action.value is NOT a share exchange ratio. Measured over
+                    // the table: acquisitionby/of average 2,051 and reach 133,846.7, and
+                    // `split` reaches 10,872,442 -- these are deal values in millions. A
+                    // real stock-for-stock ratio is ~0.1-3.0. Feeding it in as `ratio` would
+                    // have turned 40 DFS shares into 40 x 50343.3 = 2,013,732 COF shares at
+                    // a basis of $0.0039, against a real currently-trading symbol, with
+                    // nothing downstream able to catch it (E2-F9).
+                    //
+                    // So this runner does not claim to have terms. The handler's rollover
+                    // path is left fully intact and still activates the day a trustworthy
+                    // deal-terms source exists -- the judgement is about PROVENANCE, not
+                    // magnitude, and a plausibility band cannot separate a genuine 0.5 ratio
+                    // from a $0.6m deal value. Until then every termination exits at the
+                    // final real close, which is conservative and broker-reconcilable.
+                    ev.ratio = 0.0;
+                    ev.has_terms = false;
                     // A terms row supersedes a bare delisting for the same
                     // symbol: it says what the holding BECAME.
                     bool replaced = false;
@@ -1238,8 +1919,51 @@ int main(int argc, char* argv[]) {
             }
 
             if (!terminations.empty()) {
+                // A terminating symbol is, by definition, one that has STOPPED trading, so
+                // it cannot be in previous_day_close_prices -- that map is built from the
+                // run date's T-1 bar, and a delisted name has no bar there. Handing it in
+                // alone meant every termination took the SKIPPED_NO_PRICE branch and the
+                // position was left dangling with "operator review required", even though
+                // the final close sits in the database (DFS: 200.05 on its last bar,
+                // 2025-05-16). The data was never missing; the lookup was asking the wrong
+                // question (E2-F10).
+                //
+                // So: start from the T-1 map, then for any terminating symbol still absent,
+                // fall back to its LAST REAL CLOSE. Same principle as the execution price
+                // resolver -- price from a real session, never from a basis or a guess.
+                std::unordered_map<std::string, double> final_closes = previous_day_close_prices;
+
+                std::vector<std::string> need_final;
+                for (const auto& ev : terminations) {
+                    if (final_closes.find(ev.symbol) == final_closes.end()) {
+                        need_final.push_back(ev.symbol);
+                    }
+                }
+
+                if (!need_final.empty()) {
+                    // Bounded window: the event date is the last day it could have traded.
+                    auto hist = db->get_historical_closes(
+                        need_final, std::string(lifecycle_start_buf), as_of_date);
+                    if (hist.is_ok()) {
+                        for (const auto& [sym, series] : hist.value()) {
+                            if (series.empty()) continue;
+                            const auto& last = *series.rbegin();   // most recent real close
+                            if (last.second > 0.0 && std::isfinite(last.second)) {
+                                final_closes[sym] = last.second;
+                                INFO("Termination price | " + sym + " has no T-1 close (it "
+                                     "stopped trading); using its last real close " +
+                                     std::to_string(last.second) + " from " + last.first);
+                            }
+                        }
+                    } else {
+                        WARN("Could not load final closes for terminating symbols: " +
+                             std::string(hist.error()->what()) +
+                             " -- those positions will be left untouched for operator review.");
+                    }
+                }
+
                 auto exits = CorporateActionsLifecycle::apply_terminations(
-                    previous_positions, terminations, previous_day_close_prices);
+                    previous_positions, terminations, final_closes);
                 lifecycle_log.insert(lifecycle_log.end(), exits.begin(), exits.end());
             }
 
@@ -1253,6 +1977,58 @@ int main(int argc, char* argv[]) {
                     break;
                 }
             }
+
+            // A termination closes a real position at a real price, so it is a TRADE and
+            // must be recorded as one. Without an execution row it was invisible twice
+            // over (E2-F11):
+            //
+            //   * live_results is computed from the PnL manager and the day's executions,
+            //     so a corp-action exit's realized P&L had no route into the aggregate.
+            //     The position row said 122.00 and live_results said 0.00 -- rows and
+            //     aggregate disagreeing, the F-D failure shape in a third place, and it
+            //     never reached the equity curve either.
+            //   * A broker statement shows a liquidation or cash-in-lieu event with no
+            //     counterpart in trading.executions, so the two books cannot be reconciled.
+            //
+            // Emitting the execution closes both at once, through the path that already
+            // exists, rather than adding a second private channel into the aggregate.
+            //
+            // exec_id/order_id are DETERMINISTIC (symbol + ex_date, not a clock) so a
+            // replay of the same date regenerates the same ids, delete_stale_executions
+            // matches them, and the re-insert is an overwrite rather than a duplicate.
+            for (const auto& adj : lifecycle_log) {
+                if (adj.outcome != LifecycleOutcome::EXITED_AT_FINAL_CLOSE) continue;
+                if (std::abs(adj.quantity_before) < 1e-9 || !(adj.exit_price > 0.0)) continue;
+
+                // E2-F7: the P&L route. Gated on the same conditions as the execution row so
+                // the two can never disagree about which events were recognised.
+                corp_action_realized_total += adj.realized_delta;
+                corp_action_realized_by_symbol[adj.symbol] += adj.realized_delta;
+
+                ExecutionReport ca_exec;
+                ca_exec.order_id = "CORPACTION_" + adj.symbol + "_" + adj.event_date;
+                ca_exec.exec_id  = "CA_" + adj.symbol + "_" + adj.event_date + "_EXIT";
+                ca_exec.symbol   = adj.symbol;
+                // Closing a long is a SELL; closing a short is a BUY.
+                ca_exec.side = adj.quantity_before > 0.0 ? Side::SELL : Side::BUY;
+                ca_exec.filled_quantity = Quantity(std::abs(adj.quantity_before));
+                ca_exec.fill_price = Price(adj.exit_price);
+                ca_exec.fill_time = now;
+                // A corporate action is not a discretionary trade: the holder pays no
+                // commission and crosses no spread, so every cost component is zero.
+                ca_exec.commissions_fees = Decimal(0.0);
+                ca_exec.implicit_price_impact = Decimal(0.0);
+                ca_exec.slippage_market_impact = Decimal(0.0);
+                ca_exec.total_transaction_costs = Decimal(0.0);
+                ca_exec.is_partial = false;
+
+                corp_action_executions.push_back(ca_exec);
+                INFO("Corp-action exit booked as an execution: " + adj.symbol + " " +
+                     (ca_exec.side == Side::SELL ? "SELL" : "BUY") + " " +
+                     std::to_string(std::abs(adj.quantity_before)) + " @ " +
+                     std::to_string(adj.exit_price) + " (realized " +
+                     std::to_string(adj.realized_delta) + ", zero cost -- corporate action)");
+            }
             if (mutated) {
                 std::vector<Position> lifecycle_positions;
                 lifecycle_positions.reserve(previous_positions.size());
@@ -1260,19 +2036,106 @@ int main(int argc, char* argv[]) {
                     Position p = pos;
                     p.symbol = sym;
                     p.last_update = now;
+                    // E2-F19: day-T placeholder, same rule as the class-1 store above.
+                    // A termination's realized_delta reaches the day-T row and the
+                    // aggregate through corp_action_realized_total, not through here.
+                    p.realized_pnl = Decimal(0.0);
                     lifecycle_positions.push_back(std::move(p));
                 }
+
+                // E2-F13: record class-3 events in the audit/dedup log.
+                //
+                // audit_log.record() was called ONLY from the class-1 applier block, so a
+                // termination left no row in trading.corp_action_applied at all -- no audit
+                // trail, and nothing to stop a replay re-applying it. Class-1 events have
+                // been deduped since the dedup table landed; class 3 never was.
+                //
+                // LifecycleAdjustment and PositionAdjustment are different records, so the
+                // fields are mapped explicitly. event_value carries the exit price (the
+                // event's defining parameter for a termination, as the split factor or
+                // $/share is for class 1) and ratio_change stays 1.0 because a termination
+                // restates no price.
+                //
+                // The dedup key is (symbol, event_date, type), and TERMINATION is a new type
+                // value, so these rows cannot collide with existing SPLIT/DIVIDEND keys.
+                // Its own instance, following the div_log precedent below. Safe because the
+                // class-1 audit_log is long out of scope by now -- the header's "concurrent
+                // instances not supported" warning is about a save() race between two LIVE
+                // objects, and these are strictly sequential.
+                CorporateActionsAuditLog lifecycle_audit(ca_state_dir, db,
+                                                         portfolio_id,
+                                                         "LIVE_EQUITY_MEAN_REVERSION",
+                                                         "EQUITY_MEAN_REVERSION");
+                auto lc_loaded = lifecycle_audit.load();
+                if (lc_loaded.is_error()) {
+                    // Fail closed, matching the class-1 block: a dedup record that cannot be
+                    // read cannot be extended safely, and writing on top of an unknown state
+                    // risks re-applying a termination on the next run.
+                    ERROR("Cannot read the corp-action dedup record for lifecycle events: " +
+                          std::string(lc_loaded.error()->what()));
+                    return 1;
+                }
+
+                std::size_t recorded = 0;
+                for (const auto& adj : lifecycle_log) {
+                    if (adj.outcome != LifecycleOutcome::EXITED_AT_FINAL_CLOSE &&
+                        adj.outcome != LifecycleOutcome::CONVERTED_TO_CONTRA) {
+                        continue;  // nothing was applied; nothing to dedup against
+                    }
+                    PositionAdjustment rec;
+                    rec.symbol = adj.symbol;
+                    rec.event_date = adj.event_date;
+                    rec.type = CorpActionType::TERMINATION;
+                    rec.quantity_before = adj.quantity_before;
+                    rec.quantity_after = adj.quantity_after;
+                    rec.avg_price_before = 0.0;
+                    rec.avg_price_after = 0.0;
+                    rec.event_value = adj.exit_price;
+                    rec.ratio_change = 1.0;
+                    lifecycle_audit.record(rec);
+                    ++recorded;
+                }
+
+                // Positions and their dedup rows commit as ONE unit, for the same reason the
+                // class-1 block does it: positions committed with the dedup write lost would
+                // leave the next run free to re-apply the event.
+                auto lc_unit = db->begin_unit_of_work();
+                if (lc_unit.is_error()) {
+                    ERROR("Cannot open a unit of work for lifecycle persistence: " +
+                          std::string(lc_unit.error()->what()));
+                    return 1;
+                }
+                DbTransaction& lc_txn = *lc_unit.value();
+
                 auto store_lc = db->store_positions(
-                    lifecycle_positions,
+                    lc_txn, lifecycle_positions,
                     kEquityStrategyId, kEquityStrategyName,
                     portfolio_id, "trading.positions");
                 if (store_lc.is_error()) {
                     ERROR("Failed to persist lifecycle-adjusted positions: " +
                           std::string(store_lc.error()->what()));
+                    return 1;  // lc_txn rolls back on scope exit
+                }
+
+                if (recorded > 0) {
+                    auto save_lc = lifecycle_audit.save_in(lc_txn);
+                    if (save_lc.is_error()) {
+                        ERROR("Failed to persist lifecycle dedup records: " +
+                              std::string(save_lc.error()->what()));
+                        return 1;  // lc_txn rolls back on scope exit
+                    }
+                }
+
+                auto lc_commit = lc_txn.commit();
+                if (lc_commit.is_error()) {
+                    ERROR("Failed to commit lifecycle adjustments: " +
+                          std::string(lc_commit.error()->what()));
                     return 1;
                 }
+
                 INFO("Persisted " + std::to_string(lifecycle_log.size()) +
-                     " lifecycle adjustment(s) to trading.positions");
+                     " lifecycle adjustment(s) to trading.positions, " +
+                     std::to_string(recorded) + " dedup record(s)");
             }
         }
 
@@ -1283,28 +2146,39 @@ int main(int argc, char* argv[]) {
         // has to be handed the book back first, and it has to be the book as restated
         // by the corporate-action blocks above, since a split changes quantity and a
         // dividend changes cost basis. See LiveDailyCycle::prepare_strategy_for_signals.
-        INFO("Seeding strategy with previous-day book and generating signals...");
-        auto strat_prewarm = LiveDailyCycle::prepare_strategy_for_signals(
-            *mr_strategy, previous_positions, all_bars);
-        if (strat_prewarm.is_error()) {
-            std::cerr << "Failed to preprocess data in strategy: "
-                      << strat_prewarm.error()->what() << std::endl;
-            return 1;
-        }
+        std::unordered_map<std::string, Position> positions;
 
-        // Process data through portfolio pipeline (optimization + risk), mirroring backtest
-        INFO("Processing data through portfolio manager (optimization + risk)...");
-        auto port_process_result = portfolio->process_market_data(all_bars);
-        if (port_process_result.is_error()) {
-            std::cerr << "Failed to process data in portfolio manager: "
-                      << port_process_result.error()->what() << std::endl;
-            return 1;
-        }
-        INFO("Portfolio processing completed");
+        if (today_is_non_trading) {
+            // Carry the book forward untouched. No bar closed today, so there is nothing
+            // to signal from and nothing legitimate to trade against; re-deriving targets
+            // from a stale bar would manufacture a weekend trade.
+            positions = previous_positions;
+            INFO("Non-trading day: carried " + std::to_string(positions.size()) +
+                 " position(s) forward without generating signals.");
+        } else {
+            INFO("Seeding strategy with previous-day book and generating signals...");
+            auto strat_prewarm = LiveDailyCycle::prepare_strategy_for_signals(
+                *mr_strategy, previous_positions, all_bars);
+            if (strat_prewarm.is_error()) {
+                std::cerr << "Failed to preprocess data in strategy: "
+                          << strat_prewarm.error()->what() << std::endl;
+                return 1;
+            }
 
-        // Get optimized portfolio positions (integer-rounded after optimization/risk)
-        INFO("Retrieving optimized portfolio positions...");
-        auto positions = portfolio->get_portfolio_positions();
+            // Process data through portfolio pipeline (risk; optimization is off for MR)
+            INFO("Processing data through portfolio manager (risk)...");
+            auto port_process_result = portfolio->process_market_data(all_bars);
+            if (port_process_result.is_error()) {
+                std::cerr << "Failed to process data in portfolio manager: "
+                          << port_process_result.error()->what() << std::endl;
+                return 1;
+            }
+            INFO("Portfolio processing completed");
+
+            // Get portfolio positions (post risk-management)
+            INFO("Retrieving portfolio positions...");
+            positions = portfolio->get_portfolio_positions();
+        }
 
         // Verify we have prices for all required symbols
         std::set<std::string> all_symbols;
@@ -1373,16 +2247,62 @@ int main(int argc, char* argv[]) {
         INFO("PnLManager initialized with InstrumentRegistry access");
 
         double yesterday_total_pnl = 0.0;
+        // E2-F1: the Day T-1 book marked at close(T-1), summed from the same finalized rows
+        // that get persisted. This is what total_unrealized_pnl[T-1] must hold, so the
+        // aggregate and the position rows agree by construction (protocol L5). 0.0 under
+        // SETTLED, so futures could never pick up a value here even if it reached this code.
+        double yesterday_finalized_unrealized = 0.0;
         std::vector<trade_ngin::Position> yesterday_finalized_positions;
 
         if (!two_days_ago_close_prices.empty() && !previous_positions.empty() && pnl_manager) {
             INFO("Using PnLManager to finalize Day T-1 positions...");
 
-            // Convert map to vector for PnLManager
-            std::vector<Position> prev_positions_vec;
-            prev_positions_vec.reserve(previous_positions.size());
-            for (const auto& [symbol, pos] : previous_positions) {
-                prev_positions_vec.push_back(pos);
+            // Convert map to vector for PnLManager.
+            // Sourced from the PRE-corp-action snapshot: Day T-1 is finalized as the book
+            // actually stood on T-1. Using the mutated `previous_positions` here wrote the
+            // post-action quantities and basis onto the T-1 row, restating a day before the
+            // ex-date (see the snapshot's comment above).
+            //
+            // E2-F15: that is right ONLY while the event's ex-date is AFTER T-1. When a
+            // DEFERRED event is catching up -- ex_date <= T-1 -- the T-1 close is already
+            // post-event, so finalizing the pre-action book marks a pre-event basis against a
+            // post-event price. Measured: BKNG's 2026-04-06 row took
+            // `1.200601 * (176.19 - 4194.31) = -4824.16` of phantom unrealized, dropping the
+            // equity curve to 95,080.29 for that day. It does NOT self-correct -- running
+            // 04-08 and 04-09 left the 04-06 row unchanged.
+            //
+            // So pick per symbol: the RESTATED book where a deferred event has now been
+            // applied for a date on or before T-1, the pre-action snapshot everywhere else.
+            //
+            // NOTE ON REACHABILITY, so nobody reads more discrimination into this than it has.
+            // The E2-F15 gate only admits an event when `ex_date <= last_bar_date`, and the
+            // loaded series never reaches past T-1 under the lag model, so every APPLIED
+            // class-1 event necessarily satisfies `ex_date <= T-1`. The predicate below is
+            // therefore true for every symbol carrying an applied event today, and the
+            // pre-action snapshot survives only for symbols with NO event -- which is the
+            // overwhelming majority and the case 8a1a96ef was actually about.
+            //
+            // 8a1a96ef's protection is NOT weakened by that. Its regression was an event with
+            // `ex_date == today` applying and restating T-1, a day before its own ex-date.
+            // The gate now defers exactly that event, so the situation cannot arise upstream
+            // of here. The predicate is kept explicit rather than assumed: it states the rule
+            // that makes this correct, and keeps it correct if the gate's horizon ever moves.
+            //
+            // E2-F19 gap G4: the restated book is the POST-CLASS-1, PRE-LIFECYCLE
+            // snapshot, not the fully mutated map -- a symbol that also terminated or
+            // was renamed this run would otherwise be finalized onto T-1 as a qty-0 row
+            // carrying a day-T cash flow. The rule lives in
+            // LiveDailyCycle::select_finalization_book so it is unit-testable.
+            std::vector<std::string> restated_symbols;
+            std::vector<Position> prev_positions_vec = LiveDailyCycle::select_finalization_book(
+                previous_positions_pre_action, previous_positions_post_class1,
+                applied_class1_ex_date, core::format_utc_date(previous_date),
+                &restated_symbols);
+            for (const auto& symbol : restated_symbols) {
+                INFO("Finalizing " + symbol + " from the RESTATED T-1 book: a " +
+                     "deferred corp action for " + applied_class1_ex_date.at(symbol) +
+                     " was applied this run, so the T-1 close is already post-event "
+                     "and the pre-action basis would be a frame behind it (E2-F15).");
             }
 
             // Use PnLManager to finalize previous day
@@ -1391,12 +2311,16 @@ int main(int argc, char* argv[]) {
                 previous_day_close_prices,  // T-1 prices
                 two_days_ago_close_prices,  // T-2 prices
                 initial_capital,  // Previous portfolio value (TODO: get actual previous value)
-                0.0  // Commissions (will be handled later)
-            );
+                0.0,  // Commissions (will be handled later)
+                // Equities carry a true weighted cost basis in average_price, so the
+                // T-1 row records mark-to-market unrealized P&L. Futures pass no policy
+                // and stay on SETTLED, where the move is entirely realized (E2-F3).
+                trade_ngin::LivePnLManager::UnrealizedPolicy::MARK_TO_MARKET);
 
             if (finalization_result.is_ok()) {
                 auto& result = finalization_result.value();
                 yesterday_total_pnl = result.finalized_daily_pnl;
+                yesterday_finalized_unrealized = result.finalized_unrealized_pnl;
                 yesterday_finalized_positions = result.finalized_positions;
 
                 INFO("PnLManager finalized Day T-1: Total PnL=$" + std::to_string(yesterday_total_pnl));
@@ -1412,15 +2336,85 @@ int main(int argc, char* argv[]) {
                 throw std::runtime_error("PnLManager finalization failed");
             }
 
-            // Store updated positions for yesterday (Day T-1) in database
-            if (!yesterday_finalized_positions.empty()) {
+            // Store updated positions for yesterday (Day T-1) in database.
+            //
+            // E2-F19 / E2-F20: the finalizer writes the settlement move into every row's
+            // realized_pnl. That is the futures definition; on this cash book it is a
+            // MARK, and it overwrote the trade realized T-1's own run had recorded -- on
+            // a weekend three times over, so Monday's load read Friday's mark move and
+            // seeded it. The T-1 row keeps the LOADED realized (the day's own flow); the
+            // finalizer's aggregate fields are untouched. The shared finalizer is not
+            // edited: the futures runners persist its rows as-is.
+            LiveDailyCycle::restore_loaded_realized(yesterday_finalized_positions,
+                                                    previous_positions_pre_action);
+
+            // finalize_previous_day returns a row for EVERY carried position, flat ones
+            // included, so it applies the same dead-row rule as the Day-T write below:
+            // a row is dropped only when it carries neither quantity nor realized. This
+            // is the path that actually produced the observed dead rows (4 of the 6 had
+            // zero quantity AND zero P&L), and those are still dropped. A row with zero
+            // quantity and a realized figure is a close-day row and is kept.
+            std::vector<Position> finalized_to_store;
+            finalized_to_store.reserve(yesterday_finalized_positions.size() +
+                                       previous_closed_rows.size());
+            for (const auto& fp : yesterday_finalized_positions) {
+                if (!LiveDailyCycle::is_dead_row(fp)) {
+                    finalized_to_store.push_back(fp);
+                } else {
+                    DEBUG("Skipping dead Day T-1 position (no quantity, no realized): " +
+                          fp.symbol);
+                }
+            }
+            // Closed rows loaded for T-1 are re-appended verbatim -- there is nothing to
+            // mark and their realized is already the day's figure. Appended AFTER the
+            // finalized rows: store_positions keys its DELETE on positions[0].last_update.
+            for (const auto& [symbol, closed] : previous_closed_rows) {
+                finalized_to_store.push_back(closed);
+            }
+
+            // E2-F14 guard: never let a day with NO T-1 prices overwrite a day that was
+            // already finalized correctly.
+            //
+            // store_positions is DELETE-then-INSERT keyed on (strategy, portfolio, T-1
+            // date), and it runs here -- ~480 lines BEFORE the `yesterday_total_pnl != 0.0`
+            // gate that protects the live_results UPDATE. So when finalization degenerates
+            // (every symbol takes the no-T-1-close branch and returns 0/0), live_results is
+            // spared but the position rows are silently replaced with zeros.
+            //
+            // Resolving t1_date from the trading calendar removes the weekend cause, but a
+            // genuine data gap on a real trading day can still empty this map. In that case
+            // the rows being written are all 0/0 and carry no information: the day's own run
+            // already wrote the real rows, so skipping loses nothing and refusing to write
+            // is strictly safer than overwriting. Failing closed here is deliberate.
+            const bool have_t1_prices = !previous_day_close_prices.empty();
+            if (!finalized_to_store.empty() && !have_t1_prices) {
+                WARN("Refusing to write " + std::to_string(finalized_to_store.size()) +
+                     " Day T-1 position rows: no T-1 close prices were resolved, so every "
+                     "row is a degenerate 0/0 that would overwrite an already-finalized day");
+            }
+            if (!finalized_to_store.empty() && have_t1_prices) {
                 // Always save yesterday's finalized positions immediately (not queued)
                 // These are updates to existing positions from the previous day
-                auto update_result = db->store_positions(yesterday_finalized_positions, kEquityStrategyId, kEquityStrategyName, portfolio_id, "trading.positions");
+                auto update_result = db->store_positions(finalized_to_store, kEquityStrategyId, kEquityStrategyName, portfolio_id, "trading.positions");
                 if (update_result.is_error()) {
+                    // E2-F5 follow-on: FATAL, like every other store_positions site in this
+                    // runner. This one logged and carried on, so a failed T-1 position write
+                    // left the run exiting 0 with the previous day's rows still holding their
+                    // Day-T placeholders -- the row-versus-aggregate split that L5 exists to
+                    // catch, produced by a run that looked clean.
+                    //
+                    // It matters more since E2-F5: store_positions now REFUSES to fall back to
+                    // an unscoped delete and returns an error instead, so this path is
+                    // genuinely reachable on a transient SQL fault rather than only on a
+                    // broken schema. The transaction rolls back cleanly (pqxx::work destructs
+                    // uncommitted), so nothing is half-written -- but the day is unfinalized
+                    // and the next run would build on it.
                     ERROR("Failed to update Day T-1 positions: " + std::string(update_result.error()->what()));
+                    ERROR("Day T-1 positions could not be finalized. Refusing to exit 0 with "
+                          "an unfinalized book.");
+                    return 1;
                 } else {
-                    INFO("Successfully updated " + std::to_string(yesterday_finalized_positions.size()) + " Day T-1 positions with finalized PnL");
+                    INFO("Successfully updated " + std::to_string(finalized_to_store.size()) + " Day T-1 positions with finalized PnL");
                 }
             }
 
@@ -1475,18 +2469,39 @@ int main(int argc, char* argv[]) {
         // Price, execute, and roll back anything that could not be priced. The rules
         // and their rationale live in LiveDailyCycle::execute_day_t so that the runner
         // and its tests exercise one implementation rather than two that can drift.
-        auto day_t_exec = LiveDailyCycle::execute_day_t(
-            *execution_manager, positions, previous_positions, previous_day_close_prices,
-            all_bars, now, app_config.live.execution_price_max_staleness_days);
+        //
+        // Skipped entirely on a non-trading day. `positions` was carried forward from
+        // `previous_positions` above, so every delta is zero and no execution could be
+        // generated anyway -- but the guard is explicit rather than incidental, because
+        // "the deltas happen to be zero" is not the reason we must not trade on a day the
+        // exchange is shut.
+        LiveDailyCycle::ExecutionOutcome exec_outcome;
+        if (today_is_non_trading) {
+            INFO("Non-trading day: skipping execution generation entirely.");
+        } else {
+            auto day_t_exec = LiveDailyCycle::execute_day_t(
+                *execution_manager, positions, previous_positions, previous_day_close_prices,
+                all_bars, now, app_config.live.execution_price_max_staleness_days);
 
-        if (day_t_exec.is_error()) {
-            ERROR("ExecutionManager failed: " + std::string(day_t_exec.error()->what()));
-            // No fallback - component is required to work
-            throw std::runtime_error("ExecutionManager failed");
+            if (day_t_exec.is_error()) {
+                ERROR("ExecutionManager failed: " + std::string(day_t_exec.error()->what()));
+                // No fallback - component is required to work
+                throw std::runtime_error("ExecutionManager failed");
+            }
+            exec_outcome = day_t_exec.value();
         }
 
-        auto exec_outcome = day_t_exec.value();
         std::vector<ExecutionReport> daily_executions = exec_outcome.executions;
+        // Corporate-action exits are trades too. Appending them here -- before set_executions,
+        // the PnL aggregation and the DB write -- is what gives their realized P&L a route
+        // into live_results and the equity curve, and gives a broker statement something to
+        // reconcile against (E2-F11).
+        if (!corp_action_executions.empty()) {
+            INFO("Merging " + std::to_string(corp_action_executions.size()) +
+                 " corp-action exit execution(s) into the day's executions");
+            daily_executions.insert(daily_executions.end(),
+                                    corp_action_executions.begin(), corp_action_executions.end());
+        }
         INFO("ExecutionManager generated " + std::to_string(daily_executions.size()) +
              " executions");
 
@@ -1510,11 +2525,42 @@ int main(int argc, char* argv[]) {
 
         // Feed executions back to strategy for cost basis tracking.
         // BaseStrategy::on_execution() maintains weighted average_price and realized_pnl.
+        //
+        // E2-F11: corporate-action exits are EXCLUDED. They are synthetic accounting entries,
+        // not fills the strategy should learn a basis from, and feeding them in corrupts its
+        // book.
+        //
+        // The mechanism: apply_terminations sets pos.quantity = 0 BEFORE the strategy is
+        // seeded from that same map, so by the time on_execution sees the exit the strategy
+        // holds ZERO of the symbol. Its realized branch (base_strategy.cpp:197-199) requires a
+        // position on the opposite side of the fill, so it books nothing -- and then the
+        // `else` at :237-251 treats the SELL as OPENING A SHORT, leaving the strategy holding
+        // a phantom -qty_before position in a delisted symbol at the exit price.
+        //
+        // It is invisible today: this runs after signal generation, and the zero-quantity
+        // filter drops the row before it is persisted. But the strategy carries a fabricated
+        // short for the rest of the process, and anything later that reads positions_ -- a
+        // stop-loss check, a risk aggregate, a second strategy sharing the book -- would see
+        // it. The realized P&L these exits lock in reaches the aggregate through
+        // corp_action_realized_total instead, which is the correct route.
         for (const auto& exec : daily_executions) {
+            if (exec.order_id.rfind("CORPACTION_", 0) == 0) {
+                DEBUG("Skipping on_execution for corp-action exit " + exec.symbol +
+                      " (synthetic entry; realized P&L booked via the day-T aggregate)");
+                continue;
+            }
             auto exec_result = mr_strategy->on_execution(exec);
             if (exec_result.is_error()) {
-                WARN("Failed to process execution for " + exec.symbol + ": " +
-                     std::string(exec_result.error()->what()));
+                // E2-F19: FATAL. A dropped fill leaves its cost in total_daily_commissions
+                // while its realized reaches neither the row nor metrics_, and the
+                // strategy's book no longer matches the executions the run has already
+                // persisted. Continuing would produce a day whose rows cannot sum to its
+                // aggregate for a reason no later check could name.
+                ERROR("Failed to process execution for " + exec.symbol + ": " +
+                      std::string(exec_result.error()->what()) +
+                      ". Refusing to continue with a book that does not reflect a "
+                      "persisted execution.");
+                return 1;
             } else {
                 DEBUG("Strategy processed execution for " + exec.symbol +
                       ": avg_price updated via on_execution()");
@@ -1552,6 +2598,44 @@ int main(int argc, char* argv[]) {
                   "or the carried book. Recorded basis 0 and zero unrealized PnL rather "
                   "than substituting today's close. This is an upstream invariant "
                   "failure - investigate.");
+        }
+
+        // E2-F19 gap G1: a held symbol that left the configured universe was closed out
+        // by execute_day_t and booked by on_execution, but has no entry in the target
+        // map and so no row. Give the exit a row, or the rows cannot sum to the
+        // aggregate.
+        auto rowless_exits = LiveDailyCycle::add_rowless_exits(positions, strategy_positions, now);
+        for (const auto& symbol : rowless_exits) {
+            WARN("Closed-out symbol " + symbol + " has no day-T target entry (left the "
+                 "universe?); recorded a closed row carrying its realized P&L of $" +
+                 std::to_string(positions.at(symbol).realized_pnl.as_double()));
+        }
+
+        // E2-F19 (R4): a termination's realized P&L reaches the aggregate through
+        // corp_action_realized_total; the synthetic exit is deliberately kept out of
+        // on_execution (E2-F11), so nothing put it on the symbol's row. Add it here,
+        // once, after resolve_and_apply_basis has assigned the strategy's figure with
+        // `=`. On a non-trading day the terminated entry arrives through the carried
+        // book (qty 0); on a trading day through the target map. Either way the row
+        // exists, or is created, and the dead-row rule below keeps it because it
+        // carries realized.
+        for (const auto& [symbol, delta] : corp_action_realized_by_symbol) {
+            if (delta == 0.0) continue;
+            auto it = positions.find(symbol);
+            if (it == positions.end()) {
+                Position closed;
+                closed.symbol = symbol;
+                closed.quantity = Quantity(0.0);
+                closed.average_price = Decimal(0.0);
+                closed.unrealized_pnl = Decimal(0.0);
+                closed.realized_pnl = Decimal(0.0);
+                closed.last_update = now;
+                it = positions.emplace(symbol, closed).first;
+            }
+            it->second.realized_pnl = Decimal(it->second.realized_pnl.as_double() + delta);
+            INFO("Corp-action realized $" + std::to_string(delta) + " booked onto the " +
+                 symbol + " day-T row (row now " +
+                 std::to_string(it->second.realized_pnl.as_double()) + ")");
         }
 
         // Log final Day T position state
@@ -1602,7 +2686,11 @@ int main(int argc, char* argv[]) {
                     INFO("Deleting stale executions for today with matching order_ids: " + std::to_string(order_ids_vector.size()));
 
                     // Use the new delete_stale_executions method
-                    auto del_res = db->delete_stale_executions(order_ids_vector, now, "trading.executions");
+                    // E2-F4: was a 3-arg call putting the table name in the strategy_name
+                    // slot, so it deleted nothing. Now correctly scoped.
+                    auto del_res = db->delete_stale_executions(
+                        order_ids_vector, now, kEquityStrategyName, portfolio_id,
+                        "trading.executions");
                     if (del_res.is_error()) {
                         WARN("Failed to delete stale executions: " + std::string(del_res.error()->what()));
                     } else {
@@ -1691,14 +2779,28 @@ int main(int argc, char* argv[]) {
         positions_to_save.reserve(positions.size());
 
         for (const auto& [symbol, position] : positions) {
-            // Save positions if they have non-zero quantity OR if they have PnL (closed positions today)
-            bool has_quantity = position.quantity.as_double() != 0.0;
-            bool has_pnl = (position.realized_pnl.as_double() != 0.0 || position.unrealized_pnl.as_double() != 0.0);
-
-            // Don't save positions with zero quantity and zero PnL
-            if (!has_quantity && !has_pnl) {
+            // E2-F19: a row is dropped only when it carries neither quantity nor
+            // realized P&L (LiveDailyCycle::is_dead_row). The previous rule dropped on
+            // quantity alone, copied from the futures runner on the premise that "the
+            // exit's realized lands in live_results exactly as it does for futures".
+            // The rule was identical; the consequence was not. A futures exit realizes
+            // exactly zero (average_price is reset to close(T-1) daily and the fill
+            // strikes at close(T-1)), so its dropped row is genuinely empty. An equity
+            // exit realizes the whole accumulated gain against a true cost basis, and
+            // dropping the row lost the largest figure of the position's life at row
+            // level: 11 close events in the 2026-04..08 series, e.g. TMUS 2026-04-15
+            // -402.65 in live_results with no row to carry it.
+            //
+            // A flat symbol with no trade still writes no row -- the 852-symbol
+            // accumulation the old comment feared cannot occur, because a symbol that
+            // closed on an earlier day carries realized 0 today (the seed is zeroed).
+            // A closed row exists on the close date only.
+            if (LiveDailyCycle::is_dead_row(position)) {
+                DEBUG("Skipping dead position (no quantity, no realized): " + symbol);
                 continue;
             }
+            const bool closed_row =
+                std::abs(position.quantity.as_double()) <= LiveDailyCycle::kRowTolerance;
 
             // Create a new position with validated values
             trade_ngin::Position validated_position;
@@ -1768,6 +2870,15 @@ int main(int argc, char* argv[]) {
                 }
             }
 
+            if (closed_row) {
+                // No basis for a position that no longer exists: on_execution leaves the
+                // exit price in average_price after a full close, and storing a price on
+                // a closed row is the category error AVERAGE_PRICE_LIFECYCLE.md exists to
+                // prevent. Zero reads unambiguously as "closed".
+                validated_position.average_price = Decimal(0.0);
+                validated_position.unrealized_pnl = Decimal(0.0);
+            }
+
             positions_to_save.push_back(validated_position);
             INFO("Position to save: " + symbol +
                  " qty=" + std::to_string(validated_position.quantity.as_double()) +
@@ -1776,6 +2887,69 @@ int main(int argc, char* argv[]) {
                  " daily_unrealized_pnl=" + std::to_string(static_cast<double>(validated_position.unrealized_pnl)));
         }
         
+        // E2-C7: live has NO overnight borrow-cost accrual, so it must not carry a short.
+        //
+        // TransactionCostManager::calculate_overnight_borrow_fees() has exactly one caller,
+        // backtest_coordinator.cpp -- the live path never accrues it. A short position held
+        // live would therefore cost nothing overnight while the same position in the backtest
+        // is charged, making the two silently disagree on any short book.
+        //
+        // Unreachable today: Equity::is_short_allowed() requires account_mode == REG_T AND
+        // short_selling_allowed, and equity.hpp defaults them to CASH/false with REG_T
+        // configured nowhere. That is exactly why this is a guard rather than an
+        // implementation -- writing untested borrow accrual for a case that cannot occur is
+        // worse than refusing the case. When shorting IS enabled (tracked as T2.10), this
+        // fires on day one and the accrual gets written then, against a real book.
+        {
+            std::vector<std::string> shorts;
+            for (const auto& p : positions_to_save) {
+                if (p.quantity.as_double() < 0.0) shorts.push_back(p.symbol);
+            }
+            if (!shorts.empty()) {
+                std::string joined;
+                for (const auto& sym : shorts) joined += (joined.empty() ? "" : ", ") + sym;
+                ERROR("Refusing to persist a short equity position: live accrues no overnight "
+                      "borrow cost, so this book would be under-charged against its own "
+                      "backtest. Symbols: " + joined);
+                ERROR("Enable borrow-fee accrual in the live EOD path before allowing shorts "
+                      "(see TransactionCostManager::calculate_overnight_borrow_fees).");
+                return 1;
+            }
+        }
+
+        // E2-F19 (R-3): clear today's position rows for this book BEFORE queueing the
+        // day-T write, unconditionally.
+        //
+        // store_positions is DELETE-then-INSERT keyed on the date of the rows it is
+        // handed, and save_positions_snapshot returns early on an empty book -- so a day
+        // whose day-T write is EMPTY never deletes anything, and whatever rows already
+        // sit on today's date survive as today's book. Two writers put rows there
+        // before this point: the corp-action placeholder stores (dated today, written
+        // even when zero adjustments applied) and, through the loader's timestamp
+        // drift, a T-1 row that has been rewritten four times. Measured on the pre-fix
+        // chain: TMUS closed on 2026-07-07 with no realized row to keep, the
+        // placeholder row (qty 17.6) survived as the 07-07 book, and the runner sold
+        // the same 17.6 shares again every day through 07-27 while booking mark P&L on
+        // stock it no longer held. Scoped exactly like store_positions' own delete.
+        {
+            const std::string clear_today =
+                "DELETE FROM trading.positions WHERE strategy_id = '" +
+                std::string(kEquityStrategyId) + "' AND strategy_name = '" +
+                std::string(kEquityStrategyName) + "' AND portfolio_id = '" + portfolio_id +
+                "' AND DATE(last_update) = '" + today_date_str + "'";
+            auto cleared = db->execute_direct_query(clear_today);
+            if (cleared.is_error()) {
+                ERROR("Failed to clear today's position rows before the day-T write: " +
+                      std::string(cleared.error()->what()) +
+                      ". Refusing to continue: an empty day-T write would leave stale rows "
+                      "as today's book.");
+                return 1;
+            }
+            INFO("Cleared any existing position rows for " + today_date_str +
+                 " ahead of the day-T write (" + std::to_string(positions_to_save.size()) +
+                 " row(s) queued)");
+        }
+
         if (!positions_to_save.empty()) {
             INFO("Attempting to save " + std::to_string(positions_to_save.size()) + " positions to database");
             DEBUG("Database connection status: " + std::string(db->is_connected() ? "connected" : "disconnected"));
@@ -1784,7 +2958,7 @@ int main(int argc, char* argv[]) {
             results_manager->set_positions(positions_to_save);
             INFO("Queued " + std::to_string(positions_to_save.size()) + " current positions for storage");
         } else {
-            INFO("No positions to save (all positions are zero)");
+            INFO("No positions to save (all positions are zero); today's rows cleared above");
         }
 
         // Compute portfolio-level snapshot metrics using RiskManager on today's state
@@ -1822,9 +2996,26 @@ int main(int argc, char* argv[]) {
         // ========================================
         INFO("STEP 3: Calculating commissions and Day T PnL...");
 
-        // Calculate commissions from executions
+        // E2-C4: charge the FULL modelled transaction cost, not commission alone.
+        //
+        // This summed exec.commissions_fees while both futures runners sum
+        // exec.total_transaction_costs (live_portfolio_conservative.cpp:1445,
+        // live_portfolio.cpp:1431), so spread and market impact were computed, stored on
+        // the execution row, and then silently dropped from P&L and the equity curve.
+        // Measured 2026-07-24..08-03: executions totalled $16.0801, live_results recorded
+        // $15.00 -- $1.0801 of real slippage never charged. It is also why live disagreed
+        // with its own backtest, which does charge the full figure
+        // (backtest_coordinator.cpp:777).
+        //
+        // Slippage IS a true cost here and subtracting it is NOT a double-count: fill_price
+        // is deliberately kept as the clean reference price with no embedded slippage
+        // (execution_manager.cpp:159, backtest_execution_manager.cpp:82), so the modelled
+        // figure is the ONLY representation of execution cost in the system. Note
+        // total_transaction_costs = commissions_fees + slippage_market_impact;
+        // implicit_price_impact is the per-share intermediate, already inside slippage, and
+        // must not be added again.
         for (const auto& exec : daily_executions) {
-            total_daily_commissions += exec.commissions_fees.as_double();
+            total_daily_commissions += exec.total_transaction_costs.as_double();
         }
         INFO("Total daily commissions: $" + std::to_string(total_daily_commissions));
 
@@ -1834,13 +3025,108 @@ int main(int argc, char* argv[]) {
             pnl_manager->update_position_pnl(symbol, 0.0, 0.0);  // Zero PnL for Day T
         }
 
+        // E2-F1: today's TRADE-realized P&L, gross of costs.
+        //
+        // Realized P&L does NOT need the T-1 lag. A closing fill on day D is priced at
+        // close(D-1) and the P&L it locks in is known the moment it fills, so it belongs on
+        // day D's row and is written here at insert. Only the MARK needs the next day's
+        // close, and that is what the Day T-1 UPDATE now supplies.
+        //
+        // Before this, daily_realized_pnl was a literal 0.0 here and the T-1 UPDATE
+        // overwrote it with finalize_previous_day()'s output -- the whole book's daily mark
+        // move, `sum qty*(close(T-1) - close(T-2))`, booked as "realized" even for positions
+        // that never traded. That is the futures settlement model, correct there because a
+        // futures position genuinely settles daily, and wrong for a cash equity book. It is
+        // also what made total_pnl double-count once E2-F12 layered the open mark on top:
+        // cumulative "realized" ALREADY contained the full move from entry, so adding
+        // unrealized measured from the same cost basis counted it twice. Verified against
+        // hand-computed P&L from raw executions and closes: cumulative daily_realized_pnl
+        // tracked true mark-to-market P&L exactly, which is only possible if it was already
+        // the whole thing.
+        //
+        // metrics_.realized_pnl accumulates `sum(trade realized) - sum(costs)` over THIS
+        // process's executions only (it starts at zero each run and seeding does not touch
+        // it), so adding the day's costs back recovers the gross figure. Gross is what gets
+        // reported, with costs in their own column, exactly as futures does it -- the
+        // consumer subtracts once, in daily_pnl below.
         double daily_realized_pnl = 0.0;
-        double daily_unrealized_pnl = 0.0;
-        double daily_pnl_for_today = -total_daily_commissions;  // Only commissions on Day T
+        if (mr_strategy) {
+            daily_realized_pnl = mr_strategy->get_metrics().realized_pnl + total_daily_commissions;
+        }
 
-        INFO("Day T PnL (placeholder): $0.00");
-        INFO("Day T commissions: $" + std::to_string(total_daily_commissions));
-        INFO("Day T total impact: $" + std::to_string(daily_pnl_for_today));
+        // E2-F7: add the realized P&L locked in by corporate actions on this ex-date.
+        //
+        // A termination's gain or loss is genuine trade-realized P&L -- the position is gone
+        // and the proceeds are final -- but it never passes through BaseStrategy::on_execution
+        // in a way that books it. apply_terminations sets quantity = 0 BEFORE the strategy is
+        // seeded, so on_execution's realized branch (base_strategy.cpp:197-199, which requires
+        // a position on the opposite side of the fill) is false and computes nothing.
+        // metrics_.realized_pnl above therefore misses it entirely.
+        //
+        // Adding it here puts it in daily_realized_pnl, and from there it flows through the
+        // existing arithmetic into daily_pnl, total_realized_pnl, total_pnl,
+        // current_portfolio_value and the equity curve -- no new column, no second channel,
+        // no cross-day persistence.
+        if (corp_action_realized_total != 0.0) {
+            INFO("Corp-action realized P&L booked into Day T aggregate: $" +
+                 std::to_string(corp_action_realized_total));
+            daily_realized_pnl += corp_action_realized_total;
+        }
+
+        // E2-F19 (R5): protocol L5's realized clause, asserted inside the run.
+        //
+        // The rows and the aggregate come from the SAME accumulator -- pos.realized_pnl
+        // and metrics_.realized_pnl are incremented in the same branch of on_execution
+        // from the same expression; the rows are the decomposition by symbol, the
+        // aggregate the sum (plus the day's costs added back, plus corp-action realized,
+        // which R4 put on the rows too). So the residual is identically zero unless
+        // something broke the identity: a fill whose on_execution failed (now fatal
+        // above), a held symbol absent from the target map (add_rowless_exits above),
+        // or a future filter that drops a row carrying realized. Both previous attempts
+        // at this column shipped without this check and were reverted after a replay
+        // found 20 and 32 violating days. This is the difference between "L5 passed on
+        // the days we checked" and "L5 cannot fail without the run failing".
+        //
+        // Tolerance 1e-4 absolute: Decimal is fixed-point at 1e-8 with per-fill
+        // rounding on the row side while metrics_ is a double, so the sides differ by
+        // up to ~5e-9 per fill.
+        {
+            double row_realized_sum = 0.0;
+            std::string breakdown;
+            for (const auto& p : positions_to_save) {
+                const double r = static_cast<double>(p.realized_pnl);
+                row_realized_sum += r;
+                if (std::abs(r) > LiveDailyCycle::kRowTolerance) {
+                    breakdown += " " + p.symbol + "=" + std::to_string(r);
+                }
+            }
+            const double residual = row_realized_sum - daily_realized_pnl;
+            if (std::abs(residual) > 1e-4) {
+                ERROR("L5 realized identity VIOLATED: sum of positions.daily_realized_pnl (" +
+                      std::to_string(row_realized_sum) + ") != live_results.daily_realized_pnl (" +
+                      std::to_string(daily_realized_pnl) + "), residual " +
+                      std::to_string(residual) + ". Per-symbol rows:" +
+                      (breakdown.empty() ? std::string(" <none>") : breakdown) +
+                      ". Refusing to persist a day whose rows do not sum to its aggregate.");
+                return 1;
+            }
+            INFO("L5 realized identity holds: rows " + std::to_string(row_realized_sum) +
+                 " == aggregate " + std::to_string(daily_realized_pnl) +
+                 " (residual " + std::to_string(residual) + ")");
+        }
+
+        // daily_unrealized_pnl used to be declared and pinned to 0.0 here as a Day-T placeholder.
+        // Nothing ever repaired it -- the Day T-1 UPDATE below never mentions the column -- so
+        // every equity row carried 0 even though the book had open marks (E2-F12). It is now
+        // computed for real in STEP 5, once the previous day's mark is known.
+        //
+        // The reported flow is `(realized - costs) + change in mark`, mirroring futures'
+        // `gross - costs`. Costs are subtracted exactly once, here.
+        double daily_pnl_for_today = daily_realized_pnl - total_daily_commissions;
+
+        INFO("Day T trade-realized (gross): $" + std::to_string(daily_realized_pnl));
+        INFO("Day T transaction costs: $" + std::to_string(total_daily_commissions));
+        INFO("Day T realized net of costs: $" + std::to_string(daily_pnl_for_today));
 
         // ========================================
         // STEP 4: UPDATE Day T-1 live_results AND equity_curve WITH FINALIZED PnL
@@ -1857,8 +3143,16 @@ int main(int argc, char* argv[]) {
         double yesterday_realized_pnl_for_email = 0.0;
         double yesterday_unrealized_pnl_for_email = 0.0;
 
-        if (!two_days_ago_close_prices.empty() && yesterday_total_pnl != 0.0 && !is_first_trading_day) {
-            INFO("STEP 4: Updating Day T-1 live_results with finalized PnL: $" + std::to_string(yesterday_total_pnl));
+        // E2-F1: the Day T-1 UPDATE's job is now to write the MARK, not to overwrite realized.
+        // It must therefore run whenever T-1 closes were resolved, even on a day whose mark
+        // move happened to be zero. The old `yesterday_total_pnl != 0.0` condition skipped the
+        // whole statement on such a day, leaving the row un-finalized -- and combined with the
+        // date mismatch (E2-F14) it fired on every weekend, which is how the Sunday/Monday
+        // reruns were able to leave live_results stale while still rewriting position rows.
+        if (!previous_day_close_prices.empty() && !is_first_trading_day) {
+            INFO("STEP 4: Finalizing Day T-1 live_results -- mark $" +
+                 std::to_string(yesterday_finalized_unrealized) + ", day move $" +
+                 std::to_string(yesterday_total_pnl));
 
             // Get yesterday's commissions and other existing metrics from database
             double yesterday_commissions = 0.0;
@@ -1928,13 +3222,78 @@ int main(int argc, char* argv[]) {
                 INFO("Could not load day-before-yesterday aggregates: " + std::string(e.what()));
             }
 
-            // Calculate yesterday's cumulative values
-            // NOTE: Since we may not have correct commissions, the cumulative values will be recalculated by SQL
-            // using the daily_pnl formula (daily_realized_pnl - daily_commissions)
-            double yesterday_total_pnl_cumulative = day_before_yesterday_total_pnl + yesterday_daily_pnl_finalized;
-            double yesterday_total_commissions_cumulative = day_before_yesterday_total_commissions + yesterday_commissions;
-            double yesterday_total_realized_pnl_cumulative = yesterday_total_pnl_cumulative + yesterday_total_commissions_cumulative;
-            double yesterday_portfolio_value_finalized = day_before_yesterday_portfolio_value + yesterday_daily_pnl_finalized;
+            // E2-F1: the "realized-only strip" that used to live here is GONE, along with the
+            // day-before-yesterday total_unrealized_pnl read that fed it and the
+            // yesterday_total_*_cumulative chain derived from it.
+            //
+            // That machinery existed only because total_pnl was an ACCUMULATOR carrying a
+            // mark-to-market value: each day had to subtract the prior row's mark before
+            // adding its own flow, or the mark compounded. total_pnl is now DERIVED --
+            // `(cumulative realized - cumulative costs) + current mark` -- and
+            // total_realized_pnl accumulates a genuine trade-realized flow, so there is
+            // nothing to strip. The UPDATE below reads total_realized_pnl straight off the
+            // previous row.
+            //
+            // If you find yourself reintroducing a strip here, stop: it means total_pnl has
+            // been turned back into a running total, which is the defect this replaced.
+
+            // E2-F1: the read of the T-1 row's STORED total_unrealized_pnl that used to sit
+            // here is gone. That value was the Day-T snapshot -- the book priced at close(T-2)
+            // -- which is precisely the stale figure E2-F13 identified. The T-1 mark is now
+            // yesterday_finalized_unrealized, summed from the finalized rows at close(T-1),
+            // and both the SQL below and the equity figure above use it.
+
+
+            // E2-F1: mark-to-market equity for T-1, computed from the SAME components the
+            // UPDATE below writes into current_portfolio_value:
+            //     initial + (prev_cumulative_realized + this row's realized - cumulative costs)
+            //             + this row's finalized mark
+            // It feeds total_cumulative_return and total_annualized_return, which are set in
+            // that same statement, so it has to be derived here rather than read back. Keeping
+            // the two expressions identical is the point -- when they drifted apart, the return
+            // columns described an equity the row did not carry.
+            double t1_daily_realized = 0.0;
+            double t1_total_costs = 0.0;
+            double dby_total_realized = 0.0;
+            try {
+                std::string comp_query =
+                    "SELECT COALESCE(y.daily_realized_pnl, 0.0), "
+                    "       COALESCE(y.total_transaction_costs, 0.0), "
+                    "       COALESCE((SELECT total_realized_pnl FROM trading.live_results "
+                    "                 WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' "
+                    "                   AND portfolio_id = '" + portfolio_id + "' "
+                    "                   AND DATE(date) < '" + yesterday_date_str + "' "
+                    "                 ORDER BY date DESC LIMIT 1), 0.0) "
+                    "FROM trading.live_results y "
+                    "WHERE y.strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' "
+                    "  AND y.portfolio_id = '" + portfolio_id + "' "
+                    "  AND DATE(y.date) = '" + yesterday_date_str + "'";
+                auto cq = db->execute_query(comp_query);
+                if (cq.is_ok() && cq.value()->num_rows() > 0) {
+                    auto a = DataConversionUtils::safe_get_double(cq.value()->column(0), 0,
+                                                                  "daily_realized_pnl");
+                    auto b = DataConversionUtils::safe_get_double(cq.value()->column(1), 0,
+                                                                  "total_transaction_costs");
+                    auto c = DataConversionUtils::safe_get_double(cq.value()->column(2), 0,
+                                                                  "total_realized_pnl");
+                    if (a.is_ok()) t1_daily_realized = a.value();
+                    if (b.is_ok()) t1_total_costs = b.value();
+                    if (c.is_ok()) dby_total_realized = c.value();
+                    if (!a.is_ok() || !b.is_ok() || !c.is_ok()) {
+                        WARN("Could not read all T-1 equity components; the return columns "
+                             "will disagree with current_portfolio_value for this row.");
+                    }
+                } else {
+                    WARN("No T-1 live_results row found for the equity components read; "
+                         "return columns will be computed off initial capital alone.");
+                }
+            } catch (const std::exception& e) {
+                WARN("Could not load T-1 equity components: " + std::string(e.what()));
+            }
+
+            double yesterday_portfolio_value_finalized = initial_capital
+                + ((dby_total_realized + t1_daily_realized) - t1_total_costs)
+                + yesterday_finalized_unrealized;
 
             // Calculate yesterday's returns using LiveMetricsCalculator
             double yesterday_daily_return = metrics_calculator->calculate_daily_return(
@@ -1958,7 +3317,8 @@ int main(int argc, char* argv[]) {
             try {
                 // Call PostgreSQL function to calculate trading days
                 auto trading_days_result = db->execute_query(
-                    "SELECT trading.get_trading_days('LIVE_EQUITY_MEAN_REVERSION', DATE '" + yesterday_date_str + "')");
+                    "SELECT trading.get_trading_days('LIVE_EQUITY_MEAN_REVERSION', DATE '" + yesterday_date_str +
+                    "', '" + portfolio_id + "')");
                 
                 if (trading_days_result.is_ok()) {
                     auto table = trading_days_result.value();
@@ -2017,39 +3377,110 @@ int main(int argc, char* argv[]) {
 
             // UPDATE yesterday's live_results with ALL recalculated metrics
             // Note: We calculate daily_pnl, total_pnl, and current_portfolio_value in SQL
-            // to properly incorporate the EXISTING daily_commissions value
+            // to properly incorporate the EXISTING daily_transaction_costs value
+            // (trading.live_results has no commissions column -- see E2-F5; the INSERT
+            //  above writes the equity commission into daily_transaction_costs, and this
+            //  UPDATE must read the same column or the whole statement fails)
             // IMPORTANT: Only update portfolio_leverage and equity_to_margin_ratio if they are NULL or 0
+            // E2-F1 -- the Day T-1 finalization, restated.
+            //
+            // WHAT CHANGED AND WHY. This statement used to overwrite daily_realized_pnl with
+            // finalize_previous_day()'s output: the whole book's daily mark move,
+            // `sum qty*(close(T-1) - close(T-2))`, booked as "realized" even for positions
+            // that never traded. That is the std::to_string(yesterday_finalized_unrealized)TURES settlement model. It is correct there --
+            // a futures position is entered at close(T-1) and settled at close(T), so the
+            // move genuinely IS realized daily and unrealized is 0 by identity -- and it is
+            // wrong for a cash equity book, where a held position's move is unrealized until
+            // it is sold.
+            //
+            // It also made total_pnl double-count. Cumulative "realized" already contained
+            // the entire move from entry, so once E2-F12 layered total_unrealized_pnl on top,
+            // the same price move was counted twice. Verified against P&L hand-computed from
+            // raw executions and closes: cumulative daily_realized_pnl tracked true
+            // mark-to-market P&L EXACTLY, which is only possible if it was already the whole
+            // thing rather than a realized component.
+            //
+            // THE MODEL NOW, mirroring futures' `gross - costs`:
+            //   daily_realized_pnl   trade-realized, gross, written on the day itself at
+            //                        INSERT and NOT touched here -- a closing fill's P&L is
+            //                        known when it fills and needs no T-1 lag.
+            //   total_unrealized_pnl the T-1 book marked at close(T-1), i.e. the sum of the
+            //                        same finalized rows persisted to trading.positions, so
+            //                        the aggregate equals the row sum by construction (L5).
+            //                        This is what E2-F13 was: the column used to be a DAY-T
+            //                        snapshot priced at close(T-2) that finalization never
+            //                        revisited, so it differed from the rows by exactly that
+            //                        day's P&L.
+            //   daily_pnl            (realized - costs) + change in mark. Costs subtracted
+            //                        ONCE, here; pos.realized_pnl is gross for this reason.
+            //   total_pnl            (cumulative realized - cumulative costs) + current mark.
+            //                        DERIVED, not accumulated.
+            //
+            // The old "realized-only strip" is gone with the defect that needed it. total_pnl
+            // is no longer a running sum that the mark has to be added to and stripped back
+            // out of each day; it is recomputed from cumulative realized, cumulative costs and
+            // the current mark. Do not reintroduce an accumulator here -- a snapshot added to
+            // a running total is exactly how the mark started compounding.
+            //
+            // Bare column names on the right-hand side of a SET read the row's PRE-UPDATE
+            // values, which is what we want for daily_realized_pnl, daily_transaction_costs
+            // and total_transaction_costs: all three were written by that day's own INSERT.
             std::string update_query =
                 "WITH day_before AS ("
                 "  SELECT COALESCE(current_portfolio_value, " + std::to_string(initial_capital) + ") as portfolio, "
-                "         COALESCE(total_pnl, 0.0) as total_pnl, "
-                "         COALESCE(total_realized_pnl, 0.0) as total_realized_pnl_prev "
+                "         COALESCE(total_unrealized_pnl, 0.0) as prev_unrealized, "
+                "         COALESCE(total_realized_pnl, 0.0) as prev_total_realized "
                 "  FROM trading.live_results "
-                "  WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND DATE(date) < '" + yesterday_date_str + "' "
+                "  WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND portfolio_id = '" + portfolio_id + "' AND DATE(date) < '" + yesterday_date_str + "' "
                 "  ORDER BY date DESC LIMIT 1"
                 ") "
                 "UPDATE trading.live_results SET "
-                "daily_realized_pnl = " + std::to_string(yesterday_total_pnl) + ", "
-                "daily_pnl = " + std::to_string(yesterday_total_pnl) + " - COALESCE(daily_commissions, 0.0), "
-                "total_pnl = COALESCE((SELECT total_pnl FROM day_before), 0.0) + (" + std::to_string(yesterday_total_pnl) + " - COALESCE(daily_commissions, 0.0)), "
-                "total_realized_pnl = " + std::to_string(yesterday_total_realized_pnl_cumulative) + ", "
-                "current_portfolio_value = COALESCE((SELECT portfolio FROM day_before), " + std::to_string(initial_capital) + ") + (" + std::to_string(yesterday_total_pnl) + " - COALESCE(daily_commissions, 0.0)), "
+                // The mark, from the finalized rows. daily_realized_pnl is deliberately absent.
+                "total_unrealized_pnl = " + std::to_string(yesterday_finalized_unrealized) + ", "
+                "daily_unrealized_pnl = " + std::to_string(yesterday_finalized_unrealized) + " - COALESCE((SELECT prev_unrealized FROM day_before), 0.0), "
+                "total_realized_pnl = COALESCE((SELECT prev_total_realized FROM day_before), 0.0) + COALESCE(daily_realized_pnl, 0.0), "
+                "daily_pnl = (COALESCE(daily_realized_pnl, 0.0) - COALESCE(daily_transaction_costs, 0.0)) "
+                "            + (" + std::to_string(yesterday_finalized_unrealized) + " - COALESCE((SELECT prev_unrealized FROM day_before), 0.0)), "
+                "total_pnl = (COALESCE((SELECT prev_total_realized FROM day_before), 0.0) + COALESCE(daily_realized_pnl, 0.0) "
+                "             - COALESCE(total_transaction_costs, 0.0)) + " + std::to_string(yesterday_finalized_unrealized) + ", "
+                "current_portfolio_value = " + std::to_string(initial_capital) + " "
+                "             + (COALESCE((SELECT prev_total_realized FROM day_before), 0.0) + COALESCE(daily_realized_pnl, 0.0) "
+                "                - COALESCE(total_transaction_costs, 0.0)) + " + std::to_string(yesterday_finalized_unrealized) + ", "
                 "daily_return = CASE WHEN COALESCE((SELECT portfolio FROM day_before), " + std::to_string(initial_capital) + ") > 0 "
-                "               THEN ((" + std::to_string(yesterday_total_pnl) + " - COALESCE(daily_commissions, 0.0)) / COALESCE((SELECT portfolio FROM day_before), " + std::to_string(initial_capital) + ")) * 100.0 "
+                "               THEN (((COALESCE(daily_realized_pnl, 0.0) - COALESCE(daily_transaction_costs, 0.0)) "
+                "                      + (" + std::to_string(yesterday_finalized_unrealized) + " - COALESCE((SELECT prev_unrealized FROM day_before), 0.0))) "
+                "                     / COALESCE((SELECT portfolio FROM day_before), " + std::to_string(initial_capital) + ")) * 100.0 "
                 "               ELSE 0.0 END, "
                 "total_cumulative_return = " + std::to_string(yesterday_total_cumulative_return_pct) + ", "
                 "total_annualized_return = " + std::to_string(yesterday_total_return_annualized) + ", "
                 "portfolio_leverage = CASE WHEN portfolio_leverage IS NULL OR portfolio_leverage = 0 THEN " + std::to_string(yesterday_portfolio_leverage) + " ELSE portfolio_leverage END, "
                 "equity_to_margin_ratio = CASE WHEN equity_to_margin_ratio IS NULL OR equity_to_margin_ratio = 0 THEN " + std::to_string(yesterday_equity_to_margin_ratio) + " ELSE equity_to_margin_ratio END, "
-                "cash_available = COALESCE((SELECT portfolio FROM day_before), " + std::to_string(initial_capital) + ") + (" + std::to_string(yesterday_total_pnl) + " - COALESCE(daily_commissions, 0.0)) - COALESCE(margin_posted, 0.0) "
-                "WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND DATE(date) = '" + yesterday_date_str + "'";
+                "cash_available = " + std::to_string(initial_capital) + " "
+                "             + (COALESCE((SELECT prev_total_realized FROM day_before), 0.0) + COALESCE(daily_realized_pnl, 0.0) "
+                "                - COALESCE(total_transaction_costs, 0.0)) + " + std::to_string(yesterday_finalized_unrealized) + " - COALESCE(margin_posted, 0.0) "
+                "WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND portfolio_id = '" + portfolio_id + "' AND DATE(date) = '" + yesterday_date_str + "'";
 
             INFO("Executing UPDATE query for Day T-1 live_results...");
             INFO("UPDATE will set current_portfolio_value for date: " + yesterday_date_str);
 
             auto update_result = db->execute_direct_query(update_query);
             if (update_result.is_error()) {
+                // E2-F1: a failed T-1 UPDATE is FATAL. It used to log and carry on, and the
+                // run still exited 0 -- the same defect class as E2-F5/E2-F6, where a
+                // swallowed write failure made a zero exit code meaningless.
+                //
+                // This is not hypothetical: during E2-F1 development a malformed statement
+                // failed on every single day of a 12-day replay, every run exited 0, and the
+                // only symptom was that total_unrealized_pnl silently kept its stale Day-T
+                // value. Every internal identity still reconciled, because the INSERT path
+                // computes them consistently -- so the run looked clean and was not.
+                //
+                // If this statement does not apply, the T-1 row keeps a mark priced at
+                // close(T-2) and the book is wrong from that day forward. Fail the run.
                 ERROR("Failed to update Day T-1 live_results: " + std::string(update_result.error()->what()));
+                ERROR("Day T-1 aggregates could not be finalized. Refusing to exit 0 with a "
+                      "stale mark on " + yesterday_date_str + ".");
+                return 1;
             } else {
                 INFO("Successfully updated Day T-1 live_results with finalized PnL and all metrics");
 
@@ -2065,7 +3496,7 @@ int main(int argc, char* argv[]) {
             // Query the current portfolio value from updated live_results
             std::string get_equity_query =
                 "SELECT current_portfolio_value FROM trading.live_results "
-                "WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND DATE(date) = '" + yesterday_date_str + "'";
+                "WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND portfolio_id = '" + portfolio_id + "' AND DATE(date) = '" + yesterday_date_str + "'";
 
             INFO("Querying for portfolio value with date: " + yesterday_date_str);
 
@@ -2077,13 +3508,28 @@ int main(int argc, char* argv[]) {
                 INFO("Query returned " + std::to_string(table->num_rows()) + " rows");
 
                 if (table->num_rows() > 0) {
-                    auto array = std::static_pointer_cast<arrow::DoubleArray>(table->column(0)->chunk(0));
+                    // current_portfolio_value is NUMERIC, which this driver surfaces as a
+                    // StringArray -- every other numeric read in this file does the same
+                    // (see the yesterday-metrics block below). Casting the chunk to
+                    // DoubleArray does not convert it; static_pointer_cast just
+                    // reinterprets the pointer, so Value(0) read a garbage double that
+                    // printed as 0.000000, failed the "< 1000" guard, and skipped the
+                    // Day T-1 equity_curve update on 6 of 10 days -- leaving equity_curve
+                    // disagreeing with live_results.current_portfolio_value (E2-F7).
+                    auto array = std::static_pointer_cast<arrow::StringArray>(table->column(0)->chunk(0));
 
                     // Check for NULL value before reading
                     if (array->IsNull(0)) {
                         ERROR("Cannot update Day T-1 equity_curve: current_portfolio_value is NULL for date " + yesterday_date_str);
                     } else {
-                        double portfolio_value = array->Value(0);
+                        double portfolio_value = 0.0;
+                        try {
+                            portfolio_value = std::stod(std::string(array->GetView(0)));
+                        } catch (const std::exception& e) {
+                            ERROR("Could not parse current_portfolio_value '" +
+                                  std::string(array->GetView(0)) + "' for " + yesterday_date_str +
+                                  ": " + e.what());
+                        }
                         INFO("Raw value read from database: " + std::to_string(portfolio_value));
 
                         // Validate the value before using it
@@ -2128,7 +3574,7 @@ int main(int argc, char* argv[]) {
                     "SELECT daily_return, daily_pnl, daily_realized_pnl, daily_unrealized_pnl, "
                     "portfolio_leverage, equity_to_margin_ratio "
                     "FROM trading.live_results "
-                    "WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND DATE(date) = '" + yesterday_date_str + "'";
+                    "WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND portfolio_id = '" + portfolio_id + "' AND DATE(date) = '" + yesterday_date_str + "'";
 
                 INFO("Loading yesterday's metrics from database with query: " + metrics_query);
                 auto metrics_result = db->execute_query(metrics_query);
@@ -2198,6 +3644,12 @@ int main(int argc, char* argv[]) {
         double previous_portfolio_value = initial_capital; // Default to initial capital
         double previous_total_pnl = 0.0;
         double previous_total_commissions = 0.0;
+        // The previous row's mark-to-market snapshot. Needed for two things: to strip the mark
+        // back out of the previous stored total_pnl so the running total stays realized-only,
+        // and to difference into daily_unrealized_pnl. get_previous_live_aggregates() is shared
+        // with the futures runners so it is not widened to return this; the equity runner reads
+        // the column itself, scoped by portfolio_id like every other query in this file.
+        double previous_total_unrealized_pnl = 0.0;
 
         try {
             auto db_ptr = std::dynamic_pointer_cast<PostgresDatabase>(db);
@@ -2216,19 +3668,147 @@ int main(int argc, char* argv[]) {
             INFO("Could not load previous day aggregates: " + std::string(e.what()));
         }
 
-        // Calculate cumulative values for Day T
-        double total_pnl = previous_total_pnl + daily_pnl_for_today;
-        double current_portfolio_value = previous_portfolio_value + daily_pnl_for_today;
-        double daily_pnl = daily_pnl_for_today;  // Only commissions on Day T
+        // Load the previous row's mark-to-market snapshot (see declaration above). A missing
+        // row -- the first trading day -- correctly leaves this at 0.0, which makes the
+        // realized-only strip a no-op and makes daily_unrealized_pnl equal the full opening
+        // mark, both of which are right on day one.
+        try {
+            std::string prev_unrealized_query =
+                "SELECT COALESCE(total_unrealized_pnl, 0.0) FROM trading.live_results "
+                "WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND portfolio_id = '" + portfolio_id + "' "
+                "AND DATE(date) < '" + today_date_str + "' "
+                "ORDER BY date DESC LIMIT 1";
+            auto pu = db->execute_query(prev_unrealized_query);
+            if (pu.is_ok() && pu.value()->num_rows() > 0) {
+                auto r = DataConversionUtils::safe_get_double(pu.value()->column(0), 0,
+                                                              "total_unrealized_pnl");
+                if (r.is_ok()) {
+                    previous_total_unrealized_pnl = r.value();
+                    INFO("Loaded previous total_unrealized_pnl: $" +
+                         std::to_string(previous_total_unrealized_pnl));
+                } else {
+                    WARN("Could not read previous total_unrealized_pnl (" +
+                         std::string(r.error()->what()) + "); treating the previous mark as 0. "
+                         "total_pnl will be overstated by the prior mark until the next clean read.");
+                }
+            } else {
+                INFO("No previous total_unrealized_pnl row; treating the previous mark as 0");
+            }
+        } catch (const std::exception& e) {
+            WARN("Could not load previous total_unrealized_pnl: " + std::string(e.what()));
+        }
+
+        // Mark-to-market accounting -- EQUITIES ONLY. Read this before changing anything here.
+        //
+        // WHY EQUITIES DIFFER FROM FUTURES (E2-F12). `average_price` does not mean the same
+        // thing in the two books:
+        //   * Futures: average_price IS the prior settlement close, i.e. a mark. A position is
+        //     entered at close(T-1) and settled at close(T), so the entire move is realized on
+        //     the day it happens and unrealized is 0 BY IDENTITY. The futures runners therefore
+        //     write 0 to both unrealized columns and a realized-only total_pnl, which for them
+        //     already IS mark-to-market. Nothing about the futures path may change.
+        //   * Equities: average_price is a true weighted cost basis that survives across days.
+        //     An open position carries a real mark-to-market gain or loss that is NOT in
+        //     realized PnL. Reporting realized-only here understates a book holding winners and
+        //     leaves the equity curve flat while the book actually moves.
+        // So this runner reports total_pnl and current_portfolio_value INCLUDING unrealized.
+        //
+        // WHY THE RECURSION IS REALIZED-ONLY. total_pnl was previously accumulated as
+        // `previous_total_pnl + daily_pnl_for_today`, reading the previous row's total_pnl back
+        // out of the DB. If unrealized were folded into the stored total_pnl and that same
+        // recursion were kept, every day would re-add the PRIOR day's open-position mark on top
+        // of today's -- unrealized would compound into a cumulative sum of daily snapshots and
+        // the equity curve would diverge without bound. Unrealized is a SNAPSHOT, not a flow:
+        // it replaces the prior snapshot, it does not add to it. The running total therefore
+        // stays realized-only and unrealized is layered on top once, at the end.
         double total_commissions_cumulative = previous_total_commissions + total_daily_commissions;
 
-        // For equities, track realized PnL separately from unrealized
-        double total_realized_pnl = total_pnl + total_commissions_cumulative;
-        // Calculate total unrealized PnL from current open positions
+        // Calculate total unrealized PnL from current open positions. Computed BEFORE total_pnl
+        // now (it used to be derived after) because total_pnl depends on it.
         double total_unrealized_pnl = 0.0;
         for (const auto& [sym, pos] : positions) {
             total_unrealized_pnl += pos.unrealized_pnl.as_double();
         }
+
+        // E2-F1: on a CLOSED day the mark is CARRIED, not recomputed to zero.
+        //
+        // A carry-forward day (weekend or holiday, per B1) generates no executions, so
+        // LiveDailyCycle has no execution_prices to mark against and every position's
+        // unrealized_pnl comes back 0 -- making the sum above 0 even though the book is
+        // unchanged and fully marked. The stored position rows are NOT zero: they carry the
+        // held mark. So the aggregate and the rows disagreed on exactly the closed days.
+        //
+        // The reported effect was a fabricated round trip. Measured on the 2026-07-24..08-04
+        // replay before this guard: Saturday 08-01 reported daily_pnl = -1052.6450 and
+        // Monday reversed it, on days the market never opened. That corrupts daily_return,
+        // and every volatility- and drawdown-derived metric with it.
+        //
+        // No new close exists, so there is no new mark and no P&L: carry the previous value
+        // and let daily_unrealized_pnl fall out as exactly 0. This also restores L5 on closed
+        // days, because the carried figure is precisely what the position rows hold.
+        if (today_is_non_trading) {
+            INFO("Non-trading day: carrying the previous mark ($" +
+                 std::to_string(previous_total_unrealized_pnl) +
+                 ") rather than recomputing it from an unmarked book");
+            total_unrealized_pnl = previous_total_unrealized_pnl;
+        }
+
+        // E2-F1: cumulative TRADE-realized, gross. Read from the previous row and extended by
+        // today's realized rather than derived from a total_pnl accumulator.
+        //
+        // The old code did the reverse -- it accumulated total_pnl and back-solved
+        // total_realized_pnl from it -- which only worked while "realized" meant the daily
+        // mark move. It also needed a "realized-only strip" (subtracting the prior row's mark
+        // from the prior total_pnl) to stop the mark compounding day over day. Both are gone:
+        // realized is now a genuine flow that accumulates, and total_pnl is DERIVED from it.
+        // Do not turn total_pnl back into an accumulator -- adding a snapshot to a running
+        // total is precisely how the mark started compounding.
+        double previous_total_realized_pnl = 0.0;
+        try {
+            std::string prev_realized_query =
+                "SELECT COALESCE(total_realized_pnl, 0.0) FROM trading.live_results "
+                "WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND portfolio_id = '" + portfolio_id + "' "
+                "AND DATE(date) < '" + today_date_str + "' "
+                "ORDER BY date DESC LIMIT 1";
+            auto pr = db->execute_query(prev_realized_query);
+            if (pr.is_ok() && pr.value()->num_rows() > 0) {
+                auto r = DataConversionUtils::safe_get_double(pr.value()->column(0), 0,
+                                                              "total_realized_pnl");
+                if (r.is_ok()) {
+                    previous_total_realized_pnl = r.value();
+                    INFO("Loaded previous total_realized_pnl: $" +
+                         std::to_string(previous_total_realized_pnl));
+                } else {
+                    WARN("Could not read previous total_realized_pnl (" +
+                         std::string(r.error()->what()) + "); treating it as 0. Cumulative "
+                         "realized and every figure derived from it will be understated until "
+                         "the next clean read.");
+                }
+            } else {
+                INFO("No previous total_realized_pnl row; starting the cumulative at 0");
+            }
+        } catch (const std::exception& e) {
+            WARN("Could not load previous total_realized_pnl: " + std::string(e.what()));
+        }
+
+        double total_realized_pnl = previous_total_realized_pnl + daily_realized_pnl;
+
+        // Day-over-day change in the mark. This is what daily_unrealized_pnl should have held
+        // all along; it was previously hard-wired to 0.0 as a Day-T placeholder and never
+        // repaired by the Day T-1 UPDATE, so it read 0 on every equity row.
+        double daily_unrealized_pnl = total_unrealized_pnl - previous_total_unrealized_pnl;
+
+        // The reported identity, and the one to hand-check:
+        //     total_pnl = (cumulative realized - cumulative costs) + current mark
+        // Costs are subtracted exactly once. Realized is gross precisely so that this is the
+        // only place they come off, matching how the futures runners report `gross - costs`.
+        double total_pnl = (total_realized_pnl - total_commissions_cumulative) + total_unrealized_pnl;
+        double current_portfolio_value = initial_capital + total_pnl;
+
+        // daily_pnl must be the day-over-day change in total_pnl or the equity-curve continuity
+        // invariant (protocol L6: value(T) - value(T-1) == daily_pnl(T)) breaks the moment the
+        // curve became mark-to-market.
+        double daily_pnl = daily_pnl_for_today + daily_unrealized_pnl;
 
         // Calculate returns using LiveMetricsCalculator
         double daily_return = metrics_calculator->calculate_daily_return(daily_pnl, previous_portfolio_value);
@@ -2250,7 +3830,8 @@ int main(int argc, char* argv[]) {
 
             // Call PostgreSQL function to calculate trading days
             auto trading_days_result = db->execute_query(
-                "SELECT trading.get_trading_days('LIVE_EQUITY_MEAN_REVERSION', DATE '" + now_date_str + "')");
+                "SELECT trading.get_trading_days('LIVE_EQUITY_MEAN_REVERSION', DATE '" + now_date_str +
+                    "', '" + portfolio_id + "')");
             
             if (trading_days_result.is_ok()) {
                 auto table = trading_days_result.value();
@@ -2469,10 +4050,15 @@ int main(int argc, char* argv[]) {
                 {"net_notional", net_notional},
                 {"daily_return", daily_return},
                 {"daily_pnl", daily_pnl},
-                {"total_commissions", total_commissions_cumulative},
+                // trading.live_results has no commissions columns -- it carries the
+                // transaction-cost pair the futures runner writes. For equities the
+                // commission IS the realised transaction cost, so it lands there.
+                // Naming a non-existent column makes the whole INSERT fail, which is
+                // how live_results silently went unwritten (E2-F5).
+                {"total_transaction_costs", total_commissions_cumulative},
                 {"daily_realized_pnl", daily_realized_pnl},
                 {"daily_unrealized_pnl", daily_unrealized_pnl},
-                {"daily_commissions", total_daily_commissions},
+                {"daily_transaction_costs", total_daily_commissions},
                 {"margin_posted", total_posted_margin},
                 {"cash_available", current_portfolio_value - total_posted_margin},
                 {"total_dividend_income", total_dividend_income}
@@ -2521,8 +4107,13 @@ int main(int argc, char* argv[]) {
         // Use the new LiveResultsManager - save all results at once
         INFO("Saving all live trading results using LiveResultsManager...");
 
+        bool persist_failed = false;
         auto save_result = results_manager->save_all_results("LIVE_EQUITY_MEAN_REVERSION", now);
         if (save_result.is_error()) {
+            // save_all_results attempts every table and names the ones that failed
+            // (FIX-0b). Logging that and returning 0 anyway defeats the point: a caller
+            // reading the exit status would treat a partially-written run as a success.
+            persist_failed = true;
             ERROR("Failed to save all live results: " + std::string(save_result.error()->what()));
         } else {
             INFO("Successfully saved all live trading results to database");
@@ -2588,7 +4179,7 @@ int main(int argc, char* argv[]) {
 
                 std::string positions_query_email = "SELECT symbol, quantity, average_price, daily_realized_pnl, daily_unrealized_pnl, last_update "
                                                    "FROM trading.positions "
-                                                   "WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND DATE(last_update) = '" + yesterday_date_for_email + "'";
+                                                   "WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND portfolio_id = '" + portfolio_id + "' AND DATE(last_update) = '" + yesterday_date_for_email + "'";
 
                 auto positions_result_email = db->execute_query(positions_query_email);
 
@@ -2636,9 +4227,9 @@ int main(int argc, char* argv[]) {
                     // email body alongside Daily Total PnL.
                     std::string yesterday_metrics_query =
                         "SELECT daily_return, daily_unrealized_pnl, daily_realized_pnl, daily_pnl, "
-                        "daily_commissions, total_dividend_income "
+                        "daily_transaction_costs, total_dividend_income "
                         "FROM trading.live_results "
-                        "WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND date = '" + yesterday_date_for_email + "' "
+                        "WHERE strategy_id = 'LIVE_EQUITY_MEAN_REVERSION' AND portfolio_id = '" + portfolio_id + "' AND date = '" + yesterday_date_for_email + "' "
                         "ORDER BY date DESC LIMIT 1";
 
                     INFO("Loading yesterday's daily metrics from live_results: " + yesterday_metrics_query);
@@ -2771,7 +4362,12 @@ int main(int argc, char* argv[]) {
                     yesterday_positions_finalized,  // Now populated with yesterday's finalized positions
                     yesterday_exit_prices,  // Day T-1 close prices for yesterday's positions
                     yesterday_entry_prices,  // Day T-2 close prices for yesterday's positions
-                    yesterday_daily_metrics_final  // Yesterday's metrics
+                    yesterday_daily_metrics_final,  // Yesterday's metrics
+                    // E2-F11: the charts query THIS book. The overload used to hardcode the
+                    // trend-following strategy id and an empty portfolio, so every equity
+                    // email rendered empty charts.
+                    std::string(kEquityStrategyId),
+                    portfolio_id
                 );
                 
                 // Send email without CSV attachments (CSV export disabled for mean reversion)
@@ -2794,6 +4390,11 @@ int main(int argc, char* argv[]) {
         std::cerr << "At end of main: initialized=" << Logger::instance().is_initialized()
                   << std::endl;
 
+        if (persist_failed) {
+            ERROR("Run completed but one or more result tables were not persisted -- "
+                  "exiting non-zero so this is not mistaken for a successful run.");
+            return 1;
+        }
         return 0;
 
     } catch (const std::exception& e) {

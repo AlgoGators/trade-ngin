@@ -1,6 +1,7 @@
 # Set test source files
 set(TEST_SOURCES
     core/test_decimal.cpp
+    core/test_time_utils_parse.cpp
     core/test_result.cpp
     core/test_state_manager.cpp
     core/test_logger.cpp
@@ -17,6 +18,8 @@ set(TEST_SOURCES
     data/test_postgres_database.cpp
     data/test_database_pooling.cpp
     data/test_db_transaction_atomicity.cpp
+    data/test_delete_stale_executions_scope_db.cpp
+    data/test_get_trading_days_scope_db.cpp
     data/test_market_data_bus.cpp
     data/test_credential_store.cpp
     data/test_bar_close_uses_adjusted.cpp
@@ -36,6 +39,8 @@ set(TEST_SOURCES
     transaction_cost/test_impact_model.cpp
     live/corp_actions/test_applier.cpp
     live/corp_actions/test_effect_classes.cpp
+    live/corp_actions/test_frame_horizon.cpp
+    live/corp_actions/test_ex_date_eligibility.cpp
     live/corp_actions/test_rename_eras.cpp
     live/corp_actions/test_denominator_frame.cpp
     live/corp_actions/test_denominator_range_db.cpp
@@ -52,6 +57,7 @@ set(TEST_SOURCES
     backtest/test_backtest_data_loader.cpp
     backtest/test_backtest_csv_exporter.cpp
     backtest/test_backtest_coordinator.cpp
+    backtest/test_backtest_unrealized_accounting.cpp
     execution/test_execution_engine.cpp
     portfolio/test_portfolio_manager.cpp
     core/test_equity_portfolio_namespace.cpp
@@ -60,6 +66,7 @@ set(TEST_SOURCES
     instruments/test_futures_margin_overload.cpp
     portfolio/test_portfolio_aggregation.cpp
     portfolio/test_portfolio_manager_internals.cpp
+    portfolio/test_fractional_position_convergence.cpp
     storage/test_backtest_results_manager.cpp
     storage/test_live_results_manager.cpp
     storage/test_live_results_key_roundtrip_db.cpp
@@ -71,6 +78,9 @@ set(TEST_SOURCES
     live/test_margin_manager.cpp
     live/test_live_metrics_calculator.cpp
     live/test_live_pnl_manager.cpp
+    live/test_finalize_unrealized_policy.cpp
+    live/test_finalize_realized_policy.cpp
+    live/test_realized_row_retention.cpp
     live/test_unrealized_cost_basis.cpp
     live/test_live_data_loader.cpp
     live/test_csv_exporter.cpp

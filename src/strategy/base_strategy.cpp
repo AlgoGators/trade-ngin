@@ -255,10 +255,25 @@ Result<void> BaseStrategy::on_execution(const ExecutionReport& report) {
 
         pos.last_update = report.fill_time;
 
-        // Always subtract transaction costs from realized PnL (for all trades, not just closing)
-        // This ensures transaction costs are accounted for in opening positions too
+        // E2-F1 / E2-F9: `pos.realized_pnl` is GROSS trade P&L. Transaction costs are NOT
+        // netted into it.
+        //
+        // This field is persisted as trading.positions.daily_realized_pnl (via
+        // LiveDailyCycle::resolve_and_apply_basis), while live_results carries costs in
+        // their own column. Netting costs here made the row net-of-cost and the aggregate
+        // net-of-commission-only, so the two reconciled against different cost bases in the
+        // same run and the row-sums-to-aggregate check could never be exact.
+        //
+        // The reporting model now mirrors futures: realized is gross, costs are a separate
+        // column, and the consumer subtracts once --
+        //     daily_pnl = (daily_realized_pnl - daily_transaction_costs) + daily_unrealized_pnl
+        // Netting here as well would subtract them twice.
+        //
+        // metrics_ is deliberately left net. It is internal strategy bookkeeping, and
+        // metrics_.total_pnl feeds the drawdown gate in check_risk_limits(); making that
+        // gross would quietly loosen a risk limit, which is outside this fix. The asymmetry
+        // is intentional: metrics_ is a risk input, pos.realized_pnl is a reported figure.
         double transaction_cost = static_cast<double>(report.total_transaction_costs);
-        pos.realized_pnl -= Decimal(transaction_cost);
         metrics_.realized_pnl -= transaction_cost;
         metrics_.total_pnl -= transaction_cost;
 
