@@ -82,6 +82,7 @@ set(TEST_SOURCES
     live/corp_actions/test_window.cpp
     live/test_effective_universe.cpp
     live/test_live_daily_cycle_carry_forward.cpp
+    live/test_broker_frame_event_classes.cpp
     live/test_rolled_back_symbol_mark.cpp
     live/test_feed_freshness_universe.cpp
     live/test_feed_ingestion_assertion.cpp

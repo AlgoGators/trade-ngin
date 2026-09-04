@@ -9,6 +9,19 @@ namespace broker_frame {
 
 bool is_dividend(const AppliedEvent& ev) { return ev.action_type == "DIVIDEND"; }
 
+namespace {
+// B-vii: which events actually change the SHARE COUNT.
+//
+// Only these two. A SPINOFF restates the parent's cost basis and explicitly leaves its
+// share count alone ("a spinoff never changes the PARENT share count",
+// corporate_actions_lifecycle.cpp), and a TERMINATION closes a position without restating
+// anything -- its basis_ratio is NULL for that reason. Treating either as a split divides
+// every EARLIER dividend's per-share cash by a factor that never touched the share count.
+bool is_share_count_split(const AppliedEvent& ev) {
+    return ev.action_type == "SPLIT" || ev.action_type == "ADR_SPLIT";
+}
+}  // namespace
+
 double dividend_basis_ratio(double dividend_per_share, double close_at_ex_date) {
     // The denominator is the RAW close ON the ex-date. A non-positive close cannot
     // produce a meaningful ratio, and 0 is the value the runner deliberately leaves in
@@ -75,7 +88,7 @@ double expected_pnl_gap(double quantity, double raw_basis_value,
     std::stable_sort(chain.begin(), chain.end(),
                      [](const AppliedEvent* a, const AppliedEvent* b) {
                          if (a->ex_date != b->ex_date) return a->ex_date < b->ex_date;
-                         return !is_dividend(*a) && is_dividend(*b);
+                         return is_share_count_split(*a) && is_dividend(*b);
                      });
 
     double product = 1.0;
@@ -85,8 +98,16 @@ double expected_pnl_gap(double quantity, double raw_basis_value,
 
     for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
         const AppliedEvent& ev = **it;
+        const bool dividend_row = is_dividend(ev);
+        const bool split_row = is_share_count_split(ev);
+        // B-vii: classify BEFORE validating the ratio. A TERMINATION carries a NULL
+        // basis_ratio because it restates nothing, and validating it here returned 0.0 for
+        // the whole chain -- so the reconciliation went silent for any symbol whose history
+        // contains a close-out. A row that is neither a dividend nor a share-count split
+        // contributes to neither term and its ratio is none of this function's business.
+        if (!dividend_row && !split_row) continue;
         if (!ev.ratio_known || !(ev.ratio > 0.0) || !std::isfinite(ev.ratio)) return 0.0;
-        if (!is_dividend(ev)) {
+        if (split_row) {
             // A split, and every dividend BEFORE it was paid at a share count this factor
             // has since multiplied.
             splits_after *= ev.ratio;
