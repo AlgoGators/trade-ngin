@@ -773,17 +773,26 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                 // realized something (E2-F54 (c): the live is_dead_row rule). Futures are
                 // unaffected: under REALIZED_ONLY this is the original unconditional skip.
                 if (std::abs(qty) < 1e-8) {
-                    if (strategy_method == PnLAccountingMethod::REALIZED_ONLY ||
-                        !realized_row.keep) {
-                        continue;
-                    }
+                    if (strategy_method == PnLAccountingMethod::REALIZED_ONLY) continue;
                     // The exit's P&L needs somewhere to live. AVERAGE_PRICE_LIFECYCLE
                     // rule 5: a closed row carries no basis and no mark.
+                    //
+                    // The flow is written back on EVERY flat bar, not only the closing one,
+                    // and it is 0 on the bars after the close. That is not redundant:
+                    // update_strategy_position writes into current_positions, and
+                    // save_daily_positions persists that whole map once per bar. Skipping
+                    // the write on a later flat bar leaves the CLOSING bar's realized
+                    // sitting in the map, and it is then re-persisted every day for the
+                    // rest of the backtest -- measured on DD, whose 76.145406 exit repeated
+                    // on all 22 rows from 2026-08-03 to 2026-09-02 and made the column sum
+                    // to 137x the position's actual realized. Writing the zero lets the
+                    // persist layer's dead-row filter drop the row instead.
                     Position closed_row = pos;
                     closed_row.quantity = Decimal(0.0);
                     closed_row.average_price = Decimal(0.0);
                     closed_row.unrealized_pnl = Decimal(0.0);
-                    closed_row.realized_pnl = Decimal(realized_row.flow);
+                    closed_row.realized_pnl =
+                        Decimal(realized_row.keep ? realized_row.flow : 0.0);
                     auto closed_update =
                         portfolio->update_strategy_position(strategy_id, symbol, closed_row);
                     if (closed_update.is_error()) {
