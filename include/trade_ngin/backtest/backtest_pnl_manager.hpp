@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cmath>
+
 #include "trade_ngin/live/pnl_manager_base.hpp"
 #include "trade_ngin/core/types.hpp"
 #include "trade_ngin/strategy/types.hpp"  // PnLAccountingMethod (E2-F2)
@@ -159,6 +161,112 @@ public:
         if (method == PnLAccountingMethod::REALIZED_ONLY) return 0.0;
         if (quantity == 0.0 || average_price <= 0.0) return 0.0;
         return quantity * (mark_price - average_price) * point_value;
+    }
+
+    /**
+     * @brief What `realized_pnl` a stored backtest row carries, by accounting method.
+     *
+     * Phase 4 audit T4.6 / §1.14, and the pin C-5 §9-A2 found missing. The coordinator
+     * branches here and the two answers are different quantities, not two spellings of one:
+     *
+     *   REALIZED_ONLY (futures)  -- the day's settled mark-to-market IS the day's realized.
+     *                               There is no separate cost basis to close against.
+     *   MIXED / UNREALIZED_ONLY  -- realized is booked by on_execution when a position
+     *                               actually closes, and the row carries that bar's FLOW.
+     *                               The settled move belongs in unrealized, not here.
+     *
+     * Stamping the MTM figure on an equity row was the defect: it made every held day look
+     * like a realizing day and made the column uncorrelated with the fills.
+     *
+     * @param method    the strategy's accounting method.
+     * @param daily_mtm the bar's settled mark-to-market move, dollarised.
+     * @param flow      the realized increment from this bar's fills (realized_row_for_bar).
+     */
+    static double realized_for_row(PnLAccountingMethod method, double daily_mtm, double flow) {
+        return method == PnLAccountingMethod::REALIZED_ONLY ? daily_mtm : flow;
+    }
+
+    /**
+     * @brief The stored row's per-bar realized FLOW, and whether the row survives.
+     *
+     * E2-F54. `backtest.final_positions.realized_pnl` is a FLOW -- what this position
+     * realized on THIS bar's date -- exactly as `trading.positions.daily_realized_pnl` is
+     * live (E2-F19, docs/AVERAGE_PRICE_LIFECYCLE.md). The strategy's own record is a
+     * running total over the whole backtest, so the row is the increment since the
+     * previous bar.
+     *
+     * Two ordering constraints are why this is a named function rather than three lines
+     * inside the bar loop:
+     *
+     *   1. `cumulative` MUST be read from the strategy's fill-maintained holdings
+     *      (BaseStrategy::get_positions(), written by on_execution), NOT from the target
+     *      snapshot the loop iterates. The target copy is taken before on_execution runs,
+     *      so a sale on bar D would otherwise land on D+1.
+     *
+     *   2. This MUST be called before any flat-row skip. A full close is the bar with the
+     *      largest realized and a quantity of zero; skipping it first strands the exit's
+     *      P&L until the symbol is re-entered, or loses it entirely.
+     *
+     * @param quantity            Signed position quantity AFTER this bar's fills.
+     * @param cumulative_from_fills The strategy's running realized total for this symbol.
+     * @param last_cumulative     In/out: the value at the previous bar. Advanced here.
+     *                            Cleared by BacktestCoordinator::reset_portfolio_state();
+     *                            an uncleared ledger opens the next portfolio's first bar
+     *                            with the previous book's total and reports a difference.
+     * @param tol                 Dead-row tolerance, matching LiveDailyCycle::is_dead_row.
+     */
+    struct RealizedRow {
+        double flow = 0.0;   ///< what realized_pnl on this row must carry
+        bool keep = false;   ///< false => dead row, do not write or persist it
+    };
+
+    static RealizedRow realized_row_for_bar(double quantity,
+                                            double cumulative_from_fills,
+                                            double& last_cumulative,
+                                            double tol = 1e-8) {
+        const RealizedRow row = realized_row_peek(quantity, cumulative_from_fills,
+                                                  last_cumulative, tol);
+        commit_realized_row(cumulative_from_fills, last_cumulative);
+        return row;
+    }
+
+    /**
+     * @brief The bar's flow WITHOUT advancing the ledger.
+     *
+     * E2-F59. `last_cumulative` means "the cumulative as of the last row actually WRITTEN",
+     * not "as of the last bar seen". Three paths in the coordinator's bar loop return without
+     * writing anything -- the symbol has no close on this bar, it has no previous close, or
+     * the P&L result is not valid -- and on those the ledger must be left alone so the next
+     * written row carries the whole span. Advancing on a bar that writes nothing does not
+     * defer the realized, it LOSES it: the ledger says it was reported and no row carries it.
+     *
+     * Peek where the write is conditional; commit once the row is written. `realized_row_for_bar`
+     * is peek+commit and is for the paths that always write.
+     */
+    static RealizedRow realized_row_peek(double quantity,
+                                         double cumulative_from_fills,
+                                         double last_cumulative,
+                                         double tol = 1e-8) {
+        RealizedRow row;
+        row.flow = cumulative_from_fills - last_cumulative;
+        row.keep = !is_dead_row(quantity, row.flow, tol);
+        return row;
+    }
+
+    /** @brief Advance the ledger. Call ONLY after the row has been written. E2-F59. */
+    static void commit_realized_row(double cumulative_from_fills, double& last_cumulative) {
+        last_cumulative = cumulative_from_fills;
+    }
+
+    /**
+     * @brief The live dead-row rule, restated for the backtest.
+     *
+     * LiveDailyCycle::is_dead_row: a row dies only when it has NEITHER quantity NOR
+     * realized. A position closed to zero that realized something keeps its row for that
+     * date, so the exit's P&L has somewhere to live and the flows sum to the cumulative.
+     */
+    static bool is_dead_row(double quantity, double realized, double tol = 1e-8) {
+        return std::abs(quantity) <= tol && std::abs(realized) <= tol;
     }
 
     /**

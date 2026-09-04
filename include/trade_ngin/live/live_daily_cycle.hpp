@@ -2,6 +2,9 @@
 #pragma once
 
 #include <algorithm>
+#include <cmath>
+#include <map>
+#include <utility>
 #include <ctime>
 #include <set>
 #include <string>
@@ -10,6 +13,7 @@
 
 #include "trade_ngin/core/error.hpp"
 #include "trade_ngin/core/holiday_checker.hpp"
+#include "trade_ngin/core/time_utils.hpp"
 #include "trade_ngin/live/corporate_actions_lifecycle.hpp"
 #include "trade_ngin/live/execution_manager.hpp"
 #include "trade_ngin/live/execution_price_resolver.hpp"
@@ -142,6 +146,103 @@ public:
     }
 
     /**
+     * @brief What feeding the cost model produced, so the runner can log it and a
+     *        test can assert on it without reaching into the model.
+     */
+    struct CostFeedResult {
+        size_t symbols_fed = 0;   ///< symbols that contributed at least one bar
+        size_t bars_fed = 0;      ///< total (volume, close) observations handed over
+        size_t returns_fed = 0;   ///< log returns handed over == bars_fed - symbols_fed
+        std::vector<std::string> no_bars;  ///< universe symbols with no bars at all
+        std::vector<std::string> thin;     ///< symbols with fewer than `min_bars`
+    };
+
+    /**
+     * @brief Give the transaction-cost model the market data it prices fills from.
+     *
+     * E2-F62. `TransactionCostManager::calculate_costs` reads its ADV from
+     * `impact_model_.get_adv()` and its spread widening from
+     * `spread_model_.get_volatility_multiplier()` (`transaction_cost_manager.cpp:26-27`).
+     * Both are populated ONLY by `update_market_data`, and the live equity runner
+     * never called it -- the only runner in the tree that did not. So every live
+     * equity fill was priced against the hard-coded fallbacks at `:33` and `:37`:
+     * `adv = 100000` shares and `vol_mult = 1.0`. For a name that really trades
+     * 5.4 M shares a day that overstates the participation rate 54x and selects a
+     * 40 bps impact coefficient where the true ADV selects 10 bps
+     * (`impact_model.cpp` get_impact_k_bps), and the spread never widens with
+     * realised volatility. Registering the tier config
+     * (`register_equity_costs_from_bars`) does NOT fix this: that writes the
+     * spread ticks and the caps, not the ADV the impact model divides by.
+     *
+     * WHY prev_close = 0.0 ON THE FIRST BAR, and not the bar's own close.
+     * `TransactionCostManager::update_market_data` records the volume
+     * unconditionally and gates the log return on `prev_close_price > 0.0`, so a
+     * zero prev_close means "volume yes, return omitted". Passing the bar's own
+     * close instead -- which is what `ExecutionManager::update_market_data`'s
+     * 3-arg form does for a symbol it has not seen (`execution_manager.cpp:186`),
+     * and therefore what the futures live runner gets at
+     * `live_portfolio_conservative.cpp:890` -- injects a fabricated
+     * log(close/close) = 0 return. One false zero in a 20-return window pulls the
+     * sample stdev down and biases `vol_mult` low. `backtest_coordinator.cpp:455-464`
+     * argues the same point for the same reason; this is the live half of it.
+     * We call the 4-arg cost-manager form directly to keep that control.
+     *
+     * THE PERMANENT 1-BAR OFFSET (by construction, not a defect).
+     * The backtest feeds day T's bar to the cost model and then fills at T-1's
+     * close (`backtest_coordinator.cpp:568` runs before the executions are costed),
+     * so its 20-bar window ends at T. The live runner only has bars through T-1 --
+     * asking for T would be lookahead -- so its window ends at T-1. The two cost
+     * models therefore average volumes over windows offset by one bar forever.
+     * Measured on this universe that is ~0.2-2 % of ADV and moves `vol_mult` in
+     * its third decimal; it cannot change an ADV tier except for a symbol sitting
+     * on a bucket boundary. It is the price of not looking ahead, and it is the
+     * one backtest/live cost difference that survives this fix.
+     *
+     * @param tcm    the cost manager whose ADV and volatility deques to fill
+     * @param symbols the effective universe -- iterated in this order so a stray
+     *        key in `bars_by_symbol` can never be fed
+     * @param bars_by_symbol bars per symbol; sorted by timestamp here rather than
+     *        assumed sorted, because the deques are ORDER-dependent (returns are
+     *        consecutive differences) and the sort is nine microseconds
+     * @param min_bars the count below which a symbol is reported as thin: 21 bars
+     *        is what a full 20-observation ADV and 20 real returns require
+     */
+    static CostFeedResult feed_cost_model(
+        transaction_cost::TransactionCostManager& tcm,
+        const std::vector<std::string>& symbols,
+        const std::unordered_map<std::string, std::vector<Bar>>& bars_by_symbol,
+        size_t min_bars = 21) {
+
+        CostFeedResult out;
+        for (const auto& symbol : symbols) {
+            auto it = bars_by_symbol.find(symbol);
+            if (it == bars_by_symbol.end() || it->second.empty()) {
+                out.no_bars.push_back(symbol);
+                continue;
+            }
+
+            std::vector<Bar> bars = it->second;
+            std::stable_sort(bars.begin(), bars.end(),
+                             [](const Bar& a, const Bar& b) { return a.timestamp < b.timestamp; });
+
+            // 0.0 means "no previous close": volume is recorded, the return is
+            // omitted rather than fabricated. See the note above.
+            double prev_close = 0.0;
+            for (const auto& bar : bars) {
+                const double close = static_cast<double>(bar.close);
+                tcm.update_market_data(symbol, bar.volume, close, prev_close);
+                if (prev_close > 0.0 && close > 0.0) ++out.returns_fed;
+                prev_close = close;
+                ++out.bars_fed;
+            }
+
+            ++out.symbols_fed;
+            if (bars.size() < min_bars) out.thin.push_back(symbol);
+        }
+        return out;
+    }
+
+    /**
      * @brief The symbols this run must load data for: config plus the successors
      *        of anything currently held.
      *
@@ -199,6 +300,106 @@ public:
         return universe;
     }
 
+    /**
+     * @brief The first REAL close on or after `ex_date` in an ascending close series (BA-24).
+     *
+     * A spinoff's children are read in ONE range query starting at the batch's earliest
+     * ex-date, which is right -- one indexed read instead of one per child. Selecting from
+     * the result was not: taking the first positive close in the returned series gives a
+     * child whose own ex-date is LATER than the batch's earliest a close from BEFORE its own
+     * distribution. An already-listed child (a tracking stock, a when-issued line, a second
+     * spinoff from the same parent inside one catch-up batch) would then be delivered at a
+     * pre-event price, and both its allocated basis and the realized booked on liquidation
+     * would be struck at that price. Nothing downstream could notice, because the number is
+     * a real close of the right symbol.
+     *
+     * Non-positive and non-finite closes are skipped rather than accepted: a 0 is the value
+     * the loader leaves in place when it has nothing, and pricing a distribution at 0 books
+     * the child's whole value as realized gain.
+     *
+     * @return (date used, close), or (empty, 0.0) when the series has no usable bar on or
+     *         after `ex_date` -- which the caller must treat as "refuse", never as "guess".
+     */
+    static std::pair<std::string, double> first_close_on_or_after(
+        const std::map<std::string, double>& series, const std::string& ex_date) {
+        for (auto it = series.lower_bound(ex_date); it != series.end(); ++it) {
+            if (it->second > 0.0 && std::isfinite(it->second)) return {it->first, it->second};
+        }
+        return {std::string{}, 0.0};
+    }
+
+    /** @brief What the E2-F43 feed check found. */
+    struct FeedIngestionCheck {
+        /** One entry per symbol that should have ingested a bar and did not, with the
+         *  reason spelled out ready for an ERROR line. */
+        std::vector<std::string> not_ingested;
+        size_t verified{0};   ///< symbols whose last_update IS the newest loaded bar
+        size_t no_bars{0};    ///< symbols with no bar at all in the window (not a failure here)
+    };
+
+    /**
+     * @brief Did the strategy actually ingest the bars this run loaded? (E2-F43)
+     *
+     * `PortfolioManager::process_market_data` LOGS an `on_data` error and then reads
+     * `get_target_positions()` off un-updated instrument data. For a strategy whose state
+     * starts empty every session -- which every live process is -- that yields ZERO targets
+     * for every symbol, and zero targets against a held book is a full-book SELL, not a
+     * no-op. Until E2-F28 collapsed the double feed, the removed first feed returned that
+     * error to the runner and the run exited 1; nothing checks it now.
+     *
+     * The test is exact rather than approximate because it can be: `on_data` stamps the
+     * bar's own timestamp on the instrument, so after a successful feed the strategy's
+     * `last_update` for a symbol IS the newest bar loaded for that symbol. Anything else
+     * means the feed did not happen, happened partially, or happened against a different
+     * set of bars than the one the rest of the day is priced from.
+     *
+     * A symbol with NO bars in the window is not this check's business: that is a data gap
+     * and the runner's T-1 price checks own it. It is counted, not failed, so the caller can
+     * tell "everything was verified" from "there was nothing to verify".
+     *
+     * @param universe the effective universe (config plus successors of held names)
+     * @param bars every bar loaded this run, any order
+     * @param strategy_last_update symbol -> the strategy's own last_update; a symbol ABSENT
+     *        from this map has no instrument data at all, which is itself a failure
+     */
+    static FeedIngestionCheck verify_strategy_ingested_bars(
+        const std::vector<std::string>& universe, const std::vector<Bar>& bars,
+        const std::unordered_map<std::string, Timestamp>& strategy_last_update) {
+        std::unordered_map<std::string, Timestamp> newest_bar;
+        for (const auto& bar : bars) {
+            auto it = newest_bar.find(bar.symbol);
+            if (it == newest_bar.end() || bar.timestamp > it->second) {
+                newest_bar[bar.symbol] = bar.timestamp;
+            }
+        }
+
+        FeedIngestionCheck out;
+        for (const auto& symbol : universe) {
+            auto nb = newest_bar.find(symbol);
+            if (nb == newest_bar.end()) {
+                ++out.no_bars;
+                continue;
+            }
+            auto lu = strategy_last_update.find(symbol);
+            if (lu == strategy_last_update.end()) {
+                out.not_ingested.push_back(
+                    symbol +
+                    " (no instrument data: the strategy was never initialized for a symbol "
+                    "in the effective universe)");
+                continue;
+            }
+            if (lu->second != nb->second) {
+                out.not_ingested.push_back(symbol + " (strategy last_update " +
+                                           core::format_utc_datetime(lu->second) +
+                                           ", newest loaded bar " +
+                                           core::format_utc_datetime(nb->second) + ")");
+                continue;
+            }
+            ++out.verified;
+        }
+        return out;
+    }
+
     /** What one day's execution step did, beyond the fills themselves. */
     struct ExecutionOutcome {
         std::vector<ExecutionReport> executions;
@@ -215,6 +416,15 @@ public:
          * the executions is how a log-versus-DB disagreement starts.
          */
         std::unordered_map<std::string, double> execution_prices;
+        /**
+         * B-iv: the level a rolled-back holding is carried at. A symbol with no close
+         * within the staleness bound has no entry in `execution_prices` OR `t1_closes`,
+         * so its day-T row would be marked 0 while the aggregate carries the T-1 level
+         * the rollback copied -- and the fatal in-run unrealized identity then aborts a
+         * day in which nothing was actually wrong. Overlaid onto the mark map by
+         * day_t_mark_prices so row and aggregate are computed from one level.
+         */
+        std::unordered_map<std::string, double> carried_marks;
     };
 
     /**
@@ -287,6 +497,12 @@ public:
                 prev_it->second.quantity.as_double() != 0.0) {
                 positions[symbol] = prev_it->second;
                 positions[symbol].last_update = now;
+                // B-iv: the copy above brings the T-1 row's stored unrealized -- a LEVEL --
+                // into the day-T aggregate. Carry the level's MARK too, so the row is
+                // written against the same number instead of 0. Same policy as R-2 on the
+                // finalizer side: an unprinted symbol keeps its last mark.
+                const double mark = carried_mark_from_row(prev_it->second);
+                if (mark > 0.0) outcome.carried_marks[symbol] = mark;
             } else {
                 positions.erase(symbol);
             }
@@ -379,12 +595,36 @@ public:
      */
     static std::unordered_map<std::string, double> day_t_mark_prices(
         const std::unordered_map<std::string, double>& t1_closes,
-        const std::unordered_map<std::string, double>& execution_prices) {
+        const std::unordered_map<std::string, double>& execution_prices,
+        const std::unordered_map<std::string, double>& carried_marks = {}) {
         std::unordered_map<std::string, double> marks = t1_closes;
+        // B-iv: a rolled-back holding first, so a real execution price still wins below.
+        // It did not trade, so it has no execution price; this is the only level it has.
+        for (const auto& [symbol, price] : carried_marks) {
+            if (price > 0.0) marks[symbol] = price;
+        }
         for (const auto& [symbol, price] : execution_prices) {
             if (price > 0.0) marks[symbol] = price;
         }
         return marks;
+    }
+
+    /**
+     * @brief The mark a carried row was last valued at, recovered from the row itself.
+     *
+     * B-iv. `unrealized = qty * (mark - basis)`, so `mark = basis + unrealized / qty`.
+     * Recovered from the row because a rolled-back symbol has no price series to read --
+     * that absence is why it was rolled back. Returns 0 ("no mark") when the row cannot
+     * imply one: a flat row, or one with no basis. Absent is a better answer than zero,
+     * because a zero mark books the whole notional as a gain.
+     */
+    static double carried_mark_from_row(const Position& row) {
+        const double qty = row.quantity.as_double();
+        const double basis = row.average_price.as_double();
+        if (std::abs(qty) < 1e-9 || !(basis > 0.0)) return 0.0;
+        const double mark = basis + row.unrealized_pnl.as_double() / qty;
+        if (!std::isfinite(mark) || !(mark > 0.0)) return 0.0;
+        return mark;
     }
 
     // -----------------------------------------------------------------------

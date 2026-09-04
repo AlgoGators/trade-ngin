@@ -172,6 +172,7 @@ Result<bool> CorporateActionsAuditLog::load() {
         for (const auto& r : existing.value()) {
             applied_.emplace(r.symbol, r.ex_date,
                              CorporateActionsApplier::type_from_type_string(r.action_type));
+            recorded_.push_back(r);  // F-8: keeps the basis_ratio chain
             if (r.total_cash != 0.0 || r.dividend_per_share != 0.0) {
                 DividendEvent de;
                 de.symbol = r.symbol;
@@ -308,6 +309,27 @@ bool CorporateActionsAuditLog::is_applied(const std::string& symbol,
     return applied_.find(AppliedKey{symbol, ex_date, action}) != applied_.end();
 }
 
+std::vector<broker_frame::AppliedEvent> CorporateActionsAuditLog::basis_chain(
+    const std::string& symbol) const {
+    std::vector<broker_frame::AppliedEvent> chain;
+    for (const auto& r : recorded_) {
+        if (r.symbol != symbol) continue;
+        broker_frame::AppliedEvent ev;
+        ev.symbol = r.symbol;
+        ev.ex_date = r.ex_date;
+        ev.action_type = r.action_type;
+        ev.ratio = r.basis_ratio;
+        ev.ratio_known = r.basis_ratio_known;
+        ev.dividend_per_share = r.dividend_per_share;
+        chain.push_back(std::move(ev));
+    }
+    std::sort(chain.begin(), chain.end(),
+              [](const broker_frame::AppliedEvent& a, const broker_frame::AppliedEvent& b) {
+                  return a.ex_date < b.ex_date;
+              });
+    return chain;
+}
+
 void CorporateActionsAuditLog::record(const PositionAdjustment& adj) {
     applied_.emplace(adj.symbol, adj.event_date, adj.type);
 
@@ -319,11 +341,22 @@ void CorporateActionsAuditLog::record(const PositionAdjustment& adj) {
         // E2-F23 / migration 005: the pass's own as-of date, so a later pass's
         // rows are distinguishable from an earlier pass's. Empty stores NULL.
         row.run_date = run_date_;
+        // F-8 / migration 006: the factor this event divided the basis by, so the
+        // adjusted basis can be inverted back to the broker's frame from the ledger
+        // alone -- including after the position closes, when the basis itself is gone
+        // (a closed row carries average_price = 0) and this row is the only surviving
+        // record of the chain. A TERMINATION restates no basis, so it records none:
+        // NULL reads as "no ratio here", not as a 1.0 somebody could chain through.
+        if (adj.type != CorpActionType::TERMINATION) {
+            row.basis_ratio = adj.ratio_change;
+            row.basis_ratio_known = true;
+        }
         if (adj.type == CorpActionType::DIVIDEND) {
             row.qty_held = adj.quantity_after;
             row.dividend_per_share = adj.event_value;
             row.total_cash = row.qty_held * row.dividend_per_share;
         }
+        recorded_.push_back(row);  // F-8: this run's events join the lifetime chain
         pending_.push_back(std::move(row));
     }
 

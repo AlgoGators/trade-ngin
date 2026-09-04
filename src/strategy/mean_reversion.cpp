@@ -89,6 +89,23 @@ Result<void> MeanReversionStrategy::on_data(const std::vector<Bar>& data) {
     }
 
     try {
+        // Drift-G / F-1: this map is LOCAL and is deliberately never published.
+        //
+        // BaseStrategy::on_signal() -- which the three trend strategies call -- writes
+        // `last_signals_`, and `last_signals_` has exactly one reader, `get_last_signals()`,
+        // which has no callers anywhere in the tree. Calling on_signal() here would therefore
+        // publish nothing: not to `trading.signals`, not to `backtest.signals`, not to any
+        // consumer. It would only create the impression that mean-reversion signals are
+        // recorded by the strategy, which is the impression that put `backtest.signals` on
+        // the E2 reconciliation checklist in the first place.
+        //
+        // What IS recorded, and what reconciliation reads, is the RUNNER's publication: the
+        // equity runner writes one `trading.signals` row per configured symbol per day from
+        // `get_z_score()` (live_equity_mean_reversion.cpp, `set_signals`), which is the
+        // quantity this signal is computed from. The backtest path publishes no signals at
+        // all -- there is no writer to fix -- so the checklist stops expecting them there.
+        // Pinned by SignalsPublication.* and by
+        // LiveBacktestSignalConsistency's get_last_signals() assertion.
         std::unordered_map<std::string, double> signals;
 
         for (const auto& bar : data) {

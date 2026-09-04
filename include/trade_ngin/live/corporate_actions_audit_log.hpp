@@ -8,6 +8,7 @@
 #include <memory>
 
 #include "trade_ngin/data/postgres_database.hpp"
+#include "trade_ngin/live/broker_frame.hpp"
 #include "trade_ngin/live/corporate_actions_applier.hpp"
 
 namespace trade_ngin {
@@ -203,10 +204,32 @@ public:
      */
     double total_cumulative_dividend_income() const;
 
+    /**
+     * @brief F-8 -- every recorded class-1 event for one symbol, as broker_frame input.
+     *
+     * The lifetime chain of `basis_ratio` factors (migration 006) for this
+     * portfolio/strategy/name, spanning both the rows loaded at startup and the rows
+     * recorded by THIS run, so a symbol adjusted today reports the full chain rather
+     * than only today's step. Ordered oldest ex-date first.
+     *
+     * `ratio_known` is false for a row written before migration 006. Those are the
+     * reason the chain is returned rather than a single number: one unknown factor
+     * makes the whole inversion unanswerable, and `broker_frame::raw_basis` says so.
+     *
+     * Keyed on the symbol as recorded. A holding re-keyed by a class-2 rename has its
+     * pre-rename events under the OLD ticker; the dedup check bridges that with the
+     * alias table, this accessor deliberately does not, because the reconciliation it
+     * feeds is a per-symbol statement compare and mixing two tickers into one chain
+     * would be silently wrong in the other direction. Such a chain reports fewer
+     * events, never a wrong ratio.
+     */
+    std::vector<broker_frame::AppliedEvent> basis_chain(const std::string& symbol) const;
+
     /** Test helper: clear in-memory state (does not touch disk). */
     void clear_in_memory() {
         applied_.clear();
         dividend_events_.clear();
+        recorded_.clear();
     }
 
     const std::string& state_dir() const { return state_dir_; }
@@ -263,6 +286,10 @@ private:
     std::string state_dir_;
     std::set<AppliedKey> applied_;
     std::vector<DividendEvent> dividend_events_;
+    // F-8: every applied row with its basis_ratio, loaded rows and this run's alike,
+    // so basis_chain() can answer for a symbol adjusted today. Not a dedup structure --
+    // applied_ remains the only thing is_applied() consults.
+    std::vector<PostgresDatabase::AppliedCorpActionRow> recorded_;
 
     // Set only for the DB-backed construction. When null the class behaves
     // exactly as before (file-only), which is what the unit tests exercise.

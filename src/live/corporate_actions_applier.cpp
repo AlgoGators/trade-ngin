@@ -12,6 +12,7 @@ const char* CorporateActionsApplier::type_to_string(CorpActionType t) {
         case CorpActionType::ADR_SPLIT: return "ADR_SPLIT";
         case CorpActionType::DIVIDEND:  return "DIVIDEND";
         case CorpActionType::TERMINATION: return "TERMINATION";
+        case CorpActionType::SPINOFF:   return "SPINOFF";
         case CorpActionType::UNKNOWN:   return "UNKNOWN";
     }
     return "UNKNOWN";
@@ -22,6 +23,7 @@ CorpActionType CorporateActionsApplier::type_from_type_string(const std::string&
     if (type_name == "ADR_SPLIT") return CorpActionType::ADR_SPLIT;
     if (type_name == "DIVIDEND") return CorpActionType::DIVIDEND;
     if (type_name == "TERMINATION") return CorpActionType::TERMINATION;
+    if (type_name == "SPINOFF") return CorpActionType::SPINOFF;
     return CorpActionType::UNKNOWN;
 }
 
@@ -210,6 +212,14 @@ std::vector<PositionAdjustment> CorporateActionsApplier::apply(
                 // upstream; skip it rather than apply price-restating logic to it.
                 WARN("CorporateActionsApplier: TERMINATION is a lifecycle class, not a "
                      "price-restating action -- skipping " + ev.symbol + " on " + ev.ex_date);
+                continue;
+            case CorpActionType::SPINOFF:
+                // E2-F31, same reason and a sharper edge: `value` on a spinoff is the CHILD
+                // RATIO (0.25, 0.33333), so restating a parent by it as if it were a split
+                // factor would cut the share count to a quarter. apply_spinoffs owns this.
+                WARN("CorporateActionsApplier: SPINOFF is a lifecycle class, not a "
+                     "price-restating action -- skipping " + ev.symbol + " on " + ev.ex_date +
+                     ". Its `value` is the child ratio, not a split factor.");
                 continue;
             case CorpActionType::UNKNOWN:
                 continue;  // handled above

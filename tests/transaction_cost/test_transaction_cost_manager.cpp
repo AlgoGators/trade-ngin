@@ -65,7 +65,11 @@ std::vector<Bar> synthetic_equity_bars(const std::string& symbol,
 // Expected from get_tiered_equity_config:
 //   point_value = 1.0 (per share, not per "contract")
 //   commission_per_unit = 0.005 ($0.005/share, IBKR Pro)
-//   apply_regulatory_fees = true (SEC + FINRA on sells)
+//   apply_regulatory_fees = FALSE -- E2-C3. The banner used to claim `true (SEC + FINRA on
+//     sells)`, contradicting the assertion twenty lines below it and every tier in
+//     asset_cost_config.cpp: IBKR Pro FIXED's $0.005/share is all-inclusive of exchange,
+//     clearing and regulatory fees, so charging SEC/FINRA on top double-charges. It would be
+//     true under Tiered, where those fees are passed through.
 //   baseline_spread_ticks = 1.0 (mega-cap = tight spread)
 TEST(ADVClassifierWireupTest, MegaCapSymbolGetsTier1Config) {
     TransactionCostManager::Config tcm_config;

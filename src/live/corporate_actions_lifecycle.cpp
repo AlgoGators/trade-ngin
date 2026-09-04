@@ -16,8 +16,328 @@ const char* CorporateActionsLifecycle::outcome_to_string(LifecycleOutcome o) {
         case LifecycleOutcome::RENAMED:               return "RENAMED";
         case LifecycleOutcome::SKIPPED_NO_POSITION:   return "SKIPPED_NO_POSITION";
         case LifecycleOutcome::SKIPPED_NO_PRICE:      return "SKIPPED_NO_PRICE";
+        case LifecycleOutcome::SPUN_OFF_CHILD_HELD:   return "SPUN_OFF_CHILD_HELD";
+        case LifecycleOutcome::SPUN_OFF_CHILD_SOLD:   return "SPUN_OFF_CHILD_SOLD";
+        case LifecycleOutcome::SKIPPED_NO_CHILD_PRICE: return "SKIPPED_NO_CHILD_PRICE";
     }
     return "SKIPPED_NO_POSITION";
+}
+
+SpinoffChildPolicy spinoff_child_policy_from_string(const std::string& s) {
+    // Unknown text takes the DEFAULT, not HOLD: a typo in a config file must not strand an
+    // unpriceable child position in the book (F-4). The runner logs which policy is in force.
+    if (s == "hold") return SpinoffChildPolicy::HOLD;
+    return SpinoffChildPolicy::LIQUIDATE_AT_FIRST_CLOSE;
+}
+
+const char* spinoff_child_policy_to_string(SpinoffChildPolicy p) {
+    switch (p) {
+        case SpinoffChildPolicy::HOLD: return "hold";
+        case SpinoffChildPolicy::LIQUIDATE_AT_FIRST_CLOSE: return "liquidate_at_first_close";
+    }
+    return "liquidate_at_first_close";
+}
+
+std::vector<LifecycleAdjustment> CorporateActionsLifecycle::apply_spinoffs(
+    std::unordered_map<std::string, Position>& positions,
+    const std::vector<SpinoffEvent>& events,
+    SpinoffChildPolicy policy) {
+    std::vector<LifecycleAdjustment> log;
+    log.reserve(events.size());
+
+    for (const auto& ev : events) {
+        // Names of the children as the EVENT states them, for the refusal messages: `adj`
+        // carries deliveries, and a refusal delivers nothing.
+        std::string requested;
+        for (const auto& c : ev.children) {
+            if (!requested.empty()) requested += ", ";
+            requested += c.symbol + " x" + std::to_string(c.ratio);
+        }
+
+        LifecycleAdjustment adj;
+        adj.symbol = ev.parent;
+        adj.event_date = ev.ex_date;
+        adj.vendor_label = "spinoff";
+        adj.action_class = CorpActionClass::PRICE_RESTATING;
+        adj.outcome = LifecycleOutcome::SKIPPED_NO_POSITION;
+        adj.ratio_change = ev.parent_restatement_factor;
+
+        auto it = positions.find(ev.parent);
+        if (it == positions.end()) continue;  // not held; nothing to do, nothing to log
+
+        Position& pos = it->second;
+        const double qty = pos.quantity.as_double();
+        const double basis = pos.average_price.as_double();
+        adj.quantity_before = qty;
+        adj.quantity_after = qty;          // a spinoff never changes the PARENT share count
+        adj.avg_price_before = basis;
+        adj.avg_price_after = basis;
+
+        if (std::abs(qty) < 1e-9) {
+            adj.outcome = LifecycleOutcome::SKIPPED_NO_POSITION;
+            continue;
+        }
+
+        // B-iii: a spinoff cannot be allocated off a basis the book does not have.
+        //
+        // Every basis expression below is written `basis > 0.0 ? ... : 0.0`, so a parent
+        // whose average_price is 0 produces parent_basis_after = 0 and pool_per_share = 0,
+        // hence a child basis of 0. `allocation_sane` rejects only NEGATIVE and non-finite
+        // values, and zero is neither -- so the event proceeded and, under the default
+        // liquidate_at_first_close, booked `quantity * first_close` as pure realized gain
+        // while the runner's receipt BUY (gated on child_avg_price > 0) was suppressed:
+        // a disposal in trading.executions with no matching acquisition.
+        //
+        // average_price == 0 is the shape a position is PERSISTED in when its basis could
+        // not be resolved (AVERAGE_PRICE_LIFECYCLE rule 5 and the rule-5 residual, which
+        // writes 0 with a BASIS TRACE | UNRESOLVED error). That is precisely the book a
+        // corporate action must not be applied to. Refuse it whole, the same shape as the
+        // E2-F17 provenance skip: no dedup row, so the event is retried next run once the
+        // basis is repaired rather than being silently consumed.
+        if (!(basis > 0.0)) {
+            adj.outcome = LifecycleOutcome::SKIPPED_NO_PARENT_BASIS;
+            WARN("Corp action SPINOFF " + ev.parent + " (" + ev.ex_date +
+                 "): the parent holds " + std::to_string(qty) +
+                 " shares at cost basis " + std::to_string(basis) +
+                 ", which is not a known basis. Allocating from it would give every child a "
+                 "basis of ZERO and book their entire market value as realized gain, with "
+                 "the receipt suppressed and only the disposal recorded. NOTHING is applied "
+                 "and NO dedup row is written -- repair the position's cost basis (see "
+                 "BASIS TRACE | UNRESOLVED for " + ev.parent +
+                 ") and the event will be retried on the next run.");
+            log.push_back(std::move(adj));
+            continue;
+        }
+
+        // F must be a real restatement and every r a real ratio. Neither is ever inferred
+        // from magnitude -- both arrive from named columns -- so a bad value here is a data
+        // fault, not a judgement call, and it must not be worked around.
+        //
+        // E2-F48: the test is `F > 1`, which is what this comment always said and what the
+        // arithmetic below requires; the code tested `F > 0`. A distribution takes value OUT
+        // of the parent, so the factor the price series steps by is strictly greater than 1
+        // and `1 - 1/F` -- the fraction of the basis that leaves -- is strictly positive.
+        // An F below 1 is a REVERSE SPLIT that fell on the spinoff's ex-date (DD 2019-06-03
+        // with CTVA, HLT 2017-01-04, LDOS 2013-09-30). Accepting it made `1 - 1/F` negative
+        // and handed the child a NEGATIVE cost basis, while suppressing a real split that
+        // applied correctly before this path existed. The caller decomposes the bar and
+        // sends the reverse split to class 1; this guard is the backstop.
+        const double F = ev.parent_restatement_factor;
+        bool terms_usable = (F > 1.0) && std::isfinite(F) && !ev.children.empty();
+        for (const auto& c : ev.children) {
+            if (!(c.ratio > 0.0) || !std::isfinite(c.ratio) || c.symbol.empty() ||
+                c.symbol == ev.parent) {
+                terms_usable = false;
+            }
+        }
+        if (!terms_usable) {
+            adj.outcome = LifecycleOutcome::SKIPPED_NO_CHILD_PRICE;
+            WARN("Corp action SPINOFF " + ev.parent + " -> {" + requested + "} (" +
+                 ev.ex_date + "): unusable terms (restatement factor " + std::to_string(F) +
+                 ", " + std::to_string(ev.children.size()) +
+                 " child/children) -- NOTHING applied. A distribution's factor is strictly "
+                 "greater than 1; a factor at or below 1 is a reverse split on the same "
+                 "ex-date and belongs to the class-1 path, not here (E2-F48). The parent is "
+                 "left untouched and the caller must decide which of the bar's columns the "
+                 "class-1 path still applies (E2-F31).");
+            log.push_back(std::move(adj));
+            continue;
+        }
+
+        // A child with no close cannot be delivered, sold, or marked -- and it cannot be
+        // WEIGHTED either, so a missing close on ONE child makes the allocation across all of
+        // them unknowable. Refusing whole is the only honest outcome: the alternative is to
+        // invent a price from the parent's basis, which fabricates the one number a broker
+        // statement would be compared against. (E2-F49: this was already all-or-nothing per
+        // event; with several children it is now all-or-nothing across the set.)
+        double fmv_total = 0.0;  // sum(r_i * P_i) -- the allocation denominator
+        std::string unpriceable;
+        for (const auto& c : ev.children) {
+            if (!(c.first_close > 0.0) || !std::isfinite(c.first_close)) {
+                if (!unpriceable.empty()) unpriceable += ", ";
+                unpriceable += c.symbol;
+                continue;
+            }
+            fmv_total += c.ratio * c.first_close;
+        }
+        if (!unpriceable.empty() || !(fmv_total > 0.0) || !std::isfinite(fmv_total)) {
+            adj.outcome = LifecycleOutcome::SKIPPED_NO_CHILD_PRICE;
+            WARN("Corp action SPINOFF " + ev.parent + " -> {" + requested + "} (" +
+                 ev.ex_date + "): " +
+                 (unpriceable.empty() ? std::string("the children carry no positive value")
+                                      : unpriceable + " ha(s) no close on or after the "
+                                                      "ex-date") +
+                 ", so the distribution cannot be priced, allocated, delivered or sold. "
+                 "NOTHING is applied and no dedup row is written -- the parent keeps " +
+                 std::to_string(qty) + " shares at basis " + std::to_string(basis) +
+                 ", which is a PRE-spinoff basis against a POST-spinoff price series, and "
+                 "the children are missing from the book entirely. The caller must also "
+                 "suppress the class-1 event (E2-F31). Load the child price series, or "
+                 "reconcile this position by hand.");
+            log.push_back(std::move(adj));
+            continue;
+        }
+
+        // ---- the restatement ----
+        const double parent_basis_after = basis > 0.0 ? basis / F : 0.0;
+        // The value that LEFT the parent, per parent share, spread over the children it was
+        // distributed into by relative fair market value. Exact complement of B/F, so total
+        // basis is conserved over the parent AND every child together.
+        const double pool_per_share = basis > 0.0 ? basis * (1.0 - 1.0 / F) : 0.0;
+
+        std::vector<SpinoffChildDelivery> deliveries;
+        deliveries.reserve(ev.children.size());
+        bool allocation_sane = std::isfinite(parent_basis_after) && parent_basis_after >= 0.0;
+        for (const auto& c : ev.children) {
+            SpinoffChildDelivery d;
+            d.symbol = c.symbol;
+            d.ratio = c.ratio;
+            d.first_close = c.first_close;
+            // basis_i = pool * P_i / sum(r_j P_j); with one child this is pool / r exactly.
+            d.avg_price = pool_per_share > 0.0 ? pool_per_share * c.first_close / fmv_total
+                                               : 0.0;
+            // BA-25: floor, but not through floating-point dust.
+            //
+            // `qty` is reloaded from `trading.positions.quantity`, which is numeric(20,6).
+            // A retried reverse-split spinoff therefore arrives as 33.333333 rather than the
+            // 33.33333333 the same-run path holds in memory, and 33.333333 x 1.8 is
+            // 59.9999994: floor gives 59 whole shares plus a 0.9999994 "fraction", so the
+            // holder is one share short and the book emits a cash-in-lieu SELL for very
+            // nearly a whole share that no broker ever paid. The same-run path, working from
+            // an unrounded quantity, delivers 60 and no CIL -- so the two paths disagreed
+            // about the same event because of the storage precision between them.
+            //
+            // A real fractional entitlement is nowhere near an integer (100 x 0.33333 is
+            // 33.333, a third of a share out), so rounding to the nearest share when the
+            // exact figure is within 1e-6 of one cannot swallow a genuine fraction: 1e-6 of
+            // a share is four orders of magnitude smaller than the smallest quantity the
+            // column can even represent.
+            const double exact = qty * c.ratio;
+            const double nearest = std::round(exact);
+            const bool is_whole = std::abs(exact - nearest) < 1e-6;
+            d.quantity = is_whole ? nearest : std::floor(exact);
+            // When the entitlement WAS a whole number, the remainder is zero on BOTH sides of
+            // it -- not just below. Clamping a negative to 0 covered `exact` sitting just
+            // under the integer (59.9999994) and left the mirror case standing: an `exact` of
+            // 60.0000004 rounds to 60 and then reports a 4e-7 "fraction", which becomes a
+            // cash-in-lieu SELL of four ten-millionths of a share and a realized figure to
+            // match. Dust either way, and dust that reaches trading.executions.
+            d.fractional = is_whole ? 0.0 : (exact - d.quantity);
+            d.cash_in_lieu = d.fractional * c.first_close;
+            // The fraction is sold at the child's first close against the CHILD's basis.
+            // Those shares were child shares from the instant of distribution, never parent
+            // shares.
+            d.realized_delta = d.fractional * (c.first_close - d.avg_price);
+            if (!std::isfinite(d.avg_price) || d.avg_price < 0.0) allocation_sane = false;
+            deliveries.push_back(std::move(d));
+        }
+
+        // E2-F48: never a negative basis on any side. `F > 1` above makes this unreachable --
+        // which is exactly why it is asserted rather than assumed. A negative child basis is
+        // not a small error: under liquidate_at_first_close the child's whole first close
+        // PLUS the negative basis is booked as realized gain on the parent's row, and the
+        // number is persisted into trading.positions and live_results in one step.
+        if (!allocation_sane) {
+            adj.outcome = LifecycleOutcome::SKIPPED_NO_CHILD_PRICE;
+            WARN("Corp action SPINOFF " + ev.parent + " -> {" + requested + "} (" +
+                 ev.ex_date + "): the allocation produced a negative or non-finite basis "
+                 "(parent " + std::to_string(parent_basis_after) + ", pool " +
+                 std::to_string(pool_per_share) + ") from basis " + std::to_string(basis) +
+                 ", factor " + std::to_string(F) +
+                 ". NOTHING is applied -- a negative cost basis books the child's entire "
+                 "first close, and more, as realized gain (E2-F48).");
+            log.push_back(std::move(adj));
+            continue;
+        }
+
+        if (basis > 0.0) pos.average_price = Decimal(parent_basis_after);
+        adj.avg_price_after = parent_basis_after;
+        adj.children = deliveries;
+
+        double realized_total = 0.0;
+        for (const auto& d : adj.children) realized_total += d.realized_delta;
+
+        {
+            std::string detail;
+            for (const auto& d : adj.children) {
+                if (!detail.empty()) detail += "; ";
+                detail += std::to_string(d.ratio) + " x " + d.symbol + " -> " +
+                          std::to_string(d.quantity) + " sh at basis " +
+                          std::to_string(d.avg_price) + " (first close " +
+                          std::to_string(d.first_close) + "), cash in lieu of " +
+                          std::to_string(d.fractional) + " sh = " +
+                          std::to_string(d.cash_in_lieu);
+            }
+            INFO("Corp action SPINOFF: " + ev.parent + " on " + ev.ex_date + " distributes " +
+                 std::to_string(adj.children.size()) + " child/children per share. Parent qty " +
+                 std::to_string(qty) + " unchanged, basis " + std::to_string(basis) + " -> " +
+                 std::to_string(parent_basis_after) + " (factor " + std::to_string(F) +
+                 "); " + detail + ". CIL realized " + std::to_string(realized_total) + ".");
+        }
+
+        if (policy == SpinoffChildPolicy::HOLD) {
+            adj.outcome = LifecycleOutcome::SPUN_OFF_CHILD_HELD;
+            for (const auto& d : adj.children) {
+                if (!(d.quantity > 0.0)) continue;
+                auto existing = positions.find(d.symbol);
+                if (existing == positions.end()) {
+                    Position child;
+                    child.symbol = d.symbol;
+                    child.quantity = Quantity(d.quantity);
+                    child.average_price = Decimal(d.avg_price);
+                    child.realized_pnl = Decimal(0.0);
+                    child.unrealized_pnl = Decimal(0.0);
+                    positions.emplace(d.symbol, std::move(child));
+                } else {
+                    // Already hold the child (it was in the universe and traded): merge at
+                    // weighted-average cost, the same rule a rollover into a held acquirer
+                    // uses.
+                    Position& dest = existing->second;
+                    const double q_dest = dest.quantity.as_double();
+                    const double p_dest = dest.average_price.as_double();
+                    const double q_sum = q_dest + d.quantity;
+                    if (std::abs(q_sum) > 1e-9) {
+                        dest.average_price =
+                            Decimal((q_dest * p_dest + d.quantity * d.avg_price) / q_sum);
+                    }
+                    dest.quantity = Quantity(q_sum);
+                }
+            }
+            adj.realized_delta = realized_total;
+            pos.realized_pnl = Decimal(pos.realized_pnl.as_double() + realized_total);
+            log.push_back(std::move(adj));
+            continue;
+        }
+
+        // LIQUIDATE_AT_FIRST_CLOSE. Each child is received and sold in one step, so none of
+        // them becomes an unpriceable holding the next run has to carry (F-4). The realized
+        // figure is struck against that child's own allocated basis, so a child that opened
+        // exactly at its allocated value books zero -- the distribution itself is not a P&L
+        // event.
+        adj.outcome = LifecycleOutcome::SPUN_OFF_CHILD_SOLD;
+        std::string disposal_detail;
+        for (auto& d : adj.children) {
+            const double liquidation_realized = d.quantity * (d.first_close - d.avg_price);
+            d.realized_delta += liquidation_realized;
+            realized_total += liquidation_realized;
+            if (!disposal_detail.empty()) disposal_detail += "; ";
+            disposal_detail += std::to_string(d.quantity) + " " + d.symbol + " at " +
+                               std::to_string(d.first_close) + " against basis " +
+                               std::to_string(d.avg_price) + " (realized " +
+                               std::to_string(liquidation_realized) + ")";
+        }
+        adj.realized_delta = realized_total;
+        pos.realized_pnl = Decimal(pos.realized_pnl.as_double() + realized_total);
+
+        INFO("Corp action SPINOFF child disposal: sold " + disposal_detail +
+             "; policy=liquidate_at_first_close, so no unpriceable child is left in the "
+             "book. Total realized booked on " + ev.parent + " for this event: " +
+             std::to_string(adj.realized_delta) + ".");
+
+        log.push_back(std::move(adj));
+    }
+
+    return log;
 }
 
 CorporateActionsLifecycle::RenameMap CorporateActionsLifecycle::build_rename_map(

@@ -153,6 +153,17 @@ public:
     }
 
     /**
+     * @brief How many years the loaded calendar actually covers.
+     *
+     * `coverage_description()` prints the FIRST and LAST year, which reads as a range and is
+     * not one: a file that lost its middle years advertises "2020-2030" while covering two.
+     * The count is the only figure that distinguishes them, and callers that refuse to run on
+     * a partial load (the three live runners, BA-1) need it in their own log line rather than
+     * in a string a human has to read.
+     */
+    size_t coverage_years() const { return covered_years_.size(); }
+
+    /**
      * @brief Human-readable coverage range for error messages.
      */
     std::string coverage_description() const {

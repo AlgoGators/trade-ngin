@@ -204,7 +204,8 @@ Result<void> PostgresDatabase::store_backtest_equity_curve_batch(
 Result<void> PostgresDatabase::store_backtest_positions(const std::vector<Position>& positions,
                                                         const std::string& run_id,
                                                         const std::string& portfolio_id,
-                                                        const std::string& table_name) {
+                                                        const std::string& table_name,
+                                                        bool keep_closed_rows) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     // Validate connection
@@ -284,9 +285,16 @@ Result<void> PostgresDatabase::store_backtest_positions(const std::vector<Positi
         std::vector<std::string> position_values;
 
         for (const auto& pos : positions) {
-            // Skip zero positions
+            // Skip zero positions. E2-F54: a cash book passes keep_closed_rows so that a
+            // position closed to zero keeps the row carrying that bar's realized flow --
+            // dropping it strands the exit's P&L. The rule is the live one
+            // (LiveDailyCycle::is_dead_row): dead means no quantity AND no realized.
+            // Futures leave the flag false and keep the original unconditional filter.
             if (std::abs(static_cast<double>(pos.quantity)) < 1e-10) {
-                continue;
+                if (!keep_closed_rows ||
+                    std::abs(static_cast<double>(pos.realized_pnl)) < 1e-10) {
+                    continue;
+                }
             }
 
             // Extract date from last_update timestamp

@@ -3,6 +3,7 @@
 
 #include <ctime>
 #include <string>
+#include <vector>
 #include <unordered_map>
 
 namespace trade_ngin {
@@ -37,8 +38,17 @@ struct FeedFreshness {
     std::string stalest_symbol;
     /// Calendar days from `stalest_date` to the as-of date. 0 when !any_data.
     long days_behind{0};
-    /// How many symbols were assessed.
+    /// How many symbols were assessed. B-ii: this is the size of the REQUESTED
+    /// universe when one is supplied, not the number that answered.
     std::size_t symbols{0};
+    /// B-ii: requested symbols with no bar at all. A symbol that never printed
+    /// cannot set `stalest_date` -- it is not "a few days behind", it is absent,
+    /// which is a different and worse condition. Counted separately so the
+    /// threshold policy on `days_behind` is unchanged.
+    std::size_t absent{0};
+    /// First absent symbol in sort order, so the report is deterministic. Empty
+    /// when `absent == 0`.
+    std::string absent_symbol;
 };
 
 /// Parse YYYY-MM-DD as a UTC instant; 0 on malformed input. Kept local so this
@@ -85,6 +95,12 @@ inline long calendar_days_between_utc(const std::string& from_ymd, const std::st
  * @param last_bar_date symbol -> newest loaded bar, YYYY-MM-DD (the map the
  *        runner already builds for the corp-action horizon gate).
  * @param as_of_ymd     the run's end date, YYYY-MM-DD.
+ * @param requested     B-ii: the universe the run ASKED for. `last_bar_date` only
+ *        contains symbols that returned rows, so a name with zero bars is invisible
+ *        to a check driven by that map -- it cannot be the minimum and cannot set
+ *        the bound, and the guard reports "stalest of 9" on a ten-name book while
+ *        the tenth reaches day T unpriced. Pass the universe and absence is seen.
+ *        Empty preserves the original behaviour for callers that have no universe.
  *
  * Symbols whose date will not parse are counted but cannot set the bound; a map
  * consisting only of such entries reports `any_data = false`, because nothing in
@@ -92,9 +108,18 @@ inline long calendar_days_between_utc(const std::string& from_ymd, const std::st
  */
 inline FeedFreshness assess_feed_freshness(
     const std::unordered_map<std::string, std::string>& last_bar_date,
-    const std::string& as_of_ymd) {
+    const std::string& as_of_ymd,
+    const std::vector<std::string>& requested = {}) {
     FeedFreshness f;
-    f.symbols = last_bar_date.size();
+    f.symbols = requested.empty() ? last_bar_date.size() : requested.size();
+
+    // B-ii: absence first, and named deterministically.
+    for (const auto& symbol : requested) {
+        auto it = last_bar_date.find(symbol);
+        if (it != last_bar_date.end() && freshness_parse_ymd_utc(it->second) > 0) continue;
+        ++f.absent;
+        if (f.absent_symbol.empty() || symbol < f.absent_symbol) f.absent_symbol = symbol;
+    }
 
     for (const auto& [symbol, ymd] : last_bar_date) {
         if (freshness_parse_ymd_utc(ymd) <= 0) continue;

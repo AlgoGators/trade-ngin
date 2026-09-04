@@ -2799,6 +2799,7 @@ PostgresDatabase::get_current_holding_start_dates(const std::string& strategy_id
                                                   const std::string& strategy_name,
                                                   const std::string& portfolio_id,
                                                   const std::vector<std::string>& symbols,
+                                                  const std::string& on_or_before,
                                                   const std::string& table_name) {
     using Map = std::unordered_map<std::string, std::string>;
 
@@ -2823,20 +2824,32 @@ PostgresDatabase::get_current_holding_start_dates(const std::string& strategy_id
         // Deliberately NOT the same question as get_position_inception_dates. That one
         // fails wide for the class-1 price window; this one is the class-2 rename era
         // and must fail narrow (BA-2).
+        //
+        // BA-19: `on_or_before` bounds BOTH halves. The outer scan must not take a future
+        // non-zero row as the start of the current holding, and the flat-row subquery must
+        // not take a future flat row as the break -- a stray row dated after the replay date
+        // would otherwise push the break past every real row and drop the symbol from the
+        // map, skipping its rename in silence. An empty bound leaves both halves as they
+        // were: `$5::date IS NULL` short-circuits each predicate.
+        const bool bounded = !on_or_before.empty();
         auto result = txn.exec(
             "SELECT symbol, min(date)::text AS holding_start "
             "FROM " + table_name + " p "
                 " WHERE strategy_id = $1 AND strategy_name = $2 AND portfolio_id = $3 "
                 "  AND symbol = ANY($4) AND quantity <> 0 "
+                "  AND ($5::date IS NULL OR date <= $5::date) "
                 "  AND date > COALESCE(("
                 "        SELECT max(z.date) FROM " + table_name + " z "
                 "         WHERE z.strategy_id = p.strategy_id "
                 "           AND z.strategy_name = p.strategy_name "
                 "           AND z.portfolio_id = p.portfolio_id "
-                "           AND z.symbol = p.symbol AND z.quantity = 0), "
+                "           AND z.symbol = p.symbol AND z.quantity = 0 "
+                "           AND ($5::date IS NULL OR z.date <= $5::date)), "
                 "      DATE '1900-01-01') "
                 "GROUP BY symbol",
-            pqxx::params{strategy_id, strategy_name, portfolio_id, symbols});
+            pqxx::params{strategy_id, strategy_name, portfolio_id, symbols,
+                         bounded ? std::optional<std::string>(on_or_before)
+                                 : std::optional<std::string>{}});
 
         Map out;
         for (const auto& row : result) {
@@ -2977,7 +2990,13 @@ PostgresDatabase::load_applied_corp_actions(const std::string& portfolio_id,
             // E2-F23 / migration 005. Empty string for a legacy row, which the
             // caller reads as "unknown" and accepts -- refusing every row written
             // before the column existed would make the next run unstartable.
-            "COALESCE(run_date::text, '') AS run_date "
+            "COALESCE(run_date::text, '') AS run_date, "
+            // F-8 / migration 006. NULL means the ratio was never recorded, which
+            // is NOT the same as "the event moved no basis" -- the two are
+            // separated here rather than collapsed into a 1.0 the caller cannot
+            // tell from a real one.
+            "basis_ratio IS NOT NULL AS basis_ratio_known, "
+            "COALESCE(basis_ratio, 1) AS basis_ratio "
             "FROM trading.corp_action_applied "
             "WHERE portfolio_id = $1 AND strategy_id = $2 AND strategy_name = $3",
             portfolio_id, strategy_id, strategy_name);
@@ -2993,6 +3012,8 @@ PostgresDatabase::load_applied_corp_actions(const std::string& portfolio_id,
             r.dividend_per_share = row["dividend_per_share"].as<double>();
             r.total_cash = row["total_cash"].as<double>();
             r.run_date = row["run_date"].c_str();
+            r.basis_ratio_known = row["basis_ratio_known"].as<bool>();
+            r.basis_ratio = row["basis_ratio"].as<double>();
             out.push_back(std::move(r));
         }
 
@@ -3069,13 +3090,19 @@ Result<void> PostgresDatabase::store_applied_corp_actions_in(
             txn.exec_params(
                 "INSERT INTO trading.corp_action_applied "
                 "(portfolio_id, strategy_id, strategy_name, symbol, action_type, "
-                " ex_date, qty_held, dividend_per_share, total_cash, run_date) "
+                " ex_date, qty_held, dividend_per_share, total_cash, run_date, "
+                " basis_ratio) "
                 "VALUES ($1, $2, $3, $4, $5, $6::date, $7, $8, $9, "
-                "        NULLIF($10, '')::date) "
+                "        NULLIF($10, '')::date, $11) "
                 "ON CONFLICT (portfolio_id, strategy_id, strategy_name, symbol, "
                 "             action_type, ex_date) DO NOTHING",
                 portfolio_id, strategy_id, strategy_name, r.symbol, r.action_type,
-                r.ex_date, r.qty_held, r.dividend_per_share, r.total_cash, r.run_date);
+                r.ex_date, r.qty_held, r.dividend_per_share, r.total_cash, r.run_date,
+                // F-8 / migration 006: NULL when the caller had no ratio to record
+                // (a TERMINATION restates nothing), so an absent ratio stays
+                // honestly absent rather than becoming an identity factor.
+                r.basis_ratio_known ? std::optional<double>(r.basis_ratio)
+                                    : std::optional<double>());
         }
         return Result<void>();
 

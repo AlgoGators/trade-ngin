@@ -104,6 +104,12 @@ TEST_F(DenominatorRangeDbTest, AdjustedAndRawClosesDivergeOnRealStackedEvents) {
         "SELECT a.symbol, a.time::date::text, a.close, a.adjusted_close, a.div_cash "
         "FROM equities_data.ohlcv_1d a "
         "WHERE a.div_cash > 0 AND a.close > 0 AND a.adjusted_close > 0 "
+        // The premise is a row whose adjusted close already DIFFERS from its raw close
+        // (a later split or dividend has restated it). Without this predicate the
+        // time-descending locator drifts with the calendar and, as of 2026-09-04, picked
+        // APH 2026-06-23 where adjusted_close == close, failing the test on a row that
+        // never carried the stacked shape (D-4-FIX F-2).
+        "  AND a.adjusted_close <> a.close "
         // Bounded so the scan stays quick; stacked pairs are common in recent history.
         "  AND a.time > now() - interval '2 years' "
         "  AND EXISTS (SELECT 1 FROM equities_data.ohlcv_1d b "

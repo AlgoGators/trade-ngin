@@ -241,8 +241,10 @@ public:
 
     // ========== Convenience Methods ==========
 
-    // Note: load_commissions_by_symbol was deleted - dead code wrapper around the
-    // deleted LiveDataLoader equivalent. See LiveDataLoader header for rationale.
+    // Note: this coordinator's load_commissions_by_symbol wrapper was deleted as dead code.
+    // LiveDataLoader::load_commissions_by_symbol itself was NOT deleted -- it is live and
+    // called by the equity runner every session (drift-D: the previous wording said "the
+    // deleted LiveDataLoader equivalent", which is false).
 
     /**
      * @brief Load positions for export

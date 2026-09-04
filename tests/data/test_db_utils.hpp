@@ -312,8 +312,10 @@ public:
     Result<void> store_backtest_positions(
         const std::vector<Position>& positions, const std::string& run_id,
         const std::string& portfolio_id = "BASE_PORTFOLIO",
-        const std::string& table_name = "backtest.final_positions") override {
+        const std::string& table_name = "backtest.final_positions",
+        bool keep_closed_rows = false) override {
         (void)positions; (void)run_id; (void)portfolio_id; (void)table_name;
+        (void)keep_closed_rows;
         return record_call("store_backtest_positions");
     }
 

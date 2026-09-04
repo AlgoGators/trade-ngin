@@ -1,5 +1,7 @@
 #pragma once
 
+#include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace trade_ngin {
@@ -74,6 +76,35 @@ private:
                                                           double target = 0.0);
     static double calculate_max_drawdown_from_equity(const std::vector<double>& equity_values);
 };
+
+/**
+ * @brief The since-inception block as `trading.live_results` columns (E2-F33).
+ *
+ * One definition of "which columns ARE the historical-metrics block", so the two sites that
+ * write it -- the Day T-1 UPDATE and the day-T INSERT -- cannot drift apart and drop a
+ * column on one path only. Fifteen columns in total, every one of which was NULL on every
+ * equity row before E2-F33.
+ *
+ * `volatility` IS one of them (D3, 2026-09-03). It was held out when the block first landed
+ * because the equity runner wrote `portfolio_var x 100` -- the ex-ante instrument-mix sigma --
+ * into that column and the chain gate compared it, so filling in NULLs must not have moved it.
+ * The lead then ruled the two books may not carry two meanings in one column: both futures
+ * runners store the REALISED annualised return volatility here and keep the ex-ante sigma in
+ * `portfolio_var`, and equities now do the same. It also makes `sharpe_ratio` reproducible
+ * from the row it is written on -- `sharpe = total_annualized_return / volatility` -- which it
+ * was not while the denominator lived nowhere.
+ *
+ * `portfolio_var`, `var_95` and `cvar_95` are untouched: the ex-ante sigma still feeds the risk
+ * gate and nothing is lost.
+ *
+ * `total_trades` and `flat_days` are absent because `trading.live_results` has no such
+ * columns; flat_days is `total_days - winning_days - losing_days` on read.
+ */
+std::unordered_map<std::string, double> historical_metrics_double_columns(
+    const HistoricalMetrics& m);
+
+/** @brief The integer half of the same block: winning_days, losing_days, total_days. */
+std::unordered_map<std::string, int> historical_metrics_int_columns(const HistoricalMetrics& m);
 
 }  // namespace trade_ngin
 

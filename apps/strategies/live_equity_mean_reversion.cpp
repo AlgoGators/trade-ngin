@@ -26,6 +26,7 @@
 #include "trade_ngin/live/data_freshness.hpp"
 #include "trade_ngin/live/corp_action_feed_status.hpp"
 #include "trade_ngin/live/trading_days_anchor.hpp"
+#include "trade_ngin/live/broker_frame.hpp"
 #include "trade_ngin/live/corporate_actions_audit_log.hpp"
 #include "trade_ngin/live/live_daily_cycle.hpp"
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
@@ -35,6 +36,7 @@
 #include "trade_ngin/storage/live_results_manager.hpp"
 #include "trade_ngin/live/live_data_loader.hpp"
 #include "trade_ngin/live/live_metrics_calculator.hpp"
+#include "trade_ngin/live/live_historical_metrics.hpp"
 #include "trade_ngin/live/live_trading_coordinator.hpp"
 #include "trade_ngin/live/live_price_manager.hpp"
 #include "trade_ngin/live/execution_price_resolver.hpp"
@@ -121,6 +123,17 @@ int main(int argc, char* argv[]) {
         logger_config.min_level = LogLevel::INFO;
         logger_config.destination = LogDestination::BOTH;
         logger_config.log_directory = "logs";
+        // drift-F: a REPLAY keeps its logs under the date it replayed.
+        //
+        // Retention is 10 files per prefix per directory. A 126-day chain therefore left
+        // eight logs behind and evicted the other 118 -- including every dividend-applying
+        // run and the holiday case, which are exactly the days E2's log-vs-DB reconciliation
+        // needs to read afterwards. A real-time run keeps the flat `logs/` path it always
+        // had (empty subdirectory); a dated run gets `logs/<YYYY-MM-DD>/`, so each replayed
+        // date has its own budget and no date can evict another.
+        if (use_override_date) {
+            logger_config.log_subdirectory = core::format_utc_date(target_date);
+        }
         logger_config.filename_prefix = "live_equity_mr";
         logger.initialize(logger_config);
 
@@ -338,6 +351,23 @@ int main(int argc, char* argv[]) {
         }
         auto previous_date = *prev_day_opt;
 
+        // drift-F: say which day was resolved, out loud, once.
+        //
+        // Everything the day depends on hangs off this one value -- which book is loaded,
+        // which close finalizes it, which frame the corp-action gates compare against -- and
+        // until now it was only inferable from downstream lines. E2-F45 was a wrong answer
+        // here that survived a full chain because nothing printed it: `find_previous_trading_day`
+        // tested each candidate in local time and returned the UTC one, so every Monday,
+        // Tuesday, Saturday and post-holiday run silently finalized against a closed day.
+        INFO("Resolved previous trading day = " + core::format_utc_date(previous_date) +
+             " for run date " + core::format_utc_date(now) +
+             " (calendar covers " + std::to_string(holiday_checker.coverage_years()) +
+             " year(s); walked back " +
+             std::to_string(static_cast<long long>(
+                 std::chrono::duration_cast<std::chrono::hours>(now - previous_date).count() /
+                 24)) +
+             " calendar day(s))");
+
         // ========================================
         // EFFECTIVE UNIVERSE (E2-F34 / F-4) -- finalized AFTER the book is known
         // ========================================
@@ -401,8 +431,12 @@ int main(int argc, char* argv[]) {
                 // alias from the previous issuer's lifetime and gets re-keyed onto a
                 // symbol with no bars. Measured on this book on 2026-09-03: META's
                 // lifetime inception is 2026-06-11, its current holding began 2026-07-31.
+                // BA-19: bounded at the run's own T-1. Rows dated after it can only come
+                // from an interrupted reset or an abandoned replay, and either shape moves
+                // the rename era silently -- see the header.
                 auto holding_start = db->get_current_holding_start_dates(
-                    kEquityStrategyId, kEquityStrategyName, portfolio_id, held_syms);
+                    kEquityStrategyId, kEquityStrategyName, portfolio_id, held_syms,
+                    core::format_utc_date(previous_date));
                 if (holding_start.is_error()) {
                     WARN("Could not read current-holding start dates (" +
                          std::string(holding_start.error()->what()) +
@@ -844,7 +878,29 @@ int main(int argc, char* argv[]) {
             const int tolerance_days = app_config.live.data_staleness_tolerance_days;
             const std::string as_of_ymd =
                 format_ymd_utc(std::chrono::system_clock::to_time_t(end_date));
-            const auto freshness = assess_feed_freshness(last_bar_date, as_of_ymd);
+            // B-ii: hand the guard the universe we ASKED for. `last_bar_date` is built
+            // from the bars that came back, so a symbol with zero rows is invisible to a
+            // check driven by that map alone -- it cannot be the stalest and the run
+            // reports "stalest of 9" on a ten-name book while the tenth reaches day T
+            // unpriced and is carried unpriceable (E2-F34).
+            const auto freshness = assess_feed_freshness(last_bar_date, as_of_ymd, symbols);
+
+            if (freshness.absent > 0) {
+                // Absence is not "a few days behind" -- there is no date to measure. It is
+                // reported on its own terms and treated as stale regardless of tolerance.
+                const std::string msg =
+                    "Equity feed is missing " + std::to_string(freshness.absent) + " of " +
+                    std::to_string(freshness.symbols) +
+                    " requested symbol(s) entirely, first: " + freshness.absent_symbol +
+                    " (no bar of any date as of " + as_of_ymd + ").";
+                if (use_override_date) {
+                    WARN(msg + " Proceeding in historical-replay mode.");
+                } else {
+                    ERROR(msg + " Refusing to run live with an incomplete universe. "
+                                "Refresh the OHLCV feed or remove the symbol from config.");
+                    return 1;
+                }
+            }
 
             if (!freshness.any_data) {
                 // No symbol has a usable bar date. Maximally stale, never neutral.
@@ -903,13 +959,60 @@ int main(int argc, char* argv[]) {
         // ADV per symbol from the bars we just loaded. Closes audit §1.1:
         // before this, unconfigured equities fell through to the futures
         // default ($1.50/share commission, point_value=100).
+        //
+        // E2-F62: registering the tier is only half of what the cost model needs. The
+        // tier supplies the spread ticks and the impact caps; the ADV the impact model
+        // DIVIDES BY, and the volatility that widens the spread, live in two separate
+        // deques that only update_market_data fills. This runner never called it -- the
+        // only runner in the tree that did not -- so every live equity fill was priced
+        // against transaction_cost_manager.cpp's fallbacks (adv = 100000 at :33,
+        // vol_mult = 1.0 at :37) instead of the symbol's real ~5.4 M ADV: participation
+        // 54x too high, the 40 bps impact bucket where the truth is 10, spread never
+        // widened by realised vol. Measured on the 2026-04-01..21 window before this
+        // fix, that is +8.6 % of transaction cost against what the backtest predicts
+        // (5.947 bps vs 5.477 bps of identical notional, D-4 6.7), and it grows with
+        // clip size because the error is in the participation rate.
+        //
+        // Fed from the SAME bars the tier is registered from, so the ADV that picks the
+        // tier and the ADV that scales the impact are the same twenty observations
+        // rather than two independent guesses. The permanent 1-bar window offset
+        // against the backtest, and why the first bar passes prev_close = 0.0 rather
+        // than its own close, are documented on LiveDailyCycle::feed_cost_model.
         {
             std::unordered_map<std::string, std::vector<trade_ngin::Bar>> bars_by_symbol;
             for (const auto& bar : all_bars) {
                 bars_by_symbol[bar.symbol].push_back(bar);
             }
-            execution_manager->get_transaction_cost_manager()
-                .register_equity_costs_from_bars(symbols, bars_by_symbol);
+            auto& tcm = execution_manager->get_transaction_cost_manager();
+            tcm.register_equity_costs_from_bars(symbols, bars_by_symbol);
+
+            const auto feed = LiveDailyCycle::feed_cost_model(tcm, symbols, bars_by_symbol);
+            INFO("Cost model fed: " + std::to_string(feed.bars_fed) + " bar(s) and " +
+                 std::to_string(feed.returns_fed) + " log return(s) across " +
+                 std::to_string(feed.symbols_fed) + " symbol(s) (E2-F62); ADV and "
+                 "volatility now measured, not the adv=100000 fallback");
+            if (!feed.no_bars.empty()) {
+                std::string joined;
+                for (size_t i = 0; i < feed.no_bars.size(); ++i) {
+                    if (i) joined += ", ";
+                    joined += feed.no_bars[i];
+                }
+                WARN("Cost model has NO bars for " + joined +
+                     " -- a fill in one of these would still be priced off the "
+                     "adv=100000 fallback. These are the same symbols the T-1 price "
+                     "checks below report; nothing can trade without a price anyway.");
+            }
+            if (!feed.thin.empty()) {
+                std::string joined;
+                for (size_t i = 0; i < feed.thin.size(); ++i) {
+                    if (i) joined += ", ";
+                    joined += feed.thin[i];
+                }
+                WARN("Cost model has fewer than 21 bars for " + joined +
+                     " -- its ADV averages fewer than the full 20 observations and its "
+                     "volatility multiplier fewer than 20 returns. Measured, but on a "
+                     "short window.");
+            }
         }
 
 
@@ -1670,6 +1773,467 @@ int main(int argc, char* argv[]) {
                     }
                 }
 
+                // ================= E2-F31: which of these rows are really SPINOFFS =========
+                //
+                // A spinoff arrives in the per-bar columns wearing somebody else's clothes.
+                // Tiingo puts the parent's price step in `split_factor` (FTV 2025-06-30 =
+                // 1.327), or in `div_cash` (MMM 2024-04-01 = 17.3875), or nowhere at all
+                // (LEN 2025-02-07). Read as what it looks like, the first mints 32.7 phantom
+                // FTV shares and the second books $1,738.75 of income that never arrived --
+                // and in every case the CHILD, the entire point of the event, is never
+                // created.
+                //
+                // The only trustworthy statement that a row IS a spinoff, and of how many
+                // child shares it pays, is the `spinoff` row in
+                // equities_data.corporate_action -- ticker = parent, contraticker = child,
+                // value = child shares per parent share. Verified 5/5 against the real
+                // distributions (GE/GEV 0.25, WDC/SNDK 0.33333, FTV/RAL 0.33333, LEN/MRP 0.5,
+                // MMM/SOLV 0.25). NEVER inferred from the magnitude of the step: that is
+                // exactly the provenance rule E2-F9 exists to enforce, and a 1.327 split
+                // factor is perfectly plausible as a real split.
+                //
+                // This table is frozen after 2025-08-29, so a spinoff AFTER that date is not
+                // detectable at all and still takes the mangling path. That is data-blocked,
+                // not code-blocked, and the tripwire for it is E2-F41's class-1-row check.
+                //
+                // E2-F49: a VECTOR per key, not a scalar. Fifteen (parent, ex-date) pairs in
+                // this table carry more than one `spinoff` row -- RTX 2020-04-03 delivers
+                // OTIS 0.5 AND CARR 1.0, HLT 2017-01-04 delivers PK 0.6 AND HGV 0.33333 --
+                // and a map to one (child, ratio) let the last row read overwrite every
+                // earlier one, so one arbitrary child was delivered and the rest were never
+                // created at all.
+                std::map<std::pair<std::string, std::string>,
+                         std::vector<std::pair<std::string, double>>>
+                    spinoff_terms;
+                {
+                    auto spin = db->get_corporate_actions(symbols, std::string(start_buf),
+                                                          std::string(today_buf), {"spinoff"});
+                    if (spin.is_error()) {
+                        // Fail LOUD and fail CLOSED downstream: without the terms every
+                        // spinoff in the window is indistinguishable from a split, and the
+                        // per-bar row would be applied as one.
+                        ERROR("Could not read spinoff deal terms (" +
+                              std::string(spin.error()->what()) +
+                              ") -- any spinoff in this window will be MISREAD as a split or a "
+                              "dividend by the class-1 applier (E2-F31). Refusing to apply "
+                              "corporate actions this run; re-run once the database is "
+                              "reachable.");
+                        return 1;
+                    }
+                    for (const auto& row : spin.value()) {
+                        if (row.contra_ticker.empty() || row.contra_ticker == "N/A") continue;
+                        if (row.contra_ticker == row.ticker) continue;
+                        if (!(row.value > 0.0) || !std::isfinite(row.value)) continue;
+                        auto& terms = spinoff_terms[{row.ticker, row.date_str}];
+                        // Guard the feed against a duplicate row for the same child; the
+                        // ratio is the vendor's and the first one read stands.
+                        bool already = false;
+                        for (const auto& t : terms) {
+                            if (t.first == row.contra_ticker) already = true;
+                        }
+                        if (!already) terms.emplace_back(row.contra_ticker, row.value);
+                    }
+                    if (!spinoff_terms.empty()) {
+                        size_t child_rows = 0;
+                        for (const auto& [key, terms] : spinoff_terms)
+                            child_rows += terms.size();
+                        INFO("Spinoff deal terms in window: " +
+                             std::to_string(spinoff_terms.size()) +
+                             " (parent, ex-date) pair(s) carrying " +
+                             std::to_string(child_rows) + " child ratio(s)");
+                        for (const auto& [key, terms] : spinoff_terms) {
+                            if (terms.size() < 2) continue;
+                            std::string joined;
+                            for (const auto& t : terms) {
+                                if (!joined.empty()) joined += ", ";
+                                joined += t.first + " x" + std::to_string(t.second);
+                            }
+                            INFO("Spinoff deal terms | " + key.first + " on " + key.second +
+                                 " delivers " + std::to_string(terms.size()) +
+                                 " children: " + joined + " (E2-F49)");
+                        }
+                    }
+                }
+
+                // ---- E2-F41: a class-1 deal-terms row the per-bar feed does not carry ----
+                //
+                // Class-1 effects are sourced PER BAR: everything in this block reads
+                // ohlcv_1d.split_factor and ohlcv_1d.div_cash, never corporate_action.value.
+                // So a class-1 row in the deal-terms feed whose ex-date bar is FLAT is applied
+                // by nothing at all -- no error, no WARN, no dedup row, no deferral -- and the
+                // position carries an unrestated cost basis across a real event forever.
+                //
+                // LEN 2025-02-07 is the proven instance: `spinoff` MRP 0.5 and
+                // `spinoffdividend` 11.495 in corporate_action, while the LEN bar for that day
+                // says split_factor 1 and div_cash 0 and the close fell 127.25 -> 121.94.
+                // Universe-wide since 2020 the class is 99 rows -- 87 dividends, 5 spinoff +
+                // 5 spinoffdividend pairs, 1 adrratiosplit and 1 split -- and the ten-symbol
+                // book hides every one of them. Nothing here CHANGES: the applier still has no
+                // input to act on. What changes is that the run says so.
+                //
+                // Scoped to symbols actually HELD, over the same window the per-bar fetch
+                // used, so it costs one indexed read and can only speak about positions this
+                // book carries.
+                if (!previous_positions.empty()) {
+                    std::vector<std::string> held_syms_for_terms;
+                    for (const auto& [sym, pos] : previous_positions) {
+                        if (std::abs(pos.quantity.as_double()) > 1e-9)
+                            held_syms_for_terms.push_back(sym);
+                    }
+                    if (!held_syms_for_terms.empty()) {
+                        std::sort(held_syms_for_terms.begin(), held_syms_for_terms.end());
+                        auto class1_terms = db->get_corporate_actions(
+                            held_syms_for_terms, std::string(start_buf), std::string(today_buf),
+                            vendor_labels_for_class(CorpActionClass::PRICE_RESTATING));
+                        if (class1_terms.is_error()) {
+                            WARN("Could not cross-check the class-1 deal-terms feed against the "
+                                 "per-bar feed (" + std::string(class1_terms.error()->what()) +
+                                 ") -- a corporate action the bars do not carry would go "
+                                 "unannounced this run (E2-F41).");
+                        } else {
+                            // Every (ticker, ex-date) the PER-BAR feed produced a row for.
+                            std::set<std::pair<std::string, std::string>> per_bar_keys;
+                            for (const auto& r : rows) {
+                                per_bar_keys.insert({r.ticker, r.date_str});
+                            }
+                            // The decision -- which rows the bars do not carry -- lives in
+                            // class1_rows_the_bars_do_not_carry() so it can be asserted. A
+                            // WARN emitted inside this loop could not be, and the pin this
+                            // announcement shipped with passed with the whole block reverted
+                            // (C-5 §9-A1).
+                            std::vector<std::pair<std::string, std::string>> terms_keys;
+                            terms_keys.reserve(class1_terms.value().size());
+                            for (const auto& t : class1_terms.value()) {
+                                terms_keys.push_back({t.ticker, t.date_str});
+                            }
+                            const auto silent_keys =
+                                class1_rows_the_bars_do_not_carry(terms_keys, per_bar_keys);
+                            const std::set<std::pair<std::string, std::string>> silent_set(
+                                silent_keys.begin(), silent_keys.end());
+                            const size_t silent = silent_keys.size();
+                            for (const auto& t : class1_terms.value()) {
+                                if (!silent_set.count({t.ticker, t.date_str})) continue;
+                                WARN("Class-1 corporate action NOT VISIBLE to the applier: " +
+                                     t.ticker + " " + t.date_str + " " + t.action +
+                                     " (value " + std::to_string(t.value) +
+                                     (t.contra_ticker.empty() || t.contra_ticker == "N/A"
+                                          ? std::string()
+                                          : ", contra " + t.contra_ticker) +
+                                     "). The deal-terms feed has this event; the ex-date bar "
+                                     "carries split_factor 1 and div_cash 0, so the per-bar "
+                                     "applier -- the only thing that restates a class-1 basis "
+                                     "-- has no input and does nothing. " + t.ticker +
+                                     " keeps a PRE-event cost basis against a post-event price "
+                                     "series and no dedup row records the gap. This is a DATA "
+                                     "gap, not a code one: reconcile the position by hand or "
+                                     "fix the bar (E2-F41).");
+                            }
+                            if (silent == 0) {
+                                INFO("Class-1 deal-terms cross-check: " +
+                                     std::to_string(class1_terms.value().size()) +
+                                     " row(s) in the window for held symbols, all visible to "
+                                     "the per-bar applier (E2-F41)");
+                            }
+                        }
+                    }
+                }
+
+                // The child's first REAL close on or after the ex-date. It prices the cash in
+                // lieu of the fractional share and, under liquidate_at_first_close, the whole
+                // child position. One read for every child we might receive.
+                //
+                // Both real 2025 children in this database (RAL, MRP) have ZERO rows in
+                // equities_data.ohlcv_1d, so this map is legitimately empty for them and the
+                // handler refuses the event rather than guessing a price.
+                //
+                // BA-24: keyed on (CHILD, ITS OWN EX-DATE), not on the child alone.
+                //
+                // The read is one range starting at the batch's earliest ex-date, which is
+                // right -- one indexed query instead of one per child. Selecting from it was
+                // not: taking the first positive close in the returned series gives a child
+                // whose own ex-date is LATER than the batch's earliest a close from before
+                // its own distribution. An already-listed child (a tracking stock, a
+                // when-issued line, a second spinoff from the same parent in one catch-up
+                // batch) would then be delivered at a price that predates the event, and the
+                // basis allocated to it -- and the realized booked when it is liquidated --
+                // would both be struck at that price. Nothing downstream could notice: the
+                // number is a real close of the right symbol.
+                std::map<std::pair<std::string, std::string>, std::pair<std::string, double>>
+                    child_first_close;  // (child, ex_date) -> (date used, close)
+                {
+                    std::vector<std::string> children;
+                    std::set<std::pair<std::string, std::string>> child_ex_dates;
+                    std::string earliest_ex;
+                    for (const auto& row : rows) {
+                        auto sp = spinoff_terms.find({row.ticker, row.date_str});
+                        if (sp == spinoff_terms.end()) continue;
+                        if (previous_positions.find(row.ticker) == previous_positions.end())
+                            continue;
+                        // E2-F49: EVERY child of the pair, not the one the map happened to
+                        // keep. A close missing for any one of them refuses the whole event.
+                        for (const auto& t : sp->second) {
+                            children.push_back(t.first);
+                            child_ex_dates.insert({t.first, row.date_str});
+                        }
+                        if (earliest_ex.empty() || row.date_str < earliest_ex)
+                            earliest_ex = row.date_str;
+                    }
+                    if (!children.empty()) {
+                        auto ch = db->get_historical_closes(children, earliest_ex,
+                                                            std::string(today_buf));
+                        if (ch.is_ok()) {
+                            const auto& series_by_child = ch.value();
+                            for (const auto& key : child_ex_dates) {
+                                auto sit = series_by_child.find(key.first);
+                                if (sit == series_by_child.end()) continue;
+                                const auto hit = LiveDailyCycle::first_close_on_or_after(
+                                    sit->second, key.second);
+                                if (!hit.first.empty()) child_first_close[key] = hit;
+                            }
+                        } else {
+                            WARN("Could not load spinoff child closes (" +
+                                 std::string(ch.error()->what()) +
+                                 ") -- affected spinoffs are refused, not guessed.");
+                        }
+                    }
+                }
+
+                // ---- E2-F47 (BA-20): one BAR, one routing -------------------------
+                //
+                // get_per_bar_corporate_actions emits a bar's split_factor and its div_cash
+                // as two separate rows carrying the same (ticker, ex_date), and seven real
+                // spinoff bars in this database carry both. Matching each row against the
+                // terms key on its own routed the same distribution TWICE: two SpinoffEvents
+                // for one bar, the child delivered twice and its realized booked twice.
+                //
+                // Collect the bar's columns first, so the routing below is per BAR rather
+                // than per row, and so the parent's restatement factor is the product the
+                // price series actually took across the whole bar instead of one column of
+                // it. The comment that used to sit at the apply site -- "which no row in
+                // this database does" -- was simply wrong; the seven are named in
+                // SpinoffBarColumns.
+                std::map<std::pair<std::string, std::string>, SpinoffBarColumns>
+                    spinoff_bar_columns;
+                for (const auto& row : rows) {
+                    if (spinoff_terms.find({row.ticker, row.date_str}) == spinoff_terms.end())
+                        continue;
+                    auto& col = spinoff_bar_columns[{row.ticker, row.date_str}];
+                    if (row.action == "split" || row.action == "adrratiosplit") {
+                        col.has_split = true;
+                        col.split_factor = row.value;
+                    } else if (row.action == "dividend") {
+                        col.has_dividend = true;
+                        col.dividend_cash = row.value;
+                    }
+                    if (!(col.close_at_ex_date > 0.0)) {
+                        const double c_on = close_on(row.ticker, row.date_str);
+                        col.close_at_ex_date =
+                            c_on > 0.0 ? c_on : close_before(row.ticker, row.date_str);
+                    }
+                }
+                // E2-F48 (BA-21): announce the decomposition of every spinoff bar before
+                // anything is routed, so the log says which rule was applied to which bar.
+                //
+                // HELD SYMBOLS ONLY. `close_by_symbol_date` is loaded for symbols that both
+                // have an event in the window AND are in the book (`event_symbols` filters on
+                // previous_positions), so for a configured-but-not-held name every close is
+                // 0.0, `dividend_factor()` falls back to exactly 1, and a dividend-encoded
+                // spinoff therefore looks like a bar with no distribution factor left. That
+                // produced a "SPINOFF REFUSED ... nothing to allocate" WARN about a book
+                // position that does not exist, with numbers derived from a close that was
+                // never fetched -- a false alarm on the loudest line in the block, and one
+                // that would train a reader to skim past the real ones. The row loop below
+                // already skips a non-held ticker outright, so nothing here can ever be
+                // routed for one; the honest thing is silence.
+                //
+                // BA-27: gate on a NON-ZERO quantity, not on mere presence in the map.
+                // `previous_positions` can carry a symbol at quantity 0, and a closed
+                // position holds nothing to distribute -- announcing a spinoff decomposition
+                // for one is the same false alarm as announcing it for a symbol the book
+                // never held. `apply_spinoffs` already refuses a zero quantity outright, so
+                // the announcement was the only thing that spoke.
+                auto book_holds = [&previous_positions](const std::string& symbol) {
+                    auto it = previous_positions.find(symbol);
+                    return it != previous_positions.end() &&
+                           std::abs(it->second.quantity.as_double()) > 1e-9;
+                };
+                for (const auto& [key, col] : spinoff_bar_columns) {
+                    if (!book_holds(key.first)) continue;
+                    // E2-F51: a split_factor ABOVE 1 on a spinoff ex-date is folded into the
+                    // distribution's own factor rather than applied as a share-count change,
+                    // and until now that decision was taken in silence. It is the right
+                    // decision -- on all five such bars in this database (ABT 2004-05-03, BX
+                    // 2015-10-01, K 2023-10-02, MET 2017-08-07, RTX 2020-04-03) the vendor is
+                    // encoding part of the distribution in that column and the holder's share
+                    // count did not move, which is verified against the adjusted series in
+                    // SpinoffBarColumns -- but it is a judgement the log has to state, because
+                    // a genuine forward split coincident with a spinoff would fall outside it
+                    // and the only way anyone would notice is a share count that did not grow.
+                    if (col.folds_a_forward_split()) {
+                        WARN("Spinoff bar carries a split_factor ABOVE 1: " + key.first +
+                             " on " + key.second + " has split_factor " +
+                             std::to_string(col.split_factor) +
+                             ", which is read as PART OF THE DISTRIBUTION and folded into the "
+                             "restatement factor (" + std::to_string(col.spinoff_factor()) +
+                             "), NOT applied as a share-count change -- the parent keeps its "
+                             "quantity. That is what the vendor means on every such bar in "
+                             "this database, verified against adjusted_close on both sides of "
+                             "the bar. If this ticker really did split forward on its spinoff "
+                             "ex-date, the share count is now wrong and this line is the only "
+                             "warning of it (E2-F51).");
+                    }
+                    if (col.has_reverse_split()) {
+                        WARN("Spinoff bar carries a coincident REVERSE SPLIT: " + key.first +
+                             " on " + key.second + " has split_factor " +
+                             std::to_string(col.split_factor) +
+                             " (< 1), which is a real share-count change and NOT the "
+                             "distribution's factor. It is routed to the class-1 applier "
+                             "exactly as it was before the spinoff path existed; the "
+                             "distribution keeps the rest of the bar's step, " +
+                             std::to_string(col.total_factor()) + " / " +
+                             std::to_string(col.reverse_split_factor()) + " = " +
+                             std::to_string(col.spinoff_factor()) + " (E2-F48).");
+                    }
+                    // BA-26: the bar's DIVIDEND row may already have been applied as an
+                    // ordinary class-1 dividend by an earlier run.
+                    //
+                    // The terms feed lags the price feed. A run that saw the div_cash row
+                    // before `equities_data.corporate_action` carried the matching `spinoff`
+                    // row had no way to know it was a distribution: it applied it as a
+                    // dividend, divided the basis by 1 + d/c, and wrote the dedup row. A
+                    // later run with the terms in hand would route the SAME bar to the
+                    // spinoff handler and divide by 1 + d/c a SECOND time -- the routing
+                    // checks is_applied(SPINOFF) and is_applied(SPLIT|ADR_SPLIT) but never
+                    // is_applied(DIVIDEND), so nothing stopped it.
+                    //
+                    // The book is already wrong at this point and no arithmetic here can put
+                    // it right: the basis was restated by the wrong factor and the child was
+                    // never delivered. Inventing a correction would guess at a share count
+                    // and a first close nobody recorded. Refuse the routing, say exactly what
+                    // happened, and leave it to a human.
+                    if (audit_log.is_applied(key.first, key.second,
+                                             CorpActionType::DIVIDEND)) {
+                        // What is actually wrong, and what is not.
+                        //
+                        // The class-1 dividend divided the basis by 1 + d/c using the same
+                        // ex-date close SpinoffBarColumns uses, and on a dividend-encoded bar
+                        // that is EXACTLY the factor the spinoff path would have divided by.
+                        // So the parent's basis is already right; it is the CHILD that is
+                        // missing. Only a bar that also folds a split_factor above 1 into the
+                        // distribution leaves the parent short, by that factor -- named below
+                        // when it is there.
+                        // B-viii: ask the ledger which columns the earlier run applied.
+                        // The routing checked is_applied(DIVIDEND) but never
+                        // is_applied(SPLIT), so it could not tell "the basis is short by
+                        // the split step" from "the basis is right and the SHARES are
+                        // inflated" -- opposite repairs, and it reported the first for
+                        // both.
+                        const bool split_also_applied =
+                            audit_log.is_applied(key.first, key.second,
+                                                 CorpActionType::SPLIT) ||
+                            audit_log.is_applied(key.first, key.second,
+                                                 CorpActionType::ADR_SPLIT);
+                        const auto gap = col.already_applied_gap(/*dividend_applied=*/true,
+                                                                 split_also_applied);
+                        const double residual = gap.basis_short_by;
+                        const bool parent_basis_is_right = gap.basis_correct;
+                        std::string children_named;
+                        {
+                            auto terms = spinoff_terms.find(key);
+                            if (terms != spinoff_terms.end()) {
+                                for (const auto& t : terms->second) {
+                                    if (!children_named.empty()) children_named += ", ";
+                                    children_named += t.first + " x" + std::to_string(t.second);
+                                }
+                            }
+                        }
+                        WARN("SPINOFF NOT ROUTED -- THIS BAR WAS ALREADY APPLIED AS A "
+                             "DIVIDEND: " + key.first + " on " + key.second +
+                             ". An earlier run applied its div_cash row as an ordinary class-1 "
+                             "dividend (the deal-terms row that identifies it as a "
+                             "distribution arrived later) and wrote the dedup row. The factor "
+                             "it divided the basis by (" +
+                             std::to_string(col.dividend_factor()) +
+                             ") is the SAME factor the spinoff path would have used, so " +
+                             key.first +
+                             "'s cost basis is ALREADY CORRECT and must not be restated "
+                             "again -- routing this bar now would divide by it a second time. "
+                             "What is missing is the DISTRIBUTION: {" +
+                             (children_named.empty() ? std::string("the child/children")
+                                                     : children_named) +
+                             "} were never received, never priced and never sold, so the "
+                             "value that left the parent's basis went nowhere instead of into "
+                             "theirs" +
+                             (parent_basis_is_right
+                                  ? (gap.shares_inflated_by > 1.0
+                                         ? " -- AND the earlier run also applied this bar's "
+                                           "split_factor as an ordinary class-1 SPLIT. On a "
+                                           "spinoff bar that column is part of the "
+                                           "distribution, not a share-count change, so " +
+                                           key.first +
+                                           "'s SHARE COUNT is inflated by a factor of " +
+                                           std::to_string(gap.shares_inflated_by) +
+                                           " (phantom shares, E2-F31). The basis is right; "
+                                           "it is the quantity that needs repairing."
+                                         : std::string("."))
+                                  : " -- AND this bar folds a split_factor into the "
+                                    "distribution which the earlier run did NOT apply, so "
+                                    "the parent's basis is additionally short by a factor "
+                                    "of " + std::to_string(residual) + ".") +
+                             " NOTHING is applied. Delivering the children now would need the "
+                             "share count held on the ex-date and each child's first close at "
+                             "the time; the dividend row recorded neither and this run does "
+                             "not guess at them (BA-26).");
+                    }
+                    if (!col.routes_a_spinoff()) {
+                        WARN("SPINOFF REFUSED for " + key.first + " on " + key.second +
+                             ": once the coincident reverse split (" +
+                             std::to_string(col.reverse_split_factor()) +
+                             ") is taken out of the bar's step (" +
+                             std::to_string(col.total_factor()) +
+                             ") there is no distribution factor left (" +
+                             std::to_string(col.spinoff_factor()) +
+                             " <= 1), so the price series priced NO value out of the parent "
+                             "and there is nothing to allocate to the child. Delivering it "
+                             "anyway would give the child a zero or negative cost basis and "
+                             "book its whole first close as realized gain. Every class-1 row "
+                             "on this bar is applied as it was before the spinoff path "
+                             "existed; the child is NOT delivered and this book holds none "
+                             "of it. No dedup row is written -- it retries every run "
+                             "(E2-F48).");
+                    }
+                }
+                for (const auto& [key, col] : spinoff_bar_columns) {
+                    if (!book_holds(key.first)) continue;   // BA-27
+                    if (!col.carries_both_columns()) continue;
+                    WARN("Spinoff bar carries BOTH class-1 columns: " + key.first +
+                         " on " + key.second + " has split_factor " +
+                         std::to_string(col.split_factor) + " AND div_cash " +
+                         std::to_string(col.dividend_cash) + " (close " +
+                         std::to_string(col.close_at_ex_date) +
+                         "). The per-bar feed emits those as two rows on the same "
+                         "(ticker, ex_date); they are ONE event and are routed once. The "
+                         "factor the parent's price series took across the bar is the "
+                         "product " + std::to_string(col.split_step()) + " x " +
+                         std::to_string(col.dividend_factor()) + " = " +
+                         std::to_string(col.total_factor()) + " (E2-F47).");
+                }
+
+                // The (ticker, ex_date) keys already routed to the spinoff handler this
+                // batch. A second per-bar row for a key that has been routed is DROPPED --
+                // its contribution is already inside total_factor() above.
+                std::set<std::pair<std::string, std::string>> spinoff_routed_in_batch;
+
+                // E2-F48: the reverse-split factor the class-1 applier is still going to
+                // apply to a spinoff parent AFTER the distribution has restated it. The
+                // spinoff runs first (the children come off the PRE-split share count), so
+                // between the two the parent's basis is in an intermediate frame and the
+                // G1 basis-vs-mark bound below has to know that or it fires on a correct
+                // restatement: HLT's basis lands at B/1.422 while its mark is already
+                // post-1-for-3, a ratio of 0.33 against a bound of 0.2.
+                std::unordered_map<std::string, double> pending_class1_split_factor;
+
+                std::vector<SpinoffEvent> spinoff_events;
                 std::vector<CorpActionEvent> events;
                 events.reserve(rows.size());
                 // Intra-batch dedup (ultrareview bug_037): if the same
@@ -1679,6 +2243,213 @@ int main(int argc, char* argv[]) {
                 // must guard locally so we don't double-apply within one run.
                 std::set<std::tuple<std::string, std::string, CorpActionType>> seen_in_batch;
                 for (const auto& row : rows) {
+                    // E2-F31: a spinoff is routed AWAY from the applier and the class-1 event
+                    // is SUPPRESSED. Letting it through is the defect itself, and the two must
+                    // be one decision: applying both would restate the parent twice.
+                    {
+                        auto sp = spinoff_terms.find({row.ticker, row.date_str});
+                        const auto bar_it =
+                            spinoff_bar_columns.find({row.ticker, row.date_str});
+                        const bool is_spinoff_bar = sp != spinoff_terms.end() &&
+                                                    bar_it != spinoff_bar_columns.end();
+
+                        // E2-F48: which rows of a spinoff bar still belong to class 1.
+                        //
+                        //  - a REVERSE split row always does: it is a share-count change the
+                        //    distribution does not make, and it applied correctly before the
+                        //    spinoff path existed;
+                        //  - EVERY row does when the bar has no distribution factor left
+                        //    once the reverse split is taken out (DD 2019-06-03 / CTVA),
+                        //    which is the refusal announced above.
+                        //
+                        // Anything else is the distribution and is routed away below.
+                        // BA-26: a bar whose dividend row an earlier run already applied
+                        // as class 1 must not be routed at all -- see the WARN in the
+                        // announcement pass. Its rows stay where they are; the class-1 path's
+                        // own dedup check skips the dividend it already applied, so nothing
+                        // is applied twice by leaving them there.
+                        const bool dividend_already_applied =
+                            is_spinoff_bar && audit_log.is_applied(row.ticker, row.date_str,
+                                                                   CorpActionType::DIVIDEND);
+                        const bool row_stays_class1 =
+                            is_spinoff_bar &&
+                            (dividend_already_applied ||
+                             !bar_it->second.routes_a_spinoff() ||
+                             ((row.action == "split" || row.action == "adrratiosplit") &&
+                              bar_it->second.has_reverse_split()));
+
+                        if (is_spinoff_bar && !row_stays_class1) {
+                            // E2-F49: every child of this (parent, ex-date), never one of
+                            // them. `children_label` is only for the log lines below.
+                            const auto& child_terms = sp->second;
+                            std::string children_label;
+                            for (const auto& t : child_terms) {
+                                if (!children_label.empty()) children_label += ", ";
+                                children_label += t.first;
+                            }
+
+                            // E2-F47: the bar was routed by an earlier row of the same bar.
+                            // Drop this one -- its column is already inside the factor that
+                            // routing used -- and keep it suppressed from the class-1 path,
+                            // which is what routing the bar means.
+                            if (!spinoff_routed_in_batch.insert({row.ticker, row.date_str})
+                                     .second) {
+                                continue;
+                            }
+
+                            if (previous_positions.find(row.ticker) == previous_positions.end())
+                                continue;
+                            if (audit_log.is_applied(row.ticker, row.date_str,
+                                                     CorpActionType::SPINOFF))
+                                continue;
+
+                            // Same horizon gate as class 1, for the same reason: the parent's
+                            // basis is divided by F, and F is the step the PRICE SERIES takes
+                            // on the ex-date bar. Restating before that bar is loaded leaves
+                            // basis and marks in different frames (E2-F15).
+                            auto lb = last_bar_date.find(row.ticker);
+                            if (lb == last_bar_date.end() || row.date_str > lb->second) {
+                                WARN("Deferring SPINOFF for " + row.ticker + " -> " + children_label +
+                                     " (ex_date " + row.date_str +
+                                     "): its loaded price series ends " +
+                                     (lb == last_bar_date.end()
+                                          ? std::string("nowhere")
+                                          : lb->second) +
+                                     ", so the parent bars are still in PRE-event units "
+                                     "(E2-F15). No dedup row is written; it applies on the "
+                                     "next run once the ex-date bar is in the window.");
+                                continue;
+                            }
+
+                            // E2-F17, unchanged in force. Suppressing the class-1 event also
+                            // removes it from the applier's provenance gate, so the SAME test
+                            // has to run here: this path divides the parent's basis by F just
+                            // as a split does, and restating a basis formed AFTER the ex-date
+                            // double-adjusts it. Only POSITIVE evidence may skip; UNKNOWN
+                            // applies, because dropping a real distribution is worse.
+                            {
+                                auto lbuy = last_buy_by_symbol.find(row.ticker);
+                                const bool bought_after = lbuy != last_buy_by_symbol.end() &&
+                                                          lbuy->second > row.date_str;
+                                const bool verifiably_flat =
+                                    run_on_record_at_ex_date(row.date_str) &&
+                                    !(std::abs(qty_at_end_of_ex_date(row.ticker,
+                                                                     row.date_str)) > 1e-9);
+                                if (bought_after || verifiably_flat) {
+                                    WARN("Skipping SPINOFF for " + row.ticker + " -> " + children_label +
+                                         " (ex_date " + row.date_str +
+                                         "): the shares held now were acquired AFTER the "
+                                         "ex-date, at a price the market had already adjusted, "
+                                         "so this book received no child shares and its basis "
+                                         "must not be restated. Evidence: " +
+                                         (bought_after ? "BUY " + lbuy->second
+                                                       : "book verifiably flat at end of "
+                                                         "ex-date " + row.date_str) +
+                                         " (E2-F17).");
+                                    continue;
+                                }
+                            }
+
+                            // F -- the factor the price series restates the parent by.
+                            //
+                            // E2-F47: taken from the WHOLE BAR, not from the one row that
+                            // happened to be reached first. It is the product of what the
+                            // class-1 path would have applied to each of the bar's columns,
+                            // which is exactly the step the vendor's adjusted series takes
+                            // across the bar (measured on all eight real cases -- see
+                            // SpinoffBarColumns). Same columns, same denominators, same
+                            // frame; only the INTERPRETATION changes.
+                            //
+                            // E2-F48: with the coincident reverse split, if any, taken back
+                            // out -- that part is a share-count change and goes to class 1.
+                            // The two together reproduce total_factor() exactly.
+                            const auto& bar_columns = bar_it->second;
+                            const double F = bar_columns.spinoff_factor();
+
+                            // E2-F50: has the coincident reverse split ALREADY been applied?
+                            //
+                            // A refused distribution writes no dedup row, so it retries every
+                            // run -- but the reverse split it was decomposed from is NOT
+                            // refused with it: that half goes to class 1, applies, and IS
+                            // dedup'd. The moment the child price series appears, the retry
+                            // therefore runs against a book that has already been split, and
+                            // two things silently go wrong:
+                            //
+                            //  1. the vendor's ratio is child shares per PRE-split parent
+                            //     share (HLT distributed 0.6 PK and 0.33333 HGV against the
+                            //     330 M shares outstanding before its 1-for-3, not after), so
+                            //     applying it to the post-split 33.33 shares delivers 20 PK
+                            //     instead of 60 -- a third of the entitlement, silently;
+                            //  2. `pending_class1_split_factor` would be set from the bar even
+                            //     though nothing is pending any more, and the G1 basis-vs-mark
+                            //     bound would divide an already-post-split basis by 0.3333 a
+                            //     second time -- a 3x error in the guard that exists to catch
+                            //     3x errors.
+                            //
+                            // Rescaling the ratios by 1/F_split fixes both and is exact, not
+                            // approximate: q_post = q_pre * F_split and r_post = r / F_split,
+                            // so q_post * r_post == q_pre * r -- the same children, the same
+                            // counts. The basis follows too, because B_post = B_pre / F_split
+                            // makes the pool and the FMV weights scale together and cancel, so
+                            // the retry lands on exactly the book a same-run apply would have.
+                            const auto frame = bar_columns.retry_frame(
+                                audit_log.is_applied(row.ticker, row.date_str,
+                                                     CorpActionType::SPLIT) ||
+                                audit_log.is_applied(row.ticker, row.date_str,
+                                                     CorpActionType::ADR_SPLIT));
+                            const double ratio_scale = frame.child_ratio_scale;
+                            if (frame.pending_split_factor != 1.0) {
+                                // Still pending: class 1 applies it after this block, so the
+                                // children come off the PRE-split count and the G1 bound has
+                                // to know a division is still to come (E2-F48).
+                                pending_class1_split_factor[row.ticker] =
+                                    frame.pending_split_factor;
+                            }
+                            if (frame.split_already_applied) {
+                                WARN("Spinoff retry on an ALREADY-SPLIT book: " + row.ticker +
+                                     " (ex_date " + row.date_str +
+                                     ") -- the coincident reverse split " +
+                                     std::to_string(bar_columns.reverse_split_factor()) +
+                                     " was applied and dedup'd by an earlier run (the "
+                                     "distribution was refused then and writes no dedup row of "
+                                     "its own, so it retries). The vendor's ratios are per "
+                                     "PRE-split share, so they are scaled by " +
+                                     std::to_string(ratio_scale) +
+                                     " to the post-split share count, and no class-1 split is "
+                                     "pending for the basis-vs-mark bound (E2-F50).");
+                            }
+
+                            SpinoffEvent sev;
+                            sev.parent = row.ticker;
+                            sev.ex_date = row.date_str;
+                            sev.parent_restatement_factor = F;
+                            for (const auto& t : child_terms) {
+                                SpinoffChildTerms ct;
+                                ct.symbol = t.first;
+                                ct.ratio = t.second * ratio_scale;
+                                auto cf = child_first_close.find({t.first, row.date_str});
+                                if (cf != child_first_close.end()) {
+                                    ct.first_close = cf->second.second;
+                                    INFO("Spinoff child price | " + t.first +
+                                         " first close after ex-date " + row.date_str +
+                                         " is " + std::to_string(cf->second.second) +
+                                         " from " + cf->second.first);
+                                } else {
+                                    WARN("Spinoff child price | " + t.first +
+                                         " has NO close on or after ex-date " + row.date_str +
+                                         ", so the whole " + row.ticker +
+                                         " distribution cannot be allocated and is refused: "
+                                         "an allocation computed over a subset of the "
+                                         "children is not an allocation (E2-F49).");
+                                }
+                                sev.children.push_back(std::move(ct));
+                            }
+                            spinoff_events.push_back(std::move(sev));
+                            // SUPPRESSED: no CorpActionEvent is built for this row.
+                            continue;
+                        }
+                    }
+
                     CorpActionType type = CorporateActionsApplier::type_from_action_string(row.action);
                     if (type == CorpActionType::UNKNOWN) continue;
                     if (audit_log.is_applied(row.ticker, row.date_str, type)) continue;
@@ -1753,11 +2524,18 @@ int main(int argc, char* argv[]) {
                         // different frame than the marks it is compared against
                         // -- a small systematic drift on every dividend.
                         //
-                        // This is a different axis from the deliberate
-                        // raw-dollar / adjusted-close frame mix documented in
-                        // 05-22 §B6, which is preserved: the dividend amount is
+                        // Drift-D: this note used to end "the dividend amount is
                         // still a raw dollar figure and the close is still an
-                        // adjusted one. Only WHICH close changed.
+                        // ADJUSTED one", describing the 05-22 §B6 frame mix as
+                        // preserved. It is not, and has not been since the
+                        // denominator map was rebuilt: `close_by_symbol_date` is
+                        // loaded from ONE raw range read (see the comment above
+                        // its construction), precisely because an adjusted close
+                        // already carries every LATER event in the window and a
+                        // stacked div-then-split batch rescaled a basis by
+                        // 1 + split*d/c instead of 1 + d/c. BOTH sides of the
+                        // ratio are raw now: a raw dividend over a raw ex-date
+                        // close. The frame mix is gone, not preserved.
                         //
                         // Note this was previously masked: with dates formatted
                         // via localtime on a TZ=America/New_York host, keys
@@ -1844,7 +2622,214 @@ int main(int argc, char* argv[]) {
                     events.push_back(std::move(ev));
                 }
 
-                if (!events.empty()) {
+                // ---- E2-F31: spinoffs, BEFORE the class-1 applier ----
+                //
+                // Ordering matters whenever a symbol carries a spinoff AND a class-1 event
+                // on the same ex-date, and it is NOT true that "no row in this database
+                // does" -- the comment that used to stand here. Eight bars do: HLT
+                // 2017-01-04, K 2023-10-02, MET 2017-08-07, LDOS 2013-09-30, RTX
+                // 2020-04-03, ABT 2004-05-03, BX 2015-10-01 all carry split_factor AND
+                // div_cash on the spinoff ex-date, and DD 2019-06-03 carries a coincident
+                // reverse split (E2-F47, E2-F48).
+                //
+                // Spinoffs go first because they are the event that decides WHAT is held:
+                // the children are distributed on the share count held BEFORE any
+                // coincident split (HLT distributed 0.6 PK and 0.33333 HGV per PRE-reverse-
+                // split share, then did the 1-for-3), and an ordinary dividend applying
+                // afterwards rescales the correct, already-restated parent basis rather
+                // than a basis about to be split.
+                std::vector<LifecycleAdjustment> spinoff_log;
+                if (!spinoff_events.empty()) {
+                    const auto policy = spinoff_child_policy_from_string(
+                        app_config.live.spinoff_child_policy);
+                    INFO("Applying " + std::to_string(spinoff_events.size()) +
+                         " SPINOFF event(s); spinoff_child_policy=" +
+                         std::string(spinoff_child_policy_to_string(policy)));
+                    spinoff_log = CorporateActionsLifecycle::apply_spinoffs(
+                        previous_positions, spinoff_events, policy);
+
+                    for (const auto& adj : spinoff_log) {
+                        if (adj.outcome == LifecycleOutcome::SKIPPED_NO_CHILD_PRICE ||
+                            adj.outcome == LifecycleOutcome::SKIPPED_NO_PARENT_BASIS) {
+                            // The class-1 event for this row was ALREADY suppressed, which is
+                            // the point: the parent keeps its real share count instead of
+                            // gaining phantom ones. Say plainly what the book now holds, so
+                            // this is never mistaken for a clean run.
+                            WARN("SPINOFF NOT APPLIED and its class-1 distribution rows "
+                                 "SUPPRESSED: " + adj.symbol + " (" + adj.event_date +
+                                 "). The book therefore carries " + adj.symbol +
+                                 " at a PRE-spinoff cost basis (" +
+                                 std::to_string(adj.avg_price_before) +
+                                 ") against a POST-spinoff price series, and holds none of "
+                                 "the children. Unrealized P&L on this name is overstated as "
+                                 "a loss by the distributed value until the child price "
+                                 "series exist. No dedup row is written -- it retries every "
+                                 "run. (A coincident reverse split, if the bar carried one, "
+                                 "was NOT suppressed and applied through class 1.)");
+                            continue;
+                        }
+                        if (adj.outcome != LifecycleOutcome::SPUN_OFF_CHILD_HELD &&
+                            adj.outcome != LifecycleOutcome::SPUN_OFF_CHILD_SOLD) {
+                            continue;
+                        }
+
+                        // The realized figure -- cash in lieu, plus the disposal under
+                        // liquidate_at_first_close -- reaches live_results and the equity
+                        // curve by the same route a termination's does (E2-F7/E2-F11). It is
+                        // booked against the PARENT's row: the child has no position row of
+                        // its own under the default policy, and attributing it there instead
+                        // would be a row for a holding the book never carried.
+                        if (adj.realized_delta != 0.0) {
+                            corp_action_realized_total += adj.realized_delta;
+                            corp_action_realized_by_symbol[adj.symbol] += adj.realized_delta;
+                        }
+
+                        // The receipt, then the disposal, FOR EVERY CHILD. Two executions
+                        // each, deterministic ids (symbol + ex-date, never a clock) so a
+                        // replay of the same date regenerates the same rows and the
+                        // re-insert overwrites rather than duplicates -- the CORPACTION_
+                        // pattern the exits already use.
+                        //
+                        // A broker statement shows exactly these lines. Without them a child
+                        // arrives and leaves the book with nothing to reconcile against.
+                        // E2-F49: the loop is what makes RTX -> OTIS + CARR and
+                        // HLT -> PK + HGV produce two receipts rather than one.
+                        for (const auto& child : adj.children) {
+                            const double received = child.quantity + child.fractional;
+                            if (received > 1e-9 && child.avg_price > 0.0) {
+                                ExecutionReport recv;
+                                recv.order_id =
+                                    "CORPACTION_" + child.symbol + "_" + adj.event_date;
+                                recv.exec_id =
+                                    "CA_" + child.symbol + "_" + adj.event_date + "_RECEIPT";
+                                recv.symbol = child.symbol;
+                                recv.side = Side::BUY;
+                                recv.filled_quantity = Quantity(received);
+                                // Priced at the ALLOCATED basis, not at the market: the
+                                // shares were not bought, they were distributed, and booking
+                                // them at the first close would fabricate a gain on receipt.
+                                recv.fill_price = Price(child.avg_price);
+                                recv.fill_time = now;
+                                recv.commissions_fees = Decimal(0.0);
+                                recv.implicit_price_impact = Decimal(0.0);
+                                recv.slippage_market_impact = Decimal(0.0);
+                                recv.total_transaction_costs = Decimal(0.0);
+                                recv.is_partial = false;
+                                corp_action_executions.push_back(recv);
+                            }
+
+                            const double disposed =
+                                adj.outcome == LifecycleOutcome::SPUN_OFF_CHILD_SOLD
+                                    ? child.quantity + child.fractional
+                                    : child.fractional;   // HOLD: only the fraction is sold
+                            if (disposed > 1e-9 && child.first_close > 0.0) {
+                                ExecutionReport disp;
+                                disp.order_id =
+                                    "CORPACTION_" + child.symbol + "_" + adj.event_date;
+                                disp.exec_id =
+                                    "CA_" + child.symbol + "_" + adj.event_date +
+                                    (adj.outcome == LifecycleOutcome::SPUN_OFF_CHILD_SOLD
+                                         ? "_DISPOSAL"
+                                         : "_CIL");
+                                disp.symbol = child.symbol;
+                                disp.side = Side::SELL;
+                                disp.filled_quantity = Quantity(disposed);
+                                disp.fill_price = Price(child.first_close);
+                                disp.fill_time = now;
+                                disp.commissions_fees = Decimal(0.0);
+                                disp.implicit_price_impact = Decimal(0.0);
+                                disp.slippage_market_impact = Decimal(0.0);
+                                disp.total_transaction_costs = Decimal(0.0);
+                                disp.is_partial = false;
+                                corp_action_executions.push_back(disp);
+                            }
+                        }
+
+                        // E2-F15 / G1, applied to the spinoff parent for the same reason it
+                        // is applied to a split: the basis was divided by F and the price
+                        // series was too, so after the restatement basis and mark must be in
+                        // one frame. A wrong F -- a mis-encoded step, a terms row on the
+                        // wrong date -- would otherwise restate the parent silently and
+                        // nothing downstream would notice.
+                        {
+                            auto mk = previous_day_close_prices.find(adj.symbol);
+                            double pending_split = 1.0;
+                            {
+                                auto ps = pending_class1_split_factor.find(adj.symbol);
+                                if (ps != pending_class1_split_factor.end() &&
+                                    ps->second > 0.0)
+                                    pending_split = ps->second;
+                            }
+                            if (mk != previous_day_close_prices.end() && mk->second > 0.0 &&
+                                adj.avg_price_after > 0.0) {
+                                // E2-F48: compare the basis the parent will hold once the
+                                // coincident reverse split has ALSO been applied, which is
+                                // the frame the mark is already in.
+                                const double basis_to_mark =
+                                    (adj.avg_price_after / pending_split) / mk->second;
+                                if (basis_to_mark > 5.0 || basis_to_mark < 0.2) {
+                                    ERROR("E2-F15 guard: after the SPINOFF of {" +
+                                          adj.children_joined() + "} from " + adj.symbol +
+                                          " the parent cost basis (" +
+                                          std::to_string(adj.avg_price_after) +
+                                          ") is implausible against the mark (" +
+                                          std::to_string(mk->second) + "), ratio " +
+                                          std::to_string(basis_to_mark) +
+                                          ". The restatement factor " +
+                                          std::to_string(adj.ratio_change) +
+                                          (pending_split != 1.0
+                                               ? " (with the coincident class-1 split " +
+                                                     std::to_string(pending_split) +
+                                                     " still to be applied)"
+                                               : std::string()) +
+                                          " and the price series disagree. Refusing to trade.");
+                                    return 1;
+                                }
+                            }
+                        }
+
+                        // The parent's own basis moved, so the frame it is now in must be
+                        // stamped on the dedup ledger like any other class-1 restatement.
+                        applied_class1_ex_date[adj.symbol] =
+                            std::max(applied_class1_ex_date[adj.symbol], adj.event_date);
+
+                        // Two dedup rows, parent and child, so a replay cannot re-distribute.
+                        PositionAdjustment parent_row;
+                        parent_row.symbol = adj.symbol;
+                        parent_row.event_date = adj.event_date;
+                        parent_row.type = CorpActionType::SPINOFF;
+                        parent_row.quantity_before = adj.quantity_before;
+                        parent_row.quantity_after = adj.quantity_after;
+                        parent_row.avg_price_before = adj.avg_price_before;
+                        parent_row.avg_price_after = adj.avg_price_after;
+                        parent_row.event_value = adj.ratio_change;
+                        parent_row.ratio_change = adj.ratio_change;   // F, the basis divisor
+                        audit_log.record(parent_row);
+
+                        // E2-F49: one dedup row PER CHILD, so a replay cannot
+                        // re-distribute any of them and the ledger names every company the
+                        // book actually received.
+                        for (const auto& child : adj.children) {
+                            PositionAdjustment child_row;
+                            child_row.symbol = child.symbol;
+                            child_row.event_date = adj.event_date;
+                            child_row.type = CorpActionType::SPINOFF;
+                            child_row.quantity_before = 0.0;
+                            child_row.quantity_after = child.quantity;
+                            child_row.avg_price_before = 0.0;
+                            child_row.avg_price_after = child.avg_price;
+                            child_row.event_value = child.first_close;
+                            // The child's basis was CREATED here, not restated from
+                            // anything, so there is no factor that inverts it. 1.0 is the
+                            // honest value: the broker frame and the book frame agree on a
+                            // basis nothing adjusted.
+                            child_row.ratio_change = 1.0;
+                            audit_log.record(child_row);
+                        }
+                    }
+                }
+
+                if (!events.empty() || !spinoff_log.empty()) {
                     auto adjustments = CorporateActionsApplier::apply(previous_positions, events);
                     for (const auto& adj : adjustments) {
                         INFO("Applied " + std::string(CorporateActionsApplier::type_to_string(adj.type)) +
@@ -1860,6 +2845,39 @@ int main(int argc, char* argv[]) {
                     for (const auto& adj : adjustments) {
                         auto& slot = applied_class1_ex_date[adj.symbol];
                         if (slot.empty() || adj.event_date > slot) slot = adj.event_date;
+                    }
+
+                    // F-8 (docs/BROKER_BASIS_RECONCILIATION.md). The basis this run just
+                    // wrote is in the ADJUSTED frame; a broker statement is not. State both
+                    // numbers on the day the gap is created, so a reconciliation does not
+                    // have to reconstruct the chain from ohlcv_1d months later -- and so the
+                    // operator can see, from the log alone, that a dividend moved the book's
+                    // basis and would not have moved the broker's.
+                    for (const auto& adj : adjustments) {
+                        const auto chain = audit_log.basis_chain(adj.symbol);
+                        const double raw =
+                            broker_frame::raw_basis(adj.avg_price_after, chain);
+                        size_t dividends = 0;
+                        for (const auto& ev : chain) {
+                            if (broker_frame::is_dividend(ev)) ++dividends;
+                        }
+                        if (broker_frame::basis_is_known(raw)) {
+                            INFO("F-8 basis frames | " + adj.symbol +
+                                 " adjusted=" + std::to_string(adj.avg_price_after) +
+                                 " raw-equivalent=" + std::to_string(raw) + " (" +
+                                 std::to_string(dividends) + " dividend event(s) in the "
+                                 "chain of " + std::to_string(chain.size()) + ")");
+                        } else {
+                            WARN("F-8 basis frames | " + adj.symbol + " adjusted=" +
+                                 std::to_string(adj.avg_price_after) +
+                                 " raw-equivalent=UNKNOWN: the applied chain of " +
+                                 std::to_string(chain.size()) +
+                                 " event(s) contains one whose basis_ratio was never "
+                                 "recorded (a dedup row written before migration 006), so "
+                                 "the adjusted basis cannot be inverted from the ledger. "
+                                 "Recompute it from the raw ex-date closes in "
+                                 "equities_data.ohlcv_1d before reconciling this symbol.");
+                        }
                     }
 
                     // E2-F15 / G1 -- THE INVARIANT THAT WOULD HAVE CAUGHT THIS.
@@ -1923,15 +2941,42 @@ int main(int argc, char* argv[]) {
                     // A refusal is a decision, and it is checkable: if declining to restate
                     // leaves the basis visibly out of frame with the T-1 mark, the refusal was
                     // wrong. Same bounds and same fail-closed shape as the applied side.
+                    //
+                    // BA-24: a REFUSED SPINOFF PARENT is in neither set and used to escape
+                    // both. E2-F31 suppresses the class-1 event for a spinoff bar, so the
+                    // parent is not in `events`; a refusal applies nothing, so it is not in
+                    // `adjustments` either. The one shape with a KNOWN unrestated basis --
+                    // the runner says so itself, "carries a PRE-spinoff cost basis against a
+                    // POST-spinoff price series" -- was the one shape nothing measured. It is
+                    // added to the inspection set below.
                     {
                         std::set<std::string> applied_syms;
                         for (const auto& adj : adjustments) applied_syms.insert(adj.symbol);
 
+                        // (symbol, what was refused) over BOTH refusal paths.
+                        std::vector<std::pair<std::string, std::string>> unapplied;
                         for (const auto& ev : events) {
                             if (applied_syms.count(ev.symbol)) continue;   // it applied
-                            auto pos = previous_positions.find(ev.symbol);
+                            unapplied.emplace_back(
+                                ev.symbol,
+                                std::string(CorporateActionsApplier::type_to_string(ev.type)) +
+                                    " (ex_date " + ev.ex_date + ")");
+                        }
+                        for (const auto& adj : spinoff_log) {
+                            if (adj.outcome == LifecycleOutcome::SPUN_OFF_CHILD_HELD ||
+                                adj.outcome == LifecycleOutcome::SPUN_OFF_CHILD_SOLD) {
+                                continue;  // it applied
+                            }
+                            unapplied.emplace_back(
+                                adj.symbol,
+                                "SPINOFF to {" + adj.children_joined() + "} (ex_date " +
+                                    adj.event_date + ")");
+                        }
+
+                        for (const auto& [symbol, what] : unapplied) {
+                            auto pos = previous_positions.find(symbol);
                             if (pos == previous_positions.end()) continue; // nothing held
-                            auto mk = previous_day_close_prices.find(ev.symbol);
+                            auto mk = previous_day_close_prices.find(symbol);
                             if (mk == previous_day_close_prices.end() || !(mk->second > 0.0)) continue;
                             const double basis = pos->second.average_price.as_double();
                             if (!(basis > 0.0)) continue;
@@ -1939,9 +2984,8 @@ int main(int argc, char* argv[]) {
 
                             const double basis_to_mark = basis / mk->second;
                             if (basis_to_mark > 5.0 || basis_to_mark < 0.2) {
-                                ERROR("E2-F17 guard: " + ev.symbol + " carried an unapplied " +
-                                      std::string(CorporateActionsApplier::type_to_string(ev.type)) +
-                                      " (ex_date " + ev.ex_date + ") and its cost basis (" +
+                                ERROR("E2-F17 guard: " + symbol + " carried an unapplied " +
+                                      what + " and its cost basis (" +
                                       std::to_string(basis) + ") is implausible against the mark (" +
                                       std::to_string(mk->second) + "), ratio " +
                                       std::to_string(basis_to_mark) +
@@ -1956,7 +3000,20 @@ int main(int argc, char* argv[]) {
                     // placeholder rows this block writes are dated today and carry the
                     // loaded book; writing them with zero adjustments was what let a
                     // stale book survive an empty day-T write (E2-F24).
-                    if (!adjustments.empty()) {
+                    //
+                    // E2-F31: an APPLIED spinoff moves the parent's basis and its realized
+                    // figure, so it counts as an adjustment for this purpose exactly as a
+                    // split does. A REFUSED one (SKIPPED_NO_CHILD_PRICE) moved nothing and
+                    // must not drag a placeholder write in behind it.
+                    bool spinoff_mutated = false;
+                    for (const auto& adj : spinoff_log) {
+                        if (adj.outcome == LifecycleOutcome::SPUN_OFF_CHILD_HELD ||
+                            adj.outcome == LifecycleOutcome::SPUN_OFF_CHILD_SOLD) {
+                            spinoff_mutated = true;
+                            break;
+                        }
+                    }
+                    if (!adjustments.empty() || spinoff_mutated) {
                     // Persist corrected positions back so future runs (and
                     // tomorrow's load_positions_by_date) pick up the adjusted state.
                     // Stamp last_update = now (ultrareview bug_007): the date-keyed
@@ -2151,15 +3208,41 @@ int main(int argc, char* argv[]) {
                 }
             }
 
+            // E2-F26: ask for the six labels whose row describes the death of its OWN
+            // ticker. `acquisitionof`, `mergerfrom` and `spunofffrom` are the survivor's
+            // row -- the acquirer, the surviving merger party, the spinoff child -- and
+            // this query is keyed on `ticker`, so admitting them builds a TerminationEvent
+            // for a company that is alive. The counterparty rows are not lost information;
+            // they are a different fact (what the CONTRA ticker became) and belong to the
+            // rollover path, which needs a trustworthy ratio it does not have.
             auto terms_result = db->get_corporate_actions(
                 symbols, std::string(lifecycle_start_buf), as_of_date,
-                vendor_labels_for_class(CorpActionClass::TERMINATION));
+                vendor_labels_for_termination_keying(TerminationKeying::ROW_TICKER_TERMINATES));
             if (terms_result.is_error()) {
                 WARN("Failed to fetch TERMINATION deal terms: " +
                      std::string(terms_result.error()->what()));
             } else {
                 for (const auto& row : terms_result.value()) {
                     if (previous_positions.find(row.ticker) == previous_positions.end()) continue;
+                    // The same admission rule again, per row, and not redundant: the
+                    // filter above bounds what the QUERY returns, this bounds what the
+                    // RUN acts on. It also applies the bars-contradict test the delisting
+                    // loop already runs -- a terms row on a ticker still printing after
+                    // its own event date belongs to a prior issuer of that symbol.
+                    auto lb_terms = last_bar_date.find(row.ticker);
+                    const std::string last_bar_terms =
+                        lb_terms == last_bar_date.end() ? std::string() : lb_terms->second;
+                    if (!CorporateActionsLifecycle::terms_row_terminates_its_ticker(
+                            row.action, row.date_str, last_bar_terms)) {
+                        WARN("Ignoring TERMINATION deal-terms row " + row.action + " for " +
+                             row.ticker + " (" + row.date_str + ", bars run to " +
+                             (last_bar_terms.empty() ? std::string("(none loaded)")
+                                                     : last_bar_terms) +
+                             "): it does not describe the termination of this ticker -- "
+                             "either it is the survivor's row (E2-F26) or the bars "
+                             "contradict it. The holding is left untouched.");
+                        continue;
+                    }
                     TerminationEvent ev;
                     ev.symbol = row.ticker;
                     ev.event_date = row.date_str;
@@ -2463,6 +3546,66 @@ int main(int argc, char* argv[]) {
                 return 1;
             }
             INFO("Portfolio processing completed");
+
+            // E2-F43 (BA-17): prove the strategy ACTUALLY INGESTED today's bars.
+            //
+            // PortfolioManager::process_market_data (portfolio_manager.cpp:217-222) calls
+            // strategy->on_data(data), and when that returns an error it LOGS the error and
+            // carries straight on to get_target_positions() against un-updated instrument
+            // data. For MeanReversion that yields the previous cycle's targets -- or, from a
+            // process that starts with an empty instrument_data_ every session, ZERO targets
+            // for every symbol. Zero targets on a held book is not "no change": it is a
+            // full-book SELL, generated from a strategy that never saw a price.
+            //
+            // Until E2-F28 the first of the two feeds returned that error to the runner and
+            // the run exited 1. Collapsing to the single feed removed the last caller that
+            // checked, so the failure mode became silent. It is unreachable on valid bars
+            // today (start() precedes this, and MeanReversion::on_data has no failing branch
+            // once RUNNING), which is exactly why it needs an assertion rather than a hope:
+            // one added throw, one strategy without on_data's early-return contract, and the
+            // book is liquidated with an ERROR line in the log and exit code 0.
+            //
+            // The test is per symbol and exact: MeanReversionStrategy::on_data stamps
+            // inst_data.last_update = bar.timestamp for every bar it accepts, so after a
+            // successful feed each symbol's last_update IS the newest bar this run loaded for
+            // it. A symbol with no bars at all is NOT this check's business -- it is a data
+            // gap, reported by the T-1 price checks below -- so it is skipped and counted.
+            {
+                std::unordered_map<std::string, Timestamp> strategy_last_update;
+                for (const auto& symbol : symbols) {
+                    const auto* inst = mr_strategy->get_instrument_data(symbol);
+                    if (inst != nullptr) strategy_last_update[symbol] = inst->last_update;
+                }
+
+                const auto feed = LiveDailyCycle::verify_strategy_ingested_bars(
+                    symbols, all_bars, strategy_last_update);
+
+                if (!feed.not_ingested.empty()) {
+                    for (const auto& detail : feed.not_ingested) {
+                        ERROR("FEED ASSERTION: the strategy did not ingest the loaded bars "
+                              "for " + detail);
+                    }
+                    ERROR("Refusing to trade on a strategy that did not see this run's "
+                          "prices. get_target_positions() would return stale or empty "
+                          "targets, and an empty target map on a held book is a full-book "
+                          "SELL, not a no-op (E2-F43). Nothing has been written for today.");
+                    return 1;
+                }
+
+                if (feed.verified == 0) {
+                    ERROR("FEED ASSERTION: not one symbol in the effective universe of " +
+                          std::to_string(symbols.size()) +
+                          " could be verified against a loaded bar, so the check is vacuous "
+                          "and proves nothing about what the strategy saw. Refusing to trade "
+                          "(E2-F43).");
+                    return 1;
+                }
+
+                INFO("FEED ASSERTION: strategy ingested the newest loaded bar for " +
+                     std::to_string(feed.verified) + "/" + std::to_string(symbols.size()) +
+                     " symbol(s) in the effective universe (" + std::to_string(feed.no_bars) +
+                     " carry no bars in the window and are left to the price checks below)");
+            }
 
             // Get portfolio positions (post risk-management)
             INFO("Retrieving portfolio positions...");
@@ -2807,9 +3950,17 @@ int main(int argc, char* argv[]) {
             auto prev_it = previous_positions.find(symbol);
             double carried =
                 prev_it != previous_positions.end() ? prev_it->second.quantity.as_double() : 0.0;
+            auto mark_it = exec_outcome.carried_marks.find(symbol);
+            const std::string carried_mark =
+                mark_it != exec_outcome.carried_marks.end()
+                    ? " (unpriced, no execution); mark carried at " +
+                          std::to_string(mark_it->second) +
+                          " so the row and the aggregate agree on one level (B-iv)"
+                    : " (unpriced, no execution); NO mark could be carried -- the row "
+                      "implies none, so it is written unmarked";
             ERROR("BASIS TRACE | rolled back | " + symbol +
                   " day-T target discarded, book restored to carried quantity " +
-                  std::to_string(carried) + " (unpriced, no execution)");
+                  std::to_string(carried) + carried_mark);
         }
 
         // Feed executions back to strategy for cost basis tracking.
@@ -3079,8 +4230,13 @@ int main(int argc, char* argv[]) {
         // On a non-trading day execute_day_t never runs and execution_prices is empty, so
         // this is exactly previous_day_close_prices and the carry-forward path is byte for
         // byte what it was.
+        // B-iv: `carried_marks` carries the level a rolled-back holding was last valued
+        // at. Without it that symbol's row is marked 0 while the aggregate carries the
+        // T-1 level the rollback copied, and the fatal in-run unrealized identity aborts
+        // a day in which nothing was wrong.
         const auto day_t_marks = LiveDailyCycle::day_t_mark_prices(
-            previous_day_close_prices, exec_outcome.execution_prices);
+            previous_day_close_prices, exec_outcome.execution_prices,
+            exec_outcome.carried_marks);
         {
             size_t substituted = 0;
             for (const auto& [sym, price] : day_t_marks) {
@@ -3251,24 +4407,11 @@ int main(int argc, char* argv[]) {
         // placeholder row (qty 17.6) survived as the 07-07 book, and the runner sold
         // the same 17.6 shares again every day through 07-27 while booking mark P&L on
         // stock it no longer held. Scoped exactly like store_positions' own delete.
-        {
-            const std::string clear_today =
-                "DELETE FROM trading.positions WHERE strategy_id = '" +
-                std::string(kEquityStrategyId) + "' AND strategy_name = '" +
-                std::string(kEquityStrategyName) + "' AND portfolio_id = '" + portfolio_id +
-                "' AND DATE(last_update) = '" + today_date_str + "'";
-            auto cleared = db->execute_direct_query(clear_today);
-            if (cleared.is_error()) {
-                ERROR("Failed to clear today's position rows before the day-T write: " +
-                      std::string(cleared.error()->what()) +
-                      ". Refusing to continue: an empty day-T write would leave stale rows "
-                      "as today's book.");
-                return 1;
-            }
-            INFO("Cleared any existing position rows for " + today_date_str +
-                 " ahead of the day-T write (" + std::to_string(positions_to_save.size()) +
-                 " row(s) queued)");
-        }
+        // E2-F44 (BA-18): the DELETE itself now runs immediately before the write it
+        // protects, NOT here. Both in-run L5 identities are fatal, and both used to fire
+        // AFTER this statement had already removed today's rows -- so a violated identity
+        // left the day EMPTY as well as unwritten. Moved down; see the comment at the
+        // clear-then-write site further below.
 
         if (!positions_to_save.empty()) {
             INFO("Attempting to save " + std::to_string(positions_to_save.size()) + " positions to database");
@@ -3428,6 +4571,23 @@ int main(int argc, char* argv[]) {
                       std::to_string(residual) + ". Per-symbol rows:" +
                       (breakdown.empty() ? std::string(" <none>") : breakdown) +
                       ". Refusing to persist a day whose rows do not sum to its aggregate.");
+                // E2-F44 (BA-18): say what this exit leaves behind, because "the run failed"
+                // and "the database is unchanged" are not the same statement.
+                ERROR("STATE AT THIS EXIT (" + today_date_str + "): NOTHING has been written "
+                      "for day T -- its position rows are untouched (the clear-then-write "
+                      "pair runs later), and live_results, equity_curve, executions and "
+                      "signals for today are never written on this path. ALREADY WRITTEN and "
+                      "NOT rolled back: trading.positions for T-1 (" +
+                      core::format_utc_date(previous_date) +
+                      ", the finalization at close(T-1)), any trading.corp_action_applied "
+                      "dedup rows this run committed with their day-T placeholder positions, "
+                      "and the stale-execution DELETE for today's order ids. RECOVERY: fix "
+                      "the cause and re-run THIS SAME DATE, which re-finalizes T-1 and "
+                      "rewrites day T. If the re-run will not take, reset the book WINDOWED "
+                      "from " + today_date_str + " -- positions, live_results, equity_curve, "
+                      "executions, signals AND corp_action_applied together (replay rule 7) "
+                      "-- and replay forward from there. Never leave this date and run the "
+                      "next one (replay rule 8).");
                 return 1;
             }
             INFO("L5 realized identity holds: rows " + std::to_string(row_realized_sum) +
@@ -3900,6 +5060,130 @@ int main(int argc, char* argv[]) {
                 }
             }
 
+            // ================= E2-F33: the since-inception metrics block ==============
+            //
+            // Fifteen columns on trading.live_results were NULL on every equity row ever
+            // written (22/22 on this book, 126/126 on the drift audit's), because this
+            // runner never called LiveHistoricalMetricsCalculator at all while both futures
+            // runners have called it for T-1 and for day T since they were written
+            // (live_portfolio_conservative.cpp:2283-2380 is the block this mirrors).
+            //
+            // Same calculator, same four history loads, same override of total_days with the
+            // authoritative get_trading_days() count -- the only differences are the strategy
+            // id and the E2-F32-corrected trading-days figure this runner already computed
+            // above, which is the denominator the annualized return in the same row used.
+            //
+            // Included since D3: `volatility`. Both futures runners write
+            // `{"volatility", yesterday_hist_metrics.volatility}` into this same T-1 update;
+            // the equity runner used to leave the ex-ante `portfolio_var x 100` standing here,
+            // so the column meant one thing on one book and another on the other, and the
+            // sharpe ratio written beside it could not be reproduced from it. `portfolio_var`
+            // is untouched and still carries the ex-ante figure.
+            //
+            // Failure here is a WARN, not a fatal: every trading decision for T-1 is already
+            // made and persisted by this point, and these columns are reporting. That is the
+            // same choice the futures runners make at the identical site.
+            try {
+                HistoricalMetrics yesterday_hist_metrics;
+
+                if (data_loader && data_loader->is_connected()) {
+                    auto returns_hist_res = data_loader->load_daily_returns_history(
+                        kEquityStrategyId, portfolio_id, previous_date);
+                    auto pnl_hist_res = data_loader->load_daily_pnl_history(
+                        kEquityStrategyId, portfolio_id, previous_date);
+                    auto equity_hist_res = data_loader->load_equity_curve_history(
+                        kEquityStrategyId, portfolio_id, previous_date);
+                    auto trades_hist_res = data_loader->load_total_trades_count(
+                        kEquityStrategyId, portfolio_id, previous_date);
+
+                    std::vector<double> returns_hist;
+                    std::vector<double> pnl_hist;
+                    std::vector<double> equity_hist;
+                    int total_trades_hist = 0;
+
+                    if (returns_hist_res.is_ok()) returns_hist = returns_hist_res.value();
+                    if (pnl_hist_res.is_ok()) pnl_hist = pnl_hist_res.value();
+                    if (equity_hist_res.is_ok()) equity_hist = equity_hist_res.value();
+                    if (trades_hist_res.is_ok()) total_trades_hist = trades_hist_res.value();
+
+                    LiveHistoricalMetricsCalculator hist_calc;
+                    // daily_return is stored in PERCENT (the T-1 UPDATE above multiplies by
+                    // 100.0), so the series arrives in percent and must NOT be scaled again --
+                    // the futures runner carries the same note after a 100x volatility bug.
+                    yesterday_hist_metrics =
+                        hist_calc.calculate(returns_hist, pnl_hist, equity_hist,
+                                            yesterday_total_return_annualized,
+                                            total_trades_hist);
+
+                    // total_days is the authoritative trading-day count for T-1 -- the same
+                    // E2-F32-corrected figure that annualized the return written into this
+                    // row -- not the number of live_results rows, which includes weekends.
+                    yesterday_hist_metrics.total_days = trading_days_count;
+                    if (trading_days_count > 0) {
+                        yesterday_hist_metrics.win_rate =
+                            static_cast<double>(yesterday_hist_metrics.winning_days) /
+                            static_cast<double>(trading_days_count) * 100.0;
+                    }
+
+                    INFO("HIST_METRICS [Day T-1] " + yesterday_date_str +
+                         ": return_volatility=" +
+                         std::to_string(yesterday_hist_metrics.volatility) +
+                         " downside_deviation=" +
+                         std::to_string(yesterday_hist_metrics.downside_deviation) +
+                         " sharpe=" + std::to_string(yesterday_hist_metrics.sharpe_ratio) +
+                         " sortino=" + std::to_string(yesterday_hist_metrics.sortino_ratio) +
+                         " max_drawdown=" +
+                         std::to_string(yesterday_hist_metrics.max_drawdown) +
+                         " winning_days=" +
+                         std::to_string(yesterday_hist_metrics.winning_days) +
+                         " losing_days=" + std::to_string(yesterday_hist_metrics.losing_days) +
+                         " total_days=" + std::to_string(yesterday_hist_metrics.total_days) +
+                         " win_rate=" + std::to_string(yesterday_hist_metrics.win_rate) +
+                         " avg_win=" + std::to_string(yesterday_hist_metrics.avg_win) +
+                         " avg_loss=" + std::to_string(yesterday_hist_metrics.avg_loss) +
+                         " best_day=" + std::to_string(yesterday_hist_metrics.best_day) +
+                         " worst_day=" + std::to_string(yesterday_hist_metrics.worst_day) +
+                         " gross_profit=" +
+                         std::to_string(yesterday_hist_metrics.gross_profit) +
+                         " gross_loss=" + std::to_string(yesterday_hist_metrics.gross_loss) +
+                         " profit_factor=" +
+                         std::to_string(yesterday_hist_metrics.profit_factor) +
+                         " (returns n=" + std::to_string(returns_hist.size()) +
+                         ", equity n=" + std::to_string(equity_hist.size()) +
+                         ", executions=" + std::to_string(total_trades_hist) + ")");
+
+                    // One definition of the block, shared with the day-T write below, so a
+                    // column can never be written on one path and forgotten on the other.
+                    // update_live_results takes doubles only, so the three integer columns
+                    // are widened here; they are whole numbers by construction.
+                    auto metric_updates =
+                        historical_metrics_double_columns(yesterday_hist_metrics);
+                    for (const auto& [column, value] :
+                         historical_metrics_int_columns(yesterday_hist_metrics)) {
+                        metric_updates[column] = static_cast<double>(value);
+                    }
+
+                    auto yesterday_metrics_manager = std::make_unique<LiveResultsManager>(
+                        db, true, kEquityStrategyId, portfolio_id, kEquityStrategyName);
+                    auto update_metrics_result =
+                        yesterday_metrics_manager->update_live_results(previous_date,
+                                                                       metric_updates);
+                    if (update_metrics_result.is_error()) {
+                        WARN("Failed to update Day T-1 historical performance metrics: " +
+                             std::string(update_metrics_result.error()->what()));
+                    } else {
+                        INFO("Successfully updated Day T-1 historical performance metrics in "
+                             "trading.live_results");
+                    }
+                } else {
+                    WARN("LiveDataLoader not available or not connected; skipping the Day T-1 "
+                         "historical metrics update (E2-F33).");
+                }
+            } catch (const std::exception& e) {
+                WARN("Exception while updating Day T-1 historical performance metrics: " +
+                     std::string(e.what()));
+            }
+
             // Load updated metrics from database for email - MUST do this AFTER the UPDATE
             try {
                 std::string metrics_query =
@@ -4137,6 +5421,26 @@ int main(int argc, char* argv[]) {
                       std::to_string(residual) + ". Per-symbol rows:" +
                       (breakdown.empty() ? std::string(" <none>") : breakdown) +
                       ". Refusing to persist a day whose rows do not sum to its aggregate.");
+                // E2-F44 (BA-18). This exit is later than the realized one and leaves more
+                // behind: the whole Day T-1 finalization has run by now.
+                ERROR("STATE AT THIS EXIT (" + today_date_str + "): NOTHING has been written "
+                      "for day T -- its position rows are untouched (the clear-then-write "
+                      "pair runs later), and live_results, equity_curve, executions and "
+                      "signals for today are never written on this path. ALREADY WRITTEN and "
+                      "NOT rolled back: trading.positions, trading.live_results AND "
+                      "trading.equity_curve for T-1 (" +
+                      core::format_utc_date(previous_date) +
+                      ") -- the full finalization, including the T-1 mark, the historical "
+                      "metrics block and the T-1 equity point -- plus any "
+                      "trading.corp_action_applied dedup rows this run committed with their "
+                      "day-T placeholder positions, and the stale-execution DELETE for "
+                      "today's order ids. RECOVERY: fix the cause and re-run THIS SAME DATE, "
+                      "which re-finalizes T-1 and rewrites day T. If the re-run will not "
+                      "take, reset the book WINDOWED from " + today_date_str +
+                      " -- positions, live_results, equity_curve, executions, signals AND "
+                      "corp_action_applied together (replay rule 7) -- and replay forward "
+                      "from there. Never leave this date and run the next one (replay "
+                      "rule 8).");
                 return 1;
             } else {
                 INFO("L5 unrealized identity holds: rows " +
@@ -4334,30 +5638,37 @@ int main(int argc, char* argv[]) {
             // Calculate current date for results (use override date if specified)
             auto current_date = now;
             
-            // Use the calculated returns from above
-            double sharpe_ratio = 0.0;  // Would need historical data to calculate
-            double sortino_ratio = 0.0; // Would need historical data to calculate
-            double max_drawdown = 0.0;  // Would need historical data to calculate
-            double calmar_ratio = 0.0;  // Would need historical data to calculate
+            // E2-F33: the thirteen `= 0.0; // Would need historical data to calculate`
+            // placeholders that stood here are gone, along with the claim in their comments.
+            // The history they said was unavailable is four SELECTs away and both futures
+            // runners have loaded it since they were written; they were never written to a
+            // column, which is why the block read NULL rather than zero. What replaces them
+            // is `historical_metrics` above.
+            //
+            // `volatility` IS one of them now (D3). It used to be assigned
+            // `risk_eval.portfolio_var * 100` here -- the ex-ante instrument-mix sigma
+            // sqrt(w'Sigma w), with w normalised to GROSS exposure. On a one-stock book that is
+            // simply that stock's own annualised sigma (24.65 % for TMUS, 21.87 % for ABT, 0
+            // when the book is flat): it ignores leverage -- the book was 5 % invested -- and
+            // says nothing about the account's returns, so `sharpe_ratio` could not be
+            // reproduced from the row it was written on (-4.70 / 21.89 = -0.21, not -5.89).
+            //
+            // Both futures runners store the REALISED annualised return volatility in this
+            // column and keep the ex-ante sigma in `portfolio_var`
+            // (live_portfolio_conservative.cpp, `volatility = historical_metrics.volatility`
+            // after the calculate() call, and `{"portfolio_var", portfolio_var}` beside it).
+            // One column may not mean two things on two books. `portfolio_var`, `var_95` and
+            // `cvar_95` keep the ex-ante figure unchanged -- the risk gate reads it and nothing
+            // is lost.
             double volatility = 0.0;
-            int total_trades = 0;       // No trades in daily position generation
-            double win_rate = 0.0;      // No trades in daily position generation
-            double profit_factor = 0.0; // No trades in daily position generation
-            double avg_win = 0.0;       // No trades in daily position generation
-            double avg_loss = 0.0;      // No trades in daily position generation
-            double max_win = 0.0;       // No trades in daily position generation
-            double max_loss = 0.0;      // No trades in daily position generation
-            double avg_holding_period = 0.0; // No trades in daily position generation
             double var_95 = 0.0;
             double cvar_95 = 0.0;
             double beta = 0.0;
             double correlation = 0.0;
-            double downside_volatility = 0.0;
             
-            // Get volatility from risk evaluation if available
+            // The ex-ante risk figures. NOT volatility any more -- see above.
             if (risk_eval.is_ok()) {
                 const auto& r = risk_eval.value();
-                volatility = r.portfolio_var * 100.0; // Convert to percentage
                 var_95 = r.portfolio_var * 100.0;     // Use portfolio VaR as proxy
                 cvar_95 = r.portfolio_var * 100.0;    // Use portfolio VaR as proxy (no CVaR available)
                 beta = 0.0;                           // No beta available in RiskResult
@@ -4431,6 +5742,93 @@ int main(int argc, char* argv[]) {
                 total_dividend_income = div_log.total_cumulative_dividend_income();
             }
 
+            // ================= E2-F33: the same block for day T ========================
+            //
+            // The T-1 pass above repairs yesterday's row once its mark is final. Today's row
+            // is INSERTed below and would stay NULL until tomorrow's run -- and the LAST day
+            // of any replay never gets a tomorrow, so "every row carries the block" needs
+            // this too. Mirrors live_portfolio_conservative.cpp:2743-2830.
+            //
+            // History is loaded as of previous_date (fully finalized days only) and today's
+            // own figures are appended, so the series ends with a day-T value that is
+            // consistent with the columns written in the same statement.
+            HistoricalMetrics historical_metrics;
+            try {
+                if (data_loader && data_loader->is_connected()) {
+                    auto returns_hist_res = data_loader->load_daily_returns_history(
+                        kEquityStrategyId, portfolio_id, previous_date);
+                    auto pnl_hist_res = data_loader->load_daily_pnl_history(
+                        kEquityStrategyId, portfolio_id, previous_date);
+                    auto equity_hist_res = data_loader->load_equity_curve_history(
+                        kEquityStrategyId, portfolio_id, previous_date);
+                    auto trades_hist_res = data_loader->load_total_trades_count(
+                        kEquityStrategyId, portfolio_id, now);
+
+                    std::vector<double> returns_hist;
+                    std::vector<double> pnl_hist;
+                    std::vector<double> equity_hist;
+                    int total_trades_hist = 0;
+
+                    if (returns_hist_res.is_ok()) returns_hist = returns_hist_res.value();
+                    if (pnl_hist_res.is_ok()) pnl_hist = pnl_hist_res.value();
+                    if (equity_hist_res.is_ok()) equity_hist = equity_hist_res.value();
+                    if (trades_hist_res.is_ok()) total_trades_hist = trades_hist_res.value();
+
+                    // Already in percent on both sides (the stored column and daily_return
+                    // here), so appended as-is. Do NOT scale.
+                    returns_hist.push_back(daily_return);
+                    pnl_hist.push_back(daily_pnl);
+                    equity_hist.push_back(current_portfolio_value);
+
+                    LiveHistoricalMetricsCalculator hist_calc;
+                    historical_metrics =
+                        hist_calc.calculate(returns_hist, pnl_hist, equity_hist,
+                                            total_return_annualized, total_trades_hist);
+
+                    // D3: keep the `volatility` local aligned with the return-volatility
+                    // definition, the same line live_portfolio_conservative.cpp carries after
+                    // its own calculate(). The metric map below takes the column from the
+                    // shared helper, so this is belt and braces -- but the local is what the
+                    // email and the console report read.
+                    volatility = historical_metrics.volatility;
+
+                    historical_metrics.total_days = trading_days_count;
+                    if (trading_days_count > 0) {
+                        historical_metrics.win_rate =
+                            static_cast<double>(historical_metrics.winning_days) /
+                            static_cast<double>(trading_days_count) * 100.0;
+                    }
+
+                    INFO("HIST_METRICS [Day T]: return_volatility=" +
+                         std::to_string(historical_metrics.volatility) +
+                         " downside_deviation=" +
+                         std::to_string(historical_metrics.downside_deviation) +
+                         " sharpe=" + std::to_string(historical_metrics.sharpe_ratio) +
+                         " sortino=" + std::to_string(historical_metrics.sortino_ratio) +
+                         " max_drawdown=" + std::to_string(historical_metrics.max_drawdown) +
+                         " winning_days=" + std::to_string(historical_metrics.winning_days) +
+                         " losing_days=" + std::to_string(historical_metrics.losing_days) +
+                         " total_days=" + std::to_string(historical_metrics.total_days) +
+                         " win_rate=" + std::to_string(historical_metrics.win_rate) +
+                         " avg_win=" + std::to_string(historical_metrics.avg_win) +
+                         " avg_loss=" + std::to_string(historical_metrics.avg_loss) +
+                         " best_day=" + std::to_string(historical_metrics.best_day) +
+                         " worst_day=" + std::to_string(historical_metrics.worst_day) +
+                         " gross_profit=" + std::to_string(historical_metrics.gross_profit) +
+                         " gross_loss=" + std::to_string(historical_metrics.gross_loss) +
+                         " profit_factor=" + std::to_string(historical_metrics.profit_factor) +
+                         " (returns n=" + std::to_string(returns_hist.size()) +
+                         ", equity n=" + std::to_string(equity_hist.size()) +
+                         ", executions=" + std::to_string(total_trades_hist) + ")");
+                } else {
+                    WARN("LiveDataLoader not available or not connected; the day-T historical "
+                         "performance metrics stay at their defaults (E2-F33).");
+                }
+            } catch (const std::exception& e) {
+                WARN("Exception while calculating day-T historical performance metrics: " +
+                     std::string(e.what()));
+            }
+
             // Prepare metrics maps
             std::unordered_map<std::string, double> double_metrics = {
                 {"total_cumulative_return", total_cumulative_return_pct},
@@ -4471,6 +5869,19 @@ int main(int argc, char* argv[]) {
                 {"active_positions", active_positions}
             };
 
+            // E2-F33: the same columns the Day T-1 UPDATE writes, from the same helper --
+            // sixteen since D3 folded `volatility` in. The helper's entry overwrites the
+            // literal `{"volatility", volatility}` above with the identical figure, because
+            // the local was assigned from the same `historical_metrics` after calculate().
+            for (const auto& [column, value] :
+                 historical_metrics_double_columns(historical_metrics)) {
+                double_metrics[column] = value;
+            }
+            for (const auto& [column, value] :
+                 historical_metrics_int_columns(historical_metrics)) {
+                int_metrics[column] = value;
+            }
+
             // Set all metrics at once
             results_manager->set_metrics(double_metrics, int_metrics);
 
@@ -4509,6 +5920,49 @@ int main(int argc, char* argv[]) {
         // Store equity curve and save all results to database
         // Use the new LiveResultsManager - save all results at once
         INFO("Saving all live trading results using LiveResultsManager...");
+
+        // E2-F19 (R-3): clear today's position rows for this book, unconditionally, in the
+        // same breath as the write.
+        //
+        // store_positions is DELETE-then-INSERT keyed on the date of the rows it is handed,
+        // and save_positions_snapshot returns early on an empty book -- so a day whose day-T
+        // write is EMPTY never deletes anything, and whatever rows already sit on today's
+        // date survive as today's book. Two writers put rows there before this point: the
+        // corp-action placeholder stores (dated today, written even when zero adjustments
+        // applied) and, through the loader's timestamp drift, a T-1 row that has been
+        // rewritten four times. Measured on the pre-fix chain: TMUS closed on 2026-07-07
+        // with no realized row to keep, the placeholder row (qty 17.6) survived as the
+        // 07-07 book, and the runner sold the same 17.6 shares again every day through
+        // 07-27 while booking mark P&L on stock it no longer held. Scoped exactly like
+        // store_positions' own delete.
+        //
+        // E2-F44 (BA-18): it sits HERE, not up with the day-T row build where it used to,
+        // because the only thing that must precede the INSERT is this DELETE -- while three
+        // fatal checks and the whole Day T-1 finalization sat between the two. Deleting
+        // today's rows and then exiting 1 on an identity violation left the day both empty
+        // and unwritten, which is strictly worse than leaving the previous run's rows in
+        // place for the re-run to overwrite. Nothing between the old site and this one reads
+        // or writes trading.positions for today: delete_stale_data() inside
+        // save_all_results covers live_results, equity_curve and executions but explicitly
+        // NOT positions, which is why this statement exists at all.
+        {
+            const std::string clear_today =
+                "DELETE FROM trading.positions WHERE strategy_id = '" +
+                std::string(kEquityStrategyId) + "' AND strategy_name = '" +
+                std::string(kEquityStrategyName) + "' AND portfolio_id = '" + portfolio_id +
+                "' AND DATE(last_update) = '" + today_date_str + "'";
+            auto cleared = db->execute_direct_query(clear_today);
+            if (cleared.is_error()) {
+                ERROR("Failed to clear today's position rows before the day-T write: " +
+                      std::string(cleared.error()->what()) +
+                      ". Refusing to continue: an empty day-T write would leave stale rows "
+                      "as today's book.");
+                return 1;
+            }
+            INFO("Cleared any existing position rows for " + today_date_str +
+                 " ahead of the day-T write (" + std::to_string(positions_to_save.size()) +
+                 " row(s) queued)");
+        }
 
         bool persist_failed = false;
         auto save_result = results_manager->save_all_results("LIVE_EQUITY_MEAN_REVERSION", now);

@@ -9,6 +9,8 @@ set(TEST_SOURCES
     core/test_config_version.cpp
     core/test_config_base.cpp
     core/test_holiday_checker.cpp
+    core/test_holiday_coverage_years.cpp
+    core/test_logger_retention.cpp
     core/test_email_positions_table.cpp
     core/test_run_id_generator.cpp
     core/test_config_loader.cpp
@@ -48,6 +50,18 @@ set(TEST_SOURCES
     live/corp_actions/test_corp_action_query_bounds_db.cpp
     live/corp_actions/test_audit_log.cpp
     live/corp_actions/test_income.cpp
+    live/corp_actions/test_broker_frame.cpp
+    live/corp_actions/test_broker_frame_db.cpp
+    live/corp_actions/test_class1_silent_row_announcement.cpp
+    live/corp_actions/test_spinoff_zero_basis_parent.cpp
+    live/corp_actions/test_spinoff_receipt.cpp
+    live/corp_actions/test_spinoff_bar_routing.cpp
+    live/corp_actions/test_spinoff_reverse_split.cpp
+    live/corp_actions/test_spinoff_multi_child.cpp
+    live/corp_actions/test_spinoff_retry_after_split.cpp
+    live/corp_actions/test_spinoff_bar_warnings.cpp
+    live/corp_actions/test_spinoff_refusal_bound.cpp
+    live/corp_actions/test_spinoff_dividend_double_apply.cpp
     live/test_live_metrics_includes_dividend_income.cpp
     live/test_daily_pnl_identity.cpp
     live/test_trading_days_anchor.cpp
@@ -60,6 +74,8 @@ set(TEST_SOURCES
     backtest/test_backtest_data_loader.cpp
     backtest/test_backtest_csv_exporter.cpp
     backtest/test_backtest_coordinator.cpp
+    backtest/test_bt_equity_validation_config.cpp
+    backtest/test_backtest_realized_flow.cpp
     backtest/test_backtest_unrealized_accounting.cpp
     execution/test_execution_engine.cpp
     portfolio/test_portfolio_manager.cpp
@@ -67,7 +83,13 @@ set(TEST_SOURCES
     live/corp_actions/test_window.cpp
     live/test_effective_universe.cpp
     live/test_live_daily_cycle_carry_forward.cpp
+    live/test_broker_frame_event_classes.cpp
+    live/test_rolled_back_symbol_mark.cpp
+    live/test_feed_freshness_universe.cpp
+    live/test_feed_ingestion_assertion.cpp
+    live/test_day_t_write_ordering.cpp
     data/test_current_holding_start_db.cpp
+    data/test_current_holding_start_bound_db.cpp
     instruments/test_equity_margin_cash_regt.cpp
     instruments/test_futures_margin_overload.cpp
     portfolio/test_portfolio_aggregation.cpp
@@ -77,9 +99,11 @@ set(TEST_SOURCES
     storage/test_live_results_manager.cpp
     storage/test_live_results_key_roundtrip_db.cpp
     live/test_live_historical_metrics.cpp
+    live/test_live_historical_metrics_columns.cpp
     live/test_live_price_manager.cpp
     live/test_live_trading_coordinator_keying.cpp
     live/test_execution_manager.cpp
+    live/test_cost_model_feed.cpp
     live/test_execution_price_integrity.cpp
     live/test_margin_manager.cpp
     live/test_live_metrics_calculator.cpp
@@ -99,6 +123,7 @@ set(TEST_SOURCES
     strategy/test_equity_backtest_db_validation.cpp
     strategy/test_equity_pnl_accounting.cpp
     strategy/test_live_bt_signal_consistency.cpp
+    strategy/test_signals_publication.cpp
     strategy/test_volatility_size_1_nan_guard.cpp
     strategy/test_stale_unrealized_pnl_zero_avg_price.cpp
     strategy/test_live_daily_cycle_seeding.cpp
