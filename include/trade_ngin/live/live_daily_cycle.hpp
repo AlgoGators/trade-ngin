@@ -146,6 +146,103 @@ public:
     }
 
     /**
+     * @brief What feeding the cost model produced, so the runner can log it and a
+     *        test can assert on it without reaching into the model.
+     */
+    struct CostFeedResult {
+        size_t symbols_fed = 0;   ///< symbols that contributed at least one bar
+        size_t bars_fed = 0;      ///< total (volume, close) observations handed over
+        size_t returns_fed = 0;   ///< log returns handed over == bars_fed - symbols_fed
+        std::vector<std::string> no_bars;  ///< universe symbols with no bars at all
+        std::vector<std::string> thin;     ///< symbols with fewer than `min_bars`
+    };
+
+    /**
+     * @brief Give the transaction-cost model the market data it prices fills from.
+     *
+     * E2-F62. `TransactionCostManager::calculate_costs` reads its ADV from
+     * `impact_model_.get_adv()` and its spread widening from
+     * `spread_model_.get_volatility_multiplier()` (`transaction_cost_manager.cpp:26-27`).
+     * Both are populated ONLY by `update_market_data`, and the live equity runner
+     * never called it -- the only runner in the tree that did not. So every live
+     * equity fill was priced against the hard-coded fallbacks at `:33` and `:37`:
+     * `adv = 100000` shares and `vol_mult = 1.0`. For a name that really trades
+     * 5.4 M shares a day that overstates the participation rate 54x and selects a
+     * 40 bps impact coefficient where the true ADV selects 10 bps
+     * (`impact_model.cpp` get_impact_k_bps), and the spread never widens with
+     * realised volatility. Registering the tier config
+     * (`register_equity_costs_from_bars`) does NOT fix this: that writes the
+     * spread ticks and the caps, not the ADV the impact model divides by.
+     *
+     * WHY prev_close = 0.0 ON THE FIRST BAR, and not the bar's own close.
+     * `TransactionCostManager::update_market_data` records the volume
+     * unconditionally and gates the log return on `prev_close_price > 0.0`, so a
+     * zero prev_close means "volume yes, return omitted". Passing the bar's own
+     * close instead -- which is what `ExecutionManager::update_market_data`'s
+     * 3-arg form does for a symbol it has not seen (`execution_manager.cpp:186`),
+     * and therefore what the futures live runner gets at
+     * `live_portfolio_conservative.cpp:890` -- injects a fabricated
+     * log(close/close) = 0 return. One false zero in a 20-return window pulls the
+     * sample stdev down and biases `vol_mult` low. `backtest_coordinator.cpp:455-464`
+     * argues the same point for the same reason; this is the live half of it.
+     * We call the 4-arg cost-manager form directly to keep that control.
+     *
+     * THE PERMANENT 1-BAR OFFSET (by construction, not a defect).
+     * The backtest feeds day T's bar to the cost model and then fills at T-1's
+     * close (`backtest_coordinator.cpp:568` runs before the executions are costed),
+     * so its 20-bar window ends at T. The live runner only has bars through T-1 --
+     * asking for T would be lookahead -- so its window ends at T-1. The two cost
+     * models therefore average volumes over windows offset by one bar forever.
+     * Measured on this universe that is ~0.2-2 % of ADV and moves `vol_mult` in
+     * its third decimal; it cannot change an ADV tier except for a symbol sitting
+     * on a bucket boundary. It is the price of not looking ahead, and it is the
+     * one backtest/live cost difference that survives this fix.
+     *
+     * @param tcm    the cost manager whose ADV and volatility deques to fill
+     * @param symbols the effective universe -- iterated in this order so a stray
+     *        key in `bars_by_symbol` can never be fed
+     * @param bars_by_symbol bars per symbol; sorted by timestamp here rather than
+     *        assumed sorted, because the deques are ORDER-dependent (returns are
+     *        consecutive differences) and the sort is nine microseconds
+     * @param min_bars the count below which a symbol is reported as thin: 21 bars
+     *        is what a full 20-observation ADV and 20 real returns require
+     */
+    static CostFeedResult feed_cost_model(
+        transaction_cost::TransactionCostManager& tcm,
+        const std::vector<std::string>& symbols,
+        const std::unordered_map<std::string, std::vector<Bar>>& bars_by_symbol,
+        size_t min_bars = 21) {
+
+        CostFeedResult out;
+        for (const auto& symbol : symbols) {
+            auto it = bars_by_symbol.find(symbol);
+            if (it == bars_by_symbol.end() || it->second.empty()) {
+                out.no_bars.push_back(symbol);
+                continue;
+            }
+
+            std::vector<Bar> bars = it->second;
+            std::stable_sort(bars.begin(), bars.end(),
+                             [](const Bar& a, const Bar& b) { return a.timestamp < b.timestamp; });
+
+            // 0.0 means "no previous close": volume is recorded, the return is
+            // omitted rather than fabricated. See the note above.
+            double prev_close = 0.0;
+            for (const auto& bar : bars) {
+                const double close = static_cast<double>(bar.close);
+                tcm.update_market_data(symbol, bar.volume, close, prev_close);
+                if (prev_close > 0.0 && close > 0.0) ++out.returns_fed;
+                prev_close = close;
+                ++out.bars_fed;
+            }
+
+            ++out.symbols_fed;
+            if (bars.size() < min_bars) out.thin.push_back(symbol);
+        }
+        return out;
+    }
+
+    /**
      * @brief The symbols this run must load data for: config plus the successors
      *        of anything currently held.
      *

@@ -959,13 +959,60 @@ int main(int argc, char* argv[]) {
         // ADV per symbol from the bars we just loaded. Closes audit §1.1:
         // before this, unconfigured equities fell through to the futures
         // default ($1.50/share commission, point_value=100).
+        //
+        // E2-F62: registering the tier is only half of what the cost model needs. The
+        // tier supplies the spread ticks and the impact caps; the ADV the impact model
+        // DIVIDES BY, and the volatility that widens the spread, live in two separate
+        // deques that only update_market_data fills. This runner never called it -- the
+        // only runner in the tree that did not -- so every live equity fill was priced
+        // against transaction_cost_manager.cpp's fallbacks (adv = 100000 at :33,
+        // vol_mult = 1.0 at :37) instead of the symbol's real ~5.4 M ADV: participation
+        // 54x too high, the 40 bps impact bucket where the truth is 10, spread never
+        // widened by realised vol. Measured on the 2026-04-01..21 window before this
+        // fix, that is +8.6 % of transaction cost against what the backtest predicts
+        // (5.947 bps vs 5.477 bps of identical notional, D-4 6.7), and it grows with
+        // clip size because the error is in the participation rate.
+        //
+        // Fed from the SAME bars the tier is registered from, so the ADV that picks the
+        // tier and the ADV that scales the impact are the same twenty observations
+        // rather than two independent guesses. The permanent 1-bar window offset
+        // against the backtest, and why the first bar passes prev_close = 0.0 rather
+        // than its own close, are documented on LiveDailyCycle::feed_cost_model.
         {
             std::unordered_map<std::string, std::vector<trade_ngin::Bar>> bars_by_symbol;
             for (const auto& bar : all_bars) {
                 bars_by_symbol[bar.symbol].push_back(bar);
             }
-            execution_manager->get_transaction_cost_manager()
-                .register_equity_costs_from_bars(symbols, bars_by_symbol);
+            auto& tcm = execution_manager->get_transaction_cost_manager();
+            tcm.register_equity_costs_from_bars(symbols, bars_by_symbol);
+
+            const auto feed = LiveDailyCycle::feed_cost_model(tcm, symbols, bars_by_symbol);
+            INFO("Cost model fed: " + std::to_string(feed.bars_fed) + " bar(s) and " +
+                 std::to_string(feed.returns_fed) + " log return(s) across " +
+                 std::to_string(feed.symbols_fed) + " symbol(s) (E2-F62); ADV and "
+                 "volatility now measured, not the adv=100000 fallback");
+            if (!feed.no_bars.empty()) {
+                std::string joined;
+                for (size_t i = 0; i < feed.no_bars.size(); ++i) {
+                    if (i) joined += ", ";
+                    joined += feed.no_bars[i];
+                }
+                WARN("Cost model has NO bars for " + joined +
+                     " -- a fill in one of these would still be priced off the "
+                     "adv=100000 fallback. These are the same symbols the T-1 price "
+                     "checks below report; nothing can trade without a price anyway.");
+            }
+            if (!feed.thin.empty()) {
+                std::string joined;
+                for (size_t i = 0; i < feed.thin.size(); ++i) {
+                    if (i) joined += ", ";
+                    joined += feed.thin[i];
+                }
+                WARN("Cost model has fewer than 21 bars for " + joined +
+                     " -- its ADV averages fewer than the full 20 observations and its "
+                     "volatility multiplier fewer than 20 returns. Measured, but on a "
+                     "short window.");
+            }
         }
 
 
