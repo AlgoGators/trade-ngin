@@ -826,14 +826,19 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                     PnLAccountingMethod method = (pnl_method_it != pnl_method_by_strategy.end())
                                                      ? pnl_method_it->second
                                                      : PnLAccountingMethod::REALIZED_ONLY;
+                    // The §1.14 branch itself lives in BacktestPnLManager::realized_for_row
+                    // so it can be asserted; the pin 7e3d07c2 claimed for it tested only the
+                    // accessor and passed with this file reverted (C-5 §9-A2).
                     if (method == PnLAccountingMethod::REALIZED_ONLY) {
-                        updated_pos.realized_pnl = Decimal(pnl_result.daily_pnl);
+                        updated_pos.realized_pnl = Decimal(BacktestPnLManager::realized_for_row(
+                            method, pnl_result.daily_pnl, realized_row.flow));
                     } else {
                         // E2-F19 / E2-F54: this row's realized_pnl is a per-bar FLOW, and
                         // it was already computed above -- before the flat-row skip and
                         // from the fill-maintained record. Do not recompute it here from
                         // `pos`, which is the pre-fill target snapshot.
-                        updated_pos.realized_pnl = Decimal(realized_row.flow);
+                        updated_pos.realized_pnl = Decimal(BacktestPnLManager::realized_for_row(
+                            method, pnl_result.daily_pnl, realized_row.flow));
                     }
                     // E2-F8: prefer the strategy's fill-maintained basis over the target
                     // position's average_price, which for mean reversion is the day's close

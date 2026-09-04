@@ -164,6 +164,29 @@ public:
     }
 
     /**
+     * @brief What `realized_pnl` a stored backtest row carries, by accounting method.
+     *
+     * Phase 4 audit T4.6 / §1.14, and the pin C-5 §9-A2 found missing. The coordinator
+     * branches here and the two answers are different quantities, not two spellings of one:
+     *
+     *   REALIZED_ONLY (futures)  -- the day's settled mark-to-market IS the day's realized.
+     *                               There is no separate cost basis to close against.
+     *   MIXED / UNREALIZED_ONLY  -- realized is booked by on_execution when a position
+     *                               actually closes, and the row carries that bar's FLOW.
+     *                               The settled move belongs in unrealized, not here.
+     *
+     * Stamping the MTM figure on an equity row was the defect: it made every held day look
+     * like a realizing day and made the column uncorrelated with the fills.
+     *
+     * @param method    the strategy's accounting method.
+     * @param daily_mtm the bar's settled mark-to-market move, dollarised.
+     * @param flow      the realized increment from this bar's fills (realized_row_for_bar).
+     */
+    static double realized_for_row(PnLAccountingMethod method, double daily_mtm, double flow) {
+        return method == PnLAccountingMethod::REALIZED_ONLY ? daily_mtm : flow;
+    }
+
+    /**
      * @brief The stored row's per-bar realized FLOW, and whether the row survives.
      *
      * E2-F54. `backtest.final_positions.realized_pnl` is a FLOW -- what this position
