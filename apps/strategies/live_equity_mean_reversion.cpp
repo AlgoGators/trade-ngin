@@ -40,6 +40,16 @@
 
 using namespace trade_ngin;
 
+// Storage identity for this runner. The read path
+// (load_positions_by_date / corp-action queries) and the write path
+// (LiveResultsManager -> ResultsManagerBase) must agree on all three key columns:
+// (strategy_id, strategy_name, portfolio_id). They did not before FIX-0 -- the
+// coordinator defaulted portfolio_id to the futures book's BASE_PORTFOLIO and
+// ResultsManagerBase substituted strategy_id for strategy_name -- so writes landed
+// under a key no read would ever match. Named here so the two paths cannot drift again.
+static constexpr const char* kEquityStrategyId = "LIVE_EQUITY_MEAN_REVERSION";
+static constexpr const char* kEquityStrategyName = "EQUITY_MEAN_REVERSION";
+
 // Resolve the on-disk dedup state directory for the live equity app.
 // Honors TRADE_NGIN_STATE_DIR (treated as the parent directory) when set;
 // otherwise roots an absolute path at the current working directory. Always
@@ -407,7 +417,14 @@ int main(int argc, char* argv[]) {
         // Create LiveTradingCoordinator to manage all live trading components
         INFO("Creating LiveTradingCoordinator for centralized component management");
         LiveTradingConfig coordinator_config;
-        coordinator_config.strategy_id = "LIVE_EQUITY_MEAN_REVERSION";
+        coordinator_config.strategy_id = kEquityStrategyId;
+        // Without these two the write key is (LIVE_EQUITY_MEAN_REVERSION,
+        // LIVE_EQUITY_MEAN_REVERSION, BASE_PORTFOLIO) while every read uses
+        // (LIVE_EQUITY_MEAN_REVERSION, EQUITY_MEAN_REVERSION, <configured portfolio>):
+        // two of three columns differ, so run 2 loads an empty book. The futures runner
+        // has always set portfolio_id here; equity omitted it.
+        coordinator_config.strategy_name = kEquityStrategyName;
+        coordinator_config.portfolio_id = portfolio_id;
         coordinator_config.schema = "trading";
         coordinator_config.initial_capital = mr_config.capital_allocation;
         coordinator_config.store_results = true;
@@ -603,7 +620,7 @@ int main(int argc, char* argv[]) {
 
         // Load previous day positions for PnL calculation
         INFO("Loading previous day positions for PnL calculation...");
-        auto previous_positions_result = db->load_positions_by_date("LIVE_EQUITY_MEAN_REVERSION", "EQUITY_MEAN_REVERSION", portfolio_id, previous_date, "trading.positions");
+        auto previous_positions_result = db->load_positions_by_date(kEquityStrategyId, kEquityStrategyName, portfolio_id, previous_date, "trading.positions");
         std::unordered_map<std::string, Position> previous_positions;
         
         if (previous_positions_result.is_ok()) {
@@ -651,6 +668,13 @@ int main(int argc, char* argv[]) {
         // Adjustments land BEFORE the strategy generates today's targets.
         // See docs/CORP_ACTIONS_DATA_BOUNDARY.md. Closes audit §1.12, §1.15.
         // ========================================
+        // Position inception, read once in the class-1 block below and consumed by
+        // BOTH corp-action blocks -- which need OPPOSITE failure semantics, so the raw
+        // result is carried out here rather than the class-1 fallback map.
+        // See the read site for why class 2 must never see that fallback.
+        std::unordered_map<std::string, std::string> inception_raw;
+        bool inception_read_ok = false;
+
         if (!previous_positions.empty()) {
             // Lookback is DERIVED FROM POSITION HISTORY, never a fixed
             // constant and never from last_update.
@@ -698,14 +722,21 @@ int main(int argc, char* argv[]) {
 
             const auto bulk_start_t = today_t - max_lookback_days * kSecondsPerDay;
 
+            // One read, TWO consumers with OPPOSITE failure semantics, so the raw
+            // result is kept alongside the class-1 fallback map rather than being
+            // overwritten by it:
+            //   * class 1 (price rescale) fails WIDE -- under-applying a rescale is
+            //     the permanent error, so an unreadable inception widens the window
+            //     to the bulk edge.
+            //   * class 2 (renames) fails NARROW -- it skips entirely. Feeding it
+            //     class-1's bulk-start sentinel would be worse than useless: a
+            //     sentinel dated two years back satisfies `inception <= effective_until`
+            //     for any recent alias, which is exactly the era test's failure mode.
             std::unordered_map<std::string, std::string> inception_dates;
             auto inception_result = db->get_position_inception_dates(
-                "LIVE_EQUITY_MEAN_REVERSION", "EQUITY_MEAN_REVERSION",
+                kEquityStrategyId, kEquityStrategyName,
                 portfolio_id, held_symbols);
             if (inception_result.is_error()) {
-                // Fail wide, not narrow: without inception we cannot prove the
-                // floor covers the book, and under-applying is the permanent
-                // error. Treat every holding as reaching the bulk window edge.
                 WARN("Could not read position inception dates (" +
                      std::string(inception_result.error()->what()) +
                      ") -- falling back to the full " +
@@ -715,13 +746,23 @@ int main(int argc, char* argv[]) {
                 }
             } else {
                 inception_dates = inception_result.value();
+                inception_raw = inception_result.value();
+                inception_read_ok = true;
             }
 
             const auto window = derive_corp_action_window(
                 today_t, kMinLookbackDays, max_lookback_days, inception_dates);
             auto window_start_t = window.start;
-            const auto& deep_symbols = window.deep_symbols;
-            const auto deep_start_t = window.deep_start;
+            // window.deep_symbols / window.deep_start no longer drive a second
+            // "top up the deep holdings" read: the single raw-close read below spans
+            // [window.start, today], and window.start already equals window.deep_start
+            // whenever there are deep symbols. They stay on the struct because the
+            // derivation tests pin them and they name the reason the window is wide.
+            if (!window.deep_symbols.empty()) {
+                INFO(std::to_string(window.deep_symbols.size()) +
+                     " holding(s) predate the bulk price load; corp-action window opens at " +
+                     format_ymd_utc(window.deep_start));
+            }
 
             // UTC, not localtime: bar timestamps are true UTC instants, and on
             // the deployed image (TZ=America/New_York) localtime pushes every
@@ -794,67 +835,77 @@ int main(int argc, char* argv[]) {
                          "empty -- genuine first run for this strategy");
                 }
 
-                // Historical close lookup keyed by (symbol, YYYY-MM-DD) so
-                // the dividend rescale denominator uses close at THIS event's
-                // ex_date - 1, not today's T-1 close (ultrareview bug_002).
-                // Built once from the same `all_bars` we already loaded.
-                std::unordered_map<std::string, std::map<std::string, double>>
-                    close_by_symbol_date;
-                for (const auto& bar : all_bars) {
-                    auto bt = std::chrono::system_clock::to_time_t(bar.timestamp);
-                    std::tm btm{};
-                    gmtime_r(&bt, &btm);
-                    char dbuf[11];
-                    std::strftime(dbuf, sizeof(dbuf), "%Y-%m-%d", &btm);
-                    close_by_symbol_date[bar.symbol][std::string(dbuf)] =
-                        bar.close.as_double();
+                // Dividend-denominator closes, keyed (symbol, YYYY-MM-DD).
+                //
+                // RAW closes, from one range read, and nothing else. Two separate
+                // defects made the old construction wrong, and this single source
+                // removes both:
+                //
+                // 1. Frame. The map was built from `all_bars`, which are ADJUSTED
+                //    closes. The applier's per-event basis rescale must equal
+                //    compute_backward_adjustment_factors' per-event step, and that
+                //    step works in raw closes. An adjusted close already carries
+                //    every LATER event in the window, so the two agree only when no
+                //    later event exists. Stacked div-then-split in one catch-up
+                //    batch rescaled basis by 1 + split*d/c instead of 1 + d/c:
+                //    10 sh @ $100 with a $1 dividend then a 2:1 split gave 49.01
+                //    against the correct 49.505.
+                // 2. Range. The old deep top-up passed [deep_start, window_start) --
+                //    and window.start EQUALS window.deep_start whenever deep_symbols
+                //    is non-empty, because the globally-oldest inception is always
+                //    itself a deep symbol. The half-open range therefore collapsed
+                //    to a single day, and a holding older than the bulk load got a
+                //    denominator from the wrong end of its history with no error.
+                //
+                // window_start_t already reaches back to the oldest inception (that
+                // is what made the collapse possible), so one read over
+                // [window_start, today] covers the deep holdings too: no second
+                // call, no deep/bulk seam, no two frames to reconcile. The read is
+                // an indexed point lookup per (symbol, date) -- the denominator
+                // needs a close AT each ex-date, not a contiguous series -- and is
+                // scoped to symbols that actually have events in the window, so it
+                // is far cheaper than the ~25 s full-universe adjusted-series query.
+                std::vector<std::string> event_symbols;
+                {
+                    std::set<std::string> uniq;
+                    for (const auto& row : rows) {
+                        if (previous_positions.find(row.ticker) != previous_positions.end()) {
+                            uniq.insert(row.ticker);
+                        }
+                    }
+                    event_symbols.assign(uniq.begin(), uniq.end());
                 }
 
-                // Top up closes for holdings established before the bulk price
-                // load, so an old position is fully covered instead of being
-                // partially adjusted. Targeted range read: the denominator needs
-                // a close AT each ex-date, not a contiguous series, so this is an
-                // indexed lookup (~45 ms for one symbol over ten years), not a
-                // re-run of the ~25 s adjusted-series query.
-                //
-                // Bound: held symbols that predate the bulk load, over their own
-                // inception -- deliberately NOT capped. A cap would reintroduce
-                // the partial coverage this replaces, and partial coverage
-                // corrupts a cost basis permanently. Measured: 10 deep symbols
-                // over 10 years = 0.97 s; the pathological case (all 852 symbols
-                // held since 2000) = 6.1 s / 4.6 M rows, which is survivable and
-                // unreachable in practice, since positions accrue gradually.
-                if (!deep_symbols.empty()) {
-                    const std::string deep_buf = format_ymd_utc(deep_start_t);
+                std::unordered_map<std::string, std::map<std::string, double>>
+                    close_by_symbol_date;
+                if (!event_symbols.empty()) {
+                    const auto denom_range = denominator_fetch_range(window, today_t);
+                    INFO("Loading raw closes for " + std::to_string(event_symbols.size()) +
+                         " held symbol(s) with corp-action events, from " +
+                         denom_range.start + " to " + denom_range.end);
 
-                    INFO("Topping up closes for " + std::to_string(deep_symbols.size()) +
-                         " holding(s) established before the price window, from " +
-                         std::string(deep_buf));
-
-                    auto deep_result = db->get_historical_closes(
-                        deep_symbols, std::string(deep_buf), std::string(start_buf));
-                    if (deep_result.is_error()) {
-                        ERROR("Could not top up closes for holdings older than the "
-                              "price window: " +
-                              std::string(deep_result.error()->what()) +
-                              ". Their dividend adjustments would use a missing "
-                              "denominator and leave cost basis permanently wrong.");
+                    auto closes_result = db->get_historical_closes(
+                        event_symbols, denom_range.start, denom_range.end);
+                    if (closes_result.is_error()) {
+                        ERROR("Could not load raw closes for the dividend denominator: " +
+                              std::string(closes_result.error()->what()) +
+                              ". Dividend adjustments would use a missing denominator and "
+                              "leave cost basis permanently wrong.");
                     } else {
                         size_t added = 0;
-                        for (const auto& [sym, by_date] : deep_result.value()) {
+                        for (const auto& [sym, by_date] : closes_result.value()) {
                             for (const auto& [d, close] : by_date) {
-                                // insert, never overwrite: bars already loaded
-                                // are the authoritative frame for their dates.
-                                if (close_by_symbol_date[sym].emplace(d, close).second) ++added;
+                                close_by_symbol_date[sym][d] = close;
+                                ++added;
                             }
                         }
                         INFO("Added " + std::to_string(added) +
-                             " historical closes for deep holdings");
+                             " historical closes for corp-action denominators");
 
-                        // The only genuinely unrecoverable case: no bars at all
-                        // for a symbol we hold. Everything else is now covered.
+                        // The only genuinely unrecoverable case: no closes at all
+                        // for a symbol we hold and that has an event.
                         std::vector<std::string> no_data;
-                        for (const auto& sym : deep_symbols) {
+                        for (const auto& sym : event_symbols) {
                             auto it = close_by_symbol_date.find(sym);
                             if (it == close_by_symbol_date.end() || it->second.empty()) {
                                 no_data.push_back(sym);
@@ -873,6 +924,7 @@ int main(int argc, char* argv[]) {
                         }
                     }
                 }
+
                 // Last close strictly BEFORE ex_date (walks back over
                 // weekends/holidays via the map's ordering). 0.0 if no bar.
                 // Close ON ex_date -- the denominator the price series uses.
@@ -911,7 +963,7 @@ int main(int argc, char* argv[]) {
                         auto tt = std::mktime(&tm) - 24 * 60 * 60;  // ex_date - 1 day
                         auto tp = std::chrono::system_clock::from_time_t(tt);
                         auto r = db->load_positions_by_date(
-                            "LIVE_EQUITY_MEAN_REVERSION", "EQUITY_MEAN_REVERSION",
+                            kEquityStrategyId, kEquityStrategyName,
                             portfolio_id, tp, "trading.positions");
                         auto& slot = positions_at_date_cache[ex_date];
                         if (r.is_ok()) slot = r.value();
@@ -979,7 +1031,7 @@ int main(int argc, char* argv[]) {
                                      " -- using today's T-1 close as a fallback");
                             }
                         }
-                        ev.close_t_minus_1 = c;
+                        ev.close_at_ex_date = c;
                         // bug_021: prefer qty at ex_date - 1; fall back to
                         // current qty if the historical positions row is
                         // missing (e.g. first-week catch-up runs).
@@ -1032,7 +1084,7 @@ int main(int argc, char* argv[]) {
 
                     auto store_result = db->store_positions(
                         ca_txn, positions_to_store,
-                        "LIVE_EQUITY_MEAN_REVERSION", "EQUITY_MEAN_REVERSION",
+                        kEquityStrategyId, kEquityStrategyName,
                         portfolio_id, "trading.positions");
                     if (store_result.is_error()) {
                         ERROR("Failed to persist corp-action-adjusted positions: " +
@@ -1094,9 +1146,17 @@ int main(int argc, char* argv[]) {
                     aliases.push_back(TickerAlias{row.historical_ticker, row.current_symbol,
                                                   row.effective_until, row.note});
                 }
-                auto renames = CorporateActionsLifecycle::apply_renames(
-                    previous_positions, aliases, as_of_date);
-                lifecycle_log.insert(lifecycle_log.end(), renames.begin(), renames.end());
+                if (!inception_read_ok) {
+                    // Fail narrow. A skipped rename is retried next run; a rename
+                    // applied against a guessed era re-keys a live holding onto a
+                    // symbol that may have no prices at all.
+                    WARN("Position inception dates unavailable -- skipping SERIES_CONTINUITY "
+                         "handling this run rather than applying renames unbounded");
+                } else {
+                    auto renames = CorporateActionsLifecycle::apply_renames(
+                        previous_positions, aliases, as_of_date, inception_raw);
+                    lifecycle_log.insert(lifecycle_log.end(), renames.begin(), renames.end());
+                }
             }
 
             // Class 3: build termination events from the two available
@@ -1114,9 +1174,32 @@ int main(int argc, char* argv[]) {
                      std::string(delist_result.error()->what()) +
                      " -- skipping TERMINATION timing");
             } else {
+                // Same hazard as the rename era bug, one class over: delisting_date
+                // is keyed on the ticker, and a reused ticker inherits the dead
+                // company's row. Acting on it exits a live position at a stale
+                // price. Bars settle it -- a symbol still printing after the
+                // claimed delisting is plainly not delisted -- and we already hold
+                // every bar of the load window, so this costs no query.
+                std::unordered_map<std::string, std::string> last_bar_date;
+                for (const auto& bar : all_bars) {
+                    const std::string d =
+                        format_ymd_utc(std::chrono::system_clock::to_time_t(bar.timestamp));
+                    auto it = last_bar_date.find(bar.symbol);
+                    if (it == last_bar_date.end() || d > it->second) last_bar_date[bar.symbol] = d;
+                }
+
                 for (const auto& [symbol, delist_date] : delist_result.value()) {
                     if (previous_positions.find(symbol) == previous_positions.end()) continue;
                     if (delist_date > as_of_date) continue;  // not yet effective
+                    auto lb = last_bar_date.find(symbol);
+                    const std::string last_bar =
+                        lb == last_bar_date.end() ? std::string() : lb->second;
+                    if (CorporateActionsLifecycle::delisting_is_stale(delist_date, last_bar)) {
+                        WARN("Ignoring stale delisting for " + symbol + " (delisting_date " +
+                             delist_date + " but bars run to " + last_bar +
+                             ") -- the ticker is trading, so the row belongs to a prior issuer");
+                        continue;
+                    }
                     TerminationEvent ev;
                     ev.symbol = symbol;
                     ev.event_date = delist_date;
@@ -1182,7 +1265,7 @@ int main(int argc, char* argv[]) {
                 }
                 auto store_lc = db->store_positions(
                     lifecycle_positions,
-                    "LIVE_EQUITY_MEAN_REVERSION", "EQUITY_MEAN_REVERSION",
+                    kEquityStrategyId, kEquityStrategyName,
                     portfolio_id, "trading.positions");
                 if (store_lc.is_error()) {
                     ERROR("Failed to persist lifecycle-adjusted positions: " +
@@ -1273,7 +1356,7 @@ int main(int argc, char* argv[]) {
             if (!yesterday_finalized_positions.empty()) {
                 // Always save yesterday's finalized positions immediately (not queued)
                 // These are updates to existing positions from the previous day
-                auto update_result = db->store_positions(yesterday_finalized_positions, "LIVE_EQUITY_MEAN_REVERSION", "EQUITY_MEAN_REVERSION", portfolio_id, "trading.positions");
+                auto update_result = db->store_positions(yesterday_finalized_positions, kEquityStrategyId, kEquityStrategyName, portfolio_id, "trading.positions");
                 if (update_result.is_error()) {
                     ERROR("Failed to update Day T-1 positions: " + std::string(update_result.error()->what()));
                 } else {
@@ -1536,25 +1619,35 @@ int main(int argc, char* argv[]) {
 
             // For equities, track both realized and unrealized PnL
             validated_position.realized_pnl = position.realized_pnl;
-            // Calculate unrealized PnL using strategy's entry price (true cost basis)
+            // Unrealized P&L against the position's own cost basis.
+            //
+            // This used to read MeanReversionInstrumentData::entry_price, which has no
+            // writer anywhere in the tree -- it was always 0.0, so the guard below never
+            // passed and EVERY persisted trading.positions.unrealized_pnl was written as
+            // 0 while live_results.total_unrealized_pnl was nonzero: a guaranteed
+            // log-versus-DB mismatch. Position::average_price is the field that is
+            // actually maintained (mean_reversion.cpp names on_execution as its sole
+            // writer, and the stop-loss already reads it rather than entry_price), and it
+            // is corp-action adjusted, so it is the cost basis this belongs on.
+            //
+            // It is 0 for a position whose fill has not been processed yet, hence the
+            // guard; that case persists 0, as before.
             if (position.quantity.as_double() != 0.0) {
                 double current_price = 0.0;
                 auto price_it = previous_day_close_prices.find(symbol);
                 if (price_it != previous_day_close_prices.end()) {
                     current_price = price_it->second;
                 }
-                // Use strategy's entry price for accurate unrealized PnL
-                double entry_price = 0.0;
-                auto* inst_data = mr_strategy->get_instrument_data(symbol);
-                if (inst_data && inst_data->entry_price > 0.0) {
-                    entry_price = inst_data->entry_price;
-                }
-                if (current_price > 0.0 && entry_price > 0.0) {
-                    double unrealized = (current_price - entry_price) * position.quantity.as_double();
-                    validated_position.unrealized_pnl = Decimal(unrealized);
-                } else {
-                    validated_position.unrealized_pnl = Decimal(0.0);
-                }
+                // Same rule the live_results aggregate uses, so the row and the total
+                // cannot disagree. Equities are point_value 1. The mark check stays here
+                // because current_price is 0.0 when the symbol has no T-1 close, and
+                // measuring against 0 would book the whole notional as a gain.
+                validated_position.unrealized_pnl =
+                    current_price > 0.0
+                        ? Decimal(LivePnLManager::unrealized_from_cost_basis(
+                              position.quantity.as_double(),
+                              static_cast<double>(position.average_price), current_price))
+                        : Decimal(0.0);
             } else {
                 validated_position.unrealized_pnl = Decimal(0.0);
             }

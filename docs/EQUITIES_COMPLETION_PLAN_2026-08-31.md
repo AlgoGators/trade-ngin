@@ -426,3 +426,28 @@ bridge → effective_until), each caught by the next verification layer before a
 `docs/EXECUTION_PLAN_2026-08-27.md` batches 1'-4 are the MAIN-branch track (CI/governance,
 benchmarks, macOS build). Equities is E1-E5 here. The CI postgres-service work is
 batch-3/main-track — do not fold it into equities.
+
+
+---
+
+## E2 EXECUTION REQUIREMENTS — mandatory observations (added 2026-08-31)
+
+These are not optional checks; a run that does not produce this evidence has not
+verified what it claims to.
+
+**R1 — `find_previous_trading_day` must be observed in production.** It has 15 unit
+tests and has NEVER executed in a real equity run. Twice in this effort a function
+passed its tests while behaving differently in production (the `last_update` window
+no-op; the fail-closed that did not fail closed). For every E2 equity run, capture and
+check the log line reporting the resolved previous trading day, and confirm:
+  - it is not a weekend, not in the holiday calendar;
+  - it matches the last date with bars for the configured universe;
+  - after a holiday weekend it skips BOTH the weekend and the holiday
+    (the 2026-07-06 case resolves to 2026-07-02, not 07-03);
+  - the corp-action window start reports its DERIVATION RULE ("derived from inception
+    of <symbol>" vs "14-day floor"), and a floor reported while positions are held is
+    a contradiction that must be investigated, not accepted.
+
+**R2 — `is_market_open` is knowingly unexercised.** It has zero production callers, so
+the market-hours half of the EquityInstrument holiday wiring is decorative. Left as-is
+by decision (2026-08-31). Do not assume intraday session awareness is active.

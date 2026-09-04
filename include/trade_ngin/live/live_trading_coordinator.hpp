@@ -27,6 +27,12 @@ class InstrumentRegistry;
  */
 struct LiveTradingConfig {
     std::string strategy_id = "LIVE_TREND_FOLLOWING";
+    // Storage strategy_name. EMPTY means "same as strategy_id", which is what the
+    // futures runners have always relied on -- their rows are keyed
+    // (strategy_id, strategy_id, portfolio_id). Set it only when the read key uses a
+    // distinct name, as the equity runner does (reads EQUITY_MEAN_REVERSION, writes
+    // under LIVE_EQUITY_MEAN_REVERSION unless this is populated).
+    std::string strategy_name;
     std::string portfolio_id = "BASE_PORTFOLIO";
     std::string schema = "trading";
     double initial_capital = 500000.0;

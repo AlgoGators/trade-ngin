@@ -36,6 +36,9 @@ set(TEST_SOURCES
     transaction_cost/test_impact_model.cpp
     live/corp_actions/test_applier.cpp
     live/corp_actions/test_effect_classes.cpp
+    live/corp_actions/test_rename_eras.cpp
+    live/corp_actions/test_denominator_frame.cpp
+    live/corp_actions/test_denominator_range_db.cpp
     live/corp_actions/test_audit_log.cpp
     live/corp_actions/test_income.cpp
     live/test_live_metrics_includes_dividend_income.cpp
@@ -59,12 +62,15 @@ set(TEST_SOURCES
     portfolio/test_portfolio_manager_internals.cpp
     storage/test_backtest_results_manager.cpp
     storage/test_live_results_manager.cpp
+    storage/test_live_results_key_roundtrip_db.cpp
     live/test_live_historical_metrics.cpp
     live/test_live_price_manager.cpp
+    live/test_live_trading_coordinator_keying.cpp
     live/test_execution_manager.cpp
     live/test_margin_manager.cpp
     live/test_live_metrics_calculator.cpp
     live/test_live_pnl_manager.cpp
+    live/test_unrealized_cost_basis.cpp
     live/test_live_data_loader.cpp
     live/test_csv_exporter.cpp
     strategy/test_base_strategy.cpp

@@ -30,6 +30,9 @@ protected:
     bool store_enabled_;  // Single control flag (replaces save_positions, save_signals, etc.)
     std::string schema_;  // "backtest" or "trading"
     std::string strategy_id_;
+    // Storage strategy_name. Defaults to strategy_id_ when the ctor arg is empty, which
+    // preserves the futures keying (strategy_id, strategy_id, portfolio_id) exactly.
+    std::string strategy_name_;
     std::string portfolio_id_;
     std::string component_id_;
 
@@ -40,7 +43,8 @@ protected:
 public:
     ResultsManagerBase(std::shared_ptr<PostgresDatabase> db, bool store_enabled,
                        const std::string& schema, const std::string& strategy_id,
-                       const std::string& portfolio_id = "BASE_PORTFOLIO");
+                       const std::string& portfolio_id = "BASE_PORTFOLIO",
+                       const std::string& strategy_name = "");
 
     virtual ~ResultsManagerBase() = default;
 
@@ -59,6 +63,9 @@ public:
     }
     std::string get_strategy_id() const {
         return strategy_id_;
+    }
+    std::string get_strategy_name() const {
+        return strategy_name_;
     }
     std::string get_portfolio_id() const {
         return portfolio_id_;

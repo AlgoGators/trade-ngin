@@ -121,7 +121,7 @@ TEST(CorpActionClass1, PerBarDividendRescalesBasisWithoutTouchingShareCount) {
     ev.ex_date = "2026-08-10";
     ev.type = CorporateActionsApplier::type_from_action_string("dividend");
     ev.value = 0.485;
-    ev.close_t_minus_1 = 72.50;
+    ev.close_at_ex_date = 72.50;
 
     auto log = CorporateActionsApplier::apply(positions, {ev});
 
@@ -149,7 +149,7 @@ TEST(CorpActionClass1, DividendCashIsRecordedButNeverAddedToPositionPnl) {
     ev.ex_date = "2026-08-10";
     ev.type = CorpActionType::DIVIDEND;
     ev.value = 0.485;
-    ev.close_t_minus_1 = 72.50;
+    ev.close_at_ex_date = 72.50;
     ev.qty_at_ex_date = 250.0;
 
     auto log = CorporateActionsApplier::apply(positions, {ev});
@@ -180,7 +180,7 @@ TEST(CorpActionClass1, SplitBeforeDividendOnASharedBarLandsCashOnPostSplitShares
     div.ex_date = "2026-06-30";
     div.type = CorpActionType::DIVIDEND;
     div.value = 1.0;
-    div.close_t_minus_1 = 100.0;
+    div.close_at_ex_date = 100.0;
 
     auto log = CorporateActionsApplier::apply(positions, {split, div});
 
@@ -202,7 +202,9 @@ TEST(CorpActionClass2, RenameRekeysPositionAndPreservesBasis) {
     positions["ANTM"] = make_position("ANTM", 40.0, 480.0);
 
     std::vector<TickerAlias> aliases = {{"ANTM", "ELV", "2022-06-28", "rebrand"}};
-    auto log = CorporateActionsLifecycle::apply_renames(positions, aliases, "2026-08-31");
+    // Held since before the rebrand, so this position IS the old-era one.
+    auto log = CorporateActionsLifecycle::apply_renames(positions, aliases, "2026-08-31",
+                                                        {{"ANTM", "2021-03-01"}});
 
     ASSERT_EQ(log.size(), 1u);
     EXPECT_EQ(log[0].outcome, LifecycleOutcome::RENAMED);
@@ -220,7 +222,8 @@ TEST(CorpActionClass2, RenameNotYetEffectiveIsLeftAlone) {
     positions["BK"] = make_position("BK", 10.0, 55.0);
 
     std::vector<TickerAlias> aliases = {{"BK", "BNY", "2026-01-01", ""}};
-    auto log = CorporateActionsLifecycle::apply_renames(positions, aliases, "2025-12-15");
+    auto log = CorporateActionsLifecycle::apply_renames(positions, aliases, "2025-12-15",
+                                                        {{"BK", "2025-06-01"}});
 
     EXPECT_TRUE(log.empty());
     EXPECT_EQ(positions.count("BK"), 1u);
@@ -235,7 +238,8 @@ TEST(CorpActionClass2, BothKeysHeldMergeAtWeightedAverageCost) {
     positions["COR"] = make_position("COR", 300.0, 20.0, /*realized=*/75.0);
 
     std::vector<TickerAlias> aliases = {{"ABC", "COR", "2023-08-30", ""}};
-    auto log = CorporateActionsLifecycle::apply_renames(positions, aliases, "2026-08-31");
+    auto log = CorporateActionsLifecycle::apply_renames(
+        positions, aliases, "2026-08-31", {{"ABC", "2022-01-04"}, {"COR", "2024-02-02"}});
 
     ASSERT_EQ(log.size(), 1u);
     EXPECT_EQ(positions.count("ABC"), 0u);
@@ -252,7 +256,8 @@ TEST(CorpActionClass2, UnmappedHistoricalTickerIsNeverLost) {
     positions["OLDCO"] = make_position("OLDCO", 5.0, 12.0);
 
     std::vector<TickerAlias> aliases = {{"ANTM", "ELV", "2022-06-28", ""}};
-    auto log = CorporateActionsLifecycle::apply_renames(positions, aliases, "2026-08-31");
+    auto log = CorporateActionsLifecycle::apply_renames(positions, aliases, "2026-08-31",
+                                                        {{"OLDCO", "2020-01-02"}});
 
     EXPECT_TRUE(log.empty());
     ASSERT_EQ(positions.count("OLDCO"), 1u);

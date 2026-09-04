@@ -91,10 +91,10 @@ std::vector<PositionAdjustment> CorporateActionsApplier::apply(
             }
             case CorpActionType::DIVIDEND: {
                 // ratio_change = 1 + dividend_per_share / close[T-1]
-                if (ev.close_t_minus_1 <= 0.0 || !std::isfinite(ev.close_t_minus_1)) {
+                if (ev.close_at_ex_date <= 0.0 || !std::isfinite(ev.close_at_ex_date)) {
                     WARN("CorporateActionsApplier: dividend for " + ev.symbol +
                          " on " + ev.ex_date + " has invalid close[T-1]=" +
-                         std::to_string(ev.close_t_minus_1) + " -- skipping");
+                         std::to_string(ev.close_at_ex_date) + " -- skipping");
                     continue;
                 }
                 if (ev.value <= 0.0 || !std::isfinite(ev.value)) {
@@ -103,7 +103,7 @@ std::vector<PositionAdjustment> CorporateActionsApplier::apply(
                          std::to_string(ev.value) + " -- skipping");
                     continue;
                 }
-                const double ratio = 1.0 + ev.value / ev.close_t_minus_1;
+                const double ratio = 1.0 + ev.value / ev.close_at_ex_date;
                 const double avg_after = avg_before > 0.0 ? avg_before / ratio : 0.0;
                 // Dividend doesn't change quantity; only rescales avg_price into
                 // the post-dividend adjusted-price frame (audit §1.15).

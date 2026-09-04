@@ -9,15 +9,20 @@ namespace trade_ngin {
 
 ResultsManagerBase::ResultsManagerBase(std::shared_ptr<PostgresDatabase> db, bool store_enabled,
                                        const std::string& schema, const std::string& strategy_id,
-                                       const std::string& portfolio_id)
+                                       const std::string& portfolio_id,
+                                       const std::string& strategy_name)
     : db_(db),
       store_enabled_(store_enabled),
       schema_(schema),
       strategy_id_(strategy_id),
+      // Empty means "same as the id": the futures runners have always written
+      // (strategy_id, strategy_id, portfolio_id) and must keep doing so byte-for-byte.
+      strategy_name_(strategy_name.empty() ? strategy_id : strategy_name),
       portfolio_id_(portfolio_id),
       component_id_("ResultsManager_" + schema) {
     INFO("Initialized " + component_id_ + " for strategy: " + strategy_id +
-         ", portfolio: " + portfolio_id + ", storage " + (store_enabled ? "enabled" : "disabled"));
+         ", name: " + strategy_name_ + ", portfolio: " + portfolio_id + ", storage " +
+         (store_enabled ? "enabled" : "disabled"));
 }
 
 Result<void> ResultsManagerBase::validate_database_connection() const {
@@ -84,7 +89,7 @@ Result<void> ResultsManagerBase::save_positions(const std::vector<Position>& pos
                                              table_name);
     } else {
         // For live trading, use regular store_positions
-        return db_->store_positions(positions, strategy_id_, strategy_id_, portfolio_id_,
+        return db_->store_positions(positions, strategy_id_, strategy_name_, portfolio_id_,
                                     table_name);
     }
 }
@@ -119,7 +124,7 @@ Result<void> ResultsManagerBase::save_executions(const std::vector<ExecutionRepo
         // BacktestResultsManager should override this method to pass portfolio_id
         return db_->store_backtest_executions(executions, run_id, "BASE_PORTFOLIO", table_name);
     } else {
-        return db_->store_executions(executions, strategy_id_, strategy_id_, portfolio_id_,
+        return db_->store_executions(executions, strategy_id_, strategy_name_, portfolio_id_,
                                      table_name);
     }
 }
@@ -155,7 +160,7 @@ Result<void> ResultsManagerBase::save_signals(
         return db_->store_backtest_signals(signals, strategy_id_, run_id, date, "BASE_PORTFOLIO",
                                            table_name);
     } else {
-        return db_->store_signals(signals, strategy_id_, strategy_id_, portfolio_id_, date,
+        return db_->store_signals(signals, strategy_id_, strategy_name_, portfolio_id_, date,
                                   table_name);
     }
 }
