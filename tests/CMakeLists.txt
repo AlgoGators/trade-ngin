@@ -81,6 +81,7 @@ set(TEST_SOURCES
     live/corp_actions/test_window.cpp
     live/test_effective_universe.cpp
     live/test_live_daily_cycle_carry_forward.cpp
+    live/test_feed_freshness_universe.cpp
     live/test_feed_ingestion_assertion.cpp
     live/test_day_t_write_ordering.cpp
     data/test_current_holding_start_db.cpp

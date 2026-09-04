@@ -878,7 +878,29 @@ int main(int argc, char* argv[]) {
             const int tolerance_days = app_config.live.data_staleness_tolerance_days;
             const std::string as_of_ymd =
                 format_ymd_utc(std::chrono::system_clock::to_time_t(end_date));
-            const auto freshness = assess_feed_freshness(last_bar_date, as_of_ymd);
+            // B-ii: hand the guard the universe we ASKED for. `last_bar_date` is built
+            // from the bars that came back, so a symbol with zero rows is invisible to a
+            // check driven by that map alone -- it cannot be the stalest and the run
+            // reports "stalest of 9" on a ten-name book while the tenth reaches day T
+            // unpriced and is carried unpriceable (E2-F34).
+            const auto freshness = assess_feed_freshness(last_bar_date, as_of_ymd, symbols);
+
+            if (freshness.absent > 0) {
+                // Absence is not "a few days behind" -- there is no date to measure. It is
+                // reported on its own terms and treated as stale regardless of tolerance.
+                const std::string msg =
+                    "Equity feed is missing " + std::to_string(freshness.absent) + " of " +
+                    std::to_string(freshness.symbols) +
+                    " requested symbol(s) entirely, first: " + freshness.absent_symbol +
+                    " (no bar of any date as of " + as_of_ymd + ").";
+                if (use_override_date) {
+                    WARN(msg + " Proceeding in historical-replay mode.");
+                } else {
+                    ERROR(msg + " Refusing to run live with an incomplete universe. "
+                                "Refresh the OHLCV feed or remove the symbol from config.");
+                    return 1;
+                }
+            }
 
             if (!freshness.any_data) {
                 // No symbol has a usable bar date. Maximally stale, never neutral.
