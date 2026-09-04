@@ -2,6 +2,9 @@
 #pragma once
 
 #include <algorithm>
+#include <cmath>
+#include <map>
+#include <utility>
 #include <ctime>
 #include <set>
 #include <string>
@@ -198,6 +201,34 @@ public:
         }
         universe.insert(universe.end(), additions.begin(), additions.end());
         return universe;
+    }
+
+    /**
+     * @brief The first REAL close on or after `ex_date` in an ascending close series (BA-24).
+     *
+     * A spinoff's children are read in ONE range query starting at the batch's earliest
+     * ex-date, which is right -- one indexed read instead of one per child. Selecting from
+     * the result was not: taking the first positive close in the returned series gives a
+     * child whose own ex-date is LATER than the batch's earliest a close from BEFORE its own
+     * distribution. An already-listed child (a tracking stock, a when-issued line, a second
+     * spinoff from the same parent inside one catch-up batch) would then be delivered at a
+     * pre-event price, and both its allocated basis and the realized booked on liquidation
+     * would be struck at that price. Nothing downstream could notice, because the number is
+     * a real close of the right symbol.
+     *
+     * Non-positive and non-finite closes are skipped rather than accepted: a 0 is the value
+     * the loader leaves in place when it has nothing, and pricing a distribution at 0 books
+     * the child's whole value as realized gain.
+     *
+     * @return (date used, close), or (empty, 0.0) when the series has no usable bar on or
+     *         after `ex_date` -- which the caller must treat as "refuse", never as "guess".
+     */
+    static std::pair<std::string, double> first_close_on_or_after(
+        const std::map<std::string, double>& series, const std::string& ex_date) {
+        for (auto it = series.lower_bound(ex_date); it != series.end(); ++it) {
+            if (it->second > 0.0 && std::isfinite(it->second)) return {it->first, it->second};
+        }
+        return {std::string{}, 0.0};
     }
 
     /** @brief What the E2-F43 feed check found. */

@@ -1863,10 +1863,24 @@ int main(int argc, char* argv[]) {
                 // Both real 2025 children in this database (RAL, MRP) have ZERO rows in
                 // equities_data.ohlcv_1d, so this map is legitimately empty for them and the
                 // handler refuses the event rather than guessing a price.
-                std::unordered_map<std::string, std::pair<std::string, double>>
-                    child_first_close;  // child -> (date, close)
+                //
+                // BA-24: keyed on (CHILD, ITS OWN EX-DATE), not on the child alone.
+                //
+                // The read is one range starting at the batch's earliest ex-date, which is
+                // right -- one indexed query instead of one per child. Selecting from it was
+                // not: taking the first positive close in the returned series gives a child
+                // whose own ex-date is LATER than the batch's earliest a close from before
+                // its own distribution. An already-listed child (a tracking stock, a
+                // when-issued line, a second spinoff from the same parent in one catch-up
+                // batch) would then be delivered at a price that predates the event, and the
+                // basis allocated to it -- and the realized booked when it is liquidated --
+                // would both be struck at that price. Nothing downstream could notice: the
+                // number is a real close of the right symbol.
+                std::map<std::pair<std::string, std::string>, std::pair<std::string, double>>
+                    child_first_close;  // (child, ex_date) -> (date used, close)
                 {
                     std::vector<std::string> children;
+                    std::set<std::pair<std::string, std::string>> child_ex_dates;
                     std::string earliest_ex;
                     for (const auto& row : rows) {
                         auto sp = spinoff_terms.find({row.ticker, row.date_str});
@@ -1875,7 +1889,10 @@ int main(int argc, char* argv[]) {
                             continue;
                         // E2-F49: EVERY child of the pair, not the one the map happened to
                         // keep. A close missing for any one of them refuses the whole event.
-                        for (const auto& t : sp->second) children.push_back(t.first);
+                        for (const auto& t : sp->second) {
+                            children.push_back(t.first);
+                            child_ex_dates.insert({t.first, row.date_str});
+                        }
                         if (earliest_ex.empty() || row.date_str < earliest_ex)
                             earliest_ex = row.date_str;
                     }
@@ -1883,13 +1900,13 @@ int main(int argc, char* argv[]) {
                         auto ch = db->get_historical_closes(children, earliest_ex,
                                                             std::string(today_buf));
                         if (ch.is_ok()) {
-                            for (const auto& [sym, series] : ch.value()) {
-                                for (const auto& [d, close] : series) {  // std::map: ascending
-                                    if (close > 0.0 && std::isfinite(close)) {
-                                        child_first_close[sym] = {d, close};
-                                        break;
-                                    }
-                                }
+                            const auto& series_by_child = ch.value();
+                            for (const auto& key : child_ex_dates) {
+                                auto sit = series_by_child.find(key.first);
+                                if (sit == series_by_child.end()) continue;
+                                const auto hit = LiveDailyCycle::first_close_on_or_after(
+                                    sit->second, key.second);
+                                if (!hit.first.empty()) child_first_close[key] = hit;
                             }
                         } else {
                             WARN("Could not load spinoff child closes (" +
@@ -2216,7 +2233,7 @@ int main(int argc, char* argv[]) {
                                 SpinoffChildTerms ct;
                                 ct.symbol = t.first;
                                 ct.ratio = t.second * ratio_scale;
-                                auto cf = child_first_close.find(t.first);
+                                auto cf = child_first_close.find({t.first, row.date_str});
                                 if (cf != child_first_close.end()) {
                                     ct.first_close = cf->second.second;
                                     INFO("Spinoff child price | " + t.first +
@@ -2729,15 +2746,42 @@ int main(int argc, char* argv[]) {
                     // A refusal is a decision, and it is checkable: if declining to restate
                     // leaves the basis visibly out of frame with the T-1 mark, the refusal was
                     // wrong. Same bounds and same fail-closed shape as the applied side.
+                    //
+                    // BA-24: a REFUSED SPINOFF PARENT is in neither set and used to escape
+                    // both. E2-F31 suppresses the class-1 event for a spinoff bar, so the
+                    // parent is not in `events`; a refusal applies nothing, so it is not in
+                    // `adjustments` either. The one shape with a KNOWN unrestated basis --
+                    // the runner says so itself, "carries a PRE-spinoff cost basis against a
+                    // POST-spinoff price series" -- was the one shape nothing measured. It is
+                    // added to the inspection set below.
                     {
                         std::set<std::string> applied_syms;
                         for (const auto& adj : adjustments) applied_syms.insert(adj.symbol);
 
+                        // (symbol, what was refused) over BOTH refusal paths.
+                        std::vector<std::pair<std::string, std::string>> unapplied;
                         for (const auto& ev : events) {
                             if (applied_syms.count(ev.symbol)) continue;   // it applied
-                            auto pos = previous_positions.find(ev.symbol);
+                            unapplied.emplace_back(
+                                ev.symbol,
+                                std::string(CorporateActionsApplier::type_to_string(ev.type)) +
+                                    " (ex_date " + ev.ex_date + ")");
+                        }
+                        for (const auto& adj : spinoff_log) {
+                            if (adj.outcome == LifecycleOutcome::SPUN_OFF_CHILD_HELD ||
+                                adj.outcome == LifecycleOutcome::SPUN_OFF_CHILD_SOLD) {
+                                continue;  // it applied
+                            }
+                            unapplied.emplace_back(
+                                adj.symbol,
+                                "SPINOFF to {" + adj.children_joined() + "} (ex_date " +
+                                    adj.event_date + ")");
+                        }
+
+                        for (const auto& [symbol, what] : unapplied) {
+                            auto pos = previous_positions.find(symbol);
                             if (pos == previous_positions.end()) continue; // nothing held
-                            auto mk = previous_day_close_prices.find(ev.symbol);
+                            auto mk = previous_day_close_prices.find(symbol);
                             if (mk == previous_day_close_prices.end() || !(mk->second > 0.0)) continue;
                             const double basis = pos->second.average_price.as_double();
                             if (!(basis > 0.0)) continue;
@@ -2745,9 +2789,8 @@ int main(int argc, char* argv[]) {
 
                             const double basis_to_mark = basis / mk->second;
                             if (basis_to_mark > 5.0 || basis_to_mark < 0.2) {
-                                ERROR("E2-F17 guard: " + ev.symbol + " carried an unapplied " +
-                                      std::string(CorporateActionsApplier::type_to_string(ev.type)) +
-                                      " (ex_date " + ev.ex_date + ") and its cost basis (" +
+                                ERROR("E2-F17 guard: " + symbol + " carried an unapplied " +
+                                      what + " and its cost basis (" +
                                       std::to_string(basis) + ") is implausible against the mark (" +
                                       std::to_string(mk->second) + "), ratio " +
                                       std::to_string(basis_to_mark) +
