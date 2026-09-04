@@ -65,6 +65,50 @@ public:
     }
 
     /**
+     * @brief The cost basis to record against a position on day T.
+     *
+     * A basis is established when a position is opened and has to survive every
+     * day it is held: realized PnL on exit, unrealized PnL while held, and the
+     * mean-reversion stop-loss are all measured from it. The equity runner used to
+     * seed every day-T position's average_price with the previous session's close
+     * and then correct only the symbols the strategy knew about -- which, because
+     * positions_ was never seeded, meant only the symbols that traded that day. A
+     * held-but-untraded position therefore had its basis re-anchored to the latest
+     * close every session: it always looked flat, its unrealized PnL was always
+     * ~0, and its stop-loss measured from yesterday rather than from what it cost.
+     *
+     * @param strategy_basis The weighted average BaseStrategy::on_execution()
+     *        maintains. Authoritative when set: a symbol that traded today has a
+     *        basis that already accounts for today's fills. <= 0 when the strategy
+     *        has no record of the symbol.
+     * @param carried_basis The basis the same symbol carries in the previous day's
+     *        book, AFTER corporate actions have restated it. <= 0 when the symbol
+     *        is not a carried-over holding.
+     * @return the basis to record, or 0.0 when neither source knows one. A mark is
+     *         deliberately never a candidate: the day's close is what the position is
+     *         worth, not what it cost, and substituting one for the other is the bug
+     *         above.
+     *
+     * On the 0.0 return: it means "no basis is known", and it is the CALLER's job to
+     * decide what that means for a row it is about to persist. Do not read it as a
+     * price and do not skip the write and leave the day-T placeholder in place -- that
+     * placeholder is the previous close, so skipping reinstates the very mark-as-basis
+     * substitution this function exists to prevent. The equity runner treats it as an
+     * upstream invariant failure: it logs the symbol and records a zero basis with zero
+     * unrealized PnL, so the row reads as incomplete rather than as a plausible lie.
+     *
+     * In normal flow it should be unreachable for a held position. Every holding has a
+     * basis -- it either traded today, in which case on_execution() set one from a fill
+     * that ExecutionManager refused to price without a real close, or it was carried,
+     * in which case the seeded book supplied one.
+     */
+    static double resolve_day_t_cost_basis(double strategy_basis, double carried_basis) {
+        if (strategy_basis > 0.0) return strategy_basis;
+        if (carried_basis > 0.0) return carried_basis;
+        return 0.0;
+    }
+
+    /**
      * Finalization result structure for Day T-1
      */
     struct FinalizationResult {

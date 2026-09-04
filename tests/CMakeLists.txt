@@ -67,6 +67,7 @@ set(TEST_SOURCES
     live/test_live_price_manager.cpp
     live/test_live_trading_coordinator_keying.cpp
     live/test_execution_manager.cpp
+    live/test_execution_price_integrity.cpp
     live/test_margin_manager.cpp
     live/test_live_metrics_calculator.cpp
     live/test_live_pnl_manager.cpp
@@ -84,6 +85,7 @@ set(TEST_SOURCES
     strategy/test_live_bt_signal_consistency.cpp
     strategy/test_volatility_size_1_nan_guard.cpp
     strategy/test_stale_unrealized_pnl_zero_avg_price.cpp
+    strategy/test_live_daily_cycle_seeding.cpp
     statistics/test_normalizer.cpp
     statistics/test_pca.cpp
     statistics/test_adf.cpp

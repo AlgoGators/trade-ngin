@@ -24,6 +24,7 @@
 #include "trade_ngin/live/corporate_actions_lifecycle.hpp"
 #include "trade_ngin/live/corp_action_window.hpp"
 #include "trade_ngin/live/corporate_actions_audit_log.hpp"
+#include "trade_ngin/live/live_daily_cycle.hpp"
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
 #include "trade_ngin/strategy/mean_reversion.hpp"
 #include "trade_ngin/strategy/equity_strategy_builder.hpp"
@@ -33,6 +34,7 @@
 #include "trade_ngin/live/live_metrics_calculator.hpp"
 #include "trade_ngin/live/live_trading_coordinator.hpp"
 #include "trade_ngin/live/live_price_manager.hpp"
+#include "trade_ngin/live/execution_price_resolver.hpp"
 #include "trade_ngin/live/live_pnl_manager.hpp"
 #include "trade_ngin/live/execution_manager.hpp"
 #include "trade_ngin/live/margin_manager.hpp"
@@ -542,29 +544,6 @@ int main(int argc, char* argv[]) {
                 .register_equity_costs_from_bars(symbols, bars_by_symbol);
         }
 
-        // Pre-warm strategy state so portfolio can pull price history for optimization/risk
-        INFO("Preprocessing data in strategy to populate price history...");
-        auto strat_prewarm = mr_strategy->on_data(all_bars);
-        if (strat_prewarm.is_error()) {
-            std::cerr << "Failed to preprocess data in strategy: "
-                      << strat_prewarm.error()->what() << std::endl;
-            return 1;
-        }
-
-        // Process data through portfolio pipeline (optimization + risk), mirroring backtest
-        INFO("Processing data through portfolio manager (optimization + risk)...");
-        auto port_process_result = portfolio->process_market_data(all_bars);
-        if (port_process_result.is_error()) {
-            std::cerr << "Failed to process data in portfolio manager: "
-                      << port_process_result.error()->what() << std::endl;
-            return 1;
-        }
-        INFO("Portfolio processing completed");
-
-        // Get optimized portfolio positions (integer-rounded after optimization/risk)
-        INFO("Retrieving optimized portfolio positions...");
-        auto positions = portfolio->get_portfolio_positions();
-        
         // ========================================
         // NON-TRADING DAY DETECTION
         // Find the actual previous trading day (skip weekends and holidays)
@@ -889,8 +868,10 @@ int main(int argc, char* argv[]) {
                     if (closes_result.is_error()) {
                         ERROR("Could not load raw closes for the dividend denominator: " +
                               std::string(closes_result.error()->what()) +
-                              ". Dividend adjustments would use a missing denominator and "
-                              "leave cost basis permanently wrong.");
+                              ". Every dividend in this window is therefore SKIPPED and left "
+                              "unapplied; none is recorded in trading.corp_action_applied, so "
+                              "all of them are retried on a later run. Cost bases are stale "
+                              "until then, not wrong.");
                     } else {
                         size_t added = 0;
                         for (const auto& [sym, by_date] : closes_result.value()) {
@@ -919,8 +900,10 @@ int main(int argc, char* argv[]) {
                             }
                             ERROR("No price history exists for held symbol(s): " +
                                   sym_list +
-                                  ". Corporate actions on them cannot be applied at all "
-                                  "-- reconcile these positions before continuing.");
+                                  ". Dividends on them are SKIPPED and left unapplied (no "
+                                  "dedup record is written, so they are retried once price "
+                                  "history covers the ex-date). Splits and renames, which "
+                                  "need no close, still apply. Reconcile these positions.");
                         }
                     }
                 }
@@ -1023,13 +1006,29 @@ int main(int argc, char* argv[]) {
                             c = close_before(row.ticker, row.date_str);
                         }
                         if (c <= 0.0) {
-                            auto p_it = previous_day_close_prices.find(row.ticker);
-                            c = (p_it != previous_day_close_prices.end()) ? p_it->second : 0.0;
-                            if (c > 0.0) {
-                                WARN("No historical close for " + row.ticker +
-                                     " before ex_date " + row.date_str +
-                                     " -- using today's T-1 close as a fallback");
-                            }
+                            // Deliberately NO fallback to today's T-1 close. The
+                            // denominator has to be the close as at the ex-date: the
+                            // ratio is 1 + dividend / close_at_ex_date, so a close from
+                            // a different date yields a different ratio, and the result
+                            // is written into average_price and then stamped in
+                            // trading.corp_action_applied, which stops the event ever
+                            // being reconsidered. DD's 2025-11-03 dividend of 47.50
+                            // against its ex-date close of 34.69 is a ratio of 2.3693;
+                            // against a later close of 136.98 it is 1.3468, and a true
+                            // basis of 100.00 is persisted as 175.92 forever.
+                            //
+                            // Leaving c at 0.0 makes CorporateActionsApplier skip the
+                            // event (it rejects a non-positive close), which produces no
+                            // PositionAdjustment, so no dedup row is recorded and the
+                            // dividend is reconsidered on a later run once the closes
+                            // are available. An unapplied adjustment is recoverable; a
+                            // wrongly applied one is not.
+                            ERROR("No close at or before ex_date " + row.date_str +
+                                  " for " + row.ticker +
+                                  " -- the dividend denominator cannot be established, so "
+                                  "this event is SKIPPED and left unapplied. It carries no "
+                                  "dedup record and will be retried once price history "
+                                  "covers the ex-date.");
                         }
                         ev.close_at_ex_date = c;
                         // bug_021: prefer qty at ex_date - 1; fall back to
@@ -1277,6 +1276,36 @@ int main(int argc, char* argv[]) {
             }
         }
 
+        // Seed the strategy with the previous day's holdings, then generate the day's
+        // signals. Both the ordering and the placement of this block are load-bearing:
+        // MeanReversionStrategy::generate_signal() branches on what it currently holds,
+        // so a live process -- which starts with an empty positions_ every session --
+        // has to be handed the book back first, and it has to be the book as restated
+        // by the corporate-action blocks above, since a split changes quantity and a
+        // dividend changes cost basis. See LiveDailyCycle::prepare_strategy_for_signals.
+        INFO("Seeding strategy with previous-day book and generating signals...");
+        auto strat_prewarm = LiveDailyCycle::prepare_strategy_for_signals(
+            *mr_strategy, previous_positions, all_bars);
+        if (strat_prewarm.is_error()) {
+            std::cerr << "Failed to preprocess data in strategy: "
+                      << strat_prewarm.error()->what() << std::endl;
+            return 1;
+        }
+
+        // Process data through portfolio pipeline (optimization + risk), mirroring backtest
+        INFO("Processing data through portfolio manager (optimization + risk)...");
+        auto port_process_result = portfolio->process_market_data(all_bars);
+        if (port_process_result.is_error()) {
+            std::cerr << "Failed to process data in portfolio manager: "
+                      << port_process_result.error()->what() << std::endl;
+            return 1;
+        }
+        INFO("Portfolio processing completed");
+
+        // Get optimized portfolio positions (integer-rounded after optimization/risk)
+        INFO("Retrieving optimized portfolio positions...");
+        auto positions = portfolio->get_portfolio_positions();
+
         // Verify we have prices for all required symbols
         std::set<std::string> all_symbols;
         for (const auto& [symbol, position] : positions) {
@@ -1288,14 +1317,45 @@ int main(int argc, char* argv[]) {
             all_symbols.insert(symbol);
         }
 
+        // A held position with no T-1 close is not a warning any more. Downstream the
+        // execution path will refuse to price it from a cost basis, so it would either
+        // be silently skipped or -- before that refusal existed -- filled at zero. The
+        // widened lookup below rescues the ordinary cases (halts, thin names, the
+        // session after a holiday) from real older closes; anything it cannot rescue is
+        // a genuine data gap on a position carrying real risk, and the run must not
+        // quietly price around it.
+        std::vector<std::string> missing_t1_with_position;
         for (const auto& symbol : all_symbols) {
             if (previous_day_close_prices.find(symbol) == previous_day_close_prices.end()) {
-                WARN("Missing T-1 price for symbol: " + symbol);
+                bool holds_risk = false;
+                auto pos_it = positions.find(symbol);
+                if (pos_it != positions.end() && pos_it->second.quantity.as_double() != 0.0) {
+                    holds_risk = true;
+                }
+                auto prev_it = previous_positions.find(symbol);
+                if (prev_it != previous_positions.end() &&
+                    prev_it->second.quantity.as_double() != 0.0) {
+                    holds_risk = true;
+                }
+                if (holds_risk) {
+                    missing_t1_with_position.push_back(symbol);
+                } else {
+                    WARN("Missing T-1 price for symbol: " + symbol + " (no position - ignored)");
+                }
             }
             if (two_days_ago_close_prices.find(symbol) == two_days_ago_close_prices.end() &&
                 previous_positions.find(symbol) != previous_positions.end()) {
                 WARN("Missing T-2 price for symbol: " + symbol + " (needed for PnL finalization)");
             }
+        }
+        if (!missing_t1_with_position.empty()) {
+            std::sort(missing_t1_with_position.begin(), missing_t1_with_position.end());
+            for (const auto& symbol : missing_t1_with_position) {
+                ERROR("Missing T-1 price for symbol with a non-zero position: " + symbol);
+            }
+            INFO("Will attempt to price " + std::to_string(missing_t1_with_position.size()) +
+                 " position-carrying symbol(s) from their most recent real close; any that "
+                 "cannot be priced will not trade.");
         }
 
         // ========================================
@@ -1412,21 +1472,40 @@ int main(int argc, char* argv[]) {
                 << std::setw(2) << now_tm->tm_mday;
         std::string date_str = date_ss.str();
 
-        auto execution_result = execution_manager->generate_daily_executions(
-            positions,
-            previous_positions,
-            previous_day_close_prices,
-            now
-        );
+        // Price, execute, and roll back anything that could not be priced. The rules
+        // and their rationale live in LiveDailyCycle::execute_day_t so that the runner
+        // and its tests exercise one implementation rather than two that can drift.
+        auto day_t_exec = LiveDailyCycle::execute_day_t(
+            *execution_manager, positions, previous_positions, previous_day_close_prices,
+            all_bars, now, app_config.live.execution_price_max_staleness_days);
 
-        std::vector<ExecutionReport> daily_executions;
-        if (execution_result.is_ok()) {
-            daily_executions = execution_result.value();
-            INFO("ExecutionManager generated " + std::to_string(daily_executions.size()) + " executions");
-        } else {
-            ERROR("ExecutionManager failed: " + std::string(execution_result.error()->what()));
+        if (day_t_exec.is_error()) {
+            ERROR("ExecutionManager failed: " + std::string(day_t_exec.error()->what()));
             // No fallback - component is required to work
             throw std::runtime_error("ExecutionManager failed");
+        }
+
+        auto exec_outcome = day_t_exec.value();
+        std::vector<ExecutionReport> daily_executions = exec_outcome.executions;
+        INFO("ExecutionManager generated " + std::to_string(daily_executions.size()) +
+             " executions");
+
+        for (const auto& entry : exec_outcome.widened_prices) {
+            INFO("BASIS TRACE | price widened | " + entry +
+                 " (no T-1 close; used most recent real session)");
+        }
+        for (const auto& symbol : exec_outcome.unpriced) {
+            ERROR("BASIS TRACE | unpriced | " + symbol + " has no close within " +
+                  std::to_string(app_config.live.execution_price_max_staleness_days) +
+                  " days - it did not trade today");
+        }
+        for (const auto& symbol : exec_outcome.rolled_back) {
+            auto prev_it = previous_positions.find(symbol);
+            double carried =
+                prev_it != previous_positions.end() ? prev_it->second.quantity.as_double() : 0.0;
+            ERROR("BASIS TRACE | rolled back | " + symbol +
+                  " day-T target discarded, book restored to carried quantity " +
+                  std::to_string(carried) + " (unpriced, no execution)");
         }
 
         // Feed executions back to strategy for cost basis tracking.
@@ -1442,29 +1521,39 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        // Now update Day T positions with the corrected average_price from on_execution().
-        // The strategy's positions now have correct cost basis from weighted averaging.
+        // Now resolve each day-T position's cost basis. The rules -- strategy basis
+        // from on_execution, else the carried (post-corporate-action) basis, and never
+        // a mark -- and the handling of the residual live in
+        // LiveDailyCycle::resolve_and_apply_basis, so the runner and its tests share
+        // one implementation. Marks come from the same widened price map the fills were
+        // priced at, so unrealized PnL and the executions agree on what a symbol was
+        // worth today.
         auto strategy_positions = mr_strategy->get_positions();
-        for (auto& [symbol, current_position] : positions) {
+        for (const auto& [symbol, pos] : positions) {
+            if (pos.quantity.as_double() == 0.0) continue;
             auto strat_it = strategy_positions.find(symbol);
-            if (strat_it != strategy_positions.end()) {
-                double cost_basis = strat_it->second.average_price.as_double();
-                if (cost_basis > 0.0) {
-                    current_position.average_price = Decimal(cost_basis);
-                    // Recalculate unrealized PnL with correct cost basis
-                    double current_price = 0.0;
-                    if (previous_day_close_prices.find(symbol) != previous_day_close_prices.end()) {
-                        current_price = previous_day_close_prices[symbol];
-                    }
-                    if (current_price > 0.0 && current_position.quantity.as_double() != 0.0) {
-                        current_position.unrealized_pnl = Decimal(
-                            current_position.quantity.as_double() * (current_price - cost_basis));
-                    }
-                    // Carry realized PnL from strategy
-                    current_position.realized_pnl = strat_it->second.realized_pnl;
-                }
-            }
+            auto carried_it = previous_positions.find(symbol);
+            DEBUG("BASIS TRACE | inputs | " + symbol + " strategy=" +
+                  (strat_it != strategy_positions.end()
+                       ? std::to_string(strat_it->second.average_price.as_double())
+                       : std::string("none")) +
+                  " carried=" +
+                  (carried_it != previous_positions.end()
+                       ? std::to_string(carried_it->second.average_price.as_double())
+                       : std::string("none")));
         }
+
+        auto unresolved_basis = LiveDailyCycle::resolve_and_apply_basis(
+            positions, strategy_positions, previous_positions, exec_outcome.execution_prices);
+
+        for (const auto& symbol : unresolved_basis) {
+            ERROR("BASIS TRACE | UNRESOLVED | " + symbol +
+                  " holds a non-zero quantity with no cost basis from either the strategy "
+                  "or the carried book. Recorded basis 0 and zero unrealized PnL rather "
+                  "than substituting today's close. This is an upstream invariant "
+                  "failure - investigate.");
+        }
+
         // Log final Day T position state
         for (const auto& [symbol, pos] : positions) {
             if (pos.quantity.as_double() != 0.0) {
@@ -2009,8 +2098,14 @@ int main(int argc, char* argv[]) {
                             INFO("✓ Valid portfolio value for Day T-1: $" + std::to_string(portfolio_value));
 
                             // Create a temporary LiveResultsManager for Day T-1 equity update
+                            // portfolio_id is NOT defaultable here: LiveResultsManager
+                            // falls back to "BASE_PORTFOLIO", the futures book, so
+                            // omitting it files this portfolio's equity curve under a
+                            // portfolio it does not belong to while EQUITY_MR_PORTFOLIO
+                            // gets no row at all. live_portfolio_conservative.cpp:2217
+                            // passes it at the byte-identical call site.
                             auto yesterday_manager = std::make_unique<LiveResultsManager>(
-                                db, true, "LIVE_EQUITY_MEAN_REVERSION"
+                                db, true, kEquityStrategyId, portfolio_id, kEquityStrategyName
                             );
                             yesterday_manager->set_equity(portfolio_value);
 

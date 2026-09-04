@@ -167,11 +167,18 @@ struct LiveSpecificConfig {
     // as running on stale data. WARNs in historical-replay mode, ERRORs in true-live
     // mode (review T2.9). Default absorbs a weekend plus a holiday.
     int data_staleness_tolerance_days{4};
+    // How old (calendar days) a substituted close may be when a symbol has no T-1
+    // print and is about to trade. Five covers every ordinary session gap -- a
+    // three-day weekend plus a further holiday reaches Wednesday -- so anything
+    // beyond it means the symbol is halted or missing from the feed, not merely
+    // between sessions. Symbols exceeding the bound are not traded.
+    int execution_price_max_staleness_days{5};
 
     nlohmann::json to_json() const {
         nlohmann::json j;
         j["historical_days"] = historical_days;
         j["data_staleness_tolerance_days"] = data_staleness_tolerance_days;
+        j["execution_price_max_staleness_days"] = execution_price_max_staleness_days;
         return j;
     }
 
@@ -180,6 +187,9 @@ struct LiveSpecificConfig {
             historical_days = j.at("historical_days").get<int>();
         if (j.contains("data_staleness_tolerance_days"))
             data_staleness_tolerance_days = j.at("data_staleness_tolerance_days").get<int>();
+        if (j.contains("execution_price_max_staleness_days"))
+            execution_price_max_staleness_days =
+                j.at("execution_price_max_staleness_days").get<int>();
     }
 };
 
