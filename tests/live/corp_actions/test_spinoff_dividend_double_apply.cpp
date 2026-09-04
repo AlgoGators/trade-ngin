@@ -18,12 +18,21 @@
 // basis of 106.07 goes to 89.5155 (correct) and then to 75.5486 (wrong by 15.6 %), and the
 // child's allocated basis is struck off the wrong pool.
 //
-// THE FIX IS A REFUSAL, NOT A CORRECTION. By the time the second run notices, the book is
-// already wrong and the ledger cannot put it right: the share count held on the ex-date and
-// the child's first close at the time were never recorded against the dividend row. Inventing
-// either would be a guess written into `average_price` and stamped in
-// `trading.corp_action_applied`, where nothing reconsiders it. The run refuses to route,
-// names the double-apply, and leaves it to a human.
+// WHAT IS ACTUALLY WRONG, AND WHAT IS NOT (corrected in B-5d). The class-1 dividend divided
+// the basis by 1 + d/c against the same ex-date close `SpinoffBarColumns` uses, and on a
+// dividend-encoded bar that is EXACTLY the factor the spinoff path would have divided by. So
+// the PARENT'S BASIS IS ALREADY RIGHT. The first version of this WARN said the book "needs a
+// manual restatement", which pointed a reader at the one number that is correct.
+//
+// What is missing is the CHILD: never received, never priced, never sold. The value that left
+// the parent's basis -- the pool `B(1 - 1/F)` -- went nowhere instead of into the child's.
+//
+// THE FIX IS STILL A REFUSAL, NOT A CORRECTION, but for a narrower reason: delivering the
+// child now would need the share count held on the ex-date and the child's first close at the
+// time, and the dividend row recorded neither. Inventing either would be a guess written into
+// `average_price` and stamped in `trading.corp_action_applied`, where nothing reconsiders it.
+// (A bar that also folds a split_factor above 1 into the distribution is the one case where
+// the parent IS additionally short; the WARN names that factor when it is there.)
 
 #include <gtest/gtest.h>
 
@@ -35,6 +44,7 @@
 
 #include "trade_ngin/live/corporate_actions_applier.hpp"
 #include "trade_ngin/live/corporate_actions_audit_log.hpp"
+#include "trade_ngin/live/corporate_actions_lifecycle.hpp"
 
 using namespace trade_ngin;
 
@@ -130,6 +140,45 @@ TEST(SpinoffDividendDoubleApply, RoutingItAgainWouldRestateTheBasisTwiceOverMMMs
     EXPECT_NEAR(pool_wrong, pool_correct / factor, 1e-9);
 }
 
+// The arithmetic the corrected WARN rests on, not just its wording: on a dividend-encoded
+// spinoff bar the factor the class-1 applier used IS the factor the spinoff path would have
+// used, so the parent's basis is right and nothing about it needs repairing.
+TEST(SpinoffDividendDoubleApply, TheClass1DividendFactorIsTheSpinoffFactorOnADividendBar) {
+    // MMM 2024-04-01: div_cash 17.3875 against a raw ex-date close of 94.02, no split column.
+    SpinoffBarColumns mmm;
+    mmm.has_dividend = true;
+    mmm.dividend_cash = 17.3875;
+    mmm.close_at_ex_date = 94.02;
+
+    EXPECT_DOUBLE_EQ(mmm.dividend_factor(), mmm.spinoff_factor())
+        << "the class-1 dividend and the spinoff divide the parent's basis by the SAME "
+           "number, which is why an already-applied dividend leaves the basis correct";
+    EXPECT_NEAR(mmm.spinoff_factor(), 1.1849340565837057, 1e-12);
+    EXPECT_FALSE(mmm.has_reverse_split());
+
+    // A reverse-split bar is the same story for the distribution half: the reverse split is
+    // routed to class 1 on its own and answers to its own dedup row.
+    SpinoffBarColumns hlt;
+    hlt.has_split = true;
+    hlt.split_factor = 0.3333333333;
+    hlt.has_dividend = true;
+    hlt.dividend_cash = 24.48;
+    hlt.close_at_ex_date = 58.00;
+    EXPECT_NEAR(hlt.spinoff_factor(), hlt.dividend_factor(), 1e-9);
+
+    // The ONE case where the parent really is left short: a split_factor above 1 folded into
+    // the distribution. The WARN names that residual factor when it is there.
+    SpinoffBarColumns abt;
+    abt.has_split = true;
+    abt.split_factor = 1.0688328345;
+    abt.has_dividend = true;
+    abt.dividend_cash = 2.9154459753;
+    abt.close_at_ex_date = 42.32;
+    EXPECT_NE(abt.spinoff_factor(), abt.dividend_factor());
+    EXPECT_NEAR(abt.spinoff_factor() / abt.dividend_factor(), 1.0688328345, 1e-9)
+        << "the residual is exactly the folded split factor";
+}
+
 TEST(SpinoffDividendDoubleApply, TheRoutingAsksTheLedgerAndRefusesRatherThanCorrecting) {
     const std::string src = read_runner();
     if (src.empty()) GTEST_SKIP() << "runner source not found from the test working directory";
@@ -143,12 +192,18 @@ TEST(SpinoffDividendDoubleApply, TheRoutingAsksTheLedgerAndRefusesRatherThanCorr
     EXPECT_NE(src.find("dividend_already_applied ||"), std::string::npos)
         << "the answer must feed row_stays_class1, or asking changes nothing";
 
-    // And it says so, loudly, naming the double-apply and refusing to invent a repair.
-    EXPECT_NE(src.find("SPINOFF REFUSED -- ALREADY APPLIED AS A DIVIDEND"), std::string::npos);
-    EXPECT_NE(src.find("needs a manual restatement (BA-26)"), std::string::npos)
-        << "the WARN must say the book cannot be repaired from the ledger -- the share count "
-           "and the child's first close at the time were never recorded -- rather than "
-           "implying the run has fixed it";
+    // And it says so, loudly, and says the RIGHT thing about what is broken.
+    EXPECT_NE(src.find("SPINOFF NOT ROUTED -- THIS BAR WAS ALREADY APPLIED AS A "), std::string::npos);
+    EXPECT_NE(src.find("'s cost basis is ALREADY CORRECT and must not be restated "),
+              std::string::npos)
+        << "the parent basis is right -- the class-1 dividend divided by the same factor the "
+           "spinoff would have -- and a WARN that sends someone to restate it points them at "
+           "the one number that is correct";
+    EXPECT_NE(src.find("What is missing is the DISTRIBUTION"), std::string::npos)
+        << "the WARN must name what IS missing: the child, never received, never priced, "
+           "never sold";
+    EXPECT_EQ(src.find("needs a manual restatement"), std::string::npos)
+        << "the superseded wording is back";
 }
 
 TEST(SpinoffDividendDoubleApply, AnUnrecordedDividendDoesNotBlockANormalSpinoff) {

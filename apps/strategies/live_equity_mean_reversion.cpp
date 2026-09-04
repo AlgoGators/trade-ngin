@@ -2031,20 +2031,56 @@ int main(int argc, char* argv[]) {
                     // happened, and leave it to a human.
                     if (audit_log.is_applied(key.first, key.second,
                                              CorpActionType::DIVIDEND)) {
-                        WARN("SPINOFF REFUSED -- ALREADY APPLIED AS A DIVIDEND: " + key.first +
-                             " on " + key.second +
-                             ". An earlier run applied this bar's div_cash row as an ordinary "
-                             "class-1 dividend (the deal-terms row that identifies it as a "
-                             "distribution arrived later) and wrote its dedup row, so the "
-                             "cost basis has ALREADY been divided by " +
+                        // What is actually wrong, and what is not.
+                        //
+                        // The class-1 dividend divided the basis by 1 + d/c using the same
+                        // ex-date close SpinoffBarColumns uses, and on a dividend-encoded bar
+                        // that is EXACTLY the factor the spinoff path would have divided by.
+                        // So the parent's basis is already right; it is the CHILD that is
+                        // missing. Only a bar that also folds a split_factor above 1 into the
+                        // distribution leaves the parent short, by that factor -- named below
+                        // when it is there.
+                        const double residual =
+                            col.dividend_factor() > 0.0
+                                ? col.spinoff_factor() / col.dividend_factor()
+                                : 1.0;
+                        const bool parent_basis_is_right = std::abs(residual - 1.0) < 1e-9;
+                        std::string children_named;
+                        {
+                            auto terms = spinoff_terms.find(key);
+                            if (terms != spinoff_terms.end()) {
+                                for (const auto& t : terms->second) {
+                                    if (!children_named.empty()) children_named += ", ";
+                                    children_named += t.first + " x" + std::to_string(t.second);
+                                }
+                            }
+                        }
+                        WARN("SPINOFF NOT ROUTED -- THIS BAR WAS ALREADY APPLIED AS A "
+                             "DIVIDEND: " + key.first + " on " + key.second +
+                             ". An earlier run applied its div_cash row as an ordinary class-1 "
+                             "dividend (the deal-terms row that identifies it as a "
+                             "distribution arrived later) and wrote the dedup row. The factor "
+                             "it divided the basis by (" +
                              std::to_string(col.dividend_factor()) +
-                             ". Routing it as a spinoff now would divide by that a SECOND "
-                             "time and deliver a child against a twice-restated basis. "
-                             "NOTHING is applied. The book currently holds " + key.first +
-                             " at a dividend-restated basis and none of its children; that "
-                             "cannot be repaired from the ledger -- the share count and the "
-                             "child's first close at the time were never recorded -- so it "
-                             "needs a manual restatement (BA-26).");
+                             ") is the SAME factor the spinoff path would have used, so " +
+                             key.first +
+                             "'s cost basis is ALREADY CORRECT and must not be restated "
+                             "again -- routing this bar now would divide by it a second time. "
+                             "What is missing is the DISTRIBUTION: {" +
+                             (children_named.empty() ? std::string("the child/children")
+                                                     : children_named) +
+                             "} were never received, never priced and never sold, so the "
+                             "value that left the parent's basis went nowhere instead of into "
+                             "theirs" +
+                             (parent_basis_is_right
+                                  ? std::string(".")
+                                  : " -- AND this bar folds a split_factor into the "
+                                    "distribution, so the parent is additionally short by a "
+                                    "factor of " + std::to_string(residual) + ".") +
+                             " NOTHING is applied. Delivering the children now would need the "
+                             "share count held on the ex-date and each child's first close at "
+                             "the time; the dividend row recorded neither and this run does "
+                             "not guess at them (BA-26).");
                     }
                     if (!col.routes_a_spinoff()) {
                         WARN("SPINOFF REFUSED for " + key.first + " on " + key.second +
