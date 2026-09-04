@@ -85,7 +85,12 @@ inline bool basis_is_known(double v) { return v > 0.0; }
 /**
  * @brief The P&L difference the two frames MUST show, and which is not a break.
  *
- *     U_book - (U_broker + D) = q * B_broker * (1 - 1 / PRODUCT r_i) - q * SUM d_i
+ *     U_book - (U_broker + D) = q * B_broker * (1 - 1 / PRODUCT r_i) - q * SUM (d_i / S_i)
+ *
+ * where `S_i` is the product of the SPLIT factors applied after event i (BA-23). Per-share
+ * cash may not be summed across a split: a dividend paid before a 4:1 split was paid on a
+ * quarter of today's shares, and charging it at today's count over-states the cash by the
+ * split factor -- which is the size of error this comparison exists to detect.
  *
  * For a single dividend this is the closed form in the rule,
  * `q * d * (B_broker - (c + d)) / (c + d)` -- the dividend times the relative distance

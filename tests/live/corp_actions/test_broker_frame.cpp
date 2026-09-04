@@ -197,8 +197,12 @@ TEST(BrokerFrame, PnLGapEqualsDividendTimesBasisDistance) {
         EXPECT_NEAR(q * (M2 - b_book) - (q * (M2 - b_broker) + q * d), gap, 1e-9);
     }
 
-    // Case 3 -- a chain of two dividends and a split. The general form must still equal the
-    // definition, and the split must again contribute nothing.
+    // Case 3 -- a chain of two dividends and a split BETWEEN them (BA-23). The cash the
+    // broker actually paid is NOT `q * (0.63 + 0.24)`: the 0.63 was paid before a 4:1 split,
+    // when the holder had a quarter of today's shares. Both this derivation and the
+    // implementation used to sum the two per-share figures and charge them at today's count,
+    // which over-states the cash by the split factor -- the same size of error the whole
+    // comparison exists to detect, hidden because the test made the same mistake.
     {
         const double b_broker = 90.0;
         const std::vector<broker_frame::AppliedEvent> chain = {
@@ -206,19 +210,88 @@ TEST(BrokerFrame, PnLGapEqualsDividendTimesBasisDistance) {
             split("2026-08-11", 4.0),
             dividend("2026-10-14", 0.24, 30.00),
         };
-        double product = 1.0, cash = 0.0;
+
+        // Derived from the share counts, not from a per-share sum. q = 100 today, so the
+        // holder had 25 shares when the first dividend paid and 100 when the second did.
+        const double q_at_first_dividend = q / 4.0;
+        const double cash_dollars = q_at_first_dividend * 0.63 + q * 0.24;
+        EXPECT_DOUBLE_EQ(cash_dollars, 39.75);
+        EXPECT_NE(cash_dollars, q * (0.63 + 0.24))
+            << "the naive per-share sum charges $87.00 of cash that was never paid";
+
+        double product = 1.0;
         for (const auto& ev : chain) {
-            if (!broker_frame::is_dividend(ev)) continue;
-            product *= ev.ratio;
-            cash += ev.dividend_per_share;
+            if (broker_frame::is_dividend(ev)) product *= ev.ratio;
         }
         const double b_book = b_broker / product;
 
         const double gap = broker_frame::expected_pnl_gap(q, b_broker, chain);
         const double M = 77.0;
         const double u_book = q * (M - b_book);
-        const double u_broker_plus_cash = q * (M - b_broker) + q * cash;
+        const double u_broker_plus_cash = q * (M - b_broker) + cash_dollars;
         EXPECT_NEAR(u_book - u_broker_plus_cash, gap, 1e-9);
+
+        // The mark still cancels.
+        const double M2 = 12.5;
+        EXPECT_NEAR(q * (M2 - b_book) - (q * (M2 - b_broker) + cash_dollars), gap, 1e-9);
+    }
+
+    // Case 4 -- the split's position in the chain is what decides the answer. Same two
+    // dividends, same split factor, split moved to the END: now BOTH dividends were paid
+    // pre-split, and the cash is a quarter of each at today's count.
+    {
+        const double b_broker = 90.0;
+        const std::vector<broker_frame::AppliedEvent> late_split = {
+            dividend("2026-04-15", 0.63, 100.00),
+            dividend("2026-10-14", 0.24, 30.00),
+            split("2026-11-02", 4.0),
+        };
+        const double cash_dollars = (q / 4.0) * 0.63 + (q / 4.0) * 0.24;
+        double product = 1.0;
+        for (const auto& ev : late_split) {
+            if (broker_frame::is_dividend(ev)) product *= ev.ratio;
+        }
+        const double b_book = b_broker / product;
+        const double gap = broker_frame::expected_pnl_gap(q, b_broker, late_split);
+        const double M = 77.0;
+        EXPECT_NEAR(q * (M - b_book) - (q * (M - b_broker) + cash_dollars), gap, 1e-9);
+
+        // ... and moving the split to the FRONT (both dividends post-split) gives a third,
+        // larger answer. If these three ever agree, the split has stopped being accounted for.
+        const std::vector<broker_frame::AppliedEvent> early_split = {
+            split("2026-01-02", 4.0),
+            dividend("2026-04-15", 0.63, 100.00),
+            dividend("2026-10-14", 0.24, 30.00),
+        };
+        const double gap_early = broker_frame::expected_pnl_gap(q, b_broker, early_split);
+        EXPECT_NE(gap, gap_early);
+        EXPECT_NEAR(q * (M - b_book) - (q * (M - b_broker) + q * (0.63 + 0.24)), gap_early,
+                    1e-9);
+    }
+
+    // Case 5 -- a split and a dividend on the SAME ex-date (the E2-F47 bar shape). The
+    // per-bar feed emits the split row first and the applier applies it first, so the
+    // dividend was paid at the POST-split count: its own bar's split is not in S_i. Order
+    // within the vector must not matter -- the chain is sorted with splits first on a tie.
+    {
+        const double b_broker = 90.0;
+        const std::vector<broker_frame::AppliedEvent> split_first = {
+            split("2026-08-11", 4.0),
+            dividend("2026-08-11", 0.24, 30.00),
+        };
+        const std::vector<broker_frame::AppliedEvent> dividend_first = {
+            dividend("2026-08-11", 0.24, 30.00),
+            split("2026-08-11", 4.0),
+        };
+        const double a = broker_frame::expected_pnl_gap(q, b_broker, split_first);
+        const double b = broker_frame::expected_pnl_gap(q, b_broker, dividend_first);
+        EXPECT_DOUBLE_EQ(a, b) << "the answer depended on the order the rows happened to "
+                                  "arrive in, not on the dates they carry";
+
+        const double product = broker_frame::dividend_basis_ratio(0.24, 30.00);
+        const double b_book = b_broker / product;
+        const double M = 77.0;
+        EXPECT_NEAR(q * (M - b_book) - (q * (M - b_broker) + q * 0.24), a, 1e-9);
     }
 
     // A chain with no dividend has no gap -- splits alone leave the frames identical.
