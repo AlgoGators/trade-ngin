@@ -286,53 +286,86 @@ constexpr const char* kBarEraFloor = "2020-01-01";
 // (ticker, date, action) triples KNOWN to be silent and accepted. The allowlist
 // is the point of the test: a corporate action nothing applies is tolerable only
 // once somebody has looked at it and written down why.
+//
+// B-5b widened the scan from the configured book to EVERY symbol with bars since
+// 2020-01-01 (see tripwire_universe()), which is what E2-F41 asked for: the
+// ten-symbol book hid the whole class. Measured 2026-09-04, universe-wide, with a
+// bar present on the ex-date: 87 dividends, 5 `spinoff` + 5 `spinoffdividend`,
+// 1 adrratiosplit, 1 split.
+//
+// The QUANTITY-CHANGING and DISTRIBUTION-BEARING shapes are enumerated here, one
+// row each, because those are the ones a silent no-op cannot be recovered from --
+// a share count that never adjusts, or a child never received. Dividends are the
+// numerous, less dangerous shape and are bounded by count instead (see
+// kMaxSilentDividends); listing 87 of them would make this a data dump rather
+// than a decision.
 const std::set<std::vector<std::string>>& allowlisted_silent_class1() {
     static const std::set<std::vector<std::string>> a = {
         // The Millrose (MRP) spin-off. Tiingo encoded it in neither split_factor
         // nor div_cash on the LEN bar, so the class-1 applier cannot see it at
-        // all. Receipt of the child is E4 NEW-5(B); until that lands, LEN is not
-        // in the traded universe and this row is inert. Both vendor labels for
-        // the one event are listed -- corporate_action carries a `spinoff` row
-        // (ratio 0.5) and a `spinoffdividend` row (11.495) for the same date.
+        // all. E2-F31 receives spinoff children now, but it is driven by the
+        // PER-BAR row: a bar with no move produces no row, so the routing never
+        // fires and this stays silent. LEN is not in the traded universe.
+        // Both vendor labels for the one event are listed -- corporate_action
+        // carries a `spinoff` row (ratio 0.5) and a `spinoffdividend` row
+        // (11.495) for the same date.
         {"LEN", "2025-02-07", "spinoff"},
         {"LEN", "2025-02-07", "spinoffdividend"},
+
+        // The four other spinoffs of the same shape, none in any equity config.
+        // Each is a real distribution the bar does not carry, so E2-F31 cannot
+        // see them either; each is now announced at run time by the E2-F41
+        // cross-check if the symbol is ever held.
+        {"TT", "2020-03-02", "spinoff"},           // Trane -> Ingersoll Rand, 0.8824
+        {"TT", "2020-03-02", "spinoffdividend"},   // ... 29.8162 the same day
+        {"MTCH", "2020-07-01", "spinoff"},         // Match -> IAC, 2.0
+        {"MTCH", "2020-07-01", "spinoffdividend"}, // ... 222.315
+        {"OXY", "2020-08-03", "spinoff"},          // Occidental -> OXY.WS warrants, 0.125
+        {"OXY", "2020-08-03", "spinoffdividend"},  // ... 0.6
+        {"AMC", "2022-08-22", "spinoff"},          // AMC -> APE units, 1.0
+        {"AMC", "2022-08-22", "spinoffdividend"},  // ... 69.5
+
+        // BIDU's 2021 ADR ratio change: value 80 with a flat bar. An ADR ratio
+        // change IS a share-count change, so a silent one is the dangerous kind;
+        // it is allowlisted because BIDU is in no equity config, not because it
+        // is harmless.
+        {"BIDU", "2021-03-01", "adrratiosplit"},
+
+        // MBC 2022-12-15 `split` with value 1280 and a flat bar. A 1280:1 split
+        // is not a corporate action, it is a units artefact in the deal-terms
+        // feed (MBC listed in December 2022); the bar is right and the row is
+        // wrong. In no equity config.
+        {"MBC", "2022-12-15", "split"},
     };
     return a;
 }
 
-// The symbols a live equity run can reach: every symbol named by an equity
-// portfolio config on this machine, plus the symbols this tripwire exists to
-// keep watching. LEN is not in the configured book -- it is here because it is
-// the proven instance of the failure, and dropping it would make the test
-// green by looking away.
-std::vector<std::string> tripwire_universe() {
-    namespace fs = std::filesystem;
-    std::set<std::string> symbols = {"LEN"};
+// Dividends whose ex-date bar carries div_cash 0 are the numerous shape: 87 of
+// them universe-wide since 2020. They are still unapplied basis restatements, so
+// the count is pinned -- it may not grow without somebody looking -- but they are
+// not enumerated. A dividend cannot change a share count, and the equity book's
+// own dividends are all visible to the per-bar applier (the E2-F41 run-time
+// cross-check reports zero for the configured universe on both gate windows).
+constexpr size_t kMaxSilentDividends = 95;
 
-    fs::path dir = fs::current_path();
-    for (int i = 0; i < 8 && !dir.empty(); ++i) {
-        bool found_any = false;
-        for (const char* rel : {"config/portfolios/equity_mr/portfolio.json",
-                                "config_template/portfolios/equity_mr/portfolio.json"}) {
-            fs::path candidate = dir / rel;
-            if (!fs::exists(candidate)) continue;
-            found_any = true;
-            try {
-                std::ifstream in(candidate);
-                nlohmann::json j = nlohmann::json::parse(in);
-                for (const auto& [name, def] : j.at("strategies").items()) {
-                    (void)name;
-                    if (!def.contains("symbols")) continue;
-                    for (const auto& s : def.at("symbols")) symbols.insert(s.get<std::string>());
-                }
-            } catch (const std::exception&) {
-                // A malformed config must not silently shrink the scan set; the
-                // size assertion in the test catches that.
-            }
-        }
-        if (found_any) break;
-        dir = dir.parent_path();
-    }
+// EVERY symbol with bars in the era a live book can reach -- not the configured
+// ten (E2-F41, widened in B-5b).
+//
+// Scanning the configured universe was the flaw the finding names: the book holds
+// ten symbols and the whole silent class lives outside them, so the tripwire was
+// green while ~99 rows sat unapplied one config edit away. `equities_data.ohlcv_1d`
+// since 2020-01-01 is roughly 850 symbols, which is the set any equity config on
+// this branch can name, and the join is indexed on (symbol, time).
+std::vector<std::string> tripwire_universe(const std::string& conn) {
+    pqxx::connection c(conn);
+    pqxx::work w(c);
+    auto rows = w.exec(
+        "SELECT DISTINCT symbol FROM equities_data.ohlcv_1d WHERE time >= $1::date",
+        pqxx::params{std::string(kBarEraFloor)});
+    w.commit();
+
+    std::set<std::string> symbols = {"LEN"};  // the proven instance, kept even if it ever loses bars
+    for (const auto& r : rows) symbols.insert(r[0].c_str());
     return std::vector<std::string>(symbols.begin(), symbols.end());
 }
 
@@ -381,16 +414,26 @@ std::vector<SilentClass1Row> scan_silent_class1(const std::string& conn,
 // (a) The silent no-op. A bar exists, the applier reads it, and it says nothing
 // happened.
 TEST_F(CorpActionQueryBoundsDbTest, NoSilentlyUnappliedClass1RowInTheLiveUniverse) {
-    const auto universe = tripwire_universe();
-    ASSERT_GE(universe.size(), 5u)
-        << "no equity portfolio config was found; scanning one symbol proves nothing";
+    const auto universe = tripwire_universe(conn_string_);
+    ASSERT_GE(universe.size(), 500u)
+        << "the scan set is " << universe.size()
+        << " symbols; E2-F41 is precisely that the ten configured names hide the class, so a "
+           "small set here proves nothing";
 
     const auto silent = scan_silent_class1(conn_string_, universe);
 
     std::vector<std::string> unexplained;
+    size_t silent_dividends = 0;
     for (const auto& s : silent) {
         if (!s.has_bar) continue;  // shape (b), pinned by the next test
         if (allowlisted_silent_class1().count({s.ticker, s.date, s.action})) continue;
+        // Dividends are bounded by count rather than enumerated -- see the comment on
+        // kMaxSilentDividends. They cannot change a share count, and 87 named rows would
+        // turn this allowlist into a data dump nobody reads.
+        if (s.action == "dividend") {
+            ++silent_dividends;
+            continue;
+        }
         unexplained.push_back(s.ticker + " " + s.date + " " + s.action +
                               " (bar present, split_factor=" + std::to_string(s.split_factor) +
                               " div_cash=" + std::to_string(s.div_cash) + ")");
@@ -400,11 +443,23 @@ TEST_F(CorpActionQueryBoundsDbTest, NoSilentlyUnappliedClass1RowInTheLiveUnivers
     for (const auto& u : unexplained) detail += "\n    " + u;
     EXPECT_TRUE(unexplained.empty())
         << unexplained.size()
-        << " class-1 corporate_action row(s) have a bar on the ex-date that carries no "
-           "move, so the applier is a silent no-op and the cost basis is never restated:"
+        << " class-1 corporate_action row(s) that CHANGE A SHARE COUNT or DELIVER A "
+           "SECURITY have a bar on the ex-date that carries no move, so the applier is a "
+           "silent no-op and neither the quantity nor the cost basis is ever restated:"
         << detail
         << "\n  Either the bar data is wrong (fix the feed) or the row is genuinely "
            "inapplicable (add it to allowlisted_silent_class1 with the reason).";
+
+    EXPECT_LE(silent_dividends, kMaxSilentDividends)
+        << silent_dividends << " dividends across the whole universe have a flat ex-date bar "
+           "(bound " << kMaxSilentDividends
+        << "). Each is an unapplied basis restatement. The bound exists so the class cannot "
+           "grow unnoticed -- if the feed has degraded, raise it deliberately and say why; if "
+           "a configured symbol is now among them, the run-time E2-F41 cross-check will name "
+           "it every session.";
+    EXPECT_GT(silent_dividends, 0u)
+        << "no silent dividends at all means the scan is not reaching the table; E2-F41 "
+           "measured 87 on 2026-09-04";
 }
 
 // The allowlist must never become a rubber stamp: every entry has to name a row
@@ -414,7 +469,7 @@ TEST_F(CorpActionQueryBoundsDbTest, EveryAllowlistedSilentRowStillExistsAndIsSti
     ASSERT_FALSE(allowlisted_silent_class1().empty())
         << "an empty allowlist makes the tripwire above prove nothing about LEN";
 
-    const auto silent = scan_silent_class1(conn_string_, tripwire_universe());
+    const auto silent = scan_silent_class1(conn_string_, tripwire_universe(conn_string_));
     std::set<std::vector<std::string>> observed;
     for (const auto& s : silent) {
         if (s.has_bar) observed.insert({s.ticker, s.date, s.action});
@@ -432,7 +487,7 @@ TEST_F(CorpActionQueryBoundsDbTest, EveryAllowlistedSilentRowStillExistsAndIsSti
 // dividends. A split or spinoff whose ex-date has no bar means a share count
 // that never adjusts, which no later run can repair.
 TEST_F(CorpActionQueryBoundsDbTest, AMissingBarOnAClass1DateIsOnlyEverADividend) {
-    const auto silent = scan_silent_class1(conn_string_, tripwire_universe());
+    const auto silent = scan_silent_class1(conn_string_, tripwire_universe(conn_string_));
 
     std::vector<std::string> quantity_changing;
     size_t missing_bar_dividends = 0;

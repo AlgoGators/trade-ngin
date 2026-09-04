@@ -1782,6 +1782,76 @@ int main(int argc, char* argv[]) {
                     }
                 }
 
+                // ---- E2-F41: a class-1 deal-terms row the per-bar feed does not carry ----
+                //
+                // Class-1 effects are sourced PER BAR: everything in this block reads
+                // ohlcv_1d.split_factor and ohlcv_1d.div_cash, never corporate_action.value.
+                // So a class-1 row in the deal-terms feed whose ex-date bar is FLAT is applied
+                // by nothing at all -- no error, no WARN, no dedup row, no deferral -- and the
+                // position carries an unrestated cost basis across a real event forever.
+                //
+                // LEN 2025-02-07 is the proven instance: `spinoff` MRP 0.5 and
+                // `spinoffdividend` 11.495 in corporate_action, while the LEN bar for that day
+                // says split_factor 1 and div_cash 0 and the close fell 127.25 -> 121.94.
+                // Universe-wide since 2020 the class is 99 rows -- 87 dividends, 5 spinoff +
+                // 5 spinoffdividend pairs, 1 adrratiosplit and 1 split -- and the ten-symbol
+                // book hides every one of them. Nothing here CHANGES: the applier still has no
+                // input to act on. What changes is that the run says so.
+                //
+                // Scoped to symbols actually HELD, over the same window the per-bar fetch
+                // used, so it costs one indexed read and can only speak about positions this
+                // book carries.
+                if (!previous_positions.empty()) {
+                    std::vector<std::string> held_syms_for_terms;
+                    for (const auto& [sym, pos] : previous_positions) {
+                        if (std::abs(pos.quantity.as_double()) > 1e-9)
+                            held_syms_for_terms.push_back(sym);
+                    }
+                    if (!held_syms_for_terms.empty()) {
+                        std::sort(held_syms_for_terms.begin(), held_syms_for_terms.end());
+                        auto class1_terms = db->get_corporate_actions(
+                            held_syms_for_terms, std::string(start_buf), std::string(today_buf),
+                            vendor_labels_for_class(CorpActionClass::PRICE_RESTATING));
+                        if (class1_terms.is_error()) {
+                            WARN("Could not cross-check the class-1 deal-terms feed against the "
+                                 "per-bar feed (" + std::string(class1_terms.error()->what()) +
+                                 ") -- a corporate action the bars do not carry would go "
+                                 "unannounced this run (E2-F41).");
+                        } else {
+                            // Every (ticker, ex-date) the PER-BAR feed produced a row for.
+                            std::set<std::pair<std::string, std::string>> per_bar_keys;
+                            for (const auto& r : rows) {
+                                per_bar_keys.insert({r.ticker, r.date_str});
+                            }
+                            size_t silent = 0;
+                            for (const auto& t : class1_terms.value()) {
+                                if (per_bar_keys.count({t.ticker, t.date_str})) continue;
+                                ++silent;
+                                WARN("Class-1 corporate action NOT VISIBLE to the applier: " +
+                                     t.ticker + " " + t.date_str + " " + t.action +
+                                     " (value " + std::to_string(t.value) +
+                                     (t.contra_ticker.empty() || t.contra_ticker == "N/A"
+                                          ? std::string()
+                                          : ", contra " + t.contra_ticker) +
+                                     "). The deal-terms feed has this event; the ex-date bar "
+                                     "carries split_factor 1 and div_cash 0, so the per-bar "
+                                     "applier -- the only thing that restates a class-1 basis "
+                                     "-- has no input and does nothing. " + t.ticker +
+                                     " keeps a PRE-event cost basis against a post-event price "
+                                     "series and no dedup row records the gap. This is a DATA "
+                                     "gap, not a code one: reconcile the position by hand or "
+                                     "fix the bar (E2-F41).");
+                            }
+                            if (silent == 0) {
+                                INFO("Class-1 deal-terms cross-check: " +
+                                     std::to_string(class1_terms.value().size()) +
+                                     " row(s) in the window for held symbols, all visible to "
+                                     "the per-bar applier (E2-F41)");
+                            }
+                        }
+                    }
+                }
+
                 // The child's first REAL close on or after the ex-date. It prices the cash in
                 // lieu of the fractional share and, under liquidate_at_first_close, the whole
                 // child position. One read for every child we might receive.
