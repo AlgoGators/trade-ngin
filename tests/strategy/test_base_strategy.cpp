@@ -12,6 +12,7 @@
 #include "../data/test_db_utils.hpp"
 #include "trade_ngin/strategy/mean_reversion.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
+#include "trade_ngin/backtest/backtest_pnl_manager.hpp"
 using namespace trade_ngin;
 
 // --- Mock Database with Failure Simulation ---
@@ -596,4 +597,55 @@ TEST_F(BaseStrategyTest, OnExecution_ExactAndPartialCloseRealizeOnTheFill) {
     ASSERT_TRUE(strategy->on_execution(createExecution(Side::SELL, "AAPL", 60, 170.0)).is_ok());
     EXPECT_DOUBLE_EQ(strategy->get_positions().at("AAPL").realized_pnl.as_double(), 400.0 + 1200.0);
     EXPECT_DOUBLE_EQ(strategy->get_positions().at("AAPL").quantity.as_double(), 0.0);
+}
+
+// ---------------------------------------------------------------------------
+// C-5 §9-A2 -- the §1.14 branch itself, not just the accessor it reads.
+//
+// THE TEST DEFECT: the three tests above assert what get_pnl_accounting() returns for a
+// mean-reversion and a trend-following config. That contract predates 7e3d07c2. Executed
+// revert (C-5 L-CLOSURE): with src/backtest/backtest_coordinator.cpp reverted to 7e3d07c2^
+// -- the file whose branch the commit's own header names -- all three still PASS:
+//
+//     [==========] 3 tests from 1 test suite ran.
+//     [  PASSED  ] 3 tests.
+//
+// The coordinator's branch was never entered, so nothing pinned the behaviour the commit
+// shipped. These add it: the two methods must produce DIFFERENT realized figures from the
+// same bar, because they are different quantities.
+// ---------------------------------------------------------------------------
+
+TEST(PnLAccountingBranchRule, TheTwoMethodsBookDifferentRealizedFromTheSameBar) {
+    // One bar: a settled MTM move of -877.50 (the MYM.v.0 figure), and fills that realized
+    // +200.00 on this bar.
+    const double daily_mtm = -877.50;
+    const double flow = 200.00;
+
+    const double futures = trade_ngin::backtest::BacktestPnLManager::realized_for_row(
+        PnLAccountingMethod::REALIZED_ONLY, daily_mtm, flow);
+    const double equities = trade_ngin::backtest::BacktestPnLManager::realized_for_row(
+        PnLAccountingMethod::MIXED, daily_mtm, flow);
+
+    EXPECT_DOUBLE_EQ(futures, daily_mtm)
+        << "under REALIZED_ONLY the settled move IS the day's realized";
+    EXPECT_DOUBLE_EQ(equities, flow)
+        << "under MIXED realized comes from the fills, never from the mark";
+    EXPECT_NE(futures, equities)
+        << "if these agreed the branch would be unobservable and the column meaningless";
+}
+
+TEST(PnLAccountingBranchRule, AHeldEquityDayBooksZeroRealizedNotTheMarkMove) {
+    // The defect's signature: a day on which nothing closed. Under MIXED the row must read
+    // 0.00, not the day's mark-to-market move -- otherwise every held day looks like a
+    // realizing day and the column no longer sums to the position's realized P&L.
+    const double realized = trade_ngin::backtest::BacktestPnLManager::realized_for_row(
+        PnLAccountingMethod::MIXED, /*daily_mtm=*/-877.50, /*flow=*/0.0);
+    EXPECT_DOUBLE_EQ(realized, 0.0);
+}
+
+TEST(PnLAccountingBranchRule, UnrealizedOnlyBooksTheFlowLikeMixed) {
+    // UNREALIZED_ONLY is a cash book too; only REALIZED_ONLY takes the mark.
+    EXPECT_DOUBLE_EQ(trade_ngin::backtest::BacktestPnLManager::realized_for_row(
+                         PnLAccountingMethod::UNREALIZED_ONLY, -877.50, 200.0),
+                     200.0);
 }

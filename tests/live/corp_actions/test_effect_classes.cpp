@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <string>
 #include <unordered_map>
@@ -369,6 +370,92 @@ TEST(CorpActionClass3, RolloverIntoAnAlreadyHeldAcquirerMergesAtWeightedCost) {
     // 50 rolled-in shares at basis 100 merged with 50 held at 80.
     EXPECT_DOUBLE_EQ(positions["ACQR"].average_price.as_double(),
                      (50.0 * 80.0 + 50.0 * 100.0) / 100.0);
+}
+
+// ---------------------------------------------------------------------------
+// E2-F26 -- three of the nine class-3 labels are keyed on the SURVIVOR, not on
+// the ticker that dies.
+// ---------------------------------------------------------------------------
+
+TEST(CorpActionClass3, AcquirerKeyedRowDoesNotTerminateTheAcquirer) {
+    // `acquisitionof` sits on the ACQUIRER (COF acquisitionof DFS), `mergerfrom` on the
+    // surviving merger party, `spunofffrom` on the spinoff CHILD (RAL spunofffrom FTV).
+    // On those three the row's own `ticker` is the name that LIVES. The runner keys the
+    // deal-terms query on `ticker`, so admitting them makes a TerminationEvent for a
+    // symbol that is still printing bars, and the no-terms path closes it at the final
+    // close. 1,611 acquisitionof + 78 spunofffrom + 13 mergerfrom rows in
+    // equities_data.corporate_action sit on tickers still printing 30+ days later.
+
+    const auto& terminates =
+        vendor_labels_for_termination_keying(TerminationKeying::ROW_TICKER_TERMINATES);
+    const auto& counterparty =
+        vendor_labels_for_termination_keying(TerminationKeying::COUNTERPARTY_ROW);
+
+    for (const std::string l : {"acquisitionof", "mergerfrom", "spunofffrom"}) {
+        EXPECT_EQ(std::count(terminates.begin(), terminates.end(), l), 0) << l;
+        EXPECT_EQ(std::count(counterparty.begin(), counterparty.end(), l), 1) << l;
+        EXPECT_EQ(termination_keying(l), TerminationKeying::COUNTERPARTY_ROW) << l;
+    }
+    for (const std::string l : {"acquisitionby", "mergerto", "delisted", "voluntarydelisting",
+                                "regulatorydelisting", "bankruptcyliquidation"}) {
+        EXPECT_EQ(std::count(terminates.begin(), terminates.end(), l), 1) << l;
+        EXPECT_EQ(termination_keying(l), TerminationKeying::ROW_TICKER_TERMINATES) << l;
+    }
+    // The split PARTITIONS class 3 -- no label gained, none lost, so the query filter
+    // cannot silently drop a label the classifier still routes here.
+    EXPECT_EQ(terminates.size(), 6u);
+    EXPECT_EQ(counterparty.size(), 3u);
+    EXPECT_EQ(terminates.size() + counterparty.size(),
+              vendor_labels_for_class(CorpActionClass::TERMINATION).size());
+
+    // The admission rule the runner applies to one deal-terms row, both reasons.
+    EXPECT_FALSE(CorporateActionsLifecycle::terms_row_terminates_its_ticker(
+        "spunofffrom", "2025-06-30", "2026-08-28"))
+        << "the spinoff CHILD is the survivor -- it must not be exited";
+    EXPECT_FALSE(CorporateActionsLifecycle::terms_row_terminates_its_ticker(
+        "acquisitionof", "2025-05-16", ""))
+        << "survivor-keyed even when no bars are loaded to contradict it";
+    EXPECT_TRUE(CorporateActionsLifecycle::terms_row_terminates_its_ticker(
+        "acquisitionby", "2025-05-16", ""))
+        << "the dying ticker with no bars after the event is a real termination";
+    EXPECT_FALSE(CorporateActionsLifecycle::terms_row_terminates_its_ticker(
+        "mergerto", "2025-05-16", "2026-08-28"))
+        << "bars after the event contradict the row -- it belongs to a prior issuer";
+    EXPECT_FALSE(CorporateActionsLifecycle::terms_row_terminates_its_ticker(
+        "dividend", "2025-05-16", ""))
+        << "only a class-3 label may build a TerminationEvent";
+
+    // End to end on the real shape. RAL is the CHILD of the FTV spinoff and is still
+    // trading; building the runner's event list through the admission rule leaves it held.
+    std::unordered_map<std::string, Position> positions;
+    positions["RAL"] = make_position("RAL", 33.0, 52.2);
+    const std::unordered_map<std::string, double> final_closes = {{"RAL", 60.0}};
+
+    std::vector<TerminationEvent> admitted;
+    if (CorporateActionsLifecycle::terms_row_terminates_its_ticker("spunofffrom", "2025-06-30",
+                                                                   "2026-08-28")) {
+        admitted.push_back(termination("RAL", "2025-06-30", "spunofffrom"));
+    }
+    EXPECT_TRUE(admitted.empty());
+
+    auto log = CorporateActionsLifecycle::apply_terminations(positions, admitted, final_closes);
+    EXPECT_TRUE(log.empty());
+    EXPECT_DOUBLE_EQ(positions["RAL"].quantity.as_double(), 33.0);
+    EXPECT_DOUBLE_EQ(positions["RAL"].average_price.as_double(), 52.2);
+
+    // And the pre-fix path, stated so the reason for the split cannot be lost: admit every
+    // class-3 label -- which is what the terms query filter used to be -- and the
+    // still-printing child is closed out at 60 with 257.40 of realized P&L it never made.
+    std::unordered_map<std::string, Position> unguarded;
+    unguarded["RAL"] = make_position("RAL", 33.0, 52.2);
+    const auto& all_class3 = vendor_labels_for_class(CorpActionClass::TERMINATION);
+    ASSERT_NE(std::count(all_class3.begin(), all_class3.end(), std::string("spunofffrom")), 0)
+        << "spunofffrom is still classified TERMINATION -- only its KEYING changed";
+    auto bad = CorporateActionsLifecycle::apply_terminations(
+        unguarded, {termination("RAL", "2025-06-30", "spunofffrom")}, final_closes);
+    ASSERT_EQ(bad.size(), 1u);
+    EXPECT_EQ(bad[0].outcome, LifecycleOutcome::EXITED_AT_FINAL_CLOSE);
+    EXPECT_DOUBLE_EQ(unguarded["RAL"].quantity.as_double(), 0.0);
 }
 
 TEST(CorpActionClass3, EventForAnUnheldSymbolIsANoOp) {

@@ -476,10 +476,18 @@ public:
      * @param table_name Name of the positions table
      * @return Result indicating success or failure
      */
+    /**
+     * @param keep_closed_rows E2-F54. Default false preserves the historical filter:
+     *        every zero-quantity row is dropped. Cash books (MIXED / UNREALIZED_ONLY)
+     *        pass true so a position closed to zero keeps the row carrying that bar's
+     *        realized flow -- the live is_dead_row rule. Futures backtests leave it false
+     *        and store exactly the rows they always did.
+     */
     virtual Result<void> store_backtest_positions(
         const std::vector<Position>& positions, const std::string& run_id,
         const std::string& portfolio_id = "BASE_PORTFOLIO",
-        const std::string& table_name = "backtest.final_positions");
+        const std::string& table_name = "backtest.final_positions",
+        bool keep_closed_rows = false);
 
     // Multi-strategy version: store positions with strategy_id
     virtual Result<void> store_backtest_positions_with_strategy(
@@ -750,6 +758,17 @@ public:
      * Direction of error: too LATE is safe (the rename is skipped and retried next run);
      * too EARLY re-keys a live holding, which is silent and permanent. This errs late.
      *
+     * BA-19: `on_or_before` bounds BOTH halves of the question to rows the run can
+     * legitimately see -- normally the run's own `previous_date`. `trading.positions` is not
+     * append-only in practice: an interrupted windowed reset, or a replay abandoned partway,
+     * leaves rows dated AFTER the date being replayed. Unbounded, such a row moves the answer
+     * twice over -- a future non-zero row can become the `min(date)` of "the current
+     * holding", and a future FLAT row raises the break date past every real row and makes the
+     * symbol vanish from the map entirely, silently skipping its rename. Neither failure is
+     * visible in the run's output. Empty (the default) means unbounded, which is the previous
+     * behaviour exactly.
+     *
+     * @param on_or_before inclusive YYYY-MM-DD ceiling on the rows considered; empty = none.
      * @return symbol -> YYYY-MM-DD the current holding began. Symbols with no non-zero
      *         row after the last flat row are ABSENT, and class 2 skips them.
      */
@@ -758,6 +777,7 @@ public:
         const std::string& strategy_name,
         const std::string& portfolio_id,
         const std::vector<std::string>& symbols,
+        const std::string& on_or_before = {},
         const std::string& table_name = "trading.positions");
 
     /**
@@ -837,6 +857,20 @@ public:
          * chain always carries an earlier wall clock.
          */
         std::string run_date;
+        /**
+         * The factor this event divided the cost basis by (F-8, migration 006):
+         * F for a SPLIT/ADR_SPLIT, 1 + d/c for a DIVIDEND, i.e.
+         * PositionAdjustment.ratio_change. Multiplying
+         * trading.positions.average_price by the product of these over a holding
+         * recovers the BROKER-frame basis, which a dividend never moves.
+         *
+         * `basis_ratio_known` false means the stored value was NULL -- a row
+         * written before 006, or a TERMINATION, which restates nothing. NULL is
+         * UNKNOWN and NOT 1.0: treating it as 1.0 reports an adjusted basis as
+         * broker-equivalent. Reconciliation only; not part of the natural key.
+         */
+        double basis_ratio{1.0};
+        bool basis_ratio_known{false};
     };
 
     /**

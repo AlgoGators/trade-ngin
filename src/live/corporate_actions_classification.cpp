@@ -37,6 +37,27 @@ const std::unordered_map<std::string, CorpActionClass>& label_table() {
     return table;
 }
 
+// Which ticker a class-3 row is keyed on (E2-F26). Separate axis from the
+// effect class: every key here also appears in label_table() as TERMINATION,
+// and vendor_labels_for_termination_keying() asserts the partition by
+// construction below.
+const std::unordered_map<std::string, TerminationKeying>& keying_table() {
+    static const std::unordered_map<std::string, TerminationKeying> table = {
+        // The row's own ticker is the one that stops trading.
+        {"acquisitionby",         TerminationKeying::ROW_TICKER_TERMINATES},
+        {"mergerto",              TerminationKeying::ROW_TICKER_TERMINATES},
+        {"delisted",              TerminationKeying::ROW_TICKER_TERMINATES},
+        {"voluntarydelisting",    TerminationKeying::ROW_TICKER_TERMINATES},
+        {"regulatorydelisting",   TerminationKeying::ROW_TICKER_TERMINATES},
+        {"bankruptcyliquidation", TerminationKeying::ROW_TICKER_TERMINATES},
+        // The row's own ticker SURVIVES; contraticker is what terminated.
+        {"acquisitionof",         TerminationKeying::COUNTERPARTY_ROW},
+        {"mergerfrom",            TerminationKeying::COUNTERPARTY_ROW},
+        {"spunofffrom",           TerminationKeying::COUNTERPARTY_ROW},
+    };
+    return table;
+}
+
 }  // namespace
 
 CorpActionClass classify_action(const std::string& vendor_label) {
@@ -73,6 +94,39 @@ const std::vector<std::string>& vendor_labels_for_class(CorpActionClass c) {
     static const std::vector<std::string> empty;
     auto it = by_class.find(c);
     return it == by_class.end() ? empty : it->second;
+}
+
+TerminationKeying termination_keying(const std::string& vendor_label) {
+    const auto& table = keying_table();
+    auto it = table.find(vendor_label);
+    // A label with no entry is not a counterparty row. Callers must have
+    // established that it is class 3 first; this default keeps a hypothetical
+    // new TERMINATION label behaving as it does today rather than silently
+    // becoming un-actionable.
+    return it == table.end() ? TerminationKeying::ROW_TICKER_TERMINATES : it->second;
+}
+
+const std::vector<std::string>& vendor_labels_for_termination_keying(TerminationKeying k) {
+    // Built from keying_table() the same way the class lists are built from
+    // label_table(), so the SQL filter and the per-row predicate cannot drift.
+    static const std::unordered_map<TerminationKeying, std::vector<std::string>> by_keying = [] {
+        std::unordered_map<TerminationKeying, std::vector<std::string>> m;
+        // Seed both keys so an empty side returns an empty list rather than
+        // falling through to the shared `empty` and hiding a lost label.
+        m[TerminationKeying::ROW_TICKER_TERMINATES];
+        m[TerminationKeying::COUNTERPARTY_ROW];
+        for (const auto& [label, keying] : keying_table()) {
+            m[keying].push_back(label);
+        }
+        for (auto& [keying, labels] : m) {
+            std::sort(labels.begin(), labels.end());  // deterministic SQL IN-lists
+        }
+        return m;
+    }();
+
+    static const std::vector<std::string> empty;
+    auto it = by_keying.find(k);
+    return it == by_keying.end() ? empty : it->second;
 }
 
 }  // namespace trade_ngin

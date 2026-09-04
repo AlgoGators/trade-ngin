@@ -21,7 +21,15 @@ namespace trade_ngin {
 // termination can be written to trading.corp_action_applied and deduped like any other
 // applied event -- before this, terminations were recorded NOWHERE and left no audit trail.
 // The applier itself never produces one; CorporateActionsLifecycle does.
-enum class CorpActionType { SPLIT, ADR_SPLIT, DIVIDEND, TERMINATION, UNKNOWN };
+// E2-F31: SPINOFF is likewise NOT an applier action. A spinoff changes WHAT you hold --
+// the parent keeps its shares at a restated basis and a NEW child position appears -- which
+// is cross-symbol and therefore CorporateActionsLifecycle::apply_spinoffs' business, exactly
+// as TERMINATION is. It lives in this enum for the same single reason: so the parent and the
+// child rows can be written to trading.corp_action_applied and deduped like any other applied
+// event. Routing a spinoff into the applier is precisely the defect: Tiingo encodes it in
+// split_factor (FTV 1.327 -> 132.7 phantom shares) or in div_cash (MMM 17.3875 -> $17.39/sh
+// of income that never arrived).
+enum class CorpActionType { SPLIT, ADR_SPLIT, DIVIDEND, TERMINATION, SPINOFF, UNKNOWN };
 
 /**
  * @brief One corporate-action event to apply.

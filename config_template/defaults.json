@@ -32,6 +32,8 @@
     "historical_days": 730,
     "data_staleness_tolerance_days": 4,
     "execution_price_max_staleness_days": 5,
+    "spinoff_child_policy": "liquidate_at_first_close",
+    "_note_spinoff_child_policy": "E2-F31. What to do with a company a spinoff hands you. liquidate_at_first_close (default) books the child and sells it at its first close. hold keeps it, and is only safe when the child is itself in the configured universe -- otherwise no bars are loaded for it and every later run reports 'Missing T-1 price for symbol with a non-zero position' and rolls the target back forever (F-4). Unrecognised text takes the default.",
     "_note": "Must match backtest.lookback_years (2 yrs ≈ 730 days). Strategy needs 256+ trading days for longest EMA and 252 for vol_lookback_long."
   },
   "strategy_defaults": {

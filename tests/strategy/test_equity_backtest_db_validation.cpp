@@ -375,12 +375,17 @@ TEST_F(EquityBacktestDBValidation, NoPositionOnInsufficientData) {
 }
 
 // ============================================================================
-// TEST: Strategy respects UNREALIZED_ONLY PnL accounting
+// TEST: Strategy respects MIXED PnL accounting
+//
+// The banner and the line below it used to say UNREALIZED_ONLY, contradicting both the
+// strategy (MeanReversionStrategy::initialize sets MIXED) and this test's own body comment
+// forty lines down, which already recorded the correction from audit §1.7. A reader who
+// stopped at the banner would have concluded the opposite of what the test asserts.
 // ============================================================================
 TEST_F(EquityBacktestDBValidation, UsesUnrealizedPnLAccounting) {
     auto strategy = create_strategy();
 
-    // Verify the strategy uses UNREALIZED_ONLY accounting
+    // Verify the strategy uses MIXED accounting (realized on close, unrealized while held)
     // Run some data through
     auto bars = create_equity_data("AAPL", 60, 150.0);
     for (const auto& bar : bars) {

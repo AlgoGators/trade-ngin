@@ -2,6 +2,9 @@
 #pragma once
 
 #include <string>
+#include <vector>
+#include <utility>
+#include <set>
 
 #include "trade_ngin/live/corporate_actions_classification.hpp"
 
@@ -87,6 +90,39 @@ inline std::string describe_corp_action_feed(const CorpActionFeedStatus& s) {
                " -- the deal-terms and rename paths that were dormant are now live)";
     }
     return out;
+}
+
+/**
+ * @brief E2-F41: the deal-terms rows the PER-BAR feed does not carry.
+ *
+ * Class-1 effects are sourced per bar -- `ohlcv_1d.split_factor` and `ohlcv_1d.div_cash`,
+ * never `corporate_action.value`. A class-1 row in the deal-terms feed whose ex-date bar is
+ * FLAT is therefore applied by nothing at all: no error, no dedup row, no deferral, and the
+ * position carries an unrestated cost basis across a real event forever.
+ *
+ * LEN 2025-02-07 is the proven instance -- `spinoff` MRP 0.5 and `spinoffdividend` 11.495 in
+ * corporate_action, while the LEN bar says split_factor 1, div_cash 0, and the close fell
+ * 127.25 -> 121.94. Universe-wide since 2020 the class is 99 rows.
+ *
+ * Nothing can be APPLIED here; the applier has no input to act on. What this produces is the
+ * announcement, which is the whole point of E2-F41 -- so it is a returned value rather than a
+ * log statement, because a WARN emitted inside a runner loop cannot be asserted and the
+ * original pin passed with the announcement reverted (C-5 §9-A1).
+ *
+ * @param terms_keys    (ticker, ex-date) of every class-1 deal-terms row read for the held
+ *                      book, in the order the feed returned them.
+ * @param per_bar_keys  (ticker, ex-date) of every row the per-bar feed produced.
+ * @return the subset of `terms_keys` absent from `per_bar_keys`, order preserved.
+ */
+inline std::vector<std::pair<std::string, std::string>> class1_rows_the_bars_do_not_carry(
+    const std::vector<std::pair<std::string, std::string>>& terms_keys,
+    const std::set<std::pair<std::string, std::string>>& per_bar_keys) {
+    std::vector<std::pair<std::string, std::string>> silent;
+    for (const auto& key : terms_keys) {
+        if (per_bar_keys.count(key)) continue;
+        silent.push_back(key);
+    }
+    return silent;
 }
 
 }  // namespace trade_ngin

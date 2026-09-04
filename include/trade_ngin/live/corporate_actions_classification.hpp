@@ -65,6 +65,53 @@ const char* corp_action_class_to_string(CorpActionClass c);
 const std::vector<std::string>& vendor_labels_for_class(CorpActionClass c);
 
 /**
+ * @brief Which side of a class-3 event the row's own `ticker` sits on.
+ *
+ * The nine TERMINATION labels do NOT all describe the death of the ticker the
+ * row is keyed on. Three of them are the counterparty's view of somebody
+ * else's termination, keyed on the name that SURVIVES:
+ *
+ *   COF  acquisitionof  DFS   -- COF is the acquirer; DFS is what died.
+ *   XYZ  mergerfrom     ABC   -- XYZ is the surviving merger party.
+ *   RAL  spunofffrom    FTV   -- RAL is the spinoff CHILD, newly listed.
+ *
+ * Feeding those to a query keyed on `ticker` and turning each row into a
+ * TerminationEvent closes out a holding in a company that is alive and still
+ * printing bars (E2-F26): 1,611 acquisitionof, 78 spunofffrom and 13
+ * mergerfrom rows in equities_data.corporate_action sit on tickers that kept
+ * printing 30+ days after the row. Unreachable for the ten configured symbols,
+ * reachable on any universe-scale replay, and ARMED by the deal-terms feed
+ * revival that E4 asks for -- so the split lands before the ask is sent.
+ *
+ * This is deliberately a SECOND axis, not a narrowing of CorpActionClass.
+ * `spunofffrom` is still a TERMINATION: it describes a termination event, its
+ * handler is still the lifecycle, and `classify_action` must keep saying so.
+ * What changes is only which ticker the row's terms apply TO.
+ */
+enum class TerminationKeying {
+    ROW_TICKER_TERMINATES,  ///< the row's `ticker` is the name that dies
+    COUNTERPARTY_ROW        ///< the row's `ticker` SURVIVES; `contraticker` died
+};
+
+/**
+ * @brief Keying of one class-3 vendor label.
+ *
+ * Only meaningful for labels that `classify_action` maps to TERMINATION; any
+ * other label reports ROW_TICKER_TERMINATES, which is why every caller must
+ * check the class first (`terms_row_terminates_its_ticker` does).
+ */
+TerminationKeying termination_keying(const std::string& vendor_label);
+
+/**
+ * @brief Class-3 labels with a given keying, sorted, for the SQL IN-lists.
+ *
+ * The two lists PARTITION `vendor_labels_for_class(TERMINATION)`; a query that
+ * wants only the rows describing the death of their own ticker asks for
+ * ROW_TICKER_TERMINATES.
+ */
+const std::vector<std::string>& vendor_labels_for_termination_keying(TerminationKeying k);
+
+/**
  * @brief FALLBACK ONLY: the date equities_data.corporate_action was last seen
  *        receiving events, as of the commit that wrote this line.
  *
