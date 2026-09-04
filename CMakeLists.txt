@@ -139,6 +139,7 @@ set(TRADE_NGIN_SOURCES
     src/live/live_price_manager.cpp
     src/live/live_pnl_manager.cpp
     src/live/execution_manager.cpp
+    src/live/execution_price_resolver.cpp
     src/live/margin_manager.cpp
     src/live/csv_exporter.cpp
     src/live/corporate_actions_applier.cpp

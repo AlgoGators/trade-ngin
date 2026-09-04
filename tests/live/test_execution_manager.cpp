@@ -104,15 +104,74 @@ TEST_F(ExecutionManagerTest, ClosedShortPositionGeneratesBuyExecution) {
     EXPECT_EQ(r.value()[0].side, Side::BUY);
 }
 
-TEST_F(ExecutionManagerTest, MissingMarketPriceFallsBackToAveragePrice) {
+// This test used to be MissingMarketPriceFallsBackToAveragePrice and asserted that a
+// symbol with no market price was filled at its average_price. That fallback was the
+// bug: average_price is a COST BASIS, and for a position opened today it is 0 until
+// the fill being priced has been processed -- so the fallback booked fills at zero,
+// persisted the zero as the new basis, and reloaded it the next session as a carried
+// basis of zero. The old assertion passed only because the fixture handed it a
+// pre-set basis of 4500.0, which production does not have for a new position.
+//
+// A symbol we cannot price is a symbol we must not trade.
+TEST_F(ExecutionManagerTest, MissingMarketPriceSkipsTheExecutionRatherThanPricingItFromBasis) {
     ExecutionManager em;
     std::unordered_map<std::string, Position> curr{{"ES", make_position("ES", 2.0, 4500.0)}};
     std::unordered_map<std::string, Position> prev;
     std::unordered_map<std::string, double> prices;  // no price for ES
-    auto r = em.generate_daily_executions(curr, prev, prices, std::chrono::system_clock::now());
+    std::vector<std::string> unpriced;
+    auto r = em.generate_daily_executions(curr, prev, prices, std::chrono::system_clock::now(),
+                                          PricingPolicy::STRICT, &unpriced);
     ASSERT_TRUE(r.is_ok());
-    ASSERT_EQ(r.value().size(), 1u);
-    EXPECT_DOUBLE_EQ(r.value()[0].fill_price.as_double(), 4500.0);
+    EXPECT_TRUE(r.value().empty()) << "an unpriceable symbol must not generate an execution";
+    ASSERT_EQ(unpriced.size(), 1u);
+    EXPECT_EQ(unpriced[0], "ES");
+}
+
+// A brand-new position has no basis at all. This is the production shape the old
+// fallback actually met, and the one that made the zero self-sustaining.
+TEST_F(ExecutionManagerTest, MissingMarketPriceOnAZeroBasisPositionDoesNotFillAtZero) {
+    ExecutionManager em;
+    std::unordered_map<std::string, Position> curr{{"ES", make_position("ES", 2.0, 0.0)}};
+    std::unordered_map<std::string, Position> prev;
+    std::unordered_map<std::string, double> prices;
+    auto r = em.generate_daily_executions(curr, prev, prices, std::chrono::system_clock::now(),
+                                          PricingPolicy::STRICT);
+    ASSERT_TRUE(r.is_ok());
+    for (const auto& e : r.value()) {
+        EXPECT_GT(e.fill_price.as_double(), 0.0) << "fill booked at a non-positive price";
+    }
+    EXPECT_TRUE(r.value().empty());
+}
+
+// A price that is present but non-positive is not a price either.
+TEST_F(ExecutionManagerTest, NonPositiveMarketPriceIsRefused) {
+    ExecutionManager em;
+    std::unordered_map<std::string, Position> curr{{"ES", make_position("ES", 2.0, 4500.0)}};
+    std::unordered_map<std::string, Position> prev;
+    std::unordered_map<std::string, double> prices{{"ES", 0.0}};
+    std::vector<std::string> unpriced;
+    auto r = em.generate_daily_executions(curr, prev, prices, std::chrono::system_clock::now(),
+                                          PricingPolicy::STRICT, &unpriced);
+    ASSERT_TRUE(r.is_ok());
+    EXPECT_TRUE(r.value().empty());
+    ASSERT_EQ(unpriced.size(), 1u);
+    EXPECT_EQ(unpriced[0], "ES");
+}
+
+// A close-out with no price must not book a fill at the position's own basis, which
+// would silently report zero realized PnL on the exit.
+TEST_F(ExecutionManagerTest, MissingMarketPriceOnCloseOutSkipsRatherThanUsingBasis) {
+    ExecutionManager em;
+    std::unordered_map<std::string, Position> curr;
+    std::unordered_map<std::string, Position> prev{{"ES", make_position("ES", 3.0, 4500.0)}};
+    std::unordered_map<std::string, double> prices;  // no price for ES
+    std::vector<std::string> unpriced;
+    auto r = em.generate_daily_executions(curr, prev, prices, std::chrono::system_clock::now(),
+                                          PricingPolicy::STRICT, &unpriced);
+    ASSERT_TRUE(r.is_ok());
+    EXPECT_TRUE(r.value().empty());
+    ASSERT_EQ(unpriced.size(), 1u);
+    EXPECT_EQ(unpriced[0], "ES");
 }
 
 // ===== generate_execution =====
@@ -158,4 +217,65 @@ TEST_F(ExecutionManagerTest, UpdateMarketDataDoesNotThrow) {
     ExecutionManager em;
     EXPECT_NO_THROW(em.update_market_data("ES", 1000.0, 4500.0));
     EXPECT_NO_THROW(em.update_market_data("ES", 1100.0, 4510.0));
+}
+
+// ---------------------------------------------------------------------------
+// Futures behaviour preservation.
+//
+// TrendFollowingStrategy sets Position::average_price to price_history.back() --
+// the latest mark, by design (trend_following.cpp:623, REALIZED_ONLY daily
+// settlement). So for futures the mark fallback prices the fill at a real,
+// one-session-stale close, and removing it would replace a correct fill with a
+// skip. MARK_FALLBACK is the default precisely so the two futures runners, which
+// pass no policy argument, keep the behaviour they have always had.
+// ---------------------------------------------------------------------------
+
+TEST_F(ExecutionManagerTest, MarkFallbackPricesFuturesFillFromTheLatestMark) {
+    ExecutionManager em;
+    // ZC on a Monday with no Sunday print: average_price holds Friday's close.
+    std::unordered_map<std::string, Position> curr{{"ZC", make_position("ZC", 10.0, 450.25)}};
+    std::unordered_map<std::string, Position> prev;
+    std::unordered_map<std::string, double> prices;  // no T-1 print
+
+    auto r = em.generate_daily_executions(curr, prev, prices, std::chrono::system_clock::now());
+
+    ASSERT_TRUE(r.is_ok());
+    ASSERT_EQ(r.value().size(), 1u) << "futures must still generate the execution";
+    EXPECT_DOUBLE_EQ(r.value()[0].fill_price.as_double(), 450.25)
+        << "fill must be priced at the mark, exactly as before the STRICT policy existed";
+    EXPECT_DOUBLE_EQ(r.value()[0].filled_quantity.as_double(), 10.0);
+}
+
+TEST_F(ExecutionManagerTest, MarkFallbackClosesFuturesPositionAtTheLatestMark) {
+    ExecutionManager em;
+    std::unordered_map<std::string, Position> curr;
+    std::unordered_map<std::string, Position> prev{{"ZC", make_position("ZC", 10.0, 450.25)}};
+    std::unordered_map<std::string, double> prices;
+
+    auto r = em.generate_daily_executions(curr, prev, prices, std::chrono::system_clock::now());
+
+    ASSERT_TRUE(r.is_ok());
+    ASSERT_EQ(r.value().size(), 1u) << "the close-out must still be generated for futures";
+    EXPECT_DOUBLE_EQ(r.value()[0].fill_price.as_double(), 450.25);
+}
+
+// The default must remain MARK_FALLBACK. If this flips, both futures runners
+// silently change behaviour without their call sites being touched.
+TEST_F(ExecutionManagerTest, DefaultPolicyIsMarkFallbackSoFuturesCallersAreUnaffected) {
+    ExecutionManager em;
+    std::unordered_map<std::string, Position> curr{{"ES", make_position("ES", 1.0, 4500.0)}};
+    std::unordered_map<std::string, Position> prev;
+    std::unordered_map<std::string, double> prices;
+
+    auto defaulted = em.generate_daily_executions(curr, prev, prices,
+                                                  std::chrono::system_clock::now());
+    auto explicit_mark = em.generate_daily_executions(curr, prev, prices,
+                                                      std::chrono::system_clock::now(),
+                                                      PricingPolicy::MARK_FALLBACK);
+    ASSERT_TRUE(defaulted.is_ok());
+    ASSERT_TRUE(explicit_mark.is_ok());
+    ASSERT_EQ(defaulted.value().size(), explicit_mark.value().size());
+    ASSERT_EQ(defaulted.value().size(), 1u);
+    EXPECT_DOUBLE_EQ(defaulted.value()[0].fill_price.as_double(),
+                     explicit_mark.value()[0].fill_price.as_double());
 }

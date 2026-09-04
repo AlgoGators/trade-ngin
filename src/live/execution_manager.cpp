@@ -1,5 +1,6 @@
 #include "trade_ngin/live/execution_manager.hpp"
 #include "trade_ngin/core/logger.hpp"
+#include <algorithm>
 #include <cmath>
 #include <sstream>
 #include <iomanip>
@@ -10,10 +11,13 @@ Result<std::vector<ExecutionReport>> ExecutionManager::generate_daily_executions
     const std::unordered_map<std::string, Position>& current_positions,
     const std::unordered_map<std::string, Position>& previous_positions,
     const std::unordered_map<std::string, double>& market_prices,
-    const Timestamp& timestamp) {
+    const Timestamp& timestamp,
+    PricingPolicy pricing,
+    std::vector<std::string>* unpriced_out) {
 
     INFO("Generating execution reports for position changes...");
     std::vector<ExecutionReport> daily_executions;
+    std::vector<std::string> unpriced_symbols;
 
     // Handle existing positions that changed
     for (const auto& [symbol, current_position] : current_positions) {
@@ -34,13 +38,25 @@ Result<std::vector<ExecutionReport>> ExecutionManager::generate_daily_executions
         if (std::abs(current_qty - prev_qty) > 1e-6) {
             double trade_size = current_qty - prev_qty;
 
-            // Get market price (Day T-1 close price for Day T execution)
-            double market_price = current_position.average_price.as_double();
+            // Market price (Day T-1 close for Day T execution). What happens when the
+            // map has no usable entry depends on what average_price means to THIS
+            // caller -- see PricingPolicy. Futures assigns it the latest mark, so the
+            // fallback yields a real price; equity mean reversion maintains it as a
+            // cost basis, which is 0.00 for a position opened today.
             auto price_it = market_prices.find(symbol);
-            if (price_it != market_prices.end()) {
+            double market_price = 0.0;
+            if (price_it != market_prices.end() && price_it->second > 0.0) {
                 market_price = price_it->second;
-            } else {
+            } else if (pricing == PricingPolicy::MARK_FALLBACK) {
+                market_price = current_position.average_price.as_double();
                 WARN("No market price for " + symbol + ", using average price");
+            } else {
+                ERROR("No usable market price for " + symbol +
+                      " - skipping execution for a position change of " +
+                      std::to_string(trade_size) +
+                      ". This symbol will NOT be traded today.");
+                unpriced_symbols.push_back(symbol);
+                continue;
             }
 
             // Generate execution
@@ -62,13 +78,23 @@ Result<std::vector<ExecutionReport>> ExecutionManager::generate_daily_executions
             // This position was completely closed
             double prev_qty = prev_position.quantity.as_double();
 
-            // Get market price (Day T-1 close price for closing on Day T)
-            double market_price = prev_position.average_price.as_double(); // Default fallback
+            // Same rule as the position-change path above; see PricingPolicy. Under
+            // STRICT, a close-out priced at the position's own cost basis would book
+            // the exit at what it cost rather than what it is worth, silently
+            // reporting zero realized PnL.
             auto price_it = market_prices.find(symbol);
-            if (price_it != market_prices.end()) {
+            double market_price = 0.0;
+            if (price_it != market_prices.end() && price_it->second > 0.0) {
                 market_price = price_it->second;
-            } else {
+            } else if (pricing == PricingPolicy::MARK_FALLBACK) {
+                market_price = prev_position.average_price.as_double();
                 WARN("No market price for closed position " + symbol + ", using average price");
+            } else {
+                ERROR("No usable market price to close " + symbol + " (quantity " +
+                      std::to_string(prev_qty) +
+                      ") - skipping execution. The caller must reconcile this symbol.");
+                unpriced_symbols.push_back(symbol);
+                continue;
             }
 
             // Generate execution for closing (opposite side of position)
@@ -85,6 +111,22 @@ Result<std::vector<ExecutionReport>> ExecutionManager::generate_daily_executions
     }
 
     INFO("Generated " + std::to_string(daily_executions.size()) + " execution reports");
+
+    if (!unpriced_symbols.empty()) {
+        std::sort(unpriced_symbols.begin(), unpriced_symbols.end());
+        unpriced_symbols.erase(std::unique(unpriced_symbols.begin(), unpriced_symbols.end()),
+                               unpriced_symbols.end());
+        std::string joined;
+        for (const auto& s : unpriced_symbols) {
+            if (!joined.empty()) joined += ", ";
+            joined += s;
+        }
+        ERROR("Skipped " + std::to_string(unpriced_symbols.size()) +
+              " symbol(s) with no usable market price: " + joined +
+              ". Their intended position changes did NOT execute.");
+    }
+    if (unpriced_out) *unpriced_out = unpriced_symbols;
+
     return Result<std::vector<ExecutionReport>>(daily_executions);
 }
 
