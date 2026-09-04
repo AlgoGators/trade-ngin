@@ -748,15 +748,18 @@ Result<void> BacktestCoordinator::process_portfolio_day(
             for (const auto& [symbol, pos] : positions_map) {
                 double qty = static_cast<double>(pos.quantity);
 
-                // E2-F54 (a)+(b): compute the bar's realized FLOW and advance the ledger
-                // BEFORE the flat-row skip, from the FILL-maintained record rather than
-                // the target snapshot this loop iterates. `pos` was copied before
-                // on_execution ran (~40 lines above), so `pos.realized_pnl` is realized
-                // through YESTERDAY's fills -- reading it here puts a sale on the next
-                // bar. And a full close IS a flat row, so skipping first strands the
-                // exit's realized. Read BacktestPnLManager::realized_row_for_bar.
-                BacktestPnLManager::RealizedRow realized_row;
-                if (strategy_method != PnLAccountingMethod::REALIZED_ONLY) {
+                // E2-F54 (a): the cumulative comes from the strategy's FILL-maintained
+                // record, not the target snapshot this loop iterates. `pos` was copied
+                // before on_execution ran (~40 lines above), so `pos.realized_pnl` is
+                // realized through YESTERDAY's fills -- reading it here puts a sale on the
+                // next bar.
+                //
+                // E2-F59: the ledger is advanced ONLY where the row is actually written.
+                // Three paths below return without writing (no close for this symbol, no
+                // previous close, invalid P&L); advancing before them does not defer the
+                // realized, it loses it. Hence peek here, commit at each write site.
+                const std::string flow_key = strategy_id + "|" + symbol;
+                auto fill_cumulative = [&]() {
                     double cumulative = static_cast<double>(pos.realized_pnl);
                     auto flow_it = fill_positions_by_strategy.find(strategy_id);
                     if (flow_it != fill_positions_by_strategy.end() && flow_it->second) {
@@ -765,9 +768,8 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                             cumulative = static_cast<double>(held->second.realized_pnl);
                         }
                     }
-                    realized_row = BacktestPnLManager::realized_row_for_bar(
-                        qty, cumulative, last_cumulative_realized_[strategy_id + "|" + symbol]);
-                }
+                    return cumulative;
+                };
 
                 // Skip zero quantity positions -- unless this is the close-day row and it
                 // realized something (E2-F54 (c): the live is_dead_row rule). Futures are
@@ -787,18 +789,24 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                     // on all 22 rows from 2026-08-03 to 2026-09-02 and made the column sum
                     // to 137x the position's actual realized. Writing the zero lets the
                     // persist layer's dead-row filter drop the row instead.
+                    const double closed_cumulative = fill_cumulative();
+                    const auto closed_flow = BacktestPnLManager::realized_row_peek(
+                        qty, closed_cumulative, last_cumulative_realized_[flow_key]);
                     Position closed_row = pos;
                     closed_row.quantity = Decimal(0.0);
                     closed_row.average_price = Decimal(0.0);
                     closed_row.unrealized_pnl = Decimal(0.0);
                     closed_row.realized_pnl =
-                        Decimal(realized_row.keep ? realized_row.flow : 0.0);
+                        Decimal(closed_flow.keep ? closed_flow.flow : 0.0);
                     auto closed_update =
                         portfolio->update_strategy_position(strategy_id, symbol, closed_row);
                     if (closed_update.is_error()) {
                         WARN("Failed to write close-day row for " + symbol + ": " +
                              std::string(closed_update.error()->what()));
                     }
+                    // The row was written (or deliberately zeroed): the ledger may advance.
+                    BacktestPnLManager::commit_realized_row(closed_cumulative,
+                                                            last_cumulative_realized_[flow_key]);
                     continue;
                 }
 
@@ -840,14 +848,19 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                     // accessor and passed with this file reverted (C-5 §9-A2).
                     if (method == PnLAccountingMethod::REALIZED_ONLY) {
                         updated_pos.realized_pnl = Decimal(BacktestPnLManager::realized_for_row(
-                            method, pnl_result.daily_pnl, realized_row.flow));
+                            method, pnl_result.daily_pnl, 0.0));
                     } else {
-                        // E2-F19 / E2-F54: this row's realized_pnl is a per-bar FLOW, and
-                        // it was already computed above -- before the flat-row skip and
-                        // from the fill-maintained record. Do not recompute it here from
-                        // `pos`, which is the pre-fill target snapshot.
+                        // E2-F19 / E2-F54 / E2-F59: a per-bar FLOW, taken from the
+                        // fill-maintained record and computed HERE -- on the path that
+                        // actually writes the row -- so a bar the symbol had no close for
+                        // defers its realized to the next written row instead of losing it.
+                        const double held_cumulative = fill_cumulative();
+                        const auto held_flow = BacktestPnLManager::realized_row_peek(
+                            qty, held_cumulative, last_cumulative_realized_[flow_key]);
                         updated_pos.realized_pnl = Decimal(BacktestPnLManager::realized_for_row(
-                            method, pnl_result.daily_pnl, realized_row.flow));
+                            method, pnl_result.daily_pnl, held_flow.flow));
+                        BacktestPnLManager::commit_realized_row(
+                            held_cumulative, last_cumulative_realized_[flow_key]);
                     }
                     // E2-F8: prefer the strategy's fill-maintained basis over the target
                     // position's average_price, which for mean reversion is the day's close

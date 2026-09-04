@@ -140,3 +140,88 @@ TEST(BacktestRealizedFlow, AClearedLedgerReportsTheWholeCumulativeNotAnIncrement
     EXPECT_DOUBLE_EQ(first_bar_of_the_next_run.flow, 75.0)
         << "an uncleared ledger would report 75 - 200 = -125 here";
 }
+
+// ---------------------------------------------------------------------------
+// E2-F59 -- the ledger must advance only on a bar whose row is actually WRITTEN.
+//
+// THE REGRESSION (introduced by 1b52f2d3, found by the lead's adversarial diff): the flow is
+// computed and `last_cumulative_realized_` advanced before the flat-row check, but three
+// paths after it return without writing anything:
+//
+//     if (curr_it == current_close_prices.end()) continue;          // no bar for this symbol
+//     if (!pnl_manager_->has_previous_close(symbol)) { ...; continue; }
+//     if (pnl_result.valid) { ... }                                 // else: nothing written
+//
+// Before the change the ledger was advanced INSIDE the valid-PnL branch, so a fill on a bar
+// the symbol has no close for was DEFERRED -- it surfaced on the next row that was written.
+// Advancing first turns that deferral into a LOSS: the ledger says the realized has been
+// reported, and no row ever carried it. Σ over rows then under-states the position's realized.
+//
+// The rule this pins: `last` is the cumulative AS OF THE LAST ROW WRITTEN, not as of the last
+// bar seen. A bar that writes nothing must leave it alone, and the next written row carries
+// the whole span.
+// ---------------------------------------------------------------------------
+
+TEST(BacktestRealizedFlow, ASkippedBarDefersItsFlowInsteadOfLosingIt) {
+    double last = 0.0;
+
+    // Bar D: fills realize +200, but the symbol has no close on this bar, so the coordinator
+    // writes no row. The ledger must NOT be advanced -- modelled here by not calling.
+    // (If it were advanced, `last` would become 200 and the +200 would never reach a row.)
+
+    // Bar D+1: the symbol prints again. Cumulative is now 250 (D's 200 plus 50 more) and the
+    // row IS written. It must carry the whole 250.
+    auto written = BacktestPnLManager::realized_row_for_bar(10.0, 250.0, last);
+    EXPECT_DOUBLE_EQ(written.flow, 250.0)
+        << "the skipped bar's 200 must surface on the next written row, not vanish";
+    EXPECT_TRUE(written.keep);
+    EXPECT_DOUBLE_EQ(last, 250.0) << "the ledger advances only now, on the row that was written";
+}
+
+TEST(BacktestRealizedFlow, HadTheSkippedBarAdvancedTheLedgerTheFlowWouldBeLost) {
+    // The defect, stated as arithmetic so the fix cannot be undone silently. This is what the
+    // pre-fix ordering produced: advance on the bar that wrote nothing, then report only the
+    // remainder on the next row.
+    double last = 0.0;
+    BacktestPnLManager::realized_row_for_bar(10.0, 200.0, last);  // the bar that wrote NOTHING
+    auto next = BacktestPnLManager::realized_row_for_bar(10.0, 250.0, last);
+    EXPECT_DOUBLE_EQ(next.flow, 50.0);
+    EXPECT_NE(next.flow, 250.0) << "200 of realized has no row to live on -- this is E2-F59";
+}
+
+TEST(BacktestRealizedFlow, FlowsStillSumWhenBarsAreSkipped) {
+    // The invariant R1 checks in the database, with two unwritten bars in the middle.
+    double last = 0.0;
+    double summed = 0.0;
+
+    // D0 written, D1 and D2 skipped (no close), D3 written, D4 close-out written.
+    struct Bar { double qty; double cumulative; bool written; };
+    const Bar bars[] = {
+        {10.0, 100.0, true},    // +100
+        {10.0, 175.0, false},   // no close -- no row
+        {10.0, 220.0, false},   // no close -- no row
+        {10.0, 300.0, true},    // carries 175+45+80 == 200 since the last written row
+        {0.0,  360.0, true},    // close-out carries the final 60
+    };
+    for (const auto& b : bars) {
+        if (!b.written) continue;  // the coordinator must not touch the ledger here
+        auto r = BacktestPnLManager::realized_row_for_bar(b.qty, b.cumulative, last);
+        if (r.keep) summed += r.flow;
+    }
+    EXPECT_DOUBLE_EQ(summed, 360.0) << "Σ over written rows must equal the fills' total";
+}
+
+TEST(BacktestRealizedFlow, PeekDoesNotAdvanceTheLedger) {
+    // The API shape that makes E2-F59 unrepeatable: a conditional write site must peek, and
+    // commit only once it has written. Peeking twice must give the same answer.
+    double last = 0.0;
+    auto a = BacktestPnLManager::realized_row_peek(10.0, 250.0, last);
+    auto b = BacktestPnLManager::realized_row_peek(10.0, 250.0, last);
+    EXPECT_DOUBLE_EQ(a.flow, 250.0);
+    EXPECT_DOUBLE_EQ(b.flow, 250.0) << "peek must be pure";
+    EXPECT_DOUBLE_EQ(last, 0.0) << "peek must not advance the ledger";
+
+    BacktestPnLManager::commit_realized_row(250.0, last);
+    EXPECT_DOUBLE_EQ(last, 250.0);
+    EXPECT_DOUBLE_EQ(BacktestPnLManager::realized_row_peek(10.0, 250.0, last).flow, 0.0);
+}

@@ -224,11 +224,38 @@ public:
                                             double cumulative_from_fills,
                                             double& last_cumulative,
                                             double tol = 1e-8) {
+        const RealizedRow row = realized_row_peek(quantity, cumulative_from_fills,
+                                                  last_cumulative, tol);
+        commit_realized_row(cumulative_from_fills, last_cumulative);
+        return row;
+    }
+
+    /**
+     * @brief The bar's flow WITHOUT advancing the ledger.
+     *
+     * E2-F59. `last_cumulative` means "the cumulative as of the last row actually WRITTEN",
+     * not "as of the last bar seen". Three paths in the coordinator's bar loop return without
+     * writing anything -- the symbol has no close on this bar, it has no previous close, or
+     * the P&L result is not valid -- and on those the ledger must be left alone so the next
+     * written row carries the whole span. Advancing on a bar that writes nothing does not
+     * defer the realized, it LOSES it: the ledger says it was reported and no row carries it.
+     *
+     * Peek where the write is conditional; commit once the row is written. `realized_row_for_bar`
+     * is peek+commit and is for the paths that always write.
+     */
+    static RealizedRow realized_row_peek(double quantity,
+                                         double cumulative_from_fills,
+                                         double last_cumulative,
+                                         double tol = 1e-8) {
         RealizedRow row;
         row.flow = cumulative_from_fills - last_cumulative;
-        last_cumulative = cumulative_from_fills;
         row.keep = !is_dead_row(quantity, row.flow, tol);
         return row;
+    }
+
+    /** @brief Advance the ledger. Call ONLY after the row has been written. E2-F59. */
+    static void commit_realized_row(double cumulative_from_fills, double& last_cumulative) {
+        last_cumulative = cumulative_from_fills;
     }
 
     /**
