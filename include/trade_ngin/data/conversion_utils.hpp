@@ -65,8 +65,28 @@ public:
      * @brief Get an int64 from a ChunkedArray, with type-aware dispatch.
      *
      * Like safe_get_double but for integers. Doubles in the column are
-     * truncated toward zero (with a single WARN about precision loss);
-     * strings are parsed via std::stoll.
+     * truncated toward zero (with a single WARN about precision loss).
+     *
+     * E2-F37 / BA-14 -- temporal columns. The canonical schema stores dates as
+     * `arrow::TimestampArray`, but convert_generic_to_arrow may surface the same
+     * column as utf8 or int64 depending on the source, which is why callers route
+     * timestamps through here at all. Before this there was no TIMESTAMP case, so
+     * such a column hit `default` and errored -- or, worse, arrived as a STRING
+     * and `std::stoll("2026-09-02 00:00:00")` returned **2026**: a silent,
+     * plausible-looking integer that is not a timestamp in any unit.
+     *
+     * UNITS -- read this before using the result:
+     *   * TIMESTAMP: the column's OWN unit (s / ms / us / ns), exactly as an
+     *     int64 column holding the same value would have returned. The canonical
+     *     schema is microseconds and `LiveDataLoader::load_previous_day_data`
+     *     reads it as such. This function does not normalise, because doing so
+     *     would silently change what that caller already computes.
+     *   * DATE32: days since the epoch. DATE64: milliseconds since the epoch.
+     *     Both are Arrow's native units for those types.
+     *   * STRING: a fully-integral string is parsed as an integer. A string that
+     *     is NOT fully integral is parsed as `YYYY-MM-DD[ HH:MM:SS]` and returned
+     *     as MICROSECONDS since the epoch, matching the canonical timestamp unit.
+     *     Anything else is a CONVERSION_ERROR -- never a partial parse.
      */
     static Result<int64_t> safe_get_int64(
         const std::shared_ptr<arrow::ChunkedArray>& col, int64_t row,

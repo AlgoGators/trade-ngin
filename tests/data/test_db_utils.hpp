@@ -230,18 +230,6 @@ public:
         return record_call("store_backtest_signals");
     }
 
-    Result<void> store_backtest_metadata(const std::string& run_id, const std::string& name,
-                                         const std::string& description,
-                                         const Timestamp& start_date, const Timestamp& end_date,
-                                         const nlohmann::json& hyperparameters,
-                                         const std::string& portfolio_id,
-                                         const std::string& table_name) override {
-        (void)run_id; (void)name; (void)description;
-        (void)start_date; (void)end_date; (void)hyperparameters;
-        (void)portfolio_id; (void)table_name;
-        return record_call("store_backtest_metadata");
-    }
-
     // Live trading data storage methods
     Result<void> store_trading_results(
         const std::string& strategy_id, const Timestamp& date, double total_return,

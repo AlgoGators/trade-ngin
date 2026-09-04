@@ -153,14 +153,16 @@ ExecutionReport ExecutionManager::generate_execution(
     exec.filled_quantity = std::abs(quantity_change);
     exec.fill_time = timestamp;
 
-    double abs_quantity = exec.filled_quantity.as_double();
-
     // TransactionCostManager is the single source of truth.
     // Keep fill_price as pure reference price (no embedded slippage).
     exec.fill_price = market_price;
 
+    // E2-F29: pass the SIGNED quantity. TransactionCostManager takes |qty| for every cost
+    // term except the SEC/TAF regulatory fees, which are sell-side only and are gated on
+    // `quantity < 0`. Passing |quantity_change| made that gate unreachable, so a config with
+    // apply_regulatory_fees charged a sell exactly what it charged a buy.
     auto cost_result = cost_manager_->calculate_costs(
-        symbol, abs_quantity, market_price);
+        symbol, quantity_change, market_price);
 
     exec.commissions_fees = Decimal(cost_result.commissions_fees);
     exec.implicit_price_impact = Decimal(cost_result.implicit_price_impact);
@@ -199,16 +201,30 @@ void ExecutionManager::update_market_data(const std::string& symbol, double volu
 }
 
 std::string ExecutionManager::generate_date_string(const Timestamp& timestamp) {
-    // Convert timestamp to time_t
+    // UTC, because this is the RUN DATE and every other artefact of the same run
+    // is stamped in UTC: the equity runner parses the CLI date as UTC midnight
+    // (95679ea2) and formats `now_tm` with gmtime_r at every consumer, and the
+    // rows this id belongs to are keyed on that UTC date.
+    //
+    // std::localtime here took the previous calendar day on any negative-offset
+    // host -- the 2026-06-15 run wrote DAILY_AAPL_20260614 (E2-F46). That id is
+    // what delete_stale_executions matches on and what a broker statement is
+    // reconciled against, so naming the wrong day is not cosmetic.
+    //
+    // Futures are unmoved: they still pass local midnight (E2-F42), which lands
+    // at 04:00/05:00Z on the same calendar day, so reading it in UTC yields the
+    // YYYYMMDD they always got. gmtime_r, not std::gmtime: this is called from
+    // the same paths the thread-safety sweep covered.
     std::time_t time = std::chrono::system_clock::to_time_t(timestamp);
-    std::tm* tm = std::localtime(&time);
+    std::tm tm{};
+    if (gmtime_r(&time, &tm) == nullptr) return std::string();
 
     // Create date string in YYYYMMDD format
     std::stringstream date_ss;
     date_ss << std::setfill('0')
-            << std::setw(4) << (tm->tm_year + 1900)
-            << std::setw(2) << (tm->tm_mon + 1)
-            << std::setw(2) << tm->tm_mday;
+            << std::setw(4) << (tm.tm_year + 1900)
+            << std::setw(2) << (tm.tm_mon + 1)
+            << std::setw(2) << tm.tm_mday;
     return date_ss.str();
 }
 

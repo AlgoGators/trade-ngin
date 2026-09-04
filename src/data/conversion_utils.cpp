@@ -1,7 +1,9 @@
 // src/data/conversion_utils.cpp
 #include "trade_ngin/data/conversion_utils.hpp"
 
+#include <cctype>
 #include <cstdint>
+#include <ctime>
 #include <stdexcept>
 #include <string>
 
@@ -12,6 +14,58 @@
 namespace trade_ngin {
 
 namespace {
+
+// Parse "YYYY-MM-DD" or "YYYY-MM-DD HH:MM:SS" (also accepting the 'T'
+// separator) as MICROSECONDS since the Unix epoch. UTC by construction --
+// timegm, never mktime, because a stored timestamptz is already a UTC instant
+// and mktime would re-interpret it in the host zone (E2-F22).
+//
+// Returns false on anything else, so a caller can distinguish "not a datetime"
+// from a datetime at the epoch.
+bool parse_ymd_hms_to_micros(const std::string& text, int64_t& out_micros) {
+    if (text.size() < 10) return false;
+    if (text[4] != '-' || text[7] != '-') return false;
+
+    auto digits = [&](std::size_t at, std::size_t n, int& out) -> bool {
+        if (at + n > text.size()) return false;
+        int v = 0;
+        for (std::size_t i = 0; i < n; ++i) {
+            const char c = text[at + i];
+            if (c < '0' || c > '9') return false;
+            v = v * 10 + (c - '0');
+        }
+        out = v;
+        return true;
+    };
+
+    int year = 0, month = 0, day = 0, hour = 0, minute = 0, second = 0;
+    if (!digits(0, 4, year) || !digits(5, 2, month) || !digits(8, 2, day)) return false;
+    if (month < 1 || month > 12 || day < 1 || day > 31) return false;
+
+    if (text.size() >= 19) {
+        const char sep = text[10];
+        if (sep != ' ' && sep != 'T') return false;
+        if (text[13] != ':' || text[16] != ':') return false;
+        if (!digits(11, 2, hour) || !digits(14, 2, minute) || !digits(17, 2, second)) {
+            return false;
+        }
+        if (hour > 23 || minute > 59 || second > 60) return false;
+    } else if (text.size() != 10) {
+        return false;  // a partial time is not a datetime
+    }
+
+    std::tm tm{};
+    tm.tm_year = year - 1900;
+    tm.tm_mon = month - 1;
+    tm.tm_mday = day;
+    tm.tm_hour = hour;
+    tm.tm_min = minute;
+    tm.tm_sec = second;
+    const std::time_t seconds = timegm(&tm);
+    if (seconds == static_cast<std::time_t>(-1)) return false;
+    out_micros = static_cast<int64_t>(seconds) * 1000000;
+    return true;
+}
 
 // Resolve a logical row index into a ChunkedArray to (chunk pointer,
 // offset within that chunk). Returns nullptr on out-of-range so the
@@ -317,6 +371,20 @@ Result<int64_t> DataConversionUtils::safe_get_int64(
                      column_name + " at row " + std::to_string(row));
                 return Result<int64_t>(static_cast<int64_t>(d));
             }
+            // E2-F37 / BA-14: temporal columns. The canonical schema stores dates as
+            // TimestampArray; without these cases such a column fell through to
+            // `default` and errored. The value is returned in the column's OWN unit
+            // (the canonical schema is microseconds, which is what
+            // LiveDataLoader::load_previous_day_data reads) -- see the header.
+            case arrow::Type::TIMESTAMP:
+                return Result<int64_t>(
+                    static_cast<const arrow::TimestampArray*>(chunk)->Value(off));
+            case arrow::Type::DATE32:  // days since epoch
+                return Result<int64_t>(static_cast<int64_t>(
+                    static_cast<const arrow::Date32Array*>(chunk)->Value(off)));
+            case arrow::Type::DATE64:  // milliseconds since epoch
+                return Result<int64_t>(
+                    static_cast<const arrow::Date64Array*>(chunk)->Value(off));
             case arrow::Type::STRING:
             case arrow::Type::LARGE_STRING: {
                 std::string s;
@@ -325,15 +393,38 @@ Result<int64_t> DataConversionUtils::safe_get_int64(
                 } else {
                     s = static_cast<const arrow::LargeStringArray*>(chunk)->GetString(off);
                 }
+                // A FULLY integral string is an integer. `std::stoll` stops at the
+                // first non-digit, so "2026-09-02 00:00:00" used to come back as
+                // 2026 -- a silent, plausible integer that is not a timestamp in any
+                // unit. Require the whole string to be consumed before believing it.
                 try {
-                    return Result<int64_t>(static_cast<int64_t>(std::stoll(s)));
-                } catch (const std::exception& e) {
-                    WARN("safe_get_int64: bad value '" + s + "' in column " + column_name +
-                         " at row " + std::to_string(row) + " (" + e.what() + ")");
-                    return make_error<int64_t>(ErrorCode::CONVERSION_ERROR,
-                                               "safe_get_int64 parse failure",
-                                               "DataConversionUtils");
+                    std::size_t consumed = 0;
+                    const long long v = std::stoll(s, &consumed);
+                    while (consumed < s.size() &&
+                           std::isspace(static_cast<unsigned char>(s[consumed]))) {
+                        ++consumed;
+                    }
+                    if (consumed == s.size()) {
+                        return Result<int64_t>(static_cast<int64_t>(v));
+                    }
+                } catch (const std::exception&) {
+                    // fall through to the datetime attempt
                 }
+
+                // Not an integer. The one shape a temporal column legitimately takes
+                // as text: YYYY-MM-DD, optionally with a time. Returned as
+                // MICROSECONDS since the epoch, the canonical timestamp unit.
+                int64_t micros = 0;
+                if (parse_ymd_hms_to_micros(s, micros)) {
+                    return Result<int64_t>(micros);
+                }
+
+                WARN("safe_get_int64: bad value '" + s + "' in column " + column_name +
+                     " at row " + std::to_string(row) +
+                     " (neither an integer nor YYYY-MM-DD[ HH:MM:SS])");
+                return make_error<int64_t>(ErrorCode::CONVERSION_ERROR,
+                                           "safe_get_int64 parse failure",
+                                           "DataConversionUtils");
             }
             default: {
                 const std::string actual = chunk->type()->ToString();

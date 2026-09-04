@@ -17,6 +17,19 @@
 using namespace trade_ngin;
 using namespace trade_ngin::testing;
 
+// The live sequence exactly as apps/strategies/live_equity_mean_reversion.cpp
+// performs it: LiveDailyCycle hands the previous day's book back, then
+// PortfolioManager::process_market_data feeds the day's bars (portfolio_manager.cpp
+// calls strategy->on_data(data) itself). Written as one helper so a test cannot
+// accidentally exercise a sequence the runner does not.
+static Result<void> live_sequence(BaseStrategy& strategy,
+                                  const std::unordered_map<std::string, Position>& previous,
+                                  const std::vector<Bar>& bars) {
+    auto seeded = LiveDailyCycle::prepare_strategy_for_signals(strategy, previous);
+    if (seeded.is_error()) return seeded;
+    return strategy.on_data(bars);  // the portfolio manager's one and only feed
+}
+
 // Wave 2 regression tests.
 //
 // F-B: the live equity runner never seeded the strategy's positions_ from the
@@ -144,7 +157,7 @@ TEST_F(LiveDailyCycleSeedingTest, SeededLongIsHeldInsideTheHoldBand) {
     auto bars = hold_band_series("AAPL");
 
     auto flat = create_strategy();
-    ASSERT_TRUE(LiveDailyCycle::prepare_strategy_for_signals(*flat, {}, bars).is_ok());
+    ASSERT_TRUE(live_sequence(*flat, {}, bars).is_ok());
 
     const double z = flat->get_z_score("AAPL");
     ASSERT_LT(z, -mr_config_.exit_threshold)
@@ -160,7 +173,7 @@ TEST_F(LiveDailyCycleSeedingTest, SeededLongIsHeldInsideTheHoldBand) {
     std::unordered_map<std::string, Position> previous{
         {"AAPL", held_long("AAPL", 100.0, 98.0)}};
     ASSERT_TRUE(
-        LiveDailyCycle::prepare_strategy_for_signals(*seeded, previous, bars).is_ok());
+        live_sequence(*seeded, previous, bars).is_ok());
 
     EXPECT_GT(seeded->get_position("AAPL"), 0.0)
         << "a held long inside the hold band must be kept, not liquidated at the "
@@ -177,7 +190,7 @@ TEST_F(LiveDailyCycleSeedingTest, SeededLongExitsOnlyOnceInsideTheExitThreshold)
     std::unordered_map<std::string, Position> previous{
         {"AAPL", held_long("AAPL", 100.0, 98.0)}};
     ASSERT_TRUE(
-        LiveDailyCycle::prepare_strategy_for_signals(*seeded, previous, bars).is_ok());
+        live_sequence(*seeded, previous, bars).is_ok());
 
     ASSERT_LT(std::abs(seeded->get_z_score("AAPL")), mr_config_.exit_threshold)
         << "series precondition: z must be inside the exit threshold";
@@ -195,7 +208,7 @@ TEST_F(LiveDailyCycleSeedingTest, StopLossFiresFromTheSeededCostBasis) {
     std::unordered_map<std::string, Position> previous{
         {"AAPL", held_long("AAPL", 100.0, 200.0)}};
     ASSERT_TRUE(
-        LiveDailyCycle::prepare_strategy_for_signals(*seeded, previous, bars).is_ok());
+        live_sequence(*seeded, previous, bars).is_ok());
 
     EXPECT_DOUBLE_EQ(seeded->get_position("AAPL"), 0.0)
         << "a position 50% underwater must be stopped out";
@@ -207,7 +220,7 @@ TEST_F(LiveDailyCycleSeedingTest, StopLossFiresFromTheSeededCostBasis) {
     std::unordered_map<std::string, Position> healthy_book{
         {"AAPL", held_long("AAPL", 100.0, 99.0)}};
     ASSERT_TRUE(
-        LiveDailyCycle::prepare_strategy_for_signals(*healthy, healthy_book, bars).is_ok());
+        live_sequence(*healthy, healthy_book, bars).is_ok());
 
     EXPECT_GT(healthy->get_position("AAPL"), 0.0)
         << "a position 0.5% underwater is inside the 5% stop and must be held";
@@ -230,7 +243,7 @@ TEST_F(LiveDailyCycleSeedingTest, StopLossMeasuresFromRetainedBasisNotPreviousCl
     std::unordered_map<std::string, Position> reanchored_book{
         {"AAPL", held_long("AAPL", 100.0, kPreviousClose)}};
     ASSERT_TRUE(
-        LiveDailyCycle::prepare_strategy_for_signals(*reanchored, reanchored_book, bars)
+        live_sequence(*reanchored, reanchored_book, bars)
             .is_ok());
     ASSERT_GT(reanchored->get_position("AAPL"), 0.0)
         << "sanity: against a re-anchored basis the stop cannot fire -- this is the "
@@ -241,7 +254,7 @@ TEST_F(LiveDailyCycleSeedingTest, StopLossMeasuresFromRetainedBasisNotPreviousCl
     std::unordered_map<std::string, Position> retained_book{
         {"AAPL", held_long("AAPL", 100.0, kTrueBasis)}};
     ASSERT_TRUE(
-        LiveDailyCycle::prepare_strategy_for_signals(*retained, retained_book, bars)
+        live_sequence(*retained, retained_book, bars)
             .is_ok());
     EXPECT_DOUBLE_EQ(retained->get_position("AAPL"), 0.0)
         << "the stop must measure from the retained cost basis";
@@ -309,7 +322,7 @@ TEST_F(LiveDailyCycleSeedingTest, EmptyBookIsInert) {
 
     auto seeded_empty = create_strategy();
     ASSERT_TRUE(
-        LiveDailyCycle::prepare_strategy_for_signals(*seeded_empty, {}, bars).is_ok());
+        live_sequence(*seeded_empty, {}, bars).is_ok());
 
     EXPECT_DOUBLE_EQ(seeded_empty->get_position("AAPL"), unseeded->get_position("AAPL"));
     EXPECT_DOUBLE_EQ(seeded_empty->get_z_score("AAPL"), unseeded->get_z_score("AAPL"));
@@ -328,7 +341,7 @@ TEST_F(LiveDailyCycleSeedingTest, FlatSymbolIsUnaffectedByAnotherSymbolsSeed) {
     std::unordered_map<std::string, Position> previous{
         {"AAPL", held_long("AAPL", 100.0, 98.0)}};
     ASSERT_TRUE(
-        LiveDailyCycle::prepare_strategy_for_signals(*seeded, previous, bars).is_ok());
+        live_sequence(*seeded, previous, bars).is_ok());
 
     EXPECT_DOUBLE_EQ(seeded->get_position("MSFT"), unseeded->get_position("MSFT"))
         << "MSFT was not seeded and must be unchanged";
@@ -343,7 +356,7 @@ TEST_F(LiveDailyCycleSeedingTest, EntrySignalStillOpensANewPosition) {
     auto bars = hold_band_series("AAPL", 94.0);
 
     auto seeded = create_strategy();
-    ASSERT_TRUE(LiveDailyCycle::prepare_strategy_for_signals(*seeded, {}, bars).is_ok());
+    ASSERT_TRUE(live_sequence(*seeded, {}, bars).is_ok());
 
     ASSERT_LT(seeded->get_z_score("AAPL"), -mr_config_.entry_threshold)
         << "series precondition: z must be beyond the entry threshold";
@@ -440,7 +453,7 @@ TEST_F(LiveDailyCycleSeedingTest, SeedZeroesRealizedAndKeepsBasisAndMark) {
         {"AAPL", held_with_pnl("AAPL", 100.0, 98.0, /*realized*/ -466.969196,
                                /*unrealized*/ 12.34)}};
     ASSERT_TRUE(
-        LiveDailyCycle::prepare_strategy_for_signals(*seeded, previous, bars).is_ok());
+        live_sequence(*seeded, previous, bars).is_ok());
 
     const auto& positions = seeded->get_positions();
     auto it = positions.find("AAPL");
@@ -476,7 +489,7 @@ TEST_F(LiveDailyCycleSeedingTest, SeededRealizedDoesNotLeakIntoTheDaysFill) {
     std::unordered_map<std::string, Position> previous{
         {"TMUS", held_with_pnl("TMUS", qty, basis, /*realized*/ -466.969196, 0.0)}};
     ASSERT_TRUE(
-        LiveDailyCycle::prepare_strategy_for_signals(*seeded, previous, bars).is_ok());
+        live_sequence(*seeded, previous, bars).is_ok());
 
     ASSERT_TRUE(seeded->on_execution(fill("TMUS", Side::SELL, qty, exit)).is_ok());
 
@@ -533,7 +546,7 @@ TEST_F(LiveDailyCycleSeedingTest, ThreeDayFlowWithInterposedFinalization) {
                        double target_qty, double t1_close) {
         auto strat = create_strategy();
         EXPECT_TRUE(
-            LiveDailyCycle::prepare_strategy_for_signals(*strat, loaded, bars).is_ok());
+            live_sequence(*strat, loaded, bars).is_ok());
 
         std::unordered_map<std::string, Position> positions;
         Position target;
@@ -606,7 +619,7 @@ TEST_F(LiveDailyCycleSeedingTest, CloseOutOfAConfiguredSymbolKeepsItsRow) {
     auto strat = create_strategy();
     std::unordered_map<std::string, Position> previous{
         {"MSFT", held_with_pnl("MSFT", 10.0, 100.0, 0.0, 0.0)}};
-    ASSERT_TRUE(LiveDailyCycle::prepare_strategy_for_signals(*strat, previous, bars).is_ok());
+    ASSERT_TRUE(live_sequence(*strat, previous, bars).is_ok());
 
     std::unordered_map<std::string, Position> positions;
     Position target;
@@ -635,7 +648,7 @@ TEST_F(LiveDailyCycleSeedingTest, CloseOutOfAnUnconfiguredSymbolGetsARow) {
     auto strat = create_strategy();
     std::unordered_map<std::string, Position> previous{
         {"MSFT", held_with_pnl("MSFT", 10.0, 100.0, 0.0, 0.0)}};
-    ASSERT_TRUE(LiveDailyCycle::prepare_strategy_for_signals(*strat, previous, bars).is_ok());
+    ASSERT_TRUE(live_sequence(*strat, previous, bars).is_ok());
 
     // MSFT has left the universe: no target entry at all.
     std::unordered_map<std::string, Position> positions;
@@ -658,4 +671,112 @@ TEST_F(LiveDailyCycleSeedingTest, CloseOutOfAnUnconfiguredSymbolGetsARow) {
     EXPECT_NEAR(positions.at("MSFT").realized_pnl.as_double(), 100.0, 1e-6);
     EXPECT_DOUBLE_EQ(positions.at("MSFT").quantity.as_double(), 0.0);
     EXPECT_FALSE(LiveDailyCycle::is_dead_row(positions.at("MSFT")));
+}
+
+// ---------------------------------------------------------------------------
+// E2-F28 -- the live day feeds the strategy ONCE
+// ---------------------------------------------------------------------------
+
+// E2-F28: prepare_strategy_for_signals used to call on_data() itself, and the
+// portfolio manager called it again on the same vector a few lines later. MeanReversion
+// appends unconditionally (mean_reversion.cpp: price_history.push_back per bar,
+// volume_sample_count++ per bar), so every live session saw each bar twice: the history
+// ran to the trim cap instead of the bar count and the ADV EMA advanced over a series
+// that never traded. Backtests feed once, so the two paths could not agree.
+TEST_F(LiveDailyCycleSeedingTest, LiveDayFeedsEachBarExactlyOnce) {
+    auto bars = hold_band_series("AAPL");
+    ASSERT_EQ(bars.size(), 31u) << "fixture precondition";
+
+    auto strat = create_strategy();
+    ASSERT_TRUE(live_sequence(*strat, {}, bars).is_ok());
+
+    const auto* data = strat->get_instrument_data("AAPL");
+    ASSERT_NE(data, nullptr);
+    EXPECT_EQ(data->price_history.size(), bars.size())
+        << "the live day fed the strategy more than once: history holds "
+        << data->price_history.size() << " closes for " << bars.size() << " bars";
+    EXPECT_EQ(data->volume_sample_count, bars.size())
+        << "ADV EMA advanced " << data->volume_sample_count << " times for "
+        << bars.size() << " bars";
+}
+
+// ---------------------------------------------------------------------------
+// E2-F35 / BA-4 -- the row and the aggregate mark from ONE map
+// ---------------------------------------------------------------------------
+
+// The regression, stated as the two sides of the identity. THIN has no T-1 close;
+// execute_day_t widens to an older real session and both fills and marks it there.
+// The aggregate (summed over `positions` after resolve_and_apply_basis) therefore
+// carries THIN's mark, while the day-T row loop used to recompute from the T-1 close
+// map -- which does not contain THIN at all -- and wrote 0. Same book, two answers.
+TEST_F(LiveDailyCycleSeedingTest, RowAndAggregateMarkAWidenedSymbolIdentically) {
+    const auto now = std::chrono::system_clock::now();
+
+    // T-1 closes: AAPL printed, THIN did not.
+    const std::unordered_map<std::string, double> t1_closes{{"AAPL", 110.0}};
+    // What execute_day_t actually priced with: the T-1 closes plus THIN's widened close.
+    const std::unordered_map<std::string, double> execution_prices{{"AAPL", 110.0},
+                                                                   {"THIN", 50.0}};
+
+    std::unordered_map<std::string, Position> previous;
+    previous["AAPL"] = held_long("AAPL", 10.0, 100.0);
+    previous["THIN"] = held_long("THIN", 20.0, 40.0);
+    auto positions = previous;
+
+    LiveDailyCycle::resolve_and_apply_basis(positions, {}, previous, execution_prices);
+
+    double aggregate = 0.0;
+    for (const auto& [symbol, pos] : positions) aggregate += pos.unrealized_pnl.as_double();
+    EXPECT_NEAR(aggregate, 10.0 * (110.0 - 100.0) + 20.0 * (50.0 - 40.0), 1e-9);
+
+    // What the day-T row loop writes, marked from the map the fix hands it.
+    const auto marks = LiveDailyCycle::day_t_mark_prices(t1_closes, execution_prices);
+    double rows = 0.0;
+    for (const auto& [symbol, pos] : positions) {
+        auto mark = marks.find(symbol);
+        const double price = mark != marks.end() ? mark->second : 0.0;
+        if (price > 0.0) {
+            rows += LivePnLManager::unrealized_from_cost_basis(
+                pos.quantity.as_double(), pos.average_price.as_double(), price);
+        }
+    }
+    EXPECT_NEAR(rows, aggregate, 1e-9)
+        << "the row sum and the aggregate must mark from the same map (E2-F35)";
+
+    // And the shape of the defect, for the record: the un-widened map drops THIN's mark.
+    double rows_from_t1_only = 0.0;
+    for (const auto& [symbol, pos] : positions) {
+        auto mark = t1_closes.find(symbol);
+        if (mark != t1_closes.end() && mark->second > 0.0) {
+            rows_from_t1_only += LivePnLManager::unrealized_from_cost_basis(
+                pos.quantity.as_double(), pos.average_price.as_double(), mark->second);
+        }
+    }
+    EXPECT_NEAR(aggregate - rows_from_t1_only, 200.0, 1e-9)
+        << "characterizing E2-F35: a widened symbol's row was 0 while the aggregate "
+           "carried its mark";
+}
+
+// The closed-day path must be untouched. execute_day_t is skipped on a non-trading day,
+// so execution_prices is empty and the marks are exactly the T-1 closes.
+TEST_F(LiveDailyCycleSeedingTest, EmptyExecutionPricesLeaveTheT1CloseMapAlone) {
+    const std::unordered_map<std::string, double> t1_closes{{"AAPL", 110.0}, {"MSFT", 300.0}};
+    EXPECT_EQ(LiveDailyCycle::day_t_mark_prices(t1_closes, {}), t1_closes);
+}
+
+// A present T-1 close is not overwritten by a different value unless the execution
+// path actually priced there -- and when it did, the execution price is the truth,
+// because that is what the fill was struck at.
+TEST_F(LiveDailyCycleSeedingTest, ExecutionPriceWinsAndNonPositiveSubstitutesAreIgnored) {
+    const std::unordered_map<std::string, double> t1_closes{{"AAPL", 110.0}, {"MSFT", 300.0}};
+    const std::unordered_map<std::string, double> execution_prices{
+        {"AAPL", 111.5}, {"DEAD", 0.0}, {"NEG", -3.0}};
+
+    const auto marks = LiveDailyCycle::day_t_mark_prices(t1_closes, execution_prices);
+
+    EXPECT_DOUBLE_EQ(marks.at("AAPL"), 111.5);
+    EXPECT_DOUBLE_EQ(marks.at("MSFT"), 300.0);
+    EXPECT_EQ(marks.count("DEAD"), 0u)
+        << "a zero mark books the whole notional as a gain; absent is the right answer";
+    EXPECT_EQ(marks.count("NEG"), 0u);
 }

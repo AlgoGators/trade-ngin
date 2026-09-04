@@ -2048,43 +2048,6 @@ Result<void> PostgresDatabase::store_backtest_signals(
     }
 }
 
-Result<void> PostgresDatabase::store_backtest_metadata(
-    const std::string& run_id, const std::string& name, const std::string& description,
-    const Timestamp& start_date, const Timestamp& end_date, const nlohmann::json& hyperparameters,
-    const std::string& portfolio_id, const std::string& table_name) {
-    auto validation = validate_connection();
-    if (validation.is_error())
-        return validation;
-
-    try {
-        pqxx::work txn(*connection_);
-
-        std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
-
-        std::string query =
-            "INSERT INTO " + table_name +
-            " (run_id, portfolio_id, name, description, start_date, end_date, hyperparameters) "
-            "VALUES ($1, $2, $3, $4, $5, $6, $7) "
-            "ON CONFLICT (run_id) "
-            "DO UPDATE SET portfolio_id = EXCLUDED.portfolio_id, name = EXCLUDED.name, description "
-            "= EXCLUDED.description, "
-            "start_date = EXCLUDED.start_date, end_date = EXCLUDED.end_date, "
-            "hyperparameters = EXCLUDED.hyperparameters";
-
-        txn.exec(query, pqxx::params{run_id, actual_portfolio_id, name, description,
-                        format_timestamp(start_date), format_timestamp(end_date),
-                        hyperparameters.dump()});
-
-        txn.commit();
-        INFO("Successfully stored backtest metadata for run: " + run_id);
-        return Result<void>();
-    } catch (const std::exception& e) {
-        return make_error<void>(ErrorCode::DATABASE_ERROR,
-                                "Failed to store backtest metadata: " + std::string(e.what()),
-                                "PostgresDatabase");
-    }
-}
-
 Result<void> PostgresDatabase::store_backtest_metadata_with_portfolio(
     const std::string& run_id, const std::string& portfolio_run_id, const std::string& strategy_id,
     double strategy_allocation, const nlohmann::json& portfolio_config, const std::string& name,
@@ -2492,15 +2455,24 @@ PostgresDatabase::get_corporate_actions(
 
         // Parameter arrays rather than concatenated IN-lists: at the full
         // 852-symbol universe the string form built a 5 kB literal per call.
-        // equities_data.corporate_action stores dates as text, so the column
-        // still needs a cast; the index on (ticker, date) carries the ticker
-        // side, which is what makes this bounded.
+        //
+        // G6-4: equities_data.corporate_action stores `date` as TEXT, and this
+        // compared it as `date::date BETWEEN $3::date AND $4::date`. The cast
+        // is evaluated per row and throws on the first value that is not a
+        // parseable date, taking the whole query -- and the run -- with it; it
+        // also makes the predicate non-sargable, so the (ticker, date) index
+        // covers only the ticker side. Every value in the column is a 10-char
+        // ISO-8601 date (verified: 0 of 627,169 rows fail
+        // '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'), and ISO-8601 sorts lexicographically,
+        // so a plain text comparison selects exactly the same rows, index-native
+        // and with no cast to fail. The ISO precondition is pinned by
+        // tests/live/corp_actions/test_corp_action_query_bounds_db.cpp.
         const std::string query =
             "SELECT date, action, ticker, value, contraticker, contraname, name "
             "FROM equities_data.corporate_action "
             "WHERE ticker = ANY($1) "
             "  AND action = ANY($2) "
-            "  AND date::date BETWEEN $3::date AND $4::date "
+            "  AND date >= $3 AND date <= $4 "
             "ORDER BY date, ticker, action";
 
         auto result = txn.exec(query, pqxx::params{tickers, actions, start_date, end_date});
@@ -2535,6 +2507,39 @@ PostgresDatabase::get_corporate_actions(
         return make_error<std::vector<CorpActionRow>>(
             ErrorCode::DATABASE_ERROR,
             "Failed to fetch corporate actions: " + std::string(e.what()),
+            "PostgresDatabase");
+    }
+}
+
+Result<std::string> PostgresDatabase::get_corp_action_feed_last_date(
+    const std::string& as_of_date) {
+
+    auto validation = validate_connection();
+    if (validation.is_error()) {
+        return make_error<std::string>(validation.error()->code(), validation.error()->what());
+    }
+
+    try {
+        pqxx::work txn(*connection_);
+        // Text comparison for the same reason get_corporate_actions uses one:
+        // the column is TEXT holding ISO-8601, so max() and the bound are both
+        // lexicographic and index-friendly, and no row can throw on a cast.
+        pqxx::result r =
+            as_of_date.empty()
+                ? txn.exec("SELECT COALESCE(max(date), '') FROM equities_data.corporate_action")
+                : txn.exec_params(
+                      "SELECT COALESCE(max(date), '') FROM equities_data.corporate_action "
+                      "WHERE date <= $1",
+                      as_of_date);
+        std::string last;
+        if (!r.empty() && !r[0][0].is_null()) last = r[0][0].c_str();
+        txn.commit();
+        return Result<std::string>(std::move(last));
+
+    } catch (const std::exception& e) {
+        return make_error<std::string>(
+            ErrorCode::DATABASE_ERROR,
+            "Failed to read the corporate-action feed's last row date: " + std::string(e.what()),
             "PostgresDatabase");
     }
 }
@@ -2674,7 +2679,8 @@ PostgresDatabase::get_ticker_aliases() {
 }
 
 Result<std::unordered_map<std::string, std::string>>
-PostgresDatabase::get_delisting_dates(const std::vector<std::string>& tickers) {
+PostgresDatabase::get_delisting_dates(const std::vector<std::string>& tickers,
+                                     const std::string& from_date) {
     using Map = std::unordered_map<std::string, std::string>;
 
     auto validation = validate_connection();
@@ -2692,12 +2698,34 @@ PostgresDatabase::get_delisting_dates(const std::vector<std::string>& tickers) {
         // idx_ohlcv_1d_delisting (migration 003) covers the IS NOT NULL
         // predicate, which is what took this from 14.1 s to 1.9 s at 852
         // symbols.
-        auto result = txn.exec(
-            "SELECT symbol, max(delisting_date)::text AS delisting_date "
-            "FROM equities_data.ohlcv_1d "
-            "WHERE symbol = ANY($1) AND delisting_date IS NOT NULL "
-            "GROUP BY symbol",
-            pqxx::params{tickers});
+        // BA-8: bound the row by date. Without a floor this returns
+        // max(delisting_date) over the symbol's ENTIRE history, so a reused
+        // ticker inherits a dead company's delisting (HPC 2008-11-24, MER
+        // 2008-12-31) and a held position is exited at a stale price. The
+        // runner's bars-contradict guard cannot cover this on its own:
+        // delisting_is_stale() is false when last_bar_date is empty, which is
+        // exactly the symbol that stopped printing.
+        //
+        // Compared as text -- delisting_date is a date column and the bound is
+        // ISO, which orders lexicographically; cast the bound, not the column,
+        // so the partial index idx_ohlcv_1d_delisting still applies.
+        pqxx::result result;
+        if (from_date.empty()) {
+            result = txn.exec(
+                "SELECT symbol, max(delisting_date)::text AS delisting_date "
+                "FROM equities_data.ohlcv_1d "
+                "WHERE symbol = ANY($1) AND delisting_date IS NOT NULL "
+                "GROUP BY symbol",
+                pqxx::params{tickers});
+        } else {
+            result = txn.exec(
+                "SELECT symbol, max(delisting_date)::text AS delisting_date "
+                "FROM equities_data.ohlcv_1d "
+                "WHERE symbol = ANY($1) AND delisting_date IS NOT NULL "
+                "  AND delisting_date >= $2::date "
+                "GROUP BY symbol",
+                pqxx::params{tickers, from_date});
+        }
 
         Map out;
         for (const auto& row : result) {
@@ -2762,6 +2790,67 @@ PostgresDatabase::get_position_inception_dates(const std::string& strategy_id,
         return make_error<Map>(
             ErrorCode::DATABASE_ERROR,
             "Failed to fetch position inception dates: " + std::string(e.what()),
+            "PostgresDatabase");
+    }
+}
+
+Result<std::unordered_map<std::string, std::string>>
+PostgresDatabase::get_current_holding_start_dates(const std::string& strategy_id,
+                                                  const std::string& strategy_name,
+                                                  const std::string& portfolio_id,
+                                                  const std::vector<std::string>& symbols,
+                                                  const std::string& table_name) {
+    using Map = std::unordered_map<std::string, std::string>;
+
+    auto validation = validate_connection();
+    if (validation.is_error()) {
+        return make_error<Map>(validation.error()->code(), validation.error()->what());
+    }
+    if (symbols.empty()) return Result<Map>(Map{});
+
+    // table_name is an internal default (trading.positions), never user input --
+    // same contract as load_positions_by_date, which interpolates it likewise.
+
+    try {
+        pqxx::work txn(*connection_);
+
+        // The start of the holding we hold NOW: the earliest non-zero row that is
+        // NEWER than the most recent flat row for the same key. A close writes exactly
+        // one quantity-0 row on its own date (E2-F19), so that row is the break between
+        // a previous holding and this one. No flat row => never closed => this equals
+        // min(date), the lifetime inception.
+        //
+        // Deliberately NOT the same question as get_position_inception_dates. That one
+        // fails wide for the class-1 price window; this one is the class-2 rename era
+        // and must fail narrow (BA-2).
+        auto result = txn.exec(
+            "SELECT symbol, min(date)::text AS holding_start "
+            "FROM " + table_name + " p "
+                " WHERE strategy_id = $1 AND strategy_name = $2 AND portfolio_id = $3 "
+                "  AND symbol = ANY($4) AND quantity <> 0 "
+                "  AND date > COALESCE(("
+                "        SELECT max(z.date) FROM " + table_name + " z "
+                "         WHERE z.strategy_id = p.strategy_id "
+                "           AND z.strategy_name = p.strategy_name "
+                "           AND z.portfolio_id = p.portfolio_id "
+                "           AND z.symbol = p.symbol AND z.quantity = 0), "
+                "      DATE '1900-01-01') "
+                "GROUP BY symbol",
+            pqxx::params{strategy_id, strategy_name, portfolio_id, symbols});
+
+        Map out;
+        for (const auto& row : result) {
+            if (row["holding_start"].is_null()) continue;
+            out.emplace(row["symbol"].c_str(), row["holding_start"].c_str());
+        }
+
+        txn.commit();
+        return Result<Map>(std::move(out));
+
+    } catch (const std::exception& e) {
+        return make_error<Map>(
+            ErrorCode::DATABASE_ERROR,
+            "Failed to fetch current holding start dates: " + std::string(e.what()),
             "PostgresDatabase");
     }
 }
@@ -2884,7 +2973,11 @@ PostgresDatabase::load_applied_corp_actions(const std::string& portfolio_id,
             "SELECT symbol, action_type, ex_date::text AS ex_date, "
             "COALESCE(qty_held, 0) AS qty_held, "
             "COALESCE(dividend_per_share, 0) AS dividend_per_share, "
-            "COALESCE(total_cash, 0) AS total_cash "
+            "COALESCE(total_cash, 0) AS total_cash, "
+            // E2-F23 / migration 005. Empty string for a legacy row, which the
+            // caller reads as "unknown" and accepts -- refusing every row written
+            // before the column existed would make the next run unstartable.
+            "COALESCE(run_date::text, '') AS run_date "
             "FROM trading.corp_action_applied "
             "WHERE portfolio_id = $1 AND strategy_id = $2 AND strategy_name = $3",
             portfolio_id, strategy_id, strategy_name);
@@ -2899,6 +2992,7 @@ PostgresDatabase::load_applied_corp_actions(const std::string& portfolio_id,
             r.qty_held = row["qty_held"].as<double>();
             r.dividend_per_share = row["dividend_per_share"].as<double>();
             r.total_cash = row["total_cash"].as<double>();
+            r.run_date = row["run_date"].c_str();
             out.push_back(std::move(r));
         }
 
@@ -2967,15 +3061,21 @@ Result<void> PostgresDatabase::store_applied_corp_actions_in(
         // authoritative one. A repeated run must not rewrite qty_held with a
         // post-adjustment quantity.
         for (const auto& r : rows) {
+            // run_date is the writing pass's OWN as-of date (E2-F23, migration
+            // 005), not now(): a replay of 2026-04-07 executed tonight must stamp
+            // 2026-04-07, or a later chain's rows would look like an earlier
+            // chain's and the detector would never fire. Empty stores NULL rather
+            // than an epoch date, so an unstamped row stays honestly unknown.
             txn.exec_params(
                 "INSERT INTO trading.corp_action_applied "
                 "(portfolio_id, strategy_id, strategy_name, symbol, action_type, "
-                " ex_date, qty_held, dividend_per_share, total_cash) "
-                "VALUES ($1, $2, $3, $4, $5, $6::date, $7, $8, $9) "
+                " ex_date, qty_held, dividend_per_share, total_cash, run_date) "
+                "VALUES ($1, $2, $3, $4, $5, $6::date, $7, $8, $9, "
+                "        NULLIF($10, '')::date) "
                 "ON CONFLICT (portfolio_id, strategy_id, strategy_name, symbol, "
                 "             action_type, ex_date) DO NOTHING",
                 portfolio_id, strategy_id, strategy_name, r.symbol, r.action_type,
-                r.ex_date, r.qty_held, r.dividend_per_share, r.total_cash);
+                r.ex_date, r.qty_held, r.dividend_per_share, r.total_cash, r.run_date);
         }
         return Result<void>();
 

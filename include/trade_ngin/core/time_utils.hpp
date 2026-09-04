@@ -115,6 +115,43 @@ inline bool parse_utc_datetime(const std::string& text,
     return true;
 }
 
+/**
+ * @brief Parse a `YYYY-MM-DD` CALENDAR DATE as UTC midnight.
+ *
+ * The date-only counterpart to parse_utc_datetime, for the sites that take a
+ * bare date (a CLI run date, an ex-date) rather than a timestamp. std::mktime
+ * reads the broken-down date as LOCAL midnight; every consumer then formats it
+ * back through gmtime (format_utc_date), so on a host at a positive UTC offset
+ * the value lands on the PREVIOUS day and the whole run shifts with it -- the
+ * date key written to trading.positions, the T-1 lookup, the dedup comparison.
+ * A New York host hides this (local midnight is 05:00 UTC, same calendar day),
+ * which is why it survived: the defect only shows east of Greenwich.
+ *
+ * Leading/trailing text is rejected rather than ignored, so a timestamp string
+ * cannot be silently truncated to its date here -- use parse_utc_datetime for
+ * those. Returns false on a malformed string, leaving `out` untouched.
+ */
+inline bool parse_utc_date(const std::string& text,
+                           std::chrono::system_clock::time_point& out) {
+    int year = 0, month = 0, day = 0;
+    char trailing = '\0';
+    // The %c catches any extra character: exactly 3 conversions means the whole
+    // string was "YYYY-MM-DD" and nothing else.
+    if (std::sscanf(text.c_str(), "%4d-%2d-%2d%c", &year, &month, &day, &trailing) != 3) {
+        return false;
+    }
+    if (month < 1 || month > 12 || day < 1 || day > 31) return false;
+    std::tm tm = {};
+    tm.tm_year = year - 1900;
+    tm.tm_mon = month - 1;
+    tm.tm_mday = day;
+    tm.tm_isdst = 0;
+    const time_t t = timegm(&tm);
+    if (t == static_cast<time_t>(-1)) return false;
+    out = std::chrono::system_clock::from_time_t(t);
+    return true;
+}
+
 inline std::string format_utc_datetime(std::chrono::system_clock::time_point tp) {
     auto t = std::chrono::system_clock::to_time_t(tp);
     std::tm tm{};

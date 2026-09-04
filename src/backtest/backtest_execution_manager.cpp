@@ -82,8 +82,10 @@ ExecutionReport BacktestExecutionManager::generate_execution(
     // Fill price stays as pure reference price (no embedded slippage).
     exec.fill_price = Price(execution_price);
 
+    // E2-F29: pass the SIGNED quantity so the sell-side-only SEC/TAF gate
+    // (`quantity < 0`) is reachable; every other cost term takes |qty|.
     auto cost_result = transaction_cost_manager_.calculate_costs(
-        symbol, abs_quantity, execution_price);
+        symbol, quantity_change, execution_price);
 
     exec.commissions_fees = Decimal(cost_result.commissions_fees);
     exec.implicit_price_impact = Decimal(cost_result.implicit_price_impact);

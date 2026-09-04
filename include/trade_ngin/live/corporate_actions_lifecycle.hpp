@@ -79,6 +79,47 @@ struct LifecycleAdjustment {
 class CorporateActionsLifecycle {
 public:
     /**
+     * @brief historical ticker -> its eras, ascending by `effective_until`.
+     *
+     * Each entry is (effective_until, current_symbol). ISO YYYY-MM-DD compares
+     * lexicographically, so a plain sort orders the eras. An alias with no
+     * `effective_until` cannot be era-bounded and is DROPPED, not applied
+     * unconditionally: class 2 fails narrow, and an unbounded alias is exactly
+     * the shape that re-keys a currently-trading ticker.
+     */
+    using RenameMap =
+        std::unordered_map<std::string, std::vector<std::pair<std::string, std::string>>>;
+
+    static RenameMap build_rename_map(const std::vector<TickerAlias>& aliases);
+
+    /**
+     * @brief The successor a ticker had at `date`: the first rename on or after it.
+     *
+     * A date later than every rename maps NOWHERE -- the ticker belongs to whoever
+     * holds it now, not to the old company. The compare is inclusive on purpose:
+     * `effective_until` conventions differ by a day between curated rows
+     * (day-after) and backfilled rows (source date), so on the boundary day `<=`
+     * errs toward NOT applying a backfilled rename, which is simply retried next run.
+     *
+     * @return (effective_until, current_symbol); both empty when nothing applies.
+     */
+    static std::pair<std::string, std::string> successor_at(const RenameMap& renames,
+                                                            const std::string& symbol,
+                                                            const std::string& date);
+
+    /**
+     * @brief The tickers `apply_renames` would move this holding onto, in hop order.
+     *
+     * Same chain, same era test, same as-of guard as apply_renames -- shared so the
+     * universe the runner loads bars for cannot disagree with the re-keying that
+     * happens later in the same run (E2-F34). Empty when no rename applies.
+     */
+    static std::vector<std::string> rename_chain(const RenameMap& renames,
+                                                 const std::string& symbol,
+                                                 const std::string& holding_start,
+                                                 const std::string& as_of_date);
+
+    /**
      * @brief Class 2 -- re-key positions held under a superseded ticker.
      *
      * A position still keyed by a historical ticker is moved to the current
@@ -134,10 +175,19 @@ public:
      *
      * @param final_closes Last traded price per symbol; required for exits.
      */
+    /**
+     * @param feed_last_date MEASURED last row date of
+     *        equities_data.corporate_action, YYYY-MM-DD. Quoted in the "no deal
+     *        terms" WARNs so the operator reads what the database actually holds
+     *        rather than a date compiled into the binary (E4 item 3). Empty
+     *        falls back to `kCorpActionTableFrozenAfter`, which is what every
+     *        caller got before the measurement existed.
+     */
     static std::vector<LifecycleAdjustment> apply_terminations(
         std::unordered_map<std::string, Position>& positions,
         const std::vector<TerminationEvent>& events,
-        const std::unordered_map<std::string, double>& final_closes);
+        const std::unordered_map<std::string, double>& final_closes,
+        const std::string& feed_last_date = "");
 
     /**
      * @brief Is a `delisting_date` contradicted by the symbol's own bars?

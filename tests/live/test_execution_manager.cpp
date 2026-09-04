@@ -279,3 +279,129 @@ TEST_F(ExecutionManagerTest, DefaultPolicyIsMarkFallbackSoFuturesCallersAreUnaff
     EXPECT_DOUBLE_EQ(defaulted.value()[0].fill_price.as_double(),
                      explicit_mark.value()[0].fill_price.as_double());
 }
+
+// ============================================================================
+// E2-F29: SEC/TAF regulatory fees must reach a SELL fill.
+//
+// TransactionCostManager gates the fees on `quantity < 0`; the live caller passed
+// |quantity| for both sides, so on a config with apply_regulatory_fees the sell
+// side was charged exactly what the buy side was. SELL cost - BUY cost must equal
+// sec_fee + taf for the same clip.
+// ============================================================================
+TEST_F(ExecutionManagerTest, SellSideCarriesRegulatoryFeesWhenConfigured) {
+    ExecutionManager em;
+    transaction_cost::AssetCostConfig cfg;
+    cfg.symbol = "TIERD";
+    cfg.asset_type = AssetType::EQUITY;
+    cfg.commission_per_unit = 0.0035;
+    cfg.min_commission_per_order = 0.35;
+    cfg.max_commission_per_order = 1e9;
+    cfg.apply_regulatory_fees = true;
+    cfg.sec_fee_per_million = 20.60;
+    cfg.finra_taf_per_share = 0.000195;
+    cfg.finra_taf_cap_per_trade = 9.79;
+    em.get_transaction_cost_manager().register_asset_config(cfg);
+
+    const double qty = 1000.0, px = 50.0;
+    std::unordered_map<std::string, double> prices{{"TIERD", px}};
+    std::unordered_map<std::string, Position> flat;
+    std::unordered_map<std::string, Position> held{{"TIERD", make_position("TIERD", qty, px)}};
+
+    auto buy = em.generate_daily_executions(held, flat, prices, std::chrono::system_clock::now());
+    auto sell = em.generate_daily_executions(flat, held, prices, std::chrono::system_clock::now());
+    ASSERT_TRUE(buy.is_ok() && sell.is_ok());
+    ASSERT_EQ(buy.value().size(), 1u);
+    ASSERT_EQ(sell.value().size(), 1u);
+    ASSERT_EQ(buy.value()[0].side, Side::BUY);
+    ASSERT_EQ(sell.value()[0].side, Side::SELL);
+
+    const double sec_fee = (qty * px / 1e6) * cfg.sec_fee_per_million;   // 1.03
+    const double taf = std::min(qty * cfg.finra_taf_per_share, cfg.finra_taf_cap_per_trade);  // 0.195
+    EXPECT_NEAR(sell.value()[0].commissions_fees.as_double() - buy.value()[0].commissions_fees.as_double(),
+                sec_fee + taf, 1e-9)
+        << "SELL must carry SEC + TAF on top of the BUY-side commission";
+    EXPECT_NEAR(sell.value()[0].total_transaction_costs.as_double() -
+                    buy.value()[0].total_transaction_costs.as_double(),
+                sec_fee + taf, 1e-9);
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// E2-F46 -- the order-id date must be the RUN date, in the run date's frame.
+//
+// generate_date_string formatted the run timestamp with std::localtime while
+// the equity runner passes UTC midnight (95679ea2) and stamps every other
+// artefact of the same run with gmtime. On a negative-offset host that is the
+// previous evening locally, so the id took the previous calendar day: the
+// 2026-06-15 run wrote DAILY_AAPL_20260614. The id is what
+// delete_stale_executions matches on and what a broker statement is
+// reconciled against, so an id naming the wrong day is not cosmetic.
+//
+// Both frames are pinned: UTC midnight is what the equity runner passes, local
+// midnight is what live_portfolio*.cpp:60 still passes (E2-F42). Both must
+// produce the run date's own YYYYMMDD, or fixing equities would move futures.
+// ──────────────────────────────────────────────────────────────────────────
+
+namespace {
+
+class OrderIdDateFrameTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        if (const char* tz = std::getenv("TZ")) {
+            had_tz_ = true;
+            saved_tz_ = tz;
+        }
+        setenv("TZ", "America/New_York", 1);
+        tzset();
+    }
+    void TearDown() override {
+        if (had_tz_) {
+            setenv("TZ", saved_tz_.c_str(), 1);
+        } else {
+            unsetenv("TZ");
+        }
+        tzset();
+    }
+    static Timestamp utc_midnight(int y, int m, int d) {
+        std::tm tm{};
+        tm.tm_year = y - 1900;
+        tm.tm_mon = m - 1;
+        tm.tm_mday = d;
+        return std::chrono::system_clock::from_time_t(timegm(&tm));
+    }
+    static Timestamp local_midnight(int y, int m, int d) {
+        std::tm tm{};
+        tm.tm_year = y - 1900;
+        tm.tm_mon = m - 1;
+        tm.tm_mday = d;
+        tm.tm_isdst = -1;
+        return std::chrono::system_clock::from_time_t(std::mktime(&tm));
+    }
+    bool had_tz_ = false;
+    std::string saved_tz_;
+};
+
+}  // namespace
+
+TEST_F(OrderIdDateFrameTest, UtcMidnightRunDateStampsItsOwnDay) {
+    EXPECT_EQ(ExecutionManager::generate_date_string(utc_midnight(2026, 6, 15)), "20260615")
+        << "the 2026-06-15 run wrote DAILY_<SYM>_20260614";
+    EXPECT_EQ(ExecutionManager::generate_date_string(utc_midnight(2026, 1, 1)), "20260101")
+        << "a year boundary is where the off-by-one is most expensive";
+}
+
+// Futures preservation: a local-midnight run date lands at 04:00/05:00Z on the
+// same calendar day, so reading it in UTC gives the same YYYYMMDD it always did.
+TEST_F(OrderIdDateFrameTest, LocalMidnightRunDateStampsTheSameDay) {
+    EXPECT_EQ(ExecutionManager::generate_date_string(local_midnight(2026, 6, 15)), "20260615");
+    EXPECT_EQ(ExecutionManager::generate_date_string(local_midnight(2026, 1, 1)), "20260101");
+}
+
+// The whole point of the id: two runs on different days must not collide, and a
+// run's id must match the date its rows are keyed on.
+TEST_F(OrderIdDateFrameTest, ConsecutiveRunDatesProduceDistinctStamps) {
+    const auto a = ExecutionManager::generate_date_string(utc_midnight(2026, 6, 15));
+    const auto b = ExecutionManager::generate_date_string(utc_midnight(2026, 6, 16));
+    EXPECT_EQ(a, "20260615");
+    EXPECT_EQ(b, "20260616");
+    EXPECT_NE(a, b);
+}

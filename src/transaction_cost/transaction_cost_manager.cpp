@@ -98,6 +98,16 @@ TransactionCostResult TransactionCostManager::calculate_costs(
     }
 
     // 1b. Regulatory fees (equity sell-side only)
+    //
+    // E2-F29: this is the ONLY place the SIGN of `quantity` is read; everything else uses
+    // abs_qty. Every caller used to pass |qty| -- generate_execution() had already split the
+    // trade into a positive filled_quantity plus a Side -- so the gate was unreachable and
+    // these fees were dead code. The callers now pass the signed trade; do not "normalise"
+    // the argument at a call site.
+    //
+    // Note this is latent rather than live: every production config sets
+    // apply_regulatory_fees = false (IBKR Pro FIXED is all-inclusive, E2-C3). It arms the
+    // day anyone switches an equity config to Tiered, where fees are passed through.
     if (asset_config.apply_regulatory_fees && quantity < 0) {
         double trade_value = abs_qty * reference_price;
         // SEC Transaction Fee (sell-side only)

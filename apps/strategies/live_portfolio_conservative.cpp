@@ -224,7 +224,11 @@ int main(int argc, char* argv[]) {
         // Sort strategy names for deterministic combined ID (Tier 2)
         std::sort(strategy_names.begin(), strategy_names.end());
 
-        // Generate combined strategy_id: LIVE_<sorted_names_joined_by_&>
+        // Generate combined strategy_id: LIVE_<sorted_names_joined_by_underscore>.
+        // NEW-2: this line said "&" while the loop below has joined with "_" since
+        // a88085ec, and "&" was never the separator in tree. The orphaned "&"-keyed
+        // rows in the DB come from an out-of-tree binary; no runner can read them back
+        // because the id is matched exactly.
         std::string combined_strategy_id = "LIVE_";
         for (size_t i = 0; i < strategy_names.size(); ++i) {
             if (i > 0)
@@ -737,6 +741,17 @@ int main(int argc, char* argv[]) {
         // Check if yesterday was a holiday using HolidayChecker
         // Phase 6 §6a: path resolved via HolidayChecker::resolve_holidays_path.
         HolidayChecker holiday_checker(HolidayChecker::resolve_holidays_path());
+        // BA-1: fail closed on a calendar that did not load fully. is_holiday
+        // cannot distinguish "the market was open" from "the calendar is
+        // missing", so a partial load silently turns a closure into a trading
+        // day and the non-trading-day branch below never fires.
+        if (!holiday_checker.loaded()) {
+            std::cerr << "FATAL: market holiday calendar failed to load from "
+                      << HolidayChecker::resolve_holidays_path()
+                      << " - refusing to run. Every date would report as a trading day."
+                      << std::endl;
+            return 1;
+        }
         auto yesterday_for_check = now - std::chrono::hours(24);
         auto yesterday_time_t_check = std::chrono::system_clock::to_time_t(yesterday_for_check);
         std::tm yesterday_tm_check = *std::gmtime(&yesterday_time_t_check);
