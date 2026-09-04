@@ -431,8 +431,12 @@ int main(int argc, char* argv[]) {
                 // alias from the previous issuer's lifetime and gets re-keyed onto a
                 // symbol with no bars. Measured on this book on 2026-09-03: META's
                 // lifetime inception is 2026-06-11, its current holding began 2026-07-31.
+                // BA-19: bounded at the run's own T-1. Rows dated after it can only come
+                // from an interrupted reset or an abandoned replay, and either shape moves
+                // the rename era silently -- see the header.
                 auto holding_start = db->get_current_holding_start_dates(
-                    kEquityStrategyId, kEquityStrategyName, portfolio_id, held_syms);
+                    kEquityStrategyId, kEquityStrategyName, portfolio_id, held_syms,
+                    core::format_utc_date(previous_date));
                 if (holding_start.is_error()) {
                     WARN("Could not read current-holding start dates (" +
                          std::string(holding_start.error()->what()) +

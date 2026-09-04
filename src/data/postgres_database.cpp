@@ -2799,6 +2799,7 @@ PostgresDatabase::get_current_holding_start_dates(const std::string& strategy_id
                                                   const std::string& strategy_name,
                                                   const std::string& portfolio_id,
                                                   const std::vector<std::string>& symbols,
+                                                  const std::string& on_or_before,
                                                   const std::string& table_name) {
     using Map = std::unordered_map<std::string, std::string>;
 
@@ -2823,20 +2824,32 @@ PostgresDatabase::get_current_holding_start_dates(const std::string& strategy_id
         // Deliberately NOT the same question as get_position_inception_dates. That one
         // fails wide for the class-1 price window; this one is the class-2 rename era
         // and must fail narrow (BA-2).
+        //
+        // BA-19: `on_or_before` bounds BOTH halves. The outer scan must not take a future
+        // non-zero row as the start of the current holding, and the flat-row subquery must
+        // not take a future flat row as the break -- a stray row dated after the replay date
+        // would otherwise push the break past every real row and drop the symbol from the
+        // map, skipping its rename in silence. An empty bound leaves both halves as they
+        // were: `$5::date IS NULL` short-circuits each predicate.
+        const bool bounded = !on_or_before.empty();
         auto result = txn.exec(
             "SELECT symbol, min(date)::text AS holding_start "
             "FROM " + table_name + " p "
                 " WHERE strategy_id = $1 AND strategy_name = $2 AND portfolio_id = $3 "
                 "  AND symbol = ANY($4) AND quantity <> 0 "
+                "  AND ($5::date IS NULL OR date <= $5::date) "
                 "  AND date > COALESCE(("
                 "        SELECT max(z.date) FROM " + table_name + " z "
                 "         WHERE z.strategy_id = p.strategy_id "
                 "           AND z.strategy_name = p.strategy_name "
                 "           AND z.portfolio_id = p.portfolio_id "
-                "           AND z.symbol = p.symbol AND z.quantity = 0), "
+                "           AND z.symbol = p.symbol AND z.quantity = 0 "
+                "           AND ($5::date IS NULL OR z.date <= $5::date)), "
                 "      DATE '1900-01-01') "
                 "GROUP BY symbol",
-            pqxx::params{strategy_id, strategy_name, portfolio_id, symbols});
+            pqxx::params{strategy_id, strategy_name, portfolio_id, symbols,
+                         bounded ? std::optional<std::string>(on_or_before)
+                                 : std::optional<std::string>{}});
 
         Map out;
         for (const auto& row : result) {

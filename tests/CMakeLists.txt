@@ -81,6 +81,7 @@ set(TEST_SOURCES
     live/test_feed_ingestion_assertion.cpp
     live/test_day_t_write_ordering.cpp
     data/test_current_holding_start_db.cpp
+    data/test_current_holding_start_bound_db.cpp
     instruments/test_equity_margin_cash_regt.cpp
     instruments/test_futures_margin_overload.cpp
     portfolio/test_portfolio_aggregation.cpp

@@ -750,6 +750,17 @@ public:
      * Direction of error: too LATE is safe (the rename is skipped and retried next run);
      * too EARLY re-keys a live holding, which is silent and permanent. This errs late.
      *
+     * BA-19: `on_or_before` bounds BOTH halves of the question to rows the run can
+     * legitimately see -- normally the run's own `previous_date`. `trading.positions` is not
+     * append-only in practice: an interrupted windowed reset, or a replay abandoned partway,
+     * leaves rows dated AFTER the date being replayed. Unbounded, such a row moves the answer
+     * twice over -- a future non-zero row can become the `min(date)` of "the current
+     * holding", and a future FLAT row raises the break date past every real row and makes the
+     * symbol vanish from the map entirely, silently skipping its rename. Neither failure is
+     * visible in the run's output. Empty (the default) means unbounded, which is the previous
+     * behaviour exactly.
+     *
+     * @param on_or_before inclusive YYYY-MM-DD ceiling on the rows considered; empty = none.
      * @return symbol -> YYYY-MM-DD the current holding began. Symbols with no non-zero
      *         row after the last flat row are ABSENT, and class 2 skips them.
      */
@@ -758,6 +769,7 @@ public:
         const std::string& strategy_name,
         const std::string& portfolio_id,
         const std::vector<std::string>& symbols,
+        const std::string& on_or_before = {},
         const std::string& table_name = "trading.positions");
 
     /**
