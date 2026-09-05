@@ -74,20 +74,25 @@ double BacktestMetricsCalculator::calculate_sharpe_ratio(
     return (annualized_return - risk_free_rate) / volatility;
 }
 
-double BacktestMetricsCalculator::calculate_sortino_ratio(
+std::optional<double> BacktestMetricsCalculator::calculate_sortino_ratio(
     const std::vector<double>& returns,
     int trading_days,
     double minimum_acceptable_return) const {
+    // Nothing to measure.
     if (returns.empty() || trading_days <= 0) {
-        return 0.0;
+        return std::nullopt;
     }
 
     double mean_return = calculate_mean(returns);
     double downside_vol = calculate_downside_volatility(returns, minimum_acceptable_return);
 
     if (downside_vol <= 0.0) {
-        // No negative returns - cap at reasonable value
-        return (mean_return * 252.0) >= 0 ? 999.0 : 0.0;
+        // No return fell below the target, so there is no downside to divide
+        // by. This answered 999.0 for a positive numerator and 0.0 for a
+        // negative one -- two confident values for the same division by zero,
+        // one of which reads as a spectacular result and the other as a
+        // measured absence of one.
+        return std::nullopt;
     }
 
     // Annualize mean daily return: multiply by 252 (trading days per year)
@@ -95,9 +100,12 @@ double BacktestMetricsCalculator::calculate_sortino_ratio(
     return (annualized_return - minimum_acceptable_return) / downside_vol;
 }
 
-double BacktestMetricsCalculator::calculate_calmar_ratio(double annualized_return, double max_drawdown) const {
+std::optional<double> BacktestMetricsCalculator::calculate_calmar_ratio(
+    double annualized_return, double max_drawdown) const {
     if (max_drawdown <= 0.0) {
-        return annualized_return >= 0 ? 999.0 : 0.0;
+        // An equity curve that never fell has no Calmar ratio. max_drawdown is
+        // reported separately and a zero there is the whole explanation.
+        return std::nullopt;
     }
     return annualized_return / max_drawdown;
 }

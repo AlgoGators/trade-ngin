@@ -1,6 +1,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <string>
 #include <nlohmann/json.hpp>
 #include "trade_ngin/backtest/backtest_coordinator.hpp"
 #include "trade_ngin/backtest/transaction_cost_analysis.hpp"
@@ -457,10 +458,20 @@ int main() {
         std::cout << "Total Return: " << (backtest_results.total_return * 100.0) << "%"
                   << std::endl;
         std::cout << "Sharpe Ratio: " << backtest_results.sharpe_ratio << std::endl;
-        std::cout << "Sortino Ratio: " << backtest_results.sortino_ratio << std::endl;
+        // "n/a" and not a number, because an undefined ratio printed as 0
+        // reads as a measured zero and printed as 999 reads as a triumph.
+        std::cout << "Sortino Ratio: "
+                  << (backtest_results.sortino_ratio
+                          ? std::to_string(*backtest_results.sortino_ratio)
+                          : std::string("n/a (no returns below target)"))
+                  << std::endl;
         std::cout << "Max Drawdown: " << (backtest_results.max_drawdown * 100.0) << "%"
                   << std::endl;
-        std::cout << "Calmar Ratio: " << backtest_results.calmar_ratio << std::endl;
+        std::cout << "Calmar Ratio: "
+                  << (backtest_results.calmar_ratio
+                          ? std::to_string(*backtest_results.calmar_ratio)
+                          : std::string("n/a (no drawdown)"))
+                  << std::endl;
         std::cout << "Volatility: " << (backtest_results.volatility * 100.0) << "%" << std::endl;
         std::cout << "Win Rate: " << (backtest_results.win_rate * 100.0) << "%" << std::endl;
         std::cout << "Total Trades: " << backtest_results.total_trades << std::endl;

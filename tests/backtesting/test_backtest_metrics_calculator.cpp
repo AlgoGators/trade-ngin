@@ -138,33 +138,47 @@ TEST_F(BacktestMetricsCalculatorTest, SharpeNonZeroWhenVolatilityPositive) {
     EXPECT_NE(calc_.calculate_sharpe_ratio(r, 252), 0.0);
 }
 
-TEST_F(BacktestMetricsCalculatorTest, SortinoEmptyReturnsZero) {
-    EXPECT_DOUBLE_EQ(calc_.calculate_sortino_ratio({}, 252), 0.0);
-    EXPECT_DOUBLE_EQ(calc_.calculate_sortino_ratio({0.01}, 0), 0.0);
+TEST_F(BacktestMetricsCalculatorTest, SortinoWithNothingToMeasureIsUndefined) {
+    EXPECT_FALSE(calc_.calculate_sortino_ratio({}, 252).has_value());
+    EXPECT_FALSE(calc_.calculate_sortino_ratio({0.01}, 0).has_value());
 }
 
-TEST_F(BacktestMetricsCalculatorTest, SortinoCappedAt999WhenNoDownsideAndPositive) {
-    EXPECT_DOUBLE_EQ(calc_.calculate_sortino_ratio({0.01, 0.02, 0.03}, 252), 999.0);
+TEST_F(BacktestMetricsCalculatorTest, SortinoWithNoDownsideIsUndefinedNotNineNineNine) {
+    // Three up days and nothing below the target. The denominator is zero, so
+    // there is no ratio -- this reported 999.0, which sorts to the top of any
+    // leaderboard and averages into any fund-level figure it reaches.
+    EXPECT_FALSE(calc_.calculate_sortino_ratio({0.01, 0.02, 0.03}, 252).has_value());
+    // The reason is still available, and is not itself in doubt.
+    EXPECT_DOUBLE_EQ(calc_.calculate_downside_volatility({0.01, 0.02, 0.03}, 0.0), 0.0);
 }
 
-TEST_F(BacktestMetricsCalculatorTest, SortinoZeroWhenNoDownsideAndNegativeAnnualMean) {
-    // Returns all above target=-0.01 (no downside) but mean*252 is negative.
-    EXPECT_DOUBLE_EQ(calc_.calculate_sortino_ratio({-0.005, 0.001}, 252, -0.01), 0.0);
+TEST_F(BacktestMetricsCalculatorTest, SortinoWithNoDownsideIsUndefinedWhicheverWayTheMeanPoints) {
+    // Returns all above target=-0.01, so no downside, but mean*252 is negative.
+    // The old code answered 999.0 above and 0.0 here: two confident values for
+    // the same division by zero, one reading as a triumph and one as a measured
+    // absence of return.
+    EXPECT_FALSE(calc_.calculate_sortino_ratio({-0.005, 0.001}, 252, -0.01).has_value());
 }
 
 TEST_F(BacktestMetricsCalculatorTest, SortinoComputesWithDownsideVolatility) {
     // Mean must be non-zero for the result to be non-zero.
     std::vector<double> r{0.02, -0.01, 0.02, -0.01};  // mean = 0.005
-    EXPECT_GT(calc_.calculate_sortino_ratio(r, 252), 0.0);
+    auto sortino = calc_.calculate_sortino_ratio(r, 252);
+    ASSERT_TRUE(sortino.has_value());
+    EXPECT_GT(*sortino, 0.0);
 }
 
-TEST_F(BacktestMetricsCalculatorTest, CalmarHandlesZeroDrawdown) {
-    EXPECT_DOUBLE_EQ(calc_.calculate_calmar_ratio(0.10, 0.0), 999.0);
-    EXPECT_DOUBLE_EQ(calc_.calculate_calmar_ratio(-0.10, 0.0), 0.0);
+TEST_F(BacktestMetricsCalculatorTest, CalmarWithNoDrawdownIsUndefined) {
+    // An equity curve that never fell has no Calmar ratio. Both signs of the
+    // numerator are the same division by zero.
+    EXPECT_FALSE(calc_.calculate_calmar_ratio(0.10, 0.0).has_value());
+    EXPECT_FALSE(calc_.calculate_calmar_ratio(-0.10, 0.0).has_value());
 }
 
 TEST_F(BacktestMetricsCalculatorTest, CalmarStandardCase) {
-    EXPECT_DOUBLE_EQ(calc_.calculate_calmar_ratio(0.20, 0.10), 2.0);
+    auto calmar = calc_.calculate_calmar_ratio(0.20, 0.10);
+    ASSERT_TRUE(calmar.has_value());
+    EXPECT_DOUBLE_EQ(*calmar, 2.0);
 }
 
 TEST_F(BacktestMetricsCalculatorTest, DrawdownsEmptyCurveReturnsEmpty) {
@@ -407,14 +421,15 @@ TEST_F(BacktestMetricsCalculatorTest, TotalReturnNanInputsReturnZero) {
     EXPECT_DOUBLE_EQ(calc_.calculate_total_return(100.0, nan), 0.0);
 }
 
-TEST_F(BacktestMetricsCalculatorTest, SortinoNearTargetDustHitsSentinelNotAbsurdValue) {
-    // Returns an epsilon below target leave ~1e-17 downside "dust". Pre-fix,
-    // Sortino divided by the dust and reported an absurd finite magnitude;
-    // post-fix the dust collapses to 0 and the degenerate-case sentinel applies.
+TEST_F(BacktestMetricsCalculatorTest, SortinoNearTargetDustIsUndefinedNotAnAbsurdValue) {
+    // Returns an epsilon below target leave ~1e-17 downside "dust". Sortino
+    // divided by the dust and reported an absurd finite magnitude; the dust now
+    // collapses to 0, and a zero denominator has no ratio at all. This test
+    // used to settle for "at most 999", which was only ever a bound on how
+    // wrong the answer could be.
     std::vector<double> returns(100, -1e-18);
-    const double sortino =
-        calc_.calculate_sortino_ratio(returns, /*trading_days=*/100, /*mar=*/0.0);
-    EXPECT_LE(std::abs(sortino), 999.0);
+    EXPECT_FALSE(
+        calc_.calculate_sortino_ratio(returns, /*trading_days=*/100, /*mar=*/0.0).has_value());
     const double downside = calc_.calculate_downside_volatility(returns, 0.0);
     EXPECT_DOUBLE_EQ(downside, 0.0);
 }

@@ -1018,9 +1018,7 @@ Result<void> BacktestCoordinator::save_portfolio_results_to_db(
     std::unordered_map<std::string, double> metrics = {
         {"total_return", results.total_return},
         {"sharpe_ratio", results.sharpe_ratio},
-        {"sortino_ratio", results.sortino_ratio},
         {"max_drawdown", results.max_drawdown},
-        {"calmar_ratio", results.calmar_ratio},
         {"volatility", results.volatility},
         {"total_trades", static_cast<double>(results.total_trades)},
         {"win_rate", results.win_rate},
@@ -1034,10 +1032,17 @@ Result<void> BacktestCoordinator::save_portfolio_results_to_db(
         {"beta", results.beta},
         {"correlation", results.correlation},
         {"downside_volatility", results.downside_volatility}};
-    // Only when it is defined. A column left out is stored NULL, which is what
-    // "this book has had no losing trades" means; 999.0 was what it used to say.
+    // Only when they are defined. A column left out is stored NULL, which is
+    // what "there was no denominator" means; 999.0 was what it used to say, and
+    // a reader could not tell that apart from an extraordinary result.
     if (results.profit_factor) {
         metrics["profit_factor"] = *results.profit_factor;
+    }
+    if (results.sortino_ratio) {
+        metrics["sortino_ratio"] = *results.sortino_ratio;
+    }
+    if (results.calmar_ratio) {
+        metrics["calmar_ratio"] = *results.calmar_ratio;
     }
     results_manager->set_performance_metrics(metrics);
 

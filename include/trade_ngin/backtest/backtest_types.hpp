@@ -197,9 +197,12 @@ struct BacktestResults {
     double total_return{0.0};
     double volatility{0.0};
     double sharpe_ratio{0.0};
-    double sortino_ratio{0.0};
+    /// Empty when no return fell below the target: no downside to divide by.
+    std::optional<double> sortino_ratio;
     double max_drawdown{0.0};
-    double calmar_ratio{0.0};
+    /// Empty when the curve never drew down: no denominator. max_drawdown above
+    /// is the explanation.
+    std::optional<double> calmar_ratio;
 
     // Trading metrics
     int total_trades{0};
