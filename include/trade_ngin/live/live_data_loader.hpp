@@ -40,8 +40,10 @@ struct LiveResultsRow {
     std::string strategy_id;
 
     // Additional metrics
-    double sharpe_ratio = 0.0;
-    double sortino_ratio = 0.0;
+    /// Empty when the column is NULL, which is what an undefined ratio looks
+    /// like in the database.
+    std::optional<double> sharpe_ratio;
+    std::optional<double> sortino_ratio;
     double max_drawdown = 0.0;
     double volatility = 0.0;
     double win_rate = 0.0;

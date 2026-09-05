@@ -35,8 +35,10 @@ struct CalculatedMetrics {
     double unrealized_pnl = 0.0;
 
     // Risk metrics (for future expansion)
-    double sharpe_ratio = 0.0;
-    double sortino_ratio = 0.0;
+    /// Empty when the returns never varied: no volatility to divide by.
+    std::optional<double> sharpe_ratio;
+    /// Empty when no return fell below the target: no downside to divide by.
+    std::optional<double> sortino_ratio;
     double max_drawdown = 0.0;
     double volatility = 0.0;
     double var_95 = 0.0;
@@ -187,7 +189,7 @@ public:
      * @param risk_free_rate Risk-free rate (annual)
      * @return Sharpe ratio
      */
-    double calculate_sharpe_ratio(
+    std::optional<double> calculate_sharpe_ratio(
         const std::vector<double>& returns,
         double risk_free_rate = 0.0) const;
 
@@ -197,7 +199,7 @@ public:
      * @param minimum_acceptable_return Minimum acceptable return
      * @return Sortino ratio
      */
-    double calculate_sortino_ratio(
+    std::optional<double> calculate_sortino_ratio(
         const std::vector<double>& returns,
         double minimum_acceptable_return = 0.0) const;
 

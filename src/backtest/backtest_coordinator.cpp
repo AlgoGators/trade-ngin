@@ -1017,7 +1017,6 @@ Result<void> BacktestCoordinator::save_portfolio_results_to_db(
     // Set performance metrics (portfolio-level)
     std::unordered_map<std::string, double> metrics = {
         {"total_return", results.total_return},
-        {"sharpe_ratio", results.sharpe_ratio},
         {"max_drawdown", results.max_drawdown},
         {"volatility", results.volatility},
         {"total_trades", static_cast<double>(results.total_trades)},
@@ -1037,6 +1036,9 @@ Result<void> BacktestCoordinator::save_portfolio_results_to_db(
     // a reader could not tell that apart from an extraordinary result.
     if (results.profit_factor) {
         metrics["profit_factor"] = *results.profit_factor;
+    }
+    if (results.sharpe_ratio) {
+        metrics["sharpe_ratio"] = *results.sharpe_ratio;
     }
     if (results.sortino_ratio) {
         metrics["sortino_ratio"] = *results.sortino_ratio;

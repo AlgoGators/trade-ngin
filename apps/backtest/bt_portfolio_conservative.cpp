@@ -457,7 +457,11 @@ int main() {
         std::cout << "======= Conservative Portfolio Backtest Results =======" << std::endl;
         std::cout << "Total Return: " << (backtest_results.total_return * 100.0) << "%"
                   << std::endl;
-        std::cout << "Sharpe Ratio: " << backtest_results.sharpe_ratio << std::endl;
+        std::cout << "Sharpe Ratio: "
+                  << (backtest_results.sharpe_ratio
+                          ? std::to_string(*backtest_results.sharpe_ratio)
+                          : std::string("n/a (no volatility)"))
+                  << std::endl;
         // "n/a" and not a number, because an undefined ratio printed as 0
         // reads as a measured zero and printed as 999 reads as a triumph.
         std::cout << "Sortino Ratio: "

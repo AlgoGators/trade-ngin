@@ -49,6 +49,15 @@
 
 using namespace trade_ngin;
 
+namespace {
+/// A ratio for a log line, or "n/a". Sharpe, Sortino and profit factor are all
+/// empty where their denominator is zero, and std::to_string cannot say that.
+std::string show_optional(const std::optional<double>& value) {
+    return value ? std::to_string(*value) : std::string("n/a");
+}
+}  // namespace
+
+
 // F1 dual portfolio: the operational chain reads what QT actually decided.
 // 'What did we hold yesterday' is the qt stream, not the raw signal output --
 // position buffering and execution sizing both key off it, so reading the
@@ -2429,7 +2438,7 @@ int trade_ngin::run_live_portfolio(const LivePortfolioConfig& portfolio_cfg, int
 
                     INFO("HIST_METRICS [Day T-1]: volatility=" +
                          std::to_string(yesterday_hist_metrics.volatility) +
-                         " sharpe=" + std::to_string(yesterday_hist_metrics.sharpe_ratio) +
+                         " sharpe=" + show_optional(yesterday_hist_metrics.sharpe_ratio) +
                          " winning_days=" + std::to_string(yesterday_hist_metrics.winning_days) +
                          " losing_days=" + std::to_string(yesterday_hist_metrics.losing_days) +
                          " total_days=" + std::to_string(yesterday_hist_metrics.total_days) +
@@ -2441,8 +2450,6 @@ int trade_ngin::run_live_portfolio(const LivePortfolioConfig& portfolio_cfg, int
                          " gross_loss=" + std::to_string(yesterday_hist_metrics.gross_loss));
 
                     std::unordered_map<std::string, double> metric_updates = {
-                        {"sharpe_ratio", yesterday_hist_metrics.sharpe_ratio},
-                        {"sortino_ratio", yesterday_hist_metrics.sortino_ratio},
                         {"max_drawdown", yesterday_hist_metrics.max_drawdown},
                         {"volatility", yesterday_hist_metrics.volatility},
                         {"downside_deviation", yesterday_hist_metrics.downside_deviation},
@@ -2464,6 +2471,12 @@ int trade_ngin::run_live_portfolio(const LivePortfolioConfig& portfolio_cfg, int
                     // Only written when it is defined. A book with no losing day
                     // has no profit factor, and gross_profit and gross_loss are
                     // both in this same update for anyone who wants to say so.
+                    if (yesterday_hist_metrics.sharpe_ratio) {
+                        metric_updates["sharpe_ratio"] = *yesterday_hist_metrics.sharpe_ratio;
+                    }
+                    if (yesterday_hist_metrics.sortino_ratio) {
+                        metric_updates["sortino_ratio"] = *yesterday_hist_metrics.sortino_ratio;
+                    }
                     if (yesterday_hist_metrics.profit_factor) {
                         metric_updates["profit_factor"] = *yesterday_hist_metrics.profit_factor;
                     }
@@ -2909,7 +2922,7 @@ int trade_ngin::run_live_portfolio(const LivePortfolioConfig& portfolio_cfg, int
 
                     INFO("HIST_METRICS [Day T]: volatility=" +
                          std::to_string(historical_metrics.volatility) +
-                         " sharpe=" + std::to_string(historical_metrics.sharpe_ratio) +
+                         " sharpe=" + show_optional(historical_metrics.sharpe_ratio) +
                          " winning_days=" + std::to_string(historical_metrics.winning_days) +
                          " losing_days=" + std::to_string(historical_metrics.losing_days) +
                          " total_days=" + std::to_string(historical_metrics.total_days) +
@@ -2938,8 +2951,6 @@ int trade_ngin::run_live_portfolio(const LivePortfolioConfig& portfolio_cfg, int
                 {"total_annualized_return", total_return_annualized},
                 {"volatility", historical_metrics.volatility},
                 {"downside_deviation", historical_metrics.downside_deviation},
-                {"sharpe_ratio", historical_metrics.sharpe_ratio},
-                {"sortino_ratio", historical_metrics.sortino_ratio},
                 {"max_drawdown", historical_metrics.max_drawdown},
                 {"win_rate", historical_metrics.win_rate},
                 {"avg_win", historical_metrics.avg_win},
@@ -2974,6 +2985,15 @@ int trade_ngin::run_live_portfolio(const LivePortfolioConfig& portfolio_cfg, int
             // Left out of the map when undefined, which stores the column NULL.
             // It used to be written as 999.99, a sentinel that no reader of
             // trading.live_results could tell apart from a real ratio.
+            // Left out when undefined, which stores the column NULL. Volatility
+            // and downside_deviation go in regardless, so a reader of a NULL
+            // ratio has the reason in the same row.
+            if (historical_metrics.sharpe_ratio) {
+                double_metrics["sharpe_ratio"] = *historical_metrics.sharpe_ratio;
+            }
+            if (historical_metrics.sortino_ratio) {
+                double_metrics["sortino_ratio"] = *historical_metrics.sortino_ratio;
+            }
             if (historical_metrics.profit_factor) {
                 double_metrics["profit_factor"] = *historical_metrics.profit_factor;
             }
@@ -3313,8 +3333,14 @@ int trade_ngin::run_live_portfolio(const LivePortfolioConfig& portfolio_cfg, int
 
                     if (has_today_row_metrics) {
                         // Risk-adjusted and distribution metrics from live_results
-                        strategy_metrics["Sharpe Ratio"] = today_row.sharpe_ratio;
-                        strategy_metrics["Sortino Ratio"] = today_row.sortino_ratio;
+                        // Omitted when undefined, so the report shows no row
+                        // rather than a confident 0.00.
+                        if (today_row.sharpe_ratio) {
+                            strategy_metrics["Sharpe Ratio"] = *today_row.sharpe_ratio;
+                        }
+                        if (today_row.sortino_ratio) {
+                            strategy_metrics["Sortino Ratio"] = *today_row.sortino_ratio;
+                        }
                         strategy_metrics["Max Drawdown"] = today_row.max_drawdown;
                         strategy_metrics["Volatility"] = today_row.volatility;
                         strategy_metrics["Win Rate"] = today_row.win_rate;

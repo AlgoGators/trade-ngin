@@ -72,10 +72,16 @@ public:
      * @brief Calculate Sharpe ratio
      * @param returns Vector of daily returns
      * @param trading_days Number of trading days (for annualization)
-     * @param risk_free_rate Annual risk-free rate (default 0)
-     * @return Sharpe ratio
+     * @param risk_free_rate Risk-free rate (annualized)
+     * @return The ratio, or nothing when it is undefined.
+     *
+     * Undefined when there are no returns, or when they never varied so there
+     * is no volatility to divide by. This returned 0.0 for both, which reads as
+     * a measured "earned nothing per unit of risk" rather than as the division
+     * by zero it is. volatility is reported separately and a zero there is the
+     * explanation.
      */
-    double calculate_sharpe_ratio(
+    std::optional<double> calculate_sharpe_ratio(
         const std::vector<double>& returns,
         int trading_days,
         double risk_free_rate = 0.0) const;

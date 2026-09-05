@@ -196,7 +196,8 @@ struct BacktestResults {
     // Performance metrics
     double total_return{0.0};
     double volatility{0.0};
-    double sharpe_ratio{0.0};
+    /// Empty when the returns never varied: no volatility to divide by.
+    std::optional<double> sharpe_ratio;
     /// Empty when no return fell below the target: no downside to divide by.
     std::optional<double> sortino_ratio;
     double max_drawdown{0.0};

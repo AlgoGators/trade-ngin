@@ -11,13 +11,21 @@ namespace trade_ngin {
  * Units:
  * - Returns-related fields (volatility, downside_deviation, avg_win, avg_loss,
  *   best_day, worst_day) are in percentage points, consistent with daily_return.
- * - Ratios (sharpe_ratio, sortino_ratio, profit_factor) are dimensionless.
+ * - Ratios (sharpe_ratio, sortino_ratio, profit_factor) are dimensionless, and
+ *   EMPTY where their denominator is zero. Volatility, downside deviation and
+ *   the gross P&L figures are reported alongside, so an absent ratio always has
+ *   its explanation in the same struct.
  * - PnL aggregates (gross_profit, gross_loss) are in portfolio currency.
  */
 struct HistoricalMetrics {
-    // Risk-adjusted performance
-    double sharpe_ratio = 0.0;
-    double sortino_ratio = 0.0;
+    // Risk-adjusted performance.
+    //
+    // Both were 0.0 when their denominator was zero, which is a claim -- "no
+    // return per unit of risk" -- about a quantity that has no value. A book
+    // whose daily returns never varied has no Sharpe ratio; one that never had
+    // a down day has no Sortino.
+    std::optional<double> sharpe_ratio;   // annualised return / volatility
+    std::optional<double> sortino_ratio;  // annualised return / downside deviation
     double max_drawdown = 0.0;        // % peak-to-trough from equity curve
     double volatility = 0.0;          // annualized, % units
     double downside_deviation = 0.0;  // annualized, % units

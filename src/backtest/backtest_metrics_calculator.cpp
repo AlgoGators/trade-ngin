@@ -51,19 +51,24 @@ std::vector<double> BacktestMetricsCalculator::calculate_returns_from_equity(
 
 // ========== Risk-Adjusted Return Metrics ==========
 
-double BacktestMetricsCalculator::calculate_sharpe_ratio(
+std::optional<double> BacktestMetricsCalculator::calculate_sharpe_ratio(
     const std::vector<double>& returns,
     int trading_days,
     double risk_free_rate) const {
+    // Nothing to measure.
     if (returns.empty() || trading_days <= 0) {
-        return 0.0;
+        return std::nullopt;
     }
 
     double mean_return = calculate_mean(returns);
     double volatility = calculate_volatility(returns);
 
     if (volatility <= 0.0) {
-        return 0.0;
+        // Return per unit of risk, with no risk to divide by. A zero here is
+        // not "earned nothing per unit of risk" -- it is a division by zero
+        // wearing the same clothes as a real result, and it averages into a
+        // fund-level Sharpe exactly like one.
+        return std::nullopt;
     }
 
     // Annualize mean daily return: multiply by 252 (trading days per year)

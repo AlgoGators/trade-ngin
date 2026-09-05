@@ -236,22 +236,29 @@ Result<LiveResultsRow> LiveDataLoader::load_live_results(const std::string& stra
         }
     };
 
-    // profit_factor is the one column that is legitimately absent, so it gets
-    // a reader that can say so. Rows written before the sentinel was removed
-    // still carry 999.99; that is not a profit factor either.
+    // Columns that are legitimately absent get a reader that can say so,
+    // rather than one that turns NULL into 0.0 and loses the distinction.
     auto get_optional_double = [&table, &col]() -> std::optional<double> {
         auto array = std::static_pointer_cast<arrow::StringArray>(table->column(col++)->chunk(0));
         if (array->IsNull(0))
             return std::nullopt;
         try {
-            double value = std::stod(array->GetString(0));
-            if (value >= 999.0) {
-                return std::nullopt;
-            }
-            return value;
+            return std::stod(array->GetString(0));
         } catch (const std::exception&) {
             return std::nullopt;
         }
+    };
+
+    // profit_factor additionally has a legacy value to reject: rows written
+    // before the sentinel was removed still carry 999.99, which is not a profit
+    // factor either. The threshold is specific to that column -- a Sharpe ratio
+    // of 999 would be absurd but it would still be a Sharpe ratio.
+    auto get_profit_factor = [&get_optional_double]() -> std::optional<double> {
+        auto value = get_optional_double();
+        if (value && *value >= 999.0) {
+            return std::nullopt;
+        }
+        return value;
     };
 
     auto get_int = [&table, &col]() -> int {
@@ -279,14 +286,14 @@ Result<LiveResultsRow> LiveDataLoader::load_live_results(const std::string& stra
     row.margin_posted = get_double();
     row.cash_available = get_double();
     row.daily_transaction_costs = get_double();
-    row.sharpe_ratio = get_double();
-    row.sortino_ratio = get_double();
+    row.sharpe_ratio = get_optional_double();
+    row.sortino_ratio = get_optional_double();
     row.max_drawdown = get_double();
     row.volatility = get_double();
     row.win_rate = get_double();
     row.avg_win = get_double();
     row.avg_loss = get_double();
-    row.profit_factor = get_optional_double();
+    row.profit_factor = get_profit_factor();
     row.best_day = get_double();
     row.worst_day = get_double();
     row.downside_deviation = get_double();

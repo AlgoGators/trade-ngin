@@ -139,21 +139,22 @@ double LiveMetricsCalculator::calculate_net_pnl(
 
 // ========== Risk Metrics Calculations ==========
 
-double LiveMetricsCalculator::calculate_sharpe_ratio(
+std::optional<double> LiveMetricsCalculator::calculate_sharpe_ratio(
     const std::vector<double>& returns,
     double risk_free_rate) const {
 
     if (returns.empty() || returns.size() < 2) {
-        // LOG_DEBUG << "Insufficient returns data for Sharpe ratio";
-        return 0.0;
+        // Fewer than two returns is no dispersion to measure.
+        return std::nullopt;
     }
 
     double mean_return = calculate_mean(returns);
     double std_dev = calculate_std_dev(returns, mean_return);
 
     if (std_dev <= 0.0) {
-        // LOG_DEBUG << "Zero standard deviation, cannot calculate Sharpe ratio";
-        return 0.0;
+        // The comment here already said "cannot calculate Sharpe ratio" and
+        // then returned 0.0 anyway, which is a number that says it can.
+        return std::nullopt;
     }
 
     // Convert risk-free rate from annual to daily
@@ -165,21 +166,22 @@ double LiveMetricsCalculator::calculate_sharpe_ratio(
     return sharpe * std::sqrt(252.0);
 }
 
-double LiveMetricsCalculator::calculate_sortino_ratio(
+std::optional<double> LiveMetricsCalculator::calculate_sortino_ratio(
     const std::vector<double>& returns,
     double minimum_acceptable_return) const {
 
     if (returns.empty() || returns.size() < 2) {
-        // LOG_DEBUG << "Insufficient returns data for Sortino ratio";
-        return 0.0;
+        return std::nullopt;
     }
 
     double mean_return = calculate_mean(returns);
     double downside_dev = calculate_downside_deviation(returns, minimum_acceptable_return);
 
     if (downside_dev <= 0.0) {
-        // LOG_DEBUG << "Zero downside deviation, cannot calculate Sortino ratio";
-        return 0.0;
+        // Same as above: the comment said it could not be calculated, and then
+        // a value was returned that nothing downstream could tell apart from
+        // one that had been.
+        return std::nullopt;
     }
 
     // Convert MAR from annual to daily

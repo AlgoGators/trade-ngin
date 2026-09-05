@@ -99,12 +99,16 @@ TEST_F(BacktestMetricsCalculatorTest, VolatilityConstantSeriesIsZeroNotNaN) {
     EXPECT_DOUBLE_EQ(vol, 0.0);
 }
 
-TEST_F(BacktestMetricsCalculatorTest, SharpeConstantSeriesIsZeroNotNaN) {
+TEST_F(BacktestMetricsCalculatorTest, SharpeConstantSeriesIsUndefinedNotNaN) {
     // With NaN volatility the `volatility <= 0` guard was passed (NaN
-    // comparisons are false) and Sharpe itself became NaN.
+    // comparisons are false) and Sharpe itself became NaN. That guard is still
+    // what this pins: an empty result proves the branch was taken, because a
+    // NaN volatility would have slipped past it and produced a value.
+    //
+    // The expected answer is no longer 0.0 either. A constant series has no
+    // dispersion, so there is no Sharpe ratio to state.
     auto sharpe = calc_.calculate_sharpe_ratio({0.007, 0.007, 0.007, 0.007, 0.007}, 5, 0.0);
-    EXPECT_TRUE(std::isfinite(sharpe));
-    EXPECT_DOUBLE_EQ(sharpe, 0.0);
+    EXPECT_FALSE(sharpe.has_value());
 }
 
 TEST_F(BacktestMetricsCalculatorTest, VolatilityComputesAnnualizedStdev) {
@@ -124,18 +128,31 @@ TEST_F(BacktestMetricsCalculatorTest, DownsideVolatilityCountsOnlyBelowTarget) {
                 0.01 * std::sqrt(252.0), 1e-9);
 }
 
-TEST_F(BacktestMetricsCalculatorTest, SharpeEmptyReturnsZero) {
-    EXPECT_DOUBLE_EQ(calc_.calculate_sharpe_ratio({}, 252), 0.0);
+TEST_F(BacktestMetricsCalculatorTest, SharpeWithNothingToMeasureIsUndefined) {
+    EXPECT_FALSE(calc_.calculate_sharpe_ratio({}, 252).has_value());
 }
 
-TEST_F(BacktestMetricsCalculatorTest, SharpeNonPositiveDaysReturnsZero) {
-    EXPECT_DOUBLE_EQ(calc_.calculate_sharpe_ratio({0.01, 0.02}, 0), 0.0);
-    EXPECT_DOUBLE_EQ(calc_.calculate_sharpe_ratio({0.01, 0.02}, -1), 0.0);
+TEST_F(BacktestMetricsCalculatorTest, SharpeWithNonPositiveTradingDaysIsUndefined) {
+    EXPECT_FALSE(calc_.calculate_sharpe_ratio({0.01, 0.02}, 0).has_value());
+    EXPECT_FALSE(calc_.calculate_sharpe_ratio({0.01, 0.02}, -1).has_value());
 }
 
-TEST_F(BacktestMetricsCalculatorTest, SharpeNonZeroWhenVolatilityPositive) {
+TEST_F(BacktestMetricsCalculatorTest, SharpeWithNoVolatilityIsUndefinedNotZero) {
+    // Return per unit of risk, with no risk to divide by. Zero is not the
+    // answer -- it reads as "earned nothing per unit of risk", which is a claim
+    // about a quantity that has no value, and it averages into a fund-level
+    // Sharpe exactly like a real one.
+    std::vector<double> flat{0.01, 0.01, 0.01, 0.01};
+    EXPECT_FALSE(calc_.calculate_sharpe_ratio(flat, 252).has_value());
+    // And the reason is reported separately, as a real measurement.
+    EXPECT_DOUBLE_EQ(calc_.calculate_volatility(flat), 0.0);
+}
+
+TEST_F(BacktestMetricsCalculatorTest, SharpeIsMeasuredWhenVolatilityIsPositive) {
     std::vector<double> r{0.01, -0.01, 0.02, -0.01, 0.015, -0.005};
-    EXPECT_NE(calc_.calculate_sharpe_ratio(r, 252), 0.0);
+    auto sharpe = calc_.calculate_sharpe_ratio(r, 252);
+    ASSERT_TRUE(sharpe.has_value());
+    EXPECT_NE(*sharpe, 0.0);
 }
 
 TEST_F(BacktestMetricsCalculatorTest, SortinoWithNothingToMeasureIsUndefined) {
