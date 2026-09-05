@@ -1,7 +1,15 @@
 // include/trade_ngin/execution/execution_engine.hpp
 #pragma once
 
+// NOT USED BY ANY RUNNER. As of 2026-09 no app under apps/ and no class under
+// src/ instantiates ExecutionEngine or calls execute_*(); the only callers are
+// tests/execution/test_execution_engine.cpp. Retained, compiled and tested for
+// the execution-engine track (TWAP/VWAP/IS/POV algorithms); the VWAP
+// child-order prices it generates are simulation-only and never reach live
+// order routing.
+
 #include <chrono>
+#include <cstdint>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <unordered_map>
@@ -184,6 +192,25 @@ public:
      */
     Result<void> register_custom_algo(const std::string& name,
                                       std::function<Result<void>(const ExecutionJob&)> algo);
+
+    /**
+     * @brief Generate the simulated child-order prices used by the VWAP algorithm
+     *
+     * Perturbs @p parent_price by a jitter drawn from uniform[-0.0005, 0.0005]
+     * to simulate market impact on synthetic fills. The generator is seeded from
+     * @p seed and constructed per call, so a given seed always reproduces the
+     * same price path regardless of thread or of how many jobs ran before it.
+     *
+     * Simulation only: these prices never influence live order routing. Exposed
+     * so the reproducibility guarantee can be tested directly.
+     *
+     * @param seed Seed for the price-path generator
+     * @param parent_price Price of the parent order
+     * @param num_slices Number of child orders to generate prices for
+     * @return Simulated child-order prices, one per slice
+     */
+    static std::vector<double> generate_vwap_slice_prices(std::uint32_t seed, double parent_price,
+                                                          int num_slices);
 
 private:
     std::shared_ptr<OrderManager> order_manager_;

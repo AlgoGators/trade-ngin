@@ -1,7 +1,11 @@
 #include <gtest/gtest.h>
 #include <chrono>
+#include <cmath>
+#include <cstdint>
 #include <memory>
+#include <random>
 #include <thread>
+#include <vector>
 #include "../core/test_base.hpp"
 #include "../order/test_utils.hpp"
 #include "trade_ngin/execution/execution_engine.hpp"
@@ -702,6 +706,67 @@ TEST_F(ExecutionEngineExtendedTest, SpacedSubmissionsAreTrackedDistinctly) {
         ASSERT_TRUE(jobs.is_ok());
         EXPECT_GE(jobs.value().size(), 2u);
     }
+}
+
+// ===== VWAP simulated-fill reproducibility =====
+//
+// execute_vwap() builds its synthetic child-order prices by calling
+// ExecutionEngine::generate_vwap_slice_prices(), which seeds an mt19937 from
+// a fixed file-local seed and constructs it per call. The tests below call
+// that same production function, so reverting to a shared or advancing
+// generator would fail them.
+//
+// mt19937 is exactly specified by the standard, but uniform_real_distribution
+// is not, so the concrete values may differ between toolchains. These tests
+// therefore compare runs against each other rather than against golden values;
+// reproducibility is guaranteed within a build, which is what a backtest needs.
+
+TEST_F(ExecutionEngineExtendedTest, VwapSlicePricesAreReproducibleForTheSameSeed) {
+    auto first = ExecutionEngine::generate_vwap_slice_prices(42, 150.0, 16);
+    auto second = ExecutionEngine::generate_vwap_slice_prices(42, 150.0, 16);
+    ASSERT_EQ(first.size(), 16u);
+    EXPECT_EQ(first, second) << "Same seed must reproduce an identical price path.";
+}
+
+TEST_F(ExecutionEngineExtendedTest, VwapSlicePricesDoNotCarryOverBetweenRuns) {
+    // Regression guard for the `static thread_local` generator this replaced: a
+    // generator that persisted across calls kept advancing, so the second run of
+    // a job differed from the first even with an identical seed.
+    auto run1 = ExecutionEngine::generate_vwap_slice_prices(7, 100.0, 8);
+    ExecutionEngine::generate_vwap_slice_prices(999, 100.0, 32);  // an unrelated job
+    auto run2 = ExecutionEngine::generate_vwap_slice_prices(7, 100.0, 8);
+    EXPECT_EQ(run1, run2) << "Intervening jobs must not shift a seeded price path.";
+}
+
+TEST_F(ExecutionEngineExtendedTest, VwapSlicePricesAreReproducibleAcrossThreads) {
+    // The generator must not depend on thread-local state.
+    auto expected = ExecutionEngine::generate_vwap_slice_prices(2024, 250.0, 12);
+    std::vector<double> from_thread;
+    std::thread worker([&from_thread]() {
+        from_thread = ExecutionEngine::generate_vwap_slice_prices(2024, 250.0, 12);
+    });
+    worker.join();
+    EXPECT_EQ(expected, from_thread) << "Price path must not depend on the calling thread.";
+}
+
+TEST_F(ExecutionEngineExtendedTest, VwapSlicePricesDifferForDifferentSeeds) {
+    auto a = ExecutionEngine::generate_vwap_slice_prices(42, 150.0, 16);
+    auto b = ExecutionEngine::generate_vwap_slice_prices(43, 150.0, 16);
+    EXPECT_NE(a, b) << "Different seeds should sample different price paths.";
+}
+
+TEST_F(ExecutionEngineExtendedTest, VwapSlicePricesStayWithinFiveBasisPoints) {
+    constexpr double kParentPrice = 150.0;
+    auto prices = ExecutionEngine::generate_vwap_slice_prices(42, kParentPrice, 512);
+    ASSERT_EQ(prices.size(), 512u);
+    for (double price : prices) {
+        double deviation = std::abs(price - kParentPrice) / kParentPrice;
+        EXPECT_LE(deviation, 0.0005) << "Jitter exceeded the +/-0.05% band.";
+    }
+}
+
+TEST_F(ExecutionEngineExtendedTest, VwapSlicePricesHandleZeroSlices) {
+    EXPECT_TRUE(ExecutionEngine::generate_vwap_slice_prices(42, 150.0, 0).empty());
 }
 
 }  // namespace execution_engine_extended_detail
