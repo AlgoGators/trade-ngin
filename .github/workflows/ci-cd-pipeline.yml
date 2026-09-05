@@ -343,7 +343,7 @@ jobs:
       # with.
       - name: SonarCloud Scan
         if: matrix.build-type == 'Debug' && env.SONAR_TOKEN != '' && (github.event_name == 'pull_request' || github.ref_name == 'main' || github.ref_name == 'prod' || github.ref_name == 'staging')
-        uses: SonarSource/sonarqube-scan-action@v6
+        uses: SonarSource/sonarqube-scan-action@v8
         env:
           SONAR_HOST_URL: https://sonarcloud.io
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
