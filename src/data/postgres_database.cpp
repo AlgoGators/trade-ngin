@@ -1,6 +1,7 @@
 // src/data/postgres_database.cpp
 
 #include "trade_ngin/data/postgres_database.hpp"
+#include <algorithm>
 #include <iomanip>
 #include <sstream>
 #include "trade_ngin/core/state_manager.hpp"
@@ -1704,6 +1705,15 @@ Result<void> PostgresDatabase::validate_strategy_id(const std::string& strategy_
         }
     }
 
+    // A single dash is a legitimate separator ("trend-following-1"); two in a
+    // row open a SQL line comment, so refuse them even though each character
+    // passed the allowlist above.
+    if (strategy_id.find("--") != std::string::npos) {
+        return make_error<void>(ErrorCode::INVALID_ARGUMENT,
+                                "Invalid strategy_id: consecutive dashes are not allowed",
+                                "PostgresDatabase");
+    }
+
     return Result<void>();
 }
 
@@ -1850,35 +1860,60 @@ Result<void> PostgresDatabase::store_backtest_executions(
 
         std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
 
+        for (const auto& exec : executions) {
+            auto exec_validation = validate_execution_report(exec);
+            if (exec_validation.is_error()) {
+                return exec_validation;
+            }
+        }
+
         // Use batch insert for better performance with large execution sets
         if (executions.size() > 100) {
-            // Build a single multi-value INSERT for large batches
-            std::string query = "INSERT INTO " + table_name +
-                                " (run_id, portfolio_id, execution_id, order_id, timestamp, "
-                                "symbol, side, quantity, price, commissions_fees, "
-                                "implicit_price_impact, slippage_market_impact, "
-                                "total_transaction_costs, is_partial) VALUES ";
+            // Bind every value: Postgres caps a statement at 65535 parameters,
+            // so insert in chunks of whole rows.
+            constexpr std::size_t kColumns = 14;
+            constexpr std::size_t kMaxRowsPerStatement = 65535 / kColumns;
+            const std::string prefix =
+                "INSERT INTO " + table_name +
+                " (run_id, portfolio_id, execution_id, order_id, timestamp, "
+                "symbol, side, quantity, price, commissions_fees, "
+                "implicit_price_impact, slippage_market_impact, "
+                "total_transaction_costs, is_partial) VALUES ";
 
-            std::vector<std::string> value_strings;
-            value_strings.reserve(executions.size());
-
-            for (const auto& exec : executions) {
-                std::string values = "('" + run_id + "', '" + actual_portfolio_id + "', '" +
-                                     exec.exec_id + "', '" + exec.order_id + "', '" +
-                                     format_timestamp(exec.fill_time) + "', '" + exec.symbol +
-                                     "', '" + side_to_string(exec.side) + "', " +
-                                     std::to_string(static_cast<double>(exec.filled_quantity)) +
-                                     ", " + std::to_string(static_cast<double>(exec.fill_price)) +
-                                     ", " + std::to_string(static_cast<double>(exec.commissions_fees)) +
-                                     ", " + std::to_string(static_cast<double>(exec.implicit_price_impact)) +
-                                     ", " + std::to_string(static_cast<double>(exec.slippage_market_impact)) +
-                                     ", " + std::to_string(static_cast<double>(exec.total_transaction_costs)) +
-                                     ", " + (exec.is_partial ? "true" : "false") + ")";
-                value_strings.push_back(values);
+            for (std::size_t start = 0; start < executions.size(); start += kMaxRowsPerStatement) {
+                const std::size_t end =
+                    std::min(executions.size(), start + kMaxRowsPerStatement);
+                std::string query = prefix;
+                pqxx::params batch;
+                std::size_t next_placeholder = 1;
+                for (std::size_t i = start; i < end; ++i) {
+                    const auto& exec = executions[i];
+                    if (i != start)
+                        query += ",";
+                    query += "(";
+                    for (std::size_t c = 0; c < kColumns; ++c) {
+                        if (c != 0)
+                            query += ",";
+                        query += "$" + std::to_string(next_placeholder++);
+                    }
+                    query += ")";
+                    batch.append(run_id);
+                    batch.append(actual_portfolio_id);
+                    batch.append(exec.exec_id);
+                    batch.append(exec.order_id);
+                    batch.append(format_timestamp(exec.fill_time));
+                    batch.append(exec.symbol);
+                    batch.append(side_to_string(exec.side));
+                    batch.append(static_cast<double>(exec.filled_quantity));
+                    batch.append(static_cast<double>(exec.fill_price));
+                    batch.append(static_cast<double>(exec.commissions_fees));
+                    batch.append(static_cast<double>(exec.implicit_price_impact));
+                    batch.append(static_cast<double>(exec.slippage_market_impact));
+                    batch.append(static_cast<double>(exec.total_transaction_costs));
+                    batch.append(exec.is_partial);
+                }
+                txn.exec(query, batch);
             }
-
-            query += pqxx::separated_list(",", value_strings.begin(), value_strings.end());
-            txn.exec(query);
         } else {
             // Use parameterized queries for smaller batches
             for (const auto& exec : executions) {
@@ -1931,35 +1966,60 @@ Result<void> PostgresDatabase::store_backtest_executions_with_strategy(
 
         std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
 
+        for (const auto& exec : executions) {
+            auto exec_validation = validate_execution_report(exec);
+            if (exec_validation.is_error()) {
+                return exec_validation;
+            }
+        }
+
         // Use batch insert for better performance with large execution sets
         if (executions.size() > 100) {
-            // Build a single multi-value INSERT for large batches with strategy_id
-            std::string query =
+            // Bind every value: Postgres caps a statement at 65535 parameters,
+            // so insert in chunks of whole rows.
+            constexpr std::size_t kColumns = 15;
+            constexpr std::size_t kMaxRowsPerStatement = 65535 / kColumns;
+            const std::string prefix =
                 "INSERT INTO " + table_name +
                 " (run_id, portfolio_id, strategy_id, execution_id, order_id, timestamp, symbol, "
                 "side, quantity, price, commissions_fees, implicit_price_impact, "
                 "slippage_market_impact, total_transaction_costs, is_partial) VALUES ";
 
-            std::vector<std::string> value_strings;
-            value_strings.reserve(executions.size());
-
-            for (const auto& exec : executions) {
-                std::string values = "('" + run_id + "', '" + actual_portfolio_id + "', '" +
-                                     strategy_id + "', '" + exec.exec_id + "', '" + exec.order_id +
-                                     "', '" + format_timestamp(exec.fill_time) + "', '" +
-                                     exec.symbol + "', '" + side_to_string(exec.side) + "', " +
-                                     std::to_string(static_cast<double>(exec.filled_quantity)) +
-                                     ", " + std::to_string(static_cast<double>(exec.fill_price)) +
-                                     ", " + std::to_string(static_cast<double>(exec.commissions_fees)) +
-                                     ", " + std::to_string(static_cast<double>(exec.implicit_price_impact)) +
-                                     ", " + std::to_string(static_cast<double>(exec.slippage_market_impact)) +
-                                     ", " + std::to_string(static_cast<double>(exec.total_transaction_costs)) +
-                                     ", " + (exec.is_partial ? "true" : "false") + ")";
-                value_strings.push_back(values);
+            for (std::size_t start = 0; start < executions.size(); start += kMaxRowsPerStatement) {
+                const std::size_t end =
+                    std::min(executions.size(), start + kMaxRowsPerStatement);
+                std::string query = prefix;
+                pqxx::params batch;
+                std::size_t next_placeholder = 1;
+                for (std::size_t i = start; i < end; ++i) {
+                    const auto& exec = executions[i];
+                    if (i != start)
+                        query += ",";
+                    query += "(";
+                    for (std::size_t c = 0; c < kColumns; ++c) {
+                        if (c != 0)
+                            query += ",";
+                        query += "$" + std::to_string(next_placeholder++);
+                    }
+                    query += ")";
+                    batch.append(run_id);
+                    batch.append(actual_portfolio_id);
+                    batch.append(strategy_id);
+                    batch.append(exec.exec_id);
+                    batch.append(exec.order_id);
+                    batch.append(format_timestamp(exec.fill_time));
+                    batch.append(exec.symbol);
+                    batch.append(side_to_string(exec.side));
+                    batch.append(static_cast<double>(exec.filled_quantity));
+                    batch.append(static_cast<double>(exec.fill_price));
+                    batch.append(static_cast<double>(exec.commissions_fees));
+                    batch.append(static_cast<double>(exec.implicit_price_impact));
+                    batch.append(static_cast<double>(exec.slippage_market_impact));
+                    batch.append(static_cast<double>(exec.total_transaction_costs));
+                    batch.append(exec.is_partial);
+                }
+                txn.exec(query, batch);
             }
-
-            query += pqxx::separated_list(",", value_strings.begin(), value_strings.end());
-            txn.exec(query);
         } else {
             // Use parameterized queries for smaller batches with strategy_id
             for (const auto& exec : executions) {
