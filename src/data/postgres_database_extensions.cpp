@@ -534,9 +534,18 @@ Result<void> PostgresDatabase::update_live_results(
             first = false;
         }
 
-        query += " WHERE strategy_id = $" + std::to_string(param_idx++) +
-                 " AND portfolio_id = $" + std::to_string(param_idx++) +
-                 " AND DATE(date) = $" + std::to_string(param_idx++);
+        // One increment per statement. These were three param_idx++ in a single
+        // expression, whose operands C++ leaves unsequenced: the compiler may
+        // number the placeholders in any order, and the three params below are
+        // appended in a fixed one. Getting $n out of step with the values binds
+        // the strategy id to the date predicate, so the UPDATE matches nothing
+        // and yesterday's metrics are silently never finalised.
+        const int strategy_param = param_idx++;
+        const int portfolio_param = param_idx++;
+        const int date_param = param_idx++;
+        query += " WHERE strategy_id = $" + std::to_string(strategy_param) +
+                 " AND portfolio_id = $" + std::to_string(portfolio_param) +
+                 " AND DATE(date) = $" + std::to_string(date_param);
         params.append(strategy_id);
         params.append(actual_portfolio_id);
         params.append(format_timestamp(date).substr(0, 10));

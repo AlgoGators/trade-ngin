@@ -21,8 +21,8 @@ constexpr double PERCENT_OF_PAR = 0.01;  // price quoted as a percentage of face
 /// Contract sizes are the CME/CBOT/NYMEX/COMEX contract specifications. The
 /// scale is the quote convention, and the product of the two is the point
 /// value -- the number that multiplies quantity * price.
-const std::unordered_map<std::string, ContractSpec>& table() {
-    static const std::unordered_map<std::string, ContractSpec> specs = {
+const std::unordered_map<std::string, QuotedContract>& table() {
+    static const std::unordered_map<std::string, QuotedContract> specs = {
         // --- Equity index: quoted in index points. size == multiplier. ------
         {"ES", {50.0, PER_UNIT}},   // E-mini S&P 500,      $50 x index
         {"MES", {5.0, PER_UNIT}},   // Micro E-mini S&P 500
@@ -191,7 +191,7 @@ std::string root_symbol(const std::string& symbol) {
     return root;
 }
 
-std::optional<ContractSpec> known_contract(const std::string& symbol) {
+std::optional<QuotedContract> known_contract(const std::string& symbol) {
     const auto& specs = table();
     auto it = specs.find(root_symbol(symbol));
     if (it == specs.end()) {
@@ -236,7 +236,7 @@ ResolvedMultiplier resolve_price_multiplier(const std::string& symbol, double re
     return {reported, MultiplierSource::ReportedUnrecognised};
 }
 
-const char* to_string(MultiplierSource source) {
+const char* describe(MultiplierSource source) {
     switch (source) {
         case MultiplierSource::ScaledContractSize:
             return "contract size scaled by quote convention";

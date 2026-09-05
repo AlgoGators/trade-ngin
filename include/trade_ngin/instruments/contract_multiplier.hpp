@@ -55,7 +55,12 @@ namespace trade_ngin {
  */
 
 /// One contract's two numbers, and the bridge between them.
-struct ContractSpec {
+///
+/// Named for the quote convention rather than the contract, because
+/// core/types.hpp already has a ContractSpec and it holds something else: the
+/// instrument's identity, exchange and tick size, with a multiplier it takes on
+/// trust from whoever built it.
+struct QuotedContract {
     /// Underlying units per contract: bushels, ounces, dollars of face value.
     double contract_size = 0.0;
 
@@ -102,7 +107,7 @@ struct ResolvedMultiplier {
 std::string root_symbol(const std::string& symbol);
 
 /// The known spec for a symbol, or nothing. Accepts suffixed symbols.
-std::optional<ContractSpec> known_contract(const std::string& symbol);
+std::optional<QuotedContract> known_contract(const std::string& symbol);
 
 /**
  * @brief The symbol this deployment actually prices `symbol` as.
@@ -138,7 +143,9 @@ std::optional<double> fallback_price_multiplier(const std::string& symbol);
  */
 ResolvedMultiplier resolve_price_multiplier(const std::string& symbol, double reported);
 
-/// Human-readable form of a MultiplierSource, for log lines.
-const char* to_string(MultiplierSource source);
+/// Human-readable form of a MultiplierSource, for log lines. Not spelled
+/// to_string: core/types.hpp puts one of those in namespace std for Decimal,
+/// and an unqualified call near both is a coin toss a reader has to resolve.
+const char* describe(MultiplierSource source);
 
 }  // namespace trade_ngin

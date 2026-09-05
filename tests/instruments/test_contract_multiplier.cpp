@@ -104,7 +104,7 @@ TEST(ContractMultiplier, TheGrainsThatAreNotQuotedInCentsAreNotScaled) {
 // the E-micro euro came to be priced as the full-size contract.
 // ---------------------------------------------------------------------------
 
-TEST(ContractMultiplier, TheTableStatesTheContractSpecificationNotTheDeploymentChoice) {
+TEST(ContractMultiplier, TheTableStatesTheQuotedContractificationNotTheDeploymentChoice) {
     // A micro contract is a tenth of its full-size namesake. The table says so
     // even where this deployment chooses to price them the same, because the
     // spec is a fact and the choice is a policy, and they belong in different

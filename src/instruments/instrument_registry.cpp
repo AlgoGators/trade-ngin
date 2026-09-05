@@ -332,7 +332,7 @@ std::shared_ptr<Instrument> InstrumentRegistry::create_instrument_from_db(
             } else if (resolved.source != MultiplierSource::ScaledContractSize &&
                        resolved.source != MultiplierSource::AlreadyPointValue) {
                 WARN("Contract size for " + symbol + " taken as a point value unchecked: " +
-                     std::string(to_string(resolved.source)));
+                     std::string(describe(resolved.source)));
             }
         } else {
             // Missing or zero. The contract table is a better answer than 1.0,
