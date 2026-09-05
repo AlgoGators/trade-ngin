@@ -169,10 +169,10 @@ HistoricalMetrics LiveHistoricalMetricsCalculator::calculate(
 
         if (metrics.gross_loss > 0.0) {
             metrics.profit_factor = metrics.gross_profit / metrics.gross_loss;
-        } else if (metrics.gross_profit > 0.0) {
-            // Convention: very large profit factor if there are no losses
-            metrics.profit_factor = 999.99;
         }
+        // No losing day means no denominator, so profit factor stays empty.
+        // It was 999.99 here, which every consumer then had to know to special-
+        // case, and none of them did.
     }
 
     return metrics;

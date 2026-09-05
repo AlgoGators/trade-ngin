@@ -369,7 +369,11 @@ TEST_F(InstrumentRegistryTest, CreateInstrumentFromDbReturnsNullWhenBothSymbolsE
     EXPECT_EQ(r.create_instrument_from_db(table, 0), nullptr);
 }
 
-TEST_F(InstrumentRegistryTest, CreateInstrumentFromDbDefaultsContractSizeWhenZero) {
+TEST_F(InstrumentRegistryTest, CreateInstrumentFromDbFallsBackToTheKnownPointValue) {
+    // A missing contract size used to default to a multiplier of 1.0, which
+    // prices five S&P contracts at $29,000 instead of $1.45m. The contract
+    // table knows what an E-mini point is worth; that is a better answer than
+    // a number chosen because it is multiplicatively harmless.
     auto& r = InstrumentRegistry::instance();
     auto table = build_contract_table({
         {"ES.v.0", "", "FUTURE", "CME", 0.0, 0.25, "0.25", 12000.0, 9000.0,
@@ -377,5 +381,45 @@ TEST_F(InstrumentRegistryTest, CreateInstrumentFromDbDefaultsContractSizeWhenZer
     });
     auto instr = r.create_instrument_from_db(table, 0);
     ASSERT_NE(instr, nullptr);
-    EXPECT_DOUBLE_EQ(instr->get_multiplier(), 1.0);  // defaulted from 0.0
+    EXPECT_DOUBLE_EQ(instr->get_multiplier(), 50.0);
+}
+
+TEST_F(InstrumentRegistryTest, CreateInstrumentFromDbDefaultsToOneForAnUnknownSymbol) {
+    // Nothing is known about it, so there is nothing better to say.
+    auto& r = InstrumentRegistry::instance();
+    auto table = build_contract_table({
+        {"XYZ.v.0", "", "FUTURE", "CME", 0.0, 0.25, "0.25", 0.0, 0.0,
+         "09:30-16:00", ""},
+    });
+    auto instr = r.create_instrument_from_db(table, 0);
+    ASSERT_NE(instr, nullptr);
+    EXPECT_DOUBLE_EQ(instr->get_multiplier(), 1.0);
+}
+
+TEST_F(InstrumentRegistryTest, ContractSizeIsScaledByTheQuoteConvention) {
+    // metadata.contract_metadata spells this column "Contract Size", and for a
+    // ten-year note that is $100,000 of face value. The price is quoted as a
+    // percentage of par, so one point is $1,000. Reading the column straight
+    // into the multiplier priced forty contracts at $449m.
+    auto& r = InstrumentRegistry::instance();
+    auto table = build_contract_table({
+        {"ZN.v.0", "", "FUTURE", "CBOT", 100000.0, 0.015625, "1/64", 2000.0, 1500.0,
+         "17:00-16:00", ""},
+    });
+    auto instr = r.create_instrument_from_db(table, 0);
+    ASSERT_NE(instr, nullptr);
+    EXPECT_DOUBLE_EQ(instr->get_multiplier(), 1000.0);
+}
+
+TEST_F(InstrumentRegistryTest, AContractSizeThatIsAlreadyAPointValueIsNotScaledAgain) {
+    // Whether that column holds sizes or point values is not settled across
+    // deployments. A row already carrying 1,000 for ZN must not become 10.
+    auto& r = InstrumentRegistry::instance();
+    auto table = build_contract_table({
+        {"ZN.v.0", "", "FUTURE", "CBOT", 1000.0, 0.015625, "1/64", 2000.0, 1500.0,
+         "17:00-16:00", ""},
+    });
+    auto instr = r.create_instrument_from_db(table, 0);
+    ASSERT_NE(instr, nullptr);
+    EXPECT_DOUBLE_EQ(instr->get_multiplier(), 1000.0);
 }

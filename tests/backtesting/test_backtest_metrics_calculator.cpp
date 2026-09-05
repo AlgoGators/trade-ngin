@@ -262,7 +262,10 @@ TEST_F(BacktestMetricsCalculatorTest, TradeStatisticsClosingTradeIsRecorded) {
     EXPECT_EQ(s.winning_trades, 1);
     EXPECT_DOUBLE_EQ(s.win_rate, 1.0);
     EXPECT_DOUBLE_EQ(s.max_win, 9.0);  // 1*(110-100) - 1 commission = 9
-    EXPECT_DOUBLE_EQ(s.profit_factor, 999.0);  // no losses, has wins
+    // No losing trade, so there is no denominator and no profit factor. This
+    // used to assert 999.0 -- the test agreed with the sentinel rather than
+    // asking whether a sentinel belonged in a numeric field at all.
+    EXPECT_FALSE(s.profit_factor.has_value());
     EXPECT_NEAR(s.avg_holding_period, 2.0, 1e-9);
 }
 
@@ -277,7 +280,9 @@ TEST_F(BacktestMetricsCalculatorTest, TradeStatisticsLosingTradeRecorded) {
     EXPECT_EQ(s.winning_trades, 0);
     EXPECT_DOUBLE_EQ(s.win_rate, 0.0);
     EXPECT_DOUBLE_EQ(s.max_loss, 11.0);
-    EXPECT_DOUBLE_EQ(s.profit_factor, 0.0);  // no profit
+    // Losses but no profit: the ratio is a real zero, not an absence.
+    ASSERT_TRUE(s.profit_factor.has_value());
+    EXPECT_DOUBLE_EQ(*s.profit_factor, 0.0);
 }
 
 TEST_F(BacktestMetricsCalculatorTest, TradeStatisticsAddingThenClosingComputesAvgEntry) {

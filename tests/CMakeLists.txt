@@ -29,6 +29,7 @@ set(TEST_SOURCES
     instruments/test_equity.cpp
     instruments/test_option.cpp
     instruments/test_instrument_registry.cpp
+    instruments/test_contract_multiplier.cpp
     risk/test_risk_manager.cpp
     risk/test_risk_manager_extended.cpp
     optimization/test_dynamic_optimizer.cpp

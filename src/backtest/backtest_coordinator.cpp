@@ -1024,7 +1024,6 @@ Result<void> BacktestCoordinator::save_portfolio_results_to_db(
         {"volatility", results.volatility},
         {"total_trades", static_cast<double>(results.total_trades)},
         {"win_rate", results.win_rate},
-        {"profit_factor", results.profit_factor},
         {"avg_win", results.avg_win},
         {"avg_loss", results.avg_loss},
         {"max_win", results.max_win},
@@ -1035,6 +1034,11 @@ Result<void> BacktestCoordinator::save_portfolio_results_to_db(
         {"beta", results.beta},
         {"correlation", results.correlation},
         {"downside_volatility", results.downside_volatility}};
+    // Only when it is defined. A column left out is stored NULL, which is what
+    // "this book has had no losing trades" means; 999.0 was what it used to say.
+    if (results.profit_factor) {
+        metrics["profit_factor"] = *results.profit_factor;
+    }
     results_manager->set_performance_metrics(metrics);
 
     // Set portfolio-level equity curve

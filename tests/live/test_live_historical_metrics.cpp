@@ -127,15 +127,21 @@ TEST_F(LiveHistoricalMetricsTest, CalculatePopulatesAllAggregateStats) {
     EXPECT_GT(m.gross_loss, 0.0);
     EXPECT_NEAR(m.gross_profit, 3500.0, 1e-9);
     EXPECT_NEAR(m.gross_loss, 2000.0, 1e-9);
-    EXPECT_NEAR(m.profit_factor, 1.75, 1e-9);
+    ASSERT_TRUE(m.profit_factor.has_value());
+    EXPECT_NEAR(*m.profit_factor, 1.75, 1e-9);
     EXPECT_DOUBLE_EQ(m.best_day, 2.0);
     EXPECT_DOUBLE_EQ(m.worst_day, -1.5);
 }
 
-TEST_F(LiveHistoricalMetricsTest, CalculateProfitFactorIsLargeWhenNoLosses) {
+TEST_F(LiveHistoricalMetricsTest, ProfitFactorIsUndefinedWhenThereAreNoLosses) {
+    // Two up days and nothing else. gross_loss is zero, so the ratio has no
+    // denominator: the answer is "there isn't one", not 999.99. The gross
+    // figures are still reported, which is what a reader actually needs.
     LiveHistoricalMetricsCalculator c;
     auto m = c.calculate({1.0, 2.0}, {100.0, 200.0}, {1000.0, 1100.0}, 5.0, 2);
-    EXPECT_GT(m.profit_factor, 100.0);
+    EXPECT_FALSE(m.profit_factor.has_value());
+    EXPECT_NEAR(m.gross_profit, 300.0, 1e-9);
+    EXPECT_DOUBLE_EQ(m.gross_loss, 0.0);
 }
 
 TEST_F(LiveHistoricalMetricsTest, CalculateZeroVolatilityKeepsRatiosAtZero) {

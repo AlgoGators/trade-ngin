@@ -1,6 +1,8 @@
 // include/trade_ngin/backtest/backtest_types.hpp
 #pragma once
 
+#include <optional>
+
 #include <chrono>
 #include <map>
 #include <nlohmann/json.hpp>
@@ -202,7 +204,8 @@ struct BacktestResults {
     // Trading metrics
     int total_trades{0};
     double win_rate{0.0};
-    double profit_factor{0.0};
+    /// Empty when there were no losing trades to divide by.
+    std::optional<double> profit_factor;
     double avg_win{0.0};
     double avg_loss{0.0};
     double max_win{0.0};

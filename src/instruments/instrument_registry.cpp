@@ -1,5 +1,6 @@
 // src/instruments/instrument_registry.cpp
 #include "trade_ngin/instruments/instrument_registry.hpp"
+#include "trade_ngin/instruments/contract_multiplier.hpp"
 #include <arrow/api.h>
 #include "trade_ngin/core/logger.hpp"
 
@@ -309,10 +310,42 @@ std::shared_ptr<Instrument> InstrumentRegistry::create_instrument_from_db(
              " (raw column value exists: " +
              (table->GetColumnByName("Contract Size") ? "yes" : "no") + ")");
 
-        // Default to 1.0 if contract size is missing or zero
-        if (contract_size <= 0.0) {
-            WARN("Using default contract size (1.0) for " + symbol);
-            contract_size = 1.0;
+        // A futures instrument's multiplier is the currency value of one point
+        // of the QUOTED price, which is not always the contract size: a ten-year
+        // note is $100,000 of face quoted as a percentage of par, so its point
+        // value is $1,000. Reading the column straight into spec.multiplier
+        // priced every treasury, grain and livestock contract 100x too large.
+        //
+        // Which of the two quantities metadata.contract_metadata holds is not
+        // settled -- the column is spelled "Contract Size" but was seeded in at
+        // least one place with point values -- so the resolver recognises either
+        // and says which it saw.
+        double price_multiplier = contract_size;
+        if (contract_size > 0.0) {
+            auto resolved = resolve_price_multiplier(symbol, contract_size);
+            price_multiplier = resolved.value;
+            if (resolved.source == MultiplierSource::ScaledContractSize &&
+                price_multiplier != contract_size) {
+                INFO("Scaled contract size for " + symbol + ": " +
+                     std::to_string(contract_size) + " -> point value " +
+                     std::to_string(price_multiplier));
+            } else if (resolved.source != MultiplierSource::ScaledContractSize &&
+                       resolved.source != MultiplierSource::AlreadyPointValue) {
+                WARN("Contract size for " + symbol + " taken as a point value unchecked: " +
+                     std::string(to_string(resolved.source)));
+            }
+        } else {
+            // Missing or zero. The contract table is a better answer than 1.0,
+            // which silently prices an S&P contract at its index level.
+            auto known = fallback_price_multiplier(symbol);
+            if (known) {
+                WARN("No contract size for " + symbol + "; using known point value " +
+                     std::to_string(*known));
+                price_multiplier = *known;
+            } else {
+                WARN("Using default multiplier (1.0) for " + symbol);
+                price_multiplier = 1.0;
+            }
         }
 
         double min_tick = get_double("Minimum Price Fluctuation");
@@ -326,7 +359,7 @@ std::shared_ptr<Instrument> InstrumentRegistry::create_instrument_from_db(
                 spec.root_symbol = symbol;
                 spec.exchange = exchange;
                 spec.currency = "USD";  // Default
-                spec.multiplier = contract_size;
+                spec.multiplier = price_multiplier;
                 spec.tick_size = min_tick;
                 spec.commission_per_contract = commission;
 

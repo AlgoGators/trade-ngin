@@ -387,13 +387,17 @@ double LiveMetricsCalculator::calculate_win_rate(
     return (static_cast<double>(winning_trades) / total_trades) * 100.0;
 }
 
-double LiveMetricsCalculator::calculate_profit_factor(
+std::optional<double> LiveMetricsCalculator::calculate_profit_factor(
     double gross_wins,
     double gross_losses) const {
 
     if (gross_losses <= 0.0) {
-        // If no losses, profit factor is infinite (we'll return a large number)
-        return gross_wins > 0.0 ? 999.99 : 0.0;
+        // No denominator. Undefined is the honest answer, and a caller that
+        // wants to print something can decide what -- an em-dash, "n/a", the
+        // gross figures side by side. It cannot decide that if it is handed a
+        // number that looks real.
+        (void)gross_wins;
+        return std::nullopt;
     }
 
     return gross_wins / gross_losses;

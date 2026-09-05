@@ -150,6 +150,7 @@ set(TRADE_NGIN_SOURCES
     src/instruments/equity.cpp
     src/instruments/option.cpp
     src/instruments/instrument_registry.cpp
+    src/instruments/contract_multiplier.cpp
     src/order/order_manager.cpp
     src/risk/risk_manager.cpp
     src/optimization/dynamic_optimizer.cpp

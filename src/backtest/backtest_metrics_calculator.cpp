@@ -343,9 +343,10 @@ BacktestMetricsCalculator::TradeStatistics BacktestMetricsCalculator::calculate_
 
     if (stats.total_loss > 0) {
         stats.profit_factor = stats.total_profit / stats.total_loss;
-    } else if (stats.total_trades > 0 && stats.total_profit > 0) {
-        stats.profit_factor = 999.0;
     }
+    // A backtest with no losing trades has no profit factor. It reported 999.0,
+    // which is the live path's 999.99 with a different number of nines and the
+    // same problem.
 
     if (!holding_periods.empty()) {
         stats.avg_holding_period = std::accumulate(holding_periods.begin(),

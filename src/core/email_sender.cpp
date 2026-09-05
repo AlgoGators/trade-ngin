@@ -1,4 +1,5 @@
 #include "trade_ngin/core/email_sender.hpp"
+#include "trade_ngin/instruments/contract_multiplier.hpp"
 #include <curl/curl.h>
 #include <algorithm>
 #include <cctype>
@@ -930,25 +931,14 @@ std::string EmailSender::format_executions_table(const std::vector<ExecutionRepo
                 // Get multiplier from registry (primary source)
                 contract_multiplier = instrument->get_multiplier();
             } else {
-                // NOTE: This fallback uses static values as EmailSender doesn't have access to
-                // TrendFollowingStrategy Future improvement: pass strategy reference or create
-                // shared utility for fallback multipliers
-
-                // Fallback multipliers for common contracts (kept minimal for robustness)
-                static const std::unordered_map<std::string, double> fallback_multipliers = {
-                    {"NQ", 20.0},     {"MNQ", 2.0},     {"ES", 50.0},     {"MES", 5.0},
-                    {"YM", 5.0},      {"MYM", 0.5},     {"RTY", 50.0},    {"6A", 100000.0},
-                    {"6B", 62500.0},  {"6C", 100000.0}, {"6E", 125000.0}, {"6J", 12500000.0},
-                    {"6S", 125000.0}, {"6N", 100000.0}, {"6M", 500000.0}, {"CL", 1000.0},
-                    {"GC", 100.0},    {"HG", 25000.0},  {"PL", 50.0},     {"SI", 5000.0},
-                    {"ZC", 5000.0},   {"ZS", 5000.0},   {"ZW", 5000.0},   {"ZL", 60000.0},
-                    {"ZM", 100.0},    {"ZN", 100000.0}, {"ZB", 100000.0}, {"UB", 100000.0},
-                    {"ZR", 2000.0},   {"RB", 42000.0},  {"HO", 42000.0},  {"NG", 10000.0},
-                    {"HE", 40000.0},  {"LE", 40000.0},  {"GF", 50000.0},  {"KE", 5000.0}};
-
-                auto it = fallback_multipliers.find(lookup_sym);
-                if (it != fallback_multipliers.end()) {
-                    contract_multiplier = it->second;
+                // This block held its own table of contract sizes -- corn 5,000,
+                // ten-year notes 100,000 -- and multiplied prices by them. Those
+                // are bushels and dollars of face value, not point values, so
+                // every treasury and grain line in the daily report overstated
+                // notional by 100x.
+                auto known = fallback_price_multiplier(lookup_sym);
+                if (known) {
+                    contract_multiplier = *known;
                 } else {
                     WARN("Unknown contract multiplier for " + lookup_sym +
                          " in email formatting, using 1.0");
@@ -3348,20 +3338,14 @@ std::string EmailSender::format_single_strategy_executions_table(
             if (instrument) {
                 contract_multiplier = instrument->get_multiplier();
             } else {
-                static const std::unordered_map<std::string, double> fallback_multipliers = {
-                    {"NQ", 20.0},     {"MNQ", 2.0},     {"ES", 50.0},     {"MES", 5.0},
-                    {"YM", 5.0},      {"MYM", 0.5},     {"RTY", 50.0},    {"6A", 100000.0},
-                    {"6B", 62500.0},  {"6C", 100000.0}, {"6E", 125000.0}, {"6J", 12500000.0},
-                    {"6S", 125000.0}, {"6N", 100000.0}, {"6M", 500000.0}, {"CL", 1000.0},
-                    {"GC", 100.0},    {"HG", 25000.0},  {"PL", 50.0},     {"SI", 5000.0},
-                    {"ZC", 5000.0},   {"ZS", 5000.0},   {"ZW", 5000.0},   {"ZL", 60000.0},
-                    {"ZM", 100.0},    {"ZN", 100000.0}, {"ZB", 100000.0}, {"UB", 100000.0},
-                    {"ZR", 2000.0},   {"RB", 42000.0},  {"HO", 42000.0},  {"NG", 10000.0},
-                    {"HE", 40000.0},  {"LE", 40000.0},  {"GF", 50000.0},  {"KE", 5000.0}};
-
-                auto it = fallback_multipliers.find(lookup_sym);
-                if (it != fallback_multipliers.end()) {
-                    contract_multiplier = it->second;
+                // This block held its own table of contract sizes -- corn 5,000,
+                // ten-year notes 100,000 -- and multiplied prices by them. Those
+                // are bushels and dollars of face value, not point values, so
+                // every treasury and grain line in the daily report overstated
+                // notional by 100x.
+                auto known = fallback_price_multiplier(lookup_sym);
+                if (known) {
+                    contract_multiplier = *known;
                 }
             }
         } catch (...) {

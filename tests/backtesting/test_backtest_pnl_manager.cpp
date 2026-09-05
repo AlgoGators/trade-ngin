@@ -78,6 +78,12 @@ TEST_F(BacktestPnLManagerTest, FallbackMultiplierUnknownSymbolDefaultsToOne) {
 }
 
 // Validate that each known fallback symbol resolves to its expected multiplier.
+//
+// These come from instruments/contract_multiplier.cpp now, not from a table
+// inside BacktestPnLManager. The equity-index and micro entries are unchanged
+// because they are deployment aliases -- ES priced as MES and so on -- which
+// that module preserves deliberately rather than correcting to the full-size
+// specification. See deployment_aliases() there.
 struct FallbackCase {
     const char* symbol;
     double expected;
@@ -112,7 +118,12 @@ INSTANTIATE_TEST_SUITE_P(
         FallbackCase{"ZC", 50.0}, FallbackCase{"ZS", 50.0},
         FallbackCase{"YK", 50.0}, FallbackCase{"ZW", 50.0},
         FallbackCase{"YW", 50.0}, FallbackCase{"ZM", 100.0},
-        FallbackCase{"ZL", 600.0}, FallbackCase{"ZR", 20.0},
+        FallbackCase{"ZL", 600.0},
+        // Rough rice is 2,000 hundredweight quoted in dollars per
+        // hundredweight, so a point is $2,000. This table said 20, from a tick
+        // size of 0.5 -- the tick is 0.005. The live table and the email report
+        // both already had 2,000.
+        FallbackCase{"ZR", 2000.0},
         FallbackCase{"KE", 50.0}, FallbackCase{"GF", 500.0},
         FallbackCase{"HE", 400.0}, FallbackCase{"LE", 400.0},
         FallbackCase{"ZN", 1000.0}, FallbackCase{"ZB", 1000.0},

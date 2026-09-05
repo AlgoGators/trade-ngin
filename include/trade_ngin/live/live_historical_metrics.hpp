@@ -1,5 +1,6 @@
 #pragma once
 
+#include <optional>
 #include <vector>
 
 namespace trade_ngin {
@@ -35,7 +36,15 @@ struct HistoricalMetrics {
     // Profit factor based on daily PnL
     double gross_profit = 0.0;  // sum of positive daily_pnl
     double gross_loss = 0.0;    // sum of abs(negative daily_pnl)
-    double profit_factor = 0.0; // gross_profit / gross_loss
+
+    // gross_profit / gross_loss, and EMPTY when there is no denominator.
+    //
+    // A book that has not had a losing day has no profit factor -- the ratio is
+    // a division by zero, not a large number. This used to be reported as
+    // 999.99, a sentinel that is indistinguishable from a measurement once it
+    // is in a numeric column: it averages, it sorts to the top of a leaderboard,
+    // and it renders as "999.99x" on a dashboard.
+    std::optional<double> profit_factor;
 
     // Trade-level stats
     int total_trades = 0;       // count of executions since inception

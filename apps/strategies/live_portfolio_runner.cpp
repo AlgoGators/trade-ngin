@@ -2449,7 +2449,6 @@ int trade_ngin::run_live_portfolio(const LivePortfolioConfig& portfolio_cfg, int
                         {"win_rate", yesterday_hist_metrics.win_rate},
                         {"avg_win", yesterday_hist_metrics.avg_win},
                         {"avg_loss", yesterday_hist_metrics.avg_loss},
-                        {"profit_factor", yesterday_hist_metrics.profit_factor},
                         {"best_day", yesterday_hist_metrics.best_day},
                         {"worst_day", yesterday_hist_metrics.worst_day},
                         {"gross_profit", yesterday_hist_metrics.gross_profit},
@@ -2461,6 +2460,13 @@ int trade_ngin::run_live_portfolio(const LivePortfolioConfig& portfolio_cfg, int
                         // flat_days NOT written to DB — column doesn't exist on trading.live_results
                         // and is trivially derivable as total - winning - losing on read.
                         {"total_days", static_cast<double>(yesterday_hist_metrics.total_days)}};
+
+                    // Only written when it is defined. A book with no losing day
+                    // has no profit factor, and gross_profit and gross_loss are
+                    // both in this same update for anyone who wants to say so.
+                    if (yesterday_hist_metrics.profit_factor) {
+                        metric_updates["profit_factor"] = *yesterday_hist_metrics.profit_factor;
+                    }
 
                     auto yesterday_metrics_manager = std::make_unique<LiveResultsManager>(
                         db, true, combined_strategy_id, coordinator_config.portfolio_id);
@@ -2938,7 +2944,6 @@ int trade_ngin::run_live_portfolio(const LivePortfolioConfig& portfolio_cfg, int
                 {"win_rate", historical_metrics.win_rate},
                 {"avg_win", historical_metrics.avg_win},
                 {"avg_loss", historical_metrics.avg_loss},
-                {"profit_factor", historical_metrics.profit_factor},
                 {"best_day", historical_metrics.best_day},
                 {"worst_day", historical_metrics.worst_day},
                 {"gross_profit", historical_metrics.gross_profit},
@@ -2965,6 +2970,13 @@ int trade_ngin::run_live_portfolio(const LivePortfolioConfig& portfolio_cfg, int
                 {"daily_transaction_costs", total_daily_transaction_costs},
                 {"margin_posted", total_posted_margin},
                 {"cash_available", current_portfolio_value - total_posted_margin}};
+
+            // Left out of the map when undefined, which stores the column NULL.
+            // It used to be written as 999.99, a sentinel that no reader of
+            // trading.live_results could tell apart from a real ratio.
+            if (historical_metrics.profit_factor) {
+                double_metrics["profit_factor"] = *historical_metrics.profit_factor;
+            }
 
             std::unordered_map<std::string, int> int_metrics = {
                 {"active_positions", active_positions},
@@ -3308,7 +3320,11 @@ int trade_ngin::run_live_portfolio(const LivePortfolioConfig& portfolio_cfg, int
                         strategy_metrics["Win Rate"] = today_row.win_rate;
                         strategy_metrics["Average Win"] = today_row.avg_win;
                         strategy_metrics["Average Loss"] = today_row.avg_loss;
-                        strategy_metrics["Profit Factor"] = today_row.profit_factor;
+                        // Omitted when undefined, so the report shows no Profit
+                        // Factor row rather than a confident "999.99".
+                        if (today_row.profit_factor) {
+                            strategy_metrics["Profit Factor"] = *today_row.profit_factor;
+                        }
                         strategy_metrics["Best Day"] = today_row.best_day;
                         strategy_metrics["Worst Day"] = today_row.worst_day;
                         strategy_metrics["Downside Deviation"] = today_row.downside_deviation;

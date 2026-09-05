@@ -204,13 +204,18 @@ TEST_F(LiveMetricsCalculatorTest, WinRateIsPercent) {
 }
 
 TEST_F(LiveMetricsCalculatorTest, ProfitFactorRatio) {
-    EXPECT_DOUBLE_EQ(c.calculate_profit_factor(2000.0, 1000.0), 2.0);
+    auto pf = c.calculate_profit_factor(2000.0, 1000.0);
+    ASSERT_TRUE(pf.has_value());
+    EXPECT_DOUBLE_EQ(*pf, 2.0);
 }
 
-TEST_F(LiveMetricsCalculatorTest, ProfitFactorLargeWhenNoLosses) {
-    EXPECT_GT(c.calculate_profit_factor(1000.0, 0.0), 100.0);
+TEST_F(LiveMetricsCalculatorTest, ProfitFactorIsUndefinedWhenThereAreNoLosses) {
+    EXPECT_FALSE(c.calculate_profit_factor(1000.0, 0.0).has_value());
 }
 
-TEST_F(LiveMetricsCalculatorTest, ProfitFactorZeroWhenNoActivity) {
-    EXPECT_DOUBLE_EQ(c.calculate_profit_factor(0.0, 0.0), 0.0);
+TEST_F(LiveMetricsCalculatorTest, ProfitFactorIsUndefinedWhenNothingHappened) {
+    // Zero over zero. The old code returned 0.0 here and 999.99 one line up,
+    // so the same undefined quantity got two different confident answers
+    // depending on which side of the ratio happened to be empty.
+    EXPECT_FALSE(c.calculate_profit_factor(0.0, 0.0).has_value());
 }

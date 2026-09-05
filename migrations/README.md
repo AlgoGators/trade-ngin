@@ -23,12 +23,18 @@ dual-portfolio workflow:
    branch; declares books as first-class rows, lets a strategy belong to
    several, and adds the append-only book-change audit. Numbered 009 because
    PR #60 already holds 008 on its own branch; both are meant for `main`.
+10. `010_clear_profit_factor_sentinel.sql` — delivered on the `qt-platform-preview`
+   branch; clears the 999.99 placeholder the engine used to write for a book
+   with no losing days. Apply it together with the binary that stops writing it;
+   applying it early is harmless, because the next run would put the sentinel
+   back and a later re-run of the migration clears it again.
 
 The safe release sequence is: merge PR #55 and PR #56; apply 002–004 from PR
 #55, then 005 from PR #56, then 006–007 from PR #55; deploy the combined binary
 only after the schema is current. Apply 008 from PR #60 before enabling
 database-backed strategy overrides, and 009 before deploying an AlgoLens that
-has the Books tab (it no longer creates these tables itself). Run each `test_*.sh` migration test against
+has the Books tab (it no longer creates these tables itself). Apply 010 with the binary that
+stops writing the profit-factor sentinel. Run each `test_*.sh` migration test against
 disposable PostgreSQL before production rollout. Rollback scripts intentionally
 refuse operations that would discard populated attribution streams.
 

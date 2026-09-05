@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <optional>
+
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -45,7 +47,9 @@ struct LiveResultsRow {
     double win_rate = 0.0;
     double avg_win = 0.0;
     double avg_loss = 0.0;
-    double profit_factor = 0.0;
+    /// Empty when the column is NULL, which is what an undefined profit factor
+    /// looks like in the database.
+    std::optional<double> profit_factor;
     double best_day = 0.0;
     double worst_day = 0.0;
     double downside_deviation = 0.0;

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <optional>
+
 #include <vector>
 #include <string>
 #include <unordered_map>
@@ -170,7 +172,8 @@ public:
         int total_trades = 0;
         int winning_trades = 0;
         double win_rate = 0.0;
-        double profit_factor = 0.0;
+        /// Empty when there were no losing trades to divide by.
+        std::optional<double> profit_factor;
         double total_profit = 0.0;
         double total_loss = 0.0;
         double avg_win = 0.0;

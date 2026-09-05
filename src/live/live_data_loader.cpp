@@ -236,6 +236,24 @@ Result<LiveResultsRow> LiveDataLoader::load_live_results(const std::string& stra
         }
     };
 
+    // profit_factor is the one column that is legitimately absent, so it gets
+    // a reader that can say so. Rows written before the sentinel was removed
+    // still carry 999.99; that is not a profit factor either.
+    auto get_optional_double = [&table, &col]() -> std::optional<double> {
+        auto array = std::static_pointer_cast<arrow::StringArray>(table->column(col++)->chunk(0));
+        if (array->IsNull(0))
+            return std::nullopt;
+        try {
+            double value = std::stod(array->GetString(0));
+            if (value >= 999.0) {
+                return std::nullopt;
+            }
+            return value;
+        } catch (const std::exception&) {
+            return std::nullopt;
+        }
+    };
+
     auto get_int = [&table, &col]() -> int {
         auto array = std::static_pointer_cast<arrow::StringArray>(table->column(col++)->chunk(0));
         if (array->IsNull(0))
@@ -268,7 +286,7 @@ Result<LiveResultsRow> LiveDataLoader::load_live_results(const std::string& stra
     row.win_rate = get_double();
     row.avg_win = get_double();
     row.avg_loss = get_double();
-    row.profit_factor = get_double();
+    row.profit_factor = get_optional_double();
     row.best_day = get_double();
     row.worst_day = get_double();
     row.downside_deviation = get_double();

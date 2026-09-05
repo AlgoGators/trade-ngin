@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <optional>
+
 #include <cmath>
 #include <vector>
 #include <string>
@@ -43,7 +45,8 @@ struct CalculatedMetrics {
     // Additional metrics
     int trading_days = 0;
     double win_rate = 0.0;
-    double profit_factor = 0.0;
+    /// Empty when there were no losses to divide by. See calculate_profit_factor.
+    std::optional<double> profit_factor;
 };
 
 /**
@@ -292,9 +295,12 @@ public:
      * @brief Calculate profit factor
      * @param gross_wins Total winning amount
      * @param gross_losses Total losing amount (as positive value)
-     * @return Profit factor ratio
+     * @return The ratio, or nothing when there are no losses to divide by.
+     *
+     * Nothing rather than a large number: this returned 999.99, which reads as
+     * a measurement everywhere it is stored, charted or averaged.
      */
-    double calculate_profit_factor(
+    std::optional<double> calculate_profit_factor(
         double gross_wins,
         double gross_losses) const;
 
