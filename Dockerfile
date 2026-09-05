@@ -1,4 +1,4 @@
-FROM ubuntu:24.04 AS builder
+FROM ubuntu:26.04 AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -79,7 +79,7 @@ RUN cmake -S /app -B /app/build \
         -DNLopt_DIR=/usr/lib/x86_64-linux-gnu/cmake/nlopt && \
     cmake --build /app/build --config Release -j"$(nproc)"
 
-FROM ubuntu:24.04
+FROM ubuntu:26.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
     TZ=America/New_York \
