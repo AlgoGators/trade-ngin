@@ -1,6 +1,9 @@
 #include <gtest/gtest.h>
 
 #include <string>
+#include <unordered_map>
+
+#include <nlohmann/json.hpp>
 
 #include "trade_ngin/core/error.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
@@ -99,4 +102,38 @@ TEST(PostgresParamSafety, ValidateIdentifierRejectsDash) {
     // identifier rules are stricter -- dashes are not valid SQL identifiers.
     auto r = db.validate_identifier("trading-positions");
     ASSERT_TRUE(r.is_error());
+}
+
+// Follow-up to PR #42: a strategy_id is a value, but validate_strategy_id
+// is also the guard on the few places it is still concatenated, so the SQL
+// line-comment opener `--` must not pass even though single dashes do.
+TEST(PostgresParamSafety, StrategyIdRejectsDoubleDash) {
+    PostgresDatabase db = make_offline_db();
+    auto r = db.validate_strategy_id("a--b");
+    ASSERT_TRUE(r.is_error());
+    EXPECT_EQ(r.error()->code(), ErrorCode::INVALID_ARGUMENT);
+    EXPECT_TRUE(db.validate_strategy_id("trend-following-1").is_ok());
+}
+
+// The live-results writers concatenate the metric map's keys as column
+// names. They must be rejected by validate_identifier before the writer
+// ever looks at the connection -- the offline fixture has none, so a
+// CONNECTION_ERROR here would mean the column check ran too late.
+TEST(PostgresParamSafety, UpdateLiveResultsRejectsHostileColumnName) {
+    PostgresDatabase db = make_offline_db();
+    std::unordered_map<std::string, double> updates{{"x; DROP TABLE t", 1.0}};
+    auto r = db.update_live_results("LIVE-EQUITY-MR", Timestamp{}, updates, "BASE_PORTFOLIO",
+                                    "trading.live_results");
+    ASSERT_TRUE(r.is_error());
+    EXPECT_EQ(r.error()->code(), ErrorCode::INVALID_ARGUMENT);
+}
+
+TEST(PostgresParamSafety, StoreLiveResultsCompleteRejectsHostileColumnName) {
+    PostgresDatabase db = make_offline_db();
+    std::unordered_map<std::string, double> metrics{{"sharpe_ratio", 1.2}};
+    std::unordered_map<std::string, int> int_metrics{{"x; DROP TABLE t", 3}};
+    auto r = db.store_live_results_complete("LIVE-EQUITY-MR", Timestamp{}, metrics, int_metrics,
+                                            nlohmann::json(), "BASE_PORTFOLIO", "trading.live_results");
+    ASSERT_TRUE(r.is_error());
+    EXPECT_EQ(r.error()->code(), ErrorCode::INVALID_ARGUMENT);
 }

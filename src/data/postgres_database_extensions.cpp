@@ -478,6 +478,15 @@ Result<void> PostgresDatabase::update_live_results(
     const std::string& table_name) {
     std::lock_guard<std::mutex> lock(mutex_);
 
+    // Column names are concatenated into the statement (Postgres cannot bind
+    // identifiers), so allow-list every key before anything else happens.
+    for (const auto& [column, value] : updates) {
+        auto column_validation = validate_identifier(column);
+        if (column_validation.is_error()) {
+            return column_validation;
+        }
+    }
+
     // Validate connection
     auto validation = validate_connection();
     if (validation.is_error()) {
@@ -690,6 +699,21 @@ Result<void> PostgresDatabase::store_live_results_complete(
     const std::unordered_map<std::string, int>& int_metrics, const nlohmann::json& config,
     const std::string& portfolio_id, const std::string& table_name) {
     std::lock_guard<std::mutex> lock(mutex_);
+
+    // Column names are concatenated into the statement (Postgres cannot bind
+    // identifiers), so allow-list every key before anything else happens.
+    for (const auto& [column, value] : metrics) {
+        auto column_validation = validate_identifier(column);
+        if (column_validation.is_error()) {
+            return column_validation;
+        }
+    }
+    for (const auto& [column, value] : int_metrics) {
+        auto column_validation = validate_identifier(column);
+        if (column_validation.is_error()) {
+            return column_validation;
+        }
+    }
 
     // Validate connection
     auto validation = validate_connection();
