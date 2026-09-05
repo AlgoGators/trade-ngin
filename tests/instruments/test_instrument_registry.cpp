@@ -14,6 +14,7 @@
 // Reach into private state to populate the singleton without DB access.
 #define private public
 #include "trade_ngin/instruments/instrument_registry.hpp"
+#include "trade_ngin/instruments/contract_multiplier.hpp"
 #undef private
 
 using namespace trade_ngin;
@@ -371,9 +372,17 @@ TEST_F(InstrumentRegistryTest, CreateInstrumentFromDbReturnsNullWhenBothSymbolsE
 
 TEST_F(InstrumentRegistryTest, CreateInstrumentFromDbFallsBackToTheKnownPointValue) {
     // A missing contract size used to default to a multiplier of 1.0, which
-    // prices five S&P contracts at $29,000 instead of $1.45m. The contract
-    // table knows what an E-mini point is worth; that is a better answer than
-    // a number chosen because it is multiplicatively harmless.
+    // prices an S&P contract at its index level. The contract table knows what
+    // an E-mini point is worth; that is a better answer than a number chosen
+    // because it is multiplicatively harmless.
+    //
+    // 5.0 and not 50.0 because the fallback path applies this deployment's own
+    // aliases, and ES is one of them: get_instrument below rewrites ES to MES
+    // before every lookup, so the fallback has to agree with it or the same
+    // symbol would be priced two ways depending on whether the registry
+    // happened to be populated. Whether reading ES as the micro is RIGHT is an
+    // open question -- see deployment_aliases() -- but it must at least be
+    // consistent.
     auto& r = InstrumentRegistry::instance();
     auto table = build_contract_table({
         {"ES.v.0", "", "FUTURE", "CME", 0.0, 0.25, "0.25", 12000.0, 9000.0,
@@ -381,7 +390,9 @@ TEST_F(InstrumentRegistryTest, CreateInstrumentFromDbFallsBackToTheKnownPointVal
     });
     auto instr = r.create_instrument_from_db(table, 0);
     ASSERT_NE(instr, nullptr);
-    EXPECT_DOUBLE_EQ(instr->get_multiplier(), 50.0);
+    EXPECT_DOUBLE_EQ(instr->get_multiplier(), 5.0);
+    // The contract's own specification is still 50, and still says so.
+    EXPECT_DOUBLE_EQ(known_contract("ES")->price_multiplier(), 50.0);
 }
 
 TEST_F(InstrumentRegistryTest, CreateInstrumentFromDbDefaultsToOneForAnUnknownSymbol) {
