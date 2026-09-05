@@ -1,6 +1,13 @@
 // include/trade_ngin/execution/execution_engine.hpp
 #pragma once
 
+// NOT USED BY ANY RUNNER. As of 2026-09 no app under apps/ and no class under
+// src/ instantiates ExecutionEngine or calls execute_*(); the only callers are
+// tests/execution/test_execution_engine.cpp. Retained, compiled and tested for
+// the execution-engine track (TWAP/VWAP/IS/POV algorithms); the VWAP
+// child-order prices it generates are simulation-only and never reach live
+// order routing.
+
 #include <chrono>
 #include <cstdint>
 #include <memory>

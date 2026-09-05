@@ -2,6 +2,7 @@
 #include <atomic>
 #include <future>
 #include <thread>
+#include <vector>
 #include "../core/test_base.hpp"
 #include "test_db_utils.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
@@ -303,12 +304,10 @@ using namespace trade_ngin;
 
 class DatabasePoolingExtendedTest : public ::testing::Test {};
 
-// NOTE: We deliberately don't exercise retry_with_backoff retry paths here.
-// That helper calls std::rand() without seeding, which advances the global
-// RNG state and breaks downstream tests (e.g.
-// TransactionCostAnalyzerTest.ImplementationShortfall) that also rely on
-// rand(). Captured as a FIXME on the production retry helper —
-// it should use a local std::mt19937 with its own seed.
+// The retry paths are now exercised below. They previously had to be skipped
+// because retry_with_backoff called std::rand(), advancing global RNG state and
+// breaking downstream tests that also used rand(). backoff_jitter() now owns a
+// thread_local engine, so the retry paths no longer have cross-test side effects.
 
 // ===== initialize fails when all connections fail =====
 
@@ -361,8 +360,78 @@ TEST_F(DatabasePoolingExtendedTest, RetryWithBackoffStopsRetryingOnNonRetryableE
     EXPECT_EQ(calls.load(), 1);  // not a CONNECTION_ERROR → no retries
 }
 
-// Retry-path tests for retry_with_backoff are intentionally omitted: the
-// helper calls std::rand() which would pollute global RNG state used by
-// other tests. See note above.
+// ===== backoff jitter =====
+
+// The jitter exists to decorrelate clients competing for the same database.
+// An unseeded rand() emitted an identical sequence in every process, so all
+// clients retried in lockstep. Each thread must now draw its own sequence.
+TEST_F(DatabasePoolingExtendedTest, BackoffJitterStaysWithinDocumentedRange) {
+    for (int i = 0; i < 200; ++i) {
+        auto jitter = utils::backoff_jitter();
+        EXPECT_GE(jitter.count(), 0);
+        EXPECT_LE(jitter.count(), 99);
+    }
+}
+
+TEST_F(DatabasePoolingExtendedTest, BackoffJitterDecorrelatesAcrossThreads) {
+    // Compare whole sequences rather than single draws: two threads each drawing
+    // one value from [0, 99] would collide ~1% of the time, which would flake.
+    constexpr int kDraws = 8;
+    std::vector<long long> a;
+    std::vector<long long> b;
+
+    auto collect = [](std::vector<long long>& out) {
+        for (int i = 0; i < kDraws; ++i) {
+            out.push_back(utils::backoff_jitter().count());
+        }
+    };
+
+    std::thread t1(collect, std::ref(a));
+    std::thread t2(collect, std::ref(b));
+    t1.join();
+    t2.join();
+
+    ASSERT_EQ(a.size(), static_cast<size_t>(kDraws));
+    ASSERT_EQ(b.size(), static_cast<size_t>(kDraws));
+    // Two independently seeded mt19937 engines matching on all 8 draws has
+    // probability ~100^-8; any match means the engines share a seed sequence.
+    EXPECT_NE(a, b) << "Both threads produced an identical jitter sequence, "
+                       "so retry timing is still correlated across threads.";
+}
+
+// ===== retry path =====
+
+TEST_F(DatabasePoolingExtendedTest, RetryWithBackoffRetriesOnConnectionError) {
+    std::atomic<int> calls{0};
+    auto fn = [&]() -> Result<int> {
+        ++calls;
+        return make_error<int>(ErrorCode::CONNECTION_ERROR, "retryable", "test");
+    };
+
+    auto start = std::chrono::steady_clock::now();
+    auto r = utils::retry_with_backoff(fn, 2);
+    auto elapsed = std::chrono::steady_clock::now() - start;
+
+    ASSERT_TRUE(r.is_error());
+    // max_retries attempts inside the loop, then one final attempt.
+    EXPECT_EQ(calls.load(), 3);
+    // Backoff must remain exponential: the loop sleeps 30ms then >=60ms.
+    // Asserting only the lower bound keeps this robust on a loaded CI runner.
+    EXPECT_GE(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count(), 90);
+}
+
+TEST_F(DatabasePoolingExtendedTest, RetryWithBackoffReturnsSuccessAfterTransientFailure) {
+    std::atomic<int> calls{0};
+    auto fn = [&]() -> Result<int> {
+        if (++calls == 1) {
+            return make_error<int>(ErrorCode::CONNECTION_ERROR, "transient", "test");
+        }
+        return Result<int>(7);
+    };
+    auto r = utils::retry_with_backoff(fn, 3);
+    ASSERT_TRUE(r.is_ok());
+    EXPECT_EQ(r.value(), 7);
+    EXPECT_EQ(calls.load(), 2);
+}
 
 }  // namespace database_pooling_extended_detail
