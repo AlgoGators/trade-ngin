@@ -4,8 +4,13 @@ on:
   push:
     branches: [main, develop, main-hd, prod, staging]
   pull_request:
+    # "*" does not match a branch name containing a slash, so a pull
+    # request stacked on another feature branch (feat/..., fix/...) ran no
+    # checks at all -- it reported "no checks reported on the branch"
+    # rather than failing, which reads as nothing to review. "**" matches
+    # every base.
     branches:
-      - "*"
+      - "**"
 
 env:
   COVERAGE_THRESHOLD: 10
@@ -225,6 +230,10 @@ jobs:
   build:
     name: Build and Test
     runs-on: ubuntu-latest
+    # Job-scoped so the SonarCloud step below can test for its presence; the
+    # `secrets` context is not readable from a step-level `if`.
+    env:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
     container:
       image: ghcr.io/algogators/trade-ngin-ci:latest
       credentials:
@@ -325,8 +334,15 @@ jobs:
           else
             echo "✅ Coverage ($COVERAGE_PERCENT%) meets threshold (${{ env.COVERAGE_THRESHOLD }}%)"
           fi
+      # Dependabot pull requests (and pull requests from forks) run with a
+      # restricted secrets context, so SONAR_TOKEN resolves to an empty string
+      # there. sonar-scanner then exits 3, which failed the whole Debug job --
+      # and with it Image Generation, Security Scan and the summary report --
+      # on every Dependabot PR, for a reason that had nothing to do with the
+      # dependency being bumped. Skip the scan when there is no token to scan
+      # with.
       - name: SonarCloud Scan
-        if: matrix.build-type == 'Debug' && (github.event_name == 'pull_request' || github.ref_name == 'main' || github.ref_name == 'prod' || github.ref_name == 'staging')
+        if: matrix.build-type == 'Debug' && env.SONAR_TOKEN != '' && (github.event_name == 'pull_request' || github.ref_name == 'main' || github.ref_name == 'prod' || github.ref_name == 'staging')
         uses: SonarSource/sonarqube-scan-action@v6
         env:
           SONAR_HOST_URL: https://sonarcloud.io
@@ -377,14 +393,21 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
+      # This job declares `if: always()` so it can report on a failed run, but a
+      # failed build never uploads its artifacts -- so the download step failed
+      # and the summary reported nothing, on exactly the runs the summary exists
+      # to explain. The Generate Summary step already guards on the files being
+      # present, so a missing artifact is not an error here.
       - name: Download Coverage Reports
         uses: actions/download-artifact@v4
+        continue-on-error: true
         with:
           name: coverage-reports-${{ github.run_number }}
           path: coverage-reports/
 
       - name: Download Linting Reports
         uses: actions/download-artifact@v4
+        continue-on-error: true
         with:
           name: linting-report-${{ github.run_number }}
           path: linting-reports/
