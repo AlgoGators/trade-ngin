@@ -49,26 +49,15 @@ constexpr const char* kScratchPortfolio = "DBTXN_PROBE_PORTFOLIO";
 constexpr const char* kScratchStrategyId = "DBTXN_PROBE_STRATEGY";
 constexpr const char* kScratchStrategyName = "DBTXN_PROBE_NAME";
 
-/// Connection string from config/defaults.json, empty when it cannot be found.
+/// Connection string from TRADE_NGIN_TEST_DSN, empty when it is not set.
 std::string discover_connection_string() {
-    namespace fs = std::filesystem;
-    fs::path dir = fs::current_path();
-    for (int i = 0; i < 8 && !dir.empty(); ++i) {
-        fs::path candidate = dir / "config" / "defaults.json";
-        if (fs::exists(candidate)) {
-            try {
-                std::ifstream in(candidate);
-                nlohmann::json j = nlohmann::json::parse(in);
-                const auto& d = j.at("database");
-                return "postgresql://" + d.at("username").get<std::string>() + ":" +
-                       d.at("password").get<std::string>() + "@" +
-                       d.at("host").get<std::string>() + ":" + d.at("port").get<std::string>() +
-                       "/" + d.at("name").get<std::string>();
-            } catch (const std::exception&) {
-                return {};
-            }
-        }
-        dir = dir.parent_path();
+    // Database-backed tests connect ONLY through TRADE_NGIN_TEST_DSN. The previous
+    // behaviour walked up from the working directory looking for config/defaults.json,
+    // which pointed a test run inside any worktree of this checkout at the live
+    // database. Tests must never discover production credentials by accident.
+    const char* dsn = std::getenv("TRADE_NGIN_TEST_DSN");
+    if (dsn && *dsn) {
+        return std::string(dsn);
     }
     return {};
 }
@@ -109,10 +98,10 @@ protected:
         const std::string conn = discover_connection_string();
         if (conn.empty()) {
             if (require_db) {
-                FAIL() << "TRADE_NGIN_REQUIRE_DB=1 but config/defaults.json is not "
-                          "reachable, so the atomicity contract cannot be exercised";
+                FAIL() << "TRADE_NGIN_REQUIRE_DB=1 but TRADE_NGIN_TEST_DSN is not "
+                          "set, so the atomicity contract cannot be exercised";
             }
-            GTEST_SKIP() << "config/defaults.json not reachable; no database to exercise";
+            GTEST_SKIP() << "TRADE_NGIN_TEST_DSN not set; no database to exercise";
         }
         db_ = std::make_shared<PostgresDatabase>(conn);
         auto connected = db_->connect();
