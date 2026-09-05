@@ -25,7 +25,7 @@ jobs:
         password: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - name: Run Clang Format Check
         run: |
           echo "Checking code formatting..."
@@ -246,7 +246,7 @@ jobs:
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - name: Configure CMake with Coverage
         run: |
           mkdir -p build
@@ -374,7 +374,7 @@ jobs:
     needs: build
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Run Security Scan
         run: |
@@ -391,7 +391,7 @@ jobs:
     if: always()
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # This job declares `if: always()` so it can report on a failed run, but a
       # failed build never uploads its artifacts -- so the download step failed
@@ -450,7 +450,7 @@ jobs:
     needs: [lint, build, security-scan]
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v4
         with:
@@ -508,7 +508,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Fail if a forbidden schema is referenced
         shell: bash
