@@ -40,10 +40,27 @@
 
 BEGIN;
 
-UPDATE trading.live_results
-   SET profit_factor = NULL
- WHERE profit_factor >= 999.0
-   AND coalesce(gross_loss, 0) = 0;
+-- Guarded, because no migration in this repository creates
+-- trading.live_results or any of its columns -- 011 is the first that even
+-- declares them. A database built from this directory alone has no
+-- profit_factor to clear, and this must not be the statement that fails.
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+         WHERE table_schema = 'trading'
+           AND table_name = 'live_results'
+           AND column_name = 'profit_factor'
+    ) THEN
+        EXECUTE 'UPDATE trading.live_results
+                    SET profit_factor = NULL
+                  WHERE profit_factor >= 999.0
+                    AND coalesce(gross_loss, 0) = 0';
+    ELSE
+        RAISE NOTICE 'trading.live_results has no profit_factor column; nothing to clear. Apply 011 and re-run this if the engine has written to it since.';
+    END IF;
+END
+$$;
 
 -- The backtest path wrote 999.0 into whichever results table it was pointed at.
 -- trading.backtest_results is the usual one and may not exist in every

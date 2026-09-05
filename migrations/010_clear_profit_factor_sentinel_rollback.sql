@@ -15,11 +15,22 @@
 
 BEGIN;
 
-UPDATE trading.live_results
-   SET profit_factor = 999.99
- WHERE profit_factor IS NULL
-   AND coalesce(gross_loss, 0) = 0
-   AND coalesce(gross_profit, 0) > 0;
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+         WHERE table_schema = 'trading'
+           AND table_name = 'live_results'
+           AND column_name = 'profit_factor'
+    ) THEN
+        EXECUTE 'UPDATE trading.live_results
+                    SET profit_factor = 999.99
+                  WHERE profit_factor IS NULL
+                    AND coalesce(gross_loss, 0) = 0
+                    AND coalesce(gross_profit, 0) > 0';
+    END IF;
+END
+$$;
 
 DO $$
 BEGIN

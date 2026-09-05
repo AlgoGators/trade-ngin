@@ -28,13 +28,31 @@ dual-portfolio workflow:
    with no losing days. Apply it together with the binary that stops writing it;
    applying it early is harmless, because the next run would put the sentinel
    back and a later re-run of the migration clears it again.
+11. `011_live_results_and_executions_columns.sql` — delivered on the
+   `qt-platform-preview` branch; declares, with `ADD COLUMN IF NOT EXISTS`,
+   every column the live runner writes to `trading.live_results` and the
+   execution writer writes to `trading.executions`. Nothing in this directory
+   had ever created those two tables or added a column to either: their shape
+   existed only as whatever was done by hand on the box running the engine.
+   That became a deployment blocker when AlgoLens started reading ten published
+   metrics out of `live_results` rather than recomputing them. Additive and
+   idempotent — a no-op on a database that already has them, which a working
+   production box does. Apply it BEFORE 010, which UPDATEs `profit_factor`.
 
 The safe release sequence is: merge PR #55 and PR #56; apply 002–004 from PR
 #55, then 005 from PR #56, then 006–007 from PR #55; deploy the combined binary
 only after the schema is current. Apply 008 from PR #60 before enabling
 database-backed strategy overrides, and 009 before deploying an AlgoLens that
-has the Books tab (it no longer creates these tables itself). Apply 010 with the binary that
-stops writing the profit-factor sentinel. Run each `test_*.sh` migration test against
+has the Books tab (it no longer creates these tables itself). Apply 011 before 010 and before deploying an
+AlgoLens that reads the engine's published metrics; apply 010 with the binary
+that stops writing the profit-factor sentinel.
+
+Building a database from this directory and checking it against AlgoLens's
+schema contract (`algolens-api/scripts/check_schema.py`) reported fourteen
+mismatches before 011 and reports two after: `futures_data.ohlcv_1d` and
+`metadata.contract_metadata`, which belong to data-ngin and are correctly not
+created here. That check is worth running against production before any
+deploy. Run each `test_*.sh` migration test against
 disposable PostgreSQL before production rollout. Rollback scripts intentionally
 refuse operations that would discard populated attribution streams.
 
