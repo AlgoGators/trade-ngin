@@ -52,7 +52,11 @@ schema contract (`algolens-api/scripts/check_schema.py`) reported fourteen
 mismatches before 011 and reports two after: `futures_data.ohlcv_1d` and
 `metadata.contract_metadata`, which belong to data-ngin and are correctly not
 created here. That check is worth running against production before any
-deploy. Run each `test_*.sh` migration test against
+deploy. `test_011_live_results_columns.sh` covers 011 and 010 together: that the
+ten metrics AlgoLens reads are absent before 011 and present after, that 010
+skips rather than fails when `profit_factor` does not exist, that re-applying
+011 leaves a populated column alone, and that 011 refuses on a database with no
+`trading.live_results` rather than inventing one. Run each `test_*.sh` migration test against
 disposable PostgreSQL before production rollout. Rollback scripts intentionally
 refuse operations that would discard populated attribution streams.
 
