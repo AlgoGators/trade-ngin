@@ -446,6 +446,41 @@ ExecutionReport fill(const std::string& symbol, Side side, double qty, double pr
 // realized figure. unrealized is asserted at the value on_data re-marks it to --
 // (close - basis) x qty -- which is the stronger claim: the seeded basis reached
 // the mark, so the seed did not zero the basis along with realized.
+// StrategyMetrics had no default member initialisers and BaseStrategy never
+// value-initialised metrics_, so every accumulator started from whatever the heap
+// held. On the Linux CI box (gcc -O3) realized_pnl began at a stale 1,000,000 and
+// SeededRealizedDoesNotLeakIntoTheDaysFill / ThreeDayFlowWithInterposedFinalization
+// went red; on macOS the heap happened to be zero. This test cannot go red
+// deterministically on a zero-filled heap -- the CI failure is the red. The buffer
+// below is a best effort at dirtying the heap so a freshly allocated strategy
+// reuses memory full of 1e6 rather than zeros.
+TEST_F(LiveDailyCycleSeedingTest, FreshStrategyMetricsAreZero) {
+    {
+        std::vector<double> dirt(1 << 20, 1e6);
+        ASSERT_EQ(dirt.back(), 1e6);
+    }
+    auto strategy = create_strategy();
+    const StrategyMetrics& m = strategy->get_metrics();
+
+    EXPECT_EQ(m.unrealized_pnl, 0.0);
+    EXPECT_EQ(m.realized_pnl, 0.0);
+    EXPECT_EQ(m.total_pnl, 0.0);
+    EXPECT_EQ(m.sharpe_ratio, 0.0);
+    EXPECT_EQ(m.sortino_ratio, 0.0);
+    EXPECT_EQ(m.max_drawdown, 0.0);
+    EXPECT_EQ(m.win_rate, 0.0);
+    EXPECT_EQ(m.profit_factor, 0.0);
+    EXPECT_EQ(m.total_trades, 0);
+    EXPECT_EQ(m.avg_trade, 0.0);
+    EXPECT_EQ(m.avg_winner, 0.0);
+    EXPECT_EQ(m.avg_loser, 0.0);
+    EXPECT_EQ(m.max_winner, 0.0);
+    EXPECT_EQ(m.max_loser, 0.0);
+    EXPECT_EQ(m.avg_holding_period, 0.0);
+    EXPECT_EQ(m.turnover, 0.0);
+    EXPECT_EQ(m.volatility, 0.0);
+}
+
 TEST_F(LiveDailyCycleSeedingTest, SeedZeroesRealizedAndKeepsBasisAndMark) {
     auto bars = hold_band_series("AAPL");  // closes at 98.5
     auto seeded = create_strategy();

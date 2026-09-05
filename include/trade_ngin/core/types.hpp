@@ -422,7 +422,7 @@ struct ExecutionReport {
     std::string order_id;
     std::string exec_id;
     std::string symbol;
-    Side side;
+    Side side{Side::NONE};
     Quantity filled_quantity;
     Price fill_price;  // Reference fill price (no costs embedded)
     Timestamp fill_time;
@@ -433,7 +433,7 @@ struct ExecutionReport {
     Decimal slippage_market_impact;   // Implicit costs in dollars
     Decimal total_transaction_costs;  // commissions_fees + slippage_market_impact
 
-    bool is_partial;
+    bool is_partial{false};
 };
 
 /**
