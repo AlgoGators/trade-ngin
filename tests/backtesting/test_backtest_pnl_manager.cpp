@@ -44,15 +44,15 @@ TEST_F(BacktestPnLManagerTest, InitialPortfolioValueEqualsInitialCapital) {
 TEST_F(BacktestPnLManagerTest, CalculatePositionPnLLongPosition) {
     auto r = pnl_->calculate_position_pnl("ES", 2.0, 4000.0, 4010.0);
     EXPECT_TRUE(r.valid);
-    // 2 * (4010-4000) * 5 (ES point value fallback) = 100
-    EXPECT_DOUBLE_EQ(r.daily_pnl, 100.0);
-    EXPECT_DOUBLE_EQ(r.point_value, 5.0);
+    // 2 * (4010-4000) * 50 (ES point value fallback) = 1000
+    EXPECT_DOUBLE_EQ(r.daily_pnl, 1000.0);
+    EXPECT_DOUBLE_EQ(r.point_value, 50.0);
 }
 
 TEST_F(BacktestPnLManagerTest, CalculatePositionPnLShortPosition) {
     auto r = pnl_->calculate_position_pnl("ES", -3.0, 4010.0, 4000.0);
-    // -3 * (4000-4010) * 5 = 150 (short profits when price falls)
-    EXPECT_DOUBLE_EQ(r.daily_pnl, 150.0);
+    // -3 * (4000-4010) * 50 = 1500 (short profits when price falls)
+    EXPECT_DOUBLE_EQ(r.daily_pnl, 1500.0);
 }
 
 TEST_F(BacktestPnLManagerTest, CalculatePositionPnLZeroChange) {
@@ -65,9 +65,9 @@ TEST_F(BacktestPnLManagerTest, ExtractBaseSymbolStripsContinuousFutureSuffixes) 
     auto r1 = pnl_->calculate_position_pnl("ES.v.0", 1.0, 100.0, 101.0);
     auto r2 = pnl_->calculate_position_pnl("ES.c.0", 1.0, 100.0, 101.0);
     auto r3 = pnl_->calculate_position_pnl("ES.v.0.c.0", 1.0, 100.0, 101.0);
-    EXPECT_DOUBLE_EQ(r1.point_value, 5.0);
-    EXPECT_DOUBLE_EQ(r2.point_value, 5.0);
-    EXPECT_DOUBLE_EQ(r3.point_value, 5.0);
+    EXPECT_DOUBLE_EQ(r1.point_value, 50.0);
+    EXPECT_DOUBLE_EQ(r2.point_value, 50.0);
+    EXPECT_DOUBLE_EQ(r3.point_value, 50.0);
 }
 
 TEST_F(BacktestPnLManagerTest, FallbackMultiplierUnknownSymbolDefaultsToOne) {
@@ -80,10 +80,11 @@ TEST_F(BacktestPnLManagerTest, FallbackMultiplierUnknownSymbolDefaultsToOne) {
 // Validate that each known fallback symbol resolves to its expected multiplier.
 //
 // These come from instruments/contract_multiplier.cpp now, not from a table
-// inside BacktestPnLManager. The equity-index and micro entries are unchanged
-// because they are deployment aliases -- ES priced as MES and so on -- which
-// that module preserves deliberately rather than correcting to the full-size
-// specification. See deployment_aliases() there.
+// inside BacktestPnLManager. The equity-index entries are each their own
+// contract: ES is 50 and MES is 5, and neither stands in for the other. They
+// used to read as the micro through a deployment alias, which production
+// settled on 2026-09-06. The micro-to-full-size aliases below (MGC, MSF, M6B,
+// MSF) are still aliases and still deliberate -- see deployment_aliases().
 struct FallbackCase {
     const char* symbol;
     double expected;
@@ -101,10 +102,10 @@ TEST_P(FallbackMultiplierTest, FallbackPointValuesByCategory) {
 INSTANTIATE_TEST_SUITE_P(
     AssetCategoryFallbacks, FallbackMultiplierTest,
     ::testing::Values(
-        FallbackCase{"NQ", 2.0}, FallbackCase{"MNQ", 2.0},
-        FallbackCase{"ES", 5.0}, FallbackCase{"MES", 5.0},
-        FallbackCase{"YM", 0.5}, FallbackCase{"MYM", 0.5},
-        FallbackCase{"RTY", 5.0}, FallbackCase{"M2K", 5.0},
+        FallbackCase{"NQ", 20.0}, FallbackCase{"MNQ", 2.0},
+        FallbackCase{"ES", 50.0}, FallbackCase{"MES", 5.0},
+        FallbackCase{"YM", 5.0}, FallbackCase{"MYM", 0.5},
+        FallbackCase{"RTY", 50.0}, FallbackCase{"M2K", 5.0},
         FallbackCase{"MCL", 100.0}, FallbackCase{"CL", 1000.0},
         FallbackCase{"RB", 42000.0}, FallbackCase{"NG", 10000.0},
         FallbackCase{"MGC", 100.0}, FallbackCase{"GC", 100.0},
@@ -187,20 +188,20 @@ TEST_F(BacktestPnLManagerTest, SecondDayComputesPnLFromStoredPreviousClose) {
     std::unordered_map<std::string, Position> pos = {{"ES", make_pos("ES", 2.0)}};
     pnl_->calculate_daily_pnl(date_at(2026, 1, 5), pos, {{"ES", 4000.0}}, 0.0);
     auto r = pnl_->calculate_daily_pnl(date_at(2026, 1, 6), pos, {{"ES", 4010.0}}, 0.0);
-    // 2 * (4010 - 4000) * 5 = 100
-    EXPECT_DOUBLE_EQ(r.total_daily_pnl, 100.0);
-    EXPECT_DOUBLE_EQ(r.net_daily_pnl, 100.0);
-    EXPECT_DOUBLE_EQ(pnl_->get_position_daily_pnl("ES"), 100.0);
-    EXPECT_DOUBLE_EQ(pnl_->get_position_cumulative_pnl("ES"), 100.0);
+    // 2 * (4010 - 4000) * 50 = 1000
+    EXPECT_DOUBLE_EQ(r.total_daily_pnl, 1000.0);
+    EXPECT_DOUBLE_EQ(r.net_daily_pnl, 1000.0);
+    EXPECT_DOUBLE_EQ(pnl_->get_position_daily_pnl("ES"), 1000.0);
+    EXPECT_DOUBLE_EQ(pnl_->get_position_cumulative_pnl("ES"), 1000.0);
 }
 
 TEST_F(BacktestPnLManagerTest, DailyPnLCommissionsReduceNet) {
     std::unordered_map<std::string, Position> pos = {{"ES", make_pos("ES", 2.0)}};
     pnl_->calculate_daily_pnl(date_at(2026, 1, 5), pos, {{"ES", 4000.0}}, 0.0);
     auto r = pnl_->calculate_daily_pnl(date_at(2026, 1, 6), pos, {{"ES", 4010.0}}, 25.0);
-    EXPECT_DOUBLE_EQ(r.total_daily_pnl, 100.0);
-    EXPECT_DOUBLE_EQ(r.net_daily_pnl, 75.0);
-    EXPECT_DOUBLE_EQ(r.new_portfolio_value, 1'000'000.0 + 75.0);
+    EXPECT_DOUBLE_EQ(r.total_daily_pnl, 1000.0);
+    EXPECT_DOUBLE_EQ(r.net_daily_pnl, 975.0);
+    EXPECT_DOUBLE_EQ(r.new_portfolio_value, 1'000'000.0 + 975.0);
 }
 
 TEST_F(BacktestPnLManagerTest, CumulativePnLAccumulatesAcrossDaysWithUpdates) {
@@ -209,11 +210,11 @@ TEST_F(BacktestPnLManagerTest, CumulativePnLAccumulatesAcrossDaysWithUpdates) {
     std::unordered_map<std::string, Position> pos = {{"ES", make_pos("ES", 1.0)}};
     pnl_->calculate_daily_pnl(date_at(2026, 1, 5), pos, {{"ES", 4000.0}}, 0.0);  // day 1: 0
     pnl_->update_previous_closes({{"ES", 4000.0}});
-    pnl_->calculate_daily_pnl(date_at(2026, 1, 6), pos, {{"ES", 4010.0}}, 0.0);  // +50
+    pnl_->calculate_daily_pnl(date_at(2026, 1, 6), pos, {{"ES", 4010.0}}, 0.0);  // +500
     pnl_->update_previous_closes({{"ES", 4010.0}});
-    pnl_->calculate_daily_pnl(date_at(2026, 1, 7), pos, {{"ES", 4020.0}}, 0.0);  // +50
-    EXPECT_DOUBLE_EQ(pnl_->get_position_cumulative_pnl("ES"), 100.0);
-    EXPECT_DOUBLE_EQ(pnl_->get_cumulative_total_pnl(), 100.0);
+    pnl_->calculate_daily_pnl(date_at(2026, 1, 7), pos, {{"ES", 4020.0}}, 0.0);  // +500
+    EXPECT_DOUBLE_EQ(pnl_->get_position_cumulative_pnl("ES"), 1000.0);
+    EXPECT_DOUBLE_EQ(pnl_->get_cumulative_total_pnl(), 1000.0);
 }
 
 TEST_F(BacktestPnLManagerTest, MultiplePositionsAggregateCorrectly) {
@@ -225,8 +226,8 @@ TEST_F(BacktestPnLManagerTest, MultiplePositionsAggregateCorrectly) {
                               {{"ES", 4000.0}, {"NQ", 15000.0}}, 0.0);
     auto r = pnl_->calculate_daily_pnl(date_at(2026, 1, 6), pos,
                                         {{"ES", 4010.0}, {"NQ", 14990.0}}, 0.0);
-    // ES: 1 * 10 * 5 = 50; NQ: -1 * -10 * 2 = 20
-    EXPECT_DOUBLE_EQ(r.total_daily_pnl, 70.0);
+    // ES: 1 * 10 * 50 = 500; NQ: -1 * -10 * 20 = 200
+    EXPECT_DOUBLE_EQ(r.total_daily_pnl, 700.0);
 }
 
 TEST_F(BacktestPnLManagerTest, ResetClearsAllStateBackToInitialCapital) {

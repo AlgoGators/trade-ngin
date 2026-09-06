@@ -23,7 +23,12 @@ namespace {
 
 void seed_registry_with_micros() {
     auto& registry = InstrumentRegistry::instance();
-    for (const auto& symbol : {"MES", "MNQ", "MYM"}) {
+    // Registered under the symbols these tests actually feed the strategy.
+    // They were the micro spellings because get_instrument rewrote ES to
+    // MES before every lookup; it does not any more. The multiplier below
+    // is a fixture constant chosen to keep the arithmetic simple, not a
+    // claim about what an E-mini point is worth.
+    for (const auto& symbol : {"ES", "NQ", "YM"}) {
         FuturesSpec spec;
         spec.root_symbol = symbol;
         spec.exchange = "CME";

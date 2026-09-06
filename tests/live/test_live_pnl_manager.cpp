@@ -52,7 +52,7 @@ std::shared_ptr<FuturesInstrument> make_es_futures() {
     spec.initial_margin = 12000.0;
     spec.maintenance_margin = 10000.0;
     spec.weight = 1.0;
-    return std::make_shared<FuturesInstrument>("MES", spec);
+    return std::make_shared<FuturesInstrument>("ES", spec);
 }
 
 }  // namespace
@@ -61,11 +61,11 @@ class LivePnLManagerTest : public ::testing::Test {
 protected:
     void SetUp() override {
         auto& reg = InstrumentRegistry::instance();
-        reg.instruments_["MES"] = make_es_futures();
+        reg.instruments_["ES"] = make_es_futures();
     }
     void TearDown() override {
         auto& reg = InstrumentRegistry::instance();
-        reg.instruments_.erase("MES");
+        reg.instruments_.erase("ES");
     }
 };
 
