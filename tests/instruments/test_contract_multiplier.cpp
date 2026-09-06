@@ -115,22 +115,27 @@ TEST(ContractMultiplier, TheTableStatesTheQuotedContractificationNotTheDeploymen
     EXPECT_DOUBLE_EQ(spec_multiplier_of("MNQ"), 2.0);
 }
 
-TEST(ContractMultiplier, DeploymentAliasesPreserveWhatTheOldTablesDid) {
-    // Every one of these is an unresolved factor of ten, carried over unchanged
-    // from the hardcoded tables this module replaces rather than silently
-    // corrected. InstrumentRegistry::get_instrument already rewrites ES to MES
-    // before every lookup, so the first four are the existing behaviour of the
-    // live path, not an invention of this file.
-    EXPECT_EQ(deployment_symbol("ES"), "MES");
-    EXPECT_EQ(deployment_symbol("NQ"), "MNQ");
-    EXPECT_EQ(deployment_symbol("YM"), "MYM");
-    EXPECT_EQ(deployment_symbol("RTY"), "M2K");
-    EXPECT_DOUBLE_EQ(multiplier_of("ES"), 5.0);
-    EXPECT_DOUBLE_EQ(multiplier_of("NQ"), 2.0);
-    EXPECT_DOUBLE_EQ(multiplier_of("YM"), 0.5);
-    EXPECT_DOUBLE_EQ(multiplier_of("RTY"), 5.0);
+TEST(ContractMultiplier, AnEquityIndexTickerIsPricedAsItself) {
+    // These four used to alias to the micro contract, which is a tenth of the
+    // full-size. Production settled it on 2026-09-06: the metadata table holds
+    // both spellings with correct point values and the book trades the micros
+    // directly, so the aliases were never doing anything but understating the
+    // full-size positions the fund held in late 2025.
+    EXPECT_EQ(deployment_symbol("ES"), "ES");
+    EXPECT_EQ(deployment_symbol("NQ"), "NQ");
+    EXPECT_EQ(deployment_symbol("YM"), "YM");
+    EXPECT_EQ(deployment_symbol("RTY"), "RTY");
+    EXPECT_DOUBLE_EQ(multiplier_of("ES"), 50.0);
+    EXPECT_DOUBLE_EQ(multiplier_of("NQ"), 20.0);
+    EXPECT_DOUBLE_EQ(multiplier_of("YM"), 5.0);
+    EXPECT_DOUBLE_EQ(multiplier_of("RTY"), 50.0);
+}
 
-    // And these came from substring matching: "M6E" contains "6E".
+TEST(ContractMultiplier, TheRemainingAliasesStillCarryTheOldSubstringMatch) {
+    // Unlike the equity-index four, nothing in the production book holds any of
+    // these, so there is no evidence to settle them with. They read a micro
+    // ticker as its full-size namesake, which came from "M6E" containing "6E".
+    // Preserved deliberately -- see deployment_aliases().
     EXPECT_DOUBLE_EQ(multiplier_of("M6E"), 125000.0);
     EXPECT_DOUBLE_EQ(multiplier_of("M6B"), 62500.0);
     EXPECT_DOUBLE_EQ(multiplier_of("MGC"), 100.0);

@@ -107,49 +107,61 @@ TEST_F(InstrumentRegistryTest, GetInstrumentReturnsNullForUnknownSymbol) {
     EXPECT_EQ(r.get_instrument("ZZZ"), nullptr);
 }
 
-TEST_F(InstrumentRegistryTest, GetInstrumentMapsESToMES) {
+TEST_F(InstrumentRegistryTest, AFullSizeTickerIsNotSilentlyTheMicroContract) {
+    // The registry used to rewrite ES to MES before every lookup, which valued
+    // a full-size S&P contract at a tenth of what it is worth. Registering the
+    // micro must not make the full-size resolve to it.
     auto& r = InstrumentRegistry::instance();
     auto mes = make_futures("MES");
     r.instruments_["MES"] = mes;
-    EXPECT_EQ(r.get_instrument("ES"), mes);
     EXPECT_EQ(r.get_instrument("MES"), mes);
+    EXPECT_EQ(r.get_instrument("ES"), nullptr);
+    EXPECT_EQ(r.get_instrument("ES.v.0"), nullptr);
 }
 
-TEST_F(InstrumentRegistryTest, GetInstrumentMapsNQToMNQAndYMToMYM) {
+TEST_F(InstrumentRegistryTest, EachEquityIndexTickerResolvesToItsOwnContract) {
+    // Both spellings exist in production metadata with their own point values,
+    // so both must resolve to themselves and neither to the other.
     auto& r = InstrumentRegistry::instance();
+    auto nq = make_futures("NQ");
     auto mnq = make_futures("MNQ");
-    auto mym = make_futures("MYM");
+    auto ym = make_futures("YM");
+    r.instruments_["NQ"] = nq;
     r.instruments_["MNQ"] = mnq;
-    r.instruments_["MYM"] = mym;
-    EXPECT_EQ(r.get_instrument("NQ"), mnq);
-    EXPECT_EQ(r.get_instrument("YM"), mym);
+    r.instruments_["YM"] = ym;
+    EXPECT_EQ(r.get_instrument("NQ"), nq);
+    EXPECT_EQ(r.get_instrument("MNQ"), mnq);
+    EXPECT_EQ(r.get_instrument("YM"), ym);
+    // MYM is not registered here, and YM must not stand in for it.
+    EXPECT_EQ(r.get_instrument("MYM"), nullptr);
 }
 
-TEST_F(InstrumentRegistryTest, HasInstrumentRespectsMicroSymbolMapping) {
+TEST_F(InstrumentRegistryTest, HasInstrumentAnswersForTheSymbolItWasAsked) {
     auto& r = InstrumentRegistry::instance();
     r.instruments_["MES"] = make_futures("MES");
-    EXPECT_TRUE(r.has_instrument("ES"));
     EXPECT_TRUE(r.has_instrument("MES"));
+    EXPECT_FALSE(r.has_instrument("ES"));
     EXPECT_FALSE(r.has_instrument("NQ"));
     EXPECT_FALSE(r.has_instrument("UNKNOWN"));
 }
 
-TEST_F(InstrumentRegistryTest, ExactEquitySymbolWinsOverMicroRemap) {
+TEST_F(InstrumentRegistryTest, TheVariantSuffixIsStrippedAndNothingElse) {
+    // A .v. suffix marks a continuous futures series. Stripping it is all that
+    // should happen: it used to also trigger the remap unconditionally, which
+    // is how ES.v.0 -- the spelling trading.positions actually uses -- became
+    // the micro contract.
     auto& r = InstrumentRegistry::instance();
     auto es_equity = make_equity("ES");  // NYSE "ES" = Eversource Energy
-    auto mes = make_futures("MES");
+    auto es_future = make_futures("ES");
+    r.instruments_["MES"] = make_futures("MES");
+
     r.instruments_["ES"] = es_equity;
-    r.instruments_["MES"] = mes;
-    // A registered bare symbol must win over the ES->MES micro remap; pre-fix
-    // the remap fired unconditionally and handed back the futures contract.
     EXPECT_EQ(r.get_instrument("ES"), es_equity);
-    EXPECT_TRUE(r.has_instrument("ES"));
-    // A .v. variant suffix marks a futures continuous series: still remaps
-    // even with the equity registered.
-    EXPECT_EQ(r.get_instrument("ES.v.0"), mes);
+    EXPECT_EQ(r.get_instrument("ES.v.0"), es_equity);
+
+    r.instruments_["ES"] = es_future;
+    EXPECT_EQ(r.get_instrument("ES.v.0"), es_future);
     EXPECT_TRUE(r.has_instrument("ES.v.0"));
-    // Micro remap unchanged when no bare registration exists.
-    EXPECT_EQ(r.get_instrument("NQ"), nullptr);
 }
 
 TEST_F(InstrumentRegistryTest, GetFuturesInstrumentReturnsNullForNonFutures) {
@@ -376,13 +388,9 @@ TEST_F(InstrumentRegistryTest, CreateInstrumentFromDbFallsBackToTheKnownPointVal
     // an E-mini point is worth; that is a better answer than a number chosen
     // because it is multiplicatively harmless.
     //
-    // 5.0 and not 50.0 because the fallback path applies this deployment's own
-    // aliases, and ES is one of them: get_instrument below rewrites ES to MES
-    // before every lookup, so the fallback has to agree with it or the same
-    // symbol would be priced two ways depending on whether the registry
-    // happened to be populated. Whether reading ES as the micro is RIGHT is an
-    // open question -- see deployment_aliases() -- but it must at least be
-    // consistent.
+    // 50.0, the real E-mini point value. This read 5.0 while the deployment
+    // aliased ES to MES; production settled that on 2026-09-06 and the alias is
+    // gone, so ES is priced as ES.
     auto& r = InstrumentRegistry::instance();
     auto table = build_contract_table({
         {"ES.v.0", "", "FUTURE", "CME", 0.0, 0.25, "0.25", 12000.0, 9000.0,
@@ -390,8 +398,7 @@ TEST_F(InstrumentRegistryTest, CreateInstrumentFromDbFallsBackToTheKnownPointVal
     });
     auto instr = r.create_instrument_from_db(table, 0);
     ASSERT_NE(instr, nullptr);
-    EXPECT_DOUBLE_EQ(instr->get_multiplier(), 5.0);
-    // The contract's own specification is still 50, and still says so.
+    EXPECT_DOUBLE_EQ(instr->get_multiplier(), 50.0);
     EXPECT_DOUBLE_EQ(known_contract("ES")->price_multiplier(), 50.0);
 }
 

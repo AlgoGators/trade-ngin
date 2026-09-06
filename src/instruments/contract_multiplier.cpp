@@ -106,26 +106,26 @@ const std::unordered_map<std::string, QuotedContract>& table() {
 /// this module replaces already did, so that removing those tables changes the
 /// arithmetic only where it was provably wrong.
 ///
-/// The first group is deliberate elsewhere too: InstrumentRegistry::get_instrument
-/// rewrites ES to MES, YM to MYM and NQ to MNQ before it looks anything up, so
-/// this deployment reads a full-size equity-index ticker as the micro contract.
-/// The rest come from the old tables' substring matching, where "M6E" contained
+/// These come from the old tables' substring matching, where "M6E" contained
 /// "6E" and was priced as the full-size euro.
 ///
-/// EVERY ENTRY HERE IS A TEN-TIMES QUESTION and none of them is settled by
-/// anything in this repository. If the fund trades full-size Russell contracts,
-/// RTY is priced a tenth of what it should be; if it trades E-micro euro, M6E is
-/// priced ten times too high. Deciding that needs the contract the fund actually
-/// holds, which is not a thing this file can know -- so it preserves the
-/// existing answer rather than quietly substituting a different one.
+/// EVERY ENTRY HERE IS STILL A TEN-TIMES QUESTION. Each reads a micro ticker as
+/// its full-size namesake, so if the fund trades E-micro euro then M6E is priced
+/// ten times too high. They are preserved rather than corrected because the
+/// production book does not hold any of them, so there is no evidence either
+/// way -- unlike the four equity-index entries that used to head this list,
+/// which the book did settle and which are gone.
+///
+/// This function is reached only when the metadata row carries no contract size
+/// at all. Production metadata carries one for everything the fund trades, so
+/// in practice nothing here fires.
 const std::unordered_map<std::string, std::string>& deployment_aliases() {
     static const std::unordered_map<std::string, std::string> aliases = {
-        // Full-size equity-index tickers read as the micro contract, as
-        // InstrumentRegistry already does for the first three.
-        {"ES", "MES"},
-        {"NQ", "MNQ"},
-        {"YM", "MYM"},
-        {"RTY", "M2K"},
+        // The four equity-index entries that used to head this table -- ES to
+        // MES, NQ to MNQ, YM to MYM, RTY to M2K -- are GONE. They were the
+        // same ten-times error as the registry's remap and they were settled
+        // the same way: see InstrumentRegistry::get_instrument.
+        //
         // Micro tickers read as the full-size contract, from substring matching.
         {"MGC", "GC"},
         {"MSF", "6S"},

@@ -43,21 +43,24 @@ std::shared_ptr<Instrument> InstrumentRegistry::get_instrument(const std::string
         cleaned_symbol = cleaned_symbol.substr(0, v_pos);
     }
 
-    // An exact match wins before any micro-futures remap: bare equity tickers
-    // collide with futures roots (NYSE "ES" is Eversource Energy). A .v.
-    // variant suffix marks a futures continuous series, so suffixed symbols
-    // still remap unconditionally.
-    if (!had_variant_suffix && instruments_.count(cleaned_symbol) > 0) {
-        // fall through to the map lookup below with no remap
-    } else
-    // Handle special cases for micro futures
-    if (cleaned_symbol == "ES") {
-        cleaned_symbol = "MES";
-    } else if (cleaned_symbol == "YM") {
-        cleaned_symbol = "MYM";
-    } else if (cleaned_symbol == "NQ") {
-        cleaned_symbol = "MNQ";
-    }
+    // There is no micro-futures remap here any more. This used to rewrite ES to
+    // MES, YM to MYM and NQ to MNQ before every lookup, so a full-size
+    // equity-index contract was priced as the micro -- a tenth of its value.
+    //
+    // Settled against the production database on 2026-09-06, which is the only
+    // place that could settle it. metadata.contract_metadata carries both the
+    // full-size and the micro rows with correct point values (ES 50, MES 5;
+    // NQ 20, MNQ 2; YM 5, MYM 0.5), and the book has held micros directly
+    // since 2025-10-06 -- the strategies emit MES, MNQ, MYM and M2K. So the
+    // remap never once helped a position the fund actually holds. What it did
+    // was value the full-size NQ and YM held between September and November
+    // 2025 at a tenth of what they were worth.
+    //
+    // Removing it therefore changes historical equity-index valuations and
+    // nothing current. The exact-match guard that used to sit in front of it is
+    // gone with it: with no remap to pre-empt, a bare ticker simply resolves to
+    // itself, which is what the NYSE "ES" (Eversource Energy) case wanted all
+    // along.
 
     auto it = instruments_.find(cleaned_symbol);
     if (it != instruments_.end()) {
@@ -240,21 +243,24 @@ bool InstrumentRegistry::has_instrument(const std::string& symbol) const {
         cleaned_symbol = cleaned_symbol.substr(0, v_pos);
     }
 
-    // An exact match wins before any micro-futures remap: bare equity tickers
-    // collide with futures roots (NYSE "ES" is Eversource Energy). A .v.
-    // variant suffix marks a futures continuous series, so suffixed symbols
-    // still remap unconditionally.
-    if (!had_variant_suffix && instruments_.count(cleaned_symbol) > 0) {
-        // fall through to the map lookup below with no remap
-    } else
-    // Handle special cases for micro futures
-    if (cleaned_symbol == "ES") {
-        cleaned_symbol = "MES";
-    } else if (cleaned_symbol == "YM") {
-        cleaned_symbol = "MYM";
-    } else if (cleaned_symbol == "NQ") {
-        cleaned_symbol = "MNQ";
-    }
+    // There is no micro-futures remap here any more. This used to rewrite ES to
+    // MES, YM to MYM and NQ to MNQ before every lookup, so a full-size
+    // equity-index contract was priced as the micro -- a tenth of its value.
+    //
+    // Settled against the production database on 2026-09-06, which is the only
+    // place that could settle it. metadata.contract_metadata carries both the
+    // full-size and the micro rows with correct point values (ES 50, MES 5;
+    // NQ 20, MNQ 2; YM 5, MYM 0.5), and the book has held micros directly
+    // since 2025-10-06 -- the strategies emit MES, MNQ, MYM and M2K. So the
+    // remap never once helped a position the fund actually holds. What it did
+    // was value the full-size NQ and YM held between September and November
+    // 2025 at a tenth of what they were worth.
+    //
+    // Removing it therefore changes historical equity-index valuations and
+    // nothing current. The exact-match guard that used to sit in front of it is
+    // gone with it: with no remap to pre-empt, a bare ticker simply resolves to
+    // itself, which is what the NYSE "ES" (Eversource Energy) case wanted all
+    // along.
 
     return instruments_.find(cleaned_symbol) != instruments_.end();
 }
