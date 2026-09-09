@@ -178,8 +178,24 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                                         "PortfolioManager");
             }
 
-            // Update historical returns for all symbols
-            update_historical_returns(data);
+            // PM-price-history: update_historical_returns() USED TO RUN HERE,
+            // before the on_data loop below. It has been moved to just after
+            // that loop.
+            //
+            // It reads each strategy's get_price_history(), which is only
+            // populated by that strategy's on_data(). Running it first meant it
+            // read the state left by the PREVIOUS cycle, so under a single feed
+            // (7d69fe89) price_history_ and historical_returns_ stayed empty on
+            // the first cycle and lagged by one on every cycle after it. Their
+            // only consumer is optimize_positions(), which runs later in this
+            // same call -- so the optimiser was covarying yesterday's history,
+            // or none at all.
+            //
+            // The futures path feeds each strategy twice per cycle today, so the
+            // history is already populated by the time the old call site ran;
+            // mean reversion runs with optimisation off. That is why this is
+            // expected to be byte-identical on both books, and why the A/B is
+            // the evidence rather than an argument.
 
             // Store current positions for each strategy to detect changes
             for (const auto& [id, info] : strategies_) {
@@ -243,6 +259,11 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                     continue;
                 }
             }
+
+            // PM-price-history: now that every strategy has ingested this
+            // cycle's bars, its price history is current and the returns derived
+            // from it describe the data the optimiser is about to act on.
+            update_historical_returns(data);
         }
 
         //  Iterative dynamic opt + risk management loop

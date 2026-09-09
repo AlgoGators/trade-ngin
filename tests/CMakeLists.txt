@@ -99,6 +99,7 @@ set(TEST_SOURCES
     portfolio/test_portfolio_aggregation.cpp
     portfolio/test_portfolio_manager_internals.cpp
     portfolio/test_fractional_position_convergence.cpp
+    portfolio/test_price_history_ordering.cpp
     storage/test_backtest_results_manager.cpp
     storage/test_live_results_manager.cpp
     storage/test_equity_fallback_stream_db.cpp
