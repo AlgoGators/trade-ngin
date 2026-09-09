@@ -15,6 +15,7 @@ set(TEST_SOURCES
     core/test_run_id_generator.cpp
     core/test_config_loader.cpp
     core/test_backtest_window.cpp
+    core/test_static_destruction_order_db.cpp
     data/test_db_utils.cpp
     data/test_utc_date_contract.cpp
     data/test_postgres_param_safety.cpp

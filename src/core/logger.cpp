@@ -14,7 +14,6 @@
 namespace trade_ngin {
 
 // Thread-local variable to store the current component name
-thread_local std::string Logger::current_component_;
 
 // Helper function to generate formatted timestamp
 std::string generate_session_timestamp() {
@@ -215,8 +214,8 @@ std::string Logger::format_message(LogLevel level, const std::string& message) {
     }
 
     // Add component name if available
-    if (!current_component_.empty()) {
-        ss << "[" << current_component_ << "] ";
+    if (!current_component().empty()) {
+        ss << "[" << current_component() << "] ";
     }
 
     // Add the actual message
