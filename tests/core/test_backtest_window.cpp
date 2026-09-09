@@ -344,6 +344,21 @@ TEST(LookbackValidationG03, EnablingTheSlowStrategyRaisesTheRequirementAndWarns)
         << "the warning does not report the 512-day requirement the slow strategy drives";
 }
 
+const nlohmann::json kWithDocKey = {
+    {"_description", "a documentation string inside the strategies map"},
+    {"TREND_FOLLOWING",
+     {{"enabled_live", true}, {"config", {{"ema_windows", {{64, 256}}}}}}}};
+
+TEST(LookbackValidationG03, ADocumentationStringInsideStrategiesDoesNotBreakTheLoad) {
+    // The runners tolerate a non-object entry (they use contains()); the G-03
+    // loop must too, or a config main loads becomes an uncaught type_error.
+    bool ok = false;
+    const auto out = load_and_capture(TempConfigTree(kWithDocKey, 2, 730), &ok);
+    EXPECT_TRUE(ok) << "a string entry inside strategies made the load fail. Output was:\n" << out;
+    EXPECT_EQ(out.find("G-03"), std::string::npos)
+        << "the shipped window is long enough; the doc key must not change that";
+}
+
 TEST(LookbackValidationG03, ADisabledStrategyDoesNotRaiseTheRequirement) {
     bool ok = false;
     const auto out = load_and_capture(TempConfigTree(kSlowDisabled, 2, 730), &ok);

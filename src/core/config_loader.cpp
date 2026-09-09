@@ -209,15 +209,21 @@ Result<void> ConfigLoader::validate_config(const AppConfig& config) {
         std::string driver;
         for (const auto& entry : config.strategies_config.items()) {
             const auto& def = entry.value();
-            const bool enabled = def.value("enabled_backtest", false) ||
-                                 def.value("enabled_live", false);
+            // A documentation key such as "_description" is a string, not a
+            // strategy definition. value() would throw on it; the runners
+            // themselves use contains() and skip such entries, so do the same.
+            if (!def.is_object()) continue;
+            const auto flag = [&](const char* key) {
+                return def.contains(key) && def.at(key).is_boolean() && def.at(key).get<bool>();
+            };
+            const bool enabled = flag("enabled_backtest") || flag("enabled_live");
             if (!enabled) continue;
 
             int longest = kDefaultLongestEma;
             if (def.contains("config") && def.at("config").contains("ema_windows")) {
                 longest = 0;
                 for (const auto& pair : def.at("config").at("ema_windows")) {
-                    if (pair.is_array() && pair.size() == 2) {
+                    if (pair.is_array() && pair.size() == 2 && pair.at(1).is_number_integer()) {
                         longest = std::max(longest, pair.at(1).get<int>());
                     }
                 }
