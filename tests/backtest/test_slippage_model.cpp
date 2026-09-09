@@ -117,19 +117,33 @@ TEST_F(VolumeSlippageModelTest, MarketDataSellSubtractsImpact) {
     EXPECT_NEAR(slipped, 100.0 * (1.0 - 1e-4), 1e-9);
 }
 
-TEST_F(VolumeSlippageModelTest, ExcessVolumeBranchIsUnreachableAfterClamp) {
-    // FIXME: production bug — VolumeSlippageModel::calculate_slippage clamps
-    // volume_ratio to [min_volume_ratio, max_volume_ratio] on line 30 and then
-    // checks `if (volume_ratio > max_volume_ratio)` on line 41. After the clamp
-    // the condition can never be true, so the "excess_ratio" extra-impact branch
-    // is dead code. Capture observed behavior: a heavily oversized order produces
-    // exactly the max-clamp impact, with no excess multiplier applied.
+// C-19 (resolved 2026-09-09): the dead "excess volume" branch was DELETED.
+//
+// calculate_slippage clamped volume_ratio to [min, max] and then asked
+// `if (volume_ratio > max_volume_ratio)`, which the clamp had just made
+// impossible. The branch was removed rather than made reachable: making it
+// reachable would re-price every large backtest fill, which is a pricing
+// decision with its own A/B, not a tidy-up.
+//
+// So the behaviour these tests pin is unchanged, and that is the point. Above
+// the cap, slippage is FLAT -- the model caps participation, so an order at
+// 5000x ADV is priced exactly like one at the cap. That is a real modelling
+// limitation and it is now visible rather than hidden behind code that looked
+// like it handled the case.
+TEST_F(VolumeSlippageModelTest, ImpactIsFlatAboveTheVolumeCap) {
     VolumeSlippageModel m(config_);
     Bar bar = make_bar("ES", 100.0, 1000.0);
-    double clamped = m.calculate_slippage(100.0, 5'000'000.0, Side::BUY, bar);
-    double expected = 100.0 * (1.0 + 1e-3 * std::sqrt(0.1));
-    EXPECT_NEAR(clamped, expected, 1e-9)
-        << "If this fires, the dead-branch FIXME above may be resolved.";
+    const double expected = 100.0 * (1.0 + 1e-3 * std::sqrt(0.1));
+
+    // Every one of these is far above max_volume_ratio, and they span four
+    // orders of magnitude. If any "excess" term were ever applied, they would
+    // differ from each other; the flat cap requires them to be identical.
+    for (double qty : {200.0, 1'000.0, 50'000.0, 5'000'000.0}) {
+        double slipped = m.calculate_slippage(100.0, qty, Side::BUY, bar);
+        EXPECT_NEAR(slipped, expected, 1e-9)
+            << "quantity " << qty << " priced differently from the cap; an excess-impact "
+            << "term is being applied where the model is documented as flat (C-19)";
+    }
 }
 
 TEST_F(VolumeSlippageModelTest, UpdateFirstCallStoresExactBarVolume) {
