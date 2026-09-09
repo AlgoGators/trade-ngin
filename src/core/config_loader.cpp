@@ -2,6 +2,7 @@
 
 #include "trade_ngin/core/config_loader.hpp"
 
+#include <algorithm>
 #include <cctype>
 #include <ctime>
 #include <fstream>
@@ -179,6 +180,85 @@ Result<void> ConfigLoader::validate_config(const AppConfig& config) {
                                 "strategies configuration is missing or empty",
                                 "ConfigLoader");
     }
+
+    // G-03: the lookback window has to be long enough for the strategies that
+    // read it, and nothing checked that it was.
+    //
+    // config_template/defaults.json states the coupling in a COMMENT -- "Must
+    // match backtest.lookback_years (2 yrs = 730 days). Strategy needs 256+
+    // trading days for longest EMA and 252 for vol_lookback_long" -- and a
+    // comment is not a check. A short window does not fail: the longest EMA
+    // never warms up and emits a signal that looks exactly like a real one.
+    //
+    // The requirement is DERIVED from the enabled strategies' own ema_windows
+    // rather than hardcoded, because the strategies do not agree on it:
+    // TrendFollowing tops out at 256, Fast at 64, and Slow carries a {128, 512}
+    // pair. A single constant would either nag every run of a book that does not
+    // enable Slow, or miss the case of a book that does. The template's own
+    // "256+" note is understated for exactly that reason.
+    //
+    // WARN ONLY, deliberately: a refusal would abort runs that work today, which
+    // is a behaviour change and not this batch's business. The point is that a
+    // short window now says so in the log instead of being invisible.
+    {
+        constexpr int kTradingDaysPerYear = 252;
+        // Documented floor, used when a strategy does not spell out its windows.
+        constexpr int kDefaultLongestEma = 256;
+
+        int required = 0;
+        std::string driver;
+        for (const auto& entry : config.strategies_config.items()) {
+            const auto& def = entry.value();
+            const bool enabled = def.value("enabled_backtest", false) ||
+                                 def.value("enabled_live", false);
+            if (!enabled) continue;
+
+            int longest = kDefaultLongestEma;
+            if (def.contains("config") && def.at("config").contains("ema_windows")) {
+                longest = 0;
+                for (const auto& pair : def.at("config").at("ema_windows")) {
+                    if (pair.is_array() && pair.size() == 2) {
+                        longest = std::max(longest, pair.at(1).get<int>());
+                    }
+                }
+                if (longest == 0) longest = kDefaultLongestEma;
+            }
+            if (longest > required) {
+                required = longest;
+                driver = entry.key();
+            }
+        }
+        if (required == 0) required = kDefaultLongestEma;
+
+        const int available = config.backtest.lookback_years * kTradingDaysPerYear;
+        if (available < required) {
+            WARN("backtest.lookback_years=" + std::to_string(config.backtest.lookback_years) +
+                 " gives about " + std::to_string(available) + " trading days, fewer than the " +
+                 std::to_string(required) + " the longest EMA window of enabled strategy " +
+                 driver + " needs. That EMA will not be warmed up and its signal will be "
+                 "meaningless rather than absent (G-03).");
+        }
+
+        // The live side reads the same history through a CALENDAR-day setting,
+        // so the two must be put in the same units before they can be compared.
+        // 365/252 is the ratio the template's own "2 yrs = 730 days" note uses.
+        const int live_trading_days =
+            static_cast<int>(config.live.historical_days * kTradingDaysPerYear / 365.0);
+        if (live_trading_days < required) {
+            WARN("live.historical_days=" + std::to_string(config.live.historical_days) +
+                 " is about " + std::to_string(live_trading_days) +
+                 " trading days, fewer than the " + std::to_string(required) +
+                 " the longest EMA window of enabled strategy " + driver + " needs (G-03).");
+        }
+        if (live_trading_days < available) {
+            WARN("live.historical_days (" + std::to_string(live_trading_days) +
+                 " trading days) is shorter than backtest.lookback_years (" +
+                 std::to_string(available) +
+                 " trading days), so the live book warms up on less history than the "
+                 "backtest it is compared against (G-03).");
+        }
+    }
+
     return Result<void>();
 }
 
