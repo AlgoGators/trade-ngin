@@ -262,11 +262,23 @@ Result<void> LiveResultsManager::save_equity_curve(const Timestamp& date) {
              " (zero, negative, NaN, inf, or suspiciously small). Attempting to use previous day's "
              "value");
 
-        // Try to get the most recent valid equity value (>= 1000) for THIS PORTFOLIO
+        // Try to get the most recent valid equity value (>= 1000) for THIS
+        // PORTFOLIO and THIS STREAM.
+        //
+        // DB-equity-curve-fallback-stream: the predicate used to stop at
+        // portfolio_id, while trading.equity_curve is keyed
+        // (portfolio_id, strategy_id, timestamp, portfolio_type). Once a second
+        // stream exists on the same portfolio and strategy, the most recent row
+        // by timestamp can belong to the OTHER stream, and this fallback would
+        // carry that stream's equity into a row it then writes as ours -- an
+        // invented number with no run behind it, laundered through a path whose
+        // whole job is to avoid writing garbage. One stream exists today, so
+        // adding the predicate selects the same row it selected before.
         std::string get_prev_equity_query =
             "SELECT equity FROM trading.equity_curve "
             "WHERE strategy_id = '" +
             strategy_id_ + "' AND portfolio_id = '" + portfolio_id_ +
+            "' AND portfolio_type = '" + std::string(kDefaultEquityCurveStream) +
             "' "
             "AND equity >= 1000.0 "
             "ORDER BY timestamp DESC LIMIT 1";

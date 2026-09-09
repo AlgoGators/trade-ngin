@@ -100,6 +100,7 @@ set(TEST_SOURCES
     portfolio/test_fractional_position_convergence.cpp
     storage/test_backtest_results_manager.cpp
     storage/test_live_results_manager.cpp
+    storage/test_equity_fallback_stream_db.cpp
     storage/test_live_results_key_roundtrip_db.cpp
     live/test_live_historical_metrics.cpp
     live/test_live_historical_metrics_columns.cpp
