@@ -155,3 +155,66 @@ TEST(ToJsonTemporaryHazard, TheScannerRecognisesTheHazardousShape) {
     EXPECT_EQ(safe_hits, 0) << "the scanner flags the CORRECT form, so it would be disabled "
                                "the first time someone hit a false positive";
 }
+
+// ===== DEAD-email-ag-filter / DEAD-logger-lock-member: deleted, and staying deleted =====
+//
+// Two dead declarations removed in this batch:
+//
+//   src/core/email_sender.cpp   filter_non_agricultural_positions() -- [[maybe_unused]],
+//     no caller anywhere -- together with is_agricultural_future(), whose only
+//     caller was that filter. Both were a SECOND definition of logic the two
+//     futures runners already implement as their own lambda, so the copy here
+//     read as though the email report filtered agricultural positions. It did
+//     not.
+//
+//   include/trade_ngin/core/logger.hpp   locked_initialization_ -- a bool
+//     declared with a comment promising it would "prevent re-initialization
+//     after first call", never read and never written. The re-initialization
+//     guard that does exist is the explicit log_file_.close() in
+//     Logger::initialize(). (Removed alongside the E2-F61 change to the
+//     neighbouring thread_local, which is why it appears in that commit.)
+//
+// Source-scanned for the same reason as the F-5 tripwire above: what is being
+// asserted is the ABSENCE of a name across the tree, which no runtime test can
+// see. The scanner is the one already proved to work by
+// TheScannerRecognisesTheHazardousShape.
+TEST(DeadCodeRemoved, NeitherDeletedSymbolIsReferencedAnywhere) {
+    namespace fs = std::filesystem;
+    struct Gone { const char* symbol; const char* why; };
+    const Gone gone[] = {
+        {"filter_non_agricultural_positions",
+         "dead email filter; the runners have their own agricultural predicate"},
+        {"locked_initialization_",
+         "dead logger member; the real re-init guard is log_file_.close()"},
+    };
+
+    for (const auto& g : gone) {
+        std::vector<std::string> hits;
+        for (const auto& rel : {"src", "include", "apps"}) {
+            auto dir = find_repo_dir(rel);
+            if (dir.empty()) continue;
+            for (const auto& e : fs::recursive_directory_iterator(dir)) {
+                if (!e.is_regular_file()) continue;
+                const auto ext = e.path().extension();
+                if (ext != ".cpp" && ext != ".hpp" && ext != ".h") continue;
+                std::istringstream in(read_all(e.path()));
+                std::string line;
+                int n = 0;
+                while (std::getline(in, line)) {
+                    ++n;
+                    const auto first = line.find_first_not_of(" \t");
+                    if (first != std::string::npos && line.compare(first, 2, "//") == 0) continue;
+                    if (line.find(g.symbol) != std::string::npos) {
+                        hits.push_back(e.path().string() + ":" + std::to_string(n));
+                    }
+                }
+            }
+        }
+        std::ostringstream where;
+        for (const auto& h : hits) where << "\n  " << h;
+        EXPECT_TRUE(hits.empty())
+            << g.symbol << " is referenced again in non-comment source. It was removed as "
+            << "dead code (" << g.why << "); if it is genuinely needed now, it needs a "
+            << "definition and a test, not a resurrection." << where.str();
+    }
+}
