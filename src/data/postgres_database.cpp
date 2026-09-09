@@ -332,6 +332,46 @@ Result<void> PostgresDatabase::validate_connection() const {
         return make_error<void>(ErrorCode::CONNECTION_ERROR, "Not connected to database",
                                 "PostgresDatabase");
     }
+
+    // C4-DbTransaction. pqxx permits ONE transaction per connection, and every
+    // self-opening method in this class begins with
+    // `pqxx::work txn(*connection_)`. Calling any of them while a DbTransaction
+    // scope is alive therefore constructs a second transaction on the same
+    // connection, and pqxx throws.
+    //
+    // What that actually produced, measured on 2026-09-09 rather than assumed:
+    // the throw is caught by the calling method's own catch-all and returned as
+    //
+    //     Failed to store positions: Started new transaction while transaction
+    //     was still active.
+    //
+    // So it is an error, not an unhandled exception, at the call sites that
+    // exist today. Two things are still wrong with it and are what this guard
+    // fixes:
+    //
+    //   * the message describes pqxx's internal state, not the caller's mistake,
+    //     and says nothing about what to do instead;
+    //   * the failure happens INSIDE the method, after it has begun its work and
+    //     with the outer unit's transaction now in an unclear state, rather than
+    //     at the door.
+    //
+    // The check goes in validate_connection() because that is the preamble every
+    // self-opening method already runs, and because the overloads that take a
+    // DbTransaction& deliberately do NOT run it -- they delegate to the *_in
+    // variants against the caller's transaction. So it covers exactly the calls
+    // that would open a second transaction and none of those meant to join the
+    // first.
+    //
+    // No futures caller opens a unit of work today, so no run that exists now
+    // reaches this branch.
+    if (in_unit_of_work_) {
+        return make_error<void>(
+            ErrorCode::DATABASE_ERROR,
+            "A unit of work is open on this connection. This call would begin a second "
+            "transaction on the same connection, which pqxx refuses. Pass the open "
+            "DbTransaction to an overload that accepts one, or commit the unit first.",
+            "PostgresDatabase");
+    }
     return Result<void>();
 }
 
@@ -3164,24 +3204,43 @@ Result<void> PostgresDatabase::store_applied_corp_actions_in(
     }
 }
 
-DbTransaction::DbTransaction(pqxx::connection& conn)
-    : txn_(std::make_unique<pqxx::work>(conn)) {}
+DbTransaction::DbTransaction(pqxx::connection& conn, PostgresDatabase* owner)
+    : txn_(std::make_unique<pqxx::work>(conn)), owner_(owner) {
+    // C4-DbTransaction: mark the connection busy for the life of this scope.
+    if (owner_) owner_->in_unit_of_work_ = true;
+}
 
 DbTransaction::DbTransaction(DbTransaction&& other) noexcept
-    : txn_(std::move(other.txn_)), committed_(other.committed_) {
+    : txn_(std::move(other.txn_)), committed_(other.committed_), owner_(other.owner_) {
     other.committed_ = false;
+    // The moved-from scope no longer owns the busy flag; exactly one object must
+    // clear it, or a move would end the unit early.
+    other.owner_ = nullptr;
 }
 
 DbTransaction& DbTransaction::operator=(DbTransaction&& other) noexcept {
     if (this != &other) {
+        release_owner();
         txn_ = std::move(other.txn_);
         committed_ = other.committed_;
+        owner_ = other.owner_;
         other.committed_ = false;
+        other.owner_ = nullptr;
     }
     return *this;
 }
 
+void DbTransaction::release_owner() {
+    if (owner_) {
+        owner_->in_unit_of_work_ = false;
+        owner_ = nullptr;
+    }
+}
+
 DbTransaction::~DbTransaction() {
+    // The connection is free again as soon as this scope ends, whether it
+    // committed or rolled back.
+    release_owner();
     // pqxx::work rolls back on destruction when it was never committed, which is
     // exactly the behaviour we want for an abandoned unit of work. Destroying it
     // here (rather than letting the member die silently) keeps that explicit.
@@ -3226,7 +3285,7 @@ Result<std::unique_ptr<DbTransaction>> PostgresDatabase::begin_unit_of_work() {
     try {
         // `new` rather than make_unique: the constructor is private to keep
         // pqxx out of caller code, and make_unique is not a friend.
-        return Result<Scope>(Scope(new DbTransaction(*connection_)));
+        return Result<Scope>(Scope(new DbTransaction(*connection_, this)));
     } catch (const std::exception& e) {
         return make_error<Scope>(ErrorCode::DATABASE_ERROR,
                                  "Failed to begin unit of work: " + std::string(e.what()),

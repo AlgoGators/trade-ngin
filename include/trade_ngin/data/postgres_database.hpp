@@ -79,12 +79,20 @@ public:
 private:
     friend class PostgresDatabase;
 
-    explicit DbTransaction(pqxx::connection& conn);
+    // `owner` is the PostgresDatabase whose connection this transaction holds.
+    // C4-DbTransaction: the scope marks that database as busy for as long as it
+    // lives, so a self-opening method called in between refuses instead of
+    // throwing pqxx::usage_error. May be null in tests that build a scope
+    // straight from a connection.
+    DbTransaction(pqxx::connection& conn, PostgresDatabase* owner);
 
     pqxx::work& work() { return *txn_; }
 
+    void release_owner();
+
     std::unique_ptr<pqxx::work> txn_;
     bool committed_{false};
+    PostgresDatabase* owner_{nullptr};
 };
 
 /**
@@ -940,6 +948,22 @@ private:
     std::unique_ptr<pqxx::connection> connection_;
     std::mutex mutex_;
     std::string component_id_;
+
+    /**
+     * @brief Is a DbTransaction currently open on this connection? (C4-DbTransaction)
+     *
+     * pqxx allows ONE transaction per connection. Every self-opening method here
+     * constructs its own `pqxx::work` on `connection_`, so calling any of them
+     * while a DbTransaction is alive throws `pqxx::usage_error` out of a
+     * constructor -- through call sites that expect a `Result`, not an
+     * exception. The flag makes that a refusal with a sentence instead.
+     *
+     * Set by DbTransaction's constructor and cleared by its destructor, both of
+     * which are the friend's business, so no caller can desynchronise it.
+     */
+    bool in_unit_of_work_{false};
+    // DbTransaction sets and clears in_unit_of_work_ across its own lifetime.
+    friend class DbTransaction;
 
     /**
      * @brief Validate the database connection
