@@ -260,3 +260,92 @@ TEST(LoggerRetention, AnEmptySubdirectoryIsTheOldFlatPathExactly) {
         EXPECT_FALSE(std::filesystem::is_directory(e.path()));
     }
 }
+
+// ===== LOG-retention-order: order by the timestamp IN THE NAME, not by mtime =====
+//
+// Retention keeps the newest max_files and deletes the rest, so "which is
+// oldest" decides which evidence survives. It used to answer that with
+// std::filesystem::last_write_time.
+//
+// mtime is when a file was last WRITTEN, which is not when its session ran:
+//   * a long run holds part1 open while parts 2 and 3 are created and closed, so
+//     part1 ends up with the NEWEST mtime of the three;
+//   * copying, restoring or rsyncing a log directory rewrites every mtime and
+//     destroys the ordering completely, while the names are untouched.
+//
+// In either case retention deletes by the wrong key, and what it throws away is
+// whichever session happens to have been quiet longest -- not the oldest one.
+//
+// The test writes four sessions whose filename order is the exact REVERSE of
+// their mtime order, then takes a fifth. With a budget of 3, exactly two of the
+// four must go, and they must be the two oldest BY NAME (20260101, 20260102).
+// Ordering by mtime deletes 20260104 and 20260103 instead -- the newest two --
+// so the two assertions cannot both hold under the old behaviour.
+TEST(LoggerRetention, RetentionOrdersByFilenameTimestampNotMtime) {
+    TempLogDir dir;
+
+    const std::vector<std::string> by_name{
+        "live_equity_mr_20260101_000000_part1.log",  // oldest by NAME
+        "live_equity_mr_20260102_000000_part1.log",
+        "live_equity_mr_20260103_000000_part1.log",
+        "live_equity_mr_20260104_000000_part1.log",  // newest by NAME
+    };
+    for (const auto& n : by_name) touch(dir.path() / n);
+
+    // Now invert mtime against the names: the newest name gets the oldest mtime.
+    const auto base = std::filesystem::file_time_type::clock::now();
+    for (size_t i = 0; i < by_name.size(); ++i) {
+        // i = 0 is the oldest name, so give it the LATEST mtime.
+        std::filesystem::last_write_time(
+            dir.path() / by_name[i],
+            base - std::chrono::hours(24 * static_cast<int>(i)));
+    }
+
+    Logger::instance().initialize(file_config(dir.path(), "live_equity_mr"));
+    INFO("one line so the new session's file exists");
+
+    const auto after = names_in(dir.path());
+
+    EXPECT_FALSE(contains(after, by_name[0]))
+        << "the oldest session BY NAME survived; retention is ordering by mtime";
+    EXPECT_FALSE(contains(after, by_name[1]))
+        << "the second-oldest session BY NAME survived; retention is ordering by mtime";
+    EXPECT_TRUE(contains(after, by_name[2]))
+        << "retention deleted a NEWER session because its mtime was older";
+    EXPECT_TRUE(contains(after, by_name[3]))
+        << "retention deleted the NEWEST session because its mtime was oldest";
+}
+
+// part10 must not sort before part2. The timestamp is fixed-width so text order
+// is chronological, but the part number is not, and a run long enough to reach
+// ten parts is exactly the run whose early parts matter.
+TEST(LoggerRetention, PartNumbersOrderNumericallyNotLexically) {
+    TempLogDir dir;
+    const std::vector<std::string> parts{
+        "live_equity_mr_20260101_000000_part2.log",   // oldest part
+        "live_equity_mr_20260101_000000_part9.log",
+        "live_equity_mr_20260101_000000_part10.log",  // newest part
+    };
+    for (const auto& n : parts) touch(dir.path() / n);
+
+    // Invert mtime against part order, exactly as the sibling test does for the
+    // session timestamp. Without this the test is a FALSE PASS: touch() creates
+    // the files in part order and APFS mtimes are nanosecond-resolution and
+    // strictly increasing, so an mtime sort happens to evict part2 as well and
+    // the test stays green with the fix reverted. Giving part2 the NEWEST mtime
+    // means only a numeric read of the part number can evict it.
+    const auto base = std::filesystem::file_time_type::clock::now();
+    for (size_t i = 0; i < parts.size(); ++i) {
+        std::filesystem::last_write_time(
+            dir.path() / parts[i], base - std::chrono::hours(24 * static_cast<int>(i)));
+    }
+
+    Logger::instance().initialize(file_config(dir.path(), "live_equity_mr"));
+    INFO("one line so the new session's file exists");
+
+    const auto after = names_in(dir.path());
+    EXPECT_FALSE(contains(after, parts[0]))
+        << "part2 should have been the one evicted; it is the oldest part";
+    EXPECT_TRUE(contains(after, parts[2]))
+        << "part10 was evicted as though it preceded part2 -- lexical, not numeric, ordering";
+}

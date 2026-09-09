@@ -2,8 +2,14 @@
 
 #include "trade_ngin/core/config_loader.hpp"
 
+#include <algorithm>
+#include <cctype>
+#include <ctime>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
+#include <stdexcept>
+#include <string>
 
 #include "trade_ngin/core/logger.hpp"
 
@@ -174,7 +180,154 @@ Result<void> ConfigLoader::validate_config(const AppConfig& config) {
                                 "strategies configuration is missing or empty",
                                 "ConfigLoader");
     }
+
+    // G-03: the lookback window has to be long enough for the strategies that
+    // read it, and nothing checked that it was.
+    //
+    // config_template/defaults.json states the coupling in a COMMENT -- "Must
+    // match backtest.lookback_years (2 yrs = 730 days). Strategy needs 256+
+    // trading days for longest EMA and 252 for vol_lookback_long" -- and a
+    // comment is not a check. A short window does not fail: the longest EMA
+    // never warms up and emits a signal that looks exactly like a real one.
+    //
+    // The requirement is DERIVED from the enabled strategies' own ema_windows
+    // rather than hardcoded, because the strategies do not agree on it:
+    // TrendFollowing tops out at 256, Fast at 64, and Slow carries a {128, 512}
+    // pair. A single constant would either nag every run of a book that does not
+    // enable Slow, or miss the case of a book that does. The template's own
+    // "256+" note is understated for exactly that reason.
+    //
+    // WARN ONLY, deliberately: a refusal would abort runs that work today, which
+    // is a behaviour change and not this batch's business. The point is that a
+    // short window now says so in the log instead of being invisible.
+    {
+        constexpr int kTradingDaysPerYear = 252;
+        // Documented floor, used when a strategy does not spell out its windows.
+        constexpr int kDefaultLongestEma = 256;
+
+        int required = 0;
+        std::string driver;
+        for (const auto& entry : config.strategies_config.items()) {
+            const auto& def = entry.value();
+            // A documentation key such as "_description" is a string, not a
+            // strategy definition. value() would throw on it; the runners
+            // themselves use contains() and skip such entries, so do the same.
+            if (!def.is_object()) continue;
+            const auto flag = [&](const char* key) {
+                return def.contains(key) && def.at(key).is_boolean() && def.at(key).get<bool>();
+            };
+            const bool enabled = flag("enabled_backtest") || flag("enabled_live");
+            if (!enabled) continue;
+
+            int longest = kDefaultLongestEma;
+            if (def.contains("config") && def.at("config").contains("ema_windows")) {
+                longest = 0;
+                for (const auto& pair : def.at("config").at("ema_windows")) {
+                    if (pair.is_array() && pair.size() == 2 && pair.at(1).is_number_integer()) {
+                        longest = std::max(longest, pair.at(1).get<int>());
+                    }
+                }
+                if (longest == 0) longest = kDefaultLongestEma;
+            }
+            if (longest > required) {
+                required = longest;
+                driver = entry.key();
+            }
+        }
+        if (required == 0) required = kDefaultLongestEma;
+
+        const int available = config.backtest.lookback_years * kTradingDaysPerYear;
+        if (available < required) {
+            WARN("backtest.lookback_years=" + std::to_string(config.backtest.lookback_years) +
+                 " gives about " + std::to_string(available) + " trading days, fewer than the " +
+                 std::to_string(required) + " the longest EMA window of enabled strategy " +
+                 driver + " needs. That EMA will not be warmed up and its signal will be "
+                 "meaningless rather than absent (G-03).");
+        }
+
+        // The live side reads the same history through a CALENDAR-day setting,
+        // so the two must be put in the same units before they can be compared.
+        // 365/252 is the ratio the template's own "2 yrs = 730 days" note uses.
+        const int live_trading_days =
+            static_cast<int>(config.live.historical_days * kTradingDaysPerYear / 365.0);
+        if (live_trading_days < required) {
+            WARN("live.historical_days=" + std::to_string(config.live.historical_days) +
+                 " is about " + std::to_string(live_trading_days) +
+                 " trading days, fewer than the " + std::to_string(required) +
+                 " the longest EMA window of enabled strategy " + driver + " needs (G-03).");
+        }
+        if (live_trading_days < available) {
+            WARN("live.historical_days (" + std::to_string(live_trading_days) +
+                 " trading days) is shorter than backtest.lookback_years (" +
+                 std::to_string(available) +
+                 " trading days), so the live book warms up on less history than the "
+                 "backtest it is compared against (G-03).");
+        }
+    }
+
     return Result<void>();
+}
+
+std::pair<Timestamp, Timestamp> ConfigLoader::resolve_backtest_window(
+    const BacktestSpecificConfig& backtest, Timestamp now, bool* froze) {
+    if (froze) *froze = false;
+
+    // The now() path, byte-for-byte what the three bt runners did inline.
+    auto now_time_t = std::chrono::system_clock::to_time_t(now);
+    std::tm anchor_tm{};
+    std::tm* local_tm = std::localtime(&now_time_t);
+    if (local_tm != nullptr) anchor_tm = *local_tm;
+    Timestamp end_date = now;
+
+    // M-12: the frozen window, taken only when a config explicitly carries the
+    // key. Anything unparseable is refused rather than silently ignored -- a
+    // typo in a test config that quietly reverted to now() would reintroduce the
+    // very drift this exists to remove, and it would do it invisibly.
+    if (!backtest.frozen_end_date.empty()) {
+        // Parsed by hand rather than with std::get_time: libc++'s "%Y-%m-%d"
+        // accepts "03-05-2026" (year 3) and stops happily at "2026-05" without
+        // setting failbit, so a typo would be taken as a real date and the run
+        // would be frozen to the wrong window while looking fine.
+        const std::string& fd = backtest.frozen_end_date;
+        auto all_digits = [&fd](size_t off, size_t n) {
+            for (size_t k = 0; k < n; ++k) {
+                if (!std::isdigit(static_cast<unsigned char>(fd[off + k]))) return false;
+            }
+            return true;
+        };
+        if (fd.size() != 10 || fd[4] != '-' || fd[7] != '-' || !all_digits(0, 4) ||
+            !all_digits(5, 2) || !all_digits(8, 2)) {
+            throw std::runtime_error(
+                "backtest.frozen_end_date is not YYYY-MM-DD: '" + fd + "'");
+        }
+        const int fy = std::stoi(fd.substr(0, 4));
+        const int fm = std::stoi(fd.substr(5, 2));
+        const int fdy = std::stoi(fd.substr(8, 2));
+        if (fm < 1 || fm > 12 || fdy < 1 || fdy > 31) {
+            throw std::runtime_error(
+                "backtest.frozen_end_date is not a real calendar date: '" + fd + "'");
+        }
+        std::tm frozen_tm{};
+        frozen_tm.tm_year = fy - 1900;
+        frozen_tm.tm_mon = fm - 1;
+        frozen_tm.tm_mday = fdy;
+        frozen_tm.tm_hour = 0;
+        frozen_tm.tm_min = 0;
+        frozen_tm.tm_sec = 0;
+        frozen_tm.tm_isdst = -1;  // let mktime resolve DST for that local date
+        std::tm normalise = frozen_tm;
+        auto frozen_time_t = std::mktime(&normalise);
+        end_date = std::chrono::system_clock::from_time_t(frozen_time_t);
+        anchor_tm = frozen_tm;
+        if (froze) *froze = true;
+    }
+
+    std::tm start_tm = anchor_tm;
+    start_tm.tm_year -= backtest.lookback_years;
+    auto start_time_t = std::mktime(&start_tm);
+    Timestamp start_date = std::chrono::system_clock::from_time_t(start_time_t);
+
+    return {start_date, end_date};
 }
 
 void ConfigLoader::log_config_summary(const AppConfig& config) {

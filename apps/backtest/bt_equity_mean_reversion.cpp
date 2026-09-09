@@ -187,15 +187,20 @@ int main() {
         // ========================================
         // CONFIGURE BACKTEST PARAMETERS
         // ========================================
+        // Window resolution lives in ConfigLoader::resolve_backtest_window (M-12).
+        // With backtest.frozen_end_date unset -- the deployed state -- it is the
+        // same now()/lookback_years arithmetic this block used to do inline.
+        bool frozen_window = false;
         auto now = std::chrono::system_clock::now();
-        auto now_time_t = std::chrono::system_clock::to_time_t(now);
-        std::tm* now_tm = std::localtime(&now_time_t);
-
-        std::tm start_tm = *now_tm;
-        start_tm.tm_year -= app_config.backtest.lookback_years;
-        auto start_time_t = std::mktime(&start_tm);
-        Timestamp start_date = std::chrono::system_clock::from_time_t(start_time_t);
-        Timestamp end_date = now;
+        auto window = trade_ngin::ConfigLoader::resolve_backtest_window(
+            app_config.backtest, now, &frozen_window);
+        Timestamp start_date = window.first;
+        Timestamp end_date = window.second;
+        if (frozen_window) {
+            WARN("M-12 FROZEN BACKTEST WINDOW in force: end_date pinned to "
+                 + app_config.backtest.frozen_end_date
+                 + ". This is a TEST configuration; a production run must not show this line.");
+        }
 
         double initial_capital = app_config.initial_capital;
 

@@ -3,6 +3,7 @@
 #include "trade_ngin/core/logger.hpp"
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>   // strtol, used by the retention sort key
 #include <cstring>
 #include <filesystem>
 #include <vector>
@@ -14,7 +15,6 @@
 namespace trade_ngin {
 
 // Thread-local variable to store the current component name
-thread_local std::string Logger::current_component_;
 
 // Helper function to generate formatted timestamp
 std::string generate_session_timestamp() {
@@ -98,8 +98,32 @@ std::vector<std::filesystem::path> owned_log_files(const std::filesystem::path& 
         if (!is_own_log_file(entry.path().filename().string(), prefix)) continue;  // not ours
         files.push_back(entry.path());
     }
-    std::sort(files.begin(), files.end(), [](const auto& a, const auto& b) {
-        return std::filesystem::last_write_time(a) < std::filesystem::last_write_time(b);
+    // LOG-retention-order: ordered by the YYYYMMDD_HHMMSS_partN stamped INTO the
+    // filename, not by mtime.
+    //
+    // mtime is when a file was last WRITTEN, which is not when its session
+    // started. A long run holding part1 open while parts 2 and 3 are created and
+    // closed leaves part1 with the newest mtime, so retention deletes the
+    // sessions in the wrong order -- and what it deletes is the oldest evidence
+    // by name, which is what anybody reconciling a chain actually wants kept.
+    // Copying or restoring a log directory rewrites every mtime and scrambles
+    // the order completely; the filename survives that untouched.
+    //
+    // is_own_log_file() has already established the exact shape
+    // <prefix>_YYYYMMDD_HHMMSS_partN.log, so the timestamp is at a fixed offset
+    // and fixed width: comparing it as text is chronological. Only partN needs
+    // numeric treatment, because part10 sorts before part2 as text.
+    auto sort_key = [&prefix](const std::filesystem::path& p) {
+        const std::string name = p.filename().string();
+        // <prefix>_ then 8+1+6 characters of timestamp.
+        const size_t stamp_at = prefix.size() + 1;
+        const std::string stamp = name.substr(stamp_at, 15);  // YYYYMMDD_HHMMSS
+        const size_t part_at = name.find("_part", stamp_at + 15) + 5;
+        const long part = std::strtol(name.c_str() + part_at, nullptr, 10);
+        return std::pair<std::string, long>{stamp, part};
+    };
+    std::sort(files.begin(), files.end(), [&sort_key](const auto& a, const auto& b) {
+        return sort_key(a) < sort_key(b);
     });
     return files;
 }
@@ -215,8 +239,8 @@ std::string Logger::format_message(LogLevel level, const std::string& message) {
     }
 
     // Add component name if available
-    if (!current_component_.empty()) {
-        ss << "[" << current_component_ << "] ";
+    if (!current_component().empty()) {
+        ss << "[" << current_component() << "] ";
     }
 
     // Add the actual message

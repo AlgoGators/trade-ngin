@@ -359,3 +359,148 @@ TEST_F(DbTransactionAtomicityTest, AnUnstampedWriteStillDedupsOnTheNaturalKey) {
 }
 
 }  // namespace
+
+// ===== C4-DbTransaction / futures-atomicity: the in-unit guard =====
+//
+// pqxx permits ONE transaction per connection. Every self-opening method on
+// PostgresDatabase begins with `pqxx::work txn(*connection_)`, so calling any of
+// them while a DbTransaction scope is alive constructs a SECOND transaction on
+// the same connection, and pqxx throws.
+//
+// Measured pre-guard behaviour, rather than assumed: the throw is caught by the
+// calling method's own catch-all and returned as "Failed to store positions:
+// Started new transaction while transaction was still active." That is an
+// error, not an unhandled exception -- the ledger row's "unguarded" overstates
+// it for the call sites that exist today. What remains wrong is that the message
+// describes pqxx's internal state rather than the caller's mistake, and that the
+// refusal lands after the method has begun work instead of at the door.
+//
+// The guard lives in validate_connection(), which is the preamble every
+// self-opening method already runs and which the DbTransaction-taking overloads
+// deliberately do NOT run -- they delegate straight to the *_in variants against
+// the caller's transaction. So the check covers exactly the calls that would
+// open a second transaction and none of the ones meant to join the first.
+//
+// No futures caller opens a unit of work today, which is why this is
+// byte-identical on any run that exists now.
+
+TEST_F(DbTransactionAtomicityTest, ASelfOpeningCallInsideAUnitIsRefusedNotThrown) {
+    auto unit = db_->begin_unit_of_work();
+    ASSERT_TRUE(unit.is_ok()) << unit.error()->what();
+    DbTransaction& txn = *unit.value();
+
+    std::vector<Position> positions{make_position("META", 4.0, 200.0)};
+    ASSERT_TRUE(db_->store_positions(txn, positions, kScratchStrategyId, kScratchStrategyName,
+                                     kScratchPortfolio, kScratchTable)
+                    .is_ok());
+
+    // The same write through the SELF-OPENING overload, while the unit is still
+    // open. Before the guard this threw pqxx::usage_error; it must now come back
+    // as an ordinary error.
+    Result<void> second = make_error<void>(ErrorCode::UNKNOWN_ERROR, "not run", "test");
+    ASSERT_NO_THROW({
+        second = db_->store_positions(positions, kScratchStrategyId, kScratchStrategyName,
+                                      kScratchPortfolio, kScratchTable);
+    }) << "a self-opening call inside an open unit of work threw out of pqxx";
+
+    ASSERT_TRUE(second.is_error()) << "the second transaction was allowed to open";
+    // This is the load-bearing assertion: without the guard the message is
+    // pqxx's "Started new transaction while transaction was still active",
+    // which names neither the unit of work nor the way out.
+    EXPECT_NE(std::string(second.error()->what()).find("unit of work is open"),
+              std::string::npos)
+        << "refused, but not with the reason: " << second.error()->what();
+
+    // The unit itself is undamaged and still commits.
+    ASSERT_TRUE(txn.commit().is_ok());
+    EXPECT_EQ(scratch_row_count(), 1);
+}
+
+// Reads are self-opening too, and a read inside a unit is the likelier accident.
+TEST_F(DbTransactionAtomicityTest, ASelfOpeningReadInsideAUnitIsAlsoRefused) {
+    auto unit = db_->begin_unit_of_work();
+    ASSERT_TRUE(unit.is_ok());
+
+    Result<std::shared_ptr<arrow::Table>> read =
+        make_error<std::shared_ptr<arrow::Table>>(ErrorCode::UNKNOWN_ERROR, "not run", "test");
+    ASSERT_NO_THROW({ read = db_->execute_query("SELECT 1"); });
+    ASSERT_TRUE(read.is_error()) << "a read opened a second transaction on a busy connection";
+    // The message is the discriminator, not is_error(): execute_query wraps
+    // everything in a catch-all, so pre-guard pqxx's usage_error already came
+    // back as a DATABASE_ERROR and is_error() alone was green either way.
+    EXPECT_NE(std::string(read.error()->what()).find("unit of work is open"), std::string::npos)
+        << "refused, but by pqxx rather than by the guard: " << read.error()->what();
+}
+
+// A COMMITTED unit frees the connection immediately, not at scope exit.
+//
+// The first version of the guard cleared in_unit_of_work_ only in the
+// destructor and on move-assign, so the flag stayed set between a successful
+// commit() and the closing brace. pqxx is perfectly happy to start a new
+// transaction there -- the previous one is finished -- so the guard would have
+// refused a legal call, and the refusal would have told the caller to pass a
+// DbTransaction that no longer exists. Both equity call sites happen to close
+// their scope one line after committing, which is the only reason it was not
+// already reachable.
+TEST_F(DbTransactionAtomicityTest, ACommittedUnitFreesTheConnectionBeforeScopeExit) {
+    auto unit = db_->begin_unit_of_work();
+    ASSERT_TRUE(unit.is_ok()) << unit.error()->what();
+    DbTransaction& txn = *unit.value();
+
+    std::vector<Position> first{make_position("NFLX", 1.0, 500.0)};
+    ASSERT_TRUE(db_->store_positions(txn, first, kScratchStrategyId, kScratchStrategyName,
+                                     kScratchPortfolio, kScratchTable)
+                    .is_ok());
+    ASSERT_TRUE(txn.commit().is_ok());
+
+    // Still INSIDE the scope, with `txn` alive but committed.
+    std::vector<Position> second{make_position("NFLX", 2.0, 510.0)};
+    auto after = db_->store_positions(second, kScratchStrategyId, kScratchStrategyName,
+                                      kScratchPortfolio, kScratchTable);
+    EXPECT_TRUE(after.is_ok())
+        << "a self-opening call after a SUCCESSFUL commit was refused while the scope was "
+           "still open; the guard is being held past the life of the transaction: "
+        << after.error()->what();
+    EXPECT_TRUE(txn.committed());
+}
+
+// The flag must not leak: after the scope ends, ordinary calls work again.
+// A guard that stuck ON would take the database out of service for the rest of
+// the process, which is a far worse failure than the one it prevents.
+TEST_F(DbTransactionAtomicityTest, TheGuardClearsWhenTheUnitEnds) {
+    {
+        auto unit = db_->begin_unit_of_work();
+        ASSERT_TRUE(unit.is_ok());
+        // abandoned, not committed
+    }
+    std::vector<Position> after_rollback{make_position("GOOG", 1.0, 10.0)};
+    auto r1 = db_->store_positions(after_rollback, kScratchStrategyId, kScratchStrategyName,
+                                   kScratchPortfolio, kScratchTable);
+    EXPECT_TRUE(r1.is_ok()) << "the guard stayed set after an abandoned unit: " << r1.error()->what();
+
+    {
+        auto unit = db_->begin_unit_of_work();
+        ASSERT_TRUE(unit.is_ok());
+        ASSERT_TRUE(unit.value()->commit().is_ok());
+    }
+    std::vector<Position> after_commit{make_position("GOOG", 2.0, 20.0)};
+    auto r2 = db_->store_positions(after_commit, kScratchStrategyId, kScratchStrategyName,
+                                   kScratchPortfolio, kScratchTable);
+    EXPECT_TRUE(r2.is_ok()) << "the guard stayed set after a committed unit: " << r2.error()->what();
+}
+
+// Two units in a row must not be possible either -- that is the same second
+// transaction, arrived at from the other direction.
+TEST_F(DbTransactionAtomicityTest, ASecondUnitOfWorkIsRefusedWhileTheFirstIsOpen) {
+    auto first = db_->begin_unit_of_work();
+    ASSERT_TRUE(first.is_ok());
+
+    Result<std::unique_ptr<DbTransaction>> second =
+        make_error<std::unique_ptr<DbTransaction>>(ErrorCode::UNKNOWN_ERROR, "not run", "test");
+    ASSERT_NO_THROW({ second = db_->begin_unit_of_work(); });
+    ASSERT_TRUE(second.is_error()) << "two concurrent units of work on one connection";
+    // Same reasoning: begin_unit_of_work catches the usage_error from the
+    // DbTransaction constructor, so is_error() was true before the guard too.
+    EXPECT_NE(std::string(second.error()->what()).find("unit of work is open"), std::string::npos)
+        << "refused, but by pqxx rather than by the guard: " << second.error()->what();
+}

@@ -16,6 +16,19 @@ namespace trade_ngin {
  * @brief Abstract interface for database operations
  * Defines the contract that any database implementation must fulfill
  */
+/**
+ * @brief The write stream a live equity-curve row belongs to.
+ *
+ * trading.equity_curve is keyed UNIQUE (portfolio_id, strategy_id, timestamp,
+ * portfolio_type) and store_trading_equity_curve's ON CONFLICT has always named
+ * all four -- but the signature carried only three, so the fourth was whatever
+ * the column DEFAULT happened to be. It is 'system' today, which is why the
+ * upsert works; the writer simply had no way to say so, and no way to write any
+ * other stream. Naming it here makes the SQL and the signature agree, and the
+ * default reproduces the column default exactly, so nothing stored moves.
+ */
+inline constexpr const char* kDefaultEquityCurveStream = "system";
+
 class DatabaseInterface {
 public:
     virtual ~DatabaseInterface() = default;
@@ -212,37 +225,6 @@ public:
         double cvar_95, double beta, double correlation, double downside_volatility,
         const nlohmann::json& config, const std::string& table_name = "trading.results") = 0;
 
-    /**
-     * @brief Store live trading results with new schema
-     * @param strategy_id Strategy identifier
-     * @param date Trading date
-     * @param total_return Total return for the day
-     * @param volatility Portfolio volatility
-     * @param total_pnl Total P&L
-     * @param unrealized_pnl Unrealized P&L
-     * @param realized_pnl Realized P&L
-     * @param current_portfolio_value Current portfolio value
-     * @param portfolio_var Portfolio VaR
-     * @param net_leverage Net leverage
-     * @param gross_leverage Gross leverage
-     * @param max_correlation Max correlation risk
-     * @param jump_risk Jump risk (99th percentile)
-     * @param risk_scale Risk scale factor
-     * @param total_notional Total notional exposure
-     * @param active_positions Number of active positions
-     * @param config Strategy configuration JSON
-     * @param table_name Name of the table to insert into
-     * @return Result indicating success or failure
-     */
-    virtual Result<void> store_live_results(
-        const std::string& strategy_id, const Timestamp& date, double total_return,
-        double volatility, double total_pnl, double unrealized_pnl, double realized_pnl,
-        double current_portfolio_value, double daily_realized_pnl, double daily_unrealized_pnl,
-        double portfolio_var, double net_leverage, double gross_leverage,
-        double margin_leverage, double margin_cushion, double max_correlation, double jump_risk,
-        double risk_scale, double gross_notional, double net_notional, int active_positions,
-        double total_transaction_costs, double margin_posted, double cash_available,
-        const nlohmann::json& config, const std::string& table_name = "trading.live_results") = 0;
 
     /**
      * @brief Fetch previous day's cumulative aggregates from live_results
@@ -269,7 +251,8 @@ public:
     virtual Result<void> store_trading_equity_curve(
         const std::string& strategy_id, const Timestamp& timestamp, double equity,
         const std::string& portfolio_id,
-        const std::string& table_name = "trading.equity_curve") = 0;
+        const std::string& table_name = "trading.equity_curve",
+        const std::string& portfolio_type = kDefaultEquityCurveStream) = 0;
 
     /**
      * @brief Store multiple live trading equity curve points
@@ -283,7 +266,8 @@ public:
         const std::string& strategy_id,
         const std::vector<std::pair<Timestamp, double>>& equity_points,
         const std::string& portfolio_id,
-        const std::string& table_name = "trading.equity_curve") = 0;
+        const std::string& table_name = "trading.equity_curve",
+        const std::string& portfolio_type = kDefaultEquityCurveStream) = 0;
 
 protected:
     /**

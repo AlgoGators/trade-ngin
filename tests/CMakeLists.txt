@@ -14,6 +14,9 @@ set(TEST_SOURCES
     core/test_email_positions_table.cpp
     core/test_run_id_generator.cpp
     core/test_config_loader.cpp
+    core/test_backtest_window.cpp
+    core/test_static_destruction_order_db.cpp
+    core/test_to_json_temporary_hazard.cpp
     data/test_db_utils.cpp
     data/test_utc_date_contract.cpp
     data/test_postgres_param_safety.cpp
@@ -22,6 +25,9 @@ set(TEST_SOURCES
     data/test_database_pooling.cpp
     data/test_db_transaction_atomicity.cpp
     data/test_delete_stale_executions_scope_db.cpp
+    data/test_load_positions_identifier_db.cpp
+    data/test_equity_curve_stream_db.cpp
+    data/test_strategy_id_length_db.cpp
     data/test_get_trading_days_scope_db.cpp
     data/test_market_data_bus.cpp
     data/test_credential_store.cpp
@@ -95,8 +101,10 @@ set(TEST_SOURCES
     portfolio/test_portfolio_aggregation.cpp
     portfolio/test_portfolio_manager_internals.cpp
     portfolio/test_fractional_position_convergence.cpp
+    portfolio/test_price_history_ordering.cpp
     storage/test_backtest_results_manager.cpp
     storage/test_live_results_manager.cpp
+    storage/test_equity_fallback_stream_db.cpp
     storage/test_live_results_key_roundtrip_db.cpp
     live/test_live_historical_metrics.cpp
     live/test_live_historical_metrics_columns.cpp
