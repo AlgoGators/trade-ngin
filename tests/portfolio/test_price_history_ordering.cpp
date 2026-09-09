@@ -193,3 +193,88 @@ TEST_F(PriceHistoryOrderingTest, DerivedReturnsCoverEveryBarOfThisCycle) {
     EXPECT_NEAR(rets[0], 0.10, 1e-12);
     EXPECT_NEAR(rets[1], 0.10, 1e-12);
 }
+
+// ===== on_data-swallowed-futures =====
+//
+// PortfolioManager::process_market_data used to LOG an on_data failure and then
+// call get_target_positions() anyway. What comes back from a strategy that did
+// not ingest the bars is either the previous cycle's targets or -- from a
+// process whose instrument data starts empty -- zero for every symbol. Zero
+// targets against a held book is a full-book liquidation, not a no-op, and it
+// would have been produced with an ERROR in the log and exit code 0.
+//
+// The equity runner grew an assertion around this (BA-17 / E2-F43); the futures
+// runners never had one. The refusal now lives at the shared site, so it covers
+// both.
+//
+// The strategy below fails on_data while still holding a position map, which is
+// exactly the dangerous shape: there is something to liquidate, and the targets
+// that would have been read do not reflect the bars.
+namespace {
+
+class FailingOnDataStrategy : public BaseStrategy {
+public:
+    FailingOnDataStrategy(std::string id, StrategyConfig config,
+                          std::shared_ptr<DatabaseInterface> db)
+        : BaseStrategy(std::move(id), std::move(config),
+                       std::static_pointer_cast<trade_ngin::PostgresDatabase>(db)) {
+        metadata_.name = "Failing OnData Strategy";
+    }
+
+    Result<void> on_data(const std::vector<Bar>&) override {
+        ++calls_;
+        return make_error<void>(ErrorCode::MARKET_DATA_ERROR,
+                                "simulated ingest failure", "FailingOnDataStrategy");
+    }
+
+    // Deliberately non-empty and deliberately NOT derived from any bar: this is
+    // the stale target map the old code would have shipped.
+    std::unordered_map<std::string, Position> get_target_positions() const override {
+        std::unordered_map<std::string, Position> t;
+        Position p;
+        p.symbol = "ES";
+        p.quantity = 0.0;  // a full-book SELL against any held position
+        t["ES"] = p;
+        ++target_reads_;
+        return t;
+    }
+
+    int calls() const { return calls_; }
+    int target_reads() const { return target_reads_; }
+
+private:
+    int calls_{0};
+    mutable int target_reads_{0};
+};
+
+}  // namespace
+
+TEST_F(PriceHistoryOrderingTest, AFailedOnDataStopsTheCycleBeforeTargetsAreRead) {
+    StrategyConfig sc;
+    sc.capital_allocation = 1'000'000.0;
+    sc.max_leverage = 2.0;
+    sc.asset_classes = {AssetClass::EQUITIES};
+    sc.frequencies = {DataFrequency::DAILY};
+    sc.trading_params["ES"] = 1.0;
+    sc.position_limits["ES"] = 10000.0;
+
+    static int m = 0;
+    auto failing = std::make_shared<FailingOnDataStrategy>(
+        "FAILS_" + std::to_string(++m), sc, db_);
+    ASSERT_TRUE(failing->initialize().is_ok());
+    ASSERT_TRUE(failing->start().is_ok());
+    ASSERT_TRUE(manager_->add_strategy(failing, 0.3).is_ok());
+
+    auto r = manager_->process_market_data({bar_at("ES", 0, 100.0)});
+
+    ASSERT_TRUE(r.is_error())
+        << "process_market_data returned success after a strategy failed to ingest the bars; "
+           "the targets it went on to read are stale or empty (on_data-swallowed-futures)";
+    EXPECT_NE(std::string(r.error()->what()).find("did not see this cycle's prices"),
+              std::string::npos)
+        << "the failure is reported, but not as the ingest failure it is: " << r.error()->what();
+
+    EXPECT_EQ(failing->calls(), 1);
+    EXPECT_EQ(failing->target_reads(), 0)
+        << "get_target_positions() was called on a strategy whose on_data had just failed";
+}
