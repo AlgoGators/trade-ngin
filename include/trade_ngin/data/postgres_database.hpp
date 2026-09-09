@@ -341,38 +341,6 @@ public:
         double cvar_95, double beta, double correlation, double downside_volatility,
         const nlohmann::json& config, const std::string& table_name = "trading.results") override;
 
-    /**
-     * @brief Store live trading results with new schema
-     * @param strategy_id Strategy identifier
-     * @param date Trading date
-     * @param total_return Total return for the day
-     * @param volatility Portfolio volatility
-     * @param total_pnl Total P&L
-     * @param unrealized_pnl Unrealized P&L
-     * @param realized_pnl Realized P&L
-     * @param current_portfolio_value Current portfolio value
-     * @param portfolio_var Portfolio VaR
-     * @param net_leverage Net leverage
-     * @param gross_leverage Gross leverage
-     * @param max_correlation Max correlation risk
-     * @param jump_risk Jump risk (99th percentile)
-     * @param risk_scale Risk scale factor
-     * @param total_notional Total notional exposure
-     * @param active_positions Number of active positions
-     * @param config Strategy configuration JSON
-     * @param table_name Name of the table to insert into
-     * @return Result indicating success or failure
-     */
-    Result<void> store_live_results(
-        const std::string& strategy_id, const Timestamp& date, double total_return,
-        double volatility, double total_pnl, double unrealized_pnl, double realized_pnl,
-        double current_portfolio_value, double daily_realized_pnl, double daily_unrealized_pnl,
-        double portfolio_var, double net_leverage, double gross_leverage,
-        double margin_leverage, double margin_cushion, double max_correlation, double jump_risk,
-        double risk_scale, double gross_notional, double net_notional, int active_positions,
-        double total_transaction_costs, double margin_posted, double cash_available,
-        const nlohmann::json& config,
-        const std::string& table_name = "trading.live_results") override;
 
     Result<std::tuple<double, double, double>> get_previous_live_aggregates(
         const std::string& strategy_id, const std::string& portfolio_id, const Timestamp& date,
@@ -390,7 +358,8 @@ public:
     Result<void> store_trading_equity_curve(
         const std::string& strategy_id, const Timestamp& timestamp, double equity,
         const std::string& portfolio_id,
-        const std::string& table_name = "trading.equity_curve") override;
+        const std::string& table_name = "trading.equity_curve",
+        const std::string& portfolio_type = kDefaultEquityCurveStream) override;
 
     /**
      * @brief Store multiple live trading equity curve points
@@ -404,7 +373,8 @@ public:
         const std::string& strategy_id,
         const std::vector<std::pair<Timestamp, double>>& equity_points,
         const std::string& portfolio_id,
-        const std::string& table_name = "trading.equity_curve") override;
+        const std::string& table_name = "trading.equity_curve",
+        const std::string& portfolio_type = kDefaultEquityCurveStream) override;
 
     // ============================================================================
     // NEW METHODS TO REPLACE RAW SQL (Phase 0 Refactoring)

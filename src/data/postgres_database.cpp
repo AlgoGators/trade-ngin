@@ -2221,78 +2221,6 @@ Result<void> PostgresDatabase::store_trading_results(
     }
 }
 
-Result<void> PostgresDatabase::store_live_results(
-    const std::string& strategy_id, const Timestamp& date, double total_return, double volatility,
-    double total_pnl, double unrealized_pnl, double realized_pnl, double current_portfolio_value,
-    double daily_realized_pnl, double daily_unrealized_pnl, double portfolio_var,
-    double net_leverage, double gross_leverage, double margin_leverage,
-    double margin_cushion, double max_correlation, double jump_risk, double risk_scale,
-    double gross_notional, double net_notional, int active_positions, double total_transaction_costs,
-    double margin_posted, double cash_available, const nlohmann::json& config,
-    const std::string& table_name) {
-    auto validation = validate_connection();
-    if (validation.is_error())
-        return validation;
-
-    try {
-        pqxx::work txn(*connection_);
-
-        // Validate table name
-        auto table_validation = validate_table_name(table_name);
-        if (table_validation.is_error()) {
-            return table_validation;
-        }
-
-        // Note: gross_leverage C++ param maps to portfolio_leverage DB column
-        // The old gross_leverage DB column is no longer written to
-        std::string query =
-            "INSERT INTO " + table_name +
-            " (strategy_id, date, total_return, volatility, total_pnl, total_unrealized_pnl, "
-            "total_realized_pnl, "
-            "current_portfolio_value, daily_realized_pnl, daily_unrealized_pnl, portfolio_var, "
-            "net_leverage, portfolio_leverage, margin_leverage, margin_cushion, "
-            "max_correlation, jump_risk, "
-            "risk_scale, gross_notional, net_notional, active_positions, total_transaction_costs, "
-            "margin_posted, cash_available, config, portfolio_id) "
-            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, "
-            "$17, $18, $19, $20, $21, $22, $23, $24, $25, 'BASE_PORTFOLIO') "
-            "ON CONFLICT (portfolio_id, strategy_id, date) "
-            "DO UPDATE SET total_return = EXCLUDED.total_return, volatility = EXCLUDED.volatility, "
-            "total_pnl = EXCLUDED.total_pnl, total_unrealized_pnl = EXCLUDED.total_unrealized_pnl, "
-            "total_realized_pnl = EXCLUDED.total_realized_pnl, current_portfolio_value = "
-            "EXCLUDED.current_portfolio_value, "
-            "daily_realized_pnl = EXCLUDED.daily_realized_pnl, daily_unrealized_pnl = "
-            "EXCLUDED.daily_unrealized_pnl, "
-            "portfolio_var = EXCLUDED.portfolio_var, "
-            "net_leverage = EXCLUDED.net_leverage, portfolio_leverage = "
-            "EXCLUDED.portfolio_leverage, margin_leverage = EXCLUDED.margin_leverage, "
-            "margin_cushion = EXCLUDED.margin_cushion, "
-            "max_correlation = EXCLUDED.max_correlation, jump_risk = EXCLUDED.jump_risk, "
-            "risk_scale = EXCLUDED.risk_scale, gross_notional = EXCLUDED.gross_notional, "
-            "net_notional = EXCLUDED.net_notional, active_positions = EXCLUDED.active_positions, "
-            "total_transaction_costs = EXCLUDED.total_transaction_costs, margin_posted = "
-            "EXCLUDED.margin_posted, cash_available = EXCLUDED.cash_available, config = "
-            "EXCLUDED.config";
-
-        txn.exec(query, pqxx::params{strategy_id, format_timestamp(date), total_return, volatility,
-                        total_pnl, unrealized_pnl, realized_pnl, current_portfolio_value,
-                        daily_realized_pnl, daily_unrealized_pnl, portfolio_var,
-                        net_leverage, gross_leverage, margin_leverage, margin_cushion,
-                        max_correlation, jump_risk, risk_scale, gross_notional, net_notional,
-                        active_positions, total_transaction_costs, margin_posted, cash_available,
-                        config.dump()});
-
-        txn.commit();
-        INFO("Successfully stored live results for strategy: " + strategy_id + " on " +
-             format_timestamp(date));
-        return Result<void>();
-    } catch (const std::exception& e) {
-        return make_error<void>(ErrorCode::DATABASE_ERROR,
-                                "Failed to store live results: " + std::string(e.what()),
-                                "PostgresDatabase");
-    }
-}
-
 Result<std::tuple<double, double, double>> PostgresDatabase::get_previous_live_aggregates(
     const std::string& strategy_id, const std::string& portfolio_id, const Timestamp& date,
     const std::string& table_name) {
@@ -2362,7 +2290,8 @@ Result<std::tuple<double, double, double>> PostgresDatabase::get_previous_live_a
 Result<void> PostgresDatabase::store_trading_equity_curve(const std::string& strategy_id,
                                                           const Timestamp& timestamp, double equity,
                                                           const std::string& portfolio_id,
-                                                          const std::string& table_name) {
+                                                          const std::string& table_name,
+                                                          const std::string& portfolio_type) {
     auto validation = validate_connection();
     if (validation.is_error())
         return validation;
@@ -2376,13 +2305,20 @@ Result<void> PostgresDatabase::store_trading_equity_curve(const std::string& str
             return table_validation;
         }
 
+        // portfolio_type is now written explicitly instead of being left to the
+        // column DEFAULT. The ON CONFLICT target has always named it, so an
+        // INSERT that did not supply it was relying on the default matching the
+        // conflict key -- true today ('system'), and silently wrong the moment a
+        // second stream exists. Default parameter is 'system', so the row this
+        // writes is identical to the row it wrote before.
         std::string query = "INSERT INTO " + table_name +
-                            " (strategy_id, timestamp, equity, portfolio_id) "
-                            "VALUES ($1, $2, $3, $4) "
+                            " (strategy_id, timestamp, equity, portfolio_id, portfolio_type) "
+                            "VALUES ($1, $2, $3, $4, $5) "
                             "ON CONFLICT (portfolio_id, strategy_id, timestamp, portfolio_type) "
                             "DO UPDATE SET equity = EXCLUDED.equity";
 
-        txn.exec(query, pqxx::params{strategy_id, format_timestamp(timestamp), equity, portfolio_id});
+        txn.exec(query, pqxx::params{strategy_id, format_timestamp(timestamp), equity, portfolio_id,
+                                     portfolio_type});
 
         txn.commit();
         return Result<void>();
@@ -2395,7 +2331,8 @@ Result<void> PostgresDatabase::store_trading_equity_curve(const std::string& str
 
 Result<void> PostgresDatabase::store_trading_equity_curve_batch(
     const std::string& strategy_id, const std::vector<std::pair<Timestamp, double>>& equity_points,
-    const std::string& portfolio_id, const std::string& table_name) {
+    const std::string& portfolio_id, const std::string& table_name,
+    const std::string& portfolio_type) {
     auto validation = validate_connection();
     if (validation.is_error())
         return validation;
@@ -2410,13 +2347,15 @@ Result<void> PostgresDatabase::store_trading_equity_curve_batch(
         }
 
         for (const auto& [timestamp, equity] : equity_points) {
+            // Same correction as the single-point writer above.
             std::string query = "INSERT INTO " + table_name +
-                                " (strategy_id, timestamp, equity, portfolio_id) "
-                                "VALUES ($1, $2, $3, $4) "
+                                " (strategy_id, timestamp, equity, portfolio_id, portfolio_type) "
+                                "VALUES ($1, $2, $3, $4, $5) "
                                 "ON CONFLICT (portfolio_id, strategy_id, timestamp, portfolio_type) "
                                 "DO UPDATE SET equity = EXCLUDED.equity";
 
-            txn.exec(query, pqxx::params{strategy_id, format_timestamp(timestamp), equity, portfolio_id});
+            txn.exec(query, pqxx::params{strategy_id, format_timestamp(timestamp), equity,
+                                         portfolio_id, portfolio_type});
         }
 
         txn.commit();
