@@ -723,6 +723,17 @@ Result<std::unordered_map<std::string, Position>> PostgresDatabase::load_positio
     try {
         pqxx::work txn(*connection_);
 
+        // table_name is interpolated into the FROM clause below and cannot be a
+        // bound parameter, so it goes through the same allowlist every other
+        // interpolating read uses. Every caller passes a literal today; that is
+        // a property of today's callers, not of this function, and it is the
+        // only reason the omission has never been reachable.
+        auto table_validation = validate_table_name(table_name);
+        if (table_validation.is_error()) {
+            return make_error<std::unordered_map<std::string, Position>>(
+                table_validation.error()->code(), table_validation.error()->what());
+        }
+
         std::string date_str = format_timestamp(date);
         pqxx::result result;
 
