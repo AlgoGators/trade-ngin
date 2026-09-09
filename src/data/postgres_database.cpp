@@ -219,6 +219,17 @@ Result<void> PostgresDatabase::store_executions(const std::vector<ExecutionRepor
         }
         std::cout << "DEBUG: Table validation passed" << std::endl;
 
+        // E2-F36 / REG-F9: store_positions validates all three identifiers
+        // (postgres_database.cpp, store_positions_in) and store_executions
+        // validated none, though it concatenates the same values into SQL the
+        // same way. The asymmetry meant the two writers could disagree about
+        // whether a given run's identifiers were acceptable -- positions
+        // refused, executions written -- leaving a book whose fills have no
+        // matching position rows.
+        if (auto sv = validate_strategy_id(strategy_id); sv.is_error()) return sv;
+        if (auto sn = validate_strategy_id(strategy_name); sn.is_error()) return sn;
+        if (auto pv = validate_strategy_id(portfolio_id); pv.is_error()) return pv;
+
         // Defensive cleanup BEFORE starting the insert transaction to avoid nested transactions
         if (!executions.empty()) {
             std::vector<std::string> order_ids;
@@ -1702,9 +1713,38 @@ Result<void> PostgresDatabase::validate_symbols(const std::vector<std::string>& 
 }
 
 Result<void> PostgresDatabase::validate_strategy_id(const std::string& strategy_id) const {
-    if (strategy_id.empty() || strategy_id.size() > 50) {
+    // E2-F36 / REG-F9. The bound was 50, which is not a property of a strategy
+    // id -- it was the width of trading.positions.strategy_id copied into a
+    // string check. That matters because the futures runners store a JOINED id:
+    // "LIVE_" plus every enabled trend strategy's name. Two strategies give 41
+    // characters, which fits. A THIRD gives
+    // "LIVE_TREND_FOLLOWING_TREND_FOLLOWING_FAST_TREND_FOLLOWING_SLOW" -- 62 --
+    // and this function rejected it before any SQL ran.
+    //
+    // 100 is the width of the widest sibling column that already exists
+    // (trading.executions.strategy_id and every strategy_name column), so the
+    // validator is no longer the tightest constraint in the system and no longer
+    // rejects an id the schema could hold.
+    //
+    // IT IS NOT, BY ITSELF, ENOUGH, and that is deliberate rather than
+    // overlooked. trading.positions.strategy_id, live_results.strategy_id and
+    // signals.strategy_id are still varchar(50), so a 62-character id now
+    // reaches the server and is refused there:
+    //     ERROR: value too long for type character varying(50)
+    // Verified against the stage-3 scratch copy of the schema on 2026-09-09.
+    //
+    // The difference is that the refusal is now the database's, with the
+    // offending value in the message, and LiveResultsManager::save_all_results
+    // collects it into "Failed to persist live results table(s): positions"
+    // rather than the run exiting 0 (that silence was closed by F-J). Making a
+    // third strategy actually work needs a migration widening those three
+    // columns, which changes the schema and is not part of a byte-identical
+    // batch. It is recorded as the other half of this row.
+    static constexpr size_t kMaxStrategyIdLength = 100;
+    if (strategy_id.empty() || strategy_id.size() > kMaxStrategyIdLength) {
         return make_error<void>(ErrorCode::INVALID_ARGUMENT,
-                                "Invalid strategy_id: must be 1-50 characters", "PostgresDatabase");
+                                "Invalid strategy_id: must be 1-100 characters",
+                                "PostgresDatabase");
     }
 
     // Allow alphanumeric, underscore, and dash
