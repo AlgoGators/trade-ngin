@@ -3266,6 +3266,13 @@ Result<void> DbTransaction::commit() {
     try {
         txn_->commit();
         committed_ = true;
+        // The pqxx::work is finished, so the connection can carry a new
+        // transaction again -- release the busy flag HERE rather than waiting
+        // for the destructor. Holding it until scope exit would refuse a
+        // perfectly legal self-opening call made after the commit but before
+        // the scope closes, and the refusal would tell the caller to pass a
+        // transaction that no longer exists.
+        release_owner();
         return Result<void>();
     } catch (const std::exception& e) {
         return make_error<void>(ErrorCode::DATABASE_ERROR,

@@ -424,7 +424,44 @@ TEST_F(DbTransactionAtomicityTest, ASelfOpeningReadInsideAUnitIsAlsoRefused) {
     Result<std::shared_ptr<arrow::Table>> read =
         make_error<std::shared_ptr<arrow::Table>>(ErrorCode::UNKNOWN_ERROR, "not run", "test");
     ASSERT_NO_THROW({ read = db_->execute_query("SELECT 1"); });
-    EXPECT_TRUE(read.is_error()) << "a read opened a second transaction on a busy connection";
+    ASSERT_TRUE(read.is_error()) << "a read opened a second transaction on a busy connection";
+    // The message is the discriminator, not is_error(): execute_query wraps
+    // everything in a catch-all, so pre-guard pqxx's usage_error already came
+    // back as a DATABASE_ERROR and is_error() alone was green either way.
+    EXPECT_NE(std::string(read.error()->what()).find("unit of work is open"), std::string::npos)
+        << "refused, but by pqxx rather than by the guard: " << read.error()->what();
+}
+
+// A COMMITTED unit frees the connection immediately, not at scope exit.
+//
+// The first version of the guard cleared in_unit_of_work_ only in the
+// destructor and on move-assign, so the flag stayed set between a successful
+// commit() and the closing brace. pqxx is perfectly happy to start a new
+// transaction there -- the previous one is finished -- so the guard would have
+// refused a legal call, and the refusal would have told the caller to pass a
+// DbTransaction that no longer exists. Both equity call sites happen to close
+// their scope one line after committing, which is the only reason it was not
+// already reachable.
+TEST_F(DbTransactionAtomicityTest, ACommittedUnitFreesTheConnectionBeforeScopeExit) {
+    auto unit = db_->begin_unit_of_work();
+    ASSERT_TRUE(unit.is_ok()) << unit.error()->what();
+    DbTransaction& txn = *unit.value();
+
+    std::vector<Position> first{make_position("NFLX", 1.0, 500.0)};
+    ASSERT_TRUE(db_->store_positions(txn, first, kScratchStrategyId, kScratchStrategyName,
+                                     kScratchPortfolio, kScratchTable)
+                    .is_ok());
+    ASSERT_TRUE(txn.commit().is_ok());
+
+    // Still INSIDE the scope, with `txn` alive but committed.
+    std::vector<Position> second{make_position("NFLX", 2.0, 510.0)};
+    auto after = db_->store_positions(second, kScratchStrategyId, kScratchStrategyName,
+                                      kScratchPortfolio, kScratchTable);
+    EXPECT_TRUE(after.is_ok())
+        << "a self-opening call after a SUCCESSFUL commit was refused while the scope was "
+           "still open; the guard is being held past the life of the transaction: "
+        << after.error()->what();
+    EXPECT_TRUE(txn.committed());
 }
 
 // The flag must not leak: after the scope ends, ordinary calls work again.
@@ -461,5 +498,9 @@ TEST_F(DbTransactionAtomicityTest, ASecondUnitOfWorkIsRefusedWhileTheFirstIsOpen
     Result<std::unique_ptr<DbTransaction>> second =
         make_error<std::unique_ptr<DbTransaction>>(ErrorCode::UNKNOWN_ERROR, "not run", "test");
     ASSERT_NO_THROW({ second = db_->begin_unit_of_work(); });
-    EXPECT_TRUE(second.is_error()) << "two concurrent units of work on one connection";
+    ASSERT_TRUE(second.is_error()) << "two concurrent units of work on one connection";
+    // Same reasoning: begin_unit_of_work catches the usage_error from the
+    // DbTransaction constructor, so is_error() was true before the guard too.
+    EXPECT_NE(std::string(second.error()->what()).find("unit of work is open"), std::string::npos)
+        << "refused, but by pqxx rather than by the guard: " << second.error()->what();
 }
