@@ -361,11 +361,40 @@ TEST_F(PortfolioManagerInternalsTest, GetRequiredChangesReturnsDeltaAfterProcess
 
 // ===== process_market_data WHEN strategy is_running=false =====
 
-TEST_F(PortfolioManagerInternalsTest, ProcessOnStoppedStrategyContinuesWithoutCrash) {
+// Retitled and re-pointed by on_data-swallowed-futures (stage 3, T-1).
+//
+// This used to assert that a stopped strategy left process_market_data returning
+// success, with the comment "production swallows per-strategy errors and
+// continues". Swallowing is what the ledger row set out to stop: after a failed
+// on_data the manager went on to read get_target_positions(), and an empty or
+// stale target map against a held book is a full-book liquidation.
+//
+// But a STOPPED strategy is not an ingest failure, and treating it as one would
+// let a deliberately paused sleeve abort the whole portfolio. So the manager now
+// distinguishes the two: a strategy that is not RUNNING is SKIPPED -- it takes
+// no part in the cycle and its targets are not read -- while a RUNNING strategy
+// whose on_data fails stops the cycle (covered by
+// PriceHistoryOrderingTest.AFailedOnDataStopsTheCycleBeforeTargetsAreRead).
+//
+// The assertion that carries this test is the second one: the cycle succeeds AND
+// the stopped strategy contributed nothing.
+TEST_F(PortfolioManagerInternalsTest, ProcessSkipsAStoppedStrategyWithoutFailingTheCycle) {
     auto a = make_strategy("STOPPED", {"AAPL"});
     ASSERT_TRUE(manager_->add_strategy(a.strat, 0.3).is_ok());
     a.strat->stop();  // stopped strategy
     auto t0 = std::chrono::system_clock::now() - std::chrono::hours(24 * 300);
     auto r = manager_->process_market_data(bars("AAPL", 300, t0));
-    EXPECT_TRUE(r.is_ok());  // production swallows per-strategy errors and continues
+
+    EXPECT_TRUE(r.is_ok())
+        << "a stopped sleeve aborted the whole portfolio cycle; being stopped is a "
+           "lifecycle state, not a data failure";
+
+    // And it really was skipped rather than silently included: a stopped
+    // strategy holds whatever target map it had when it stopped, and that map
+    // must not reach the portfolio.
+    const auto positions = manager_->get_portfolio_positions();
+    for (const auto& [symbol, pos] : positions) {
+        EXPECT_DOUBLE_EQ(static_cast<double>(pos.quantity), 0.0)
+            << "the stopped strategy contributed a position for " << symbol;
+    }
 }

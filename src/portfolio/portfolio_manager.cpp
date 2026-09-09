@@ -229,11 +229,28 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                     }
                     DEBUG("Current positions for strategy " + id + ": " + oss.str());
 
+                    // A strategy that is not RUNNING is a lifecycle state, not an
+                    // ingest failure: it has been deliberately stopped or paused
+                    // and simply does not take part in this cycle. Skip it
+                    // BEFORE the refusal below, so that a stopped sleeve does not
+                    // abort the whole portfolio -- and skip reading its targets
+                    // too, which is the half that matters, because its target map
+                    // is whatever it held when it stopped.
+                    if (info.strategy->get_state() != StrategyState::RUNNING) {
+                        WARN("Strategy " + id + " is not RUNNING; it takes no part in this "
+                             "cycle and its target positions are not read");
+                        continue;
+                    }
+
                     // Process market data through strategy
                     auto result = info.strategy->on_data(data);
                     if (result.is_error()) {
                         // on_data-swallowed-futures. This used to log the error
                         // and carry straight on to get_target_positions() below.
+                        //
+                        // Reached only for a RUNNING strategy that failed to
+                        // ingest the bars -- a genuine data failure, not the
+                        // lifecycle case handled just above.
                         //
                         // A strategy that failed to ingest the bars returns
                         // targets computed from whatever it last saw -- the
