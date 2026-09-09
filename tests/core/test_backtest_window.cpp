@@ -25,6 +25,7 @@
 #include <stdexcept>
 
 #include "trade_ngin/core/config_loader.hpp"
+#include "trade_ngin/core/logger.hpp"
 
 using namespace trade_ngin;
 
@@ -200,6 +201,7 @@ TEST(BacktestWindowM12, TemplateConfigDoesNotShipTheKey) {
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <unistd.h>
 
 namespace {
 
@@ -232,59 +234,123 @@ TEST(LookbackValidationG03, TheTrendStrategiesDisagreeOnTheirLongestEmaWindow) {
            "the template's understated 256+ note may be stale";
 }
 
-// The check must actually fire on a config that is too short, and stay quiet on
-// one that is not -- otherwise it is decoration.
-TEST(LookbackValidationG03, AShortWindowIsRejectedByTheDerivedRequirement) {
-    // Reproduce the derivation validate_config performs, against a strategies
-    // block shaped like a real portfolio.json.
-    auto requirement_for = [](const nlohmann::json& strategies) {
-        int required = 0;
-        for (const auto& entry : strategies.items()) {
-            const auto& def = entry.value();
-            if (!(def.value("enabled_backtest", false) || def.value("enabled_live", false)))
-                continue;
-            int longest = 256;
-            if (def.contains("config") && def.at("config").contains("ema_windows")) {
-                longest = 0;
-                for (const auto& p : def.at("config").at("ema_windows")) {
-                    longest = std::max(longest, p.at(1).get<int>());
-                }
-            }
-            required = std::max(required, longest);
-        }
-        return required == 0 ? 256 : required;
-    };
+// The check must actually FIRE, through ConfigLoader::validate_config itself.
+//
+// The first version of this test reimplemented the derivation as a local lambda
+// and asserted on that, so deleting the whole G-03 block from
+// src/core/config_loader.cpp left it green. It proved the test could do
+// arithmetic, not that the shipped code does anything. This one drives the real
+// entry point and reads the real log line.
+namespace {
 
-    const nlohmann::json trend_only = {
-        {"TREND_FOLLOWING",
-         {{"enabled_live", true},
-          {"config", {{"ema_windows", {{2, 8}, {64, 256}}}}}}}};
-    EXPECT_EQ(requirement_for(trend_only), 256);
-    EXPECT_GE(2 * 252, requirement_for(trend_only))
-        << "the shipped lookback_years=2 must satisfy a trend-only book";
+// validate_config is private, so the test drives the PUBLIC entry point --
+// ConfigLoader::load() -- against a temporary config tree. That is what every
+// runner calls, so the check is exercised exactly as production exercises it.
+// G-03 WARNs, so the observable is the log; console destination puts it on
+// std::cout (logger.cpp, write_to_console_unsafe).
+struct TempConfigTree {
+    std::filesystem::path root;
+    explicit TempConfigTree(const nlohmann::json& strategies, int lookback_years,
+                            int historical_days) {
+        root = std::filesystem::temp_directory_path() /
+               ("tn_g03_" + std::to_string(::getpid()) + "_" +
+                std::to_string(reinterpret_cast<uintptr_t>(this)));
+        std::filesystem::create_directories(root / "portfolios" / "probe");
+        nlohmann::json defaults = {
+            {"database", {{"host", "h"}, {"port", "5432"}, {"username", "u"},
+                          {"password", "p"}, {"name", "n"}, {"num_connections", 2}}},
+            {"backtest", {{"lookback_years", lookback_years}, {"store_trade_details", true}}},
+            {"live", {{"historical_days", historical_days}}},
+        };
+        std::ofstream(root / "defaults.json") << defaults.dump(2);
+        nlohmann::json portfolio = {
+            {"portfolio_id", "G03_TEST_PORTFOLIO"},
+            {"initial_capital", 500000.0},
+            {"reserve_capital_pct", 0.1},
+            {"strategies", strategies},
+        };
+        std::ofstream(root / "portfolios" / "probe" / "portfolio.json") << portfolio.dump(2);
+        std::ofstream(root / "portfolios" / "probe" / "risk.json") << nlohmann::json::object().dump();
+        std::ofstream(root / "portfolios" / "probe" / "email.json") << nlohmann::json::object().dump();
+    }
+    ~TempConfigTree() {
+        std::error_code ec;
+        std::filesystem::remove_all(root, ec);
+    }
+};
 
-    const nlohmann::json with_slow = {
-        {"TREND_FOLLOWING",
-         {{"enabled_live", true}, {"config", {{"ema_windows", {{64, 256}}}}}}},
-        {"TREND_FOLLOWING_SLOW",
-         {{"enabled_live", true}, {"config", {{"ema_windows", {{128, 512}}}}}}}};
-    EXPECT_EQ(requirement_for(with_slow), 512);
-    EXPECT_LT(2 * 252, requirement_for(with_slow))
-        << "enabling the slow strategy at lookback_years=2 should be short (G-03 finding); "
-           "if this no longer holds, the finding is resolved";
+std::string load_and_capture(const TempConfigTree& tree, bool* ok) {
+    LoggerConfig lc;
+    lc.destination = LogDestination::CONSOLE;
+    lc.min_level = LogLevel::WARNING;
+    Logger::instance().initialize(lc);
+    ::testing::internal::CaptureStdout();
+    auto r = ConfigLoader::load(tree.root, "probe");
+    if (ok) *ok = r.is_ok();
+    return ::testing::internal::GetCapturedStdout();
+}
 
-    // A DISABLED strategy must not raise the requirement, or every book would
-    // warn about strategies it does not run.
-    const nlohmann::json slow_disabled = {
-        {"TREND_FOLLOWING",
-         {{"enabled_live", true}, {"config", {{"ema_windows", {{64, 256}}}}}}},
-        {"TREND_FOLLOWING_SLOW",
-         {{"enabled_live", false},
-          {"enabled_backtest", false},
-          {"config", {{"ema_windows", {{128, 512}}}}}}}};
-    EXPECT_EQ(requirement_for(slow_disabled), 256)
-        << "a disabled strategy is raising the requirement, so books would warn about "
-           "strategies they do not run";
+const nlohmann::json kTrendOnly = {
+    {"TREND_FOLLOWING",
+     {{"enabled_live", true}, {"config", {{"ema_windows", {{2, 8}, {64, 256}}}}}}}};
+
+const nlohmann::json kWithSlow = {
+    {"TREND_FOLLOWING",
+     {{"enabled_live", true}, {"config", {{"ema_windows", {{64, 256}}}}}}},
+    {"TREND_FOLLOWING_SLOW",
+     {{"enabled_live", true}, {"config", {{"ema_windows", {{128, 512}}}}}}}};
+
+const nlohmann::json kSlowDisabled = {
+    {"TREND_FOLLOWING",
+     {{"enabled_live", true}, {"config", {{"ema_windows", {{64, 256}}}}}}},
+    {"TREND_FOLLOWING_SLOW",
+     {{"enabled_live", false},
+      {"enabled_backtest", false},
+      {"config", {{"ema_windows", {{128, 512}}}}}}}};
+
+}  // namespace
+
+TEST(LookbackValidationG03, AShortWindowWarnsThroughValidateConfig) {
+    bool ok = false;
+    // 1 year = 252 trading days, short of TREND_FOLLOWING's 256.
+    const auto out = load_and_capture(TempConfigTree(kTrendOnly, 1, 730), &ok);
+    EXPECT_TRUE(ok) << "G-03 must WARN, never refuse: a short window is not a fatal config error";
+    EXPECT_NE(out.find("G-03"), std::string::npos)
+        << "validate_config emitted no G-03 warning for a 252-day window against a 256-day "
+           "requirement. Output was:\n" << out;
+    EXPECT_NE(out.find("TREND_FOLLOWING"), std::string::npos)
+        << "the warning does not name the strategy that drives the requirement";
+}
+
+TEST(LookbackValidationG03, TheShippedWindowIsSilent) {
+    bool ok = false;
+    // What production ships: 2 years (504 days) against a 256-day requirement.
+    const auto out = load_and_capture(TempConfigTree(kTrendOnly, 2, 730), &ok);
+    EXPECT_TRUE(ok);
+    EXPECT_EQ(out.find("G-03"), std::string::npos)
+        << "the shipped configuration now warns on every run, which would make the warning "
+           "noise and get it ignored. Output was:\n" << out;
+}
+
+TEST(LookbackValidationG03, EnablingTheSlowStrategyRaisesTheRequirementAndWarns) {
+    bool ok = false;
+    // 2 years = 504 days, short of the slow strategy's 512.
+    const auto out = load_and_capture(TempConfigTree(kWithSlow, 2, 730), &ok);
+    EXPECT_TRUE(ok);
+    EXPECT_NE(out.find("G-03"), std::string::npos)
+        << "enabling TREND_FOLLOWING_SLOW at lookback_years=2 gives ~504 trading days against "
+           "its 512-day longest EMA, and nothing warned. Output was:\n" << out;
+    EXPECT_NE(out.find("512"), std::string::npos)
+        << "the warning does not report the 512-day requirement the slow strategy drives";
+}
+
+TEST(LookbackValidationG03, ADisabledStrategyDoesNotRaiseTheRequirement) {
+    bool ok = false;
+    const auto out = load_and_capture(TempConfigTree(kSlowDisabled, 2, 730), &ok);
+    EXPECT_TRUE(ok);
+    EXPECT_EQ(out.find("G-03"), std::string::npos)
+        << "a DISABLED strategy raised the requirement, so every book would warn about "
+           "strategies it does not run. Output was:\n" << out;
 }
 
 // The shipped template must satisfy what the books it seeds actually enable.
@@ -307,4 +373,46 @@ TEST(LookbackValidationG03, TheShippedTemplateSatisfiesTheEnabledBooksRequiremen
     EXPECT_GE(static_cast<int>(days * 252 / 365.0), trend_requirement)
         << "config_template ships live.historical_days=" << days
         << ", fewer trading days than TREND_FOLLOWING's longest EMA needs (G-03)";
+}
+
+// ===== M-12: the APP half. =====
+//
+// Everything above tests ConfigLoader::resolve_backtest_window. None of it
+// touches the three runners, so reverting only apps/backtest/*.cpp -- putting
+// the inline now()/mktime block back and losing the escape hatch entirely --
+// left every one of those tests green. The helper existing is not the point;
+// the runners USING it is.
+//
+// Source-scanned, like the F-5 tripwire, because what is being asserted is that
+// a call site exists in a file this test does not link.
+TEST(BacktestWindowM12, AllThreeBacktestRunnersGoThroughTheSharedHelper) {
+    namespace fs = std::filesystem;
+    const char* runners[] = {
+        "apps/backtest/bt_portfolio.cpp",
+        "apps/backtest/bt_portfolio_conservative.cpp",
+        "apps/backtest/bt_equity_mean_reversion.cpp",
+    };
+    int checked = 0;
+    for (const char* rel : runners) {
+        const auto path = find_repo_file(rel);
+        ASSERT_FALSE(path.empty()) << "could not locate " << rel;
+        std::ifstream in(path);
+        std::ostringstream ss;
+        ss << in.rdbuf();
+        const std::string src = ss.str();
+
+        EXPECT_NE(src.find("resolve_backtest_window"), std::string::npos)
+            << rel << " does not call ConfigLoader::resolve_backtest_window, so its window is "
+                      "still computed inline and M-12 cannot freeze it";
+        EXPECT_NE(src.find("M-12 FROZEN BACKTEST WINDOW"), std::string::npos)
+            << rel << " does not announce a frozen window, so a frozen run would be "
+                      "indistinguishable from a production one in the log";
+        // The inline arithmetic the helper replaced must be gone, or a runner
+        // could call the helper and then quietly overwrite its answer.
+        EXPECT_EQ(src.find("start_tm.tm_year -= app_config.backtest.lookback_years"),
+                  std::string::npos)
+            << rel << " still computes the window inline as well as calling the helper";
+        ++checked;
+    }
+    EXPECT_EQ(checked, 3);
 }

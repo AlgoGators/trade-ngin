@@ -60,7 +60,20 @@ std::string dsn() {
 // Where the child re-points its stderr, so the parent can read what static
 // destruction printed. gtest's own stderr capture cannot be used here: the death
 // test already owns fd 2, and calling CaptureStderr around EXPECT_EXIT aborts.
-const char* kChildStderr = "/tmp/trade_ngin_t1_shutdown_output.txt";
+// Where the child re-points its output so the parent can read it afterwards.
+//
+// The path is passed through the ENVIRONMENT, not computed from getpid(). With
+// "threadsafe" death tests the child RE-EXECS this binary, so it has a different
+// pid from the parent: a getpid()-derived name has the child writing one file
+// and the parent reading another. The environment survives the exec, so both
+// sides agree, and the name is still unique per parent process so two concurrent
+// runs (ctest -j, a second terminal) cannot collide.
+const char* kChildOutEnv = "TN_T1_SHUTDOWN_OUT";
+
+std::string child_out_path() {
+    const char* p = std::getenv(kChildOutEnv);
+    return (p && *p) ? std::string(p) : std::string("/tmp/trade_ngin_t1_shutdown_output.txt");
+}
 
 // Runs in the re-exec'd child. Everything after the freopen goes to kChildStderr.
 //
@@ -107,7 +120,7 @@ void shutdown_through_the_pool() {
     //    shutdown in one place.
     std::cout.flush();
     std::cerr.flush();
-    if (std::freopen(kChildStderr, "w", stdout) == nullptr) std::exit(4);
+    if (std::freopen(child_out_path().c_str(), "w", stdout) == nullptr) std::exit(4);
     if (dup2(fileno(stdout), fileno(stderr)) == -1) std::exit(5);
     std::fprintf(stdout, "CHILD_REACHED_EXIT\n");
     std::fflush(stdout);
@@ -118,13 +131,13 @@ void shutdown_through_the_pool() {
 }
 
 std::string read_child_stderr() {
-    std::ifstream in(kChildStderr, std::ios::binary);
+    std::ifstream in(child_out_path(), std::ios::binary);
     std::ostringstream ss;
     ss << in.rdbuf();
     return ss.str();
 }
 
-void clear_child_stderr() { std::remove(kChildStderr); }
+void clear_child_stderr() { std::remove(child_out_path().c_str()); }
 
 // Deliberately raw libpqxx, NOT PostgresDatabase.
 //
@@ -156,6 +169,17 @@ protected:
         // exec builds every singleton from nothing, in the order the test body
         // chooses.
         ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+
+        // Fix the output path for BOTH sides of the coming exec.
+        //
+        // The re-exec'd child runs this SetUp too, so the overwrite flag must be
+        // 0: with 1 the child would replace the inherited value with a path
+        // built from its OWN pid, write there, and the parent would read an
+        // empty file. Only the first process in the chain -- the parent -- gets
+        // to choose the name.
+        static const std::string out_path =
+            "/tmp/trade_ngin_t1_shutdown_output_" + std::to_string(::getpid()) + ".txt";
+        ::setenv(kChildOutEnv, out_path.c_str(), /*overwrite=*/0);
 
         const bool require_db = [] {
             const char* v = std::getenv("TRADE_NGIN_REQUIRE_DB");

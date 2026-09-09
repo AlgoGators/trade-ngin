@@ -328,6 +328,18 @@ TEST(LoggerRetention, PartNumbersOrderNumericallyNotLexically) {
     };
     for (const auto& n : parts) touch(dir.path() / n);
 
+    // Invert mtime against part order, exactly as the sibling test does for the
+    // session timestamp. Without this the test is a FALSE PASS: touch() creates
+    // the files in part order and APFS mtimes are nanosecond-resolution and
+    // strictly increasing, so an mtime sort happens to evict part2 as well and
+    // the test stays green with the fix reverted. Giving part2 the NEWEST mtime
+    // means only a numeric read of the part number can evict it.
+    const auto base = std::filesystem::file_time_type::clock::now();
+    for (size_t i = 0; i < parts.size(); ++i) {
+        std::filesystem::last_write_time(
+            dir.path() / parts[i], base - std::chrono::hours(24 * static_cast<int>(i)));
+    }
+
     Logger::instance().initialize(file_config(dir.path(), "live_equity_mr"));
     INFO("one line so the new session's file exists");
 

@@ -3,6 +3,7 @@
 #include "trade_ngin/core/logger.hpp"
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>   // strtol, used by the retention sort key
 #include <cstring>
 #include <filesystem>
 #include <vector>

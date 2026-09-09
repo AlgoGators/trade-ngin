@@ -66,11 +66,16 @@ struct Hit {
 // Any `<something>()` immediately followed by `.items()`, i.e. items() called
 // directly on the result of a CALL rather than on a named object. That covers
 // to_json().items() and every other by-value returner with the same hazard.
+// Set to the number of files actually read, so a scan that found no source
+// tree cannot be mistaken for a scan that found no hits.
+int g_files_scanned = 0;
+
 std::vector<Hit> scan(const std::vector<std::string>& dirs) {
     namespace fs = std::filesystem;
     // A call, then optional whitespace/newline, then .items()
     const std::regex pattern(R"(\)\s*\.\s*items\s*\()");
     std::vector<Hit> hits;
+    g_files_scanned = 0;
     for (const auto& rel : dirs) {
         auto dir = find_repo_dir(rel);
         if (dir.empty()) continue;
@@ -78,6 +83,7 @@ std::vector<Hit> scan(const std::vector<std::string>& dirs) {
             if (!e.is_regular_file()) continue;
             const auto ext = e.path().extension();
             if (ext != ".cpp" && ext != ".hpp" && ext != ".h") continue;
+            ++g_files_scanned;
             std::istringstream in(read_all(e.path()));
             std::string line;
             int n = 0;
@@ -100,6 +106,12 @@ std::vector<Hit> scan(const std::vector<std::string>& dirs) {
 
 TEST(ToJsonTemporaryHazard, NoCallSiteIteratesItemsOnATemporary) {
     const auto hits = scan({"src", "include", "apps"});
+
+    // Without this the test passes having scanned NOTHING whenever the binary
+    // runs somewhere find_repo_dir cannot walk up to the tree.
+    ASSERT_GT(g_files_scanned, 100)
+        << "the scanner found only " << g_files_scanned
+        << " source files; it is not looking at the repository, so its silence means nothing";
 
     std::ostringstream report;
     for (const auto& h : hits) {
@@ -188,6 +200,7 @@ TEST(DeadCodeRemoved, NeitherDeletedSymbolIsReferencedAnywhere) {
          "dead logger member; the real re-init guard is log_file_.close()"},
     };
 
+    int files = 0;
     for (const auto& g : gone) {
         std::vector<std::string> hits;
         for (const auto& rel : {"src", "include", "apps"}) {
@@ -197,6 +210,7 @@ TEST(DeadCodeRemoved, NeitherDeletedSymbolIsReferencedAnywhere) {
                 if (!e.is_regular_file()) continue;
                 const auto ext = e.path().extension();
                 if (ext != ".cpp" && ext != ".hpp" && ext != ".h") continue;
+                ++files;
                 std::istringstream in(read_all(e.path()));
                 std::string line;
                 int n = 0;
@@ -217,4 +231,7 @@ TEST(DeadCodeRemoved, NeitherDeletedSymbolIsReferencedAnywhere) {
             << "dead code (" << g.why << "); if it is genuinely needed now, it needs a "
             << "definition and a test, not a resurrection." << where.str();
     }
+    ASSERT_GT(files, 100)
+        << "the scanner found only " << files
+        << " source files; it is not looking at the repository, so its silence means nothing";
 }

@@ -33,47 +33,6 @@ using namespace trade_ngin::testing;
 
 namespace {
 
-// A strategy whose price history is a pure function of the bars it has been
-// fed -- which is the contract PortfolioManager depends on and the reason the
-// call order matters. MockStrategy cannot be used here: it inherits
-// BaseStrategy::get_price_history, which returns an empty map unconditionally,
-// so it would report "empty" whichever order the manager used.
-class HistoryRecordingStrategy : public BaseStrategy {
-public:
-    HistoryRecordingStrategy(std::string id, StrategyConfig config,
-                             std::shared_ptr<DatabaseInterface> db)
-        : BaseStrategy(std::move(id), std::move(config),
-                       std::static_pointer_cast<trade_ngin::PostgresDatabase>(db)) {
-        metadata_.name = "History Recording Strategy";
-    }
-
-    Result<void> on_data(const std::vector<Bar>& data) override {
-        auto base = BaseStrategy::on_data(data);
-        if (base.is_error()) return base;
-        for (const auto& bar : data) {
-            history_[bar.symbol].push_back(bar.close.as_double());
-            Position pos;
-            pos.symbol = bar.symbol;
-            pos.quantity = 1.0;
-            pos.average_price = bar.close;
-            pos.last_update = bar.timestamp;
-            positions_[bar.symbol] = pos;
-        }
-        ++feeds_;
-        return Result<void>();
-    }
-
-    std::unordered_map<std::string, std::vector<double>> get_price_history() const override {
-        return history_;
-    }
-
-    int feeds() const { return feeds_; }
-
-private:
-    std::unordered_map<std::string, std::vector<double>> history_;
-    int feeds_{0};
-};
-
 Bar bar_at(const std::string& symbol, int day_offset, double close) {
     Bar b;
     b.symbol = symbol;
@@ -110,23 +69,10 @@ protected:
         manager_ = std::make_unique<PortfolioManager>(plain_config(),
                                                       "PM_HISTORY_" + std::to_string(++n));
 
-        StrategyConfig sc;
-        sc.capital_allocation = 1'000'000.0;
-        sc.max_leverage = 2.0;
-        sc.asset_classes = {AssetClass::EQUITIES};
-        sc.frequencies = {DataFrequency::DAILY};
-        sc.trading_params["ES"] = 1.0;
-        sc.position_limits["ES"] = 10000.0;
-        strategy_ = std::make_shared<HistoryRecordingStrategy>(
-            "HIST_" + std::to_string(n), sc, db_);
-        ASSERT_TRUE(strategy_->initialize().is_ok());
-        ASSERT_TRUE(strategy_->start().is_ok());
-        ASSERT_TRUE(manager_->add_strategy(strategy_, 0.3).is_ok());
     }
 
     void TearDown() override {
         manager_.reset();
-        strategy_.reset();
         db_.reset();
         StateManager::reset_instance();
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
@@ -135,7 +81,6 @@ protected:
 
     std::shared_ptr<MockPostgresDatabase> db_;
     std::unique_ptr<PortfolioManager> manager_;
-    std::shared_ptr<HistoryRecordingStrategy> strategy_;
 };
 
 
