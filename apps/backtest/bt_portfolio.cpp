@@ -118,19 +118,20 @@ int main() {
         // Set portfolio_id from loaded config
         config.portfolio_id = app_config.portfolio_id;
 
-        // Convert timestamps to proper format
+        // Window resolution lives in ConfigLoader::resolve_backtest_window (M-12).
+        // With backtest.frozen_end_date unset -- the deployed state -- it is the
+        // same now()/lookback_years arithmetic this block used to do inline.
+        bool frozen_window = false;
         auto now = std::chrono::system_clock::now();
-        auto now_time_t = std::chrono::system_clock::to_time_t(now);
-        std::tm* now_tm = std::localtime(&now_time_t);
-
-        // Set start date based on lookback_years from config
-        std::tm start_tm = *now_tm;
-        start_tm.tm_year -= app_config.backtest.lookback_years;
-        auto start_time_t = std::mktime(&start_tm);
-        config.strategy_config.start_date = std::chrono::system_clock::from_time_t(start_time_t);
-
-        // Set end date to today
-        config.strategy_config.end_date = now;
+        auto window = trade_ngin::ConfigLoader::resolve_backtest_window(
+            app_config.backtest, now, &frozen_window);
+        config.strategy_config.start_date = window.first;
+        config.strategy_config.end_date = window.second;
+        if (frozen_window) {
+            WARN("M-12 FROZEN BACKTEST WINDOW in force: end_date pinned to "
+                 + app_config.backtest.frozen_end_date
+                 + ". This is a TEST configuration; a production run must not show this line.");
+        }
 
         config.strategy_config.asset_class = trade_ngin::AssetClass::FUTURES;
         config.strategy_config.data_freq = trade_ngin::DataFrequency::DAILY;

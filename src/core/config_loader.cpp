@@ -2,8 +2,13 @@
 
 #include "trade_ngin/core/config_loader.hpp"
 
+#include <cctype>
+#include <ctime>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
+#include <stdexcept>
+#include <string>
 
 #include "trade_ngin/core/logger.hpp"
 
@@ -175,6 +180,68 @@ Result<void> ConfigLoader::validate_config(const AppConfig& config) {
                                 "ConfigLoader");
     }
     return Result<void>();
+}
+
+std::pair<Timestamp, Timestamp> ConfigLoader::resolve_backtest_window(
+    const BacktestSpecificConfig& backtest, Timestamp now, bool* froze) {
+    if (froze) *froze = false;
+
+    // The now() path, byte-for-byte what the three bt runners did inline.
+    auto now_time_t = std::chrono::system_clock::to_time_t(now);
+    std::tm anchor_tm{};
+    std::tm* local_tm = std::localtime(&now_time_t);
+    if (local_tm != nullptr) anchor_tm = *local_tm;
+    Timestamp end_date = now;
+
+    // M-12: the frozen window, taken only when a config explicitly carries the
+    // key. Anything unparseable is refused rather than silently ignored -- a
+    // typo in a test config that quietly reverted to now() would reintroduce the
+    // very drift this exists to remove, and it would do it invisibly.
+    if (!backtest.frozen_end_date.empty()) {
+        // Parsed by hand rather than with std::get_time: libc++'s "%Y-%m-%d"
+        // accepts "03-05-2026" (year 3) and stops happily at "2026-05" without
+        // setting failbit, so a typo would be taken as a real date and the run
+        // would be frozen to the wrong window while looking fine.
+        const std::string& fd = backtest.frozen_end_date;
+        auto all_digits = [&fd](size_t off, size_t n) {
+            for (size_t k = 0; k < n; ++k) {
+                if (!std::isdigit(static_cast<unsigned char>(fd[off + k]))) return false;
+            }
+            return true;
+        };
+        if (fd.size() != 10 || fd[4] != '-' || fd[7] != '-' || !all_digits(0, 4) ||
+            !all_digits(5, 2) || !all_digits(8, 2)) {
+            throw std::runtime_error(
+                "backtest.frozen_end_date is not YYYY-MM-DD: '" + fd + "'");
+        }
+        const int fy = std::stoi(fd.substr(0, 4));
+        const int fm = std::stoi(fd.substr(5, 2));
+        const int fdy = std::stoi(fd.substr(8, 2));
+        if (fm < 1 || fm > 12 || fdy < 1 || fdy > 31) {
+            throw std::runtime_error(
+                "backtest.frozen_end_date is not a real calendar date: '" + fd + "'");
+        }
+        std::tm frozen_tm{};
+        frozen_tm.tm_year = fy - 1900;
+        frozen_tm.tm_mon = fm - 1;
+        frozen_tm.tm_mday = fdy;
+        frozen_tm.tm_hour = 0;
+        frozen_tm.tm_min = 0;
+        frozen_tm.tm_sec = 0;
+        frozen_tm.tm_isdst = -1;  // let mktime resolve DST for that local date
+        std::tm normalise = frozen_tm;
+        auto frozen_time_t = std::mktime(&normalise);
+        end_date = std::chrono::system_clock::from_time_t(frozen_time_t);
+        anchor_tm = frozen_tm;
+        if (froze) *froze = true;
+    }
+
+    std::tm start_tm = anchor_tm;
+    start_tm.tm_year -= backtest.lookback_years;
+    auto start_time_t = std::mktime(&start_tm);
+    Timestamp start_date = std::chrono::system_clock::from_time_t(start_time_t);
+
+    return {start_date, end_date};
 }
 
 void ConfigLoader::log_config_summary(const AppConfig& config) {
