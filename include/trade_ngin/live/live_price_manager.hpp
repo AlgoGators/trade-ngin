@@ -15,11 +15,8 @@ namespace trade_ngin {
  */
 class LivePriceManager : public PriceManagerBase {
 private:
-    std::shared_ptr<PostgresDatabase> db_;
-
     // Cache for different price types
     mutable std::unordered_map<std::string, double> latest_prices_;  // Most recent prices
-    mutable std::unordered_map<std::string, double> settlement_prices_;  // Settlement/close prices
     mutable std::unordered_map<std::string, double> previous_day_prices_;  // T-1 close prices
     mutable std::unordered_map<std::string, double> two_days_ago_prices_;  // T-2 close prices
 
@@ -27,34 +24,18 @@ private:
 
 public:
     /**
-     * Constructor
+     * Constructor.
+     *
+     * C-04: this used to take and hold a PostgresDatabase. The only members that
+     * ever read it were load_close_prices (a stub returning an empty map),
+     * get_settlement_price (a stub returning DATA_NOT_FOUND) and the two loaders
+     * that wrapped the first -- all removed here, none of them reachable from
+     * any runner. Every price this class actually serves arrives through
+     * update_from_bars, which never touched the database. Keeping the handle
+     * would go on advertising a database-backed price source that does not
+     * exist.
      */
-    explicit LivePriceManager(std::shared_ptr<PostgresDatabase> db)
-        : db_(std::move(db)) {}
-
-    /**
-     * Load close prices for a specific date
-     * Replaces the manual SQL queries in live_trend.cpp
-     */
-    Result<std::unordered_map<std::string, double>> load_close_prices(
-        const std::vector<std::string>& symbols,
-        const Timestamp& date) const;
-
-    /**
-     * Load previous day (T-1) close prices
-     * Used for execution prices and current market values
-     */
-    Result<void> load_previous_day_prices(
-        const std::vector<std::string>& symbols,
-        const Timestamp& current_date);
-
-    /**
-     * Load two days ago (T-2) close prices
-     * Used for Day T-1 PnL finalization
-     */
-    Result<void> load_two_days_ago_prices(
-        const std::vector<std::string>& symbols,
-        const Timestamp& current_date);
+    LivePriceManager() = default;
 
     /**
      * Update prices from live market data (bars)
@@ -112,14 +93,6 @@ public:
         std::optional<Timestamp> t1_date = std::nullopt);
 
     /**
-     * Get settlement/close price for a symbol on a date
-     * Replaces the settlement price queries in live_trend.cpp
-     */
-    Result<double> get_settlement_price(
-        const std::string& symbol,
-        const Timestamp& date) const;
-
-    /**
      * Get latest cached price for a symbol
      */
     Result<double> get_latest_price(const std::string& symbol) const;
@@ -153,7 +126,6 @@ public:
      */
     void clear_caches() {
         latest_prices_.clear();
-        settlement_prices_.clear();
         previous_day_prices_.clear();
         two_days_ago_prices_.clear();
     }

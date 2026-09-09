@@ -1,10 +1,12 @@
-// Coverage for live_price_manager.cpp. Most methods either don't touch the
-// database (update_from_bars, get_*_price, clear_caches) or have stub bodies
-// that don't dereference db_ (load_close_prices). We can pass nullptr for the
-// DB pointer and exercise everything that matters.
+// Coverage for live_price_manager.cpp. Nothing here touches the database,
+// because after C-04 the class does not have one: every price it serves arrives
+// through update_from_bars and is read back through get_*_price / clear_caches.
 
 #include <gtest/gtest.h>
 #include <chrono>
+#include <string>
+#include <type_traits>
+#include <utility>
 #include <vector>
 #include "trade_ngin/live/live_price_manager.hpp"
 
@@ -32,42 +34,48 @@ Bar make_bar(const std::string& symbol, Timestamp t, double close) {
 
 class LivePriceManagerTest : public ::testing::Test {};
 
-// ===== load_close_prices stub returns empty for empty symbol set =====
+// ===== C-04: the placeholder API is gone, and must stay gone =====
+//
+// Four methods were removed here, all unreachable from any runner:
+//   load_close_prices        -- returned an empty map, forever
+//   get_settlement_price     -- returned DATA_NOT_FOUND, forever
+//   load_previous_day_prices -- wrapped the first, so it OVERWROTE the T-1 cache
+//   load_two_days_ago_prices -- likewise for T-2
+//
+// The last two are why this was worth removing rather than leaving alone. They
+// look like the way to load T-1 and T-2 prices. Calling either would have wiped
+// the cache update_from_bars had just filled, and the runner would then have
+// priced a live book off an empty price map. Nothing called them, which is the
+// only reason that never happened.
+//
+// The pins below are compile-time on purpose: the failure being prevented is one
+// of these names existing again. If any comes back, this file stops compiling
+// and whoever brought it back has to state what it now does.
+template <typename T, typename = void>
+struct has_load_close_prices : std::false_type {};
+template <typename T>
+struct has_load_close_prices<
+    T, std::void_t<decltype(std::declval<const T&>().load_close_prices(
+           std::declval<std::vector<std::string>>(), std::declval<Timestamp>()))>>
+    : std::true_type {};
 
-TEST_F(LivePriceManagerTest, LoadCloseEmptySymbolsReturnsEmpty) {
-    LivePriceManager mgr(nullptr);
-    auto r = mgr.load_close_prices({}, ts_seconds(0));
-    ASSERT_TRUE(r.is_ok());
-    EXPECT_TRUE(r.value().empty());
-}
+template <typename T, typename = void>
+struct has_get_settlement_price : std::false_type {};
+template <typename T>
+struct has_get_settlement_price<
+    T, std::void_t<decltype(std::declval<const T&>().get_settlement_price(
+           std::declval<std::string>(), std::declval<Timestamp>()))>>
+    : std::true_type {};
 
-TEST_F(LivePriceManagerTest, LoadCloseNonEmptySymbolsReturnsEmptyStub) {
-    LivePriceManager mgr(nullptr);
-    auto r = mgr.load_close_prices({"ES", "CL"}, ts_seconds(0));
-    ASSERT_TRUE(r.is_ok());
-    EXPECT_TRUE(r.value().empty());
-}
-
-// ===== load_previous_day_prices / load_two_days_ago_prices populate caches =====
-
-TEST_F(LivePriceManagerTest, LoadPreviousDayPricesPopulatesCacheEvenWhenStubReturnsEmpty) {
-    LivePriceManager mgr(nullptr);
-    auto r = mgr.load_previous_day_prices({"ES"}, std::chrono::system_clock::now());
-    ASSERT_TRUE(r.is_ok());
-    EXPECT_TRUE(mgr.get_all_previous_day_prices().empty());
-}
-
-TEST_F(LivePriceManagerTest, LoadTwoDaysAgoPricesPopulatesCacheEvenWhenStubReturnsEmpty) {
-    LivePriceManager mgr(nullptr);
-    auto r = mgr.load_two_days_ago_prices({"ES"}, std::chrono::system_clock::now());
-    ASSERT_TRUE(r.is_ok());
-    EXPECT_TRUE(mgr.get_all_two_days_ago_prices().empty());
-}
+static_assert(!has_load_close_prices<LivePriceManager>::value,
+              "load_close_prices is back; it was a stub that returned an empty map (C-04)");
+static_assert(!has_get_settlement_price<LivePriceManager>::value,
+              "get_settlement_price is back; it was a stub that returned DATA_NOT_FOUND (C-04)");
 
 // ===== update_from_bars =====
 
 TEST_F(LivePriceManagerTest, UpdateFromBarsT1MatchYesterdayUpdatesPreviousDayCache) {
-    LivePriceManager mgr(nullptr);
+    LivePriceManager mgr;
     auto today = std::chrono::system_clock::now();
     auto yesterday = today - std::chrono::hours(24);
     std::vector<Bar> bars{make_bar("ES", yesterday, 4500.0)};
@@ -79,7 +87,7 @@ TEST_F(LivePriceManagerTest, UpdateFromBarsT1MatchYesterdayUpdatesPreviousDayCac
 }
 
 TEST_F(LivePriceManagerTest, UpdateFromBarsTwoBarsPopulatesT2Cache) {
-    LivePriceManager mgr(nullptr);
+    LivePriceManager mgr;
     auto today = std::chrono::system_clock::now();
     auto yesterday = today - std::chrono::hours(24);
     auto two_days_ago = today - std::chrono::hours(48);
@@ -98,7 +106,7 @@ TEST_F(LivePriceManagerTest, UpdateFromBarsTwoBarsPopulatesT2Cache) {
 }
 
 TEST_F(LivePriceManagerTest, UpdateFromBarsLastBarNotFromYesterdaySkipsT1) {
-    LivePriceManager mgr(nullptr);
+    LivePriceManager mgr;
     auto today = std::chrono::system_clock::now();
     auto three_days_ago = today - std::chrono::hours(72);
     std::vector<Bar> bars{make_bar("ZC", three_days_ago, 600.0)};
@@ -138,7 +146,7 @@ constexpr int64_t kMon = kThu + 4 * kDay;
 
 // The futures invariant: passing no t1_date must behave exactly as before.
 TEST_F(LivePriceManagerTest, OmittingT1DateKeepsTheMinus24hRuleForFuturesCallers) {
-    LivePriceManager mgr(nullptr);
+    LivePriceManager mgr;
     std::vector<Bar> bars{make_bar("ZC", ts_seconds(kThu), 600.0),
                           make_bar("ZC", ts_seconds(kFri), 610.0)};
 
@@ -152,7 +160,7 @@ TEST_F(LivePriceManagerTest, OmittingT1DateKeepsTheMinus24hRuleForFuturesCallers
     // This is CORRECT for futures and must not become a fallback: falling back to Friday
     // here would book (Fri-Thu) onto the Sunday row, a move the Saturday run already
     // booked onto Friday's row.
-    LivePriceManager mgr2(nullptr);
+    LivePriceManager mgr2;
     ASSERT_TRUE(mgr2.update_from_bars(bars, ts_seconds(kMon)).is_ok());
     EXPECT_TRUE(mgr2.get_previous_day_price("ZC").is_error())
         << "The default path gained a T-1 fallback. Futures relies on the skip: with a "
@@ -161,7 +169,7 @@ TEST_F(LivePriceManagerTest, OmittingT1DateKeepsTheMinus24hRuleForFuturesCallers
 
 // The equity fix: a Monday run resolving Friday must find Friday's bar.
 TEST_F(LivePriceManagerTest, CallerResolvedT1FindsFridayOnAMondayRun) {
-    LivePriceManager mgr(nullptr);
+    LivePriceManager mgr;
     std::vector<Bar> bars{make_bar("AAPL", ts_seconds(kThu), 100.0),
                           make_bar("AAPL", ts_seconds(kFri), 105.0)};
 
@@ -184,7 +192,7 @@ TEST_F(LivePriceManagerTest, CallerResolvedT1FindsFridayOnAMondayRun) {
 // The reason the lookup SEARCHES rather than testing back(): on a live run the vendor may
 // already have posted today's bar. A back()-only test would then reject a good Friday.
 TEST_F(LivePriceManagerTest, CallerResolvedT1FindsTheBarEvenWhenALaterBarExists) {
-    LivePriceManager mgr(nullptr);
+    LivePriceManager mgr;
     std::vector<Bar> bars{make_bar("MSFT", ts_seconds(kThu), 200.0),
                           make_bar("MSFT", ts_seconds(kFri), 205.0),
                           make_bar("MSFT", ts_seconds(kMon), 210.0)};  // today, already posted
@@ -200,7 +208,7 @@ TEST_F(LivePriceManagerTest, CallerResolvedT1FindsTheBarEvenWhenALaterBarExists)
 
 // A genuine data gap on a real trading day must still be skipped, not papered over.
 TEST_F(LivePriceManagerTest, CallerResolvedT1StillSkipsWhenThatDayHasNoBar) {
-    LivePriceManager mgr(nullptr);
+    LivePriceManager mgr;
     std::vector<Bar> bars{make_bar("ABEV", ts_seconds(kThu), 5.0)};  // nothing on Friday
 
     ASSERT_TRUE(mgr.update_from_bars(bars, ts_seconds(kMon), ts_seconds(kFri)).is_ok());
@@ -220,7 +228,7 @@ TEST_F(LivePriceManagerTest, CallerResolvedT1IsIdempotentAcrossRepeatedRuns) {
 
     double first = 0.0;
     for (int64_t ref : {kSat, kSun, kMon}) {
-        LivePriceManager mgr(nullptr);
+        LivePriceManager mgr;
         ASSERT_TRUE(mgr.update_from_bars(bars, ts_seconds(ref), ts_seconds(kFri)).is_ok());
         auto t1 = mgr.get_previous_day_price("GOOGL");
         ASSERT_TRUE(t1.is_ok()) << "Run with reference day " << ref << " lost the T-1 price.";
@@ -234,19 +242,19 @@ TEST_F(LivePriceManagerTest, CallerResolvedT1IsIdempotentAcrossRepeatedRuns) {
 // ===== get_*_price miss paths =====
 
 TEST_F(LivePriceManagerTest, GetPreviousDayPriceMissingSymbolReturnsError) {
-    LivePriceManager mgr(nullptr);
+    LivePriceManager mgr;
     auto r = mgr.get_previous_day_price("UNKNOWN");
     EXPECT_TRUE(r.is_error());
 }
 
 TEST_F(LivePriceManagerTest, GetTwoDaysAgoPriceMissingSymbolReturnsError) {
-    LivePriceManager mgr(nullptr);
+    LivePriceManager mgr;
     auto r = mgr.get_two_days_ago_price("UNKNOWN");
     EXPECT_TRUE(r.is_error());
 }
 
 TEST_F(LivePriceManagerTest, GetLatestPriceFallsBackToPreviousDay) {
-    LivePriceManager mgr(nullptr);
+    LivePriceManager mgr;
     auto today = std::chrono::system_clock::now();
     auto yesterday = today - std::chrono::hours(24);
     mgr.update_from_bars({make_bar("ES", yesterday, 4500.0)}, today);
@@ -255,16 +263,10 @@ TEST_F(LivePriceManagerTest, GetLatestPriceFallsBackToPreviousDay) {
     EXPECT_DOUBLE_EQ(r.value(), 4500.0);
 }
 
-TEST_F(LivePriceManagerTest, GetSettlementPriceMissingReturnsError) {
-    LivePriceManager mgr(nullptr);
-    auto r = mgr.get_settlement_price("ES", ts_seconds(0));
-    EXPECT_TRUE(r.is_error());
-}
-
 // ===== Base-interface get_price / get_prices =====
 
 TEST_F(LivePriceManagerTest, GetPriceBaseInterfaceUsesLatestCache) {
-    LivePriceManager mgr(nullptr);
+    LivePriceManager mgr;
     auto today = std::chrono::system_clock::now();
     auto yesterday = today - std::chrono::hours(24);
     mgr.update_from_bars({make_bar("ES", yesterday, 4500.0)}, today);
@@ -274,7 +276,7 @@ TEST_F(LivePriceManagerTest, GetPriceBaseInterfaceUsesLatestCache) {
 }
 
 TEST_F(LivePriceManagerTest, GetPricesReturnsOnlyKnownSymbols) {
-    LivePriceManager mgr(nullptr);
+    LivePriceManager mgr;
     auto today = std::chrono::system_clock::now();
     auto yesterday = today - std::chrono::hours(24);
     mgr.update_from_bars({make_bar("ES", yesterday, 4500.0)}, today);
@@ -287,7 +289,7 @@ TEST_F(LivePriceManagerTest, GetPricesReturnsOnlyKnownSymbols) {
 // ===== clear_caches =====
 
 TEST_F(LivePriceManagerTest, ClearCachesRemovesAllStoredPrices) {
-    LivePriceManager mgr(nullptr);
+    LivePriceManager mgr;
     auto today = std::chrono::system_clock::now();
     auto yesterday = today - std::chrono::hours(24);
     mgr.update_from_bars({make_bar("ES", yesterday, 4500.0)}, today);
