@@ -178,24 +178,35 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                                         "PortfolioManager");
             }
 
-            // PM-price-history: update_historical_returns() USED TO RUN HERE,
-            // before the on_data loop below. It has been moved to just after
-            // that loop.
+            // PM-price-history: MEASURED, AND LEFT ALONE.
             //
-            // It reads each strategy's get_price_history(), which is only
-            // populated by that strategy's on_data(). Running it first meant it
-            // read the state left by the PREVIOUS cycle, so under a single feed
-            // (7d69fe89) price_history_ and historical_returns_ stayed empty on
-            // the first cycle and lagged by one on every cycle after it. Their
-            // only consumer is optimize_positions(), which runs later in this
-            // same call -- so the optimiser was covarying yesterday's history,
-            // or none at all.
+            // update_historical_returns() reads each strategy's
+            // get_price_history(), which only that strategy's on_data()
+            // populates -- and it runs BEFORE the on_data loop below, so it
+            // reads the previous cycle's state. Its output feeds
+            // optimize_positions() later in this same call, so the optimiser
+            // covaries history that does not include the bars it is optimising
+            // against.
             //
-            // The futures path feeds each strategy twice per cycle today, so the
-            // history is already populated by the time the old call site ran;
-            // mean reversion runs with optimisation off. That is why this is
-            // expected to be byte-identical on both books, and why the A/B is
-            // the evidence rather than an argument.
+            // Moving this call after the loop was tried in stage 3 T-1 on the
+            // expectation that the futures double feed made it byte-identical.
+            // It is NOT. The R6 A/B on bt_portfolio_conservative, same frozen
+            // window on both sides, measured:
+            //
+            //   executions       399 -> 407
+            //   final_positions  2982 -> 3001
+            //   total_return     0.091331 -> 0.092379
+            //   sharpe_ratio     0.608967 -> 0.619561
+            //   profit_factor    0.575942 -> 0.773106
+            //   max_loss         34247.70 -> 27489.28
+            //   first equity divergence 2025-06-30
+            //
+            // and reverting this one change restored every table to identical.
+            // So it changes positions and costs: class C, needing its own
+            // decision and its own A/B, not a byte-identical cleanup.
+            //
+            // Do not "fix" the ordering here without that decision.
+            update_historical_returns(data);
 
             // Store current positions for each strategy to detect changes
             for (const auto& [id, info] : strategies_) {
@@ -305,10 +316,6 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                 }
             }
 
-            // PM-price-history: now that every strategy has ingested this
-            // cycle's bars, its price history is current and the returns derived
-            // from it describe the data the optimiser is about to act on.
-            update_historical_returns(data);
         }
 
         //  Iterative dynamic opt + risk management loop

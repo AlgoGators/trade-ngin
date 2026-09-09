@@ -1,28 +1,14 @@
-// PM-price-history: PortfolioManager::process_market_data copied each strategy's
-// price history BEFORE feeding that strategy the bars.
+// PortfolioManager cycle behaviour.
 //
-// update_historical_returns() reads strategy->get_price_history(), and a
-// strategy's price history is built by its own on_data(). Calling it first
-// therefore read the PREVIOUS cycle's state: empty on the first cycle, one cycle
-// stale on every cycle after. The only consumer of what it produces --
-// price_history_ and the historical_returns_ derived from it -- is
-// optimize_positions(), which runs later in the very same call. So the optimiser
-// was building its covariance from data that did not include the bars it was
-// optimising against, and on a first cycle from no data at all.
+// This file was created for PM-price-history (the order of
+// update_historical_returns against the on_data loop). THAT CHANGE WAS REVERTED
+// -- see the revert commit -- because the futures backtest A/B proved it moves
+// executions, positions, equity and every reported statistic. It is a class C
+// change, not the class A the ledger assumed, and it needs its own decision and
+// its own A/B.
 //
-// The single-feed collapse (7d69fe89) is what made this reachable. While every
-// strategy was fed twice per cycle, the history was already populated by the
-// time the early call ran.
-//
-// The test uses a strategy whose history exists ONLY after on_data, which is the
-// contract every real strategy has (TrendFollowing and MeanReversion both build
-// theirs from the bars they are given). One cycle, then ask what the manager
-// holds:
-//   before the fix -- empty, because the copy happened before the feed
-//   after  the fix -- this cycle's prices
-//
-// Private members are reached the same way test_portfolio_manager_internals.cpp
-// does it.
+// What remains here is the on_data-swallowed-futures guard, which the same A/B
+// showed to be byte-identical.
 
 #include <gtest/gtest.h>
 
@@ -152,47 +138,8 @@ protected:
     std::shared_ptr<HistoryRecordingStrategy> strategy_;
 };
 
-// The core claim: after ONE cycle, the manager holds THAT cycle's history.
-TEST_F(PriceHistoryOrderingTest, FirstCycleHistoryIsVisibleToTheManager) {
-    std::vector<Bar> bars{bar_at("ES", 0, 100.0)};
-    ASSERT_TRUE(manager_->process_market_data(bars).is_ok());
 
-    ASSERT_EQ(strategy_->feeds(), 1) << "the strategy must have been fed exactly once";
-    ASSERT_EQ(manager_->price_history_.count("ES"), 1u)
-        << "the manager read the strategy's price history BEFORE feeding it, so it copied "
-           "the previous cycle's state -- which on cycle one is nothing at all (PM-price-history)";
-    EXPECT_EQ(manager_->price_history_.at("ES").size(), 1u);
-    EXPECT_DOUBLE_EQ(manager_->price_history_.at("ES").front(), 100.0);
-}
 
-// And it is not merely non-empty: it is current, not one cycle behind.
-TEST_F(PriceHistoryOrderingTest, HistoryIsCurrentRatherThanOneCycleStale) {
-    ASSERT_TRUE(manager_->process_market_data({bar_at("ES", 0, 100.0)}).is_ok());
-    ASSERT_TRUE(manager_->process_market_data({bar_at("ES", 1, 110.0)}).is_ok());
-    ASSERT_TRUE(manager_->process_market_data({bar_at("ES", 2, 120.0)}).is_ok());
-
-    ASSERT_EQ(manager_->price_history_.count("ES"), 1u);
-    const auto& prices = manager_->price_history_.at("ES");
-    ASSERT_EQ(prices.size(), 3u)
-        << "the manager is holding " << prices.size()
-        << " of 3 prices, so it is reading the history one cycle late (PM-price-history)";
-    EXPECT_DOUBLE_EQ(prices.back(), 120.0)
-        << "the newest price the manager holds is not the newest bar it was given";
-}
-
-// The returns the optimiser actually consumes follow from the same read, so pin
-// them too: three prices are two returns, and their values are exact.
-TEST_F(PriceHistoryOrderingTest, DerivedReturnsCoverEveryBarOfThisCycle) {
-    ASSERT_TRUE(manager_->process_market_data({bar_at("ES", 0, 100.0)}).is_ok());
-    ASSERT_TRUE(manager_->process_market_data({bar_at("ES", 1, 110.0)}).is_ok());
-    ASSERT_TRUE(manager_->process_market_data({bar_at("ES", 2, 121.0)}).is_ok());
-
-    ASSERT_EQ(manager_->historical_returns_.count("ES"), 1u);
-    const auto& rets = manager_->historical_returns_.at("ES");
-    ASSERT_EQ(rets.size(), 2u);
-    EXPECT_NEAR(rets[0], 0.10, 1e-12);
-    EXPECT_NEAR(rets[1], 0.10, 1e-12);
-}
 
 // ===== on_data-swallowed-futures =====
 //
