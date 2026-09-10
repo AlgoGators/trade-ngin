@@ -173,8 +173,10 @@ TEST_F(EmailStrategyTablesTest, OneBadRowDoesNotSuppressTheOtherStrategies) {
     ASSERT_NO_THROW({ html = sender_.format_strategy_positions_tables(book, prices, {}); });
     EXPECT_NE(html.find("ZEBASIS"), std::string::npos);
     EXPECT_NE(html.find("ZFGOOD.v.0"), std::string::npos);
-    EXPECT_NE(html.find("MEAN_REVERSION"), std::string::npos);
-    EXPECT_NE(html.find("TREND_FOLLOWING"), std::string::npos);
+    // The sub-headers are title-cased by format_strategy_display_name, so both
+    // strategies' sections are still rendered.
+    EXPECT_NE(html.find("Mean Reversion"), std::string::npos);
+    EXPECT_NE(html.find("Trend Following"), std::string::npos);
     // 2 contracts at 12,000 initial margin, and the unpriceable row adds nothing.
     EXPECT_NE(html.find("24,000.00"), std::string::npos)
         << "the healthy row's margin must still reach the portfolio total";
