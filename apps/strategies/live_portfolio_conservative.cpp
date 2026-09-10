@@ -20,6 +20,7 @@
 #include "trade_ngin/instruments/futures.hpp"
 #include "trade_ngin/instruments/instrument_registry.hpp"
 #include "trade_ngin/live/csv_exporter.hpp"
+#include "trade_ngin/live/data_freshness.hpp"
 #include "trade_ngin/live/execution_manager.hpp"
 #include "trade_ngin/live/live_data_loader.hpp"
 #include "trade_ngin/live/live_historical_metrics.hpp"
@@ -724,6 +725,91 @@ int main(int argc, char* argv[]) {
                   std::to_string(std::chrono::system_clock::to_time_t(now)) +
                   " and the 300 days prior.");
             return 1;
+        }
+
+        // DB-FUT-freshness: the equity runner's data-freshness guard (review T2.9,
+        // corrected by BA-12), ported verbatim in policy to the futures runners.
+        //
+        // Nothing here ever asked how CURRENT the bars are. The check above only asks
+        // whether ANY bar came back, so a feed that stopped three weeks ago passes it:
+        // the 730-day window still returns tens of thousands of rows, every T-1 price
+        // is a three-week-old close, and the book is re-sized against it and stored
+        // without a word. `DB_AND_DATA_AUDIT_2026-08-27` R5.1/R5.2 decision 5.
+        //
+        // Measured from the STALEST symbol, not the freshest (BA-12): one symbol
+        // printing today would otherwise report the whole feed current however far
+        // behind the other thirty-five are, and a guard that cannot fail is not a
+        // guard. The universe handed to `assess_feed_freshness` is the one this run
+        // ASKED for, so a symbol that returned no rows at all is seen as absent
+        // rather than being invisible to a map built from what came back.
+        //
+        // Thresholds and severity are the equity runner's, unchanged: WARN in
+        // historical-replay mode, refuse in true-live mode, tolerance from
+        // `live.data_staleness_tolerance_days`.
+        {
+            std::unordered_map<std::string, std::string> last_bar_date;
+            for (const auto& bar : all_bars) {
+                const std::string d = core::format_utc_date(bar.timestamp);
+                auto it = last_bar_date.find(bar.symbol);
+                if (it == last_bar_date.end() || d > it->second) last_bar_date[bar.symbol] = d;
+            }
+
+            const int tolerance_days = app_config.live.data_staleness_tolerance_days;
+            const std::string as_of_ymd = core::format_utc_date(end_date);
+            const auto freshness = assess_feed_freshness(last_bar_date, as_of_ymd, symbols);
+
+            if (freshness.absent > 0) {
+                // Absence is not "a few days behind" -- there is no date to measure. It
+                // is reported on its own terms and treated as stale regardless of the
+                // tolerance.
+                const std::string msg =
+                    "Futures feed is missing " + std::to_string(freshness.absent) + " of " +
+                    std::to_string(freshness.symbols) +
+                    " requested symbol(s) entirely, first: " + freshness.absent_symbol +
+                    " (no bar of any date as of " + as_of_ymd + ").";
+                if (use_override_date) {
+                    WARN(msg + " Proceeding in historical-replay mode.");
+                } else {
+                    ERROR(msg + " Refusing to run live with an incomplete universe. "
+                                "Refresh the OHLCV feed or remove the symbol from config.");
+                    return 1;
+                }
+            }
+
+            if (!freshness.any_data) {
+                const std::string msg =
+                    "Futures data freshness cannot be established: none of the " +
+                    std::to_string(freshness.symbols) +
+                    " loaded symbols carries a usable bar date as of " + as_of_ymd + ".";
+                if (use_override_date) {
+                    WARN(msg + " Proceeding in historical-replay mode.");
+                } else {
+                    ERROR(msg + " Refusing to run live without a feed. Refresh the OHLCV "
+                                "feed.");
+                    return 1;
+                }
+            } else if (freshness.days_behind > tolerance_days) {
+                const std::string msg =
+                    "Futures data is stale: the stalest of " +
+                    std::to_string(freshness.symbols) + " symbols (" +
+                    freshness.stalest_symbol + ") last printed " + freshness.stalest_date +
+                    ", " + std::to_string(freshness.days_behind) +
+                    " calendar days before " + as_of_ymd + " (tolerance " +
+                    std::to_string(tolerance_days) + " days).";
+                if (use_override_date) {
+                    WARN(msg + " Proceeding in historical-replay mode.");
+                } else {
+                    ERROR(msg + " Refusing to run live on stale data. Refresh the OHLCV "
+                                "feed or raise live.data_staleness_tolerance_days.");
+                    return 1;
+                }
+            } else {
+                INFO("Futures feed freshness: stalest of " +
+                     std::to_string(freshness.symbols) + " symbols (" +
+                     freshness.stalest_symbol + ") at " + freshness.stalest_date + ", " +
+                     std::to_string(freshness.days_behind) + " days behind " + as_of_ymd +
+                     " (tolerance " + std::to_string(tolerance_days) + ").");
+            }
         }
 
         // ========================================
