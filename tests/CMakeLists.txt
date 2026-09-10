@@ -27,6 +27,7 @@ set(TEST_SOURCES
     data/test_delete_stale_executions_scope_db.cpp
     data/test_load_positions_identifier_db.cpp
     data/test_equity_curve_stream_db.cpp
+    data/test_store_positions_error_db.cpp
     data/test_strategy_id_length_db.cpp
     data/test_get_trading_days_scope_db.cpp
     data/test_market_data_bus.cpp

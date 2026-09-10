@@ -546,43 +546,35 @@ Result<void> PostgresDatabase::store_positions_in(pqxx::work& txn,
                 DEBUG("Executing position insert query: " + query);
                 txn.exec(query);
             } catch (const std::exception& e) {
-                // If strategy_id column doesn't exist, try without it
-                WARN("strategy_id column may not exist, trying without it: " +
-                     std::string(e.what()));
-
-                // Rebuild position values without strategy_id columns
-                std::vector<std::string> position_values_no_strategy;
-                for (const auto& pos : positions) {
-                    std::stringstream ss;
-                    ss << std::setprecision(17);
-
-                    // Phase 5 §5c: UTC date-string contract.
-                    const std::string position_date =
-                        trade_ngin::core::format_utc_date(pos.last_update);
-
-                    ss << "('" << pos.symbol << "', " << static_cast<double>(pos.quantity) << ", "
-                       << static_cast<double>(pos.average_price) << ", "
-                       << static_cast<double>(pos.unrealized_pnl) << ", "
-                       << static_cast<double>(pos.realized_pnl) << ", "
-                       << "'" << format_timestamp(pos.last_update) << "', "
-                       << "'" << format_timestamp(pos.last_update) << "', "
-                       << "''"
-                       << ", "  // strategy_id empty
-                       << "''"
-                       << ", "  // strategy_name empty
-                       << "'" << position_date << "', "
-                       << "'BASE_PORTFOLIO')";
-                    position_values_no_strategy.push_back(ss.str());
-                }
-
-                std::string query = "INSERT INTO " + table_name +
-                                    " (symbol, quantity, average_price, daily_unrealized_pnl, "
-                                    "daily_realized_pnl, last_update, updated_at, strategy_id, "
-                                    "strategy_name, date, portfolio_id) VALUES " +
-                                    join(position_values_no_strategy, ", ");
-
-                DEBUG("Executing position insert query without strategy_id: " + query);
-                txn.exec(query);
+                // STORE-positions-catchall-retry: return the FIRST error. Do not retry.
+                //
+                // This used to read any insert failure as "the strategy_id column may not
+                // exist", rebuild the VALUES with strategy_id = '', strategy_name = '' and
+                // portfolio_id = 'BASE_PORTFOLIO', and execute again on the SAME
+                // pqxx::work. Three things were wrong with it and all three were measured
+                // on the scratch database (T-1_CLAIMS_VERIFICATION section 1):
+                //
+                //   1. The premise is false. pqxx throws on ANY SQL error -- a value too
+                //      long for varchar(50), a duplicate key, a check violation, a lost
+                //      connection -- and none of those is a missing column.
+                //   2. The retry cannot succeed. Postgres refuses every command in a
+                //      transaction after the first error, so the second exec always threw
+                //      "current transaction is aborted, commands ignored until end of
+                //      transaction block". No row was ever written by this path.
+                //   3. It destroyed the diagnosis. That aborted-transaction message is
+                //      what escaped to the caller and what the operator saw, while the real
+                //      cause -- "value too long for type character varying(50)", "duplicate
+                //      key value violates unique constraint" -- survived only in a WARN
+                //      line that called it a missing column.
+                //
+                // Writing unattributed rows under a portfolio id the caller did not ask for
+                // would not be a correct recovery even if Postgres allowed it. A schema
+                // genuinely missing those columns is a deployment fault to fix once.
+                ERROR("store_positions failed while inserting rows into " + table_name + ": " +
+                      std::string(e.what()));
+                return make_error<void>(ErrorCode::DATABASE_ERROR,
+                                        "Failed to store positions: " + std::string(e.what()),
+                                        "PostgresDatabase");
             }
         }
 
