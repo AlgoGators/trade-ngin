@@ -54,26 +54,44 @@ int main(int argc, char* argv[]) {
                 continue;
             }
 
-            // Try to parse as date. UTC midnight, not local midnight (E2-F42 / M-08).
+            // Try to parse as date.
             //
-            // std::mktime read this as LOCAL midnight while almost every consumer of
-            // target_date formats it back through gmtime -- the yesterday key the
-            // holiday check builds, the position dates, the execution order-id stamp
-            // (execution_manager.cpp::generate_date_string, made UTC by 04b79f61), the
-            // trading-days target. On a host at a positive UTC offset local midnight is
-            // the PREVIOUS UTC day, so the entire run silently shifted a day: every row
-            // written under the wrong date, against the wrong T-1 book. A New York host
-            // hides it, which is why it survived -- local midnight there is 04:00 or
-            // 05:00 UTC, the same calendar day.
+            // E2-F42 / M-08 IS STILL OPEN HERE, AND THIS std::mktime IS STILL WRONG.
+            // It reads the operator's date as LOCAL midnight while every consumer of
+            // target_date -- the position date, the T-1 lookup, the order-id stamp, the
+            // trading-days target -- formats it back through gmtime, so on a host at a
+            // positive UTC offset the whole run lands a day early. A New York host hides
+            // it, which is why it has survived.
             //
-            // Same helper the equity runner has used since 95679ea2, and the companion
-            // `now_tm` below moves to gmtime_r in the same commit as the ledger row
-            // requires: parsing UTC while formatting local would land the pair one day
-            // apart in the other direction on THIS host, which is worse than either
-            // consistent choice.
-            std::chrono::system_clock::time_point parsed_date;
-            if (core::parse_utc_date(arg, parsed_date)) {
-                target_date = parsed_date;
+            // The fix (parse_utc_date here, gmtime_r for now_tm below) was made in T-2,
+            // MEASURED, and REVERTED, because it is not the class A change the ledger
+            // expected. Moving `now` from 04:00/05:00Z to 00:00Z on this host also moves:
+            //
+            //   * the 730-day bar window. get_market_data asks `time BETWEEN start_ts AND
+            //     end_ts` and futures bars are keyed at 00:00:00Z, so the start edge
+            //     gained exactly one extra bar per symbol. Measured on the ten-day
+            //     conservative chain from 2026-04-24: 225 of 6,480 stored signal_values
+            //     moved, by up to 1.42 on a forecast that runs to about +/-20 -- not a
+            //     rounding artefact. Quantities happened not to cross a rounding boundary
+            //     on this window; on another window they would.
+            //   * trading.equity_curve. Its ON CONFLICT key is (portfolio_id, strategy_id,
+            //     timestamp, portfolio_type), so the Day T-1 rewrite no longer matched the
+            //     existing row and INSERTED a second one: 2026-04-23 appeared twice, at
+            //     05:00Z and 00:00Z, with the same equity. Every replay boundary would
+            //     double a day.
+            //   * positions.last_update and signals.timestamp (130 and 288 rows on that
+            //     chain), and executions.exec_id / execution_time, which embed the instant.
+            //   * live_results.portfolio_var, max_correlation and risk_scale.
+            //
+            // So it belongs with the class C set, not with the guards: it needs a decision
+            // on the bar-window boundary, a decision on the stored time-of-day contract
+            // (E2-F22's lineage), and a plan for the equity_curve key, and its own A/B.
+            // Reverted in this batch and reported; see the T-2 report, item A4.
+            std::tm tm = {};
+            std::istringstream ss(arg);
+            ss >> std::get_time(&tm, "%Y-%m-%d");
+            if (!ss.fail()) {
+                target_date = std::chrono::system_clock::from_time_t(std::mktime(&tm));
                 use_override_date = true;
                 std::cout << "Running for historical date: " << arg << std::endl;
             } else if (arg != "--send-email") {
@@ -262,19 +280,7 @@ int main(int argc, char* argv[]) {
         // Get current date for daily processing (or use override date)
         auto now = use_override_date ? target_date : std::chrono::system_clock::now();
         auto now_time_t = std::chrono::system_clock::to_time_t(now);
-        // E2-F42 / M-08, the companion half. `now` is UTC midnight of the requested
-        // date, so the broken-down form every consumer below reads must be UTC too:
-        // std::localtime would put tm_mday on the previous day on this host and split
-        // the run's own idea of its date from the one it writes to the database.
-        // gmtime_r, not std::gmtime, because this is the pattern the thread-safety
-        // sweep left behind; now_tm keeps its pointer type so the call sites are
-        // untouched.
-        std::tm now_tm_storage{};
-        std::tm* now_tm = gmtime_r(&now_time_t, &now_tm_storage);
-        if (now_tm == nullptr) {
-            std::cerr << "FATAL: could not resolve the run date in UTC" << std::endl;
-            return 1;
-        }
+        std::tm* now_tm = std::localtime(&now_time_t);
 
         // Set start date based on configured historical window
         auto start_date = now - std::chrono::hours(24 * app_config.live.historical_days);
