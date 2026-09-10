@@ -265,6 +265,89 @@ int main(int argc, char* argv[]) {
         INFO("DEBUG: Target date (now): " +
              std::to_string(std::chrono::system_clock::to_time_t(now)));
 
+        // E2-F8, futures side (with B-3 F-2's exit-0 half). A SKIPPED DAY MUST NOT
+        // OPEN THE BOOK FROM FLAT.
+        //
+        // Every position this runner writes is sized as a DELTA from the previous
+        // calendar day's book, which it reads with `load_positions_by_date(now - 24h)`
+        // -- at the seed below, at the PnL lookup, at the T-1 finalization. When that
+        // read comes back empty the runner does not distinguish "the strategy holds
+        // nothing" from "nobody ran yesterday, so nothing was written". It seeds flat,
+        // sizes the whole book as a fresh entry against contracts the broker still
+        // holds, stores that, and exits 0. A monitor watching exit codes sees a clean
+        // run while the book is being abandoned. That is the equity defect E2-F8, whose
+        // guard has been at live_equity_mean_reversion.cpp:1125 since the equities
+        // campaign, and B-3 F-2's complaint that the failure is not even distinguishable
+        // at the exit-code level from a normal quiet day.
+        //
+        // The discriminator is NOT "are there positions" -- a flat book has none and is
+        // a perfectly valid state. It is "did a run HAPPEN for that date". Every run
+        // writes a live_results row whether or not it holds anything, so that row is the
+        // evidence, and it is what this asks for.
+        //
+        // Deliberately NOT resolved by falling back to MAX(date): that would paper over
+        // a broken invariant and could silently revive a stale book. Runs must be
+        // sequential and complete -- inherent to the T-1 lag model, where day T's P&L is
+        // finalized by day T+1's run -- so a hole means a run was missed, and the remedy
+        // is to replay the missing dates in order, which works and needs no code. What
+        // was missing was being TOLD.
+        //
+        // Placed here, before the run-metadata write and before any bar is loaded, so a
+        // refused run writes nothing at all. On a consecutive chain the first query
+        // returns a row and this block is silent.
+        {
+            const std::string prev_date_str = core::format_utc_date(now - std::chrono::hours(24));
+            const std::string today_date_str = core::format_utc_date(now);
+
+            auto first_cell = [](const Result<std::shared_ptr<arrow::Table>>& r) -> std::string {
+                if (r.is_error() || !r.value() || r.value()->num_rows() == 0) return {};
+                auto col = std::static_pointer_cast<arrow::StringArray>(
+                    r.value()->column(0)->chunk(0));
+                if (!col || col->length() == 0 || col->IsNull(0)) return {};
+                return std::string(col->GetView(0));
+            };
+
+            auto prev_run = db->execute_query(
+                "SELECT count(*)::text FROM trading.live_results "
+                "WHERE strategy_id = '" + combined_strategy_id + "'"
+                " AND portfolio_id = '" + portfolio_id + "'"
+                " AND date = '" + prev_date_str + "'");
+
+            long prev_run_rows = 0;
+            const std::string prev_cell = first_cell(prev_run);
+            if (!prev_cell.empty()) prev_run_rows = std::stol(prev_cell);
+
+            if (prev_run.is_error()) {
+                // Cannot establish the invariant either way. Say so rather than
+                // treating an unanswered question as a clean answer.
+                WARN("Could not check whether the previous day (" + prev_date_str +
+                     ") ran: " + std::string(prev_run.error()->what()) +
+                     ". Proceeding; verify the book by hand if this run writes "
+                     "unexpected executions.");
+            } else if (prev_run_rows == 0) {
+                auto last_run = db->execute_query(
+                    "SELECT COALESCE(MAX(date)::text, '') FROM trading.live_results "
+                    "WHERE strategy_id = '" + combined_strategy_id + "'"
+                    " AND portfolio_id = '" + portfolio_id + "'"
+                    " AND date < '" + today_date_str + "'");
+                const std::string last_run_date = first_cell(last_run);
+
+                if (!last_run_date.empty()) {
+                    ERROR("No run was recorded for the previous day (" + prev_date_str +
+                          "), but " + combined_strategy_id + " / " + portfolio_id +
+                          " last ran on " + last_run_date +
+                          ". A run was missed. Replay every date from " + last_run_date +
+                          " forward, in order, before running " + today_date_str +
+                          " -- continuing would seed the book flat and size every "
+                          "position as a fresh entry against contracts the broker still "
+                          "holds. Refusing to run.");
+                    return 1;
+                }
+                INFO("No prior run anywhere for " + combined_strategy_id + " / " +
+                     portfolio_id + " -- genuine first run.");
+            }
+        }
+
         double initial_capital = app_config.initial_capital;
 
         auto symbols_result = db->get_symbols(trade_ngin::AssetClass::FUTURES);
