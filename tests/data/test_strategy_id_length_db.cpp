@@ -17,10 +17,12 @@
 //   1. the validator accepts the 62-character id (the cap raise);
 //   2. store_executions now runs the same identifier checks store_positions has
 //      always run (the asymmetry half);
-//   3. the 62-character id STILL fails at the database, because
-//      trading.positions.strategy_id is varchar(50). This is asserted, not
-//      hoped: if somebody later widens the column, this test fails and points at
-//      the ledger row, which is exactly when the rest of E2-F36 can be closed.
+//   3. the 62-character id is now STORED, because migration 012 widened
+//      trading.positions / live_results / signals .strategy_id from varchar(50)
+//      to varchar(100). This half was outstanding when the file was written and
+//      the test asserted the failure; it now asserts the success, and it fails
+//      on any database where 012 has not been applied, which is the tripwire that
+//      matters from here on.
 //
 // Reachability gate matches tests/data/test_delete_stale_executions_scope_db.cpp.
 
@@ -156,14 +158,22 @@ protected:
 TEST_F(StrategyIdLengthTest, TheJoinedThreeStrategyIdPassesTheValidator) {
     ASSERT_EQ(std::string(kJoinedId).size(), 62u);
 
-    // The validator no longer refuses it: whatever stops this id now, it is not
-    // the length check.
+    // The subject of THIS test is the validator, not the schema, so it must not turn a
+    // missing migration into a failure about the cap. Ask the column first; the schema
+    // half is asserted on its own below, where a missing 012 is the point.
+    if (column_width("positions") < 62) {
+        GTEST_SKIP() << "trading.positions.strategy_id is varchar(" << column_width("positions")
+                     << "), so migration 012_strategy_id_width.sql has not been applied to this "
+                        "database and the id cannot reach the server whatever the validator says";
+    }
+
+    // The validator does not refuse it, and since migration 012 neither does the
+    // column: the id is stored whole.
     auto p = db_->store_positions({a_position()}, kJoinedId, kStrategyName, kPortfolio,
                                   "trading.positions");
-    ASSERT_TRUE(p.is_error()) << "the varchar(50) column accepted 62 characters";
-    EXPECT_NE(p.error()->code(), ErrorCode::INVALID_ARGUMENT)
-        << "the 62-character joined id is still being refused by validate_strategy_id's "
-           "length cap rather than reaching the database (E2-F36): " << p.error()->what();
+    ASSERT_TRUE(p.is_ok())
+        << "the 62-character joined id was refused with the column wide enough to hold it, so "
+           "validate_strategy_id's cap has regressed: " << p.error()->what();
 
     // And where the column is wide enough (executions is varchar(100)), it is
     // stored intact.
@@ -202,54 +212,34 @@ TEST_F(StrategyIdLengthTest, StoreExecutionsRejectsTheSameIdentifiersStorePositi
     }
 }
 
-// 3. The half that is NOT done. Asserted so the day it changes is visible.
-TEST_F(StrategyIdLengthTest, PositionsColumnIsStillTooNarrowForTheJoinedId) {
-    ASSERT_EQ(column_width("positions"), 50)
-        << "trading.positions.strategy_id is no longer varchar(50). If it was widened "
-           "deliberately, the rest of E2-F36 can now be closed: update this test and the "
-           "ledger row.";
-    ASSERT_EQ(column_width("live_results"), 50);
-    ASSERT_EQ(column_width("signals"), 50);
-    ASSERT_EQ(column_width("executions"), 100);
+// 3. The half that WAS outstanding, now done. Migration 012 widened the three
+// narrow columns to the width trading.executions already had, so the joined id a
+// third enabled trend strategy produces can be stored everywhere it has to be.
+//
+// This test fails on a database where 012 has not been applied. That is the
+// point: from here on the tripwire is the missing migration, not the missing
+// width.
+TEST_F(StrategyIdLengthTest, TheThreeColumnsAreWideEnoughForTheJoinedId) {
+    for (const char* t : {"positions", "live_results", "signals", "executions"}) {
+        EXPECT_EQ(column_width(t), 100)
+            << "trading." << t << ".strategy_id is not varchar(100). If it is 50, "
+               "migration 012_strategy_id_width.sql has not been applied to this database "
+               "and a third enabled trend strategy cannot store " << t << ".";
+    }
 
-    // So a third strategy still cannot store positions -- but it fails at the
-    // database, loudly, with the value in the message, rather than being turned
-    // away by a string length check that had no schema behind it.
+    // And the id goes in and comes back whole -- not truncated, which is the other
+    // way a widening can be got wrong.
     auto r = db_->store_positions({a_position()}, kJoinedId, kStrategyName, kPortfolio,
                                   "trading.positions");
-    ASSERT_TRUE(r.is_error())
-        << "a 62-character id was stored in a varchar(50) column; the schema changed under "
-           "this test";
-    EXPECT_EQ(r.error()->code(), ErrorCode::DATABASE_ERROR)
-        << "the refusal should now come from the server, not the validator";
+    ASSERT_TRUE(r.is_ok()) << r.error()->what();
 
-    // And nothing was written. This is the assertion that matters: whatever the
-    // message says, the book must not have acquired a row.
     pqxx::connection c(conn_);
     pqxx::work w(c);
-    auto rows = w.exec("SELECT count(*) FROM trading.positions WHERE portfolio_id = " +
+    auto rows = w.exec("SELECT strategy_id FROM trading.positions WHERE portfolio_id = " +
                        w.quote(kPortfolio));
-    EXPECT_EQ(rows[0][0].as<int>(), 0);
-
-    // NOTE, and this is a finding rather than an expectation: the error text
-    // that comes back is NOT the server's "value too long for type character
-    // varying(50)". It is "current transaction is aborted, commands ignored
-    // until end of transaction block".
-    //
-    // store_positions wraps its INSERT in a catch that assumes ONE cause --
-    // "strategy_id column may not exist, trying without it" -- and retries with
-    // empty strategy_id/strategy_name and a hardcoded 'BASE_PORTFOLIO'
-    // portfolio_id. The retry runs on the same, now-aborted, transaction, so it
-    // fails too and its error is what the caller sees. The real diagnosis is
-    // only in a WARN line.
-    //
-    // Here the retry harmlessly fails. The reason it is worth writing down is
-    // what it would do if it did NOT: on any insert failure with a live
-    // transaction it would write this portfolio's positions into BASE_PORTFOLIO
-    // with no strategy attribution. Out of scope for E2-F36; reported for the
-    // ledger.
-    EXPECT_NE(std::string(r.error()->what()).find("ERROR"), std::string::npos)
-        << "expected a server error to be reported; got: " << r.error()->what();
+    ASSERT_EQ(rows.size(), 1u);
+    EXPECT_EQ(rows[0][0].as<std::string>(), kJoinedId)
+        << "the id was stored truncated rather than whole";
 }
 
 // Ordinary ids -- everything in production today -- are unaffected by the raise.
