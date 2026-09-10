@@ -1916,17 +1916,26 @@ int main(int argc, char* argv[]) {
                 "instrument metadata.");
         }
         // Equity-to-Margin Ratio = portfolio_equity / total_posted_margin.
-        // Higher = safer (more equity per dollar of margin posted). The prior
-        // formula here used gross_notional in the numerator, which is a
-        // leverage-to-margin metric, not equity-to-margin. We use
-        // initial_capital as the equity proxy (matches MarginManager's
-        // gross_leverage convention).
-        double equity_to_margin_ratio =
-            (total_posted_margin > 0.0) ? (initial_capital / total_posted_margin) : 0.0;
-        if (equity_to_margin_ratio <= 1.0 && active_positions > 0) {
-            WARN("Equity-to-Margin Ratio is <= 1.0 (account equity at or below "
-                 "posted margin); verify margins and sizing.");
-        }
+        // Higher = safer (more equity per dollar of margin posted).
+        //
+        // MAIN-post-#55, margin numerator. This was computed HERE, from
+        // initial_capital, because current_portfolio_value is not known yet at this
+        // point in the run -- and the comment said as much and called it a proxy. It is
+        // not a proxy for a reported column: it is a constant. As the book gains or
+        // loses money, the equity in "equity to margin" never moves, so the ratio that
+        // reaches trading.live_results and the daily email answers a different question
+        // from the one its name asks, and disagrees with the two other producers of the
+        // same quantity -- live_metrics_calculator.cpp:307, which the main audit named
+        // the reconciliation target, and MarginManager. L1-Q3 of MAIN_AUDIT_2026-08-27.
+        //
+        // The numerator is now current_portfolio_value, and the computation therefore
+        // moves down to where that value exists, immediately below its own INFO block.
+        // Only the declaration stays here, so the value is still in scope for the
+        // storage and email sites further down that already read it.
+        //
+        // The <= 1.0 alarm moves with it: an alarm on a number that has not been
+        // computed yet would fire on the constant, not on the account.
+        double equity_to_margin_ratio = 0.0;
 
         // ========================================
         // PHASE 4: PER-STRATEGY POSITIONS STORAGE
@@ -2963,6 +2972,17 @@ int main(int argc, char* argv[]) {
         INFO("  Total PnL: $" + std::to_string(total_pnl));
         INFO("  Daily return: " + std::to_string(daily_return) + "%");
         INFO("  Annualized return: " + std::to_string(total_return_annualized) + "%");
+
+        // MAIN-post-#55: the equity-to-margin numerator, computed where the equity is
+        // known. Same formula and same guard as before, current_portfolio_value in place
+        // of the initial_capital constant, matching LiveMetricsCalculator's
+        // calculate_equity_to_margin_ratio(current_portfolio_value, margin_posted).
+        equity_to_margin_ratio =
+            (total_posted_margin > 0.0) ? (current_portfolio_value / total_posted_margin) : 0.0;
+        if (equity_to_margin_ratio <= 1.0 && active_positions > 0) {
+            WARN("Equity-to-Margin Ratio is <= 1.0 (account equity at or below "
+                 "posted margin); verify margins and sizing.");
+        }
 
         std::cout << "Total P&L: $" << std::fixed << std::setprecision(2) << total_pnl << std::endl;
         std::cout << "Realized P&L: $" << std::fixed << std::setprecision(2) << total_realized_pnl
