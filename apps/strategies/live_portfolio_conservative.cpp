@@ -432,14 +432,11 @@ int main(int argc, char* argv[]) {
         //
         // The equity runner has gone through assess_trading_days_anchor since E2-F32; the
         // helper was written to be shared and says so in its own header. This wires the
-        // futures runners to it. No new logic: the same comparison, the same effective
-        // anchor (the earlier of the two), the same WARN, and the same recomputation
-        // through trading_days_from_anchor, which reproduces the SQL exactly rather than
-        // being a near-enough substitute.
+        // futures runners to it: the same comparison and the same WARN. The metadata row
+        // stays authoritative; the count is never recomputed here.
         //
         // The metadata row itself is a one-row data correction on production and is NOT
         // made here.
-        std::string trading_days_anchor_override;
         {
             auto anchor_cell = [](const Result<std::shared_ptr<arrow::Table>>& r) -> std::string {
                 if (r.is_error() || !r.value() || r.value()->num_rows() == 0) return {};
@@ -466,7 +463,6 @@ int main(int argc, char* argv[]) {
                 const auto anchor = assess_trading_days_anchor(anchor_cell(anchor_q),
                                                                anchor_cell(first_q));
                 if (anchor.anchor_is_late) {
-                    trading_days_anchor_override = anchor.effective_anchor;
                     WARN("Annualization anchor is LATER than the book it annualizes: "
                          "strategy_trading_days_metadata.live_start_date = " +
                          anchor.metadata_anchor + " but live_results for " +
@@ -474,9 +470,9 @@ int main(int argc, char* argv[]) {
                          anchor.earliest_result +
                          ". trading.get_trading_days would return 1 for every date before "
                          "the anchor and explode total_annualized_return just after it "
-                         "(E2-F32). Using " + anchor.effective_anchor +
-                         " for this run; seed the metadata row to that date, or delete it "
-                         "so the MIN(date) fallback applies.");
+                         "(E2-F32). The anchor is NOT moved: the metadata row is authoritative and "
+                         "the function's count stands. Fix the data: correct the row if it is "
+                         "wrong, or remove the stray results if they are.");
                 } else {
                     INFO("Annualization anchor " +
                          (anchor.effective_anchor.empty() ? std::string("(none yet)")
@@ -2345,18 +2341,6 @@ int main(int argc, char* argv[]) {
                                 "strategy_trading_days_metadata.live_start_date");
                         }
                     }
-                    // E2-F32: the function anchored to a metadata row that post-dates the
-                    // book, so recompute from the book's own first day. Same formula the
-                    // function uses, different start date.
-                    if (!trading_days_anchor_override.empty()) {
-                        const int corrected = trading_days_from_anchor(
-                            trading_days_anchor_override, yesterday_date_ss.str());
-                        WARN("TRADING_DAYS_CALC [Day T-1]: corrected from " +
-                             std::to_string(trading_days_count) + " to " +
-                             std::to_string(corrected) + " (anchor " +
-                             trading_days_anchor_override + ", E2-F32)");
-                        trading_days_count = corrected;
-                    }
                 } else {
                     WARN("TRADING_DAYS_CALC [Day T-1]: Could not call get_trading_days function: " +
                          std::string(trading_days_result.error()->what()));
@@ -2995,16 +2979,6 @@ int main(int argc, char* argv[]) {
                             "TRADING_DAYS_CALC [Day T]: This value comes from "
                             "strategy_trading_days_metadata.live_start_date");
                     }
-                }
-                // E2-F32, as above: correct the ANCHOR, not the formula.
-                if (!trading_days_anchor_override.empty()) {
-                    const int corrected =
-                        trading_days_from_anchor(trading_days_anchor_override, now_date_ss.str());
-                    WARN("TRADING_DAYS_CALC [Day T]: corrected from " +
-                         std::to_string(trading_days_count) + " to " +
-                         std::to_string(corrected) + " (anchor " +
-                         trading_days_anchor_override + ", E2-F32)");
-                    trading_days_count = corrected;
                 }
             } else {
                 WARN("TRADING_DAYS_CALC [Day T]: Could not call get_trading_days function: " +
