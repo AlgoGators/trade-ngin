@@ -357,26 +357,61 @@ int main(int argc, char* argv[]) {
                      ". Proceeding; verify the book by hand if this run writes "
                      "unexpected executions.");
             } else if (prev_run_rows == 0) {
-                auto last_run = db->execute_query(
-                    "SELECT COALESCE(MAX(date)::text, '') FROM trading.live_results "
+                // No live_results row for T-1. Before refusing, ask whether the BOOK is
+                // there anyway.
+                //
+                // The equity guard reaches its "did a run happen" question only from
+                // inside `if (previous_positions.empty())`, so a day whose positions were
+                // written but whose live_results write failed -- which the runner logs as
+                // an ERROR and then exits 0 (live_portfolio.cpp, "Failed to save live
+                // results") -- does not stop the next day there. This guard runs before
+                // the book is loaded, so without this second question it would be
+                // STRICTER than the guard it claims to port, and it would refuse a run
+                // that has a complete book to seed from. Measured on the scratch copy of
+                // production: 13 such dates exist, all on BASE_PORTFOLIO, 2 of them
+                // immediately before a day that did run.
+                //
+                // Asking the database rather than loading the book keeps the guard where
+                // it is, ahead of every write.
+                auto prev_book = db->execute_query(
+                    "SELECT count(*)::text FROM trading.positions "
                     "WHERE strategy_id = '" + combined_strategy_id + "'"
                     " AND portfolio_id = '" + portfolio_id + "'"
-                    " AND date < '" + today_date_str + "'");
-                const std::string last_run_date = first_cell(last_run);
+                    " AND date = '" + prev_date_str + "'");
+                long prev_book_rows = 0;
+                const std::string book_cell = first_cell(prev_book);
+                if (!book_cell.empty()) prev_book_rows = std::stol(book_cell);
 
-                if (!last_run_date.empty()) {
-                    ERROR("No run was recorded for the previous day (" + prev_date_str +
-                          "), but " + combined_strategy_id + " / " + portfolio_id +
-                          " last ran on " + last_run_date +
-                          ". A run was missed. Replay every date from " + last_run_date +
-                          " forward, in order, before running " + today_date_str +
-                          " -- continuing would seed the book flat and size every "
-                          "position as a fresh entry against contracts the broker still "
-                          "holds. Refusing to run.");
-                    return 1;
+                if (prev_book_rows > 0) {
+                    WARN("No live_results row for the previous day (" + prev_date_str +
+                         "), but " + std::to_string(prev_book_rows) +
+                         " position row(s) are stored for it, so the book is intact and this "
+                         "run can seed from it. That day's results write did not complete; "
+                         "its reported numbers are missing and should be back-filled.");
+                    // fall through and run
+                } else {
+                    auto last_run = db->execute_query(
+                        "SELECT COALESCE(MAX(date)::text, '') FROM trading.live_results "
+                        "WHERE strategy_id = '" + combined_strategy_id + "'"
+                        " AND portfolio_id = '" + portfolio_id + "'"
+                        " AND date < '" + today_date_str + "'");
+                    const std::string last_run_date = first_cell(last_run);
+
+                    if (!last_run_date.empty()) {
+                        ERROR("No run was recorded for the previous day (" + prev_date_str +
+                              ") and no positions are stored for it either, but " +
+                              combined_strategy_id + " / " + portfolio_id + " last ran on " +
+                              last_run_date +
+                              ". A run was missed. Replay every date from " + last_run_date +
+                              " forward, in order, before running " + today_date_str +
+                              " -- continuing would seed the book flat and size every "
+                              "position as a fresh entry against contracts the broker still "
+                              "holds. Refusing to run.");
+                        return 1;
+                    }
+                    INFO("No prior run anywhere for " + combined_strategy_id + " / " +
+                         portfolio_id + " -- genuine first run.");
                 }
-                INFO("No prior run anywhere for " + combined_strategy_id + " / " +
-                     portfolio_id + " -- genuine first run.");
             }
         }
 
