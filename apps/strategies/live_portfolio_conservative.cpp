@@ -2604,30 +2604,87 @@ int main(int argc, char* argv[]) {
                 if (metrics_result.is_ok() && metrics_result.value()->num_rows() > 0) {
                     auto table = metrics_result.value();
                     if (table->num_columns() >= 4) {
-                        auto daily_return_arr = std::static_pointer_cast<arrow::DoubleArray>(
-                            table->column(0)->chunk(0));
-                        auto daily_pnl_arr = std::static_pointer_cast<arrow::DoubleArray>(
-                            table->column(1)->chunk(0));
-                        auto daily_realized_arr = std::static_pointer_cast<arrow::DoubleArray>(
-                            table->column(2)->chunk(0));
-                        auto daily_unrealized_arr = std::static_pointer_cast<arrow::DoubleArray>(
-                            table->column(3)->chunk(0));
+                        // FUT-email-UB (C-5 B1). These four columns were read by
+                        // static_pointer_cast<arrow::DoubleArray> on arrays that are NOT
+                        // DoubleArrays. execute_query goes through convert_generic_to_arrow,
+                        // which builds a StringBuilder for every column and stamps utf8 on
+                        // the field (postgres_database.cpp, "Build a string array for all
+                        // columns"), so every one of these is a StringArray. static_pointer_cast
+                        // does not check; Value(0) then reads the string array's OFFSETS
+                        // buffer as if it were a double. That is undefined behaviour, and on
+                        // this host it printed 0.000000 for a row that held daily_return
+                        // 1.2767 and daily_pnl 6347.25.
+                        //
+                        // Read by the array's actual type instead, the way chart_generator.cpp
+                        // has always done it (:188-196). Dispatching rather than assuming utf8
+                        // is deliberate: it stays correct if convert_generic_to_arrow is ever
+                        // given real column types, which is the change condition 2 of
+                        // STAGE3_PLAN section 20 pairs with this one.
+                        auto numeric_cell = [](const std::shared_ptr<arrow::Table>& t, int col,
+                                               double& out) -> bool {
+                            if (!t || col >= t->num_columns()) return false;
+                            auto column = t->column(col);
+                            if (!column || column->num_chunks() == 0) return false;
+                            auto chunk = column->chunk(0);
+                            if (!chunk || chunk->length() == 0 || chunk->IsNull(0)) return false;
+                            switch (chunk->type_id()) {
+                                case arrow::Type::STRING: {
+                                    auto a = std::static_pointer_cast<arrow::StringArray>(chunk);
+                                    try {
+                                        out = std::stod(a->GetString(0));
+                                    } catch (const std::exception&) {
+                                        return false;
+                                    }
+                                    return true;
+                                }
+                                case arrow::Type::LARGE_STRING: {
+                                    auto a =
+                                        std::static_pointer_cast<arrow::LargeStringArray>(chunk);
+                                    try {
+                                        out = std::stod(a->GetString(0));
+                                    } catch (const std::exception&) {
+                                        return false;
+                                    }
+                                    return true;
+                                }
+                                case arrow::Type::DOUBLE: {
+                                    auto a = std::static_pointer_cast<arrow::DoubleArray>(chunk);
+                                    out = a->Value(0);
+                                    return true;
+                                }
+                                case arrow::Type::FLOAT: {
+                                    auto a = std::static_pointer_cast<arrow::FloatArray>(chunk);
+                                    out = static_cast<double>(a->Value(0));
+                                    return true;
+                                }
+                                case arrow::Type::INT64: {
+                                    auto a = std::static_pointer_cast<arrow::Int64Array>(chunk);
+                                    out = static_cast<double>(a->Value(0));
+                                    return true;
+                                }
+                                case arrow::Type::INT32: {
+                                    auto a = std::static_pointer_cast<arrow::Int32Array>(chunk);
+                                    out = static_cast<double>(a->Value(0));
+                                    return true;
+                                }
+                                default:
+                                    return false;
+                            }
+                        };
 
-                        if (daily_return_arr && daily_return_arr->length() > 0 &&
-                            !daily_return_arr->IsNull(0)) {
-                            yesterday_daily_return_for_email = daily_return_arr->Value(0);
+                        double cell = 0.0;
+                        if (numeric_cell(table, 0, cell)) {
+                            yesterday_daily_return_for_email = cell;
                             INFO("Loaded yesterday's daily_return: " +
                                  std::to_string(yesterday_daily_return_for_email));
                         }
-                        if (daily_pnl_arr && daily_pnl_arr->length() > 0 &&
-                            !daily_pnl_arr->IsNull(0)) {
-                            yesterday_daily_pnl_for_email = daily_pnl_arr->Value(0);
+                        if (numeric_cell(table, 1, cell)) {
+                            yesterday_daily_pnl_for_email = cell;
                             INFO("Loaded yesterday's daily_pnl: " +
                                  std::to_string(yesterday_daily_pnl_for_email));
                         }
-                        if (daily_realized_arr && daily_realized_arr->length() > 0 &&
-                            !daily_realized_arr->IsNull(0)) {
-                            yesterday_realized_pnl_for_email = daily_realized_arr->Value(0);
+                        if (numeric_cell(table, 2, cell)) {
+                            yesterday_realized_pnl_for_email = cell;
                             INFO("Loaded yesterday's daily_realized_pnl: " +
                                  std::to_string(yesterday_realized_pnl_for_email));
                         } else {
@@ -2638,9 +2695,8 @@ int main(int argc, char* argv[]) {
                                 "Using calculated aggregate_yesterday_total_pnl as realized PnL: " +
                                 std::to_string(yesterday_realized_pnl_for_email));
                         }
-                        if (daily_unrealized_arr && daily_unrealized_arr->length() > 0 &&
-                            !daily_unrealized_arr->IsNull(0)) {
-                            yesterday_unrealized_pnl_for_email = daily_unrealized_arr->Value(0);
+                        if (numeric_cell(table, 3, cell)) {
+                            yesterday_unrealized_pnl_for_email = cell;
                             INFO("Loaded yesterday's daily_unrealized_pnl: " +
                                  std::to_string(yesterday_unrealized_pnl_for_email));
                         }
