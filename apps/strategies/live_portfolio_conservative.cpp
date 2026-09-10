@@ -758,6 +758,40 @@ int main(int argc, char* argv[]) {
         std::ostringstream yesterday_oss_check;
         yesterday_oss_check << std::put_time(&yesterday_tm_check, "%Y-%m-%d");
         std::string yesterday_date_str_check = yesterday_oss_check.str();
+
+        // FUT-covers_date (C-5 B4). `loaded()` above says the FILE parsed. It says
+        // nothing about whether the calendar reaches the date being asked about, and
+        // outside the covered years `is_holiday` returns false because the answer is
+        // UNKNOWN, not because the market was open. A run past the end of the calendar
+        // would therefore treat every closure as a trading day, take the normal-day
+        // branch on a holiday, and write executions for a day the exchange was shut --
+        // with no error and no log line, because nothing here ever asked.
+        //
+        // The equity runner has failed closed on this since BA-1
+        // (live_equity_mean_reversion.cpp:332). Same check here, on the two dates this
+        // runner actually asks the calendar about: the run date, which fixes the data
+        // window, and the previous calendar day, which is the argument `is_holiday`
+        // is given directly below. Both, because coverage is per YEAR and a run on
+        // 1 January asks about 31 December of the year before.
+        {
+            char cov_buf[11];
+            std::tm cov_tm{};
+            auto cov_t = std::chrono::system_clock::to_time_t(now);
+            gmtime_r(&cov_t, &cov_tm);
+            std::strftime(cov_buf, sizeof(cov_buf), "%Y-%m-%d", &cov_tm);
+            for (const std::string& cov_date : {std::string(cov_buf), yesterday_date_str_check}) {
+                if (!holiday_checker.covers_date(cov_date)) {
+                    ERROR("Holiday calendar does not cover " + cov_date + " (loaded: " +
+                          holiday_checker.coverage_description() + ", " +
+                          std::to_string(holiday_checker.coverage_years()) +
+                          " year(s)). Trading-day arithmetic would treat market closures "
+                          "as open days. Extend the calendar via "
+                          "scripts/generate_market_holidays.py before running this date.");
+                    return 1;
+                }
+            }
+        }
+
         bool is_yesterday_holiday = holiday_checker.is_holiday(yesterday_date_str_check);
 
         // Yesterday was non-trading if: today is Sunday (Sat was non-trading) OR yesterday was
