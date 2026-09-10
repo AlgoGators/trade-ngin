@@ -2892,15 +2892,6 @@ int main(int argc, char* argv[]) {
             // Calculate current date for results (use override date if specified)
             auto current_date = now;
 
-            // Use the calculated returns from above
-            [[maybe_unused]] double volatility = 0.0;
-
-            // Get volatility from risk evaluation if available
-            if (risk_eval.is_ok()) {
-                const auto& r = risk_eval.value();
-                volatility = r.portfolio_var * 100.0;  // Convert to percentage
-            }
-
             // Create configuration JSON
             nlohmann::json report_config_json;
             report_config_json["strategy_type"] = combined_strategy_id;  // From config (Phase 1)
@@ -2998,9 +2989,6 @@ int main(int argc, char* argv[]) {
                     historical_metrics =
                         hist_calc.calculate(returns_hist, pnl_hist, equity_hist,
                                             total_return_annualized, total_trades_hist);
-
-                    // Keep volatility variable aligned with return-volatility definition
-                    volatility = historical_metrics.volatility;
 
                     // Override total_days with authoritative trading days count from
                     // get_trading_days() DB function, which uses strategy_trading_days_metadata
