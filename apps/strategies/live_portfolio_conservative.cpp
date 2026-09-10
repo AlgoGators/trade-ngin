@@ -55,12 +55,26 @@ int main(int argc, char* argv[]) {
                 continue;
             }
 
-            // Try to parse as date
-            std::tm tm = {};
-            std::istringstream ss(arg);
-            ss >> std::get_time(&tm, "%Y-%m-%d");
-            if (!ss.fail()) {
-                target_date = std::chrono::system_clock::from_time_t(std::mktime(&tm));
+            // Try to parse as date. UTC midnight, not local midnight (E2-F42 / M-08).
+            //
+            // std::mktime read this as LOCAL midnight while almost every consumer of
+            // target_date formats it back through gmtime -- the yesterday key the
+            // holiday check builds, the position dates, the execution order-id stamp
+            // (execution_manager.cpp::generate_date_string, made UTC by 04b79f61), the
+            // trading-days target. On a host at a positive UTC offset local midnight is
+            // the PREVIOUS UTC day, so the entire run silently shifted a day: every row
+            // written under the wrong date, against the wrong T-1 book. A New York host
+            // hides it, which is why it survived -- local midnight there is 04:00 or
+            // 05:00 UTC, the same calendar day.
+            //
+            // Same helper the equity runner has used since 95679ea2, and the companion
+            // `now_tm` below moves to gmtime_r in the same commit as the ledger row
+            // requires: parsing UTC while formatting local would land the pair one day
+            // apart in the other direction on THIS host, which is worse than either
+            // consistent choice.
+            std::chrono::system_clock::time_point parsed_date;
+            if (core::parse_utc_date(arg, parsed_date)) {
+                target_date = parsed_date;
                 use_override_date = true;
                 std::cout << "Running for historical date: " << arg << std::endl;
             } else if (arg != "--send-email") {
@@ -249,7 +263,19 @@ int main(int argc, char* argv[]) {
         // Get current date for daily processing (or use override date)
         auto now = use_override_date ? target_date : std::chrono::system_clock::now();
         auto now_time_t = std::chrono::system_clock::to_time_t(now);
-        std::tm* now_tm = std::localtime(&now_time_t);
+        // E2-F42 / M-08, the companion half. `now` is UTC midnight of the requested
+        // date, so the broken-down form every consumer below reads must be UTC too:
+        // std::localtime would put tm_mday on the previous day on this host and split
+        // the run's own idea of its date from the one it writes to the database.
+        // gmtime_r, not std::gmtime, because this is the pattern the thread-safety
+        // sweep left behind; now_tm keeps its pointer type so the call sites are
+        // untouched.
+        std::tm now_tm_storage{};
+        std::tm* now_tm = gmtime_r(&now_time_t, &now_tm_storage);
+        if (now_tm == nullptr) {
+            std::cerr << "FATAL: could not resolve the run date in UTC" << std::endl;
+            return 1;
+        }
 
         // Set start date based on configured historical window
         auto start_date = now - std::chrono::hours(24 * app_config.live.historical_days);
