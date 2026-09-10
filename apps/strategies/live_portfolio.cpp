@@ -821,38 +821,6 @@ int main(int argc, char* argv[]) {
 
         INFO("All " + std::to_string(strategies.size()) + " strategies added to portfolio");
 
-        // ========================================
-        // STORE LIVE RUN METADATA
-        // Save run metadata (allocations, configs) for this trading day
-        // ========================================
-        INFO("Storing live run metadata for this trading day...");
-        {
-            // Build portfolio config JSON
-            nlohmann::json portfolio_config_json;
-            portfolio_config_json["total_capital"] =
-                static_cast<double>(portfolio_config.total_capital);
-            portfolio_config_json["reserve_capital"] =
-                static_cast<double>(portfolio_config.reserve_capital);
-            portfolio_config_json["use_optimization"] = portfolio_config.use_optimization;
-            portfolio_config_json["use_risk_management"] = portfolio_config.use_risk_management;
-
-            // Convert strategy_allocations to JSON
-            nlohmann::json strategy_alloc_json(strategy_allocations);
-
-            // strategy_configs is already nlohmann::json
-            auto metadata_result = db->store_live_run_metadata(
-                now, combined_strategy_id, portfolio_id, strategy_alloc_json, portfolio_config_json,
-                strategy_configs  // already nlohmann::json
-            );
-
-            if (metadata_result.is_error()) {
-                WARN("Failed to store live run metadata: " +
-                     std::string(metadata_result.error()->what()));
-            } else {
-                INFO("Successfully stored live run metadata for date");
-            }
-        }
-
         // Create LiveTradingCoordinator to manage all live trading components
         INFO("Creating LiveTradingCoordinator for centralized component management");
         LiveTradingConfig coordinator_config;
@@ -1090,6 +1058,43 @@ int main(int argc, char* argv[]) {
                 }
             }
         }
+        // ========================================
+        // STORE LIVE RUN METADATA
+        // Save run metadata (allocations, configs) for this trading day. Written only
+        // now, after the run-gap (A3), feed-freshness (A2) and calendar-coverage (A1)
+        // guards have all passed: a refused run must leave no row, because
+        // scripts/check_live_trading.py reads max(created_at) of this table as proof
+        // that the day's run happened.
+        // ========================================
+        INFO("Storing live run metadata for this trading day...");
+        {
+            // Build portfolio config JSON
+            nlohmann::json portfolio_config_json;
+            portfolio_config_json["total_capital"] =
+                static_cast<double>(portfolio_config.total_capital);
+            portfolio_config_json["reserve_capital"] =
+                static_cast<double>(portfolio_config.reserve_capital);
+            portfolio_config_json["use_optimization"] = portfolio_config.use_optimization;
+            portfolio_config_json["use_risk_management"] = portfolio_config.use_risk_management;
+
+            // Convert strategy_allocations to JSON
+            nlohmann::json strategy_alloc_json(strategy_allocations);
+
+            // strategy_configs is already nlohmann::json
+            auto metadata_result = db->store_live_run_metadata(
+                now, combined_strategy_id, portfolio_id, strategy_alloc_json, portfolio_config_json,
+                strategy_configs  // already nlohmann::json
+            );
+
+            if (metadata_result.is_error()) {
+                WARN("Failed to store live run metadata: " +
+                     std::string(metadata_result.error()->what()));
+            } else {
+                INFO("Successfully stored live run metadata for date");
+            }
+        }
+
+
 
         bool is_yesterday_holiday = holiday_checker.is_holiday(yesterday_date_str_check);
 
