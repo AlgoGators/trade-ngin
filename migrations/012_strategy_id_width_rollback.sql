@@ -52,8 +52,11 @@ BEGIN
 
         IF w IS NULL THEN
             RAISE EXCEPTION 'trading.%.strategy_id does not exist, or is not a varchar', tbl;
-        ELSIF w = 50 THEN
-            RAISE NOTICE 'trading.%.strategy_id is already varchar(50); nothing to do', tbl;
+        ELSIF w <= 50 THEN
+            -- <=, not =. A column already narrower than 50 must be left alone: setting it
+            -- TO varchar(50) would WIDEN it while the notice claimed it had been narrowed.
+            RAISE NOTICE 'trading.%.strategy_id is varchar(%), already at or below the 50 this '
+                         'rollback targets; nothing to do', tbl, w;
             CONTINUE;
         END IF;
 
@@ -72,6 +75,10 @@ BEGIN
     END LOOP;
 END $$;
 
+-- Clears the column comment 012 set. NOTE: this clears ANY comment on that column, not
+-- only 012's, because a rollback cannot know what was there before. There is no comment on
+-- it before 012 on production or on the scratch (checked), so nothing is lost today; if one
+-- is ever added independently of 012, restore it after running this.
 COMMENT ON COLUMN trading.positions.strategy_id IS NULL;
 
 COMMIT;

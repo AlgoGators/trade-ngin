@@ -15,9 +15,17 @@
 # Requires a running postgres reachable via PGHOST/PGPORT/PGUSER/PGPASSWORD.
 #
 # DESTRUCTIVE: the fixture begins with DROP SCHEMA trading CASCADE on whatever those env
-# vars point at. To run it you must name the scratch database explicitly:
-# export MIGRATION_TEST_DB=<dbname> with PGDATABASE set to the same value. Anything else
-# (including production) is refused.
+# vars point at. It must be pointed at a THROWAWAY database that holds nothing, created
+# for this purpose and dropped afterwards, for example
+#
+#   createdb t2_migration_test
+#   PGDATABASE=t2_migration_test MIGRATION_TEST_DB=t2_migration_test ./test_012_strategy_id_width.sh
+#   dropdb t2_migration_test
+#
+# NOT the stage-3 scratch. `new_algo_data_scratch` holds every A/B baseline the stage-3
+# programme compares against, in the `trading` schema this script drops, so it is refused
+# by name below along with production. An earlier version of this header said "scratch
+# dbname", which read as an instruction to destroy exactly that.
 
 set -euo pipefail
 
@@ -30,8 +38,24 @@ if [[ "${PGDATABASE:-}" != "${MIGRATION_TEST_DB}" ]]; then
     echo "REFUSING to run: PGDATABASE='${PGDATABASE:-}' != MIGRATION_TEST_DB='${MIGRATION_TEST_DB}'." >&2
     exit 2
 fi
-if [[ "${MIGRATION_TEST_DB}" == "new_algo_data" ]]; then
-    echo "REFUSING to run against new_algo_data: that is the production database." >&2
+case "${MIGRATION_TEST_DB}" in
+    new_algo_data|new_algo_data_*|*_new_algo_data)
+        echo "REFUSING to run against '${MIGRATION_TEST_DB}': that is production or the stage-3" >&2
+        echo "scratch, and this script DROPS SCHEMA trading CASCADE. Create a throwaway database." >&2
+        exit 2
+        ;;
+esac
+# Last line of defence: refuse any database that already holds a trading book, whatever it
+# is called. A brand-new database has no trading schema at all, which is the only state
+# this fixture is safe to run in.
+existing_book=$(psql -X -tAc "SELECT count(*) FROM information_schema.tables
+                               WHERE table_schema='trading'
+                                 AND table_name IN ('positions','live_results','signals')" \
+                2>/dev/null || echo 0)
+if [[ "${existing_book:-0}" != "0" ]]; then
+    echo "REFUSING to run against '${MIGRATION_TEST_DB}': it already has a trading schema with" >&2
+    echo "$existing_book of the three book tables. This script DROPS SCHEMA trading CASCADE." >&2
+    echo "Point it at an empty throwaway database." >&2
     exit 2
 fi
 

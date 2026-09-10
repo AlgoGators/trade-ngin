@@ -7,6 +7,7 @@
 #include "test_base.hpp"
 #include "trade_ngin/core/config_manager.hpp"
 #include "trade_ngin/core/config_version.hpp"
+#include "trade_ngin/core/logger.hpp"
 
 using namespace trade_ngin;
 
@@ -539,6 +540,23 @@ TEST_F(ConfigValidatorTest, LoggingValidatorRejectsAnUnknownLevelOrDestination) 
     c = ConfigManager::instance().create_default_config(ConfigType::LOGGING);
     c["destination"] = "SYSLOG";
     EXPECT_FALSE(v.validate(c).empty()) << "an unknown destination must be reported";
+
+    // The round trip that matters, and the one the first version of this validator got
+    // wrong: every string level_to_string can emit must validate, and the enumerator's
+    // own spelling ("ERR") must not. LoggerConfig writes "ERROR" for LogLevel::ERR.
+    for (auto level : {LogLevel::TRACE, LogLevel::DEBUG, LogLevel::INFO, LogLevel::WARNING,
+                       LogLevel::ERR, LogLevel::FATAL}) {
+        auto ok = ConfigManager::instance().create_default_config(ConfigType::LOGGING);
+        ok["min_level"] = level_to_string(level);
+        EXPECT_TRUE(v.validate(ok).empty())
+            << "the logger writes min_level=" << level_to_string(level)
+            << " and the validator rejects it, so a config the logger produced would not reload";
+    }
+    c = ConfigManager::instance().create_default_config(ConfigType::LOGGING);
+    c["min_level"] = "ERR";  // the enumerator's spelling, which from_json ignores
+    EXPECT_FALSE(v.validate(c).empty())
+        << "\"ERR\" is silently ignored by LoggerConfig::from_json, so accepting it would let a "
+           "typo downgrade the log level to the INFO default with no complaint";
 
     c = ConfigManager::instance().create_default_config(ConfigType::LOGGING);
     c["max_files"] = 0;

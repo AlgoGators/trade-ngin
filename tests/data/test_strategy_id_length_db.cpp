@@ -158,14 +158,22 @@ protected:
 TEST_F(StrategyIdLengthTest, TheJoinedThreeStrategyIdPassesTheValidator) {
     ASSERT_EQ(std::string(kJoinedId).size(), 62u);
 
+    // The subject of THIS test is the validator, not the schema, so it must not turn a
+    // missing migration into a failure about the cap. Ask the column first; the schema
+    // half is asserted on its own below, where a missing 012 is the point.
+    if (column_width("positions") < 62) {
+        GTEST_SKIP() << "trading.positions.strategy_id is varchar(" << column_width("positions")
+                     << "), so migration 012_strategy_id_width.sql has not been applied to this "
+                        "database and the id cannot reach the server whatever the validator says";
+    }
+
     // The validator does not refuse it, and since migration 012 neither does the
     // column: the id is stored whole.
     auto p = db_->store_positions({a_position()}, kJoinedId, kStrategyName, kPortfolio,
                                   "trading.positions");
     ASSERT_TRUE(p.is_ok())
-        << "the 62-character joined id was refused. If the error mentions "
-           "validate_strategy_id the cap regressed; if it says \"value too long\", "
-           "migration 012 has not been applied to this database: " << p.error()->what();
+        << "the 62-character joined id was refused with the column wide enough to hold it, so "
+           "validate_strategy_id's cap has regressed: " << p.error()->what();
 
     // And where the column is wide enough (executions is varchar(100)), it is
     // stored intact.
