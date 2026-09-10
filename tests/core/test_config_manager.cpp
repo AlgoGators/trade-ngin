@@ -517,6 +517,38 @@ TEST_F(ConfigValidatorTest, DatabaseValidatorAcceptsValidConfig) {
     EXPECT_TRUE(errs.empty());
 }
 
+// CFG-seed-invalid-data-json, second half. LOGGING was the one ConfigType with no
+// registered validator, so validate_config refused every start that reached it with
+// "No validator found for component: logging". The seeded default must satisfy it.
+TEST_F(ConfigValidatorTest, LoggingValidatorAcceptsTheSeededDefault) {
+    LoggingValidator v;
+    auto errors = v.validate(ConfigManager::instance().create_default_config(ConfigType::LOGGING));
+    std::string joined;
+    for (const auto& e : errors) joined += e.field + ": " + e.message + "; ";
+    EXPECT_TRUE(errors.empty()) << "the seeded logging.json would be rejected: " << joined;
+    EXPECT_EQ(v.get_type(), ConfigType::LOGGING);
+}
+
+TEST_F(ConfigValidatorTest, LoggingValidatorRejectsAnUnknownLevelOrDestination) {
+    LoggingValidator v;
+    nlohmann::json c = ConfigManager::instance().create_default_config(ConfigType::LOGGING);
+
+    c["min_level"] = "VERBOSE";  // not in the enum; the loader would silently use INFO
+    EXPECT_FALSE(v.validate(c).empty()) << "an unknown level must be reported, not coerced";
+
+    c = ConfigManager::instance().create_default_config(ConfigType::LOGGING);
+    c["destination"] = "SYSLOG";
+    EXPECT_FALSE(v.validate(c).empty()) << "an unknown destination must be reported";
+
+    c = ConfigManager::instance().create_default_config(ConfigType::LOGGING);
+    c["max_files"] = 0;
+    EXPECT_FALSE(v.validate(c).empty()) << "keeping zero files is not a retention policy";
+
+    c = ConfigManager::instance().create_default_config(ConfigType::LOGGING);
+    c["include_level"] = "yes";
+    EXPECT_FALSE(v.validate(c).empty()) << "a boolean field given a string must be reported";
+}
+
 TEST_F(ConfigValidatorTest, DatabaseValidatorTypeIsDatabase) {
     DatabaseValidator v;
     EXPECT_EQ(v.get_type(), ConfigType::DATABASE);

@@ -1,5 +1,6 @@
 // src/core/config_manager.cpp
 #include "trade_ngin/core/config_manager.hpp"
+#include <algorithm>
 #include <fstream>
 #include <sstream>
 #include "trade_ngin/core/config_version.hpp"
@@ -265,11 +266,66 @@ std::vector<ConfigValidationError> DatabaseValidator::validate(const nlohmann::j
     return errors;
 }
 
+// LoggingValidator Implementation
+std::vector<ConfigValidationError> LoggingValidator::validate(const nlohmann::json& config) const {
+    std::vector<ConfigValidationError> errors;
+
+    // The two enumerated fields. Anything outside the enum would be silently coerced to
+    // the default by the loader, so a typo would quietly change the log level rather than
+    // being reported.
+    static const std::vector<std::string> levels{"TRACE", "DEBUG", "INFO", "WARNING", "ERR",
+                                                 "FATAL"};
+    static const std::vector<std::string> destinations{"CONSOLE", "FILE", "BOTH"};
+
+    auto enumerated = [&errors, &config](const char* field,
+                                         const std::vector<std::string>& allowed) {
+        if (!config.contains(field)) return;  // optional: the struct's default applies
+        if (!config[field].is_string()) {
+            errors.push_back({field, "Must be a string"});
+            return;
+        }
+        const std::string v = config[field].get<std::string>();
+        if (std::find(allowed.begin(), allowed.end(), v) == allowed.end()) {
+            std::string joined;
+            for (const auto& a : allowed) joined += (joined.empty() ? "" : ", ") + a;
+            errors.push_back({field, "Must be one of: " + joined});
+        }
+    };
+    enumerated("min_level", levels);
+    enumerated("destination", destinations);
+
+    for (const char* field : {"log_directory", "log_subdirectory", "filename_prefix"}) {
+        if (config.contains(field) && !config[field].is_string()) {
+            errors.push_back({field, "Must be a string"});
+        }
+    }
+
+    for (const char* field : {"include_timestamp", "include_level"}) {
+        if (config.contains(field) && !config[field].is_boolean()) {
+            errors.push_back({field, "Must be a boolean"});
+        }
+    }
+
+    for (const char* field : {"max_file_size", "max_files"}) {
+        if (config.contains(field) &&
+            (!config[field].is_number_integer() || config[field].get<long long>() <= 0)) {
+            errors.push_back({field, "Must be a positive integer"});
+        }
+    }
+
+    return errors;
+}
+
 void ConfigManager::initialize_validators() {
     validators_[ConfigType::STRATEGY] = std::make_unique<StrategyValidator>();
     validators_[ConfigType::RISK] = std::make_unique<RiskValidator>();
     validators_[ConfigType::EXECUTION] = std::make_unique<ExecutionValidator>();
     validators_[ConfigType::DATABASE] = std::make_unique<DatabaseValidator>();
+    // CFG-seed-invalid-data-json, second half: LOGGING is seeded and read back like the
+    // other four, and had no validator, so validate_config refused every start that got
+    // as far as it with "No validator found for component: logging". The data.json shape
+    // defect hid it -- validation failed on `data` first.
+    validators_[ConfigType::LOGGING] = std::make_unique<LoggingValidator>();
 }
 
 Result<void> ConfigManager::initialize(const std::filesystem::path& base_path, Environment env) {
