@@ -131,6 +131,24 @@ protected:
 
 }  // namespace
 
+// A futures row with no basis keeps its margin: FuturesInstrument's margin is
+// |qty| x initial_margin and does not depend on the price at all, so "no basis"
+// is not "no margin" for a future. Dropping such a row out of the total would be
+// a regression the throw never caused, and it is what a price-first guard does if
+// it decides unpriceability from the price instead of from the instrument.
+TEST_F(EmailStrategyTablesTest, AFuturesRowWithNoBasisStillContributesItsMargin) {
+    const StrategyPositionsMap book{
+        {"TREND_FOLLOWING", {{"ZFGOOD.v.0", held("ZFGOOD.v.0", 2.0, 0.0)}}}};
+
+    std::string html;
+    ASSERT_NO_THROW({ html = sender_.format_strategy_positions_tables(book, {}, {}); });
+    EXPECT_NE(html.find("ZFGOOD.v.0"), std::string::npos);
+    // 2 contracts at 12,000, exactly as with a basis: the price is not an input.
+    EXPECT_NE(html.find("24,000.00"), std::string::npos)
+        << "a futures row without a basis was dropped from the margin total; its margin "
+           "never depended on the basis";
+}
+
 // The defect, directly: an equity row with neither basis nor close must not
 // abort the per-strategy tables.
 TEST_F(EmailStrategyTablesTest, AZeroBasisRowDoesNotAbortTheStrategyTables) {

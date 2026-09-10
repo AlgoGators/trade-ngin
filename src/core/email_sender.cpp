@@ -3155,31 +3155,28 @@ std::string EmailSender::format_single_strategy_table(
                     price_for_margin = position.average_price.as_double();
                 }
 
-                if (price_for_margin <= 0.0) {
-                    // Neither a close nor a basis. Report it and leave this row out of the
-                    // margin total; the email still goes out and the row still appears with
-                    // the figures that ARE known.
-                    WARN("Daily email: no usable price for " + lookup_sym + " (quantity " +
-                         std::to_string(signed_qty) +
-                         ", no current close and average_price is 0) -- excluded from the "
-                         "margin total. The email is still sent; margin posted is "
-                         "understated by this position.");
+                // Ask the instrument, whatever price is available -- do NOT decide from
+                // the price alone that the row is unpriceable. FuturesInstrument's margin
+                // is |qty| x initial_margin and ignores the price entirely, so a futures
+                // row with no basis still HAS a margin and must keep contributing it. Only
+                // a non-positive answer FROM THE INSTRUMENT means there is nothing to add,
+                // and that is what used to throw.
+                margin_for_position =
+                    instrument->get_margin_requirement(price_for_margin, signed_qty);
+                if (margin_for_position <= 0) {
+                    // Equities land here when neither a close nor a basis is known (margin
+                    // is a fraction of notional, so price 0 gives 0); futures land here when
+                    // the contract's own metadata carries no initial margin. Either way it
+                    // is one row that cannot be added up, not a reason to withhold the
+                    // report from everybody.
+                    WARN("Daily email: no usable margin for " + lookup_sym + " (quantity " +
+                         std::to_string(signed_qty) + ", price " +
+                         std::to_string(price_for_margin) +
+                         ") -- excluded from the margin total. The email is still sent; "
+                         "margin posted is understated by this position.");
+                    margin_for_position = 0.0;
                 } else {
-                    margin_for_position =
-                        instrument->get_margin_requirement(price_for_margin, signed_qty);
-                    if (margin_for_position <= 0) {
-                        // A positive price that still yields no margin is an instrument
-                        // configuration problem, not a missing-data problem. Report it and
-                        // carry on rather than suppressing the whole report.
-                        WARN("Daily email: instrument " + lookup_sym + " returned margin " +
-                             std::to_string(margin_for_position) +
-                             " for price=" + std::to_string(price_for_margin) +
-                             ", qty=" + std::to_string(signed_qty) +
-                             " -- excluded from the margin total.");
-                        margin_for_position = 0.0;
-                    } else {
-                        total_margin_posted += margin_for_position;
-                    }
+                    total_margin_posted += margin_for_position;
                 }
 
             } catch (const std::exception& e) {
@@ -3339,11 +3336,9 @@ std::string EmailSender::format_strategy_positions_tables(
                         } else if (position.average_price.as_double() > 0.0) {
                             price_for_margin = position.average_price.as_double();
                         }
-                        if (price_for_margin > 0.0) {
-                            const double m =
-                                instrument->get_margin_requirement(price_for_margin, signed_qty);
-                            if (m > 0.0) portfolio_total_margin += m;
-                        }
+                        const double m =
+                            instrument->get_margin_requirement(price_for_margin, signed_qty);
+                        if (m > 0.0) portfolio_total_margin += m;
                     }
                 } catch (...) {
                     // Already logged in format_single_strategy_table
