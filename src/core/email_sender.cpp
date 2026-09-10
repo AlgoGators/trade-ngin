@@ -3144,15 +3144,22 @@ std::string EmailSender::format_single_strategy_table(
                 //
                 // This is the fix 9348920d made to the single-table equity overload
                 // (format_positions_table, above), applied to the per-strategy futures
-                // overload it missed. Margin asks what the position is worth NOW, so the
-                // current close is the right input and average_price is the fallback --
-                // the same preference the market-price block below already applies.
+                // overload it missed. The price preference is kept EXACTLY as this
+                // overload always had it: the row's own average_price first, and the
+                // current close only as the fallback when the basis is missing. Preferring
+                // the close here would re-price every equity row's margin (a basis of 50
+                // against a close of 52 moves the line from 2,500 to 2,600) on a stream
+                // this change promises to leave byte-identical; the single-table equity
+                // overload above prefers the close, and that inconsistency is recorded
+                // for the statistics pass rather than resolved by a side effect here.
                 double price_for_margin = 0.0;
-                auto margin_price_it = current_prices.find(symbol);
-                if (margin_price_it != current_prices.end() && margin_price_it->second > 0.0) {
-                    price_for_margin = margin_price_it->second;
-                } else if (position.average_price.as_double() > 0.0) {
+                if (position.average_price.as_double() > 0.0) {
                     price_for_margin = position.average_price.as_double();
+                } else {
+                    auto margin_price_it = current_prices.find(symbol);
+                    if (margin_price_it != current_prices.end() && margin_price_it->second > 0.0) {
+                        price_for_margin = margin_price_it->second;
+                    }
                 }
 
                 // Ask the instrument, whatever price is available -- do NOT decide from

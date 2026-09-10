@@ -218,6 +218,27 @@ TEST_F(EmailStrategyTablesTest, ACurrentCloseCoversAZeroBasis) {
 
 // The healthy path is unchanged. This is what makes the change a reported-column
 // one rather than a behavioural one.
+// An equity row that HAS a basis keeps the margin the old code gave it, even
+// when a current close is also known: the per-strategy overload prices from the
+// basis first, exactly as before. (Basis 50 x 100 shares x 50% = 2,500; pricing
+// from the close of 52 would have given 2,600.)
+TEST_F(EmailStrategyTablesTest, AnEquityRowWithABasisKeepsItsBasisPricedMargin) {
+    const StrategyPositionsMap book{
+        {"MEAN_REVERSION", {{"ZEPRICED", held("ZEPRICED", 100.0, 50.0)}}}};
+    const std::unordered_map<std::string, double> prices{{"ZEPRICED", 52.0}};
+
+    std::string html;
+    ASSERT_NO_THROW({ html = sender_.format_strategy_positions_tables(book, prices, {}); });
+    // Pin the margin cell itself, not any occurrence of the number: other
+    // columns legitimately show close-priced figures.
+    const auto margin_at = html.find("Margin:</strong> $2,500.00");
+    EXPECT_NE(margin_at, std::string::npos)
+        << "the equity row's margin was re-priced from the close instead of its basis; "
+           "the per-strategy overload must price from the basis first, as it always did. "
+           "HTML was:\n" << html;
+    EXPECT_EQ(html.find("Margin:</strong> $2,600.00"), std::string::npos);
+}
+
 TEST_F(EmailStrategyTablesTest, ANormalFuturesBookIsUnaffected) {
     const StrategyPositionsMap book{
         {"TREND_FOLLOWING",
