@@ -44,7 +44,7 @@ using namespace trade_ngin;
 namespace {
 
 // 62 characters: exactly what a third enabled trend strategy joins to, and wider
-// than trading.positions.strategy_id at varchar(50). If migration 010 has been
+// than trading.positions.strategy_id at varchar(50). If migration 012 has been
 // applied the column is varchar(100) and this id fits, so the test picks its
 // probe from the column's ACTUAL width rather than assuming either state.
 constexpr const char* kPortfolio = "T2_STORE_ERR_PROBE_PORTFOLIO";
@@ -160,12 +160,22 @@ TEST_F(StorePositionsErrorTest, AnOverlongIdReportsValueTooLongNotAnAbortedTrans
 
     // One character past whatever the column currently is, built from a valid
     // identifier alphabet so validate_strategy_id lets it reach the server. The
-    // validator's own cap is 100 (T-1 item 11), so this only works while the
-    // column is narrower than that -- which is the point of the guard below.
-    ASSERT_LT(width, 100) << "trading.positions.strategy_id is now at least as wide as the "
-                             "validator's cap, so no id can reach the server too long. "
-                             "Rewrite this case against a different column, or drop it and "
-                             "keep the duplicate-key case.";
+    // validator's own cap is 100 (T-1 item 11), so an id can only be BOTH valid and
+    // too long while the column is narrower than that.
+    //
+    // Migration 012 widens this column to 100, which closes the gap deliberately: no
+    // id that passes the validator can then be too long for the column, and this
+    // particular server error becomes unreachable through store_positions. That is
+    // the end state E2-F36 aimed at, so it is asserted as an invariant rather than
+    // treated as a failure, and the duplicate-key case below carries the claim about
+    // the error text on its own.
+    if (width >= 100) {
+        EXPECT_EQ(width, 100)
+            << "trading.positions.strategy_id is wider than validate_strategy_id's cap; "
+               "the validator and the schema have drifted apart again, the other way";
+        GTEST_SKIP() << "migration 012 is applied (varchar(" << width << ")), so no valid "
+                        "identifier can be too long for the column";
+    }
     std::string too_long = "LIVE_";
     while (static_cast<int>(too_long.size()) <= width) too_long += "X";
     ASSERT_EQ(static_cast<int>(too_long.size()), width + 1);
