@@ -575,11 +575,28 @@ TEST_F(ConfigManagerInstanceTest, CreateDefaultConfigForExecutionIsObject) {
     EXPECT_TRUE(j.is_object());
 }
 
-TEST_F(ConfigManagerInstanceTest, CreateDefaultConfigForDatabaseHasConnectionString) {
+// CFG-seed-invalid-data-json: the seeded database config must satisfy the
+// validator that will read it back, so the test asserts against the validator
+// rather than against a hand-copied key list that can drift from it the same way
+// the seed did.
+TEST_F(ConfigManagerInstanceTest, CreateDefaultConfigForDatabaseSatisfiesItsOwnValidator) {
     auto j = ConfigManager::instance().create_default_config(ConfigType::DATABASE);
-    EXPECT_TRUE(j.contains("connection_string"));
+
+    DatabaseValidator validator;
+    auto errors = validator.validate(j);
+    std::string joined;
+    for (const auto& e : errors) joined += e.field + ": " + e.message + "; ";
+    EXPECT_TRUE(errors.empty())
+        << "the seeded data.json would be rejected on the next start: " << joined;
+
+    // port is a NUMBER here. This is ConfigManager's schema; ConfigLoader's
+    // unrelated DatabaseConfig::port is a std::string, and a swap in either
+    // direction breaks the other loader at startup.
+    EXPECT_TRUE(j["port"].is_number());
     EXPECT_TRUE(j.contains("max_connections"));
     EXPECT_TRUE(j.contains("timeout_seconds"));
+    EXPECT_FALSE(j.contains("connection_string"))
+        << "a seeded file carrying both a DSN and the parts has two sources of truth";
 }
 
 TEST_F(ConfigManagerInstanceTest, CreateDefaultConfigForLoggingIsObject) {
@@ -678,47 +695,43 @@ TEST_F(ConfigManagerInitTest, SeededDefaultsAreWrittenForEveryComponent) {
     }
 }
 
-// FINDING, pinned rather than fixed (this item is test-only).
+// CFG-seed-invalid-data-json, FIXED. This replaces the test T-1 left here, which
+// pinned the defect as it stood and was written to fail the day it was fixed.
 //
-// The seed branch writes a data.json that its OWN validator rejects, so a fresh
-// deployment starts once and then fails on every subsequent start:
+// The defect: create_default_database_config() wrote connection_string /
+// max_connections / timeout_seconds while DatabaseValidator requires host, port,
+// database and user. The seed path returns save_configs() directly and never
+// validates what it just wrote; the load path validates everything it reads. So a
+// fresh deployment started once and then failed on every subsequent start with
+// "Configuration validation failed for data: - host: Required field missing".
 //
-//   create_default_database_config() writes connection_string, max_connections,
-//   timeout_seconds  (config_manager.cpp)
-//   DatabaseValidator requires      host, port, database, user
-//   (config_manager.cpp:232)
-//
-// The two drifted apart and nothing noticed, because the seed path returns
-// save_configs() directly and never validates what it just wrote, while the load
-// path validates everything it reads. First start: seeds, succeeds. Second
-// start: loads, and fails with
-//
-//   Configuration validation failed for data:
-//    - host: Required field missing
-//    - port: Required field missing
-//    - database: Required field missing
-//
-// This test asserts that behaviour AS IT IS, so the defect is recorded and
-// cannot regress further unnoticed. It is written to FAIL the day the defect is
-// fixed, with a message saying so -- that is the intended trigger to delete it
-// and replace it with the round-trip assertion that belongs here.
-TEST_F(ConfigManagerInitTest, SeededDefaultsDoNotSatisfyTheirOwnValidatorOnReload) {
+// The assertion that matters is the ROUND TRIP -- seed, then start again over
+// what was seeded -- because that is the sequence a new deployment performs and
+// the only one in which the two halves of the contract meet. Asserting the key
+// list instead would be a second hand-written copy of the validator, free to
+// drift from it exactly as the seed did.
+TEST_F(ConfigManagerInitTest, SeededDefaultsLoadCleanlyOnTheNextStart) {
     auto& mgr = ConfigManager::instance();
     ASSERT_TRUE(mgr.initialize(dir_, Environment::DEVELOPMENT).is_ok())
-        << "the first start, which seeds, is expected to succeed";
+        << "the first start, which seeds, must succeed";
 
     ConfigVersionManager::reset_instance();
     auto second = mgr.initialize(dir_, Environment::DEVELOPMENT);
 
-    ASSERT_TRUE(second.is_error())
-        << "the seeded configs now load cleanly, which means create_default_database_config "
-           "and DatabaseValidator have been reconciled. Good -- delete this test and assert "
-           "the round trip instead.";
-    const std::string what = second.error()->what();
-    EXPECT_NE(what.find("data"), std::string::npos)
-        << "expected the data component to be the one that fails; got: " << what;
-    EXPECT_NE(what.find("Required field missing"), std::string::npos)
-        << "expected missing required fields; got: " << what;
+    ASSERT_TRUE(second.is_ok())
+        << "a second start over the seeded directory was rejected: "
+        << (second.error() ? second.error()->what() : "no error");
+
+    // And the file on disk is the one that was validated, not an in-memory
+    // default that happens to be valid: read it back and check the four keys the
+    // validator requires are actually there.
+    std::ifstream in(dir_ / "data.json");
+    nlohmann::json parsed;
+    ASSERT_NO_THROW(in >> parsed) << "data.json is not parseable JSON";
+    for (const char* field : {"host", "port", "database", "user"}) {
+        EXPECT_TRUE(parsed.contains(field))
+            << "seeded data.json is missing " << field << ", which the validator requires";
+    }
 }
 
 TEST_F(ConfigManagerInitTest, InitializeReReadsExistingFiles) {

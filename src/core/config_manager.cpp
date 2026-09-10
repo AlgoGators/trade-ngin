@@ -589,8 +589,32 @@ nlohmann::json ConfigManager::create_default_execution_config() const {
 }
 
 nlohmann::json ConfigManager::create_default_database_config() const {
+    // CFG-seed-invalid-data-json. What this writes must be what DatabaseValidator
+    // accepts, because the two run on the same file one start apart.
+    //
+    // It used to write connection_string / max_connections / timeout_seconds while
+    // the validator (DatabaseValidator::validate, above) requires host, port,
+    // database and user. Nothing noticed, because the seed path returns
+    // save_configs() directly and never validates what it just wrote, while the
+    // load path validates everything it reads. So a fresh deployment started once,
+    // seeded a data.json, and then failed on EVERY subsequent start with
+    //
+    //   Configuration validation failed for data:
+    //    - host: Required field missing
+    //    - port: Required field missing
+    //    - database: Required field missing
+    //
+    // The four required keys are written here in the shape the validator checks:
+    // port as a NUMBER (this is ConfigManager's own schema; ConfigLoader's
+    // unrelated DatabaseConfig::port is a string, and the two must not be
+    // confused). connection_string is gone rather than kept alongside them --
+    // nothing reads it back, and a seeded file that carries both a DSN and the
+    // parts would have two sources of truth that can disagree.
     nlohmann::json config;
-    config["connection_string"] = "postgresql://localhost:5432/tradingdb";
+    config["host"] = "localhost";
+    config["port"] = 5432;
+    config["database"] = "tradingdb";
+    config["user"] = "postgres";
     config["max_connections"] = 10;
     config["timeout_seconds"] = 30;
     config["version"] = "1.0.0";
