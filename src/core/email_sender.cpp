@@ -3126,17 +3126,61 @@ std::string EmailSender::format_single_strategy_table(
                 // (account-mode-aware notional fraction) and futures (|qty| ×
                 // per-contract margin, after the FuturesInstrument override).
                 const double signed_qty = position.quantity.as_double();
-                const double price_for_margin = position.average_price.as_double();
-                margin_for_position =
-                    instrument->get_margin_requirement(price_for_margin, signed_qty);
-                if (margin_for_position <= 0) {
-                    ERROR("CRITICAL: Invalid margin requirement " +
-                          std::to_string(margin_for_position) + " for " + lookup_sym +
-                          " (price=" + std::to_string(price_for_margin) +
-                          ", qty=" + std::to_string(signed_qty) + ")");
-                    throw std::runtime_error("Invalid margin requirement for: " + lookup_sym);
+
+                // FUT-email-zero-basis (C-5 B5). Margin is priced from a MARK, not from a
+                // cost basis, and one row without a basis must not suppress the whole
+                // report.
+                //
+                // This read average_price only. Zero is that column's documented "no basis
+                // known" value (AVERAGE_PRICE_LIFECYCLE rule 5) and is reachable for a held
+                // position whose basis could not be resolved, which the runner already
+                // reports as an ERROR of its own. get_margin_requirement(0, qty) then
+                // returns 0, this threw, and the `throw;` below carried it out of
+                // format_single_strategy_table, out of format_strategy_positions_tables and
+                // out of generate_trading_report_body: one unpriceable row and NOBODY got a
+                // daily report at all. The catch(...) in the portfolio-total loop below
+                // then swallowed the same failure silently, so the margin line understated
+                // without saying so.
+                //
+                // This is the fix 9348920d made to the single-table equity overload
+                // (format_positions_table, above), applied to the per-strategy futures
+                // overload it missed. Margin asks what the position is worth NOW, so the
+                // current close is the right input and average_price is the fallback --
+                // the same preference the market-price block below already applies.
+                double price_for_margin = 0.0;
+                auto margin_price_it = current_prices.find(symbol);
+                if (margin_price_it != current_prices.end() && margin_price_it->second > 0.0) {
+                    price_for_margin = margin_price_it->second;
+                } else if (position.average_price.as_double() > 0.0) {
+                    price_for_margin = position.average_price.as_double();
                 }
-                total_margin_posted += margin_for_position;
+
+                if (price_for_margin <= 0.0) {
+                    // Neither a close nor a basis. Report it and leave this row out of the
+                    // margin total; the email still goes out and the row still appears with
+                    // the figures that ARE known.
+                    WARN("Daily email: no usable price for " + lookup_sym + " (quantity " +
+                         std::to_string(signed_qty) +
+                         ", no current close and average_price is 0) -- excluded from the "
+                         "margin total. The email is still sent; margin posted is "
+                         "understated by this position.");
+                } else {
+                    margin_for_position =
+                        instrument->get_margin_requirement(price_for_margin, signed_qty);
+                    if (margin_for_position <= 0) {
+                        // A positive price that still yields no margin is an instrument
+                        // configuration problem, not a missing-data problem. Report it and
+                        // carry on rather than suppressing the whole report.
+                        WARN("Daily email: instrument " + lookup_sym + " returned margin " +
+                             std::to_string(margin_for_position) +
+                             " for price=" + std::to_string(price_for_margin) +
+                             ", qty=" + std::to_string(signed_qty) +
+                             " -- excluded from the margin total.");
+                        margin_for_position = 0.0;
+                    } else {
+                        total_margin_posted += margin_for_position;
+                    }
+                }
 
             } catch (const std::exception& e) {
                 ERROR("CRITICAL: Failed to get instrument data for " + position.symbol + ": " +
@@ -3279,10 +3323,27 @@ std::string EmailSender::format_strategy_positions_tables(
                         // Use the price/qty overload (returns total dollars).
                         // Required for equities to get account-mode-aware
                         // margin instead of the legacy 0.0 sentinel.
+                        //
+                        // FUT-email-zero-basis: priced from the same mark the per-strategy
+                        // table above uses, current close first and basis as the fallback.
+                        // Reading average_price alone here made the portfolio total
+                        // disagree with the sum of the per-strategy tables printed
+                        // immediately above it whenever a basis was missing, and the
+                        // catch(...) below meant nothing said so.
                         const double signed_qty = position.quantity.as_double();
-                        const double price_for_margin = position.average_price.as_double();
-                        portfolio_total_margin +=
-                            instrument->get_margin_requirement(price_for_margin, signed_qty);
+                        double price_for_margin = 0.0;
+                        auto margin_price_it = current_prices.find(symbol);
+                        if (margin_price_it != current_prices.end() &&
+                            margin_price_it->second > 0.0) {
+                            price_for_margin = margin_price_it->second;
+                        } else if (position.average_price.as_double() > 0.0) {
+                            price_for_margin = position.average_price.as_double();
+                        }
+                        if (price_for_margin > 0.0) {
+                            const double m =
+                                instrument->get_margin_requirement(price_for_margin, signed_qty);
+                            if (m > 0.0) portfolio_total_margin += m;
+                        }
                     }
                 } catch (...) {
                     // Already logged in format_single_strategy_table

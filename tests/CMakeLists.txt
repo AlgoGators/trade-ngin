@@ -12,6 +12,7 @@ set(TEST_SOURCES
     core/test_holiday_coverage_years.cpp
     core/test_logger_retention.cpp
     core/test_email_positions_table.cpp
+    core/test_email_strategy_tables.cpp
     core/test_run_id_generator.cpp
     core/test_config_loader.cpp
     core/test_backtest_window.cpp
