@@ -237,6 +237,10 @@ TEST_F(EmailStrategyTablesTest, AnEquityRowWithABasisKeepsItsBasisPricedMargin) 
            "the per-strategy overload must price from the basis first, as it always did. "
            "HTML was:\n" << html;
     EXPECT_EQ(html.find("Margin:</strong> $2,600.00"), std::string::npos);
+    EXPECT_NE(html.find("Total Margin Posted:</strong> $2,500.00"), std::string::npos)
+        << "the portfolio total must be priced the same way as the per-strategy cell, "
+           "from the basis, so the page agrees with itself. HTML was:\n" << html;
+    EXPECT_EQ(html.find("Total Margin Posted:</strong> $2,600.00"), std::string::npos);
 }
 
 TEST_F(EmailStrategyTablesTest, ANormalFuturesBookIsUnaffected) {

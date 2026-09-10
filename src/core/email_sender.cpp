@@ -3329,19 +3329,21 @@ std::string EmailSender::format_strategy_positions_tables(
                         // margin instead of the legacy 0.0 sentinel.
                         //
                         // FUT-email-zero-basis: priced from the same mark the per-strategy
-                        // table above uses, current close first and basis as the fallback.
-                        // Reading average_price alone here made the portfolio total
-                        // disagree with the sum of the per-strategy tables printed
-                        // immediately above it whenever a basis was missing, and the
-                        // catch(...) below meant nothing said so.
+                        // table above uses, basis first and the current close only as the
+                        // fallback, so the portfolio total equals the sum of the per-strategy
+                        // tables printed immediately above it whether or not a basis exists.
+                        // Reading average_price alone here dropped a no-basis row from the
+                        // total, and the catch(...) below meant nothing said so.
                         const double signed_qty = position.quantity.as_double();
                         double price_for_margin = 0.0;
-                        auto margin_price_it = current_prices.find(symbol);
-                        if (margin_price_it != current_prices.end() &&
-                            margin_price_it->second > 0.0) {
-                            price_for_margin = margin_price_it->second;
-                        } else if (position.average_price.as_double() > 0.0) {
+                        if (position.average_price.as_double() > 0.0) {
                             price_for_margin = position.average_price.as_double();
+                        } else {
+                            auto margin_price_it = current_prices.find(symbol);
+                            if (margin_price_it != current_prices.end() &&
+                                margin_price_it->second > 0.0) {
+                                price_for_margin = margin_price_it->second;
+                            }
                         }
                         const double m =
                             instrument->get_margin_requirement(price_for_margin, signed_qty);
