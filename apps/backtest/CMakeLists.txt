@@ -23,3 +23,25 @@ set_target_properties(bt_trend
     RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/bin/Debug"
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/bin/Release"
 )
+
+# Two-ticker spread backtest application
+set(BT_SPREAD_SOURCES
+    bt_spread.cpp
+)
+
+# Create spread backtest executable
+add_executable(bt_spread ${BT_SPREAD_SOURCES})
+
+# Link against the trade_ngin library
+target_link_libraries(bt_spread
+    PRIVATE
+        trade_ngin
+)
+
+# Set output directory
+set_target_properties(bt_spread
+    PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/bin/Debug"
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/bin/Release"
+)

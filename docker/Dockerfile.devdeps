@@ -1,0 +1,28 @@
+# Development dependency image for trade_ngin.
+# Builds only the third-party dependencies; the project itself is compiled by
+# scripts/docker_dev.sh against a mounted checkout, so edits rebuild incrementally.
+FROM ubuntu:24.04
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y \
+    build-essential cmake git wget pkg-config rsync ca-certificates lsb-release \
+    libpq-dev nlohmann-json3-dev libeigen3-dev libcurl4-openssl-dev \
+    libgtest-dev libgmock-dev gnuplot \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+RUN wget -q -O /tmp/arrow.deb \
+      "https://packages.apache.org/artifactory/arrow/ubuntu/apache-arrow-apt-source-latest-$(lsb_release --codename --short).deb" \
+    && apt-get install -y /tmp/arrow.deb \
+    && apt-get update \
+    && apt-get install -y libarrow-dev libarrow-dataset-dev \
+    && apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/arrow.deb
+# libpqxx must be built with the same C++ standard as the project: at C++20 its
+# exception constructors take a std::source_location, which changes their ABI.
+RUN git clone --depth 1 --branch 7.9.2 https://github.com/jtv/libpqxx.git /tmp/libpqxx \
+    && cmake -S /tmp/libpqxx -B /tmp/libpqxx/build \
+        -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=20 \
+        -DSKIP_BUILD_TEST=ON -DBUILD_SHARED_LIBS=ON \
+        -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+    && cmake --build /tmp/libpqxx/build -j"$(nproc)" \
+    && cmake --install /tmp/libpqxx/build \
+    && ldconfig && rm -rf /tmp/libpqxx
+ENV PKG_CONFIG_PATH=/usr/local/lib/pkgconfig
+WORKDIR /work
