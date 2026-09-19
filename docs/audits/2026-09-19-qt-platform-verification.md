@@ -20,7 +20,7 @@
 | Migration 012 on real PostgreSQL | pass | 21/21 checks passed on disposable PostgreSQL 16 | Covers forward application, immutable legacy rows, unique/ambiguous inference, new-row enforcement, append-only rules, second application, rollback refusal, lock posture, safe rollback, and repeated safe rollback |
 | QT seed lifecycle on real PostgreSQL | pass | 10/10 checks passed on a separate disposable PostgreSQL 16 container | Manual ES quantity remained `99`, NG zero closure remained `0`, system rows were unchanged, three reruns inserted nothing, and the next date carried both manual states |
 | Disposable database cleanup | pass | Both harness containers were removed | No production endpoint or data was involved |
-| Full legacy C++ test executable | partial | The complete executable builds, but a monolithic all-tests run is not green | The all-tests process reports an order-dependent `BaseStrategyTest.CheckRiskLimits_FailsOnMaxDrawdown` failure and later segfaults; the BaseStrategy group passes 12/12 in isolation. This is outside the QT-focused gate but must not be represented as a full-suite pass |
+| Full legacy C++ test executable | pass | The monolithic executable passed 1,277/1,277 tests three times in one-process mode: 27.485, 26.155, and 27.259 seconds | No test was disabled, filtered, reordered, or weakened. The former order-dependent BaseStrategy failure and immediate segfault are fixed as described below |
 | Approved production read-only audit | blocked | No approved production PostgreSQL service/profile or credential source exists in the scoped local environment | Zero production connections and zero production SQL statements were attempted |
 
 ## Defects found and fixed during verification
@@ -28,6 +28,7 @@
 1. Migration 012 was documented as idempotent but failed on its second application. PostgreSQL rejects `INSERT ... ON CONFLICT` on the append-only companion relation after its rules exist. The migration now serializes inference writes and excludes existing mappings explicitly. The real PostgreSQL harness changed from 20 pass / 1 fail to 21 pass / 0 fail.
 2. CMake always preferred pkg-config libpqxx 7.8 even when a compatible package-provided target was installed. That version cannot compile the repository's `pqxx::params` calls. Package-target-first discovery now produces a complete build while preserving pkg-config fallback.
 3. `test_credential_store.cpp` included GoogleMock without using it. Removing the unused include avoids imposing a false dependency on that test.
+4. `StrategyMetrics` left all 17 scalar members uninitialized. Earlier heap activity therefore changed the starting P&L and trade-count values, which made `BaseStrategyTest.CheckRiskLimits_FailsOnMaxDrawdown` fail only in the monolithic run. The test then used a non-fatal assertion and dereferenced the absent error on its next line, causing the reported segmentation fault immediately rather than in a later suite. Every metric now has an explicit zero default, a sentinel-backed regression test proves default construction overwrites dirty storage, and the risk test uses fatal assertions before accessing an error. The regression was observed failing before the production fix and passing afterward.
 
 ## Production read-only audit status
 
@@ -48,7 +49,7 @@ To unblock this gate, provide the existing approved production PostgreSQL servic
 
 ## Release interpretation
 
-- The C++ build and the QT-specific C++/SQL/PostgreSQL behavior are verified locally.
+- The complete C++ build, the 1,277-test monolithic C++ suite, and the QT-specific C++/SQL/PostgreSQL behavior are verified locally.
 - The migration and rollback behavior are verified on disposable PostgreSQL, not production.
 - The daily report's existing email content/template remains unchanged; the verified code supplies a captured QT position snapshot as the position-number source.
 - Production compatibility and production data integrity are not yet verified, so this checkpoint does not authorize deployment or production migration.
