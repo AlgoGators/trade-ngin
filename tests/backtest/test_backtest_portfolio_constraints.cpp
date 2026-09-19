@@ -30,25 +30,11 @@ Position make_pos(const std::string& sym, double qty) {
 
 PortfolioConstraintsConfig default_config() {
     PortfolioConstraintsConfig c;
-    c.use_risk_management = false;
     c.use_optimization = false;
     c.max_history_length = 252;
     c.min_periods_for_covariance = 20;
     c.default_variance = 0.01;
     return c;
-}
-
-std::shared_ptr<RiskManager> make_loose_risk_manager() {
-    RiskConfig rc;
-    rc.var_limit = 1.0;
-    rc.jump_risk_limit = 1.0;
-    rc.max_correlation = 1.0;
-    rc.max_gross_leverage = 1e6;
-    rc.max_net_leverage = 1e6;
-    rc.capital = 1'000'000.0;
-    rc.confidence_level = 0.99;
-    rc.lookback_period = 252;
-    return std::make_shared<RiskManager>(rc);
 }
 
 std::shared_ptr<DynamicOptimizer> make_default_optimizer() {
@@ -62,38 +48,30 @@ class BacktestPortfolioConstraintsTest : public TestBase {};
 
 TEST_F(BacktestPortfolioConstraintsTest, ConfigOnlyConstructorLeavesEverythingDisabled) {
     PortfolioConstraintsConfig cfg = default_config();
-    cfg.use_risk_management = true;
     cfg.use_optimization = true;
     BacktestPortfolioConstraints bpc(cfg);
-    EXPECT_FALSE(bpc.is_risk_management_enabled());  // null risk manager
     EXPECT_FALSE(bpc.is_optimization_enabled());     // null optimizer
 }
 
 TEST_F(BacktestPortfolioConstraintsTest, EnabledRequiresBothConfigFlagAndDependency) {
     PortfolioConstraintsConfig cfg = default_config();
-    BacktestPortfolioConstraints bpc(cfg, make_loose_risk_manager(), make_default_optimizer());
-    // Flags off: still disabled.
-    EXPECT_FALSE(bpc.is_risk_management_enabled());
+    BacktestPortfolioConstraints bpc(cfg, make_default_optimizer());
+    // Flag off: still disabled.
     EXPECT_FALSE(bpc.is_optimization_enabled());
 }
 
 TEST_F(BacktestPortfolioConstraintsTest, FullConstructorEnablesWhenFlagAndDepBothPresent) {
     PortfolioConstraintsConfig cfg = default_config();
-    cfg.use_risk_management = true;
     cfg.use_optimization = true;
-    BacktestPortfolioConstraints bpc(cfg, make_loose_risk_manager(), make_default_optimizer());
-    EXPECT_TRUE(bpc.is_risk_management_enabled());
+    BacktestPortfolioConstraints bpc(cfg, make_default_optimizer());
     EXPECT_TRUE(bpc.is_optimization_enabled());
 }
 
 TEST_F(BacktestPortfolioConstraintsTest, SettersFlipEnabledFlags) {
     PortfolioConstraintsConfig cfg = default_config();
-    cfg.use_risk_management = true;
     cfg.use_optimization = true;
     BacktestPortfolioConstraints bpc(cfg);
-    EXPECT_FALSE(bpc.is_risk_management_enabled());
-    bpc.set_risk_manager(make_loose_risk_manager());
-    EXPECT_TRUE(bpc.is_risk_management_enabled());
+    EXPECT_FALSE(bpc.is_optimization_enabled());
     bpc.set_optimizer(make_default_optimizer());
     EXPECT_TRUE(bpc.is_optimization_enabled());
 }
@@ -107,15 +85,6 @@ TEST_F(BacktestPortfolioConstraintsTest, ApplyConstraintsNoOpWhenEverythingDisab
     ASSERT_TRUE(result.is_ok());
     EXPECT_TRUE(risk_metrics.empty());
     EXPECT_DOUBLE_EQ(static_cast<double>(positions.at("ES").quantity), 5.0);
-}
-
-TEST_F(BacktestPortfolioConstraintsTest, ApplyRiskManagementWithoutManagerReturnsError) {
-    BacktestPortfolioConstraints bpc(default_config());
-    std::vector<Bar> bars;
-    std::map<std::string, Position> positions = {{"ES", make_pos("ES", 5.0)}};
-    auto result = bpc.apply_risk_management(bars, positions);
-    ASSERT_TRUE(result.is_error());
-    EXPECT_EQ(result.error()->code(), ErrorCode::INVALID_DATA);
 }
 
 TEST_F(BacktestPortfolioConstraintsTest, ApplyOptimizationWithoutOptimizerReturnsError) {
@@ -219,30 +188,10 @@ TEST_F(BacktestPortfolioConstraintsTest, ResetClearsHistoricalState) {
     EXPECT_EQ(bpc.get_history_length("ES"), 0u);
 }
 
-TEST_F(BacktestPortfolioConstraintsTest, ApplyConstraintsRunsRiskWhenEnabled) {
-    PortfolioConstraintsConfig cfg = default_config();
-    cfg.use_risk_management = true;
-    BacktestPortfolioConstraints bpc(cfg, make_loose_risk_manager(), nullptr);
-    ASSERT_TRUE(bpc.is_risk_management_enabled());
-
-    auto t0 = std::chrono::system_clock::now();
-    std::vector<Bar> bars;
-    for (int i = 0; i < 30; ++i) {
-        bars.push_back(make_bar("ES", 100.0 + i * 0.1, t0 + std::chrono::hours(24 * i)));
-    }
-    std::map<std::string, Position> positions = {{"ES", make_pos("ES", 1.0)}};
-    std::vector<RiskResult> metrics;
-    auto result = bpc.apply_constraints(bars, positions, metrics);
-    ASSERT_TRUE(result.is_ok());
-    EXPECT_EQ(metrics.size(), 1u);
-    // Loose limits → no scaling expected
-    EXPECT_DOUBLE_EQ(static_cast<double>(positions.at("ES").quantity), 1.0);
-}
-
 TEST_F(BacktestPortfolioConstraintsTest, ApplyConstraintsSkipsOptimizationWithSinglePosition) {
     PortfolioConstraintsConfig cfg = default_config();
     cfg.use_optimization = true;
-    BacktestPortfolioConstraints bpc(cfg, nullptr, make_default_optimizer());
+    BacktestPortfolioConstraints bpc(cfg, make_default_optimizer());
     ASSERT_TRUE(bpc.is_optimization_enabled());
 
     std::vector<Bar> bars;

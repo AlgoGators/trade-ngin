@@ -808,8 +808,7 @@ int main(int argc, char* argv[]) {
                  std::to_string(allocation * 100.0) + "%");
 
             auto add_result =
-                portfolio->add_strategy(strategy, allocation, portfolio_config.use_optimization,
-                                        portfolio_config.use_risk_management);
+                portfolio->add_strategy(strategy, allocation, portfolio_config.use_optimization);
 
             if (add_result.is_error()) {
                 ERROR("Failed to add strategy " + strat_name +

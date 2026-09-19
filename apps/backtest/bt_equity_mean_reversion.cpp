@@ -306,8 +306,7 @@ int main() {
         auto portfolio = std::make_shared<PortfolioManager>(portfolio_config);
 
         for (const auto& [strategy, weight] : strategies) {
-            auto add_result = portfolio->add_strategy(strategy, weight, false,
-                                                       portfolio_config.use_risk_management);
+            auto add_result = portfolio->add_strategy(strategy, weight, false);
             if (add_result.is_error()) {
                 ERROR("Failed to add strategy to portfolio: " +
                       std::string(add_result.error()->what()));

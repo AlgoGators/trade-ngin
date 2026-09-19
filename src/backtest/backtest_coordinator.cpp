@@ -66,7 +66,6 @@ Result<void> BacktestCoordinator::create_components() {
 
     // Create portfolio constraints manager
     PortfolioConstraintsConfig constraints_config;
-    constraints_config.use_risk_management = config_.use_risk_management;
     constraints_config.use_optimization = config_.use_optimization;
     constraints_manager_ = std::make_unique<BacktestPortfolioConstraints>(constraints_config);
 
@@ -192,12 +191,6 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
     // Store backtest dates for later use in save_portfolio_results_to_db
     backtest_start_date_ = start_date;
     backtest_end_date_ = end_date;
-
-    // Share risk manager with portfolio if available
-    if (risk_manager_ && portfolio) {
-        portfolio->set_risk_manager(
-            std::shared_ptr<RiskManager>(risk_manager_.get(), [](RiskManager*) {}));
-    }
 
     // Disable MarketDataBus publishing during data loading
     INFO("Disabling MarketDataBus publishing during data loading");
@@ -497,8 +490,7 @@ Result<void> BacktestCoordinator::process_day(
         equity_curve.emplace_back(timestamp, portfolio_value);
 
         // Apply portfolio constraints if enabled (updates current_positions_)
-        if (constraints_manager_ && (constraints_manager_->is_risk_management_enabled() ||
-                                     constraints_manager_->is_optimization_enabled())) {
+        if (constraints_manager_ && constraints_manager_->is_optimization_enabled()) {
             constraints_manager_->update_historical_returns(bars);
             auto constraint_result =
                 constraints_manager_->apply_constraints(bars, current_positions_, risk_metrics);
@@ -524,8 +516,10 @@ Result<void> BacktestCoordinator::process_day(
 Result<void> BacktestCoordinator::process_portfolio_day(
     const Timestamp& timestamp, const std::vector<Bar>& bars,
     std::shared_ptr<PortfolioManager> portfolio, std::vector<ExecutionReport>& executions,
-    std::vector<std::pair<Timestamp, double>>& equity_curve, std::vector<RiskResult>& risk_metrics,
-    bool is_warmup, double initial_capital) {
+    std::vector<std::pair<Timestamp, double>>& equity_curve,
+    std::vector<RiskResult>& /*risk_metrics*/, bool is_warmup, double initial_capital) {
+    // risk_metrics is never written: its only writer was the coordinator's own risk gate,
+    // which read a risk_manager_ nothing ever assigned, and has been deleted.
     try {
         // BEGINNING-OF-DAY MODEL FOR PORTFOLIO BACKTEST:
         // - Use previous day's bars for signal generation via PortfolioManager
@@ -1060,23 +1054,6 @@ Result<void> BacktestCoordinator::process_portfolio_day(
 
             // Update previous positions for next day's finalized tracking
             portfolio_previous_positions_ = portfolio_positions;
-        }
-
-        // Get risk metrics if enabled
-        if (config_.use_risk_management && risk_manager_) {
-            try {
-                auto portfolio_positions = build_portfolio_sum();
-                if (!portfolio_positions.empty()) {
-                    MarketData market_data = risk_manager_->create_market_data(bars);
-                    auto risk_result =
-                        risk_manager_->process_positions(portfolio_positions, market_data);
-                    if (risk_result.is_ok()) {
-                        risk_metrics.push_back(risk_result.value());
-                    }
-                }
-            } catch (const std::exception& e) {
-                WARN("Exception calculating risk metrics: " + std::string(e.what()));
-            }
         }
 
         // Update previous_bars for next day

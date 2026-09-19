@@ -416,8 +416,7 @@ int main() {
             double allocation = strategy_allocations[strategy_id];
 
             auto add_result = portfolio->add_strategy(strategy, allocation,
-                                                      config.portfolio_config.use_optimization,
-                                                      config.portfolio_config.use_risk_management);
+                                                      config.portfolio_config.use_optimization);
 
             if (add_result.is_error()) {
                 ERROR("Failed to add strategy " + strategy_id +

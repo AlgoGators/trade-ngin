@@ -102,8 +102,7 @@ PortfolioManager::PortfolioManager(PortfolioConfig config, std::string id,
 }
 
 Result<void> PortfolioManager::add_strategy(std::shared_ptr<StrategyInterface> strategy,
-                                            double initial_allocation, bool use_optimization,
-                                            bool use_risk_management) {
+                                            double initial_allocation, bool use_optimization) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     if (!strategy) {
@@ -141,7 +140,6 @@ Result<void> PortfolioManager::add_strategy(std::shared_ptr<StrategyInterface> s
         strategy,
         initial_allocation,
         use_optimization && config_.use_optimization,
-        use_risk_management && config_.use_risk_management,
         {},  // current positions
         {}   // target positions
     };
@@ -360,8 +358,7 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
             }
 
             // Risk Management step
-            bool has_risk_manager =
-                (external_risk_manager_ != nullptr) || (risk_manager_ != nullptr);
+            bool has_risk_manager = (risk_manager_ != nullptr);
             if (config_.use_risk_management && has_risk_manager) {
                 try {
                     Logger::register_component("RiskManager");
@@ -1254,9 +1251,7 @@ Result<void> PortfolioManager::optimize_positions() {
 
 Result<void> PortfolioManager::apply_risk_management(const std::vector<Bar>& data) {
     Logger::register_component("RiskManager");
-    // Use external risk manager if available, otherwise use internal manager
-    RiskManager* active_manager =
-        external_risk_manager_ ? external_risk_manager_.get() : risk_manager_.get();
+    RiskManager* active_manager = risk_manager_.get();
 
     if (!active_manager) {
         WARN("Risk manager not initialized, skipping risk management");

@@ -277,8 +277,8 @@ TEST_F(PortfolioManagerInternalsTest, ProcessWithOptimizationRunsIterativeLoop) 
     auto pm = std::make_unique<PortfolioManager>(cfg, manager_id_ + "_OPTLOOP");
     auto a = make_strategy("OL_A", {"AAPL"});
     auto b = make_strategy("OL_B", {"MSFT"});
-    ASSERT_TRUE(pm->add_strategy(a.strat, 0.3, /*opt=*/true, /*risk=*/false).is_ok());
-    ASSERT_TRUE(pm->add_strategy(b.strat, 0.3, /*opt=*/true, /*risk=*/false).is_ok());
+    ASSERT_TRUE(pm->add_strategy(a.strat, 0.3, /*opt=*/true).is_ok());
+    ASSERT_TRUE(pm->add_strategy(b.strat, 0.3, /*opt=*/true).is_ok());
     auto t0 = std::chrono::system_clock::now() - std::chrono::hours(24 * 400);
     std::vector<Bar> combined;
     auto a_bars = bars("AAPL", 300, t0);
@@ -299,7 +299,7 @@ TEST_F(PortfolioManagerInternalsTest, ProcessWithRiskManagementDoesNotCrashOnLar
     cfg.risk_config.max_net_leverage = 0.5;
     auto pm = std::make_unique<PortfolioManager>(cfg, manager_id_ + "_RISKLOOP");
     auto a = make_strategy("RL", {"AAPL"});
-    ASSERT_TRUE(pm->add_strategy(a.strat, 0.3, /*opt=*/false, /*risk=*/true).is_ok());
+    ASSERT_TRUE(pm->add_strategy(a.strat, 0.3, /*opt=*/false).is_ok());
     auto t0 = std::chrono::system_clock::now() - std::chrono::hours(24 * 400);
     EXPECT_TRUE(pm->process_market_data(bars("AAPL", 300, t0, 5.0)).is_ok());
 }

@@ -136,7 +136,7 @@ protected:
         auto strat = std::make_shared<FixedFractionalStrategy>(uid, sc, db_, kFractionalQty);
         EXPECT_TRUE(strat->initialize().is_ok());
         EXPECT_TRUE(strat->start().is_ok());
-        EXPECT_TRUE(manager->add_strategy(strat, 1.0, false, false).is_ok());
+        EXPECT_TRUE(manager->add_strategy(strat, 1.0, false).is_ok());
 
         auto t0 = std::chrono::system_clock::now() - std::chrono::hours(24 * 30);
         EXPECT_TRUE(manager->process_market_data(flat_bars("AAPL", 25, t0)).is_ok());

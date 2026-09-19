@@ -151,9 +151,8 @@ TEST_F(PortfolioManagerTest, AddStrategy) {
 
         // Add strategy to manager
         auto add_result = manager_->add_strategy(strategy,
-                                                 0.3,   // 30% allocation
-                                                 true,  // use optimization
-                                                 false  // do not use risk management
+                                                 0.3,  // 30% allocation
+                                                 true  // use optimization
         );
         ASSERT_TRUE(add_result.is_ok())
             << "Failed to add strategy: "
@@ -274,7 +273,7 @@ TEST_F(PortfolioManagerTest, OptimizationIntegration) {
     // Verify strategy state
     ASSERT_TRUE(strategy->get_state() == StrategyState::RUNNING) << "Strategy not in running state";
 
-    auto add_result = manager_->add_strategy(strategy, 0.3, true, false);
+    auto add_result = manager_->add_strategy(strategy, 0.3, true);
     ASSERT_TRUE(add_result.is_ok())
         << "Failed to add strategy: "
         << (add_result.error() ? add_result.error()->what() : "Unknown error");
@@ -298,7 +297,7 @@ TEST_F(PortfolioManagerTest, OptimizationIntegration) {
 
 TEST_F(PortfolioManagerTest, RiskManagementIntegration) {
     auto strategy = create_test_strategy("MOCK_1");
-    ASSERT_TRUE(manager_->add_strategy(strategy, 0.3, false, true).is_ok());
+    ASSERT_TRUE(manager_->add_strategy(strategy, 0.3, false).is_ok());
 
     // Create market data with high volatility
     std::vector<Bar> data;
@@ -370,7 +369,7 @@ TEST_F(PortfolioManagerTest, StressTest) {
 // ===== folded in from tests/portfolio/test_portfolio_manager_extended.cpp =====
 // Extended PortfolioManager coverage. Targets specific branches in
 // add_strategy, update_allocations, process_market_data, get_portfolio_value,
-// strategy/execution accessors, set_risk_manager, update_strategy_position,
+// strategy/execution accessors, update_strategy_position,
 // and update_cost_manager_market_data. Companion to test_portfolio_manager.cpp;
 // no overlap with the basic happy-path tests there.
 namespace portfolio_manager_extended_detail {
@@ -675,27 +674,6 @@ TEST_F(PortfolioManagerExtendedTest, UpdateStrategyPositionAcceptsKnownStrategy)
     }
 }
 
-// ===== set_risk_manager / external risk manager pathway =====
-
-TEST_F(PortfolioManagerExtendedTest, SetExternalRiskManagerSwitchesActiveImplementation) {
-    auto cfg = default_config(/*use_optimization=*/false, /*use_risk_management=*/true);
-    auto pm = std::make_unique<PortfolioManager>(cfg, manager_id_ + "_RISK");
-    auto external = std::make_shared<RiskManager>(cfg.risk_config);
-    pm->set_risk_manager(external);
-    // No crash + subsequent operations work with the external manager.
-    auto strat = make_strategy("EXT_RISK");
-    EXPECT_TRUE(pm->add_strategy(strat.strategy, 0.3, /*opt=*/false, /*risk=*/true).is_ok());
-}
-
-TEST_F(PortfolioManagerExtendedTest, SetExternalRiskManagerWithNullDoesNotReplace) {
-    auto cfg = default_config(/*use_optimization=*/false, /*use_risk_management=*/true);
-    auto pm = std::make_unique<PortfolioManager>(cfg, manager_id_ + "_NOOP");
-    pm->set_risk_manager(nullptr);
-    // Internal risk manager should still function.
-    auto strat = make_strategy("NULL_RISK");
-    EXPECT_TRUE(pm->add_strategy(strat.strategy, 0.3, /*opt=*/false, /*risk=*/true).is_ok());
-}
-
 // ===== update_cost_manager_market_data + downstream =====
 
 TEST_F(PortfolioManagerExtendedTest, UpdateCostManagerMarketDataDoesNotErrorOrAlterPositions) {
@@ -763,7 +741,7 @@ TEST_F(PortfolioManagerExtendedTest, ProcessWithOptimizationEnabledSucceeds) {
     auto cfg = default_config(/*use_optimization=*/true, /*use_risk_management=*/false);
     auto pm = std::make_unique<PortfolioManager>(cfg, manager_id_ + "_OPT");
     auto strat = make_strategy("OPT");
-    ASSERT_TRUE(pm->add_strategy(strat.strategy, 0.3, /*opt=*/true, /*risk=*/false).is_ok());
+    ASSERT_TRUE(pm->add_strategy(strat.strategy, 0.3, /*opt=*/true).is_ok());
     auto t0 = std::chrono::system_clock::now() - std::chrono::hours(24 * 300);
     EXPECT_TRUE(pm->process_market_data(make_bars("AAPL", 300, t0)).is_ok());
 }
@@ -772,7 +750,7 @@ TEST_F(PortfolioManagerExtendedTest, ProcessWithRiskManagementEnabledSucceeds) {
     auto cfg = default_config(/*use_optimization=*/false, /*use_risk_management=*/true);
     auto pm = std::make_unique<PortfolioManager>(cfg, manager_id_ + "_RM");
     auto strat = make_strategy("RM");
-    ASSERT_TRUE(pm->add_strategy(strat.strategy, 0.3, /*opt=*/false, /*risk=*/true).is_ok());
+    ASSERT_TRUE(pm->add_strategy(strat.strategy, 0.3, /*opt=*/false).is_ok());
     auto t0 = std::chrono::system_clock::now() - std::chrono::hours(24 * 300);
     EXPECT_TRUE(pm->process_market_data(make_bars("AAPL", 300, t0)).is_ok());
 }
@@ -781,7 +759,7 @@ TEST_F(PortfolioManagerExtendedTest, ProcessWithOptimizationAndRiskBothEnabled) 
     auto cfg = default_config(/*use_optimization=*/true, /*use_risk_management=*/true);
     auto pm = std::make_unique<PortfolioManager>(cfg, manager_id_ + "_BOTH");
     auto strat = make_strategy("BOTH");
-    ASSERT_TRUE(pm->add_strategy(strat.strategy, 0.3, /*opt=*/true, /*risk=*/true).is_ok());
+    ASSERT_TRUE(pm->add_strategy(strat.strategy, 0.3, /*opt=*/true).is_ok());
     auto t0 = std::chrono::system_clock::now() - std::chrono::hours(24 * 300);
     EXPECT_TRUE(pm->process_market_data(make_bars("AAPL", 300, t0)).is_ok());
 }

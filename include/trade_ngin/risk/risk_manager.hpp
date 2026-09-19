@@ -20,15 +20,11 @@ struct RiskConfig : public ConfigBase {
     // Risk limits
     double var_limit{0.15};          // Value at Risk limit (15%)
 
-    // ── Version B (PRODUCTION) — pair-wise correlation cap + per-bar 99th-pct jump cap ──
+    // ── Pair-wise correlation cap + per-bar 99th-pct jump cap ──
     double jump_risk_limit{0.10};    // Per-bar 99th-pct |w·r| cap (used by calculate_jump_multiplier)
     double max_correlation{0.7};     // Pair-wise |ρ| cap (used by calculate_correlation_multiplier)
 
-    // ── Version A (ALTERNATIVE — kept for documentation, not called) ──
-    // Carver shock-portfolio thresholds per Advanced Futures Trading Strategies p.607-614.
-    // Used by calculate_*_carver_shock() private methods. At our retail capital scale,
-    // long/short cancellation keeps the shocked portfolio σ below these thresholds, so
-    // the multiplier essentially never fires.
+    // Unread; kept because to_json writes them into backtest.run_metadata (deleted in T-6 commit 7)
     double corr_shock_threshold{0.65};   // 3.25 × risk_target(0.20) per p.610
     double jump_shock_threshold{0.75};   // 3.75 × risk_target(0.20) per p.608
     double max_gross_leverage{4.0};  // Maximum gross leverage
@@ -202,18 +198,6 @@ private:
     double calculate_correlation_multiplier(const MarketData& market_data,
                                             const std::vector<double>& weights,
                                             RiskResult& result) const;
-
-    // ── Version A (ALTERNATIVE, not called) — Carver shock-portfolio multipliers ──
-    // Compiled but never invoked from process_positions(). Preserved so the design
-    // alternative is visible and switchable without git archaeology. To switch back to
-    // Version A: in process_positions(), call these *_carver_shock variants instead of
-    // calculate_correlation_multiplier / calculate_jump_multiplier.
-    double calculate_jump_multiplier_carver_shock(const MarketData& market_data,
-                                                  const std::vector<double>& weights,
-                                                  RiskResult& result) const;
-    double calculate_correlation_multiplier_carver_shock(const MarketData& market_data,
-                                                         const std::vector<double>& weights,
-                                                         RiskResult& result) const;
 
     /**
      * @brief Calculate the leverage multiplier based on position weights

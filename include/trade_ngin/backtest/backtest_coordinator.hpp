@@ -100,9 +100,6 @@ private:
     /// definition the live equity runner persists -- rather than the running total.
     std::unordered_map<std::string, double> last_cumulative_realized_;
 
-    // Optional components for portfolio backtest
-    std::shared_ptr<RiskManager> risk_manager_;
-
     // Initialization state
     bool is_initialized_ = false;
 

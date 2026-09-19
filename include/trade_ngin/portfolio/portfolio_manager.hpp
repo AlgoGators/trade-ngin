@@ -123,12 +123,10 @@ public:
      * @param strategy Strategy to add
      * @param initial_allocation Initial capital allocation
      * @param use_optimization Whether this strategy uses optimization
-     * @param use_risk_management Whether this strategy uses risk management
      * @return Result indicating success or failure
      */
     Result<void> add_strategy(std::shared_ptr<StrategyInterface> strategy,
-                              double initial_allocation, bool use_optimization = false,
-                              bool use_risk_management = false);
+                              double initial_allocation, bool use_optimization = false);
 
     /**
      * @brief Process new market data
@@ -277,33 +275,18 @@ public:
         return config_;
     }
 
-    /**
-     * @brief Set external risk manager to use instead of internal one
-     * @param manager Shared pointer to an existing risk manager
-     */
-    void set_risk_manager(std::shared_ptr<RiskManager> manager) {
-        if (manager) {
-            // Store the provided manager
-            external_risk_manager_ = manager;
-            // Disable the internal manager
-            risk_manager_.reset();
-        }
-    }
-
 private:
     PortfolioConfig config_;
     std::string id_;
 
     std::unique_ptr<DynamicOptimizer> optimizer_;
     std::unique_ptr<RiskManager> risk_manager_;
-    std::shared_ptr<RiskManager> external_risk_manager_{nullptr};
     std::shared_ptr<InstrumentRegistry> registry_{nullptr};
 
     struct StrategyInfo {
         std::shared_ptr<StrategyInterface> strategy;
         double allocation;
         bool use_optimization;
-        bool use_risk_management;
         std::unordered_map<std::string, Position> current_positions;
         std::unordered_map<std::string, Position> target_positions;
     };

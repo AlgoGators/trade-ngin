@@ -634,8 +634,7 @@ int main(int argc, char* argv[]) {
                   : "no"));
         auto portfolio = std::make_shared<trade_ngin::PortfolioManager>(portfolio_config);
         auto add_result =
-            portfolio->add_strategy(mr_strategy, 1.0, portfolio_config.use_optimization,
-                                    portfolio_config.use_risk_management);
+            portfolio->add_strategy(mr_strategy, 1.0, portfolio_config.use_optimization);
         if (add_result.is_error()) {
             std::cerr << "Failed to add strategy to portfolio: " << add_result.error()->what()
                       << std::endl;

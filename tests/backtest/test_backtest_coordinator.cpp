@@ -135,9 +135,8 @@ TEST_F(BacktestCoordinatorTest, ConstraintsRespectConfigEnableFlags) {
     ASSERT_TRUE(coord.initialize().is_ok());
     auto* cm = coord.get_constraints_manager();
     ASSERT_NE(cm, nullptr);
-    // Flags are forwarded but dependencies (risk_manager/optimizer) are still null
-    // until the run_* path injects them, so the enabled-checks remain false.
-    EXPECT_FALSE(cm->is_risk_management_enabled());
+    // The optimization flag is forwarded but the optimizer dependency is still null
+    // (nothing injects it), so the enabled-check remains false.
     EXPECT_FALSE(cm->is_optimization_enabled());
 }
 
