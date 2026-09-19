@@ -40,14 +40,7 @@
     "fdm": [[1, 1], [2, 1.03], [3, 1.08], [4, 1.13], [5, 1.19], [6, 1.26]],
     "max_strategy_allocation": 1,
     "min_strategy_allocation": 0.1,
-    "use_optimization": true,
-    "use_risk_management": true,
     "carver_buffer_floor": 0.5,
     "carver_buffer_position_factor": 0.0
-  },
-  "risk_defaults": {
-    "confidence_level": 0.99,
-    "lookback_period": 252,
-    "max_correlation": 0.7
   }
 }

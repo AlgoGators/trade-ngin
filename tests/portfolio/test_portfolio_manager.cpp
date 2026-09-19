@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include "../risk/risk_module_test_helpers.hpp"
 #include <thread>
 #include "../data/test_db_utils.hpp"
 #include "../order/test_utils.hpp"
@@ -30,9 +31,9 @@ protected:
             100000.0,   // reserve_capital ($100K reserve)
             0.4,        // max_strategy_allocation (40% max per strategy)
             0.1,        // min_strategy_allocation (10% min per strategy)
-            false,      // use_optimization
-            false       // use_risk_management
+            false       // use_optimization
         };
+        config.risk_modules = {test_none_module()};
 
         // Set up optimization config
         config.opt_config.tau = 1.0;
@@ -379,14 +380,13 @@ using namespace trade_ngin::testing;
 
 namespace {
 
-PortfolioConfig default_config(bool use_optimization = false, bool use_risk_management = false) {
+PortfolioConfig default_config(bool use_optimization = false, bool with_carver = false) {
     PortfolioConfig c{
         1'000'000.0,           // total_capital
         100'000.0,             // reserve_capital
         0.6,                   // max_strategy_allocation
         0.05,                  // min_strategy_allocation
         use_optimization,
-        use_risk_management,
     };
     c.opt_config.tau = 1.0;
     c.opt_config.capital = 1'000'000.0;
@@ -401,6 +401,9 @@ PortfolioConfig default_config(bool use_optimization = false, bool use_risk_mana
     c.risk_config.capital = 1'000'000.0;
     c.risk_config.confidence_level = 0.99;
     c.risk_config.lookback_period = 252;
+    // The module list replaces the old use_risk_management bool: the carver module carries
+    // the same seven values the test just set, so a gating test gates on the same numbers.
+    c.risk_modules = {with_carver ? test_carver_module(c.risk_config) : test_none_module()};
     return c;
 }
 
@@ -738,7 +741,7 @@ TEST_F(PortfolioManagerExtendedTest, MultipleStrategiesAggregatePositionsBySymbo
 // ===== process with optimization enabled =====
 
 TEST_F(PortfolioManagerExtendedTest, ProcessWithOptimizationEnabledSucceeds) {
-    auto cfg = default_config(/*use_optimization=*/true, /*use_risk_management=*/false);
+    auto cfg = default_config(/*use_optimization=*/true, /*with_carver=*/false);
     auto pm = std::make_unique<PortfolioManager>(cfg, manager_id_ + "_OPT");
     auto strat = make_strategy("OPT");
     ASSERT_TRUE(pm->add_strategy(strat.strategy, 0.3, /*opt=*/true).is_ok());
@@ -747,7 +750,7 @@ TEST_F(PortfolioManagerExtendedTest, ProcessWithOptimizationEnabledSucceeds) {
 }
 
 TEST_F(PortfolioManagerExtendedTest, ProcessWithRiskManagementEnabledSucceeds) {
-    auto cfg = default_config(/*use_optimization=*/false, /*use_risk_management=*/true);
+    auto cfg = default_config(/*use_optimization=*/false, /*with_carver=*/true);
     auto pm = std::make_unique<PortfolioManager>(cfg, manager_id_ + "_RM");
     auto strat = make_strategy("RM");
     ASSERT_TRUE(pm->add_strategy(strat.strategy, 0.3, /*opt=*/false).is_ok());
@@ -756,7 +759,7 @@ TEST_F(PortfolioManagerExtendedTest, ProcessWithRiskManagementEnabledSucceeds) {
 }
 
 TEST_F(PortfolioManagerExtendedTest, ProcessWithOptimizationAndRiskBothEnabled) {
-    auto cfg = default_config(/*use_optimization=*/true, /*use_risk_management=*/true);
+    auto cfg = default_config(/*use_optimization=*/true, /*with_carver=*/true);
     auto pm = std::make_unique<PortfolioManager>(cfg, manager_id_ + "_BOTH");
     auto strat = make_strategy("BOTH");
     ASSERT_TRUE(pm->add_strategy(strat.strategy, 0.3, /*opt=*/true).is_ok());

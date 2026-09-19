@@ -23,19 +23,37 @@ PortfolioManager::PortfolioManager(PortfolioConfig config, std::string id,
         optimizer_ = std::make_unique<DynamicOptimizer>(config_.opt_config);
     }
 
-    // Initialize risk manager if enabled. The Carver module builds its RiskManager (which
-    // registers "RiskManager") here, at the point the manager was always built, so the
-    // initialized line below keeps its [RiskManager] tag.
-    if (config_.use_risk_management) {
+    // Build the configured risk modules. An EMPTY list is not "no risk": it is a
+    // PortfolioConfig somebody built in code and forgot a line of, and a book that runs
+    // ungated because of a forgotten line is exactly what schema 2 exists to prevent. A
+    // book that genuinely runs no risk layer says so with a single `none` assignment.
+    if (config_.risk_modules.empty()) {
+        throw std::invalid_argument(
+            "PortfolioConfig.risk_modules is empty: assign a module, or {type: none} with "
+            "_reason, _ruled_by, _ruled_on");
+    }
+    const bool no_risk_layer = config_.risk_modules.size() == 1 &&
+                               config_.risk_modules.front().type == "none";
+    // The Carver module builds its RiskManager (which registers "RiskManager") here, at
+    // the point the manager was always built, so the initialized line below keeps its
+    // [RiskManager] tag.
+    if (!no_risk_layer) {
         try {
-            auto carver = std::make_shared<CarverRiskModule>("carver", config_.risk_config);
-            if (!carver) {
+            std::vector<RiskModulePtr> built;
+            for (const auto& module_config : config_.risk_modules) {
+                auto module = make_risk_module(module_config, config_.risk_config.capital);
+                if (module.is_error()) {
+                    throw std::runtime_error(module.error()->what());
+                }
+                if (module.value()) built.push_back(module.value());
+            }
+            if (built.empty()) {
                 WARN("Failed to create risk manager, risk management will be disabled");
             } else {
                 INFO("Risk manager initialized successfully with capital=" +
                      std::to_string(config_.risk_config.capital));
                 Logger::register_component("PortfolioManager");
-                risk_modules_.push_back(std::move(carver));
+                risk_modules_ = std::move(built);
             }
         } catch (const std::exception& e) {
             ERROR("Failed to initialize risk manager: " + std::string(e.what()));
@@ -43,6 +61,27 @@ PortfolioManager::PortfolioManager(PortfolioConfig config, std::string id,
         }
     } else {
         INFO("Risk management is disabled in the configuration");
+    }
+
+    // Sleeve-scope modules. The loader has already checked that every key names a
+    // strategy of this book; a key that reaches here without one simply never fires.
+    if (!config_.sleeve_risk_modules.empty()) {
+        try {
+            std::unordered_map<std::string, std::vector<RiskModulePtr>> built;
+            for (const auto& [strategy_id, module_configs] : config_.sleeve_risk_modules) {
+                for (const auto& module_config : module_configs) {
+                    auto module = make_risk_module(module_config, config_.risk_config.capital);
+                    if (module.is_error()) {
+                        throw std::runtime_error(module.error()->what());
+                    }
+                    if (module.value()) built[strategy_id].push_back(module.value());
+                }
+            }
+            sleeve_risk_modules_ = std::move(built);
+        } catch (const std::exception& e) {
+            ERROR("Failed to initialize sleeve risk modules: " + std::string(e.what()));
+            sleeve_risk_modules_.clear();
+        }
     }
 
     // Initialize with the provided ID
@@ -333,7 +372,7 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
 
         // Sleeve-scope risk: once, before the optimiser and the loop, each sleeve's own modules
         // on its own targets (silent and a no-op when no sleeve has modules).
-        if (config_.use_risk_management) {
+        if (!sleeve_risk_modules_.empty()) {
             apply_sleeve_risk(data, prev_positions, current_timestamp, skip_execution_generation);
         }
 
@@ -374,7 +413,7 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
 
             // Risk Management step
             bool has_risk_manager = !risk_modules_.empty();
-            if (config_.use_risk_management && has_risk_manager) {
+            if (has_risk_manager) {
                 try {
                     Logger::register_component("RiskManager");
                     auto risk_result = apply_risk_management(
@@ -510,7 +549,7 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
         // Post-rounding risk point: finalize() on the final book, before the final check, the
         // chop-source attribution and the current-positions copy below all read it (silent
         // unless a module warns, refuses or is rejected).
-        if (config_.use_risk_management) {
+        if (!risk_modules_.empty() || !sleeve_risk_modules_.empty()) {
             apply_post_rounding_risk(data, std::min(iteration, max_iterations), prev_positions,
                                      current_timestamp, skip_execution_generation);
         }

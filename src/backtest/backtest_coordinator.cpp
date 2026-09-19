@@ -1307,7 +1307,6 @@ Result<void> BacktestCoordinator::save_portfolio_results_to_db(
     // Set metadata with portfolio configuration
     nlohmann::json hyperparameters;
     hyperparameters["initial_capital"] = config_.initial_capital;
-    hyperparameters["use_risk_management"] = config_.use_risk_management;
     hyperparameters["use_optimization"] = config_.use_optimization;
     hyperparameters["portfolio_config"] = portfolio_config;
 

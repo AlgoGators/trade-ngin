@@ -54,6 +54,87 @@ void ConfigLoader::merge_json(nlohmann::json& target, const nlohmann::json& sour
     }
 }
 
+namespace {
+
+/// Walks every object below `node` looking for one key, and names where it found it.
+/// Only the PATH is ever reported, never a value: the same tree carries the database
+/// and email passwords.
+bool find_key(const nlohmann::json& node, const std::string& key, const std::string& path,
+              std::string* found) {
+    if (node.is_object()) {
+        for (const auto& item : node.items()) {
+            const std::string child = path.empty() ? item.key() : path + "." + item.key();
+            if (item.key() == key) {
+                *found = child;
+                return true;
+            }
+            if (find_key(item.value(), key, child, found)) return true;
+        }
+    } else if (node.is_array()) {
+        for (size_t i = 0; i < node.size(); ++i) {
+            if (find_key(node.at(i), key, path + "[" + std::to_string(i) + "]", found)) return true;
+        }
+    }
+    return false;
+}
+
+/**
+ * @brief S7 -- the keys schema 2 removed are load ERRORS, not ignored leftovers.
+ *
+ * Ignoring them is what makes a migration silently half-applied: a `use_risk_management:
+ * false` left behind in a file nobody re-read would read as "risk is off" to a human and
+ * as nothing at all to the loader, and the book would gate while its config says it does
+ * not. Each message names the key's path and what replaced it.
+ *
+ * removed-key guard: delete after the first production run on schema 2 (the lead names
+ * the release; LEAD_RULINGS_C7 item 15 records it as an open question for HD).
+ */
+Result<void> check_removed_keys(const nlohmann::json& merged, const std::string& portfolio_id) {
+    const std::string config_prefix = "config for " + portfolio_id + ": ";
+    std::string where;
+    if (find_key(merged, "use_risk_management", "", &where)) {
+        return make_error<void>(
+            ErrorCode::INVALID_DATA,
+            config_prefix + where +
+                " (use_risk_management) was removed in schema 2; risk is assigned by risk.json "
+                "\"modules\". Delete the key (a leftover false would silently turn risk back on, "
+                "T-RISK-ARCH_ADVERSARIAL E2)",
+            "ConfigLoader");
+    }
+    if (merged.contains("risk_defaults")) {
+        return make_error<void>(
+            ErrorCode::INVALID_DATA,
+            config_prefix +
+                "risk_defaults was removed in schema 2; every gating value is written literally "
+                "in each portfolio's risk.json (run scripts/migrate_risk_json.py)",
+            "ConfigLoader");
+    }
+    if (merged.contains("strategy_defaults") && merged.at("strategy_defaults").is_object() &&
+        merged.at("strategy_defaults").contains("use_optimization")) {
+        return make_error<void>(
+            ErrorCode::INVALID_DATA,
+            config_prefix +
+                "strategy_defaults.use_optimization moved to portfolio.json \"use_optimization\" "
+                "in schema 2",
+            "ConfigLoader");
+    }
+    if (merged.contains("risk")) {
+        for (const char* key : {"corr_shock_threshold", "jump_shock_threshold"}) {
+            if (find_key(merged.at("risk"), key, "risk", &where)) {
+                return make_error<void>(
+                    ErrorCode::INVALID_DATA,
+                    "risk config for " + portfolio_id + ": " + where +
+                        " has had no reader since the carver_shock methods were deleted; delete "
+                        "it",
+                    "ConfigLoader");
+            }
+        }
+    }
+    return Result<void>();
+}
+
+}  // namespace
+
 Result<AppConfig> ConfigLoader::extract_config(const nlohmann::json& merged) {
     try {
         AppConfig config;
@@ -88,34 +169,61 @@ Result<AppConfig> ConfigLoader::extract_config(const nlohmann::json& merged) {
         // Set capital in opt_config
         config.opt_config.capital = config.initial_capital;
 
-        // Risk configuration - from risk_defaults and risk section
-        if (merged.contains("risk_defaults")) {
-            const auto& risk_defaults = merged.at("risk_defaults");
-            if (risk_defaults.contains("confidence_level")) {
-                config.risk_config.confidence_level =
-                    risk_defaults.at("confidence_level").get<double>();
+        // Risk configuration - schema 2. Named first, so an unmigrated production box
+        // is told what to run instead of being told about a key it never wrote.
+        {
+            auto schema1 = check_not_schema1(merged.value("risk", nlohmann::json::object()),
+                                             config.portfolio_id);
+            if (schema1.is_error()) {
+                return make_error<AppConfig>(ErrorCode::INVALID_DATA, schema1.error()->what(),
+                                             "ConfigLoader");
             }
-            if (risk_defaults.contains("lookback_period")) {
-                config.risk_config.lookback_period =
-                    risk_defaults.at("lookback_period").get<int>();
-            }
-            if (risk_defaults.contains("max_correlation")) {
-                config.risk_config.max_correlation =
-                    risk_defaults.at("max_correlation").get<double>();
+            auto removed = check_removed_keys(merged, config.portfolio_id);
+            if (removed.is_error()) {
+                return make_error<AppConfig>(ErrorCode::INVALID_DATA, removed.error()->what(),
+                                             "ConfigLoader");
             }
         }
 
-        if (merged.contains("risk")) {
-            config.risk_config.from_json(merged.at("risk"));
+        // P1: portfolio.json owns use_optimization now. Required and boolean; there is no
+        // default, because a default is how an optimizer gets switched on for a book
+        // nobody decided to switch it on for.
+        if (!merged.contains("use_optimization") || !merged.at("use_optimization").is_boolean()) {
+            return make_error<AppConfig>(
+                ErrorCode::INVALID_DATA,
+                "config for " + config.portfolio_id +
+                    ": portfolio.json must set \"use_optimization\" (true or false) at its top "
+                    "level; schema 2 has no default",
+                "ConfigLoader");
+        }
+        config.use_optimization = merged.at("use_optimization").get<bool>();
 
-            // Additional risk limits
-            const auto& risk = merged.at("risk");
-            if (risk.contains("max_drawdown")) {
-                config.max_drawdown = risk.at("max_drawdown").get<double>();
-            }
-            if (risk.contains("max_leverage")) {
-                config.max_leverage = risk.at("max_leverage").get<double>();
-            }
+        if (!merged.contains("risk")) {
+            return make_error<AppConfig>(ErrorCode::INVALID_DATA,
+                                         "risk config for " + config.portfolio_id +
+                                             ": risk.json is required",
+                                         "ConfigLoader");
+        }
+        auto schema = parse_risk_schema(
+            merged.at("risk"), merged.value("sleeve_risk_modules", nlohmann::json()),
+            merged.value("strategies", nlohmann::json::object()), config.portfolio_id);
+        if (schema.is_error()) {
+            return make_error<AppConfig>(ErrorCode::INVALID_DATA, schema.error()->what(),
+                                         "ConfigLoader");
+        }
+        config.risk_schema = schema.value();
+        // The reporting block is the single source of AppConfig::risk_config: every
+        // snapshot RiskManager and both equity start-up guards read it, and it survives a
+        // book whose gate becomes `none`.
+        config.risk_config = config.risk_schema.reporting.to_risk_config();
+
+        // Additional risk limits
+        const auto& risk = merged.at("risk");
+        if (risk.contains("max_drawdown")) {
+            config.max_drawdown = risk.at("max_drawdown").get<double>();
+        }
+        if (risk.contains("max_leverage")) {
+            config.max_leverage = risk.at("max_leverage").get<double>();
         }
         // Set capital in risk_config
         config.risk_config.capital = Decimal(config.initial_capital);

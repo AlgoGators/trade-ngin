@@ -7,6 +7,7 @@
 // post-rounding point after it.
 
 #include <gtest/gtest.h>
+#include "../risk/risk_module_test_helpers.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -176,7 +177,7 @@ size_t count_of(const std::string& text, const std::string& needle) {
 }
 
 PortfolioConfig risk_config(bool allow_fractional) {
-    PortfolioConfig pc{1000.0, 0.0, 1.0, 0.0, /*optimization=*/false, /*risk=*/true};
+    PortfolioConfig pc{1000.0, 0.0, 1.0, 0.0, /*optimization=*/false};
     pc.allow_fractional_positions = allow_fractional;
     pc.risk_config.capital = 1000.0;
     pc.risk_config.var_limit = 1e6;
@@ -184,6 +185,7 @@ PortfolioConfig risk_config(bool allow_fractional) {
     pc.risk_config.max_correlation = 1.0;
     pc.risk_config.max_gross_leverage = 0.29;
     pc.risk_config.max_net_leverage = 0.29;
+    pc.risk_modules = {test_carver_module(pc.risk_config)};
     return pc;
 }
 
@@ -949,4 +951,93 @@ TEST_F(RiskPostRoundingTest, TheCarverModuleIsSilentThere) {
     EXPECT_EQ(post[0].module_id, "carver");
     EXPECT_EQ(post[0].requested.action, RiskAction::NONE);
     EXPECT_FALSE(post[0].requested.metrics.has_value());
+}
+
+// ===== The constructor builds the configured modules, and refuses an empty list =====
+//
+// Schema 2 replaced `use_risk_management` with a list. The failure mode a bool never had is
+// a list nobody filled in: a PortfolioConfig built in code, one line short, would run the
+// book with no risk layer and say nothing. The constructor throws instead, which is why
+// bt_equity_validation now has to spell out its `none` with a ruling.
+
+class RiskModuleDispatchTest : public RiskModuleLoopTest {};
+
+TEST_F(RiskModuleDispatchTest, AnEmptyModuleListThrowsRatherThanRunningTheBookUngated) {
+    PortfolioConfig pc = risk_config(false);
+    pc.risk_modules.clear();
+    try {
+        PortfolioManager pm(pc, "PM_EMPTY_MODULES");
+        FAIL() << "an empty module list must not build a manager";
+    } catch (const std::invalid_argument& e) {
+        EXPECT_EQ(std::string(e.what()),
+                  "PortfolioConfig.risk_modules is empty: assign a module, or {type: none} with "
+                  "_reason, _ruled_by, _ruled_on");
+    }
+}
+
+TEST_F(RiskModuleDispatchTest, ACarverAssignmentBuildsTheGateAndKeepsTheInitialisedLine) {
+    PortfolioConfig pc = risk_config(false);
+    ::testing::internal::CaptureStdout();
+    {
+        PortfolioManager pm(pc, "PM_CARVER_MODULE");
+        const auto modules = pm.risk_decisions_json().at("modules");
+        ASSERT_EQ(modules.size(), 1u);
+        EXPECT_EQ(modules[0].at("type").get<std::string>(), "carver");
+        EXPECT_EQ(modules[0].at("id").get<std::string>(), "carver");
+        EXPECT_EQ(modules[0].at("scope").get<std::string>(), "portfolio");
+    }
+    const std::string out = ::testing::internal::GetCapturedStdout();
+    EXPECT_NE(out.find("Risk manager initialized successfully with capital="), std::string::npos)
+        << out;
+    EXPECT_EQ(out.find("Risk management is disabled in the configuration"), std::string::npos)
+        << out;
+}
+
+TEST_F(RiskModuleDispatchTest, ALoneNoneBuildsNothingAndKeepsTheDisabledLine) {
+    PortfolioConfig pc = risk_config(false);
+    pc.risk_modules = {test_none_module()};
+    ::testing::internal::CaptureStdout();
+    {
+        PortfolioManager pm(pc, "PM_NONE_MODULE");
+        EXPECT_TRUE(pm.risk_decisions_json().at("modules").empty())
+            << "`none` is an assignment that builds nothing";
+    }
+    const std::string out = ::testing::internal::GetCapturedStdout();
+    EXPECT_NE(out.find("Risk management is disabled in the configuration"), std::string::npos)
+        << out;
+    EXPECT_EQ(out.find("Risk manager initialized successfully"), std::string::npos) << out;
+}
+
+TEST_F(RiskModuleDispatchTest, ANoneAssignmentLeavesTheBookUntouchedThroughARebalance) {
+    PortfolioConfig pc = risk_config(false);
+    pc.risk_modules = {test_none_module()};
+    static int n = 0;
+    auto pm = std::make_unique<PortfolioManager>(pc, "PM_NONE_RUN_" + std::to_string(++n));
+    auto strategy = make_strategy("S1", {{{"ZZA", make_pos("ZZA", 7.0, 100.0)}}});
+    ASSERT_TRUE(pm->add_strategy(strategy, 1.0, false).is_ok());
+    ::testing::internal::CaptureStdout();
+    ASSERT_TRUE(pm->process_market_data(three_days()).is_ok());
+    const std::string out = ::testing::internal::GetCapturedStdout();
+    EXPECT_EQ(count_of(out, "Risk management result:"), 0u) << "no gate ran";
+    EXPECT_TRUE(pm->last_risk_decisions().empty());
+    EXPECT_DOUBLE_EQ(
+        static_cast<double>(pm->get_strategy_positions().at("S1").at("ZZA").quantity), 7.0);
+}
+
+TEST_F(RiskModuleDispatchTest, TheConstructorBuildsTheConfiguredSleeveModulesToo) {
+    PortfolioConfig pc = risk_config(false);
+    RiskModuleConfig cut;
+    cut.id = "sleeve_cut";
+    cut.type = "constant_scale";
+    cut.params = ConstantScaleModuleConfig{0.5, false};
+    pc.sleeve_risk_modules = {{"S1", {cut}}};
+    static int n = 0;
+    auto pm = std::make_unique<PortfolioManager>(pc, "PM_SLEEVE_CFG_" + std::to_string(++n));
+    const auto modules = pm->risk_decisions_json().at("modules");
+    ASSERT_EQ(modules.size(), 2u) << modules.dump();
+    const auto& sleeve = modules[1];
+    EXPECT_EQ(sleeve.at("scope").get<std::string>(), "sleeve");
+    EXPECT_EQ(sleeve.at("scope_id").get<std::string>(), "S1");
+    EXPECT_EQ(sleeve.at("id").get<std::string>(), "sleeve_cut");
+    EXPECT_EQ(sleeve.at("type").get<std::string>(), "constant_scale");
 }

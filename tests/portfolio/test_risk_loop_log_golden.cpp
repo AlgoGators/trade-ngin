@@ -15,6 +15,7 @@
 // Any later commit that changes it must declare the change.
 
 #include <gtest/gtest.h>
+#include "../risk/risk_module_test_helpers.hpp"
 
 #include <chrono>
 #include <memory>
@@ -130,7 +131,7 @@ TEST_F(RiskLoopLogGolden, CarverLapsMatchTheCommit3Sequence) {
     ASSERT_TRUE(strategy->initialize().is_ok());
     ASSERT_TRUE(strategy->start().is_ok());
 
-    PortfolioConfig pc{1000.0, 0.0, 1.0, 0.0, /*optimization=*/false, /*risk=*/true};
+    PortfolioConfig pc{1000.0, 0.0, 1.0, 0.0, /*optimization=*/false};
     pc.allow_fractional_positions = false;
     pc.risk_config.capital = 1000.0;
     pc.risk_config.var_limit = 1e6;
@@ -138,6 +139,7 @@ TEST_F(RiskLoopLogGolden, CarverLapsMatchTheCommit3Sequence) {
     pc.risk_config.max_correlation = 1.0;
     pc.risk_config.max_gross_leverage = 0.35;
     pc.risk_config.max_net_leverage = 0.35;
+    pc.risk_modules = {test_carver_module(pc.risk_config)};
 
     LoggerConfig lc;
     lc.destination = LogDestination::CONSOLE;

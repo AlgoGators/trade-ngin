@@ -584,8 +584,9 @@ int main(int argc, char* argv[]) {
             app_config.strategy_defaults.max_strategy_allocation;
         portfolio_config.min_strategy_allocation =
             app_config.strategy_defaults.min_strategy_allocation;
-        portfolio_config.use_optimization = app_config.strategy_defaults.use_optimization;
-        portfolio_config.use_risk_management = app_config.strategy_defaults.use_risk_management;
+        portfolio_config.use_optimization = app_config.use_optimization;
+        portfolio_config.risk_modules = app_config.risk_schema.portfolio;
+        portfolio_config.sleeve_risk_modules = app_config.risk_schema.sleeves;
         portfolio_config.opt_config = opt_config;
         portfolio_config.risk_config = risk_config;
 
@@ -1074,7 +1075,6 @@ int main(int argc, char* argv[]) {
             portfolio_config_json["reserve_capital"] =
                 static_cast<double>(portfolio_config.reserve_capital);
             portfolio_config_json["use_optimization"] = portfolio_config.use_optimization;
-            portfolio_config_json["use_risk_management"] = portfolio_config.use_risk_management;
 
             // Convert strategy_allocations to JSON
             nlohmann::json strategy_alloc_json(strategy_allocations);

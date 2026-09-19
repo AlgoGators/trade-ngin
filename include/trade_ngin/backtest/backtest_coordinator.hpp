@@ -34,7 +34,6 @@ namespace backtest {
  */
 struct BacktestCoordinatorConfig {
     double initial_capital = 1000000.0;
-    bool use_risk_management = false;
     bool use_optimization = false;
     bool store_results = true;
     int warmup_days = 0;

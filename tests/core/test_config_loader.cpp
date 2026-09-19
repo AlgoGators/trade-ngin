@@ -7,6 +7,7 @@
 #include <fstream>
 #include <nlohmann/json.hpp>
 #include "test_base.hpp"
+#include "trade_ngin/strategy/equity_strategy_builder.hpp"
 
 // Reach private merge_json/validate_config/load_legacy helpers. Pre-load std
 // headers before flipping the macro so libc++ internals stay valid.
@@ -34,13 +35,11 @@ nlohmann::json minimal_defaults() {
                           {"use_buffering", true}, {"buffer_size_factor", 0.05}}},
         {"backtest", {{"lookback_years", 2}, {"store_trade_details", true}}},
         {"live", {{"historical_days", 300}}},
+        // Schema 2: no use_optimization (it moved to portfolio.json), no
+        // use_risk_management (deleted), no risk_defaults (every value is per book).
         {"strategy_defaults", {{"max_strategy_allocation", 1.0},
                                 {"min_strategy_allocation", 0.1},
-                                {"use_optimization", true},
-                                {"use_risk_management", true},
                                 {"fdm", nlohmann::json::array({{1, 1.0}, {2, 1.03}})}}},
-        {"risk_defaults", {{"confidence_level", 0.99}, {"lookback_period", 252},
-                           {"max_correlation", 0.7}}},
     };
 }
 
@@ -51,17 +50,53 @@ nlohmann::json minimal_portfolio() {
         {"reserve_capital_pct", 0.10},
         {"max_drawdown", 0.4},
         {"max_leverage", 4.0},
+        {"use_optimization", true},
         // Validation requires at least one strategy entry.
         {"strategies", {{"TREND_FOLLOWING", {{"weight", 1.0}, {"allocation", 1.0}}}}},
     };
 }
 
-nlohmann::json minimal_risk() {
+// The seven gating values, written literally, plus the reporter and the two strategy
+// limits schema 2 makes required.
+nlohmann::json carver_module(const char* id = "carver") {
     return {
+        {"id", id},
+        {"type", "carver"},
         {"var_limit", 0.15},
         {"jump_risk_limit", 0.10},
+        {"max_correlation", 0.7},
         {"max_gross_leverage", 4.0},
         {"max_net_leverage", 2.0},
+        {"confidence_level", 0.99},
+        {"lookback_period", 252},
+        {"lookback_unit", "bars"},
+        {"min_gate_dates", 21},
+        {"missing_symbol_policy", "ignore"},
+        {"_missing_symbol_policy_reason", "unit test"},
+    };
+}
+
+nlohmann::json reporting_block() {
+    return {
+        {"type", "carver"},
+        {"window", "all_bars"},
+        {"var_limit", 0.15},
+        {"jump_risk_limit", 0.10},
+        {"max_correlation", 0.7},
+        {"max_gross_leverage", 4.0},
+        {"max_net_leverage", 2.0},
+        {"confidence_level", 0.99},
+        {"lookback_period", 252},
+    };
+}
+
+nlohmann::json minimal_risk() {
+    return {
+        {"schema", 2},
+        {"modules", nlohmann::json::array({carver_module()})},
+        {"risk_reporting", reporting_block()},
+        {"max_drawdown", 0.4},
+        {"max_leverage", 4.0},
     };
 }
 
@@ -103,7 +138,8 @@ protected:
 
     void write_full_set(const std::string& portfolio_name,
                          const nlohmann::json& defaults_override = {},
-                         const nlohmann::json& portfolio_override = {}) {
+                         const nlohmann::json& portfolio_override = {},
+                         const nlohmann::json& risk = minimal_risk()) {
         auto defaults = minimal_defaults();
         for (auto& [k, v] : defaults_override.items()) defaults[k] = v;
         write_json(base_ / "defaults.json", defaults);
@@ -112,8 +148,19 @@ protected:
         for (auto& [k, v] : portfolio_override.items()) portfolio[k] = v;
         write_json(base_ / "portfolios" / portfolio_name / "portfolio.json", portfolio);
 
-        write_json(base_ / "portfolios" / portfolio_name / "risk.json", minimal_risk());
+        write_json(base_ / "portfolios" / portfolio_name / "risk.json", risk);
         write_json(base_ / "portfolios" / portfolio_name / "email.json", minimal_email());
+    }
+
+    /// Loads a config whose risk.json is `risk` and returns the error text (empty on
+    /// success), so a rule's test reads as "this file -> this message".
+    std::string load_error(const nlohmann::json& risk,
+                            const nlohmann::json& portfolio_override = {},
+                            const nlohmann::json& defaults_override = {}) {
+        write_full_set("base", defaults_override, portfolio_override, risk);
+        auto r = ConfigLoader::load(base_, "base");
+        if (r.is_ok()) return "";
+        return r.error()->what();
     }
 
     std::filesystem::path base_;
@@ -265,15 +312,19 @@ TEST_F(ConfigLoaderTest, StrategyDefaultsConfigJsonRoundTrip) {
     s.fdm = {{1, 1.0}, {2, 1.5}, {3, 2.0}};
     s.max_strategy_allocation = 0.5;
     s.min_strategy_allocation = 0.1;
-    s.use_optimization = false;
-    s.use_risk_management = true;
     StrategyDefaultsConfig r;
-    r.from_json(s.to_json());
+    const auto j = s.to_json();
+    r.from_json(j);
     EXPECT_EQ(r.fdm.size(), 3u);
     EXPECT_DOUBLE_EQ(r.fdm[2].second, 2.0);
     EXPECT_DOUBLE_EQ(r.max_strategy_allocation, 0.5);
-    EXPECT_FALSE(r.use_optimization);
-    EXPECT_TRUE(r.use_risk_management);
+    // Schema 2 deleted both: a block that still serialised them would put a key back into
+    // the merged config that the loader now refuses (S7), and an override round trip
+    // would fail on a key nobody wrote.
+    EXPECT_FALSE(j.contains("use_optimization"))
+        << "use_optimization moved to portfolio.json in schema 2";
+    EXPECT_FALSE(j.contains("use_risk_management"))
+        << "use_risk_management was deleted in schema 2";
 }
 
 TEST_F(ConfigLoaderTest, DatabaseConfigJsonRoundTrip) {
@@ -551,8 +602,7 @@ struct ResolvedRiskExpectation {
     double confidence_level;
     int lookback_period;
     double capital;            // risk_config.capital = initial_capital
-    bool use_optimization;     // strategy_defaults, as resolved (not as the runner applies it)
-    bool use_risk_management;
+    bool use_optimization;     // portfolio.json's top level, as resolved
 };
 
 void expect_resolved_risk_config(const ResolvedRiskExpectation& e) {
@@ -585,10 +635,31 @@ void expect_resolved_risk_config(const ResolvedRiskExpectation& e) {
     EXPECT_EQ(r.lookback_period, e.lookback_period) << b << ": risk_config.lookback_period";
     EXPECT_EQ(r.capital.as_double(), e.capital) << b << ": risk_config.capital";
 
-    EXPECT_EQ(c.strategy_defaults.use_optimization, e.use_optimization)
-        << b << ": strategy_defaults.use_optimization";
-    EXPECT_EQ(c.strategy_defaults.use_risk_management, e.use_risk_management)
-        << b << ": strategy_defaults.use_risk_management";
+    EXPECT_EQ(c.use_optimization, e.use_optimization) << b << ": use_optimization";
+
+    // Schema 2: the SAME seven values are also on the book's own carver module, and the
+    // module -- not AppConfig::risk_config -- is what the PortfolioManager gates with.
+    // Rule C1 makes the two equal; these assertions are what proves it on the shipped
+    // books rather than on a fixture.
+    ASSERT_EQ(c.risk_schema.portfolio.size(), 1u) << b << ": one portfolio-scope module";
+    const RiskModuleConfig& m = c.risk_schema.portfolio.front();
+    EXPECT_EQ(m.type, "carver") << b << ": module type";
+    const auto* carver = std::get_if<CarverModuleConfig>(&m.params);
+    ASSERT_NE(carver, nullptr) << b << ": module params";
+    EXPECT_EQ(carver->var_limit, e.var_limit) << b << ": module.var_limit";
+    EXPECT_EQ(carver->jump_risk_limit, e.jump_risk_limit) << b << ": module.jump_risk_limit";
+    EXPECT_EQ(carver->max_correlation, e.max_correlation) << b << ": module.max_correlation";
+    EXPECT_EQ(carver->max_gross_leverage, e.max_gross_leverage)
+        << b << ": module.max_gross_leverage";
+    EXPECT_EQ(carver->max_net_leverage, e.max_net_leverage) << b << ": module.max_net_leverage";
+    EXPECT_EQ(carver->confidence_level, e.confidence_level) << b << ": module.confidence_level";
+    EXPECT_EQ(carver->lookback_period, e.lookback_period) << b << ": module.lookback_period";
+    EXPECT_EQ(carver->lookback_unit, "bars") << b << ": module.lookback_unit";
+    EXPECT_EQ(carver->min_gate_dates, 21) << b << ": module.min_gate_dates";
+    EXPECT_EQ(carver->missing_symbol_policy, "ignore") << b << ": module.missing_symbol_policy";
+    EXPECT_FALSE(carver->missing_symbol_policy_reason.empty())
+        << b << ": \"ignore\" is the fail-open policy and must say why it is chosen";
+    EXPECT_TRUE(c.risk_schema.sleeves.empty()) << b << ": no shipped book assigns a sleeve module";
 }
 
 }  // namespace
@@ -601,74 +672,248 @@ TEST(TrackedTemplateResolvedRiskConfig, Conservative) {
                                  /*max_gross*/ 4.0, /*max_net*/ 2.0,
                                  /*confidence*/ 0.99, /*lookback*/ 252,
                                  /*capital*/ 500000.0,
-                                 /*use_optimization*/ true, /*use_risk_management*/ true});
+                                 /*use_optimization*/ true});
 }
 
 TEST(TrackedTemplateResolvedRiskConfig, Base) {
     expect_resolved_risk_config({"base", "BASE_PORTFOLIO",
                                  /*max_drawdown*/ 0.4, /*max_leverage*/ 4.0,
                                  /*var_limit*/ 0.15, /*jump_risk_limit*/ 0.1,
-                                 /*max_correlation*/ 0.7,  // by ABSENCE: risk_defaults
+                                 /*max_correlation*/ 0.7,  // literal in its risk.json (schema 2)
                                  /*max_gross*/ 4.0, /*max_net*/ 2.0,
                                  /*confidence*/ 0.99, /*lookback*/ 252,
                                  /*capital*/ 500000.0,
-                                 /*use_optimization*/ true, /*use_risk_management*/ true});
+                                 /*use_optimization*/ true});
 }
 
-// use_optimization resolves true here as on every book; both equity runners
-// then hard-code their PortfolioConfig's use_optimization to false
-// (live_equity_mean_reversion.cpp, bt_equity_mean_reversion.cpp). This pins the
-// RESOLVED value only; moving the key into portfolio.json must not turn the
-// equity optimizer on (T-RISK-ARCH_ADVERSARIAL §C3).
+// use_optimization resolves FALSE here: schema 2 moved the key into portfolio.json and
+// EQUITY_MR writes false, which is what both equity runners have always done in code
+// (live_equity_mean_reversion.cpp, bt_equity_mean_reversion.cpp). Moving the key must not
+// turn the equity optimizer on (T-RISK-ARCH_ADVERSARIAL §C3); the runners additionally
+// refuse to start on a `true` (refuse_if_optimizer_requested, tested below).
 TEST(TrackedTemplateResolvedRiskConfig, EquityMr) {
     expect_resolved_risk_config({"equity_mr", "EQUITY_MR_PORTFOLIO",
                                  /*max_drawdown*/ 0.3, /*max_leverage*/ 1.0,
                                  /*var_limit*/ 0.25, /*jump_risk_limit*/ 0.08,
-                                 /*max_correlation*/ 0.7,  // by ABSENCE: risk_defaults
+                                 /*max_correlation*/ 0.7,  // literal in its risk.json (schema 2)
                                  /*max_gross*/ 1.0, /*max_net*/ 1.0,
                                  /*confidence*/ 0.99, /*lookback*/ 252,
                                  /*capital*/ 100000.0,
-                                 /*use_optimization*/ true, /*use_risk_management*/ true});
+                                 /*use_optimization*/ false});
 }
 
-// The max_correlation trap, pinned. BASE and EQUITY_MR resolve 0.7 because
-// defaults.json risk_defaults.max_correlation is applied before risk.json and
-// their risk.json files do not carry the key -- NOT because of RiskConfig's
-// struct default, which happens to be 0.7 too and so hides which path is live.
-// Changing the global alone moves both books and leaves CONSERVATIVE (literal
-// 0.85) where it is. A schema that writes every gating parameter literally per
-// book is expected to flip the 0.9 expectations below in the same commit.
-TEST(TrackedTemplateResolvedRiskConfig, MaxCorrelationOnBaseAndEquityMrComesFromRiskDefaults) {
-    namespace fs = std::filesystem;
+// The max_correlation trap, closed. Under schema 1 base/risk.json and equity_mr/risk.json
+// carried NO max_correlation and resolved 0.7 from defaults.json risk_defaults -- a value
+// no book had written, indistinguishable from RiskConfig's struct default (also 0.7), so
+// changing the global silently moved two books' gate. Schema 2 deletes risk_defaults and
+// writes every gating value per book. This is that test, inverted: the value must now come
+// from the book's OWN file, and there must be no global left to move it with.
+TEST(TrackedTemplateResolvedRiskConfig, EveryGatingValueIsLiteralInTheBooksOwnRiskJson) {
     const auto tmpl = tracked_config_template();
     ASSERT_FALSE(tmpl.empty()) << "config_template/ not found; this test must not skip";
 
-    for (const char* book : {"base", "equity_mr"}) {
-        std::ifstream in(tmpl / "portfolios" / book / "risk.json");
-        const auto risk = nlohmann::json::parse(in);
-        EXPECT_FALSE(risk.contains("max_correlation"))
-            << book << ": risk.json now carries max_correlation literally; update this pin";
-    }
     std::ifstream din(tmpl / "defaults.json");
-    auto defaults = nlohmann::json::parse(din);
-    ASSERT_EQ(defaults.at("risk_defaults").at("max_correlation").get<double>(), 0.7)
-        << "defaults.json risk_defaults.max_correlation";
+    const auto defaults = nlohmann::json::parse(din);
+    EXPECT_FALSE(defaults.contains("risk_defaults"))
+        << "defaults.json still carries risk_defaults: a gating value no book wrote can "
+           "still reach a book's gate (and the loader now refuses the key outright)";
+    ASSERT_TRUE(defaults.contains("strategy_defaults"));
+    EXPECT_FALSE(defaults.at("strategy_defaults").contains("use_optimization"))
+        << "use_optimization moved to portfolio.json in schema 2";
+    EXPECT_FALSE(defaults.at("strategy_defaults").contains("use_risk_management"))
+        << "use_risk_management was deleted in schema 2";
 
-    // A copy of the template with ONLY the global changed to 0.9.
-    const fs::path copy = fs::temp_directory_path() / "trade_ngin_template_maxcorr_provenance";
-    fs::remove_all(copy);
-    fs::copy(tmpl, copy, fs::copy_options::recursive);
-    defaults["risk_defaults"]["max_correlation"] = 0.9;
-    {
-        std::ofstream out(copy / "defaults.json");
-        out << defaults.dump(2);
+    struct Book { const char* dir; double max_correlation; bool use_optimization; };
+    for (const Book& b : {Book{"conservative", 0.85, true}, Book{"base", 0.7, true},
+                          Book{"equity_mr", 0.7, false}}) {
+        std::ifstream in(tmpl / "portfolios" / b.dir / "risk.json");
+        const auto risk = nlohmann::json::parse(in);
+        ASSERT_TRUE(risk.contains("modules")) << b.dir << ": risk.json must be schema 2";
+        ASSERT_EQ(risk.at("modules").size(), 1u) << b.dir;
+        const auto& module = risk.at("modules").at(0);
+        for (const char* field : {"var_limit", "jump_risk_limit", "max_correlation",
+                                  "max_gross_leverage", "max_net_leverage",
+                                  "confidence_level", "lookback_period"}) {
+            EXPECT_TRUE(module.contains(field))
+                << b.dir << ": risk.json does not write " << field
+                << " literally -- schema 2 has no layer for it to come from";
+        }
+        EXPECT_EQ(module.at("max_correlation").get<double>(), b.max_correlation)
+            << b.dir << ": max_correlation, written in the book's own file";
+
+        std::ifstream pin(tmpl / "portfolios" / b.dir / "portfolio.json");
+        const auto portfolio = nlohmann::json::parse(pin);
+        ASSERT_TRUE(portfolio.contains("use_optimization")) << b.dir;
+        EXPECT_EQ(portfolio.at("use_optimization").get<bool>(), b.use_optimization) << b.dir;
     }
-    struct Case { const char* book; double expected; };
-    for (const Case& k : {Case{"base", 0.9}, Case{"equity_mr", 0.9}, Case{"conservative", 0.85}}) {
-        auto loaded = ConfigLoader::load(copy, k.book);
-        ASSERT_TRUE(loaded.is_ok()) << k.book << ": load of the modified copy failed";
-        EXPECT_EQ(loaded.value().risk_config.max_correlation, k.expected)
-            << k.book << ": risk_config.max_correlation with risk_defaults.max_correlation = 0.9";
-    }
-    fs::remove_all(copy);
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// The loader's own schema-2 rules: the removed keys (S7), use_optimization (P1),
+// the schema-1 message (T0), and the two strategy limits (R9). The per-module
+// rules live in tests/risk/test_risk_module_config.cpp, against parse_risk_schema.
+// Each asserts the EXACT text, because the text is the whole value of a
+// fail-closed rule: an operator reading it has to know what to do next.
+// ──────────────────────────────────────────────────────────────────────────
+
+TEST_F(ConfigLoaderTest, Schema1RiskJsonIsNamedAsSuchWithTheMigrationCommand) {
+    nlohmann::json schema1 = {{"var_limit", 0.15}, {"jump_risk_limit", 0.1},
+                              {"max_gross_leverage", 4.0}, {"max_net_leverage", 2.0},
+                              {"max_drawdown", 0.4}, {"max_leverage", 4.0}};
+    EXPECT_EQ(load_error(schema1),
+              "risk config for TEST_PORTFOLIO: risk.json is schema 1 (flat gating keys, no "
+              "\"schema\"/\"modules\"); migrate it with: python3 scripts/migrate_risk_json.py "
+              "<config dir> --in-place");
+}
+
+TEST_F(ConfigLoaderTest, RemovedKeyUseRiskManagementIsALoadErrorWhereverItHides) {
+    // Nested inside a strategy's config block: the place a half-finished migration
+    // leaves one, and the place a recursive walk is the only thing that finds it.
+    nlohmann::json portfolio_override = {
+        {"strategies", {{"TREND_FOLLOWING",
+                         {{"weight", 1.0}, {"config", {{"use_risk_management", false}}}}}}}};
+    EXPECT_EQ(load_error(minimal_risk(), portfolio_override),
+              "config for TEST_PORTFOLIO: strategies.TREND_FOLLOWING.config.use_risk_management "
+              "(use_risk_management) was removed in schema 2; risk is assigned by risk.json "
+              "\"modules\". Delete the key (a leftover false would silently turn risk back on, "
+              "T-RISK-ARCH_ADVERSARIAL E2)");
+}
+
+TEST_F(ConfigLoaderTest, RemovedKeyRiskDefaultsIsALoadError) {
+    nlohmann::json defaults_override = {
+        {"risk_defaults", {{"max_correlation", 0.9}}}};
+    EXPECT_EQ(load_error(minimal_risk(), {}, defaults_override),
+              "config for TEST_PORTFOLIO: risk_defaults was removed in schema 2; every gating "
+              "value is written literally in each portfolio's risk.json (run "
+              "scripts/migrate_risk_json.py)");
+}
+
+TEST_F(ConfigLoaderTest, RemovedKeyStrategyDefaultsUseOptimizationIsALoadError) {
+    nlohmann::json defaults_override = {
+        {"strategy_defaults", {{"max_strategy_allocation", 1.0}, {"use_optimization", true}}}};
+    EXPECT_EQ(load_error(minimal_risk(), {}, defaults_override),
+              "config for TEST_PORTFOLIO: strategy_defaults.use_optimization moved to "
+              "portfolio.json \"use_optimization\" in schema 2");
+}
+
+TEST_F(ConfigLoaderTest, RemovedShockThresholdKeysUnderRiskAreALoadError) {
+    auto risk = minimal_risk();
+    risk["modules"][0]["corr_shock_threshold"] = 0.65;
+    EXPECT_EQ(load_error(risk),
+              "risk config for TEST_PORTFOLIO: risk.modules[0].corr_shock_threshold has had no "
+              "reader since the carver_shock methods were deleted; delete it");
+    auto risk2 = minimal_risk();
+    risk2["risk_reporting"]["jump_shock_threshold"] = 0.75;
+    EXPECT_EQ(load_error(risk2),
+              "risk config for TEST_PORTFOLIO: risk.risk_reporting.jump_shock_threshold has had "
+              "no reader since the carver_shock methods were deleted; delete it");
+}
+
+TEST_F(ConfigLoaderTest, UseOptimizationIsRequiredAndBoolean) {
+    auto portfolio = minimal_portfolio();
+    portfolio.erase("use_optimization");
+    write_json(base_ / "defaults.json", minimal_defaults());
+    write_json(base_ / "portfolios" / "base" / "portfolio.json", portfolio);
+    write_json(base_ / "portfolios" / "base" / "risk.json", minimal_risk());
+    write_json(base_ / "portfolios" / "base" / "email.json", minimal_email());
+    auto r = ConfigLoader::load(base_, "base");
+    ASSERT_TRUE(r.is_error());
+    EXPECT_EQ(std::string(r.error()->what()),
+              "config for TEST_PORTFOLIO: portfolio.json must set \"use_optimization\" (true or "
+              "false) at its top level; schema 2 has no default");
+
+    // A quoted "true" is the typo that used to read as absent and take the default.
+    EXPECT_EQ(load_error(minimal_risk(), {{"use_optimization", "true"}}),
+              "config for TEST_PORTFOLIO: portfolio.json must set \"use_optimization\" (true or "
+              "false) at its top level; schema 2 has no default");
+}
+
+TEST_F(ConfigLoaderTest, UseOptimizationResolvesFromPortfolioJson) {
+    write_full_set("base", {}, {{"use_optimization", false}});
+    auto r = ConfigLoader::load(base_, "base");
+    ASSERT_TRUE(r.is_ok()) << (r.error() ? r.error()->what() : "");
+    EXPECT_FALSE(r.value().use_optimization);
+}
+
+TEST_F(ConfigLoaderTest, StrategyLimitsAreRequiredInRiskJson) {
+    auto risk = minimal_risk();
+    risk.erase("max_drawdown");
+    EXPECT_EQ(load_error(risk),
+              "risk config for TEST_PORTFOLIO: risk.max_drawdown is required and must be in "
+              "(0, 1]");
+    auto risk2 = minimal_risk();
+    risk2.erase("max_leverage");
+    EXPECT_EQ(load_error(risk2),
+              "risk config for TEST_PORTFOLIO: risk.max_leverage is required and must be > 0 (it "
+              "sizes the book: trend_following.cpp:1216)");
+    auto risk3 = minimal_risk();
+    risk3["max_drawdown"] = 1.2;
+    EXPECT_EQ(load_error(risk3),
+              "risk config for TEST_PORTFOLIO: risk.max_drawdown is required and must be in "
+              "(0, 1]");
+}
+
+TEST_F(ConfigLoaderTest, RiskConfigIsBackFilledFromTheReporterNotTheModule) {
+    // The reporter is the single source of AppConfig::risk_config. Rule C1 keeps the two
+    // equal while a carver module is assigned, so to see which one the back-fill reads,
+    // the book has to have no carver module at all.
+    nlohmann::json none_module = {{"id", "none"}, {"type", "none"},
+                                  {"_reason", "unit test"}, {"_ruled_by", "tests"},
+                                  {"_ruled_on", "2026-09-19"}};
+    auto risk = minimal_risk();
+    risk["modules"] = nlohmann::json::array({none_module});
+    risk["risk_reporting"]["var_limit"] = 0.33;
+    risk["risk_reporting"]["max_gross_leverage"] = 1.0;
+    risk["risk_reporting"]["max_net_leverage"] = 1.0;
+    write_full_set("base", {}, {}, risk);
+    auto r = ConfigLoader::load(base_, "base");
+    ASSERT_TRUE(r.is_ok()) << (r.error() ? r.error()->what() : "");
+    EXPECT_DOUBLE_EQ(r.value().risk_config.var_limit, 0.33);
+    // The equity start-up guard reads exactly this value; without the back-fill it would
+    // fall to RiskConfig's struct 4.0 and both equity binaries would refuse to start.
+    EXPECT_DOUBLE_EQ(r.value().risk_config.max_gross_leverage, 1.0);
+    EXPECT_DOUBLE_EQ(r.value().risk_config.capital.as_double(), 1'000'000.0);
+    ASSERT_EQ(r.value().risk_schema.portfolio.size(), 1u);
+    EXPECT_EQ(r.value().risk_schema.portfolio.front().type, "none");
+}
+
+// PR #60's path: a DB override is merged back through to_json -> merge_json ->
+// extract_config. Under schema 2 that only survives if to_json emits the schema-2 risk
+// object and no removed key; otherwise extract_config fails, the loader WARNs and every
+// DB override is silently discarded.
+TEST_F(ConfigLoaderTest, AppConfigToJsonRoundTripsThroughExtractConfig) {
+    write_full_set("base");
+    auto direct = ConfigLoader::load(base_, "base");
+    ASSERT_TRUE(direct.is_ok()) << (direct.error() ? direct.error()->what() : "");
+
+    nlohmann::json j = direct.value().to_json();
+    ConfigLoader::merge_json(j, nlohmann::json::object());
+    auto round_tripped = ConfigLoader::extract_config(j);
+    ASSERT_TRUE(round_tripped.is_ok())
+        << "AppConfig::to_json no longer produces a config extract_config accepts, so every DB "
+           "override would be discarded with a WARN: "
+        << (round_tripped.is_error() ? round_tripped.error()->what() : "");
+    const AppConfig& a = direct.value();
+    const AppConfig& b = round_tripped.value();
+    EXPECT_EQ(b.use_optimization, a.use_optimization);
+    EXPECT_DOUBLE_EQ(b.max_drawdown, a.max_drawdown);
+    EXPECT_DOUBLE_EQ(b.max_leverage, a.max_leverage);
+    EXPECT_DOUBLE_EQ(b.risk_config.var_limit, a.risk_config.var_limit);
+    EXPECT_DOUBLE_EQ(b.risk_config.max_correlation, a.risk_config.max_correlation);
+    ASSERT_EQ(b.risk_schema.portfolio.size(), a.risk_schema.portfolio.size());
+    EXPECT_EQ(b.risk_schema.portfolio.front().id, a.risk_schema.portfolio.front().id);
+    EXPECT_EQ(b.risk_schema.to_json(), a.risk_schema.to_json());
+}
+
+// Ruling 7: the equity runners keep the hard-coded false AND refuse to start on a config
+// true. The guard is shared by both runners so they cannot drift; this is it.
+TEST(EquityOptimizerGuard, RefusesOnlyWhenTheConfigAsksForTheOptimizer) {
+    EXPECT_TRUE(apps::refuse_if_optimizer_requested(false).is_ok())
+        << "today's EQUITY_MR config says false: the guard must be silent";
+    auto refused = apps::refuse_if_optimizer_requested(true);
+    ASSERT_TRUE(refused.is_error());
+    EXPECT_EQ(std::string(refused.error()->what()),
+              "Refusing to start: portfolio.json sets use_optimization=true, but the equity "
+              "runners do not run the optimizer (HD 2026-09-01; see the comment at the "
+              "hard-code).");
 }

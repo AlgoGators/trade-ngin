@@ -10,6 +10,7 @@
 #include "trade_ngin/core/types.hpp"
 #include "trade_ngin/optimization/dynamic_optimizer.hpp"
 #include "trade_ngin/risk/risk_manager.hpp"
+#include "trade_ngin/risk/risk_module_config.hpp"
 
 namespace trade_ngin {
 
@@ -243,8 +244,10 @@ struct StrategyDefaultsConfig {
                                              {4, 1.13}, {5, 1.19}, {6, 1.26}};
     double max_strategy_allocation{1.0};
     double min_strategy_allocation{0.1};
-    bool use_optimization{true};
-    bool use_risk_management{true};
+    // use_optimization moved to portfolio.json's top level in schema 2 (AppConfig::
+    // use_optimization) and use_risk_management was deleted with the boolean risk gate:
+    // both are load errors here now, so a leftover key cannot go on being read from a
+    // block that no longer owns it.
     double carver_buffer_floor{0.5};
     double carver_buffer_position_factor{0.0};
 
@@ -257,8 +260,6 @@ struct StrategyDefaultsConfig {
         j["fdm"] = fdm_array;
         j["max_strategy_allocation"] = max_strategy_allocation;
         j["min_strategy_allocation"] = min_strategy_allocation;
-        j["use_optimization"] = use_optimization;
-        j["use_risk_management"] = use_risk_management;
         j["carver_buffer_floor"] = carver_buffer_floor;
         j["carver_buffer_position_factor"] = carver_buffer_position_factor;
         return j;
@@ -275,10 +276,6 @@ struct StrategyDefaultsConfig {
             max_strategy_allocation = j.at("max_strategy_allocation").get<double>();
         if (j.contains("min_strategy_allocation"))
             min_strategy_allocation = j.at("min_strategy_allocation").get<double>();
-        if (j.contains("use_optimization"))
-            use_optimization = j.at("use_optimization").get<bool>();
-        if (j.contains("use_risk_management"))
-            use_risk_management = j.at("use_risk_management").get<bool>();
         if (j.contains("carver_buffer_floor"))
             carver_buffer_floor = j.at("carver_buffer_floor").get<double>();
         if (j.contains("carver_buffer_position_factor"))
@@ -313,12 +310,24 @@ struct AppConfig {
     // Optimization configuration
     DynamicOptConfig opt_config;
 
-    // Risk configuration
+    // Risk configuration. Back-filled from risk.json's `risk_reporting` block, which is
+    // the reporting RiskManager the live runners snapshot the book with and the value the
+    // equity start-up leverage guard reads. It is NOT the gate: the gate's numbers live
+    // on the module list below, and rule C1 keeps the two equal while a carver module is
+    // assigned.
     RiskConfig risk_config;
+
+    // The book's risk module assignment, portfolio scope and sleeve scope.
+    RiskSchema risk_schema;
 
     // Additional risk limits from portfolio
     double max_drawdown{0.4};
     double max_leverage{4.0};
+
+    // portfolio.json's top-level use_optimization (schema 2; required, no default).
+    // Initialised false so that no path on which load() fails can leave an optimizer
+    // switched on by a value nobody wrote.
+    bool use_optimization{false};
 
     // Backtest settings
     BacktestSpecificConfig backtest;
@@ -346,7 +355,12 @@ struct AppConfig {
         j["database"] = database.to_json();
         j["execution"] = execution.to_json();
         j["optimization"] = opt_config.to_json();
-        j["risk"] = risk_config.to_json();
+        // The schema-2 risk object, not the resolved RiskConfig: a DB override is merged
+        // back through extract_config (PR #60), and a flat schema-1 risk block would now
+        // be rejected there and the whole override discarded with a WARN.
+        j["risk"] = risk_schema.to_json();
+        j["sleeve_risk_modules"] = risk_schema.sleeves_to_json();
+        j["use_optimization"] = use_optimization;
         j["max_drawdown"] = max_drawdown;
         j["max_leverage"] = max_leverage;
         j["backtest"] = backtest.to_json();

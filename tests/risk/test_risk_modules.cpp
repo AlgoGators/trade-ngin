@@ -456,3 +456,148 @@ TEST(RiskModuleNamesTest, EveryEnumHasItsName) {
     EXPECT_STREQ(risk_phase_name(RiskPhase::LAP), "lap");
     EXPECT_STREQ(risk_phase_name(RiskPhase::POST_ROUNDING), "post_rounding");
 }
+
+// ===== The runtime `blind` flag (LEAD_RULINGS_C7 item 3) =====
+//
+// A measurement made on seven dates is not a measurement; schema 1 had no way to say so,
+// and T-4 found the futures gate running on windows of about that size while every stored
+// number looked like a real one. The module now counts the COMPLETE dates in its window --
+// dates on which every symbol present in the window printed -- and marks the decision
+// `blind` below min_gate_dates, or when there is no capital to divide by.
+//
+// It is DATA ONLY: it never changes the action or the scale, and nothing logs or stores it
+// in T-6a (T-7 item 10 stores it). The last test here is the one that says so.
+
+namespace {
+
+/// `symbols` x `dates` bars, every symbol printing on every date.
+std::vector<Bar> full_window(int dates, const std::vector<std::string>& symbols) {
+    std::vector<Bar> w;
+    for (int d = 0; d < dates; ++d) {
+        for (size_t s = 0; s < symbols.size(); ++s) {
+            w.push_back(make_bar(symbols[s], d, 100.0 + d + 3.0 * static_cast<double>(s)));
+        }
+    }
+    return w;
+}
+
+}  // namespace
+
+TEST(CarverBlindTest, CountsCompleteDatesNotBars) {
+    RiskConfig cfg = tight_config();
+    CarverRiskModule carver("carver", cfg, /*min_gate_dates=*/21);
+    RiskContext ctx = lap_ctx(1);
+
+    carver.on_bars(full_window(7, {"TSTA", "TSTB", "TSTC"}), ctx);
+    EXPECT_EQ(carver.complete_dates_in_window(), 7)
+        << "21 BARS over three symbols is seven dates: the count is of dates, not bars";
+
+    CarverRiskModule wide("carver", cfg, 21);
+    wide.on_bars(full_window(21, {"TSTA", "TSTB", "TSTC"}), ctx);
+    EXPECT_EQ(wide.complete_dates_in_window(), 21);
+}
+
+TEST(CarverBlindTest, ADateOneSymbolMissedIsNotComplete) {
+    RiskConfig cfg = tight_config();
+    std::vector<Bar> window = full_window(21, {"TSTA", "TSTB"});
+    // Drop TSTB's bar on the last date: 21 distinct dates, 20 complete ones.
+    window.pop_back();
+    CarverRiskModule carver("carver", cfg, 21);
+    carver.on_bars(window, lap_ctx(1));
+    EXPECT_EQ(carver.complete_dates_in_window(), 20)
+        << "a date the whole universe did not print on cannot support a covariance";
+}
+
+TEST(CarverBlindTest, BlindBelowTheFloorAndSightedAtIt) {
+    RiskConfig cfg = tight_config();
+    const Book book = {{"TSTA", make_pos("TSTA", 10.0, 100.0)},
+                       {"TSTB", make_pos("TSTB", 10.0, 103.0)}};
+    RiskContext ctx = lap_ctx(1);
+
+    CarverRiskModule short_window("carver", cfg, 21);
+    short_window.on_bars(full_window(7, {"TSTA", "TSTB"}), ctx);
+    auto few = short_window.evaluate(book, ctx);
+    ASSERT_TRUE(few.is_ok());
+    EXPECT_TRUE(few.value().blind) << "seven complete dates, floor 21";
+
+    CarverRiskModule enough("carver", cfg, 21);
+    enough.on_bars(full_window(21, {"TSTA", "TSTB"}), ctx);
+    auto many = enough.evaluate(book, ctx);
+    ASSERT_TRUE(many.is_ok());
+    EXPECT_FALSE(many.value().blind) << "21 complete dates, floor 21";
+
+    CarverRiskModule one_short("carver", cfg, 21);
+    std::vector<Bar> window = full_window(21, {"TSTA", "TSTB"});
+    window.pop_back();
+    one_short.on_bars(window, ctx);
+    auto twenty = one_short.evaluate(book, ctx);
+    ASSERT_TRUE(twenty.is_ok());
+    EXPECT_TRUE(twenty.value().blind) << "20 complete dates, floor 21";
+}
+
+TEST(CarverBlindTest, NoCapitalToDivideByIsAlsoBlind) {
+    RiskConfig cfg = tight_config();
+    cfg.capital = Decimal(0.0);
+    CarverRiskModule carver("carver", cfg, 21);
+    RiskContext ctx = lap_ctx(1);
+    carver.on_bars(full_window(30, {"TSTA", "TSTB"}), ctx);
+    auto d = carver.evaluate({{"TSTA", make_pos("TSTA", 10.0, 100.0)}}, ctx);
+    ASSERT_TRUE(d.is_ok());
+    EXPECT_TRUE(d.value().blind)
+        << "every leverage and VaR figure the gate computes divides by capital";
+}
+
+TEST(CarverBlindTest, TheFlagIsInertTheResultIsBitwiseTheSameEitherWay) {
+    // The same window and book, gated once with a floor it clears and once with a floor
+    // it cannot: the decision's action, scale and every metric must be identical, and only
+    // `blind` may differ. If the flag ever reaches the cut, this is what catches it.
+    RiskConfig cfg = tight_config();
+    const std::vector<Bar> window = correlated_window();
+    const Book book = correlated_book();
+    RiskContext ctx = lap_ctx(1);
+
+    CarverRiskModule sighted("carver", cfg, /*min_gate_dates=*/3);
+    sighted.on_bars(window, ctx);
+    auto a = sighted.evaluate(book, ctx);
+    ASSERT_TRUE(a.is_ok());
+
+    CarverRiskModule blinded("carver", cfg, /*min_gate_dates=*/1000);
+    blinded.on_bars(window, ctx);
+    auto b = blinded.evaluate(book, ctx);
+    ASSERT_TRUE(b.is_ok());
+
+    EXPECT_FALSE(a.value().blind);
+    EXPECT_TRUE(b.value().blind);
+    EXPECT_EQ(a.value().action, b.value().action);
+    EXPECT_TRUE(same_bits(a.value().scale, b.value().scale));
+    ASSERT_TRUE(a.value().metrics.has_value());
+    ASSERT_TRUE(b.value().metrics.has_value());
+    EXPECT_EQ(a.value().metrics->risk_exceeded, b.value().metrics->risk_exceeded);
+    EXPECT_TRUE(same_bits(a.value().metrics->recommended_scale,
+                          b.value().metrics->recommended_scale));
+    EXPECT_TRUE(same_bits(a.value().metrics->portfolio_multiplier,
+                          b.value().metrics->portfolio_multiplier));
+    EXPECT_TRUE(same_bits(a.value().metrics->correlation_multiplier,
+                          b.value().metrics->correlation_multiplier));
+    EXPECT_TRUE(same_bits(a.value().metrics->leverage_multiplier,
+                          b.value().metrics->leverage_multiplier));
+}
+
+TEST(CarverBlindTest, TheBlindDecisionLogsNothingBeyondTheUnchangedResultLine) {
+    // T-6a carries the flag and does not report it: no new log line, no stored column.
+    init_console_logger();
+    RiskConfig cfg = tight_config();
+    CarverRiskModule carver("carver", cfg, /*min_gate_dates=*/1000);
+    RiskContext ctx = lap_ctx(1);
+    carver.on_bars(correlated_window(), ctx);
+
+    ::testing::internal::CaptureStdout();
+    auto d = carver.evaluate(correlated_book(), ctx);
+    const std::string out = ::testing::internal::GetCapturedStdout();
+    ASSERT_TRUE(d.is_ok());
+    ASSERT_TRUE(d.value().blind);
+    EXPECT_EQ(out.find("blind"), std::string::npos) << out;
+    EXPECT_EQ(out.find("min_gate_dates"), std::string::npos) << out;
+    EXPECT_NE(out.find("Risk management result:"), std::string::npos)
+        << "the one line the gate has always printed must still be the only one";
+}

@@ -44,6 +44,7 @@ set(TEST_SOURCES
     instruments/test_instrument_registry.cpp
     risk/test_risk_manager.cpp
     risk/test_risk_modules.cpp
+    risk/test_risk_module_config.cpp
     optimization/test_dynamic_optimizer.cpp
     backtest/test_transaction_cost_analysis.cpp
     transaction_cost/test_transaction_cost_manager.cpp
@@ -202,3 +203,18 @@ set_target_properties(trade_ngin_tests
 # Enable test discovery
 include(GoogleTest)
 gtest_discover_tests(trade_ngin_tests)
+
+# scripts/migrate_risk_json.py gets its OWN ctest entry rather than a case inside the gtest
+# binary (T-6a lead ruling 16). The migration is the one step of the schema-2 change that
+# runs by hand on a production box and is not C++, so a machine without python3 has to fail
+# here loudly instead of silently skipping it.
+find_package(Python3 COMPONENTS Interpreter QUIET)
+set(MIGRATION_PYTHON "${Python3_EXECUTABLE}")
+if(NOT MIGRATION_PYTHON)
+    # Not found at configure time: name it anyway so the entry FAILS when it runs, which
+    # is the loud failure the ruling asks for, rather than quietly dropping the test.
+    set(MIGRATION_PYTHON "python3")
+endif()
+add_test(NAME MigrateRiskJson.ScriptSuite
+         COMMAND "${MIGRATION_PYTHON}"
+                 "${CMAKE_CURRENT_SOURCE_DIR}/scripts/test_migrate_risk_json.py")

@@ -173,6 +173,7 @@ set(TRADE_NGIN_SOURCES
     src/risk/risk_module.cpp
     src/risk/carver_risk_module.cpp
     src/risk/basic_risk_modules.cpp
+    src/risk/risk_module_config.cpp
     src/optimization/dynamic_optimizer.cpp
     src/execution/execution_engine.cpp
     src/portfolio/portfolio_manager.cpp

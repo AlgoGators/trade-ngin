@@ -1,11 +1,64 @@
 // src/risk/carver_risk_module.cpp
 #include "trade_ngin/risk/carver_risk_module.hpp"
+#include <chrono>
+#include <cstdint>
+#include <set>
+#include <unordered_map>
 #include "trade_ngin/core/logger.hpp"
 
 namespace trade_ngin {
 
-CarverRiskModule::CarverRiskModule(std::string id, RiskConfig config)
-    : id_(std::move(id)), rm_(std::move(config)) {}
+CarverRiskModule::CarverRiskModule(std::string id, RiskConfig config, int min_gate_dates)
+    : id_(std::move(id)), rm_(std::move(config)), min_gate_dates_(min_gate_dates) {}
+
+int CarverRiskModule::complete_dates_in_window() const {
+    if (window_.empty()) return 0;
+    // One pass: each symbol gets a bit, each date a mask of the symbols that printed on
+    // it. A date is complete when its mask holds every symbol the window has seen.
+    // Above 64 symbols the mask cannot hold them all, so the count falls back to the
+    // exact set comparison rather than quietly reporting the wrong number.
+    std::unordered_map<std::string, size_t> symbol_index;
+    std::unordered_map<int64_t, uint64_t> mask_by_date;
+    std::unordered_map<int64_t, std::set<std::string>> set_by_date;
+    bool wide = false;
+    for (const auto& bar : window_) {
+        const auto key = std::chrono::duration_cast<std::chrono::seconds>(
+                             bar.timestamp.time_since_epoch())
+                             .count();
+        auto [it, inserted] = symbol_index.emplace(bar.symbol, symbol_index.size());
+        (void)inserted;
+        if (it->second >= 64) wide = true;
+        if (wide) {
+            set_by_date[key].insert(bar.symbol);
+        } else {
+            mask_by_date[key] |= (uint64_t{1} << it->second);
+        }
+    }
+    const size_t symbols = symbol_index.size();
+    int complete = 0;
+    if (wide) {
+        // Rebuild the per-date sets from scratch: the masks collected before the 65th
+        // symbol appeared are incomplete.
+        set_by_date.clear();
+        for (const auto& bar : window_) {
+            const auto key = std::chrono::duration_cast<std::chrono::seconds>(
+                                 bar.timestamp.time_since_epoch())
+                                 .count();
+            set_by_date[key].insert(bar.symbol);
+        }
+        for (const auto& [date, syms] : set_by_date) {
+            (void)date;
+            if (syms.size() == symbols) ++complete;
+        }
+        return complete;
+    }
+    const uint64_t all = symbols >= 64 ? ~uint64_t{0} : ((uint64_t{1} << symbols) - 1);
+    for (const auto& [date, mask] : mask_by_date) {
+        (void)date;
+        if (mask == all) ++complete;
+    }
+    return complete;
+}
 
 std::set<RiskTerm> CarverRiskModule::terms() const {
     return {RiskTerm::COMPOSITION, RiskTerm::MAGNITUDE};
@@ -78,9 +131,15 @@ Result<RiskDecision> CarverRiskModule::evaluate(
             break;
         }
     }
+    // ... plus the two the schema names (HD, LEAD_RULINGS_C7 item 3): too few complete
+    // dates to estimate anything from, and a book with no capital to divide by. With
+    // lookback_unit "bars" a 252-BAR window is about 7 futures dates, so this flag is
+    // true on most futures laps -- which is the finding T-4 made, stated rather than
+    // hidden. Data only: it is not logged and not stored in T-6a (T-7 item 10 stores it).
     decision.blind = market_data_.returns.empty() || market_data_.covariance.empty() ||
                      market_data_.symbol_indices.empty() || market_data_.ordered_symbols.empty() ||
-                     !mapped;
+                     !mapped || complete_dates_in_window() < min_gate_dates_ ||
+                     static_cast<double>(rm_.get_config().capital) <= 0.0;
     return Result<RiskDecision>(std::move(decision));
 }
 

@@ -3,6 +3,7 @@
 
 #include <iostream>
 #include <memory>
+#include <map>
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include <numeric>
@@ -22,6 +23,7 @@
 #include "trade_ngin/risk/carver_risk_module.hpp"
 #include "trade_ngin/risk/risk_manager.hpp"
 #include "trade_ngin/risk/risk_module.hpp"
+#include "trade_ngin/risk/risk_module_config.hpp"
 #include "trade_ngin/strategy/strategy_interface.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
 #include "trade_ngin/transaction_cost/transaction_cost_manager.hpp"
@@ -39,7 +41,13 @@ struct PortfolioConfig : public ConfigBase {
     double min_strategy_allocation{
         0.0};  // Minimum allocation to any strategy (keep as double - it's a ratio)
     bool use_optimization{false};     // Whether to use position optimization
-    bool use_risk_management{false};  // Whether to use risk management
+    // The risk modules this book runs, portfolio scope, in evaluation order. There is
+    // no boolean any more: a book that runs no risk layer carries a single `none`
+    // assignment naming who ruled it and when, and an EMPTY list is a configuration
+    // mistake the constructor throws on rather than a book that quietly runs ungated.
+    std::vector<RiskModuleConfig> risk_modules;
+    // Per strategy id, that sleeve's own modules. Empty on every shipped book.
+    std::map<std::string, std::vector<RiskModuleConfig>> sleeve_risk_modules;
     // Whether a fractional target quantity is a legitimate end state for this
     // portfolio. Futures trade whole contracts and leave this false, so the
     // optimizer/risk loop keeps iterating until positions are integral, exactly
@@ -55,13 +63,12 @@ struct PortfolioConfig : public ConfigBase {
     PortfolioConfig() = default;
 
     PortfolioConfig(Decimal total_capital, Decimal reserve_capital, double max_strategy_allocation,
-                    double min_strategy_allocation, bool use_optimization, bool use_risk_management)
+                    double min_strategy_allocation, bool use_optimization)
         : total_capital(total_capital),
           reserve_capital(reserve_capital),
           max_strategy_allocation(max_strategy_allocation),
           min_strategy_allocation(min_strategy_allocation),
-          use_optimization(use_optimization),
-          use_risk_management(use_risk_management) {}
+          use_optimization(use_optimization) {}
 
     // JSON serialization
     nlohmann::json to_json() const override {
@@ -71,7 +78,9 @@ struct PortfolioConfig : public ConfigBase {
         j["max_strategy_allocation"] = max_strategy_allocation;
         j["min_strategy_allocation"] = min_strategy_allocation;
         j["use_optimization"] = use_optimization;
-        j["use_risk_management"] = use_risk_management;
+        // risk_modules is deliberately absent: this object is stored verbatim in
+        // backtest.run_metadata.portfolio_config, and T-6a's declared diff is deletions
+        // only. The module list is recorded there by T-7 item 10, through describe().
         j["allow_fractional_positions"] = allow_fractional_positions;
         j["opt_config"] = opt_config.to_json();
         j["risk_config"] = risk_config.to_json();
@@ -92,9 +101,6 @@ struct PortfolioConfig : public ConfigBase {
         }
         if (j.contains("use_optimization")) {
             use_optimization = j.at("use_optimization").get<bool>();
-        }
-        if (j.contains("use_risk_management")) {
-            use_risk_management = j.at("use_risk_management").get<bool>();
         }
         if (j.contains("allow_fractional_positions")) {
             allow_fractional_positions = j.at("allow_fractional_positions").get<bool>();

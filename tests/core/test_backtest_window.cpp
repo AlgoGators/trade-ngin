@@ -267,10 +267,33 @@ struct TempConfigTree {
             {"portfolio_id", "G03_TEST_PORTFOLIO"},
             {"initial_capital", 500000.0},
             {"reserve_capital_pct", 0.1},
+            // Schema 2 requires this at the top level of portfolio.json, with no default.
+            {"use_optimization", true},
             {"strategies", strategies},
         };
         std::ofstream(root / "portfolios" / "probe" / "portfolio.json") << portfolio.dump(2);
-        std::ofstream(root / "portfolios" / "probe" / "risk.json") << nlohmann::json::object().dump();
+        // An EMPTY risk.json used to load; schema 2 refuses it, so the probe carries the
+        // smallest valid assignment. The G-03 window check is what this file is about, and
+        // the check runs after the risk config is parsed.
+        nlohmann::json risk = {
+            {"schema", 2},
+            {"modules", nlohmann::json::array({nlohmann::json{
+                            {"id", "carver"}, {"type", "carver"},
+                            {"var_limit", 0.15}, {"jump_risk_limit", 0.10},
+                            {"max_correlation", 0.7}, {"max_gross_leverage", 4.0},
+                            {"max_net_leverage", 2.0}, {"confidence_level", 0.99},
+                            {"lookback_period", 252}, {"lookback_unit", "bars"},
+                            {"min_gate_dates", 21}, {"missing_symbol_policy", "ignore"},
+                            {"_missing_symbol_policy_reason", "G-03 probe"}}})},
+            {"risk_reporting", {{"type", "carver"}, {"window", "all_bars"},
+                                {"var_limit", 0.15}, {"jump_risk_limit", 0.10},
+                                {"max_correlation", 0.7}, {"max_gross_leverage", 4.0},
+                                {"max_net_leverage", 2.0}, {"confidence_level", 0.99},
+                                {"lookback_period", 252}}},
+            {"max_drawdown", 0.4},
+            {"max_leverage", 4.0},
+        };
+        std::ofstream(root / "portfolios" / "probe" / "risk.json") << risk.dump(2);
         std::ofstream(root / "portfolios" / "probe" / "email.json") << nlohmann::json::object().dump();
     }
     ~TempConfigTree() {

@@ -168,8 +168,7 @@ int main() {
         // APPLY CONFIG VALUES TO BACKTEST CONFIG
         // ========================================
         config.portfolio_config.initial_capital = app_config.initial_capital;
-        config.portfolio_config.use_risk_management = app_config.strategy_defaults.use_risk_management;
-        config.portfolio_config.use_optimization = app_config.strategy_defaults.use_optimization;
+        config.portfolio_config.use_optimization = app_config.use_optimization;
         config.strategy_config.initial_capital = config.portfolio_config.initial_capital;
 
         std::cout << "Retrieved " << config.strategy_config.symbols.size() << " symbols"
@@ -201,7 +200,6 @@ int main() {
 
         trade_ngin::backtest::BacktestCoordinatorConfig coord_config;
         coord_config.initial_capital = static_cast<double>(config.portfolio_config.initial_capital);
-        coord_config.use_risk_management = config.portfolio_config.use_risk_management;
         coord_config.use_optimization = config.portfolio_config.use_optimization;
         coord_config.store_trade_details = config.store_trade_details;
         coord_config.portfolio_id = config.portfolio_id;
@@ -222,8 +220,9 @@ int main() {
             config.portfolio_config.initial_capital * app_config.reserve_capital_pct;
         portfolio_config.max_strategy_allocation = app_config.strategy_defaults.max_strategy_allocation;
         portfolio_config.min_strategy_allocation = app_config.strategy_defaults.min_strategy_allocation;
-        portfolio_config.use_optimization = app_config.strategy_defaults.use_optimization;
-        portfolio_config.use_risk_management = app_config.strategy_defaults.use_risk_management;
+        portfolio_config.use_optimization = app_config.use_optimization;
+        portfolio_config.risk_modules = app_config.risk_schema.portfolio;
+        portfolio_config.sleeve_risk_modules = app_config.risk_schema.sleeves;
         portfolio_config.opt_config = config.portfolio_config.opt_config;
         portfolio_config.risk_config = config.portfolio_config.risk_config;
 

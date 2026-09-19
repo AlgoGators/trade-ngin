@@ -12,6 +12,7 @@
 // silently re-introduce itself.
 
 #include <gtest/gtest.h>
+#include "../risk/risk_module_test_helpers.hpp"
 #include <thread>
 #include "../data/test_db_utils.hpp"
 #include "../order/test_utils.hpp"
@@ -33,9 +34,9 @@ protected:
             100'000.0,    // reserve_capital
             0.9,          // max_strategy_allocation (allow 0.7)
             0.05,         // min_strategy_allocation (allow 0.3)
-            false,        // use_optimization
-            false         // use_risk_management
+            false         // use_optimization
         };
+        config.risk_modules = {test_none_module()};
         config.opt_config.tau = 1.0;
         config.opt_config.capital = config.total_capital.as_double();
         config.opt_config.cost_penalty_scalar = 10;

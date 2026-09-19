@@ -19,7 +19,6 @@ namespace {
 BacktestCoordinatorConfig default_config() {
     BacktestCoordinatorConfig c;
     c.initial_capital = 1'000'000.0;
-    c.use_risk_management = false;
     c.use_optimization = false;
     c.store_results = false;
     c.warmup_days = 0;
@@ -129,7 +128,6 @@ TEST_F(BacktestCoordinatorTest, InitializeCreatesAllSubComponents) {
 
 TEST_F(BacktestCoordinatorTest, ConstraintsRespectConfigEnableFlags) {
     auto cfg = default_config();
-    cfg.use_risk_management = true;
     cfg.use_optimization = true;
     BacktestCoordinator coord(db_, registry_, cfg);
     ASSERT_TRUE(coord.initialize().is_ok());

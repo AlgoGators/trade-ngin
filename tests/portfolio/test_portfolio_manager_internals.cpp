@@ -5,6 +5,7 @@
 // in isolation.
 
 #include <gtest/gtest.h>
+#include "../risk/risk_module_test_helpers.hpp"
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -25,8 +26,8 @@ using namespace trade_ngin::testing;
 
 namespace {
 
-PortfolioConfig default_config(bool optimization = false, bool risk = false) {
-    PortfolioConfig c{1'000'000.0, 100'000.0, 0.6, 0.05, optimization, risk};
+PortfolioConfig default_config(bool optimization = false, bool with_carver = false) {
+    PortfolioConfig c{1'000'000.0, 100'000.0, 0.6, 0.05, optimization};
     c.opt_config.tau = 1.0;
     c.opt_config.capital = 1'000'000.0;
     c.opt_config.cost_penalty_scalar = 10.0;
@@ -40,6 +41,9 @@ PortfolioConfig default_config(bool optimization = false, bool risk = false) {
     c.risk_config.capital = 1'000'000.0;
     c.risk_config.confidence_level = 0.99;
     c.risk_config.lookback_period = 252;
+    // The module list replaces the old use_risk_management bool: the carver module carries
+    // the same seven values the test just set, so a gating test gates on the same numbers.
+    c.risk_modules = {with_carver ? test_carver_module(c.risk_config) : test_none_module()};
     return c;
 }
 
@@ -491,7 +495,7 @@ TEST_F(PortfolioManagerInternalsTest, MultiCycleProcessGeneratesExecutionsBetwee
 }
 
 TEST_F(PortfolioManagerInternalsTest, ProcessWithOptimizationRunsIterativeLoop) {
-    auto cfg = default_config(/*optimization=*/true, /*risk=*/false);
+    auto cfg = default_config(/*optimization=*/true, /*with_carver=*/false);
     auto pm = std::make_unique<PortfolioManager>(cfg, manager_id_ + "_OPTLOOP");
     auto a = make_strategy("OL_A", {"AAPL"});
     auto b = make_strategy("OL_B", {"MSFT"});
@@ -512,7 +516,7 @@ TEST_F(PortfolioManagerInternalsTest, ProcessWithOptimizationRunsIterativeLoop) 
 }
 
 TEST_F(PortfolioManagerInternalsTest, ProcessWithRiskManagementDoesNotCrashOnLargePositions) {
-    auto cfg = default_config(/*opt=*/false, /*risk=*/true);
+    auto cfg = default_config(/*opt=*/false, /*with_carver=*/true);
     cfg.risk_config.max_gross_leverage = 0.5;  // very restrictive
     cfg.risk_config.max_net_leverage = 0.5;
     auto pm = std::make_unique<PortfolioManager>(cfg, manager_id_ + "_RISKLOOP");

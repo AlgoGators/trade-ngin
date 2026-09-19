@@ -21,7 +21,13 @@ namespace trade_ngin {
  */
 class CarverRiskModule final : public RiskModule {
 public:
-    CarverRiskModule(std::string id, RiskConfig config);
+    /// @param min_gate_dates the window has to hold at least this many COMPLETE dates
+    ///        (every symbol present in the window has a bar on that date) before the
+    ///        gate's measurement means anything. Below it the decision is marked
+    ///        `blind` -- a data field only: it never changes the action or the scale.
+    ///        The default is schema 2's own value, so the test constructions that do
+    ///        not care about it read the same number the configs carry.
+    CarverRiskModule(std::string id, RiskConfig config, int min_gate_dates = 21);
 
     const std::string& id() const override { return id_; }
     const std::string& type() const override { return type_; }
@@ -46,7 +52,12 @@ public:
     /// scale has risk_exceeded false, and SCALE(NaN) would throw in Decimal(double).
     static RiskDecision to_decision(const RiskResult& r, const std::string& module_id);
 
+    /// Dates in the window on which every symbol present in the window has a bar
+    /// (F5's definition). Recomputed from the window; nothing caches it.
+    int complete_dates_in_window() const;
+
     const RiskManager& manager() const { return rm_; }
+    int min_gate_dates() const { return min_gate_dates_; }
     const std::vector<Bar>& window() const { return window_; }
     bool appended_this_rebalance() const { return appended_this_rebalance_; }
     double applied_level() const { return applied_level_; }
@@ -56,6 +67,7 @@ private:
     std::string id_;
     std::string type_{"carver"};
     RiskManager rm_;          ///< registers "RiskManager"; this class registers and logs nothing more
+    int min_gate_dates_{21};  ///< read only into RiskDecision::blind
     MarketData market_data_;  ///< built by on_bars, read by evaluate on the same lap
     std::vector<Bar> window_;  ///< was PortfolioManager::risk_history_
     // Per-rebalance state, reset by begin_rebalance. READ BY NOTHING yet: the risk loop still

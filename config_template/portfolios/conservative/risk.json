@@ -1,10 +1,35 @@
 {
   "_description": "Risk configuration for CONSERVATIVE_PORTFOLIO",
-  "var_limit": 0.25,
-  "jump_risk_limit": 0.05,
-  "max_correlation": 0.85,
-  "max_gross_leverage": 4.0,
-  "max_net_leverage": 2.0,
+  "schema": 2,
+  "modules": [
+    {
+      "id": "carver",
+      "type": "carver",
+      "var_limit": 0.25,
+      "jump_risk_limit": 0.05,
+      "max_correlation": 0.85,
+      "max_gross_leverage": 4.0,
+      "max_net_leverage": 2.0,
+      "confidence_level": 0.99,
+      "lookback_period": 252,
+      "lookback_unit": "bars",
+      "min_gate_dates": 21,
+      "missing_symbol_policy": "ignore",
+      "_missing_symbol_policy_reason": "Schema-1 behaviour, migrated literally: risk_manager.cpp:55-58 gates the book on the subset of its symbols present in the window (T-4 §10). Changing it is its own measured commit."
+    }
+  ],
+  "risk_reporting": {
+    "type": "carver",
+    "window": "all_bars",
+    "var_limit": 0.25,
+    "jump_risk_limit": 0.05,
+    "max_correlation": 0.85,
+    "max_gross_leverage": 4.0,
+    "max_net_leverage": 2.0,
+    "confidence_level": 0.99,
+    "lookback_period": 252,
+    "_note": "RA-01: the live runners' snapshot RiskManager reads this block through AppConfig::risk_config; on day one it mirrors the gate (HD Q5)."
+  },
   "max_drawdown": 0.3,
   "max_leverage": 2.0
 }

@@ -574,7 +574,6 @@ int main() {
 
         BacktestCoordinatorConfig coord_config;
         coord_config.initial_capital = initial_capital;
-        coord_config.use_risk_management = false;
         coord_config.use_optimization = false;
         coord_config.store_trade_details = true;
         coord_config.portfolio_id = "equity_validation";
@@ -590,7 +589,18 @@ int main() {
         portfolio_config.total_capital = Decimal(initial_capital);
         portfolio_config.reserve_capital = Decimal(initial_capital * 0.05);
         portfolio_config.use_optimization = false;
-        portfolio_config.use_risk_management = false;
+        // This harness measures the strategy alone, so it runs no portfolio risk layer.
+        // Schema 2 will not let that be a forgotten line: the decision is written down,
+        // with who made it and when, and the PortfolioManager refuses an empty list.
+        auto none_module = make_none_module(
+            "Equity validation harness: measures the strategy alone, without a portfolio risk "
+            "layer (T-RISK-ARCH \u00a77 table)",
+            "HD (T-RISK-ARCH \u00a77, adopted STAGE3_PLAN \u00a728)", "2026-09-18");
+        if (none_module.is_error()) {
+            ERROR(std::string(none_module.error()->what()));
+            return 1;
+        }
+        portfolio_config.risk_modules = {none_module.value()};
 
         auto portfolio = std::make_shared<PortfolioManager>(portfolio_config);
         auto add_result = portfolio->add_strategy(strategy, 1.0, false);
