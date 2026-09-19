@@ -29,9 +29,21 @@ using StrategyPositionRows =
     std::unordered_map<std::string, std::unordered_map<std::string, Position>>;
 
 struct ReportPositionSnapshot {
-    StrategyPositionRows by_strategy;
-    std::unordered_map<std::string, Position> combined;
+    const StrategyPositionRows by_strategy;
+    const std::unordered_map<std::string, Position> combined;
+    const std::string portfolio_id;
+    const std::string strategy_id;
+    const std::vector<std::string> strategy_names;
+    const std::string portfolio_type;
+    const Timestamp date;
+    const std::unordered_map<std::string, size_t> evidence_counts;
 };
+
+// Carry QT state for every enabled strategy, including a now-flat system book.
+Result<void> seed_qt_report_positions(
+    PostgresDatabase& db, const std::string& strategy_id,
+    const std::vector<std::string>& strategy_names, const std::string& portfolio_id,
+    const Timestamp& report_date);
 
 // Loads the QT execution snapshot for every report strategy, verifies that
 // QT rows account for all non-flat system symbols, and returns open QT

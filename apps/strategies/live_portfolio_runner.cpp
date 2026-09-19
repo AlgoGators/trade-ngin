@@ -1657,36 +1657,6 @@ int trade_ngin::run_live_portfolio(const LivePortfolioConfig& portfolio_cfg, int
                     INFO("Successfully stored " + std::to_string(strategy_positions_vec.size()) +
                          " positions for strategy: " + strategy_name);
                     total_positions_saved += strategy_positions_vec.size();
-
-                    // F1 dual portfolio: give QT a starting point to edit.
-                    //
-                    // Copies today's system positions into the qt stream, but ONLY if
-                    // no qt rows exist for this day yet -- so re-running the engine can
-                    // never overwrite a decision QT has already made. That guarantee
-                    // lives in the SQL (a single INSERT ... SELECT ... WHERE NOT EXISTS),
-                    // not in this call site, so it holds even under concurrent runs.
-                    //
-                    // No-op if migration 001 has not been applied.
-                    std::string seed_date_str;
-                    {
-                        auto seed_tt = std::chrono::system_clock::to_time_t(
-                            strategy_positions_vec.front().last_update);
-                        std::tm seed_tm{};
-                        trade_ngin::core::safe_gmtime(&seed_tt, &seed_tm);
-                        std::stringstream seed_ss;
-                        seed_ss << std::put_time(&seed_tm, "%Y-%m-%d");
-                        seed_date_str = seed_ss.str();
-                    }
-
-                    auto seed_result = db->seed_qt_positions_from_system(
-                        combined_strategy_id, strategy_name, portfolio_id, seed_date_str,
-                        "trading.positions");
-                    if (seed_result.is_error()) {
-                        // Non-fatal: the system stream is already safely stored, and the
-                        // qt stream can be seeded on the next run.
-                        WARN("Could not seed qt positions for " + strategy_name + ": " +
-                             std::string(seed_result.error()->what()));
-                    }
                 }
             } else {
                 INFO("No non-zero positions to store for strategy: " + strategy_name);
@@ -1695,6 +1665,14 @@ int trade_ngin::run_live_portfolio(const LivePortfolioConfig& portfolio_cfg, int
 
         INFO("PHASE 4: Total positions saved across all strategies: " +
              std::to_string(total_positions_saved));
+
+        // Carry QT state even when a strategy's system book has become flat.
+        // A failed seed blocks distribution below, including apparently flat reports.
+        auto qt_seed_result = seed_qt_report_positions(
+            *db, combined_strategy_id, strategy_names, portfolio_id, now);
+        if (qt_seed_result.is_error()) {
+            ERROR("INVESTOR_REPORT_BLOCKED: " + std::string(qt_seed_result.error()->what()));
+        }
 
         // Write trading.run_inputs row (replay contract, ADR-005 5.1 D-1) --
         // unconditional, every day, regardless of benchmark.mode, since it's
@@ -3028,7 +3006,7 @@ int trade_ngin::run_live_portfolio(const LivePortfolioConfig& portfolio_cfg, int
 
         StrategyPositionRows report_strategy_positions;
         std::unordered_map<std::string, Position> report_positions;
-        bool reporting_blocked = false;
+        bool reporting_blocked = qt_seed_result.is_error();
         auto report_snapshot = load_qt_report_position_snapshot(
             *db, combined_strategy_id, strategy_names, portfolio_id, now,
             strategy_positions_map);

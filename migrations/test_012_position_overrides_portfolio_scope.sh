@@ -100,6 +100,12 @@ unique_scope="$(scalar "SELECT portfolio_id FROM trading.position_override_legac
 ambiguous_scopes="$(scalar "SELECT count(*) FROM trading.position_override_legacy_scopes WHERE override_id = 2")"
 [ "$ambiguous_scopes" = "0" ] && ok "ambiguous legacy override remains unscoped" || bad "ambiguous legacy override received $ambiguous_scopes mapping(s)"
 
+if apply 012_position_overrides_portfolio_scope_rollback.sql; then
+    bad "rollback discarded inferred legacy attribution"
+else
+    ok "rollback refuses inferred legacy attribution"
+fi
+
 if "${PSQL[@]}" -c "INSERT INTO trading.position_overrides
     (user_id, source_app, strategy_id, symbol, before_state, after_state, reason, risk_check_result)
     VALUES (2, 'algolens', 'new-strategy', 'UNSCOPED', '{}'::jsonb, '{}'::jsonb,
@@ -142,6 +148,41 @@ mapping_count="$(scalar 'SELECT count(*) FROM trading.position_override_legacy_s
 [ "$mapping_count" = "1" ] && ok "second 012 created no duplicate mappings" || bad "second 012 left $mapping_count mappings"
 scoped_rows="$(scalar "SELECT count(*) FROM trading.position_overrides WHERE portfolio_id = 'BOOK_NEW'")"
 [ "$scoped_rows" = "1" ] && ok "second 012 preserved scoped audit row" || bad "second 012 disturbed scoped audit rows"
+
+echo ""
+echo "########## ROLLBACK: attribution safety and transaction locks ##########"
+if apply 012_position_overrides_portfolio_scope_rollback.sql; then
+    bad "rollback discarded portfolio attribution"
+else
+    ok "rollback refuses portfolio attribution"
+fi
+[ "$(scalar 'SELECT count(*) FROM trading.position_override_legacy_scopes')" = "1" ] \
+    && ok "refused rollback preserves companion" || bad "refused rollback lost companion"
+
+# Fixture reset is confined to this disposable container. Probe the actual
+# rollback transaction immediately before its first safety read. ACCESS
+# EXCLUSIVE conflicts with writers' ROW EXCLUSIVE locks and survives to COMMIT.
+"${PSQL[@]}" -c 'TRUNCATE trading.position_override_legacy_scopes, trading.position_overrides' >/dev/null
+if sed '/    IF EXISTS (/i\
+    IF (SELECT count(*) FROM pg_locks WHERE pid = pg_backend_pid()\
+        AND granted AND mode = '\''AccessExclusiveLock'\''\
+        AND relation IN ('\''trading.position_overrides'\''::regclass,\
+                         '\''trading.position_override_legacy_scopes'\''::regclass)) <> 2 THEN\
+        RAISE EXCEPTION '\''attribution locks missing before safety read'\'';\
+    END IF;\
+' "$HERE/012_position_overrides_portfolio_scope_rollback.sql" | "${PSQL[@]}"; then
+    ok "safe rollback holds both exclusive locks before attribution checks"
+else
+    bad "safe rollback or transaction lock assertion failed"
+fi
+if apply 012_position_overrides_portfolio_scope_rollback.sql; then
+    ok "safe rollback is idempotent"
+else
+    bad "repeated safe rollback failed"
+fi
+column_count="$(scalar "SELECT count(*) FROM information_schema.columns WHERE table_schema='trading' AND table_name='position_overrides' AND column_name='portfolio_id'")"
+[ "$column_count" = "0" ] \
+    && ok "safe rollback removes portfolio column" || bad "safe rollback left portfolio column"
 
 echo ""
 echo "RESULT: $pass passed, $fail failed"

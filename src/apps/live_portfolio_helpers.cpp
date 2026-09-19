@@ -3,10 +3,12 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <iomanip>
 #include <sstream>
 #include <stdexcept>
 
 #include "trade_ngin/core/logger.hpp"
+#include "trade_ngin/core/time_utils.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
 #include "trade_ngin/instruments/instrument_registry.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
@@ -15,25 +17,60 @@
 
 namespace trade_ngin {
 
+namespace {
+std::string report_date_string(const Timestamp& date) {
+    const auto time = std::chrono::system_clock::to_time_t(date);
+    std::tm tm{};
+    core::safe_gmtime(&time, &tm);
+    std::ostringstream text;
+    text << std::put_time(&tm, "%Y-%m-%d");
+    return text.str();
+}
+}
+
+Result<void> seed_qt_report_positions(
+    PostgresDatabase& db, const std::string& strategy_id,
+    const std::vector<std::string>& strategy_names, const std::string& portfolio_id,
+    const Timestamp& report_date) {
+    const auto date = report_date_string(report_date);
+    for (const auto& name : strategy_names) {
+        auto result = db.seed_qt_positions_from_system(strategy_id, name, portfolio_id, date);
+        if (result.is_error()) {
+            const auto scope = nlohmann::json{{"portfolio_id", portfolio_id},
+                {"strategy_id", strategy_id}, {"strategy_name", name},
+                {"portfolio_type", "qt"}, {"report_date", date}}.dump();
+            return make_error<void>(result.error()->code(),
+                "Failed to seed QT report positions " + scope + ": " + result.error()->what(),
+                "seed_qt_report_positions");
+        }
+    }
+    return Result<void>();
+}
+
 Result<ReportPositionSnapshot> load_qt_report_position_snapshot(
     PostgresDatabase& db, const std::string& strategy_id,
     const std::vector<std::string>& strategy_names, const std::string& portfolio_id,
     const Timestamp& report_date, const StrategyPositionRows& system_rows) {
     constexpr double kQuantityEpsilon = 1e-10;
-    ReportPositionSnapshot snapshot;
+    StrategyPositionRows by_strategy;
+    std::unordered_map<std::string, Position> combined;
+    std::unordered_map<std::string, size_t> evidence_counts;
+    const auto scope = nlohmann::json{{"portfolio_id", portfolio_id},
+        {"strategy_id", strategy_id}, {"strategy_names", strategy_names},
+        {"portfolio_type", "qt"}, {"report_date", report_date_string(report_date)}}.dump();
+    auto qt_result = db.load_report_positions_by_date(
+        strategy_id, strategy_names, portfolio_id, report_date, "qt");
+    if (qt_result.is_error()) {
+        return make_error<ReportPositionSnapshot>(qt_result.error()->code(),
+            "Failed to load QT report positions " + scope + ": " + qt_result.error()->what(),
+            "load_qt_report_position_snapshot");
+    }
 
+    const std::unordered_map<std::string, Position> empty_rows;
     for (const auto& strategy_name : strategy_names) {
-        auto qt_result = db.load_report_positions_by_date(
-            strategy_id, strategy_name, portfolio_id, report_date, "qt");
-        if (qt_result.is_error()) {
-            return make_error<ReportPositionSnapshot>(
-                qt_result.error()->code(),
-                "Failed to load QT report positions for portfolio " + portfolio_id +
-                    ", strategy " + strategy_name + ": " + qt_result.error()->what(),
-                "load_qt_report_position_snapshot");
-        }
-
-        const auto& raw_qt_rows = qt_result.value();
+        const auto qt_it = qt_result.value().find(strategy_name);
+        const auto& raw_qt_rows = qt_it == qt_result.value().end() ? empty_rows : qt_it->second;
+        evidence_counts[strategy_name] = raw_qt_rows.size();
         auto system_it = system_rows.find(strategy_name);
         if (system_it != system_rows.end()) {
             for (const auto& [symbol, system_position] : system_it->second) {
@@ -41,30 +78,32 @@ Result<ReportPositionSnapshot> load_qt_report_position_snapshot(
                     raw_qt_rows.find(symbol) == raw_qt_rows.end()) {
                     return make_error<ReportPositionSnapshot>(
                         ErrorCode::INVALID_DATA,
-                        "Missing QT report position for portfolio " + portfolio_id +
+                        "Missing QT report position " + scope +
                             ", strategy " + strategy_name + ", symbol " + symbol,
                         "load_qt_report_position_snapshot");
                 }
             }
         }
 
-        auto& strategy_positions = snapshot.by_strategy[strategy_name];
+        auto& strategy_positions = by_strategy[strategy_name];
         for (const auto& [symbol, qt_position] : raw_qt_rows) {
             if (std::abs(qt_position.quantity.as_double()) <= kQuantityEpsilon) {
                 continue;
             }
 
             strategy_positions[symbol] = qt_position;
-            auto combined_it = snapshot.combined.find(symbol);
-            if (combined_it == snapshot.combined.end()) {
-                snapshot.combined[symbol] = qt_position;
+            auto combined_it = combined.find(symbol);
+            if (combined_it == combined.end()) {
+                combined[symbol] = qt_position;
             } else {
                 combined_it->second.quantity += qt_position.quantity;
             }
         }
     }
 
-    return Result<ReportPositionSnapshot>(std::move(snapshot));
+    return Result<ReportPositionSnapshot>(ReportPositionSnapshot{
+        std::move(by_strategy), std::move(combined), portfolio_id, strategy_id,
+        strategy_names, "qt", report_date, std::move(evidence_counts)});
 }
 
 std::unordered_map<std::string, Bar> latest_bar_by_symbol(const std::vector<Bar>& all_bars) {

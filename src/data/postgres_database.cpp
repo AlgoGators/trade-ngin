@@ -804,40 +804,46 @@ Result<std::unordered_map<std::string, Position>> PostgresDatabase::load_positio
     }
 }
 
-Result<std::unordered_map<std::string, Position>> PostgresDatabase::load_report_positions_by_date(
-    const std::string& strategy_id, const std::string& strategy_name,
+Result<PostgresDatabase::ReportPositionRows> PostgresDatabase::load_report_positions_by_date(
+    const std::string& strategy_id, const std::vector<std::string>& strategy_names,
     const std::string& portfolio_id, const Timestamp& report_date,
     const std::string& portfolio_type) {
     auto validation = validate_connection();
     if (validation.is_error()) {
-        return make_error<std::unordered_map<std::string, Position>>(
+        return make_error<ReportPositionRows>(
             validation.error()->code(),
             "Failed to load strict report positions for portfolio " + portfolio_id +
-                ", strategy " + strategy_name + ": " + validation.error()->what(),
+                ", strategy " + strategy_id + ": " + validation.error()->what(),
             "PostgresDatabase");
     }
 
     try {
         pqxx::work txn(*connection_);
         if (!column_exists(txn, "trading.positions", "portfolio_type")) {
-            return make_error<std::unordered_map<std::string, Position>>(
+            return make_error<ReportPositionRows>(
                 ErrorCode::DATABASE_ERROR,
                 "trading.positions.portfolio_type is required for strict report position reads "
-                "for portfolio " + portfolio_id + ", strategy " + strategy_name,
+                "for portfolio " + portfolio_id + ", strategy " + strategy_id,
                 "PostgresDatabase");
         }
 
         const std::string date_str = format_timestamp(report_date);
+        std::string quoted_names;
+        for (const auto& name : strategy_names) {
+            if (!quoted_names.empty()) quoted_names += ",";
+            quoted_names += txn.quote(name);
+        }
+        if (quoted_names.empty()) quoted_names = "NULL";
         const std::string query =
             "SELECT symbol, quantity, average_price, daily_unrealized_pnl, daily_realized_pnl, "
-            "last_update FROM trading.positions "
-            "WHERE strategy_id = $1 AND strategy_name = $2 AND portfolio_id = $3 AND "
-            "date = $4 AND portfolio_type = $5";
+            "last_update, strategy_name FROM trading.positions "
+            "WHERE strategy_id = $1 AND portfolio_id = $2 AND "
+            "date = $3 AND portfolio_type = $4 AND strategy_name IN (" + quoted_names + ")";
         const auto result = txn.exec(
-            query, pqxx::params{strategy_id, strategy_name, portfolio_id, date_str, portfolio_type});
+            query, pqxx::params{strategy_id, portfolio_id, date_str, portfolio_type});
         txn.commit();
 
-        std::unordered_map<std::string, Position> positions;
+        ReportPositionRows positions;
         for (const auto& row : result) {
             Timestamp last_update;
             try {
@@ -858,17 +864,17 @@ Result<std::unordered_map<std::string, Position>> PostgresDatabase::load_report_
             }
 
             const std::string symbol = row[0].as<std::string>();
-            positions[symbol] = Position(symbol, Quantity(row[1].as<double>()),
+            positions[row[6].as<std::string>()][symbol] = Position(symbol, Quantity(row[1].as<double>()),
                                          Price(row[2].as<double>()), Decimal(row[3].as<double>()),
                                          Decimal(row[4].as<double>()), last_update);
         }
 
-        return Result<std::unordered_map<std::string, Position>>(std::move(positions));
+        return Result<ReportPositionRows>(std::move(positions));
     } catch (const std::exception& e) {
-        return make_error<std::unordered_map<std::string, Position>>(
+        return make_error<ReportPositionRows>(
             ErrorCode::DATABASE_ERROR,
             "Failed to load strict report positions for portfolio " + portfolio_id +
-                ", strategy " + strategy_name + ": " + e.what(),
+                ", strategy " + strategy_id + ": " + e.what(),
             "PostgresDatabase");
     }
 }
@@ -2325,27 +2331,27 @@ Result<int> PostgresDatabase::seed_qt_positions_from_system(const std::string& s
             return Result<int>(0);
         }
 
-        // One statement, so the check and the insert cannot race: the NOT EXISTS
-        // is evaluated as part of the same INSERT ... SELECT. If ANY qt row is
-        // already present for this key and date, zero rows are inserted and the
-        // edits QT has made are left completely untouched. That property is the
-        // whole point -- the engine re-running must never clobber a human
-        // decision.
+        // QT current state wins over system proposals across dates, including
+        // zero closures and symbols the system no longer proposes. New symbols
+        // are seeded from today's system only when no QT state exists. The
+        // unique-key conflict guard preserves same-day/concurrent QT edits.
         std::string query =
+            "WITH candidates AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY symbol "
+            "ORDER BY CASE WHEN portfolio_type = 'qt' THEN 0 ELSE 1 END, date DESC) "
+            "AS qt_rank FROM " + table_name +
+            " WHERE strategy_id = $1 AND strategy_name = $2 AND portfolio_id = $3 "
+            "AND ((portfolio_type = 'qt' AND date <= $4) "
+            "OR (portfolio_type = 'system' AND date = $4))) "
             "INSERT INTO " + table_name +
             " (symbol, quantity, average_price, daily_unrealized_pnl, daily_realized_pnl, "
             " last_update, updated_at, strategy_id, strategy_name, date, portfolio_id, "
             " portfolio_type) "
             "SELECT symbol, quantity, average_price, daily_unrealized_pnl, daily_realized_pnl, "
-            "       last_update, updated_at, strategy_id, strategy_name, date, portfolio_id, "
+            "       last_update, updated_at, strategy_id, strategy_name, $4, portfolio_id, "
             "       'qt' "
-            "FROM " + table_name +
-            " WHERE strategy_id = $1 AND strategy_name = $2 AND portfolio_id = $3 "
-            "  AND date = $4 AND portfolio_type = 'system' "
-            "  AND NOT EXISTS ("
-            "      SELECT 1 FROM " + table_name +
-            "      WHERE strategy_id = $1 AND strategy_name = $2 AND portfolio_id = $3 "
-            "        AND date = $4 AND portfolio_type = 'qt')";
+            "FROM candidates WHERE qt_rank = 1 "
+            "ON CONFLICT (portfolio_id, strategy_id, strategy_name, date, symbol, "
+            "portfolio_type) DO NOTHING";
 
         auto result = txn.exec(query, pqxx::params{strategy_id, strategy_name, portfolio_id, date});
         txn.commit();

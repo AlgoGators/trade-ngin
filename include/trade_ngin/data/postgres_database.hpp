@@ -102,8 +102,11 @@ public:
 
     // Strict investor-report read. Unlike load_positions_by_date, this never
     // falls back to an unscoped legacy query when portfolio_type is absent.
-    virtual Result<std::unordered_map<std::string, Position>> load_report_positions_by_date(
-        const std::string& strategy_id, const std::string& strategy_name,
+    using ReportPositionRows =
+        std::unordered_map<std::string, std::unordered_map<std::string, Position>>;
+    // All requested individual strategies share one SELECT/MVCC snapshot.
+    virtual Result<ReportPositionRows> load_report_positions_by_date(
+        const std::string& strategy_id, const std::vector<std::string>& strategy_names,
         const std::string& portfolio_id, const Timestamp& report_date,
         const std::string& portfolio_type);
 
@@ -334,17 +337,16 @@ public:
     /**
      * @brief Seed the 'qt' position stream from the 'system' stream for one day.
      *
-     * Copies that day's system positions into the qt stream so QT has something
-     * to edit. IDEMPOTENT AND NON-DESTRUCTIVE: if ANY qt row already exists for
-     * this portfolio/strategy/date, nothing is written. QT's edits must survive
-     * a re-run of the engine -- overwriting them would defeat the entire point
-     * of tracking the two streams separately.
+     * Carries the latest QT state (including zeros) into the requested date.
+     * New identities are seeded from that day's system positions. Existing
+     * same-day QT rows are never overwritten; missing identities are filled.
+     * QT closes/replaces a position explicitly, never by deleting its row.
      *
      * No-op (with a warning) if the dual-portfolio migration has not been applied.
      *
      * @return Result containing the number of rows seeded (0 if already seeded)
      */
-    Result<int> seed_qt_positions_from_system(
+    virtual Result<int> seed_qt_positions_from_system(
         const std::string& strategy_id, const std::string& strategy_name,
         const std::string& portfolio_id, const std::string& date,
         const std::string& table_name = "trading.positions");
