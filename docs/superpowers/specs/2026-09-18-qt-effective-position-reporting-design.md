@@ -1,8 +1,8 @@
 # QT Effective Position Reporting and Audit Design
 
-**Status:** Approved in design review on 2026-09-18  
-**Primary repository:** `trade-ngin` (`qt-platform-preview`)  
-**Companion repository:** `AlgoLens` (`qt-platform-preview`)  
+**Status:** Approved in design review on 2026-09-18
+**Primary repository:** `trade-ngin` (`qt-platform-preview`)
+**Companion repository:** `AlgoLens` (`qt-platform-preview`)
 **Production database rule:** Audit through a read-only session only. This work must not apply migrations or execute DDL/DML against production.
 
 ## 1. Purpose
