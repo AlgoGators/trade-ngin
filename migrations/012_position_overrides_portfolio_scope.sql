@@ -30,6 +30,12 @@ CREATE TABLE IF NOT EXISTS trading.position_override_legacy_scopes (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- A repeated migration must not use INSERT ... ON CONFLICT against this
+-- relation after its append-only UPDATE/DELETE rules exist: PostgreSQL rejects
+-- ON CONFLICT on relations with rules.  Serialize the inference writer and
+-- exclude already-attributed rows explicitly instead.
+LOCK TABLE trading.position_override_legacy_scopes IN SHARE ROW EXCLUSIVE MODE;
+
 -- The migration is the only automatic writer: a scope is recorded only when
 -- exactly one distinct portfolio currently matches the legacy strategy/symbol.
 -- No position_overrides row is ever updated to carry this inferred value.
@@ -55,8 +61,12 @@ WITH uniquely_inferred AS (
 INSERT INTO trading.position_override_legacy_scopes
     (override_id, portfolio_id, inference_basis)
 SELECT override_id, portfolio_id, inference_basis
-FROM uniquely_inferred
-ON CONFLICT (override_id) DO NOTHING;
+FROM uniquely_inferred AS inferred
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM trading.position_override_legacy_scopes AS existing
+    WHERE existing.override_id = inferred.override_id
+);
 
 CREATE INDEX IF NOT EXISTS idx_position_overrides_portfolio_strategy_created
     ON trading.position_overrides (portfolio_id, strategy_id, created_at DESC);

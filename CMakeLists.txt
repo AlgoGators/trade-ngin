@@ -55,22 +55,26 @@ find_package(Arrow REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(NLopt REQUIRED)
 
-# Try to find libpqxx via pkg-config (works with Homebrew)
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(PQXX REQUIRED libpqxx)
-
 # Find curl for email functionality
 find_package(CURL REQUIRED)
 
-add_library(libpqxx::pqxx UNKNOWN IMPORTED)
-set_target_properties(libpqxx::pqxx PROPERTIES
-    IMPORTED_LOCATION "${PQXX_LINK_LIBRARIES}"
-    INTERFACE_INCLUDE_DIRECTORIES "${PQXX_INCLUDE_DIRS}"
-    INTERFACE_LINK_LIBRARIES "${PQXX_LIBRARIES}"
-)
+# Prefer a package-provided CMake target when available. This selects the
+# libpqxx API version the project was built against (including pqxx::params).
+# Homebrew/system installs without a CMake package still use pkg-config.
+find_package(libpqxx CONFIG QUIET)
+if(NOT TARGET libpqxx::pqxx)
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(PQXX REQUIRED libpqxx)
 
-link_directories(${PQXX_LIBRARY_DIRS})
+    add_library(libpqxx::pqxx UNKNOWN IMPORTED)
+    set_target_properties(libpqxx::pqxx PROPERTIES
+        IMPORTED_LOCATION "${PQXX_LINK_LIBRARIES}"
+        INTERFACE_INCLUDE_DIRECTORIES "${PQXX_INCLUDE_DIRS}"
+        INTERFACE_LINK_LIBRARIES "${PQXX_LIBRARIES}"
+    )
 
+    link_directories(${PQXX_LIBRARY_DIRS})
+endif()
 
 # Include code coverage module if enabled
 include(cmake/CodeCoverage.cmake)
