@@ -8,6 +8,7 @@
 #include <numeric>
 #include <optional>
 #include <unordered_map>
+#include <unordered_set>
 #include "trade_ngin/core/config_base.hpp"
 #include "trade_ngin/core/error.hpp"
 #include "trade_ngin/core/logger.hpp"
@@ -279,11 +280,17 @@ public:
     }
 
     /**
-     * @brief Replace the portfolio-scope risk modules (by default the Carver module the
-     *        constructor builds from config.risk_config). Call before process_market_data.
-     * @return An error for a null module or a duplicate module id; the modules are unchanged then.
+     * @brief Replace the risk modules: the portfolio scope's (by default the Carver module the
+     *        constructor builds from config.risk_config) and, per strategy id, a sleeve's.
+     *        Call after add_strategy and before process_market_data.
+     * @return An error, leaving the modules unchanged, for: a null module; a duplicate module id
+     *         within a scope; a sleeve key that is not a registered strategy; more than one
+     *         REPLACE-capable module in a scope; more than one COMPOSITION-term module along a
+     *         sleeve -> portfolio chain (the scale-invariant terms would be counted twice).
      */
-    Result<void> set_risk_modules(std::vector<RiskModulePtr> portfolio_modules);
+    Result<void> set_risk_modules(
+        std::vector<RiskModulePtr> portfolio_modules,
+        std::unordered_map<std::string, std::vector<RiskModulePtr>> sleeve_modules = {});
 
     /**
      * @brief The last process_market_data call's risk decisions: every module, every lap,
@@ -311,8 +318,14 @@ private:
 
     std::unique_ptr<DynamicOptimizer> optimizer_;
     std::vector<RiskModulePtr> risk_modules_;  // portfolio scope, evaluated in order
+    std::unordered_map<std::string, std::vector<RiskModulePtr>> sleeve_risk_modules_;  // by strategy id
     std::vector<RiskDecisionRecord> risk_decisions_;  // guarded by mutex_
     bool is_backtest_{false};
+    // Per rebalance, cleared at the boundary: strategies pinned by a risk REFUSE / REPLACE (skipped
+    // by the optimiser, later scales, the fraction scan, forced rounding and the final check), and
+    // per scope the product of the quantised factors applied so far (-> RiskContext::applied).
+    std::unordered_set<std::string> pinned_scopes_;
+    std::unordered_map<std::string, double> rebalance_applied_;
     std::shared_ptr<InstrumentRegistry> registry_{nullptr};
 
     struct StrategyInfo {
@@ -403,13 +416,61 @@ private:
                                   const std::vector<Bar>& data,
                                   std::optional<Timestamp> as_of, bool is_warmup) const;
 
+    /// What a portfolio-scope REFUSE or REPLACE asks the loop to do after apply_risk_management.
+    struct RiskLapOutcome {
+        bool pin_all{false};
+        RiskAction action{RiskAction::NONE};
+        std::string module_id;
+        std::unordered_map<std::string, Position> replace_book;
+    };
+
+    /// The combination of one scope's decisions (precedence REFUSE > REPLACE > SCALE > WARN >
+    /// NONE; the SCALE applied is the minimum valid one). rows[k] = the applied action and factor
+    /// recorded against decision k.
+    struct RiskVerdict {
+        RiskAction action{RiskAction::NONE};
+        size_t winner{static_cast<size_t>(-1)};
+        double scale{1.0};
+        Decimal factor{Decimal(1.0)};
+        std::vector<std::pair<RiskAction, Decimal>> rows;
+    };
+
     /**
      * @brief Apply risk management to positions
      * @param data This call's bars
      * @param lap_ctx The lap's context (phase LAP, portfolio scope)
+     * @param outcome Set when a REFUSE or REPLACE must pin every strategy and end the loop
      * @return Result indicating success or failure
      */
-    Result<void> apply_risk_management(const std::vector<Bar>& data, const RiskContext& lap_ctx);
+    Result<void> apply_risk_management(const std::vector<Bar>& data, const RiskContext& lap_ctx,
+                                       RiskLapOutcome& outcome);
+
+    /// Combine one scope's decisions; logs an invalid SCALE (ERROR) and every WARN, in module order.
+    RiskVerdict combine_risk_decisions(const std::vector<RiskDecision>& decisions,
+                                       const RiskContext& ctx) const;
+
+    /// Push one row to risk_decisions_ (takes mutex_).
+    void record_risk_decision(const RiskContext& ctx, const std::string& module_id,
+                              RiskDecision requested, RiskAction applied_action,
+                              Decimal applied_factor, bool empty_book, std::string error);
+
+    /// Tell every module evaluated in a scope what was applied, then record its row.
+    void deliver_and_record(const std::vector<RiskModulePtr>& modules,
+                            std::vector<RiskDecision>& decisions, const RiskVerdict& verdict,
+                            const RiskContext& ctx, bool pinned);
+
+    /// The sleeve scope: once per rebalance, before the loop, each sleeve's own modules on its
+    /// own targets. A no-op when no sleeve has modules.
+    void apply_sleeve_risk(
+        const std::vector<Bar>& data,
+        const std::unordered_map<std::string, std::unordered_map<std::string, Position>>& prev_positions,
+        std::optional<Timestamp> as_of, bool is_warmup);
+
+    /// The post-rounding point: finalize() on the final book, portfolio and sleeves.
+    void apply_post_rounding_risk(
+        const std::vector<Bar>& data, int lap,
+        const std::unordered_map<std::string, std::unordered_map<std::string, Position>>& prev_positions,
+        std::optional<Timestamp> as_of, bool is_warmup);
 
     /**
      * @brief Validate allocations sum to 1

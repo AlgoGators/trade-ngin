@@ -36,6 +36,10 @@ public:
     Result<RiskDecision> evaluate(const std::unordered_map<std::string, Position>& book,
                                   const RiskContext& ctx) override;
     nlohmann::json describe() const override;  ///< {"id","type","terms","config"}
+    /// Multiplies the applied level by the quantised factor when the scope was scaled.
+    /// finalize is the default (NONE): it must NOT re-run process_positions, whose RISK_DEBUG and
+    /// VAR_DEBUG lines and second result line would change the run's log.
+    void on_applied(const RiskApplied& applied, const RiskContext& ctx) override;
 
     /// SCALE iff r.risk_exceeded, with scale = r.recommended_scale bit for bit; else NONE with
     /// scale 1.0. metrics = r in both cases. Keyed on risk_exceeded, NOT on `scale != 1.0`: a NaN

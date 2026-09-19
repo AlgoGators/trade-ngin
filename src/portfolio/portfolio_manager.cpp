@@ -302,11 +302,14 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
         // Up to 5 iterations for convergence to fully integer positions. The final rounding step
         // can cause minor tracking error/risk profile deviation
 
-        // Rebalance boundary (silent): the risk decisions recorded are this call's only, and
-        // every risk module starts its rebalance exactly once, before any lap.
+        // Rebalance boundary (silent): the risk decisions recorded, the pinned strategies and
+        // the applied factors are this call's only, and every risk module starts its rebalance
+        // exactly once, before any lap (portfolio modules first, then each sleeve's).
         {
             std::lock_guard<std::mutex> lock(mutex_);
             risk_decisions_.clear();
+            pinned_scopes_.clear();
+            rebalance_applied_.clear();
         }
         {
             const RiskContext rebalance_ctx = make_risk_context(
@@ -315,14 +318,29 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
             for (auto& module : risk_modules_) {
                 module->begin_rebalance(rebalance_ctx);
             }
+            for (auto& [sid, modules] : sleeve_risk_modules_) {
+                RiskContext sleeve_ctx = rebalance_ctx;
+                sleeve_ctx.scope = RiskScope::SLEEVE;
+                sleeve_ctx.scope_id = sid;
+                for (auto& module : modules) {
+                    module->begin_rebalance(sleeve_ctx);
+                }
+            }
         }
 
         // Invalidate covariance cache - will be recomputed once on first iteration and reused
         covariance_cache_valid_ = false;
 
+        // Sleeve-scope risk: once, before the optimiser and the loop, each sleeve's own modules
+        // on its own targets (silent and a no-op when no sleeve has modules).
+        if (config_.use_risk_management) {
+            apply_sleeve_risk(data, prev_positions, current_timestamp, skip_execution_generation);
+        }
+
         int max_iterations = 5;
         int iteration = 0;
         bool done = false;
+        RiskLapOutcome risk_outcome;  // pin_all set by a portfolio-scope REFUSE / REPLACE
 
         while (!done && iteration++ < max_iterations) {
             INFO("Iteration " + std::to_string(iteration) + " of dynamic optimization + risk loop");
@@ -360,9 +378,11 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                 try {
                     Logger::register_component("RiskManager");
                     auto risk_result = apply_risk_management(
-                        data, make_risk_context(RiskPhase::LAP, iteration, RiskScope::PORTFOLIO,
-                                                id_, config_.total_capital, data,
-                                                current_timestamp, skip_execution_generation));
+                        data,
+                        make_risk_context(RiskPhase::LAP, iteration, RiskScope::PORTFOLIO, id_,
+                                          config_.total_capital, data, current_timestamp,
+                                          skip_execution_generation),
+                        risk_outcome);
                     if (risk_result.is_error()) {
                         WARN("Portfolio risk management failed in iteration " +
                              std::to_string(iteration) + ": " +
@@ -382,6 +402,38 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                      std::to_string(iteration));
             }
 
+            // A portfolio-scope REFUSE (or REPLACE) pins every strategy and ends the loop. The
+            // strategies' own targets and signals are untouched; process_market_data returns OK.
+            if (risk_outcome.pin_all) {
+                std::lock_guard<std::mutex> lock(mutex_);
+                const bool distributable = strategies_.size() == 1;
+                if (risk_outcome.action == RiskAction::REPLACE && !distributable) {
+                    ERROR("Risk module " + risk_outcome.module_id +
+                          " replaced the book of a portfolio of " +
+                          std::to_string(strategies_.size()) +
+                          " strategies, which cannot be distributed; every strategy is pinned to "
+                          "its previous positions instead");
+                }
+                for (auto& [id, info] : strategies_) {
+                    if (risk_outcome.action == RiskAction::REPLACE && distributable) {
+                        info.target_positions = risk_outcome.replace_book;
+                    } else {
+                        info.target_positions = prev_positions[id];
+                    }
+                    pinned_scopes_.insert(id);
+                }
+                if (risk_outcome.action == RiskAction::REPLACE && distributable) {
+                    INFO("Risk replacement: the strategy's targets replaced by risk module " +
+                         risk_outcome.module_id + " after iteration " + std::to_string(iteration) +
+                         "; leaving the loop");
+                } else {
+                    INFO("Risk refusal: every strategy pinned to its previous positions after "
+                         "iteration " + std::to_string(iteration) + "; leaving the loop");
+                }
+                done = true;
+                break;
+            }
+
             // Check for partial contracts in final positions.
             // When the portfolio permits fractional positions there is nothing to
             // converge to, so a fraction is the answer rather than a reason to
@@ -394,6 +446,7 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
             if (!config_.allow_fractional_positions) {
                 std::lock_guard<std::mutex> lock(mutex_);
                 for (const auto& [id, info] : strategies_) {
+                    if (pinned_scopes_.count(id)) continue;  // pinned by a risk module
                     for (const auto& [symbol, pos] : info.target_positions) {
                         double fractional = std::abs(static_cast<double>(pos.quantity) -
                                                      std::round(static_cast<double>(pos.quantity)));
@@ -431,6 +484,7 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
 
             std::lock_guard<std::mutex> lock(mutex_);
             for (auto& [id, info] : strategies_) {
+                if (pinned_scopes_.count(id)) continue;  // pinned by a risk module
                 for (auto& [symbol, pos] : info.target_positions) {
                     double original_quantity = static_cast<double>(pos.quantity);
                     pos.quantity =
@@ -443,9 +497,22 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                 }
             }
             INFO("Final rounding completed. No partial contracts remain.");
+        } else if (risk_outcome.pin_all) {
+            INFO("Final positions pinned by a risk " +
+                 std::string(risk_outcome.action == RiskAction::REPLACE ? "replacement"
+                                                                        : "refusal") +
+                 " after " + std::to_string(iteration) + " iterations; rounding skipped.");
         } else {
             INFO("Final positions fully integer after " + std::to_string(iteration) +
                  " iterations.");
+        }
+
+        // Post-rounding risk point: finalize() on the final book, before the final check, the
+        // chop-source attribution and the current-positions copy below all read it (silent
+        // unless a module warns, refuses or is rejected).
+        if (config_.use_risk_management) {
+            apply_post_rounding_risk(data, std::min(iteration, max_iterations), prev_positions,
+                                     current_timestamp, skip_execution_generation);
         }
 
         // Final verification of all positions for partial contracts.
@@ -457,6 +524,7 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
             std::lock_guard<std::mutex> lock(mutex_);
             if (!config_.allow_fractional_positions) {
                 for (const auto& [id, info] : strategies_) {
+                    if (pinned_scopes_.count(id)) continue;  // pinned by a risk module
                     for (const auto& [symbol, pos] : info.target_positions) {
                         double fractional = std::abs(static_cast<double>(pos.quantity) -
                                                      std::round(static_cast<double>(pos.quantity)));
@@ -1088,8 +1156,8 @@ Result<void> PortfolioManager::optimize_positions() {
 
             // First collect all potential symbols
             std::vector<std::string> all_symbols;
-            for (const auto& [_, info] : strategies_) {
-                if (!info.use_optimization)
+            for (const auto& [strat_id, info] : strategies_) {
+                if (!info.use_optimization || pinned_scopes_.count(strat_id))
                     continue;
 
                 for (const auto& [symbol, _] : info.target_positions) {
@@ -1169,7 +1237,7 @@ Result<void> PortfolioManager::optimize_positions() {
             // to verify Fix #7 (PortfolioManager seeding) actually took effect. If empty here,
             // optimizer's coord descent runs from a zero baseline (the source of daily churn).
             for (const auto& [strat_id, info] : strategies_) {
-                if (!info.use_optimization)
+                if (!info.use_optimization || pinned_scopes_.count(strat_id))
                     continue;
                 DEBUG("PRE_OPTIMIZER_TRACE: strat=" + strat_id +
                      " current_positions_size=" +
@@ -1183,7 +1251,7 @@ Result<void> PortfolioManager::optimize_positions() {
 
                 // Aggregate across strategies
                 for (const auto& [strat_id, info] : strategies_) {
-                    if (!info.use_optimization)
+                    if (!info.use_optimization || pinned_scopes_.count(strat_id))
                         continue;
 
                     double allocation = info.allocation;
@@ -1267,7 +1335,7 @@ Result<void> PortfolioManager::optimize_positions() {
                 double total_original = total_contribs[symbol];
 
                 for (auto& [strat_id, info] : strategies_) {
-                    if (!info.use_optimization)
+                    if (!info.use_optimization || pinned_scopes_.count(strat_id))
                         continue;
                     if (!info.target_positions.count(symbol))
                         continue;
@@ -1349,24 +1417,65 @@ RiskContext PortfolioManager::make_risk_context(RiskPhase phase, int lap, RiskSc
     ctx.scope = scope;
     ctx.scope_id = scope_id;
     ctx.bars = &data;
+    ctx.applied = rebalance_applied_;
     return ctx;
 }
 
-Result<void> PortfolioManager::set_risk_modules(std::vector<RiskModulePtr> portfolio_modules) {
-    std::set<std::string> ids;
-    for (const auto& module : portfolio_modules) {
-        if (!module) {
-            return make_error<void>(ErrorCode::INVALID_ARGUMENT, "Risk module cannot be null",
-                                    "PortfolioManager");
+Result<void> PortfolioManager::set_risk_modules(
+    std::vector<RiskModulePtr> portfolio_modules,
+    std::unordered_map<std::string, std::vector<RiskModulePtr>> sleeve_modules) {
+    auto invalid = [](const std::string& why) {
+        return make_error<void>(ErrorCode::INVALID_ARGUMENT, why, "PortfolioManager");
+    };
+    // One scope: no null, unique ids, at most one REPLACE-capable module. Returns the number of
+    // COMPOSITION-term modules, or -1 with `why` set.
+    auto check_scope = [](const std::vector<RiskModulePtr>& modules, const std::string& scope,
+                          std::string& why) -> int {
+        std::set<std::string> ids;
+        int replace_capable = 0;
+        int composition = 0;
+        for (const auto& module : modules) {
+            if (!module) {
+                why = "Risk module cannot be null (" + scope + ")";
+                return -1;
+            }
+            if (!ids.insert(module->id()).second) {
+                why = "Duplicate risk module id: " + module->id() + " (" + scope + ")";
+                return -1;
+            }
+            if (module->capabilities().count(RiskAction::REPLACE)) ++replace_capable;
+            if (module->terms().count(RiskTerm::COMPOSITION)) ++composition;
         }
-        if (!ids.insert(module->id()).second) {
-            return make_error<void>(ErrorCode::INVALID_ARGUMENT,
-                                    "Duplicate risk module id: " + module->id(),
-                                    "PortfolioManager");
+        if (replace_capable > 1) {
+            why = "More than one REPLACE-capable risk module (" + scope + ")";
+            return -1;
+        }
+        return composition;
+    };
+
+    std::string why;
+    const int portfolio_composition = check_scope(portfolio_modules, "portfolio", why);
+    if (portfolio_composition < 0) return invalid(why);
+    if (portfolio_composition > 1) {
+        return invalid("More than one COMPOSITION-term risk module at the portfolio scope; the "
+                       "scale-invariant terms would be counted twice");
+    }
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (const auto& [sid, modules] : sleeve_modules) {
+        if (!strategies_.count(sid)) {
+            return invalid("Sleeve risk modules for an unregistered strategy: " + sid);
+        }
+        const int composition = check_scope(modules, "sleeve " + sid, why);
+        if (composition < 0) return invalid(why);
+        if (composition + portfolio_composition > 1) {
+            return invalid("More than one COMPOSITION-term risk module along the chain of sleeve " +
+                           sid + " and the portfolio; the scale-invariant terms would be counted "
+                           "twice");
         }
     }
-    std::lock_guard<std::mutex> lock(mutex_);
     risk_modules_ = std::move(portfolio_modules);
+    sleeve_risk_modules_ = std::move(sleeve_modules);
     return Result<void>();
 }
 
@@ -1386,13 +1495,142 @@ nlohmann::json PortfolioManager::risk_decisions_json() const {
             m["scope_id"] = id_;
             modules.push_back(std::move(m));
         }
+        // Sleeves in a stable order (strategies_ is unordered).
+        std::vector<std::string> sids;
+        for (const auto& [sid, _] : sleeve_risk_modules_) sids.push_back(sid);
+        std::sort(sids.begin(), sids.end());
+        for (const auto& sid : sids) {
+            for (const auto& module : sleeve_risk_modules_.at(sid)) {
+                nlohmann::json m = module->describe();
+                m["scope"] = risk_scope_name(RiskScope::SLEEVE);
+                m["scope_id"] = sid;
+                modules.push_back(std::move(m));
+            }
+        }
         records = risk_decisions_;
     }
     return build_risk_decisions_json(modules, records);
 }
 
+namespace {
+
+// Where a risk decision was taken, for the log lines that name it.
+std::string risk_location(const RiskContext& ctx) {
+    switch (ctx.phase) {
+        case RiskPhase::LAP:
+            return "in iteration " + std::to_string(ctx.lap);
+        case RiskPhase::SLEEVE:
+            return "before the loop";
+        case RiskPhase::POST_ROUNDING:
+            return "after rounding";
+        case RiskPhase::REBALANCE_START:
+            break;
+    }
+    return "at the rebalance start";
+}
+
+}  // namespace
+
+void PortfolioManager::record_risk_decision(const RiskContext& ctx, const std::string& module_id,
+                                            RiskDecision requested, RiskAction applied_action,
+                                            Decimal applied_factor, bool empty_book,
+                                            std::string error) {
+    RiskDecisionRecord rec;
+    rec.phase = ctx.phase;
+    rec.lap = ctx.lap;
+    rec.scope = ctx.scope;
+    rec.scope_id = ctx.scope_id;
+    rec.module_id = module_id;
+    rec.requested = std::move(requested);
+    rec.applied_action = applied_action;
+    rec.applied_factor = applied_factor;
+    rec.empty_book = empty_book;
+    rec.error = std::move(error);
+    std::lock_guard<std::mutex> lock(mutex_);
+    risk_decisions_.push_back(std::move(rec));
+}
+
+PortfolioManager::RiskVerdict PortfolioManager::combine_risk_decisions(
+    const std::vector<RiskDecision>& decisions, const RiskContext& ctx) const {
+    RiskVerdict v;
+    v.rows.assign(decisions.size(), {RiskAction::NONE, Decimal(1.0)});
+    const size_t none = static_cast<size_t>(-1);
+    size_t refuse = none, replace = none, scale = none;
+
+    // Module order: an invalid SCALE is an ERROR and a WARN is logged; neither touches the book.
+    for (size_t k = 0; k < decisions.size(); ++k) {
+        const RiskDecision& d = decisions[k];
+        switch (d.action) {
+            case RiskAction::SCALE:
+                // Applied iff 0 <= scale < 1 (NaN fails both): the test the gate's own
+                // risk_exceeded is. Within a scope the applied SCALE is the MIN, never a product.
+                if (d.scale >= 0.0 && d.scale < 1.0) {
+                    if (scale == none || d.scale < decisions[scale].scale) scale = k;
+                } else {
+                    ERROR("Risk module " + d.module_id + " returned SCALE " +
+                          std::to_string(d.scale) + "; not applied");
+                }
+                break;
+            case RiskAction::WARN:
+                WARN("Risk module " + d.module_id + " warning on " + risk_scope_name(ctx.scope) +
+                     " " + ctx.scope_id + " " + risk_location(ctx) + ": " + d.reason);
+                v.rows[k].first = RiskAction::WARN;
+                v.action = RiskAction::WARN;
+                break;
+            case RiskAction::REFUSE:
+                if (refuse == none) refuse = k;
+                break;
+            case RiskAction::REPLACE:
+                if (replace == none) replace = k;
+                break;
+            case RiskAction::NONE:
+                break;
+        }
+    }
+
+    // Precedence REFUSE > REPLACE > SCALE > WARN > NONE; a losing request is recorded, not applied.
+    if (refuse != none) {
+        v.action = RiskAction::REFUSE;
+        v.winner = refuse;
+    } else if (replace != none) {
+        v.action = RiskAction::REPLACE;
+        v.winner = replace;
+    } else if (scale != none) {
+        v.action = RiskAction::SCALE;
+        v.winner = scale;
+        v.scale = decisions[scale].scale;
+        v.factor = Decimal(v.scale);
+    }
+    if (v.winner != none) {
+        v.rows[v.winner] = {v.action, v.action == RiskAction::SCALE ? v.factor : Decimal(1.0)};
+    }
+    return v;
+}
+
+void PortfolioManager::deliver_and_record(const std::vector<RiskModulePtr>& modules,
+                                          std::vector<RiskDecision>& decisions,
+                                          const RiskVerdict& verdict, const RiskContext& ctx,
+                                          bool pinned) {
+    for (size_t k = 0; k < decisions.size() && k < modules.size(); ++k) {
+        RiskApplied applied;
+        applied.action = verdict.action;
+        applied.requested_scale =
+            decisions[k].action == RiskAction::SCALE ? decisions[k].scale : 1.0;
+        applied.factor = verdict.action == RiskAction::SCALE ? verdict.factor : Decimal(1.0);
+        applied.won = verdict.rows[k].first != RiskAction::NONE;
+        applied.pinned = pinned;
+        modules[k]->on_applied(applied, ctx);
+    }
+    for (size_t k = 0; k < decisions.size(); ++k) {
+        std::string id = decisions[k].module_id;
+        record_risk_decision(ctx, id, std::move(decisions[k]), verdict.rows[k].first,
+                             verdict.rows[k].second, false, "");
+    }
+}
+
 Result<void> PortfolioManager::apply_risk_management(const std::vector<Bar>& data,
-                                                     const RiskContext& lap_ctx) {
+                                                     const RiskContext& lap_ctx,
+                                                     RiskLapOutcome& outcome) {
     Logger::register_component("RiskManager");
 
     if (risk_modules_.empty()) {
@@ -1401,25 +1639,6 @@ Result<void> PortfolioManager::apply_risk_management(const std::vector<Bar>& dat
     } else {
         INFO("Using risk manager");
     }
-
-    // One record per module for this lap, pushed under the lock (silent).
-    auto record = [&](const std::string& module_id, RiskDecision requested,
-                      RiskAction applied_action, Decimal applied_factor, bool empty_book,
-                      std::string error) {
-        RiskDecisionRecord rec;
-        rec.phase = lap_ctx.phase;
-        rec.lap = lap_ctx.lap;
-        rec.scope = lap_ctx.scope;
-        rec.scope_id = lap_ctx.scope_id;
-        rec.module_id = module_id;
-        rec.requested = std::move(requested);
-        rec.applied_action = applied_action;
-        rec.applied_factor = applied_factor;
-        rec.empty_book = empty_book;
-        rec.error = std::move(error);
-        std::lock_guard<std::mutex> lock(mutex_);
-        risk_decisions_.push_back(std::move(rec));
-    };
 
     try {
         // Every module sees this lap's bars before the book is built and before the
@@ -1455,7 +1674,8 @@ Result<void> PortfolioManager::apply_risk_management(const std::vector<Bar>& dat
             for (const auto& module : risk_modules_) {
                 RiskDecision none;
                 none.module_id = module->id();
-                record(module->id(), std::move(none), RiskAction::NONE, Decimal(1.0), true, "");
+                record_risk_decision(lap_ctx, module->id(), std::move(none), RiskAction::NONE,
+                                     Decimal(1.0), true, "");
             }
             return Result<void>();
         }
@@ -1471,75 +1691,80 @@ Result<void> PortfolioManager::apply_risk_management(const std::vector<Bar>& dat
                           std::string(result.error()->what()));
                     for (auto& d : decisions) {
                         std::string id = d.module_id;
-                        record(id, std::move(d), RiskAction::NONE, Decimal(1.0), false, "");
+                        record_risk_decision(lap_ctx, id, std::move(d), RiskAction::NONE,
+                                             Decimal(1.0), false, "");
                     }
                     RiskDecision none;
                     none.module_id = module->id();
-                    record(module->id(), std::move(none), RiskAction::NONE, Decimal(1.0), false,
-                           std::string(result.error()->what()));
+                    record_risk_decision(lap_ctx, module->id(), std::move(none), RiskAction::NONE,
+                                         Decimal(1.0), false,
+                                         std::string(result.error()->what()));
                     return Result<void>();  // Don't fail the entire operation
                 }
                 decisions.push_back(result.value());
                 decisions.back().module_id = module->id();
             }
 
-            // Decisions are APPLIED by today's code only for a module that reports a
-            // RiskResult (the Carver module): its risk_exceeded block below is verbatim.
-            // A WARN is logged. Every other module's decision is recorded as requested and
-            // applied NONE (the PM applies decisions by action from commit 6).
-            std::vector<std::pair<RiskAction, Decimal>> applied(decisions.size(),
-                                                                {RiskAction::NONE, Decimal(1.0)});
-            for (size_t k = 0; k < decisions.size(); ++k) {
-                const RiskDecision& decision = decisions[k];
-                if (decision.action == RiskAction::WARN) {
-                    WARN("Risk module " + decision.module_id + " warning on " +
-                         risk_scope_name(lap_ctx.scope) + " " + lap_ctx.scope_id +
-                         " in iteration " + std::to_string(lap_ctx.lap) + ": " + decision.reason);
+            // The decisions are applied by action (precedence REFUSE > REPLACE > SCALE > WARN).
+            const RiskVerdict verdict = combine_risk_decisions(decisions, lap_ctx);
+            bool pinned = false;
+            if (verdict.action == RiskAction::REFUSE || verdict.action == RiskAction::REPLACE) {
+                const RiskDecision& d = decisions[verdict.winner];
+                if (verdict.action == RiskAction::REFUSE) {
+                    WARN("Risk module " + d.module_id + " refused " +
+                         risk_scope_name(lap_ctx.scope) + " " + lap_ctx.scope_id + " " +
+                         risk_location(lap_ctx) + ": " + d.reason +
+                         "; positions pinned to the previous book");
+                } else {
+                    WARN("Risk module " + d.module_id + " replaced the book of " +
+                         risk_scope_name(lap_ctx.scope) + " " + lap_ctx.scope_id + " " +
+                         risk_location(lap_ctx) + ": " + d.reason);
+                    outcome.replace_book = d.book;
                 }
-                if (!decision.metrics) {
-                    continue;
-                }
+                // The loop pins every strategy and leaves (process_market_data).
+                outcome.pin_all = true;
+                outcome.action = verdict.action;
+                outcome.module_id = d.module_id;
+                pinned = true;
+            } else if (verdict.action == RiskAction::SCALE) {
+                const double scale = verdict.scale;
+                WARN("Risk limits exceeded, scaling positions by " + std::to_string(scale));
 
-                // Apply risk scaling if necessary
-                const RiskResult& risk_result = *decision.metrics;
-                if (risk_result.risk_exceeded) {
-                    WARN("Risk limits exceeded, scaling positions by " +
-                         std::to_string(risk_result.recommended_scale));
+                // DESIGN DECISION: Risk scaling applies to target_positions only (Approach A)
+                // Rationale: Risk management reduces the strategy's desired exposure, not actual
+                // holdings. When current_positions ≈ target_positions (normal case), this behaves
+                // correctly. Edge cases (current ≠ target) result in slightly more aggressive
+                // de-risking, which is acceptable for risk management purposes. Alternative
+                // Approach B (scale both current and target) would provide immediate proportional
+                // de-risking but changes "what we think we hold" which could confuse PnL tracking.
+                // We keep Approach A for consistency and simplicity.
+                //
+                // Example: current=+12, target=+10, scale=0.5
+                //   new_target = 10 × 0.5 = +5
+                //   trade = 5 - 12 = sell 7 contracts
+                //   end position = +5 (50% of desired, not 50% of actual)
+                //
+                // The operand stays the double: each quantity is multiplied by Decimal(scale),
+                // never recomputed as Decimal(double(q) * scale). A strategy pinned by a risk
+                // module keeps its pinned book.
 
-                    // DESIGN DECISION: Risk scaling applies to target_positions only (Approach A)
-                    // Rationale: Risk management reduces the strategy's desired exposure, not actual
-                    // holdings. When current_positions ≈ target_positions (normal case), this behaves
-                    // correctly. Edge cases (current ≠ target) result in slightly more aggressive
-                    // de-risking, which is acceptable for risk management purposes. Alternative
-                    // Approach B (scale both current and target) would provide immediate proportional
-                    // de-risking but changes "what we think we hold" which could confuse PnL tracking.
-                    // We keep Approach A for consistency and simplicity.
-                    //
-                    // Example: current=+12, target=+10, scale=0.5
-                    //   new_target = 10 × 0.5 = +5
-                    //   trade = 5 - 12 = sell 7 contracts
-                    //   end position = +5 (50% of desired, not 50% of actual)
-
-                    // Scale positions in all strategies under lock
-                    {
-                        std::lock_guard<std::mutex> lock(mutex_);
-                        for (auto& [id, info] : strategies_) {
-                            for (auto& [symbol, pos] : info.target_positions) {
-                                pos.quantity *= risk_result.recommended_scale;
-                            }
+                // Scale positions in all strategies under lock
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    for (auto& [id, info] : strategies_) {
+                        if (pinned_scopes_.count(id)) continue;
+                        for (auto& [symbol, pos] : info.target_positions) {
+                            pos.quantity *= scale;
                         }
                     }
-                    applied[k] = {RiskAction::SCALE, Decimal(risk_result.recommended_scale)};
-                } else {
-                    INFO("Risk limits not exceeded, no scaling needed");
                 }
+                rebalance_applied_.emplace(lap_ctx.scope_id, 1.0).first->second *=
+                    static_cast<double>(verdict.factor);
+            } else {
+                INFO("Risk limits not exceeded, no scaling needed");
             }
 
-            for (size_t k = 0; k < decisions.size(); ++k) {
-                std::string id = decisions[k].module_id;
-                record(id, std::move(decisions[k]), applied[k].first, applied[k].second, false,
-                       "");
-            }
+            deliver_and_record(risk_modules_, decisions, verdict, lap_ctx, pinned);
         } catch (const std::exception& e) {
             ERROR("Exception during risk management: " + std::string(e.what()));
             return Result<void>();  // Don't fail the entire operation
@@ -1553,6 +1778,244 @@ Result<void> PortfolioManager::apply_risk_management(const std::vector<Bar>& dat
         return make_error<void>(ErrorCode::UNKNOWN_ERROR,
                                 std::string("Error during risk management: ") + e.what(),
                                 "PortfolioManager");
+    }
+}
+
+void PortfolioManager::apply_sleeve_risk(
+    const std::vector<Bar>& data,
+    const std::unordered_map<std::string, std::unordered_map<std::string, Position>>& prev_positions,
+    std::optional<Timestamp> as_of, bool is_warmup) {
+    if (sleeve_risk_modules_.empty()) return;
+
+    // strategies_ order, as every other per-strategy pass.
+    std::vector<std::pair<std::string, double>> sleeves;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (const auto& [sid, info] : strategies_) {
+            if (sleeve_risk_modules_.count(sid)) sleeves.emplace_back(sid, info.allocation);
+        }
+    }
+
+    for (const auto& [sid, allocation] : sleeves) {
+        auto& modules = sleeve_risk_modules_.at(sid);
+        if (modules.empty()) continue;
+        std::unordered_map<std::string, Position> book;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            book = strategies_.at(sid).target_positions;
+        }
+        const RiskContext ctx = make_risk_context(
+            RiskPhase::SLEEVE, 0, RiskScope::SLEEVE, sid,
+            Decimal(static_cast<double>(config_.total_capital) * allocation), data, as_of,
+            is_warmup);
+
+        try {
+            for (auto& module : modules) {
+                module->on_bars(data, ctx);
+            }
+            if (book.empty()) {
+                for (const auto& module : modules) {
+                    RiskDecision none;
+                    none.module_id = module->id();
+                    record_risk_decision(ctx, module->id(), std::move(none), RiskAction::NONE,
+                                         Decimal(1.0), true, "");
+                }
+                continue;
+            }
+
+            std::vector<RiskDecision> decisions;
+            bool failed = false;
+            for (auto& module : modules) {
+                auto result = module->evaluate(book, ctx);
+                if (result.is_error()) {
+                    // The sleeve is left untouched, as the portfolio scope is on a failure.
+                    ERROR("Risk management calculation failed: " +
+                          std::string(result.error()->what()));
+                    for (auto& d : decisions) {
+                        std::string id = d.module_id;
+                        record_risk_decision(ctx, id, std::move(d), RiskAction::NONE,
+                                             Decimal(1.0), false, "");
+                    }
+                    RiskDecision none;
+                    none.module_id = module->id();
+                    record_risk_decision(ctx, module->id(), std::move(none), RiskAction::NONE,
+                                         Decimal(1.0), false, std::string(result.error()->what()));
+                    failed = true;
+                    break;
+                }
+                decisions.push_back(result.value());
+                decisions.back().module_id = module->id();
+            }
+            if (failed) continue;
+
+            const RiskVerdict verdict = combine_risk_decisions(decisions, ctx);
+            bool pinned = false;
+            if (verdict.action == RiskAction::REFUSE || verdict.action == RiskAction::REPLACE) {
+                const RiskDecision& d = decisions[verdict.winner];
+                std::lock_guard<std::mutex> lock(mutex_);
+                auto& info = strategies_.at(sid);
+                if (verdict.action == RiskAction::REFUSE) {
+                    WARN("Risk module " + d.module_id + " refused sleeve " + sid + " " +
+                         risk_location(ctx) + ": " + d.reason +
+                         "; positions pinned to the previous book");
+                    auto prev = prev_positions.find(sid);
+                    info.target_positions =
+                        prev != prev_positions.end() ? prev->second
+                                                     : std::unordered_map<std::string, Position>{};
+                } else {
+                    WARN("Risk module " + d.module_id + " replaced the book of sleeve " + sid +
+                         " " + risk_location(ctx) + ": " + d.reason);
+                    info.target_positions = d.book;
+                }
+                pinned_scopes_.insert(sid);
+                pinned = true;
+            } else if (verdict.action == RiskAction::SCALE) {
+                const double scale = verdict.scale;
+                WARN("Risk limits exceeded on sleeve " + sid + ", scaling its positions by " +
+                     std::to_string(scale));
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    for (auto& [symbol, pos] : strategies_.at(sid).target_positions) {
+                        pos.quantity *= scale;
+                    }
+                }
+                rebalance_applied_.emplace(sid, 1.0).first->second *=
+                    static_cast<double>(verdict.factor);
+            }
+            deliver_and_record(modules, decisions, verdict, ctx, pinned);
+        } catch (const std::exception& e) {
+            ERROR("Exception during sleeve risk management for " + sid + ": " +
+                  std::string(e.what()));
+        }
+    }
+}
+
+void PortfolioManager::apply_post_rounding_risk(
+    const std::vector<Bar>& data, int lap,
+    const std::unordered_map<std::string, std::unordered_map<std::string, Position>>& prev_positions,
+    std::optional<Timestamp> as_of, bool is_warmup) {
+    if (risk_modules_.empty() && sleeve_risk_modules_.empty()) return;
+
+    // One scope's finalize: NONE and WARN pass, REFUSE pins, SCALE and REPLACE are rejected.
+    // Returns true when the scope must be pinned.
+    auto finalize_scope = [&](std::vector<RiskModulePtr>& modules,
+                              const std::unordered_map<std::string, Position>& book,
+                              const RiskContext& ctx) -> bool {
+        std::vector<RiskDecision> decisions;
+        for (auto& module : modules) {
+            auto result = module->finalize(book, ctx);
+            if (result.is_error()) {
+                ERROR("Risk management calculation failed: " +
+                      std::string(result.error()->what()));
+                for (auto& d : decisions) {
+                    std::string id = d.module_id;
+                    record_risk_decision(ctx, id, std::move(d), RiskAction::NONE, Decimal(1.0),
+                                         false, "");
+                }
+                RiskDecision none;
+                none.module_id = module->id();
+                record_risk_decision(ctx, module->id(), std::move(none), RiskAction::NONE,
+                                     Decimal(1.0), false, std::string(result.error()->what()));
+                return false;
+            }
+            decisions.push_back(result.value());
+            decisions.back().module_id = module->id();
+        }
+        // SCALE and REPLACE are not applied at this point: reject them before combining.
+        std::vector<RiskDecision> honoured = decisions;
+        for (auto& d : honoured) {
+            if (d.action == RiskAction::SCALE || d.action == RiskAction::REPLACE) {
+                ERROR("Risk module " + d.module_id + " returned " + risk_action_name(d.action) +
+                      " at the post-rounding point; only NONE, WARN and REFUSE are applied there");
+                d.action = RiskAction::NONE;
+            }
+        }
+        const RiskVerdict verdict = combine_risk_decisions(honoured, ctx);
+        const bool refuse = verdict.action == RiskAction::REFUSE;
+        if (refuse) {
+            const RiskDecision& d = decisions[verdict.winner];
+            WARN("Risk module " + d.module_id + " refused " + risk_scope_name(ctx.scope) + " " +
+                 ctx.scope_id + " " + risk_location(ctx) + ": " + d.reason +
+                 "; positions pinned to the previous book");
+        }
+        deliver_and_record(modules, decisions, verdict, ctx, refuse);
+        return refuse;
+    };
+
+    auto record_empty = [&](const std::vector<RiskModulePtr>& modules, const RiskContext& ctx) {
+        for (const auto& module : modules) {
+            RiskDecision none;
+            none.module_id = module->id();
+            record_risk_decision(ctx, module->id(), std::move(none), RiskAction::NONE,
+                                 Decimal(1.0), true, "");
+        }
+    };
+
+    auto pin = [&](const std::string& sid) {
+        auto prev = prev_positions.find(sid);
+        strategies_.at(sid).target_positions =
+            prev != prev_positions.end() ? prev->second
+                                         : std::unordered_map<std::string, Position>{};
+        pinned_scopes_.insert(sid);
+    };
+
+    try {
+        if (!risk_modules_.empty()) {
+            std::unordered_map<std::string, Position> book;
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                for (const auto& [_, info] : strategies_) {
+                    for (const auto& [symbol, pos] : info.target_positions) {
+                        auto it = book.find(symbol);
+                        if (it == book.end()) {
+                            book[symbol] = pos;
+                        } else {
+                            it->second.quantity += pos.quantity;
+                        }
+                    }
+                }
+            }
+            const RiskContext ctx =
+                make_risk_context(RiskPhase::POST_ROUNDING, lap, RiskScope::PORTFOLIO, id_,
+                                  config_.total_capital, data, as_of, is_warmup);
+            if (book.empty()) {
+                record_empty(risk_modules_, ctx);
+            } else if (finalize_scope(risk_modules_, book, ctx)) {
+                std::lock_guard<std::mutex> lock(mutex_);
+                for (auto& [sid, _] : strategies_) pin(sid);
+            }
+        }
+
+        std::vector<std::pair<std::string, double>> sleeves;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            for (const auto& [sid, info] : strategies_) {
+                if (sleeve_risk_modules_.count(sid) && !pinned_scopes_.count(sid)) {
+                    sleeves.emplace_back(sid, info.allocation);
+                }
+            }
+        }
+        for (const auto& [sid, allocation] : sleeves) {
+            auto& modules = sleeve_risk_modules_.at(sid);
+            if (modules.empty()) continue;
+            std::unordered_map<std::string, Position> book;
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                book = strategies_.at(sid).target_positions;
+            }
+            const RiskContext ctx = make_risk_context(
+                RiskPhase::POST_ROUNDING, lap, RiskScope::SLEEVE, sid,
+                Decimal(static_cast<double>(config_.total_capital) * allocation), data, as_of,
+                is_warmup);
+            if (book.empty()) {
+                record_empty(modules, ctx);
+            } else if (finalize_scope(modules, book, ctx)) {
+                std::lock_guard<std::mutex> lock(mutex_);
+                pin(sid);
+            }
+        }
+    } catch (const std::exception& e) {
+        ERROR("Exception during post-rounding risk management: " + std::string(e.what()));
     }
 }
 

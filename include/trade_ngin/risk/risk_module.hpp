@@ -76,6 +76,18 @@ struct RiskContext {
                                      ///< applied to that scope so far this rebalance
 };
 
+/// What the PM did, delivered to every module it evaluated in that scope and phase/lap.
+struct RiskApplied {
+    RiskAction action{RiskAction::NONE};  ///< what the PM did to the scope (combined over its modules)
+    double requested_scale{1.0};          ///< THIS module's own request (1.0 unless it asked for SCALE)
+    Decimal factor{Decimal(1.0)};         ///< the QUANTISED factor actually multiplied: Decimal(scale),
+                                          ///< i.e. int64(scale*1e8 + 0.5) (types.hpp); each quantity then
+                                          ///< becomes int64(double(q.raw)*double(factor.raw)/1e8), a
+                                          ///< truncation toward zero. 1 when nothing was multiplied.
+    bool won{false};                      ///< this module's request is the one applied
+    bool pinned{false};                   ///< the scope is pinned after this apply
+};
+
 class RiskModule {
 public:
     virtual ~RiskModule() = default;
@@ -98,6 +110,23 @@ public:
                                           const RiskContext& ctx) = 0;
     /// Verbatim enough to reconstruct the module.
     virtual nlohmann::json describe() const = 0;
+    /// After the PM applied the scope's combined decision (every evaluate that returned OK).
+    virtual void on_applied(const RiskApplied& applied, const RiskContext& ctx) {
+        (void)applied;
+        (void)ctx;
+    }
+    /// Once per rebalance at the post-rounding point, on the final (rounded) book, before the
+    /// final fractional check. The PM honours NONE, WARN and REFUSE here; SCALE and REPLACE are
+    /// rejected (ERROR, recorded, not applied): a multiply would re-fractionalise a
+    /// whole-contract book. The default decides NONE and must stay silent.
+    virtual Result<RiskDecision> finalize(const std::unordered_map<std::string, Position>& book,
+                                          const RiskContext& ctx) {
+        (void)book;
+        (void)ctx;
+        RiskDecision d;
+        d.module_id = id();
+        return Result<RiskDecision>(std::move(d));
+    }
 };
 using RiskModulePtr = std::shared_ptr<RiskModule>;
 

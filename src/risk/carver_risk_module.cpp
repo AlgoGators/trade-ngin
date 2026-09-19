@@ -84,6 +84,13 @@ Result<RiskDecision> CarverRiskModule::evaluate(
     return Result<RiskDecision>(std::move(decision));
 }
 
+void CarverRiskModule::on_applied(const RiskApplied& applied, const RiskContext& ctx) {
+    (void)ctx;
+    if (applied.action == RiskAction::SCALE) {
+        applied_level_ *= static_cast<double>(applied.factor);
+    }
+}
+
 nlohmann::json CarverRiskModule::describe() const {
     nlohmann::json terms_json = nlohmann::json::array();
     for (auto t : terms()) terms_json.push_back(risk_term_name(t));

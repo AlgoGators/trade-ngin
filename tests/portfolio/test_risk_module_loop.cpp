@@ -1,15 +1,16 @@
 // The PortfolioManager's risk loop driven through risk modules.
 //
-// The PM evaluates every module on every lap and records each decision in
-// last_risk_decisions(). The Carver module's decision is applied by the loop's
-// original risk_exceeded block; every other module's decision is recorded as
-// requested and applied NONE, because the PM applies decisions by action only
-// from T-6a commit 6 (these tests are extended there to assert the application).
+// The PM evaluates every module on every lap, applies the scope's combined
+// decision by action (REFUSE > REPLACE > SCALE > WARN > NONE; the SCALE applied is
+// the minimum, as the double operand of the in-place multiply) and records each
+// decision in last_risk_decisions(), with the sleeve scope before the loop and the
+// post-rounding point after it.
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -49,10 +50,17 @@ public:
         if (calls_ == 0) return {};
         return script_[std::min(calls_, script_.size()) - 1];
     }
+    std::unordered_map<std::string, std::vector<double>> get_price_history() const override {
+        return history_;
+    }
+    void set_history(std::unordered_map<std::string, std::vector<double>> h) {
+        history_ = std::move(h);
+    }
 
 private:
     std::vector<Book> script_;
     size_t calls_{0};
+    std::unordered_map<std::string, std::vector<double>> history_;
 };
 
 Timestamp day(int d) {
@@ -107,8 +115,13 @@ public:
         return Result<RiskDecision>(d);
     }
     nlohmann::json describe() const override { return {{"id", id_}, {"type", type_}}; }
+    void on_applied(const RiskApplied& a, const RiskContext& ctx) override {
+        (void)ctx;
+        applied.push_back(a);
+    }
 
     std::vector<std::string> events;
+    std::vector<RiskApplied> applied;
     std::vector<RiskContext> contexts;
     std::vector<RiskContext> rebalance_contexts;
     std::vector<Book> books;
@@ -125,16 +138,16 @@ private:
 // Test-local REPLACE module (no shipped module can replace).
 class ReplaceModule : public RiskModule {
 public:
-    explicit ReplaceModule(Book book) : book_(std::move(book)) {}
+    explicit ReplaceModule(Book book, int from_lap = 1) : book_(std::move(book)), from_lap_(from_lap) {}
     const std::string& id() const override { return id_; }
     const std::string& type() const override { return id_; }
     std::set<RiskTerm> terms() const override { return {RiskTerm::CUSTOM}; }
     std::set<RiskAction> capabilities() const override { return {RiskAction::REPLACE}; }
     Result<RiskDecision> evaluate(const Book& book, const RiskContext& ctx) override {
         (void)book;
-        (void)ctx;
         RiskDecision d;
         d.module_id = id_;
+        if (ctx.phase == RiskPhase::LAP && ctx.lap < from_lap_) return Result<RiskDecision>(d);
         d.action = RiskAction::REPLACE;
         d.reason = "replacement book";
         d.book = book_;
@@ -145,7 +158,22 @@ public:
 private:
     std::string id_{"replace"};
     Book book_;
+    int from_lap_;
 };
+
+std::vector<RiskDecisionRecord> rows_of(const std::vector<RiskDecisionRecord>& all, RiskPhase phase) {
+    std::vector<RiskDecisionRecord> out;
+    for (const auto& r : all) {
+        if (r.phase == phase) out.push_back(r);
+    }
+    return out;
+}
+
+size_t count_of(const std::string& text, const std::string& needle) {
+    size_t n = 0;
+    for (size_t at = text.find(needle); at != std::string::npos; at = text.find(needle, at + 1)) ++n;
+    return n;
+}
 
 PortfolioConfig risk_config(bool allow_fractional) {
     PortfolioConfig pc{1000.0, 0.0, 1.0, 0.0, /*optimization=*/false, /*risk=*/true};
@@ -218,8 +246,10 @@ protected:
 };
 
 TEST_F(RiskModuleLoopTest, EveryDecisionTypeIsEvaluatedAndRecordedEachLap) {
-    // A 2.5-lot target never becomes whole, so the loop runs all five laps.
+    // 2.5 lots never become whole, so a lap 2 happens; there the REFUSE beats the SCALE and the
+    // REPLACE, pins the strategy to its previous positions and ends the loop.
     make_pm(false, {{{"ZZA", make_pos("ZZA", 2.5, 100.0)}}});
+    ASSERT_TRUE(pm_->update_strategy_position("RML_S", "ZZA", make_pos("ZZA", 1.0, 100.0)).is_ok());
     ASSERT_TRUE(pm_->set_risk_modules(
                        {std::make_shared<ConstantScaleRiskModule>("scale", 0.5, /*every_lap=*/true),
                         std::make_shared<WarnRiskModule>(
@@ -227,63 +257,50 @@ TEST_F(RiskModuleLoopTest, EveryDecisionTypeIsEvaluatedAndRecordedEachLap) {
                         std::make_shared<RefuseOnConditionRiskModule>(
                             "refuse", RiskCondition{RiskCondition::Kind::LAP_AT_LEAST, 2.0},
                             "from lap two"),
-                        std::make_shared<ReplaceModule>(Book{{"ZZA", make_pos("ZZA", 1.0, 100.0)}})})
+                        std::make_shared<ReplaceModule>(Book{{"ZZA", make_pos("ZZA", 9.0, 100.0)}},
+                                                        /*from_lap=*/2)})
                     .is_ok());
 
     ::testing::internal::CaptureStdout();
     ASSERT_TRUE(pm_->process_market_data(three_days()).is_ok());
     const std::string out = ::testing::internal::GetCapturedStdout();
 
-    const auto rows = pm_->last_risk_decisions();
-    ASSERT_EQ(rows.size(), 20u) << "4 modules x 5 laps";
-    for (int lap = 1; lap <= 5; ++lap) {
-        const RiskDecisionRecord* r = &rows[static_cast<size_t>(4 * (lap - 1))];
-        SCOPED_TRACE("lap " + std::to_string(lap));
-        EXPECT_EQ(r[0].module_id, "scale");
-        EXPECT_EQ(r[0].requested.action, RiskAction::SCALE);
-        EXPECT_EQ(r[0].requested.scale, 0.5);
-        EXPECT_EQ(r[1].module_id, "warn");
-        EXPECT_EQ(r[1].requested.action, RiskAction::WARN);
-        EXPECT_EQ(r[2].module_id, "refuse");
-        EXPECT_EQ(r[2].requested.action, lap >= 2 ? RiskAction::REFUSE : RiskAction::NONE);
-        EXPECT_EQ(r[3].module_id, "replace");
-        EXPECT_EQ(r[3].requested.action, RiskAction::REPLACE);
-        for (int k = 0; k < 4; ++k) {
-            EXPECT_EQ(r[k].lap, lap);
-            EXPECT_EQ(r[k].phase, RiskPhase::LAP);
-            EXPECT_EQ(r[k].scope, RiskScope::PORTFOLIO);
-            EXPECT_FALSE(r[k].empty_book);
-            EXPECT_TRUE(r[k].error.empty());
-            // Commit 4: a non-Carver decision is recorded, NOT applied (applied from commit 6).
-            EXPECT_EQ(r[k].applied_action, RiskAction::NONE);
-            EXPECT_EQ(r[k].applied_factor.raw_value(), Decimal(1.0).raw_value());
-        }
+    const auto rows = rows_of(pm_->last_risk_decisions(), RiskPhase::LAP);
+    ASSERT_EQ(rows.size(), 8u) << "4 modules x 2 laps";
+    const std::vector<RiskAction> requested_1 = {RiskAction::SCALE, RiskAction::WARN,
+                                                 RiskAction::NONE, RiskAction::NONE};
+    const std::vector<RiskAction> applied_1 = {RiskAction::SCALE, RiskAction::WARN,
+                                               RiskAction::NONE, RiskAction::NONE};
+    const std::vector<RiskAction> requested_2 = {RiskAction::SCALE, RiskAction::WARN,
+                                                 RiskAction::REFUSE, RiskAction::REPLACE};
+    const std::vector<RiskAction> applied_2 = {RiskAction::NONE, RiskAction::WARN,
+                                               RiskAction::REFUSE, RiskAction::NONE};
+    const std::vector<std::string> ids = {"scale", "warn", "refuse", "replace"};
+    for (int k = 0; k < 4; ++k) {
+        SCOPED_TRACE(ids[k]);
+        EXPECT_EQ(rows[k].module_id, ids[k]);
+        EXPECT_EQ(rows[k].lap, 1);
+        EXPECT_EQ(rows[k].requested.action, requested_1[k]);
+        EXPECT_EQ(rows[k].applied_action, applied_1[k]);
+        EXPECT_EQ(rows[4 + k].module_id, ids[k]);
+        EXPECT_EQ(rows[4 + k].lap, 2);
+        EXPECT_EQ(rows[4 + k].requested.action, requested_2[k]);
+        EXPECT_EQ(rows[4 + k].applied_action, applied_2[k]);
     }
-    // The book is untouched by the SCALE, the REFUSE and the REPLACE: 2.5 forced to 3.
-    EXPECT_EQ(quantity("ZZA"), 3.0);
-    // The WARN is logged once per lap.
-    size_t warn_lines = 0;
-    for (size_t at = out.find("Risk module warn warning on portfolio"); at != std::string::npos;
-         at = out.find("Risk module warn warning on portfolio", at + 1)) {
-        ++warn_lines;
-    }
-    EXPECT_EQ(warn_lines, 5u) << out;
-    EXPECT_NE(out.find("[WARNING] [RiskManager] Risk module warn warning on portfolio " +
-                       std::string("PM_RML_") ),
-              std::string::npos);
-    EXPECT_EQ(out.find("Risk limits exceeded"), std::string::npos);
-    // One "Using risk manager" per lap, not one per module.
-    size_t using_lines = 0;
-    for (size_t at = out.find("Using risk manager"); at != std::string::npos;
-         at = out.find("Using risk manager", at + 1)) {
-        ++using_lines;
-    }
-    EXPECT_EQ(using_lines, 5u);
+    EXPECT_EQ(rows[0].applied_factor.raw_value(), Decimal(0.5).raw_value());
+    EXPECT_EQ(rows[4].applied_factor.raw_value(), Decimal(1.0).raw_value());
+    // Lap 1 halved the book (2.5 -> 1.25); lap 2 pinned it to the previous positions.
+    EXPECT_EQ(quantity("ZZA"), 1.0);
+    EXPECT_EQ(count_of(out, "Risk module warn warning on portfolio"), 2u) << out;
+    EXPECT_EQ(count_of(out, "Using risk manager"), 2u);
+    EXPECT_EQ(count_of(out, "Risk limits exceeded, scaling positions by 0.500000"), 1u);
+    EXPECT_EQ(count_of(out, "Risk module refuse refused portfolio"), 1u);
+    EXPECT_EQ(count_of(out, "Risk limits not exceeded"), 0u);
 
     auto j = pm_->risk_decisions_json();
-    EXPECT_EQ(j["decisions"].size(), 20u);
-    EXPECT_EQ(j["outcome"]["action"], "NONE");
-    EXPECT_EQ(j["outcome"]["laps"], 5);
+    EXPECT_EQ(j["decisions"].size(), 12u) << "8 lap rows and 4 post-rounding rows";
+    EXPECT_EQ(j["outcome"]["action"], "REFUSE");
+    EXPECT_EQ(j["outcome"]["laps"], 2);
     EXPECT_EQ(j["modules"].size(), 4u);
     EXPECT_EQ(j["modules"][0]["scope"], "portfolio");
 }
@@ -305,7 +322,7 @@ TEST_F(RiskModuleLoopTest, CarverStillScalesExactlyAsToday) {
     auto positions = pm_->get_strategy_positions();
     EXPECT_EQ(positions.at("RML_S").at("ZZA").quantity.raw_value(), expected.raw_value());
 
-    const auto rows = pm_->last_risk_decisions();
+    const auto rows = rows_of(pm_->last_risk_decisions(), RiskPhase::LAP);
     ASSERT_EQ(rows.size(), 1u);
     EXPECT_EQ(rows[0].module_id, "carver");
     EXPECT_EQ(rows[0].requested.action, RiskAction::SCALE);
@@ -321,10 +338,10 @@ TEST_F(RiskModuleLoopTest, DecisionsClearedAtEachProcessMarketData) {
     auto spy = std::make_shared<SpyModule>("spy", RiskAction::NONE);
     ASSERT_TRUE(pm_->set_risk_modules({spy}).is_ok());
     ASSERT_TRUE(pm_->process_market_data(three_days()).is_ok());
-    ASSERT_EQ(pm_->last_risk_decisions().size(), 1u);
-    EXPECT_EQ(pm_->last_risk_decisions()[0].requested.reason, "spy 1");
+    ASSERT_EQ(rows_of(pm_->last_risk_decisions(), RiskPhase::LAP).size(), 1u);
+    EXPECT_EQ(rows_of(pm_->last_risk_decisions(), RiskPhase::LAP)[0].requested.reason, "spy 1");
     ASSERT_TRUE(pm_->process_market_data({make_bar("ZZA", 4, 100.0)}).is_ok());
-    const auto rows = pm_->last_risk_decisions();
+    const auto rows = rows_of(pm_->last_risk_decisions(), RiskPhase::LAP);
     ASSERT_EQ(rows.size(), 1u) << "the first call's row must be gone";
     EXPECT_EQ(rows[0].requested.reason, "spy 2");
 }
@@ -337,7 +354,7 @@ TEST_F(RiskModuleLoopTest, EmptyBookRunsOnBarsButNotEvaluateAndRecordsOneRowPerM
     ASSERT_TRUE(pm_->process_market_data(three_days()).is_ok());
     EXPECT_EQ(a->events, (std::vector<std::string>{"begin_rebalance", "on_bars:1"}));
     EXPECT_EQ(b->events, (std::vector<std::string>{"begin_rebalance", "on_bars:1"}));
-    const auto rows = pm_->last_risk_decisions();
+    const auto rows = rows_of(pm_->last_risk_decisions(), RiskPhase::LAP);
     ASSERT_EQ(rows.size(), 2u);
     EXPECT_TRUE(rows[0].empty_book);
     EXPECT_TRUE(rows[1].empty_book);
@@ -382,7 +399,7 @@ TEST_F(RiskModuleLoopTest, SetRiskModulesRejectsNullAndDuplicateIds) {
         pm_->set_risk_modules({a, std::make_shared<SpyModule>("a", RiskAction::WARN)}).is_error());
     // A rejected call leaves the constructor's Carver module in place.
     ASSERT_TRUE(pm_->process_market_data(three_days()).is_ok());
-    const auto rows = pm_->last_risk_decisions();
+    const auto rows = rows_of(pm_->last_risk_decisions(), RiskPhase::LAP);
     ASSERT_EQ(rows.size(), 1u);
     EXPECT_EQ(rows[0].module_id, "carver");
     EXPECT_TRUE(a->events.empty());
@@ -439,8 +456,8 @@ TEST_F(CarverWindowTest, MatchesTodaysPushTrimIncludingAnEmptyBookLap) {
 
     ASSERT_TRUE(pm_->process_market_data(b1).is_ok());
     // Call 1's book is empty: the bars still went into the window (append before the return).
-    ASSERT_EQ(pm_->last_risk_decisions().size(), 1u);
-    EXPECT_TRUE(pm_->last_risk_decisions()[0].empty_book);
+    ASSERT_EQ(rows_of(pm_->last_risk_decisions(), RiskPhase::LAP).size(), 1u);
+    EXPECT_TRUE(rows_of(pm_->last_risk_decisions(), RiskPhase::LAP)[0].empty_book);
     expect_same_bars(carver->window(), b1, "after the empty-book call");
 
     ASSERT_TRUE(pm_->process_market_data(b2).is_ok());
@@ -479,4 +496,457 @@ TEST_F(CarverWindowTest, TrimsToLookbackBarsAcrossMultipleLaps) {
         }
         expect_same_bars(carver->window(), ref, "after call " + std::to_string(c));
     }
+}
+
+// ===== Commit 6: the PM applies decisions by action =====
+
+namespace {
+
+// A module whose finalize() returns a scripted action and records the book it saw.
+class FinalizeSpy : public RiskModule {
+public:
+    FinalizeSpy(std::string id, RiskAction at_finalize) : id_(std::move(id)), action_(at_finalize) {}
+    const std::string& id() const override { return id_; }
+    const std::string& type() const override { return id_; }
+    std::set<RiskTerm> terms() const override { return {RiskTerm::CUSTOM}; }
+    std::set<RiskAction> capabilities() const override { return {action_}; }
+    Result<RiskDecision> evaluate(const Book& book, const RiskContext& ctx) override {
+        (void)book;
+        (void)ctx;
+        RiskDecision d;
+        d.module_id = id_;
+        return Result<RiskDecision>(d);
+    }
+    Result<RiskDecision> finalize(const Book& book, const RiskContext& ctx) override {
+        finalized.push_back(book);
+        contexts.push_back(ctx);
+        RiskDecision d;
+        d.module_id = id_;
+        d.action = action_;
+        d.scale = action_ == RiskAction::SCALE ? 0.5 : 1.0;
+        d.reason = "at the post-rounding point";
+        return Result<RiskDecision>(d);
+    }
+    nlohmann::json describe() const override { return {{"id", id_}}; }
+
+    std::vector<Book> finalized;
+    std::vector<RiskContext> contexts;
+
+private:
+    std::string id_;
+    RiskAction action_;
+};
+
+}  // namespace
+
+// A two-sleeve manager: strategy ids SA and SB at 0.5 each.
+class RiskScopeTest : public RiskModuleLoopTest {
+protected:
+    void make_two_sleeves(bool allow_fractional, bool use_optimization, Book a, Book b) {
+        static int n = 0;
+        PortfolioConfig pc = risk_config(allow_fractional);
+        pc.use_optimization = use_optimization;
+        pm_ = std::make_unique<PortfolioManager>(pc, "PM_SCOPE_" + std::to_string(++n));
+        sa_ = make_strategy("SA", {std::move(a)});
+        sb_ = make_strategy("SB", {std::move(b)});
+        ASSERT_TRUE(pm_->add_strategy(sa_, 0.5, use_optimization).is_ok());
+        ASSERT_TRUE(pm_->add_strategy(sb_, 0.5, use_optimization).is_ok());
+    }
+    double qty(const std::string& sid, const std::string& symbol) {
+        return static_cast<double>(pm_->get_strategy_positions().at(sid).at(symbol).quantity);
+    }
+    std::shared_ptr<ScriptedStrategy> sa_, sb_;
+};
+
+class RiskApplyTest : public RiskModuleLoopTest {};
+class RiskRefuseTest : public RiskScopeTest {};
+class RiskSleeveTest : public RiskScopeTest {};
+class RiskValidationTest : public RiskScopeTest {};
+class RiskReplaceTest : public RiskScopeTest {};
+class RiskPostRoundingTest : public RiskScopeTest {};
+
+TEST_F(RiskApplyTest, ScaleIsBitwiseTheInPlaceMultiply) {
+    const std::vector<std::pair<std::string, double>> in = {{"Q1", 2.42425398},
+                                                            {"Q2", 7.12345678},
+                                                            {"Q3", -3.33333333},
+                                                            {"Q4", 13.0},
+                                                            {"Q5", 5.55555555}};
+    Book book;
+    for (const auto& [symbol, q] : in) book[symbol] = make_pos(symbol, q, 100.0);
+    make_pm(true, {book});
+    const double s = 0.8894680636;
+    ASSERT_TRUE(pm_->set_risk_modules({std::make_shared<ConstantScaleRiskModule>("c", s)}).is_ok());
+    ASSERT_TRUE(pm_->process_market_data(three_days()).is_ok());
+
+    // Decimal q(x); q *= s: the factor rounds to 88946806 raw, the product truncates.
+    const std::vector<int64_t> expected = {215629648, 633608728, -296489353, 1156308478, 494148921};
+    // The broken path Decimal(double(q) * s) differs on every input, so the inputs discriminate.
+    const std::vector<int64_t> broken = {215629649, 633608731, -296489354, 1156308483, 494148924};
+    auto positions = pm_->get_strategy_positions().at("RML_S");
+    for (size_t k = 0; k < in.size(); ++k) {
+        Decimal ref(in[k].second);
+        ref *= s;
+        EXPECT_EQ(ref.raw_value(), expected[k]);
+        EXPECT_EQ(Decimal(in[k].second * s).raw_value(), broken[k]);
+        EXPECT_EQ(positions.at(in[k].first).quantity.raw_value(), expected[k]) << in[k].first;
+    }
+}
+
+TEST_F(RiskApplyTest, ScaleOneIsNoneAndPrintsNotExceeded) {
+    make_pm(true, {{{"ZZA", make_pos("ZZA", 3.0, 100.0)}}});
+    auto scale_one = std::make_shared<SpyModule>("scale_one", RiskAction::SCALE, 1.0);
+    ASSERT_TRUE(pm_->set_risk_modules({std::make_shared<ConstantScaleRiskModule>("one", 1.0),
+                                       scale_one})
+                    .is_ok());
+    ::testing::internal::CaptureStdout();
+    ASSERT_TRUE(pm_->process_market_data(three_days()).is_ok());
+    const std::string out = ::testing::internal::GetCapturedStdout();
+    EXPECT_EQ(quantity("ZZA"), 3.0);
+    EXPECT_EQ(out.find("Risk limits exceeded"), std::string::npos) << out;
+    EXPECT_NE(out.find("Risk limits not exceeded, no scaling needed"), std::string::npos);
+    EXPECT_EQ(count_of(out, "[ERROR] [RiskManager] Risk module scale_one returned SCALE 1.000000; "
+                            "not applied"),
+              1u)
+        << out;
+    EXPECT_EQ(count_of(out, "Risk module one returned"), 0u);
+    const auto lap = rows_of(pm_->last_risk_decisions(), RiskPhase::LAP);
+    ASSERT_EQ(lap.size(), 2u);
+    EXPECT_EQ(lap[0].requested.action, RiskAction::NONE);  // ConstantScale(1.0) never asks
+    EXPECT_EQ(lap[1].requested.action, RiskAction::SCALE);
+    EXPECT_EQ(lap[1].applied_action, RiskAction::NONE);
+}
+
+TEST_F(RiskApplyTest, CallbackCarriesTheQuantisedFactor) {
+    // 2.5 lots never become whole: the spy's SCALE is applied on every lap.
+    make_pm(false, {{{"ZZA", make_pos("ZZA", 2.5, 100.0)}}});
+    auto spy = std::make_shared<SpyModule>("spy", RiskAction::SCALE, 0.1234567891);
+    ASSERT_TRUE(pm_->set_risk_modules({spy}).is_ok());
+    ASSERT_TRUE(pm_->process_market_data(three_days()).is_ok());
+    ASSERT_GE(spy->applied.size(), 2u);
+    EXPECT_EQ(spy->applied[0].action, RiskAction::SCALE);
+    EXPECT_EQ(spy->applied[0].factor.raw_value(), 12345679);  // round half away, not truncation
+    EXPECT_EQ(spy->applied[0].requested_scale, 0.1234567891);
+    EXPECT_TRUE(spy->applied[0].won);
+    EXPECT_FALSE(spy->applied[0].pinned);
+    // Lap 2 sees what lap 1 applied, quantised.
+    const std::string pm_id = spy->contexts[1].portfolio_id;
+    ASSERT_TRUE(spy->contexts[1].applied.count(pm_id));
+    EXPECT_EQ(spy->contexts[1].applied.at(pm_id), 0.12345679);
+    EXPECT_TRUE(spy->contexts[0].applied.empty());
+    const auto lap = rows_of(pm_->last_risk_decisions(), RiskPhase::LAP);
+    EXPECT_EQ(lap[0].applied_factor.raw_value(), 12345679);
+}
+
+TEST_F(RiskApplyTest, CarverAppliedLevelIsTheQuantisedFactor) {
+    make_pm(true, {{{"ZZA", make_pos("ZZA", 7.0, 100.0)}}});
+    auto carver = std::make_shared<CarverRiskModule>("carver", risk_config(true).risk_config);
+    ASSERT_TRUE(pm_->set_risk_modules({carver}).is_ok());
+    ASSERT_TRUE(pm_->process_market_data(three_days()).is_ok());
+    const auto lap = rows_of(pm_->last_risk_decisions(), RiskPhase::LAP);
+    ASSERT_EQ(lap.size(), 1u);
+    ASSERT_EQ(lap[0].applied_action, RiskAction::SCALE);
+    const double s = lap[0].requested.scale;
+    EXPECT_EQ(carver->applied_level(), static_cast<double>(Decimal(s)));
+    EXPECT_NE(carver->applied_level(), s);  // the level is the quantised factor, not the request
+}
+
+TEST_F(RiskApplyTest, MinWithinALevelNotProduct) {
+    make_pm(true, {{{"ZZA", make_pos("ZZA", 10.0, 100.0)}}});
+    auto a = std::make_shared<SpyModule>("a", RiskAction::SCALE, 0.9);
+    auto b = std::make_shared<SpyModule>("b", RiskAction::SCALE, 0.7);
+    ASSERT_TRUE(pm_->set_risk_modules({a, b}).is_ok());
+    ASSERT_TRUE(pm_->process_market_data(three_days()).is_ok());
+    EXPECT_EQ(quantity("ZZA"), 7.0);
+    ASSERT_GE(a->applied.size(), 1u);  // lap 1 (then the post-rounding point's NONE)
+    EXPECT_FALSE(a->applied[0].won);
+    EXPECT_TRUE(b->applied[0].won);
+    EXPECT_EQ(a->applied[0].factor.raw_value(), Decimal(0.7).raw_value());
+    const auto lap = rows_of(pm_->last_risk_decisions(), RiskPhase::LAP);
+    EXPECT_EQ(lap[0].applied_action, RiskAction::NONE);
+    EXPECT_EQ(lap[1].applied_action, RiskAction::SCALE);
+}
+
+TEST_F(RiskRefuseTest, PortfolioRefuseBreaksTheLoopAndPinsPreviousPositions) {
+    make_pm(false, {{{"ZZA", make_pos("ZZA", 5.0, 100.0)}}});
+    ASSERT_TRUE(pm_->update_strategy_position("RML_S", "ZZA", make_pos("ZZA", 1.0, 100.0)).is_ok());
+    // Lap 1: 5 x 0.85 = 4.25, fractional, so a lap 2 happens, where the refusal fires.
+    ASSERT_TRUE(pm_->set_risk_modules(
+                       {std::make_shared<ConstantScaleRiskModule>("cut", 0.85, /*every_lap=*/true),
+                        std::make_shared<RefuseOnConditionRiskModule>(
+                            "stop", RiskCondition{RiskCondition::Kind::LAP_AT_LEAST, 2.0},
+                            "lap two")})
+                    .is_ok());
+    ::testing::internal::CaptureStdout();
+    const auto result = pm_->process_market_data(three_days());
+    const std::string out = ::testing::internal::GetCapturedStdout();
+    ASSERT_TRUE(result.is_ok());
+
+    const auto lap = rows_of(pm_->last_risk_decisions(), RiskPhase::LAP);
+    int max_lap = 0;
+    for (const auto& r : lap) max_lap = std::max(max_lap, r.lap);
+    EXPECT_EQ(max_lap, 2);
+    EXPECT_EQ(quantity("ZZA"), 1.0) << "pinned to the previous positions";
+    EXPECT_EQ(out.find("Max iterations reached"), std::string::npos);
+    EXPECT_NE(out.find("Risk module stop refused portfolio"), std::string::npos) << out;
+    EXPECT_NE(out.find("Risk refusal: every strategy pinned to its previous positions after "
+                       "iteration 2; leaving the loop"),
+              std::string::npos);
+    EXPECT_NE(out.find("Final positions pinned by a risk refusal after 2 iterations; rounding "
+                       "skipped."),
+              std::string::npos);
+    // The strategy's own targets (its signals) are untouched.
+    EXPECT_EQ(static_cast<double>(strategy_->get_target_positions().at("ZZA").quantity), 5.0);
+    // Lap 2: the REFUSE won over the SCALE, which is recorded and not applied.
+    EXPECT_EQ(lap[2].requested.action, RiskAction::SCALE);
+    EXPECT_EQ(lap[2].applied_action, RiskAction::NONE);
+    EXPECT_EQ(lap[3].applied_action, RiskAction::REFUSE);
+    auto j = pm_->risk_decisions_json();
+    EXPECT_EQ(j["outcome"]["action"], "REFUSE");
+    EXPECT_EQ(j["outcome"]["refused"], true);
+}
+
+TEST_F(RiskRefuseTest, PinnedScopeIsSkippedByForcedRoundingAndFinalCheck) {
+    make_two_sleeves(false, false, {{"AAA", make_pos("AAA", 3.0, 100.0)}},
+                     {{"BBB", make_pos("BBB", 5.0, 100.0)}});
+    ASSERT_TRUE(pm_->update_strategy_position("SA", "AAA", make_pos("AAA", 1.5, 100.0)).is_ok());
+    ASSERT_TRUE(pm_->set_risk_modules(
+                       {std::make_shared<ConstantScaleRiskModule>("cut", 0.85, /*every_lap=*/true)},
+                       {{"SA",
+                         {std::make_shared<RefuseOnConditionRiskModule>(
+                             "stop_a", RiskCondition{RiskCondition::Kind::ALWAYS, 0.0}, "sleeve")}}})
+                    .is_ok());
+    ::testing::internal::CaptureStdout();
+    ASSERT_TRUE(pm_->process_market_data(three_days()).is_ok());
+    const std::string out = ::testing::internal::GetCapturedStdout();
+    EXPECT_EQ(qty("SA", "AAA"), 1.5);  // pinned, fractional, left alone
+    EXPECT_EQ(qty("SB", "BBB"), std::round(5.0 * 0.85 * 0.85 * 0.85 * 0.85 * 0.85));
+    EXPECT_NE(out.find("Max iterations reached (5)"), std::string::npos);
+    EXPECT_NE(out.find("Final forced rounding for BBB"), std::string::npos) << out;
+    EXPECT_EQ(out.find("Final forced rounding for AAA"), std::string::npos) << out;
+    EXPECT_EQ(out.find("FINAL CHECK"), std::string::npos) << out;
+    EXPECT_EQ(out.find("Fractional contract detected in iteration 1: AAA"), std::string::npos);
+}
+
+TEST_F(RiskRefuseTest, PerScopeApplySkipsPinnedSleeves) {
+    make_two_sleeves(true, false, {{"AAA", make_pos("AAA", 4.0, 100.0)}},
+                     {{"BBB", make_pos("BBB", 6.0, 100.0)}});
+    ASSERT_TRUE(pm_->update_strategy_position("SA", "AAA", make_pos("AAA", 2.0, 100.0)).is_ok());
+    ASSERT_TRUE(pm_->set_risk_modules(
+                       {std::make_shared<ConstantScaleRiskModule>("half", 0.5)},
+                       {{"SA",
+                         {std::make_shared<RefuseOnConditionRiskModule>(
+                             "stop_a", RiskCondition{RiskCondition::Kind::ALWAYS, 0.0}, "sleeve")}}})
+                    .is_ok());
+    ASSERT_TRUE(pm_->process_market_data(three_days()).is_ok());
+    EXPECT_EQ(qty("SA", "AAA"), 2.0);  // the seed, not 4 and not 4 x 0.5
+    EXPECT_EQ(qty("SB", "BBB"), 3.0);  // halved
+    const auto sleeve = rows_of(pm_->last_risk_decisions(), RiskPhase::SLEEVE);
+    ASSERT_EQ(sleeve.size(), 1u);
+    EXPECT_EQ(sleeve[0].scope, RiskScope::SLEEVE);
+    EXPECT_EQ(sleeve[0].scope_id, "SA");
+    EXPECT_EQ(sleeve[0].applied_action, RiskAction::REFUSE);
+    EXPECT_EQ(pm_->risk_decisions_json()["outcome"]["pinned_scopes"], nlohmann::json({"SA"}));
+}
+
+TEST_F(RiskRefuseTest, PinnedSleeveIsExcludedFromTheOptimiser) {
+    // The optimiser runs only on symbols with >= 20 returns, so both strategies supply a
+    // 40-price history.
+    make_two_sleeves(false, true, {{"AAA", make_pos("AAA", 9.0, 100.0)}, {"BBB", make_pos("BBB", 4.0, 100.0)}},
+                     {{"AAA", make_pos("AAA", 7.0, 100.0)}, {"BBB", make_pos("BBB", 5.0, 100.0)}});
+    std::unordered_map<std::string, std::vector<double>> history;
+    for (int d = 0; d < 40; ++d) {
+        history["AAA"].push_back(100.0 * (1.0 + 0.03 * std::sin(0.7 * d)));
+        history["BBB"].push_back(100.0 * (1.0 + 0.02 * std::cos(1.3 * d)));
+    }
+    sa_->set_history(history);
+    sb_->set_history(history);
+    ASSERT_TRUE(pm_->update_strategy_position("SA", "AAA", make_pos("AAA", 2.0, 100.0)).is_ok());
+    ASSERT_TRUE(pm_->update_strategy_position("SA", "BBB", make_pos("BBB", 1.0, 100.0)).is_ok());
+    ASSERT_TRUE(pm_->set_risk_modules(
+                       {}, {{"SA",
+                             {std::make_shared<RefuseOnConditionRiskModule>(
+                                 "stop_a", RiskCondition{RiskCondition::Kind::ALWAYS, 0.0},
+                                 "sleeve")}}})
+                    .is_ok());
+    ::testing::internal::CaptureStdout();
+    ASSERT_TRUE(pm_->process_market_data(three_days()).is_ok());
+    const std::string out = ::testing::internal::GetCapturedStdout();
+    EXPECT_EQ(qty("SA", "AAA"), 2.0) << out;
+    EXPECT_EQ(qty("SA", "BBB"), 1.0);
+    // SB went through the optimiser: its output is not its strategy target.
+    const bool sb_changed = qty("SB", "AAA") != 7.0 || qty("SB", "BBB") != 5.0;
+    EXPECT_TRUE(sb_changed) << "SB AAA=" << qty("SB", "AAA") << " BBB=" << qty("SB", "BBB");
+}
+
+TEST_F(RiskSleeveTest, SleeveModulesRunOncePreLoopOnOwnTargetsWithSleeveCapital) {
+    make_two_sleeves(false, false, {{"AAA", make_pos("AAA", 2.5, 100.0)}},
+                     {{"BBB", make_pos("BBB", 4.0, 100.0)}});
+    auto spy = std::make_shared<SpyModule>("sleeve_spy", RiskAction::NONE);
+    ASSERT_TRUE(pm_->set_risk_modules({}, {{"SA", {spy}}}).is_ok());
+    ASSERT_TRUE(pm_->process_market_data(three_days()).is_ok());
+    // Five laps (2.5 never becomes whole) and still one sleeve evaluation.
+    EXPECT_EQ(spy->events, (std::vector<std::string>{"begin_rebalance", "on_bars:0", "evaluate:0"}));
+    ASSERT_EQ(spy->books.size(), 1u);
+    ASSERT_EQ(spy->books[0].size(), 1u);
+    EXPECT_EQ(spy->books[0].at("AAA").quantity, Decimal(2.5));
+    const RiskContext& c = spy->contexts[0];
+    EXPECT_EQ(c.phase, RiskPhase::SLEEVE);
+    EXPECT_EQ(c.lap, 0);
+    EXPECT_EQ(c.scope, RiskScope::SLEEVE);
+    EXPECT_EQ(c.scope_id, "SA");
+    EXPECT_EQ(c.capital, Decimal(1000.0 * 0.5));
+    ASSERT_EQ(spy->rebalance_contexts.size(), 1u);
+    EXPECT_EQ(spy->rebalance_contexts[0].scope, RiskScope::SLEEVE);
+    EXPECT_EQ(spy->rebalance_contexts[0].scope_id, "SA");
+}
+
+TEST_F(RiskSleeveTest, SleeveScaleIsAppliedToThatSleeveOnlyAndSeenByThePortfolio) {
+    make_two_sleeves(true, false, {{"AAA", make_pos("AAA", 4.0, 100.0)}},
+                     {{"BBB", make_pos("BBB", 6.0, 100.0)}});
+    auto portfolio = std::make_shared<SpyModule>("portfolio_spy", RiskAction::NONE);
+    ASSERT_TRUE(pm_->set_risk_modules(
+                       {portfolio},
+                       {{"SA", {std::make_shared<ConstantScaleRiskModule>("half_a", 0.5)}}})
+                    .is_ok());
+    ASSERT_TRUE(pm_->process_market_data(three_days()).is_ok());
+    EXPECT_EQ(qty("SA", "AAA"), 2.0);
+    EXPECT_EQ(qty("SB", "BBB"), 6.0);
+    // The portfolio module measures the sleeve-scaled book and sees what the sleeve applied.
+    ASSERT_EQ(portfolio->books.size(), 1u);
+    EXPECT_EQ(portfolio->books[0].at("AAA").quantity, Decimal(2.0));
+    EXPECT_EQ(portfolio->contexts[0].applied.at("SA"), 0.5);
+}
+
+TEST_F(RiskValidationTest, CompositionTermOnlyOncePerChain) {
+    make_two_sleeves(true, false, {{"AAA", make_pos("AAA", 1.0, 100.0)}},
+                     {{"BBB", make_pos("BBB", 1.0, 100.0)}});
+    const RiskConfig rc = risk_config(true).risk_config;
+    auto portfolio_carver = std::make_shared<CarverRiskModule>("carver", rc);
+    // A Carver at the portfolio and another on a sleeve: correlation/VaR/jump counted twice.
+    auto r = pm_->set_risk_modules({portfolio_carver},
+                                   {{"SA", {std::make_shared<CarverRiskModule>("carver_a", rc)}}});
+    ASSERT_TRUE(r.is_error());
+    EXPECT_NE(std::string(r.error()->what()).find("COMPOSITION"), std::string::npos);
+    // Two at the portfolio scope.
+    EXPECT_TRUE(pm_->set_risk_modules({portfolio_carver, std::make_shared<CarverRiskModule>("c2", rc)})
+                    .is_error());
+    // A magnitude-only module on the sleeve is fine.
+    EXPECT_TRUE(pm_->set_risk_modules(
+                       {portfolio_carver},
+                       {{"SA", {std::make_shared<ConstantScaleRiskModule>("cut_a", 0.9)}}})
+                    .is_ok());
+    // A sleeve key must be a registered strategy.
+    EXPECT_TRUE(pm_->set_risk_modules({}, {{"NOPE", {std::make_shared<ConstantScaleRiskModule>(
+                                                         "cut", 0.9)}}})
+                    .is_error());
+}
+
+TEST_F(RiskValidationTest, AtMostOneReplaceCapablePerScope) {
+    make_two_sleeves(true, false, {{"AAA", make_pos("AAA", 1.0, 100.0)}},
+                     {{"BBB", make_pos("BBB", 1.0, 100.0)}});
+    EXPECT_TRUE(pm_->set_risk_modules({std::make_shared<ReplaceModule>(Book{}),
+                                       std::make_shared<SpyModule>("r2", RiskAction::REPLACE)})
+                    .is_error());
+    EXPECT_TRUE(pm_->set_risk_modules({}, {{"SA",
+                                            {std::make_shared<ReplaceModule>(Book{}),
+                                             std::make_shared<SpyModule>("r2", RiskAction::REPLACE)}}})
+                    .is_error());
+    // One per scope is fine, on two scopes.
+    EXPECT_TRUE(pm_->set_risk_modules({std::make_shared<ReplaceModule>(Book{})},
+                                      {{"SA", {std::make_shared<ReplaceModule>(Book{})}}})
+                    .is_ok());
+}
+
+TEST_F(RiskReplaceTest, SingleSleeveReplaceSetsTheBook) {
+    make_pm(false, {{{"ZZA", make_pos("ZZA", 5.5, 100.0)}}});
+    ASSERT_TRUE(pm_->set_risk_modules(
+                       {std::make_shared<ReplaceModule>(Book{{"ZZB", make_pos("ZZB", 2.0, 50.0)}})})
+                    .is_ok());
+    ::testing::internal::CaptureStdout();
+    ASSERT_TRUE(pm_->process_market_data(three_days()).is_ok());
+    const std::string out = ::testing::internal::GetCapturedStdout();
+    auto positions = pm_->get_strategy_positions().at("RML_S");
+    ASSERT_EQ(positions.size(), 1u);
+    EXPECT_EQ(static_cast<double>(positions.at("ZZB").quantity), 2.0);
+    EXPECT_NE(out.find("Risk replacement: the strategy's targets replaced by risk module replace "
+                       "after iteration 1; leaving the loop"),
+              std::string::npos)
+        << out;
+    EXPECT_EQ(pm_->risk_decisions_json()["outcome"]["action"], "REPLACE");
+}
+
+TEST_F(RiskReplaceTest, MultiSleevePortfolioReplaceFailsClosed) {
+    make_two_sleeves(true, false, {{"AAA", make_pos("AAA", 4.0, 100.0)}},
+                     {{"BBB", make_pos("BBB", 6.0, 100.0)}});
+    ASSERT_TRUE(pm_->update_strategy_position("SA", "AAA", make_pos("AAA", 1.0, 100.0)).is_ok());
+    ASSERT_TRUE(pm_->update_strategy_position("SB", "BBB", make_pos("BBB", 2.0, 100.0)).is_ok());
+    ASSERT_TRUE(pm_->set_risk_modules(
+                       {std::make_shared<ReplaceModule>(Book{{"ZZB", make_pos("ZZB", 2.0, 50.0)}})})
+                    .is_ok());
+    ::testing::internal::CaptureStdout();
+    ASSERT_TRUE(pm_->process_market_data(three_days()).is_ok());
+    const std::string out = ::testing::internal::GetCapturedStdout();
+    EXPECT_EQ(qty("SA", "AAA"), 1.0);
+    EXPECT_EQ(qty("SB", "BBB"), 2.0);
+    EXPECT_EQ(pm_->get_strategy_positions().at("SA").count("ZZB"), 0u);
+    EXPECT_NE(out.find("[ERROR] [RiskManager] Risk module replace replaced the book of a portfolio "
+                       "of 2 strategies, which cannot be distributed"),
+              std::string::npos)
+        << out;
+}
+
+TEST_F(RiskPostRoundingTest, FinalizeSeesTheRoundedBookAndMayWarnOrRefuse) {
+    // 2.5 lots never become whole: five laps, then forced rounding to 3 (the half rounds away).
+    struct Case {
+        RiskAction action;
+        double expected_qty;
+        RiskAction expected_applied;
+        const char* expected_line;
+    };
+    const std::vector<Case> cases = {
+        {RiskAction::WARN, 3.0, RiskAction::WARN,
+         "[WARNING] [RiskManager] Risk module fin warning on portfolio"},
+        {RiskAction::REFUSE, 1.0, RiskAction::REFUSE, "Risk module fin refused portfolio"},
+        {RiskAction::SCALE, 3.0, RiskAction::NONE,
+         "[ERROR] [RiskManager] Risk module fin returned SCALE at the post-rounding point; only "
+         "NONE, WARN and REFUSE are applied there"},
+    };
+    for (const auto& c : cases) {
+        SCOPED_TRACE(risk_action_name(c.action));
+        make_pm(false, {{{"ZZA", make_pos("ZZA", 2.5, 100.0)}}});
+        ASSERT_TRUE(
+            pm_->update_strategy_position("RML_S", "ZZA", make_pos("ZZA", 1.0, 100.0)).is_ok());
+        auto fin = std::make_shared<FinalizeSpy>("fin", c.action);
+        ASSERT_TRUE(pm_->set_risk_modules({fin}).is_ok());
+        ::testing::internal::CaptureStdout();
+        ASSERT_TRUE(pm_->process_market_data(three_days()).is_ok());
+        const std::string out = ::testing::internal::GetCapturedStdout();
+        ASSERT_EQ(fin->finalized.size(), 1u);
+        EXPECT_EQ(fin->finalized[0].at("ZZA").quantity, Decimal(3.0)) << "the rounded book";
+        EXPECT_EQ(fin->contexts[0].phase, RiskPhase::POST_ROUNDING);
+        EXPECT_EQ(fin->contexts[0].lap, 5);
+        EXPECT_EQ(quantity("ZZA"), c.expected_qty);
+        EXPECT_NE(out.find(c.expected_line), std::string::npos) << out;
+        const auto post = rows_of(pm_->last_risk_decisions(), RiskPhase::POST_ROUNDING);
+        ASSERT_EQ(post.size(), 1u);
+        EXPECT_EQ(post[0].requested.action, c.action);
+        EXPECT_EQ(post[0].applied_action, c.expected_applied);
+        pm_.reset();
+        StateManager::reset_instance();
+    }
+}
+
+TEST_F(RiskPostRoundingTest, TheCarverModuleIsSilentThere) {
+    // The golden log test pins the lines; here: one Carver post-rounding row, NONE, and no
+    // second "Risk management result" line in the rebalance.
+    make_pm(true, {{{"ZZA", make_pos("ZZA", 7.0, 100.0)}}});
+    ::testing::internal::CaptureStdout();
+    ASSERT_TRUE(pm_->process_market_data(three_days()).is_ok());
+    const std::string out = ::testing::internal::GetCapturedStdout();
+    EXPECT_EQ(count_of(out, "Risk management result:"), 1u);
+    const auto post = rows_of(pm_->last_risk_decisions(), RiskPhase::POST_ROUNDING);
+    ASSERT_EQ(post.size(), 1u);
+    EXPECT_EQ(post[0].module_id, "carver");
+    EXPECT_EQ(post[0].requested.action, RiskAction::NONE);
+    EXPECT_FALSE(post[0].requested.metrics.has_value());
 }
