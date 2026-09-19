@@ -73,6 +73,23 @@ TEST(LivePortfolioHelpers, QtReportSnapshotReplacesSystemQuantityAndFiltersClosu
     EXPECT_EQ(result.value().by_strategy.at("TREND").count("NQ"), 0u);
 }
 
+TEST(LivePortfolioHelpers, QtReportSnapshotCopiesRemainStableForCsvAndEmailConsumers) {
+    ReportSnapshotDatabase db;
+    db.rows["TREND"] = {{"ES", make_position("ES", 7.0)}};
+
+    auto result = load_qt_report_position_snapshot(
+        db, "LIVE_TREND", {"TREND"}, "INVESTOR_A", report_date(), {});
+
+    ASSERT_TRUE(result.is_ok());
+    auto csv_positions = result.value().by_strategy;
+    auto email_positions = result.value().combined;
+
+    db.rows["TREND"]["ES"] = make_position("ES", 99.0);
+
+    EXPECT_DOUBLE_EQ(csv_positions.at("TREND").at("ES").quantity.as_double(), 7.0);
+    EXPECT_DOUBLE_EQ(email_positions.at("ES").quantity.as_double(), 7.0);
+}
+
 TEST(LivePortfolioHelpers, QtReportSnapshotPropagatesScopedDatabaseErrors) {
     ReportSnapshotDatabase db;
     db.return_error = true;

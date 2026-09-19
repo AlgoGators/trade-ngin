@@ -3026,19 +3026,37 @@ int trade_ngin::run_live_portfolio(const LivePortfolioConfig& portfolio_cfg, int
         // All real transaction-cost data flows from cost_manager_->calculate_costs() at
         // execution time and lives on trading.executions / trading.live_results directly.
 
-        // Export current positions with per-strategy breakdown
-        std::string today_filename;
-        auto current_export_result = csv_exporter->export_current_positions(
-            now, strategy_positions_map,
-            previous_day_close_prices,  // Market prices (Day T-1 close)
-            current_portfolio_value, gross_notional, net_notional, strategy_instances_map);
-
-        if (current_export_result.is_ok()) {
-            today_filename = current_export_result.value();
-            INFO("Today's positions saved to " + today_filename);
+        StrategyPositionRows report_strategy_positions;
+        std::unordered_map<std::string, Position> report_positions;
+        bool reporting_blocked = false;
+        auto report_snapshot = load_qt_report_position_snapshot(
+            *db, combined_strategy_id, strategy_names, portfolio_id, now,
+            strategy_positions_map);
+        if (report_snapshot.is_error()) {
+            reporting_blocked = true;
+            ERROR("INVESTOR_REPORT_BLOCKED: " +
+                  std::string(report_snapshot.error()->what()));
         } else {
-            ERROR("Failed to export current positions: " +
-                  std::string(current_export_result.error()->what()));
+            report_strategy_positions = report_snapshot.value().by_strategy;
+            report_positions = report_snapshot.value().combined;
+        }
+
+        // Export current QT report positions with per-strategy breakdown
+        std::string today_filename;
+        if (!reporting_blocked) {
+            auto current_export_result = csv_exporter->export_current_positions(
+                now, report_strategy_positions,
+                previous_day_close_prices,  // Market prices (Day T-1 close)
+                current_portfolio_value, gross_notional, net_notional, strategy_instances_map);
+
+            if (current_export_result.is_ok()) {
+                today_filename = current_export_result.value();
+                INFO("Today's positions saved to " + today_filename);
+            } else {
+                reporting_blocked = true;
+                ERROR("Failed to export current positions: " +
+                      std::string(current_export_result.error()->what()));
+            }
         }
 
         // Export yesterday's finalized positions with per-strategy breakdown (if not first trading
@@ -3098,7 +3116,7 @@ int trade_ngin::run_live_portfolio(const LivePortfolioConfig& portfolio_cfg, int
         INFO("Daily trend following position generation completed successfully");
 
         // Send email report with trading results (based on send_email flag)
-        if (send_email) {
+        if (send_email && !reporting_blocked && !today_filename.empty()) {
             INFO("Sending email report...");
             try {
                 EmailSenderConfig email_config;
@@ -3400,11 +3418,11 @@ int trade_ngin::run_live_portfolio(const LivePortfolioConfig& portfolio_cfg, int
                     // above So we don't need to create it here anymore
 
                     // Generate email body with is_daily_strategy flag set to true and current
-                    // prices. Pass strategy_positions_map and all_strategy_executions for
+                    // prices. Pass the QT report snapshot and all_strategy_executions for
                     // per-strategy tables.
                     std::string email_body = email_sender->generate_trading_report_body(
-                        strategy_positions_map,  // Per-strategy positions for grouped tables
-                        positions,
+                        report_strategy_positions,  // Per-strategy QT report positions
+                        report_positions,
                         risk_eval.is_ok() ? std::make_optional(risk_eval.value()) : std::nullopt,
                         strategy_metrics, all_strategy_executions, date_str,
                         portfolio_id,                 // Portfolio name for email header
@@ -3442,8 +3460,10 @@ int trade_ngin::run_live_portfolio(const LivePortfolioConfig& portfolio_cfg, int
             } catch (const std::exception& e) {
                 ERROR("Exception during email sending: " + std::string(e.what()));
             }
-        } else {
+        } else if (!send_email) {
             INFO("Email reporting disabled");
+        } else {
+            INFO("Email reporting blocked because the current-position report was unavailable");
         }
 
         std::cerr << "At end of main: initialized=" << Logger::instance().is_initialized()
