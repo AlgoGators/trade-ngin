@@ -1240,7 +1240,7 @@ int main(int argc, char* argv[]) {
         // Only run strategy calculations if NOT a non-trading day
         // ========================================
         if (!skip_strategy_processing) {
-            // FIX: Seed strategy's positions_ from yesterday's DB snapshot BEFORE prewarm.
+            // FIX: Seed strategy's positions_ from yesterday's DB snapshot BEFORE its feed.
             // Each live invocation is a fresh process where positions_ defaults to zero.
             // The Carver position buffer reads positions_ as the comparison anchor; without
             // seeding it correctly the buffer can't absorb small day-to-day signal jitter
@@ -1283,15 +1283,6 @@ int main(int argc, char* argv[]) {
                     INFO("No yesterday positions to seed for strategy " +
                          seed_strategy_name + " (first run or no data)");
                 }
-            }
-
-            // Pre-warm strategy state so portfolio can pull price history for optimization/risk
-            INFO("Preprocessing data in strategy to populate price history...");
-            auto strat_prewarm = tf_strategy->on_data(all_bars);
-            if (strat_prewarm.is_error()) {
-                std::cerr << "Failed to preprocess data in strategy: "
-                          << strat_prewarm.error()->what() << std::endl;
-                return 1;
             }
 
             // Process data through portfolio pipeline (optimization + risk), mirroring backtest

@@ -178,36 +178,6 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                                         "PortfolioManager");
             }
 
-            // PM-price-history: MEASURED, AND LEFT ALONE.
-            //
-            // update_historical_returns() reads each strategy's
-            // get_price_history(), which only that strategy's on_data()
-            // populates -- and it runs BEFORE the on_data loop below, so it
-            // reads the previous cycle's state. Its output feeds
-            // optimize_positions() later in this same call, so the optimiser
-            // covaries history that does not include the bars it is optimising
-            // against.
-            //
-            // Moving this call after the loop was tried in stage 3 T-1 on the
-            // expectation that the futures double feed made it byte-identical.
-            // It is NOT. The R6 A/B on bt_portfolio_conservative, same frozen
-            // window on both sides, measured:
-            //
-            //   executions       399 -> 407
-            //   final_positions  2982 -> 3001
-            //   total_return     0.091331 -> 0.092379
-            //   sharpe_ratio     0.608967 -> 0.619561
-            //   profit_factor    0.575942 -> 0.773106
-            //   max_loss         34247.70 -> 27489.28
-            //   first equity divergence 2025-06-30
-            //
-            // and reverting this one change restored every table to identical.
-            // So it changes positions and costs: class C, needing its own
-            // decision and its own A/B, not a byte-identical cleanup.
-            //
-            // Do not "fix" the ordering here without that decision.
-            update_historical_returns(data);
-
             // Store current positions for each strategy to detect changes
             for (const auto& [id, info] : strategies_) {
                 prev_positions[id] = info.current_positions;
@@ -316,6 +286,13 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                 }
             }
 
+            // PM-price-history. The history is read AFTER every strategy has seen this
+            // call's bars (update_historical_returns() copies each strategy's
+            // get_price_history(), which only its on_data() fills), so the optimiser's
+            // newest bar is the bar the strategy signals from. The futures runners'
+            // prewarm, which used to fill the history before this call, is gone with
+            // it. Ruled class C (STAGE3_PLAN §25a.2, §28b.3) and measured (T-4e).
+            update_historical_returns(data);
         }
 
         //  Iterative dynamic opt + risk management loop
