@@ -234,7 +234,7 @@ The audit section will include the UTC audit timestamp, database identity in non
 
 ### 8.4 Audit evidence checkpoint
 
-The [Task 8 production database audit](../../audits/2026-09-18-qt-platform-production-db-audit.md) records the 2026-09-19T02:32:18Z UTC checkpoint and exact source SHAs. Live evidence is **blocked**: no existing approved production connection was established from the scoped local configuration. No database connection or SQL was attempted, and migration 012 was not applied. Local schema/migration contracts are documented separately from unverified live schema and data. Acceptance criterion 8 remains unmet pending the required read-only production session; this checkpoint does not establish deployment readiness.
+The [Task 8 production database audit](../../audits/2026-09-18-qt-platform-production-db-audit.md) records the completed 2026-09-19T06:19:52Z UTC read-only checkpoint and exact source SHAs. Catalog and aggregate queries ran only inside explicitly read-only transactions and every transaction rolled back. The live schema is missing migration 012, all 3,803 production position rows are in the `system` stream, and all nine latest system scopes lack QT evidence. The supplied login is a superuser rather than a read-only role, although the audit sessions were client-enforced read-only. Acceptance criterion 8's evidence collection is complete, but the evidence blocks deployment readiness until the separately authorized migration/deployment sequence and a successful repeat audit.
 
 ## 9. Testing Strategy
 

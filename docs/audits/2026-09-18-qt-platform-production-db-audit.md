@@ -2,67 +2,79 @@
 
 > Related local build and disposable-PostgreSQL evidence is recorded in
 > [`2026-09-19-qt-platform-verification.md`](2026-09-19-qt-platform-verification.md).
-> That evidence does not replace the blocked production read-only audit.
 
-**Verdict: blocked for live evidence.** Repository contracts were inspected, but an existing approved production connection could not be established from the scoped local configuration. Production schema compatibility, position integrity, and legacy override classifications remain unverified. This report does not satisfy the design's live-audit acceptance criterion or authorize deployment.
+**Verdict: the live read-only audit completed successfully, but production is not compatible with the proposed QT reporting release.** Migration 012 is absent, the QT position stream is empty, and every latest system scope lacks QT evidence. No production change was made.
 
 ## Evidence scope and provenance
 
-- Audit checkpoint: **2026-09-19T02:32:18Z (UTC)**. The filename follows the design's 2026-09-18 task date.
-- Trade Ngin source inspected: `bc07b4e70a74e9c3bdfe8e1d3651e68163b4be0c`.
-- AlgoLens source inspected: `5a51c466cff1d58047f869c6ab5c5b929e177822`.
-- Scope: local QT reporting and override schema contracts, approved-client discovery, and the production checks specified in Task 8.
-- Method: the auditing-project-truth evidence hierarchy. Local implementation, planned migrations, live schema, and live data are separate evidence classes.
-- Both tracked worktrees were clean when their source evidence was inspected. Repository SHAs identify local source, not deployed binaries or applied database migrations.
+- Live audit checkpoint: **2026-09-19T06:19:52Z (UTC)**. The filename retains the design task's 2026-09-18 date.
+- Trade Ngin source under review: `a74f1afc45cb5d94aa5bc5d30c18d1a710825fe4`.
+- AlgoLens source under review: `ccd0571ad4b428b45c8e40de964b0ba81eca99be`.
+- Database and role identities are retained only as redacted fingerprints: `db#dcd5f3f8` and `role#e8a48653`.
+- The approved local connection material matched exactly one pgAdmin server profile. Its maintenance database was used only to discover the single accessible database containing both `trading.positions` and `trading.position_overrides`.
+- Runtime database observations prove the live schema and aggregate data state at the checkpoint. Source SHAs prove only the local implementations inspected; they do not prove those binaries are deployed.
 
-## Safety posture and access finding
+## Safety posture
 
-Existing PostgreSQL client binaries were found. No approved production connection configuration was established. Filename-only discovery in the two review worktrees and corresponding source checkouts found environment examples but no actual environment files. Standard local PostgreSQL service/password configuration files checked were absent. A boolean-only check found none of the relevant PostgreSQL or application connection environment settings. No environment values were emitted, and no secrets were requested or reconstructed. This is a scoped discovery result, not a claim that production access does not exist elsewhere.
+The first successful connection opened `BEGIN READ ONLY` before the posture query. PostgreSQL reported `transaction_read_only=on`; the login's default was `off`. Every subsequent audit connection additionally forced `default_transaction_read_only=on` through the connection options and still opened an explicit `BEGIN READ ONLY` transaction. Those sessions reported both settings `on`.
 
-The repository's schema checker accepts connection material, but its existence is not proof of approved production access. The exploratory schema script can print sample rows and does not implement this audit's posture gate; neither script was executed.
+The saved pgAdmin login itself is **not** a read-only account. Catalog checks show that it is a superuser with create-database, create-role, replication, and row-security-bypass attributes. It also has schema creation plus `SELECT`, `INSERT`, `UPDATE`, `DELETE`, and `TRUNCATE` privileges on both audited tables. Neither audited table has row-level security enabled. The session controls—not the credential—provided the read-only boundary for this audit.
 
-**Database connections attempted: 0. SQL statements executed: 0. Production changes: 0.** Database identity, session user, default read-only setting, and transaction read-only setting were not observed. No transaction was opened, so there was no transaction to roll back. No migration, repair, test write, stored procedure, temporary object, explicit lock, or session-setting change was attempted. Migration 012 was read as source text only and was not applied.
+Only catalog and aggregate `SELECT` statements were executed. Every successful audit transaction ended with `ROLLBACK`. No migration, DDL, DML, procedure, temporary object, explicit lock, repair, raw-row export, or test write was attempted. No credential, investor identifier, portfolio identifier, strategy identifier, symbol, user identifier, reason, individual quantity, or JSON payload is retained here.
 
-## Highest-impact gaps
+## Highest-impact findings
 
-1. Live schema compatibility is blocked. AlgoLens's local contract requires the new override portfolio column and legacy-scope table; their production presence is unknown. Do not treat passing local tests or the migration file as deployment evidence.
-2. Live QT coverage, duplicate keys, divergence, and zero closures are blocked. No operational report correctness claim can be inferred from this audit.
-3. Legacy rows with zero, one, or multiple candidate portfolios were not counted. Migration 012's local inference joins strategy and symbol across available positions without a date predicate. A future live audit must examine available date evidence before any separate migration/deployment decision; this report establishes no safe legacy mapping.
+1. **Migration 012 is not applied.** `trading.position_overrides` has no `portfolio_id` column. `trading.position_override_legacy_scopes` is missing. The new-row portfolio constraint, portfolio/strategy/time index, and append-only rules for the companion table are therefore also missing.
+2. **The QT stream has no production data.** All 3,803 position rows are in the `system` stream. Across nine latest system book/strategy scopes and 64 latest system symbol keys, there are zero QT evidence rows. All nine scopes lack QT evidence, and all 64 system keys lack a matching QT key.
+3. **There is no production override history to migrate.** `trading.position_overrides` contains zero rows. The zero-, one-, and multiple-portfolio legacy candidate categories are therefore all zero, as are exact duplicate override groups. This removes legacy-row ambiguity at this checkpoint but does not substitute for applying migration 012.
+4. **The position primary key is healthy.** It covers portfolio, strategy ID, strategy name, date, symbol, and stream. The audit found zero duplicate complete-key groups.
+5. **The supplied credential is operationally over-privileged.** The audit was safely constrained, but future routine audits should use a dedicated read-only role or approved service profile rather than relying on client-enforced session settings around a superuser.
 
 ## Evidence matrix
 
 | Item | Owner/repository | Claimed state | Evidence | Verified state | Gap/next action |
 |---|---|---|---|---|---|
-| Read-only transaction and database identity | Production PostgreSQL | Required before any audit query | No approved connection established; zero SQL executed | blocked | Use an existing approved client and prove the required posture first |
-| Applied migration/version evidence | Production PostgreSQL | Must support the proposed application contract | No live catalog observations | blocked | Collect permitted live catalog evidence; source migration presence is insufficient |
-| Full position key and stream contract in source | Trade Ngin | Six-part key separates books, strategies, dates, symbols, and streams | Migration 001 defines `(portfolio_id, strategy_id, strategy_name, date, symbol, portfolio_type)`; migration 003 permits `system`, `qt`, and `benchmark` | done | Verify the corresponding production constraints separately |
-| Production position columns, types, defaults, nullability, keys, checks, and indexes | Production PostgreSQL | Match the reporting contract | Only migration source and application expectations available | blocked | Inspect allowed catalogs after proving read-only posture |
-| Existing override append-only contract in source | Trade Ngin | Override rows have update/delete suppression rules | Migration 004 defines the table, indexes, and two rules | done | Rules in source do not prove live enforcement or protection from privileged bypass/TRUNCATE |
-| Portfolio-scoped override migration in source | Trade Ngin | Preserve original legacy rows while requiring portfolio scope for new rows | Migration 012 adds a `TEXT` portfolio column, a `NOT VALID` non-null check, portfolio/strategy/time index, and append-only legacy mapping table | done | Planned migration only; production application and data suitability remain blocked |
-| Companion schema requirements | AlgoLens | Reads/writes require portfolio-scoped override history | `algolens-api/algolens/infrastructure/db/schema_contract.py` declares the new column and legacy table | done | Compare against live schema before deployment |
-| Local report snapshot handoff | Trade Ngin | Fresh QT snapshot supplies report position maps | `apps/strategies/live_portfolio_runner.cpp` calls `load_qt_report_position_snapshot`, blocks on error, and passes its strategy map to the current-positions exporter | partial | This source inspection is not a runtime or investor-report test |
-| Live override and legacy-table columns, constraints, indexes, and append-only rules | Production PostgreSQL | Support scoped history without rewriting legacy evidence | No live catalog observations | blocked | Inspect `information_schema.columns`, `pg_indexes`, `pg_constraint`, and `pg_rules` |
-| Stream population and duplicate full position keys | Production PostgreSQL | Supported streams and unique complete identities | No grouped data queries executed | blocked | Return aggregate stream categories and duplicate-group counts only |
-| Latest system/QT coverage and missing QT evidence | Production PostgreSQL | Complete reporting evidence within each full scope | No grouped data queries executed | blocked | Count coverage categories using complete identity and scoped dates |
-| QT zero closures and QT/system divergence | Production PostgreSQL | Zero rows count as closure evidence; quantities may differ | No grouped data queries executed | blocked | Return closure/divergence counts, without quantities or raw position identifiers |
-| Legacy overrides: zero, exactly one, or multiple candidate portfolios | Production PostgreSQL | Only unambiguous scope may be considered later | No classification queries executed | blocked | Count candidate classes using strategy/symbol and available date evidence; do not insert mappings |
-| Duplicate/orphaned/cross-book-ambiguous audit evidence | Production PostgreSQL | Audit history remains attributable | No data observations | blocked | Establish aggregate anomaly categories within the permitted scope |
-| Production compatibility and visible reporting behavior | Shared | Proposed changes work in the deployed environment | Local source only; no live or deployment evidence | not verifiable | Complete the live audit and separate deployment/runtime verification |
+| Read-only audit session | Production PostgreSQL | Required before any live query | Initial transaction reported read-only `on`; subsequent audit sessions also forced default read-only `on`; every successful session used `BEGIN READ ONLY` and rolled back | done | Preserve this transaction gate for any repeat audit |
+| Read-only credential | Production access | Prefer a credential that cannot write | Connected role is a superuser with full audited-table write privileges | missing | Provision or identify a dedicated read-only role/profile |
+| Core position schema | Production PostgreSQL | Complete six-part identity and stream discriminator | Full six-column primary key is present; no duplicate full keys; `portfolio_type` is present | done | No correction required for this feature's position identity |
+| Position stream constraint | Production PostgreSQL | Support the streams expected by deployed source | Live constraint permits only `system` and `qt`; later benchmark stream values in repository migrations are absent | partial | Reconcile deployed migration level separately from the QT release decision |
+| Base override append-only schema | Production PostgreSQL | Existing override evidence is append-only | Base table, primary key, supporting indexes, and no-update/no-delete rules are present | done | Retain these rules during migration 012 |
+| Portfolio-scoped override schema | Trade Ngin migration 012 / AlgoLens contract | New audit rows identify portfolio and history is portfolio-scoped | Portfolio column, companion table, constraint, index, and companion rules are absent | missing | Apply migration 012 only in a separately authorized write/change window before deploying the dependent AlgoLens code |
+| Stream population | Production PostgreSQL | QT state exists alongside system proposals | 3,803 system rows; zero QT rows | missing | Deploy/run the approved seed lifecycle only after release prerequisites are met, then re-audit |
+| Latest system-to-QT coverage | Production PostgreSQL | Every report scope has QT evidence | Nine latest system scopes and 64 system keys; zero QT evidence; all scopes and keys missing QT | missing | Current production data cannot support the strict QT report snapshot |
+| QT divergence and closures | Production PostgreSQL | Manual differences and zero closures are represented | No QT rows, so equal/different pairs and zero closures are all zero | not verifiable | Re-audit after legitimate QT state exists; zero here means absent evidence, not successful equivalence |
+| Legacy override classification | Production PostgreSQL | Existing rows classified by candidate portfolio | Override table contains zero rows; all candidate and duplicate categories are zero | done | Record that migration 012 has no existing legacy rows to infer at this checkpoint |
+| Production compatibility with reviewed code | Shared | Database supports the proposed Trade Ngin and AlgoLens contracts | QT evidence is absent and migration 012 schema is absent | missing | Do not treat this checkpoint as deployment approval |
 
-The local `done` rows mean the specified source artifacts were verified to exist and contain the stated contract. They do not mean the migration is applied, tests were rerun in this audit, or production is ready.
+## Sanitized aggregate evidence
 
-## Sanitized count categories
+| Measure | Count |
+|---|---:|
+| Total production position rows | 3,803 |
+| System stream rows | 3,803 |
+| QT stream rows | 0 |
+| Duplicate complete position-key groups | 0 |
+| Latest system book/strategy scopes | 9 |
+| Latest system symbol keys | 64 |
+| Latest scopes missing all QT evidence | 9 |
+| Latest system keys missing matching QT evidence | 64 |
+| Observed QT zero-closure rows (QT stream absent; behavior not verifiable) | 0 |
+| Position override rows | 0 |
+| Legacy overrides with zero / one / multiple candidate portfolios | 0 / 0 / 0 |
+| Exact duplicate override groups | 0 |
 
-All requested production counts are **not collected**, not zero: supported/other stream populations; duplicate complete-key groups; system/QT coverage groups; missing-QT groups; QT zero closures; equal/different/unmatched QT/system groups; legacy rows with zero/exactly-one/multiple candidates; and duplicate/orphaned/ambiguous override groups. No database names, account names, investor identifiers, user identifiers, symbols, reasons, quantities, or payload samples were retained.
+## Daily Trading Report interpretation
 
-## Permitted resumption sequence
+The reviewed code preserves the existing email template, recipients, schedule, and non-position content. However, the current production database has no QT position evidence to supply the report. The strict report path must not be represented as production-ready until the authorized migration/deployment sequence has occurred and a repeat read-only audit confirms QT coverage. This audit did not send an email, run the live portfolio process, seed rows, or verify a deployed runtime.
 
-1. Resolve an existing approved production client/configuration through the normal access owner. Do not infer a target from example files or guess access.
-2. The first SQL must be `BEGIN READ ONLY;`, followed by the exact Task 8 posture query selecting database/user identity and the transaction/default read-only settings. Keep identity values in memory and emit only sanitized status. Stop immediately unless `transaction_read_only` is `on`.
-3. Only after that gate, run catalog `SELECT`s against the four allowed catalog surfaces and grouped/count/sanitized position and legacy-classification `SELECT`s. Scope positions with the complete six-part key; compare streams within matching book, strategy, name, date, and symbol scopes. Never export raw identifiers or payloads.
-4. End with `ROLLBACK;`, including after query errors when possible. Document only sanitized observations and timestamps. Do not apply migration 012 or repair any data.
-5. Review the evidence and unresolved legacy/date ambiguities before a separately authorized deployment or migration decision.
+## Required next sequence
 
-## Verification and limits
+1. Have the production owner approve a write/change window for migration 012. This audit does **not** authorize or perform that migration.
+2. Apply migration 012 through the normal controlled deployment process, then verify the portfolio column, companion table, constraint, index, and append-only rules.
+3. Deploy the compatible Trade Ngin and AlgoLens releases in the approved order and run the normal QT seed lifecycle. Do not manufacture audit rows or test writes in production.
+4. Repeat this read-only audit. Require non-missing QT evidence for every report scope before enabling or representing strict QT-backed investor reporting as ready.
+5. Replace the superuser connection with a dedicated read-only audit role or service profile for future verification.
 
-This was documentation-only work. Source migration and contract files were inspected, not executed. No application, migration, or integration tests were run against production. The documentation is subject to a content review for secrets/raw data and `git diff --check` before commit. No compliance certification, absence-of-vulnerability claim, or production readiness claim is made.
+## Verification limits
+
+This audit establishes live schema and aggregate data facts only. It does not prove that reviewed source commits are deployed, does not authorize deployment, does not validate email delivery, and is not a security or compliance certification. The lack of QT and override rows is an observed absence of evidence—not proof that manual position editing works.

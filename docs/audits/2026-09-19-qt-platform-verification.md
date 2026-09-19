@@ -2,11 +2,11 @@
 
 **Checkpoint:** 2026-09-19 (America/New_York)
 
-**Release verdict:** local QT reporting gates pass; production evidence remains blocked. No production connection, query, migration, or write was attempted.
+**Release verdict:** local QT reporting gates pass and the production read-only audit is complete, but production is not ready for the reviewed QT reporting release. Migration 012 and QT position evidence are absent. No production migration or write was attempted.
 
 ## Source under test
 
-- Trade Ngin: branch `codex/qt-effective-position-reporting`, implementation through commit `a5db389`.
+- Trade Ngin: branch `codex/qt-effective-position-reporting`, implementation through commit `a74f1af`.
 - AlgoLens: branch `codex/qt-effective-position-reporting`, commit `ccd0571`.
 - The daily trading report email template and sender were not changed by this work. The intended behavior change remains limited to the position quantities supplied to the existing CSV/email reporting path.
 
@@ -21,7 +21,7 @@
 | QT seed lifecycle on real PostgreSQL | pass | 10/10 checks passed on a separate disposable PostgreSQL 16 container | Manual ES quantity remained `99`, NG zero closure remained `0`, system rows were unchanged, three reruns inserted nothing, and the next date carried both manual states |
 | Disposable database cleanup | pass | Both harness containers were removed | No production endpoint or data was involved |
 | Full legacy C++ test executable | pass | The monolithic executable passed 1,277/1,277 tests three times in one-process mode: 27.485, 26.155, and 27.259 seconds | No test was disabled, filtered, reordered, or weakened. The former order-dependent BaseStrategy failure and immediate segfault are fixed as described below |
-| Approved production read-only audit | blocked | No approved production PostgreSQL service/profile or credential source exists in the scoped local environment | Zero production connections and zero production SQL statements were attempted |
+| Approved production read-only audit | complete — release blocked | The live database was inspected through catalog and aggregate `SELECT`s in explicitly read-only transactions; every transaction rolled back | Production has 3,803 system rows, zero QT rows, zero overrides, no duplicate full position keys, and no migration-012 schema. The supplied login is a superuser, so session controls—not account privileges—provided the read-only boundary |
 
 ## Defects found and fixed during verification
 
@@ -32,7 +32,7 @@
 
 ## Production read-only audit status
 
-The existing production audit remains authoritative: `docs/audits/2026-09-18-qt-platform-production-db-audit.md`.
+The completed production audit is authoritative: `docs/audits/2026-09-18-qt-platform-production-db-audit.md`.
 
 The required first statements are:
 
@@ -43,13 +43,13 @@ SELECT current_database(), current_user,
        current_setting('default_transaction_read_only') AS default_read_only;
 ```
 
-The audit must stop unless `transaction_read_only` is `on`. After that gate, only catalog and aggregate `SELECT` statements are permitted, followed by `ROLLBACK`. No raw investor identifiers, quantities, reasons, credentials, or position payloads may be copied into documentation.
+The initial gate reported `transaction_read_only=on`. Subsequent connections additionally forced the session default to read-only. Only catalog and aggregate `SELECT` statements were executed, followed by `ROLLBACK`. No raw investor identifiers, quantities, reasons, credentials, or position payloads were copied into documentation.
 
-To unblock this gate, provide the existing approved production PostgreSQL service/profile or approved connection procedure. Do not provide credentials in chat; identify the approved local profile, secret manager command, bastion procedure, or operator-run client path.
+The connected login is not a read-only role: it is a superuser with full audited-table write privileges. A dedicated read-only audit profile remains an operational follow-up even though this session was safely constrained.
 
 ## Release interpretation
 
 - The complete C++ build, the 1,277-test monolithic C++ suite, and the QT-specific C++/SQL/PostgreSQL behavior are verified locally.
 - The migration and rollback behavior are verified on disposable PostgreSQL, not production.
 - The daily report's existing email content/template remains unchanged; the verified code supplies a captured QT position snapshot as the position-number source.
-- Production compatibility and production data integrity are not yet verified, so this checkpoint does not authorize deployment or production migration.
+- Production schema and aggregate data were verified read-only and are missing the migration-012 contract and all QT snapshot evidence, so this checkpoint does not authorize deployment or production migration.
