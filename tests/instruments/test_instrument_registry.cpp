@@ -5,6 +5,8 @@
 #include <arrow/util/logging.h>
 #include <chrono>
 #include <memory>
+#include <utility>
+#include <vector>
 #include "../core/test_base.hpp"
 #include "../data/test_db_utils.hpp"
 #include "trade_ngin/instruments/equity.hpp"
@@ -82,6 +84,8 @@ void install_instrument(InstrumentRegistry& registry, const std::shared_ptr<Inst
         registry.instruments_[symbol] = instrument;
     }
 }
+
+Result<void> load_es_collision_metadata(InstrumentRegistry& registry, bool future_first);
 
 }  // namespace
 
@@ -174,13 +178,14 @@ TEST_F(InstrumentRegistryTest, HasInstrumentAnswersForTheSymbolItWasAsked) {
     EXPECT_FALSE(r.has_instrument("UNKNOWN"));
 }
 
-TEST_F(InstrumentRegistryTest, EquityWinsGenericLookupWhenInstalledBeforeFuture) {
+TEST_F(InstrumentRegistryTest, EquityWinsGenericLookupWhenMetadataLoadsEquityBeforeFuture) {
     auto& r = InstrumentRegistry::instance();
-    auto es_equity = make_equity("ES");  // NYSE "ES" = Eversource Energy
-    auto es_future = make_futures("ES");
+    ASSERT_TRUE(load_es_collision_metadata(r, false).is_ok());
 
-    install_instrument(r, es_equity);
-    install_instrument(r, es_future);
+    auto es_equity = r.get_equity_instrument("ES");
+    auto es_future = r.get_futures_instrument("ES.v.0");
+    ASSERT_NE(es_equity, nullptr);
+    ASSERT_NE(es_future, nullptr);
 
     EXPECT_EQ(r.get_instrument("ES"), es_equity);
     EXPECT_EQ(r.get_instrument("ES.v.0"), es_future);
@@ -188,21 +193,26 @@ TEST_F(InstrumentRegistryTest, EquityWinsGenericLookupWhenInstalledBeforeFuture)
     EXPECT_EQ(r.get_equity_instrument("ES.v.0"), nullptr);
     EXPECT_EQ(r.get_futures_instrument("ES"), es_future);
     EXPECT_EQ(r.get_futures_instrument("ES.v.0"), es_future);
-    EXPECT_EQ(r.get_instruments_by_asset_class(AssetClass::EQUITIES).size(), 1u);
-    EXPECT_EQ(r.get_instruments_by_asset_class(AssetClass::FUTURES).size(), 1u);
+    const auto equities = r.get_instruments_by_asset_class(AssetClass::EQUITIES);
+    const auto futures = r.get_instruments_by_asset_class(AssetClass::FUTURES);
+    ASSERT_EQ(equities.size(), 1u);
+    ASSERT_EQ(futures.size(), 1u);
+    EXPECT_EQ(equities.front(), es_equity);
+    EXPECT_EQ(futures.front(), es_future);
 
     auto all = r.get_all_instruments();
     ASSERT_EQ(all.size(), 1u);
     EXPECT_EQ(all.at("ES"), es_equity);
 }
 
-TEST_F(InstrumentRegistryTest, EquityWinsGenericLookupWhenInstalledAfterFuture) {
+TEST_F(InstrumentRegistryTest, EquityWinsGenericLookupWhenMetadataLoadsFutureBeforeEquity) {
     auto& r = InstrumentRegistry::instance();
-    auto es_equity = make_equity("ES");  // NYSE "ES" = Eversource Energy
-    auto es_future = make_futures("ES");
+    ASSERT_TRUE(load_es_collision_metadata(r, true).is_ok());
 
-    install_instrument(r, es_future);
-    install_instrument(r, es_equity);
+    auto es_equity = r.get_equity_instrument("ES");
+    auto es_future = r.get_futures_instrument("ES.v.0");
+    ASSERT_NE(es_equity, nullptr);
+    ASSERT_NE(es_future, nullptr);
 
     EXPECT_EQ(r.get_instrument("ES"), es_equity);
     EXPECT_EQ(r.get_instrument("ES.v.0"), es_future);
@@ -210,8 +220,12 @@ TEST_F(InstrumentRegistryTest, EquityWinsGenericLookupWhenInstalledAfterFuture) 
     EXPECT_EQ(r.get_equity_instrument("ES.v.0"), nullptr);
     EXPECT_EQ(r.get_futures_instrument("ES"), es_future);
     EXPECT_EQ(r.get_futures_instrument("ES.v.0"), es_future);
-    EXPECT_EQ(r.get_instruments_by_asset_class(AssetClass::EQUITIES).size(), 1u);
-    EXPECT_EQ(r.get_instruments_by_asset_class(AssetClass::FUTURES).size(), 1u);
+    const auto equities = r.get_instruments_by_asset_class(AssetClass::EQUITIES);
+    const auto futures = r.get_instruments_by_asset_class(AssetClass::FUTURES);
+    ASSERT_EQ(equities.size(), 1u);
+    ASSERT_EQ(futures.size(), 1u);
+    EXPECT_EQ(equities.front(), es_equity);
+    EXPECT_EQ(futures.front(), es_future);
 
     auto all = r.get_all_instruments();
     ASSERT_EQ(all.size(), 1u);
@@ -372,6 +386,46 @@ std::shared_ptr<arrow::Table> build_contract_table(const std::vector<ContractRow
         arrow::field("Sector", arrow::utf8()),
     });
     return arrow::Table::Make(schema, {dbento, ib, at, ex, cs, mt, ts, im, mm, th, sec});
+}
+
+class CollisionMetadataMockDb : public MockPostgresDatabase {
+public:
+    CollisionMetadataMockDb(std::vector<ContractRow> rows)
+        : MockPostgresDatabase("mock://instrument-collision"), rows_(std::move(rows)) {}
+
+    Result<std::shared_ptr<arrow::Table>> get_contract_metadata() const override {
+        if (!is_connected()) {
+            return make_error<std::shared_ptr<arrow::Table>>(ErrorCode::DATABASE_ERROR,
+                                                             "Not connected");
+        }
+        return Result<std::shared_ptr<arrow::Table>>(build_contract_table(rows_));
+    }
+
+private:
+    std::vector<ContractRow> rows_;
+};
+
+Result<void> load_es_collision_metadata(InstrumentRegistry& registry, bool future_first) {
+    const ContractRow future{"ES.v.0", "", "FUTURE", "CME", 50.0, 0.25, "0.25", 12000.0,
+                             9000.0, "09:30-16:00", ""};
+    const ContractRow equity{"ES", "", "EQUITY", "NYSE", 1.0, 0.01, "0.01", 0.0, 0.0,
+                             "09:30-16:00", "Utilities"};
+    std::vector<ContractRow> rows = future_first
+                                        ? std::vector<ContractRow>{future, equity}
+                                        : std::vector<ContractRow>{equity, future};
+    auto db = std::make_shared<CollisionMetadataMockDb>(std::move(rows));
+
+    auto connected = db->connect();
+    if (connected.is_error()) {
+        return connected;
+    }
+
+    auto initialized = registry.initialize(db);
+    if (initialized.is_error()) {
+        return initialized;
+    }
+
+    return registry.load_instruments();
 }
 
 }  // namespace
