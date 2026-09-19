@@ -6,7 +6,7 @@
 
 ## Source under test
 
-- Trade Ngin: branch `codex/qt-effective-position-reporting`, commit `95db40a`.
+- Trade Ngin: branch `codex/qt-effective-position-reporting`, implementation through commit `a5db389`.
 - AlgoLens: branch `codex/qt-effective-position-reporting`, commit `ccd0571`.
 - The daily trading report email template and sender were not changed by this work. The intended behavior change remains limited to the position quantities supplied to the existing CSV/email reporting path.
 
