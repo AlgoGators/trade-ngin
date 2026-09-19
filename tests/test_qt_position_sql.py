@@ -51,10 +51,10 @@ class QtCarryForward(unittest.TestCase):
           (symbol, quantity, day, stream, name, book))
 
     def seed(self, day):
-        self.db.execute(seed_sql(), ('COMBINED', 'TREND', 'BOOK', day))
+        self.db.execute(seed_sql(), {'1': 'COMBINED', '2': 'TREND', '3': 'BOOK', '4': day})
 
     def qt(self, day):
-        rows = self.db.execute(report_sql(['TREND']), ('COMBINED', 'BOOK', day, 'qt'))
+        rows = self.db.execute(report_sql(['TREND']), {'1': 'COMBINED', '2': 'BOOK', '3': day, '4': 'qt'})
         return {row[0]: row[1] for row in rows}
 
     def test_report_sql_returns_all_strategies_in_one_captured_result(self):
@@ -65,7 +65,7 @@ class QtCarryForward(unittest.TestCase):
         self.row('ES', 100, '2026-09-20', 'qt')
         self.row('ES', 101, '2026-09-19', 'qt', name='UNREQUESTED')
         rows = self.db.execute(report_sql(['TREND', 'CARRY']),
-                               ('COMBINED', 'BOOK', '2026-09-19', 'qt')).fetchall()
+                               {'1': 'COMBINED', '2': 'BOOK', '3': '2026-09-19', '4': 'qt'}).fetchall()
         self.db.execute("UPDATE trading.positions SET quantity=50 WHERE strategy_name='CARRY'")
         self.assertEqual({r[6]: r[1] for r in rows}, {'TREND': 7, 'CARRY': -2})
 
