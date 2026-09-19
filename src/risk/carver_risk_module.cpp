@@ -4,9 +4,8 @@
 
 namespace trade_ngin {
 
-CarverRiskModule::CarverRiskModule(std::string id, RiskConfig config,
-                                   const std::vector<Bar>* pm_window)
-    : id_(std::move(id)), rm_(std::move(config)), pm_window_(pm_window) {}
+CarverRiskModule::CarverRiskModule(std::string id, RiskConfig config)
+    : id_(std::move(id)), rm_(std::move(config)) {}
 
 std::set<RiskTerm> CarverRiskModule::terms() const {
     return {RiskTerm::COMPOSITION, RiskTerm::MAGNITUDE};
@@ -16,10 +15,25 @@ std::set<RiskAction> CarverRiskModule::capabilities() const {
     return {RiskAction::SCALE};
 }
 
-void CarverRiskModule::on_bars(const std::vector<Bar>& bars, const RiskContext& ctx) {
-    (void)bars;
+void CarverRiskModule::begin_rebalance(const RiskContext& ctx) {
     (void)ctx;
-    market_data_ = rm_.create_market_data(*pm_window_);
+    appended_this_rebalance_ = false;
+    applied_level_ = 1.0;
+    last_requested_ = 1.0;
+}
+
+void CarverRiskModule::on_bars(const std::vector<Bar>& bars, const RiskContext& ctx) {
+    (void)ctx;
+    for (auto const& bar : bars) {
+        window_.push_back(bar);
+    }
+    size_t lookback = rm_.get_config().lookback_period;
+    if (window_.size() > lookback) {
+        // keep only the last 'lookback' bars
+        window_.erase(window_.begin(), window_.end() - static_cast<long>(lookback));
+    }
+    appended_this_rebalance_ = true;
+    market_data_ = rm_.create_market_data(window_);
 }
 
 RiskDecision CarverRiskModule::to_decision(const RiskResult& r, const std::string& module_id) {
@@ -54,6 +68,7 @@ Result<RiskDecision> CarverRiskModule::evaluate(
          ", leverage_mult=" + std::to_string(risk_result.leverage_multiplier));
 
     RiskDecision decision = to_decision(risk_result, id_);
+    last_requested_ = decision.scale;
     // Blind: the same tests RiskManager's own early returns make, recorded as data only.
     bool mapped = false;
     for (const auto& [symbol, pos] : book) {

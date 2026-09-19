@@ -122,9 +122,11 @@ TEST(CarverRiskModuleTest, EvaluateBitwiseEqualsBareRiskManager) {
                   (r.correlation_multiplier < 1.0) + (r.leverage_multiplier < 1.0);
     ASSERT_GE(binding, 2) << "corr=" << r.correlation_multiplier << " lev=" << r.leverage_multiplier;
 
-    CarverRiskModule carver("carver", cfg, &window);
+    // The module owns its window: one on_bars with the whole window (lookback 1000 >= 90 bars).
+    CarverRiskModule carver("carver", cfg);
     RiskContext ctx = lap_ctx(1);
     carver.on_bars(window, ctx);
+    ASSERT_EQ(carver.window().size(), window.size());
     auto got = carver.evaluate(book, ctx);
     ASSERT_TRUE(got.is_ok());
     const RiskDecision& d = got.value();
@@ -188,10 +190,9 @@ TEST(CarverRiskModuleTest, ActionIsKeyedOnRiskExceeded) {
 TEST(CarverRiskModuleTest, RegistersNoComponentAndLogsNothingInCtor) {
     init_console_logger();
     Logger::register_component("Sentinel");
-    std::vector<Bar> window;
     ::testing::internal::CaptureStdout();
     {
-        CarverRiskModule carver("carver", tight_config(), &window);
+        CarverRiskModule carver("carver", tight_config());
         INFO("probe");
     }
     const std::string out = ::testing::internal::GetCapturedStdout();
@@ -200,14 +201,36 @@ TEST(CarverRiskModuleTest, RegistersNoComponentAndLogsNothingInCtor) {
 }
 
 TEST(CarverRiskModuleTest, DescribeCarriesTheConfigAndTerms) {
-    std::vector<Bar> window;
-    CarverRiskModule carver("carver", tight_config(), &window);
+    CarverRiskModule carver("carver", tight_config());
     auto j = carver.describe();
     EXPECT_EQ(j["id"], "carver");
     EXPECT_EQ(j["type"], "carver");
     EXPECT_EQ(j["terms"], nlohmann::json({"composition", "magnitude"}));
     EXPECT_EQ(j["config"], tight_config().to_json());
     EXPECT_EQ(carver.capabilities(), std::set<RiskAction>{RiskAction::SCALE});
+}
+
+TEST(CarverRiskModuleTest, BeginRebalanceResetsFlagAndLevelNotWindow) {
+    CarverRiskModule carver("carver", tight_config());
+    EXPECT_FALSE(carver.appended_this_rebalance());
+    const std::vector<Bar> bars = {make_bar("TSTA", 0, 100.0), make_bar("TSTA", 1, 101.0)};
+    RiskContext ctx = lap_ctx(1);
+    carver.on_bars(bars, ctx);
+    EXPECT_TRUE(carver.appended_this_rebalance());
+    auto d = carver.evaluate({{"TSTA", make_pos("TSTA", 1000.0, 100.0)}}, ctx);
+    ASSERT_TRUE(d.is_ok());
+    ASSERT_EQ(d.value().action, RiskAction::SCALE);  // 1.0x gross against a 0.3x cap
+    EXPECT_EQ(carver.last_requested(), d.value().scale);
+
+    RiskContext start;
+    start.phase = RiskPhase::REBALANCE_START;
+    carver.begin_rebalance(start);
+    EXPECT_FALSE(carver.appended_this_rebalance());
+    EXPECT_EQ(carver.applied_level(), 1.0);
+    EXPECT_EQ(carver.last_requested(), 1.0);
+    // The window spans rebalances: begin_rebalance must not clear it.
+    ASSERT_EQ(carver.window().size(), 2u);
+    EXPECT_EQ(carver.window()[1].close.raw_value(), Decimal(101.0).raw_value());
 }
 
 // ===== ConstantScaleRiskModule =====

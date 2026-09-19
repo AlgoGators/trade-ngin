@@ -28,8 +28,7 @@ PortfolioManager::PortfolioManager(PortfolioConfig config, std::string id,
     // initialized line below keeps its [RiskManager] tag.
     if (config_.use_risk_management) {
         try {
-            auto carver = std::make_shared<CarverRiskModule>("carver", config_.risk_config,
-                                                             &risk_history_);
+            auto carver = std::make_shared<CarverRiskModule>("carver", config_.risk_config);
             if (!carver) {
                 WARN("Failed to create risk manager, risk management will be disabled");
             } else {
@@ -303,10 +302,19 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
         // Up to 5 iterations for convergence to fully integer positions. The final rounding step
         // can cause minor tracking error/risk profile deviation
 
-        // Rebalance boundary: the risk decisions recorded are this call's only (silent).
+        // Rebalance boundary (silent): the risk decisions recorded are this call's only, and
+        // every risk module starts its rebalance exactly once, before any lap.
         {
             std::lock_guard<std::mutex> lock(mutex_);
             risk_decisions_.clear();
+        }
+        {
+            const RiskContext rebalance_ctx = make_risk_context(
+                RiskPhase::REBALANCE_START, 0, RiskScope::PORTFOLIO, id_, config_.total_capital,
+                data, current_timestamp, skip_execution_generation);
+            for (auto& module : risk_modules_) {
+                module->begin_rebalance(rebalance_ctx);
+            }
         }
 
         // Invalidate covariance cache - will be recomputed once on first iteration and reused
@@ -1414,18 +1422,9 @@ Result<void> PortfolioManager::apply_risk_management(const std::vector<Bar>& dat
     };
 
     try {
-        for (auto const& bar : data) {
-            risk_history_.push_back(bar);
-        }
-        size_t lookback = config_.risk_config.lookback_period;
-        if (risk_history_.size() > lookback) {
-            // keep only the last 'lookback' bars
-            risk_history_.erase(risk_history_.begin(),
-                                risk_history_.end() - static_cast<long>(lookback));
-        }
-
         // Every module sees this lap's bars before the book is built and before the
-        // empty-book return (the Carver module builds its MarketData from the window here).
+        // empty-book return (the Carver module appends them to its window, trims it and
+        // builds its MarketData here).
         for (auto& module : risk_modules_) {
             module->on_bars(data, lap_ctx);
         }

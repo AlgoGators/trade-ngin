@@ -345,7 +345,6 @@ private:
 
     std::unordered_map<std::string, std::vector<double>> price_history_;
     std::unordered_map<std::string, std::vector<double>> historical_returns_;
-    std::vector<Bar> risk_history_;
     MarketData current_market_data_;
 
     size_t max_history_length_ = 2520;  // Keep up to 1 year of return data

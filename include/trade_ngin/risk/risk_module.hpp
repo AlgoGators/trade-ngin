@@ -83,6 +83,10 @@ public:
     virtual const std::string& type() const = 0;           ///< "carver" "constant_scale" "warn" "refuse"
     virtual std::set<RiskTerm> terms() const = 0;          ///< for the validator
     virtual std::set<RiskAction> capabilities() const = 0; ///< what evaluate may return besides NONE
+    /// EXACTLY ONCE per process_market_data, by the PM, at the rebalance boundary, before any
+    /// lap. Must not log or register a component. One call per bar on the bus-driven runners,
+    /// one per rebalance on the explicit-call runners and the backtests.
+    virtual void begin_rebalance(const RiskContext& ctx) { (void)ctx; }
     /// Once per lap, BEFORE the PM builds the book and BEFORE its empty-book return.
     /// Must not log, must not register a Logger component.
     virtual void on_bars(const std::vector<Bar>& bars, const RiskContext& ctx) {

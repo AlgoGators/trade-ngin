@@ -86,6 +86,10 @@ public:
     const std::string& type() const override { return type_; }
     std::set<RiskTerm> terms() const override { return {RiskTerm::CUSTOM}; }
     std::set<RiskAction> capabilities() const override { return {action_}; }
+    void begin_rebalance(const RiskContext& ctx) override {
+        events.push_back("begin_rebalance");
+        rebalance_contexts.push_back(ctx);
+    }
     void on_bars(const std::vector<Bar>& bars, const RiskContext& ctx) override {
         (void)bars;
         events.push_back("on_bars:" + std::to_string(ctx.lap));
@@ -106,6 +110,7 @@ public:
 
     std::vector<std::string> events;
     std::vector<RiskContext> contexts;
+    std::vector<RiskContext> rebalance_contexts;
     std::vector<Book> books;
     Book replace_book;
     int evaluations{0};
@@ -330,8 +335,8 @@ TEST_F(RiskModuleLoopTest, EmptyBookRunsOnBarsButNotEvaluateAndRecordsOneRowPerM
     auto b = std::make_shared<SpyModule>("b", RiskAction::WARN);
     ASSERT_TRUE(pm_->set_risk_modules({a, b}).is_ok());
     ASSERT_TRUE(pm_->process_market_data(three_days()).is_ok());
-    EXPECT_EQ(a->events, (std::vector<std::string>{"on_bars:1"}));
-    EXPECT_EQ(b->events, (std::vector<std::string>{"on_bars:1"}));
+    EXPECT_EQ(a->events, (std::vector<std::string>{"begin_rebalance", "on_bars:1"}));
+    EXPECT_EQ(b->events, (std::vector<std::string>{"begin_rebalance", "on_bars:1"}));
     const auto rows = pm_->last_risk_decisions();
     ASSERT_EQ(rows.size(), 2u);
     EXPECT_TRUE(rows[0].empty_book);
@@ -381,4 +386,97 @@ TEST_F(RiskModuleLoopTest, SetRiskModulesRejectsNullAndDuplicateIds) {
     ASSERT_EQ(rows.size(), 1u);
     EXPECT_EQ(rows[0].module_id, "carver");
     EXPECT_TRUE(a->events.empty());
+}
+
+TEST_F(RiskModuleLoopTest, BeginRebalanceOncePerCallBeforeAnyLap) {
+    // 2.5 lots never become whole: five laps per call.
+    make_pm(false, {{{"ZZA", make_pos("ZZA", 2.5, 100.0)}}});
+    auto spy = std::make_shared<SpyModule>("spy", RiskAction::NONE);
+    ASSERT_TRUE(pm_->set_risk_modules({spy}).is_ok());
+    const std::vector<std::string> one_call = {
+        "begin_rebalance", "on_bars:1", "evaluate:1", "on_bars:2", "evaluate:2", "on_bars:3",
+        "evaluate:3",      "on_bars:4", "evaluate:4", "on_bars:5", "evaluate:5"};
+    ASSERT_TRUE(pm_->process_market_data(three_days()).is_ok());
+    EXPECT_EQ(spy->events, one_call);
+    spy->events.clear();
+    ASSERT_TRUE(pm_->process_market_data({make_bar("ZZA", 4, 100.0)}).is_ok());
+    EXPECT_EQ(spy->events, one_call);
+    ASSERT_EQ(spy->rebalance_contexts.size(), 2u);
+    EXPECT_EQ(spy->rebalance_contexts[0].phase, RiskPhase::REBALANCE_START);
+    EXPECT_EQ(spy->rebalance_contexts[0].lap, 0);
+    EXPECT_EQ(spy->rebalance_contexts[0].scope, RiskScope::PORTFOLIO);
+}
+
+// ===== The Carver module's window (was PortfolioManager::risk_history_) =====
+
+class CarverWindowTest : public RiskModuleLoopTest {
+protected:
+    static void expect_same_bars(const std::vector<Bar>& got, const std::vector<Bar>& want,
+                                 const std::string& where) {
+        ASSERT_EQ(got.size(), want.size()) << where;
+        for (size_t k = 0; k < got.size(); ++k) {
+            EXPECT_EQ(got[k].symbol, want[k].symbol) << where << " bar " << k;
+            EXPECT_EQ(got[k].timestamp, want[k].timestamp) << where << " bar " << k;
+            EXPECT_EQ(got[k].close.raw_value(), want[k].close.raw_value()) << where << " bar " << k;
+        }
+    }
+};
+
+TEST_F(CarverWindowTest, MatchesTodaysPushTrimIncludingAnEmptyBookLap) {
+    // Fractional positions: every call converges on lap 1, so each call appends its bars once.
+    make_pm(true, {Book{}, {{"ZZA", make_pos("ZZA", 1.0, 100.0)}},
+                   {{"ZZA", make_pos("ZZA", 1.0, 100.0)}}});
+    RiskConfig cfg = risk_config(true).risk_config;
+    cfg.lookback_period = 1000;  // no trim
+    auto carver = std::make_shared<CarverRiskModule>("carver", cfg);
+    ASSERT_TRUE(pm_->set_risk_modules({carver}).is_ok());
+
+    const std::vector<Bar> b1 = {make_bar("ZZA", 1, 100.0), make_bar("ZZB", 1, 50.0),
+                                 make_bar("ZZA", 2, 101.0)};
+    const std::vector<Bar> b2 = {make_bar("ZZA", 3, 102.0), make_bar("ZZB", 3, 51.0),
+                                 make_bar("ZZA", 4, 99.0), make_bar("ZZB", 4, 49.0)};
+    const std::vector<Bar> b3 = {make_bar("ZZA", 5, 98.0), make_bar("ZZB", 5, 48.0)};
+
+    ASSERT_TRUE(pm_->process_market_data(b1).is_ok());
+    // Call 1's book is empty: the bars still went into the window (append before the return).
+    ASSERT_EQ(pm_->last_risk_decisions().size(), 1u);
+    EXPECT_TRUE(pm_->last_risk_decisions()[0].empty_book);
+    expect_same_bars(carver->window(), b1, "after the empty-book call");
+
+    ASSERT_TRUE(pm_->process_market_data(b2).is_ok());
+    ASSERT_TRUE(pm_->process_market_data(b3).is_ok());
+    std::vector<Bar> all = b1;
+    all.insert(all.end(), b2.begin(), b2.end());
+    all.insert(all.end(), b3.begin(), b3.end());
+    expect_same_bars(carver->window(), all, "after call 3");
+}
+
+TEST_F(CarverWindowTest, TrimsToLookbackBarsAcrossMultipleLaps) {
+    // Whole contracts and a binding leverage cap: 7 lots become 2.9, never whole, so every
+    // call runs five laps and appends its bars five times.
+    make_pm(false, {{{"ZZA", make_pos("ZZA", 7.0, 100.0)}}});
+    RiskConfig cfg = risk_config(false).risk_config;
+    cfg.lookback_period = 5;
+    auto carver = std::make_shared<CarverRiskModule>("carver", cfg);
+    auto spy = std::make_shared<SpyModule>("spy", RiskAction::NONE);
+    ASSERT_TRUE(pm_->set_risk_modules({carver, spy}).is_ok());
+
+    const std::vector<std::vector<Bar>> calls = {
+        {make_bar("ZZA", 1, 100.0), make_bar("ZZA", 2, 102.0), make_bar("ZZA", 3, 99.0)},
+        {make_bar("ZZA", 4, 101.0), make_bar("ZZA", 5, 97.0)},
+        {make_bar("ZZA", 6, 103.0), make_bar("ZZA", 7, 100.0), make_bar("ZZA", 8, 98.0),
+         make_bar("ZZA", 9, 104.0)}};
+
+    // The PortfolioManager's append and trim, transcribed.
+    std::vector<Bar> ref;
+    for (size_t c = 0; c < calls.size(); ++c) {
+        spy->evaluations = 0;
+        ASSERT_TRUE(pm_->process_market_data(calls[c]).is_ok());
+        ASSERT_EQ(spy->evaluations, 5) << "call " << c;
+        for (int lap = 0; lap < 5; ++lap) {
+            ref.insert(ref.end(), calls[c].begin(), calls[c].end());
+            if (ref.size() > 5) ref.erase(ref.begin(), ref.end() - 5);
+        }
+        expect_same_bars(carver->window(), ref, "after call " + std::to_string(c));
+    }
 }
