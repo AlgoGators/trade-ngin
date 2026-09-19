@@ -940,9 +940,27 @@ std::vector<std::vector<double>> PortfolioManager::calculate_covariance_matrix(
     std::vector<std::vector<double>> aligned_returns(min_periods,
                                                      std::vector<double>(num_assets, 0.0));
 
+    // T-4/C2f: the columns the C-20 guard below skipped, so their diagonal can be
+    // restored after the covariance is built (SEQUENCE §2.7). Empty whenever the
+    // guard does not fire, which is every run measured so far (T4_COVGUARD = 0).
+    std::vector<size_t> covguard_rows;
+
     for (size_t i = 0; i < num_assets; ++i) {
         const auto& symbol = ordered_symbols[i];
         const auto& returns = returns_by_symbol.at(symbol);
+
+        // C-20: a symbol whose return series is shorter than min_periods was
+        // skipped by the scan above (the empty case `continue`s there)
+        // but is still in ordered_symbols, so the unsigned subtraction below
+        // wraps and the copy reads far outside `returns`. Leave its column at
+        // the zeros aligned_returns was built with, which keeps the matrix
+        // square: the optimizer validates the covariance dimension against the
+        // symbol list, so dropping the symbol instead would break the caller.
+        if (returns.size() < min_periods) {
+            WARN("T4_COVGUARD symbol=" + symbol);
+            covguard_rows.push_back(i);
+            continue;
+        }
 
         // Take the most recent min_periods returns
         size_t start_idx = returns.size() - min_periods;
@@ -977,6 +995,22 @@ std::vector<std::vector<double>> PortfolioManager::calculate_covariance_matrix(
 
             // Annualize the covariance (assuming daily data with 252 trading days)
             covariance[i][j] *= 252.0;
+        }
+    }
+
+    // T-4/C2f -- SEQUENCE §2.7's other correction. A symbol the C-20 guard skipped
+    // keeps the all-zero column aligned_returns was built with, so its VARIANCE is
+    // zero too: the greedy's s^2 * Sigma_ii / 2 penalty vanishes and the name looks
+    // like free risk (dynamic_optimizer.cpp:157-169), and correlation_multiplier's
+    // `var_i <= 0.0` test would silently skip it. Give the guarded column the same
+    // default variance the insufficient-data branch above uses. Scoped to the rows
+    // the guard actually skipped -- NOT a blanket sweep over every diagonal -- so
+    // that with T4_COVGUARD never firing this loop is provably a no-op and cannot
+    // perturb a legitimate symbol's variance; that is what makes the futures-arm
+    // identity check against C2 a clean test of the window fix alone.
+    for (size_t i : covguard_rows) {
+        if (covariance[i][i] <= 0.0) {
+            covariance[i][i] = 0.01;  // same default as the min_periods < 20 branch
         }
     }
 

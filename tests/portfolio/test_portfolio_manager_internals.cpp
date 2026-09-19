@@ -7,6 +7,7 @@
 #include <gtest/gtest.h>
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <memory>
 #include <thread>
 #include "../core/test_base.hpp"
@@ -178,15 +179,78 @@ TEST_F(PortfolioManagerInternalsTest, CovarianceWithSufficientDataProducesPositi
     EXPECT_DOUBLE_EQ(cov[0][1], cov[1][0]);  // symmetric
 }
 
-// NOTE: calculate_covariance_matrix segfaults when called with one or more
-// symbols whose returns series is empty (mixed empty + non-empty input). The
-// production code's "if (returns.empty()) continue" guard at line ~792 only
-// skips that symbol in min_periods accumulation but leaves it in
-// ordered_symbols; the aligned-returns build at line ~826 then accesses
-// returns[start_idx + j] on the empty vector and crashes. Reported as a
-// FIXME in the end-of-phase rollup; no test is added because the task
-// forbids DISABLED_ prefixes and EXPECT_DEATH on a segfault is too brittle
-// for unit-test scope.
+// ===== C-20: calculate_covariance_matrix with an empty series (T-6 commit 2c) =====
+//
+// min_periods is the length of the SHORTEST NON-EMPTY series, so the only series that can
+// be shorter than min_periods is an empty one (a series of 1..min_periods-1 returns would
+// itself set min_periods). The scan skips an empty symbol but leaves it in the ordered
+// symbol list; without the guard, `returns.size() - min_periods` wraps and the copy reads
+// far outside the vector. With the guard its column stays zero, its variance is restored
+// to the 0.01 default, and every other entry is bit-identical to the matrix built from the
+// same inputs without that symbol (a covariance entry depends only on its two columns).
+//
+// Two shapes of "empty": a vector that never held data (no buffer), and one that was
+// cleared (a live buffer, the shape a cleared historical_returns_ entry has).
+namespace {
+
+std::vector<double> covguard_series(size_t n, double amp, double phase, double drift) {
+    std::vector<double> v(n);
+    for (size_t t = 0; t < n; ++t) {
+        v[t] = amp * std::sin(phase * static_cast<double>(t)) + drift * static_cast<double>(t);
+    }
+    return v;
+}
+
+void expect_guarded_and_bit_identical(const std::vector<std::vector<double>>& cov,
+                                      const std::vector<std::vector<double>>& ref) {
+    // cov is over {A, M, Z} (sorted), M guarded; ref is over {A, Z}
+    ASSERT_EQ(ref.size(), 2u);
+    ASSERT_EQ(cov.size(), 3u);
+    for (const auto& row : cov) ASSERT_EQ(row.size(), 3u);
+    EXPECT_EQ(cov[1][1], 0.01) << "the guarded symbol's variance must be the 0.01 default";
+    for (size_t k : {size_t{0}, size_t{2}}) {
+        EXPECT_EQ(cov[1][k], 0.0) << "guarded row, column " << k;
+        EXPECT_EQ(cov[k][1], 0.0) << "guarded column, row " << k;
+    }
+    const size_t at[2] = {0, 2};
+    for (size_t i = 0; i < 2; ++i) {
+        for (size_t j = 0; j < 2; ++j) {
+            EXPECT_EQ(std::memcmp(&cov[at[i]][at[j]], &ref[i][j], sizeof(double)), 0)
+                << "entry (" << i << "," << j << ") moved: " << cov[at[i]][at[j]] << " vs "
+                << ref[i][j];
+        }
+    }
+}
+
+}  // namespace
+
+TEST_F(PortfolioManagerInternalsTest, CovarianceGuardsANeverFilledEmptySeries) {
+    const auto a = covguard_series(30, 0.01, 0.7, 0.0002);
+    const auto z = covguard_series(25, -0.015, 0.3, 0.0001);
+    std::unordered_map<std::string, std::vector<double>> with_empty{
+        {"A", a}, {"M", std::vector<double>{}}, {"Z", z}};
+    std::unordered_map<std::string, std::vector<double>> without{{"A", a}, {"Z", z}};
+    ASSERT_EQ(with_empty.at("M").data(), nullptr) << "this case needs a vector with no buffer";
+
+    const auto ref = manager_->calculate_covariance_matrix(without);  // min_periods 25
+    const auto cov = manager_->calculate_covariance_matrix(with_empty);
+    expect_guarded_and_bit_identical(cov, ref);
+}
+
+TEST_F(PortfolioManagerInternalsTest, CovarianceGuardsAClearedEmptySeries) {
+    const auto a = covguard_series(30, 0.01, 0.7, 0.0002);
+    const auto z = covguard_series(25, -0.015, 0.3, 0.0001);
+    std::unordered_map<std::string, std::vector<double>> with_empty{{"A", a}, {"Z", z}};
+    auto& m = with_empty["M"];
+    m.assign(64, 0.02);  // give it a buffer, then empty it: size 0, buffer kept
+    m.clear();
+    ASSERT_NE(m.data(), nullptr) << "this case needs a cleared vector that kept its buffer";
+    std::unordered_map<std::string, std::vector<double>> without{{"A", a}, {"Z", z}};
+
+    const auto ref = manager_->calculate_covariance_matrix(without);
+    const auto cov = manager_->calculate_covariance_matrix(with_empty);
+    expect_guarded_and_bit_identical(cov, ref);
+}
 
 // ===== update_historical_returns (private) =====
 
