@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <climits>
 #include <cmath>
+#include <map>
 #include <set>
 #include <sstream>
 
@@ -141,7 +142,8 @@ Result<void> PortfolioManager::add_strategy(std::shared_ptr<StrategyInterface> s
         initial_allocation,
         use_optimization && config_.use_optimization,
         {},  // current positions
-        {}   // target positions
+        {},  // target positions
+        next_registration_index_++  // registration order
     };
 
     strategies_[metadata.id] = std::move(info);
@@ -821,7 +823,19 @@ void PortfolioManager::update_historical_returns(const std::vector<Bar>& data) {
         data_symbols.insert(bar.symbol);
     }
 
-    // Get price history from strategies
+    // Get price history from strategies.
+    //
+    // First-registered wins per symbol within THIS call (T-BASE_ADVERSARIAL finding 4; HD's
+    // ruling of 2026-09-19 replaced option 2's keep-longest). The first strategy to supply a
+    // symbol in this call overwrites price_history_[symbol] exactly as before, whatever an
+    // earlier call left there; a later strategy's DIFFERENT series for the same symbol
+    // replaces it only if that strategy was registered (add_strategy) earlier. Without the
+    // rule the winner was whichever strategy strategies_ (an unordered_map) happened to
+    // iterate last. A book whose symbols each come from one strategy (every single-sleeve
+    // book) sees no change. When two strategies offer different series for one symbol, the
+    // symbol is logged once below with the series kept and every offer.
+    std::unordered_map<std::string, std::string> merged_from;  // symbol -> strategy kept this call
+    std::map<std::string, std::vector<std::pair<std::string, size_t>>> contested;  // symbol -> offers
     bool got_history = false;
     for (const auto& [id, info] : strategies_) {
         // Try to get price history from this strategy
@@ -833,11 +847,33 @@ void PortfolioManager::update_historical_returns(const std::vector<Bar>& data) {
 
             // For each symbol, update our price history
             for (const auto& [symbol, prices] : price_history) {
-                // Update our price history with the strategy's data
-                price_history_[symbol] = prices;
+                auto merged = merged_from.find(symbol);
+                if (merged == merged_from.end()) {
+                    // First supply of this symbol in this call: take it
+                    price_history_[symbol] = prices;
+                    merged_from.emplace(symbol, id);
 
-                DEBUG("Updated price history for " + symbol + " with " +
-                      std::to_string(prices.size()) + " points");
+                    DEBUG("Updated price history for " + symbol + " with " +
+                          std::to_string(prices.size()) + " points");
+                } else {
+                    auto& kept = price_history_[symbol];
+                    if (prices != kept) {
+                        // A contest the rule decides: record the first taker once, then this offer
+                        auto& offers = contested[symbol];
+                        if (offers.empty()) {
+                            offers.emplace_back(merged->second, kept.size());
+                        }
+                        offers.emplace_back(id, prices.size());
+                        if (info.registration_index <
+                            strategies_.at(merged->second).registration_index) {
+                            kept = prices;
+                            merged->second = id;
+
+                            DEBUG("Updated price history for " + symbol + " with " +
+                                  std::to_string(prices.size()) + " points");
+                        }
+                    }
+                }
 
                 got_history = true;
             }
@@ -845,17 +881,33 @@ void PortfolioManager::update_historical_returns(const std::vector<Bar>& data) {
     }
     (void)got_history;
 
+    for (const auto& [symbol, offers] : contested) {
+        std::string offered;
+        for (const auto& [offer_id, offer_len] : offers) {
+            offered += (offered.empty() ? "" : ",") + offer_id + ":" + std::to_string(offer_len);
+        }
+        INFO("PM_HISTORY_MERGE symbol=" + symbol + " kept=" + merged_from.at(symbol) +
+             " len=" + std::to_string(price_history_.at(symbol).size()) + " offers=" + offered);
+    }
+
     // Now calculate returns for each symbol that has price history
     for (const auto& [symbol, prices] : price_history_) {
+        // Clear previous returns for this symbol BEFORE the two-price guard, so a symbol
+        // whose history dropped below two prices loses its stale returns instead of keeping
+        // those of an older, longer series. find(), not operator[]: a symbol that never had
+        // returns gains no empty entry here, which would change the symbol count logged
+        // below (a symbol that does reach the calculation still gets its entry from it).
+        auto previous = historical_returns_.find(symbol);
+        if (previous != historical_returns_.end()) {
+            previous->second.clear();
+        }
+
         // Need at least 2 prices to calculate a return
         if (prices.size() < 2) {
             DEBUG("Symbol " + symbol + " has only " + std::to_string(prices.size()) +
                   " prices, skipping return calculation");
             continue;
         }
-
-        // Clear previous returns for this symbol
-        historical_returns_[symbol].clear();
 
         // Calculate returns - use all available history
         for (size_t i = 1; i < prices.size(); ++i) {

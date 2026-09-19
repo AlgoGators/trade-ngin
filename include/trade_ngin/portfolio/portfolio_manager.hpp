@@ -289,9 +289,15 @@ private:
         bool use_optimization;
         std::unordered_map<std::string, Position> current_positions;
         std::unordered_map<std::string, Position> target_positions;
+        // Position of the add_strategy call that registered this strategy (0 = first).
+        // strategies_ is an unordered_map, so its iteration order is not the registration
+        // order; update_historical_returns reads this to let the first-registered strategy
+        // win when two strategies offer different price series for one symbol.
+        size_t registration_index{0};
     };
 
     std::unordered_map<std::string, StrategyInfo> strategies_;
+    size_t next_registration_index_{0};  // registration_index of the next add_strategy
     std::vector<ExecutionReport> recent_executions_;  // Portfolio-level (aggregated)
     std::unordered_map<std::string, std::vector<ExecutionReport>> strategy_executions_;  // Per-strategy executions
     // Per-strategy filled position (symbol -> net qty) accumulated from the
