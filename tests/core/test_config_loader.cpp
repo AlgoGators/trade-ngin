@@ -493,3 +493,182 @@ TEST(LiveStalenessConfig, TrackedTemplateDeclaresEveryLiveKeyTheStructSerialises
                "default is silently in force (C-1 C5 / T2.9)";
     }
 }
+
+// ──────────────────────────────────────────────────────────────────────────
+// The resolved risk configuration per book, loaded from the TRACKED template.
+//
+// These are the regression net for the risk-config schema change (T-6 commit 7,
+// schema 2). They assert what ConfigLoader::load resolves TODAY for each of the
+// three books, field by field, so a re-nesting that silently falls back to a
+// struct default fails here instead of moving positions:
+//
+//   * max_drawdown / max_leverage are read from the TOP LEVEL of risk.json
+//     (config_loader.cpp extract_config). Moving them under a sub-object without
+//     moving the reader falls back to AppConfig's 0.4 / 4.0; max_leverage sizes
+//     the trend-following book (capital * max_leverage), so CONSERVATIVE 2.0 and
+//     EQUITY_MR 1 going to 4.0 moves every position. BASE already equals the
+//     fallback, so only the other two books catch it (T-RISK-ARCH §9 defect 5).
+//   * AppConfig::risk_config's seven gating fields feed the reporter
+//     (snapshot_rm) on every runner; emptying the object moves the stored
+//     risk_scale on every row (T-RISK-ARCH_ADVERSARIAL §D1).
+//   * max_correlation is ABSENT from base/risk.json and equity_mr/risk.json;
+//     their 0.7 comes from defaults.json risk_defaults, not from the book
+//     (T-RISK-ARCH §4, "the max_correlation trap"). The provenance test below
+//     pins that path explicitly.
+//
+// The template mirrors the values the runners load (verified for all three
+// books); it is used rather than config/ so the test is hermetic.
+// ──────────────────────────────────────────────────────────────────────────
+
+namespace {
+
+// The repository's config_template/, located from this source file's path
+// (tests/core/ -> repo root) and, failing that, by walking up from the working
+// directory. Returns an empty path when neither finds it.
+std::filesystem::path tracked_config_template() {
+    namespace fs = std::filesystem;
+    const fs::path from_source =
+        fs::path(__FILE__).parent_path().parent_path().parent_path() / "config_template";
+    if (fs::exists(from_source / "defaults.json")) return from_source;
+    fs::path dir = fs::current_path();
+    for (int i = 0; i < 8 && !dir.empty(); ++i) {
+        if (fs::exists(dir / "config_template" / "defaults.json")) return dir / "config_template";
+        dir = dir.parent_path();
+    }
+    return {};
+}
+
+struct ResolvedRiskExpectation {
+    const char* book;          // portfolio directory under config_template/portfolios
+    const char* portfolio_id;
+    double max_drawdown;
+    double max_leverage;
+    double var_limit;
+    double jump_risk_limit;
+    double max_correlation;
+    double max_gross_leverage;
+    double max_net_leverage;
+    double confidence_level;
+    int lookback_period;
+    double capital;            // risk_config.capital = initial_capital
+    bool use_optimization;     // strategy_defaults, as resolved (not as the runner applies it)
+    bool use_risk_management;
+};
+
+void expect_resolved_risk_config(const ResolvedRiskExpectation& e) {
+    const auto tmpl = tracked_config_template();
+    ASSERT_FALSE(tmpl.empty()) << "config_template/ not found from " << __FILE__
+                               << " or the working directory; this test must not skip";
+    auto loaded = ConfigLoader::load(tmpl, e.book);
+    ASSERT_TRUE(loaded.is_ok()) << e.book << ": ConfigLoader::load failed: "
+                                << (loaded.is_error() ? loaded.error()->what() : "");
+    const AppConfig& c = loaded.value();
+    const std::string b = e.book;
+
+    EXPECT_EQ(c.portfolio_id, e.portfolio_id) << b << ": portfolio_id";
+
+    // Strategy limits, read from risk.json's top level.
+    EXPECT_EQ(c.max_drawdown, e.max_drawdown) << b << ": max_drawdown";
+    EXPECT_EQ(c.max_leverage, e.max_leverage)
+        << b << ": max_leverage (sizes the book; 4.0 here on a non-BASE book is the "
+                "AppConfig fallback, i.e. the reader lost the key)";
+
+    // The seven gating fields of AppConfig::risk_config.
+    const RiskConfig& r = c.risk_config;
+    EXPECT_EQ(r.var_limit, e.var_limit) << b << ": risk_config.var_limit";
+    EXPECT_EQ(r.jump_risk_limit, e.jump_risk_limit) << b << ": risk_config.jump_risk_limit";
+    EXPECT_EQ(r.max_correlation, e.max_correlation) << b << ": risk_config.max_correlation";
+    EXPECT_EQ(r.max_gross_leverage, e.max_gross_leverage)
+        << b << ": risk_config.max_gross_leverage";
+    EXPECT_EQ(r.max_net_leverage, e.max_net_leverage) << b << ": risk_config.max_net_leverage";
+    EXPECT_EQ(r.confidence_level, e.confidence_level) << b << ": risk_config.confidence_level";
+    EXPECT_EQ(r.lookback_period, e.lookback_period) << b << ": risk_config.lookback_period";
+    EXPECT_EQ(r.capital.as_double(), e.capital) << b << ": risk_config.capital";
+
+    EXPECT_EQ(c.strategy_defaults.use_optimization, e.use_optimization)
+        << b << ": strategy_defaults.use_optimization";
+    EXPECT_EQ(c.strategy_defaults.use_risk_management, e.use_risk_management)
+        << b << ": strategy_defaults.use_risk_management";
+}
+
+}  // namespace
+
+TEST(TrackedTemplateResolvedRiskConfig, Conservative) {
+    expect_resolved_risk_config({"conservative", "CONSERVATIVE_PORTFOLIO",
+                                 /*max_drawdown*/ 0.3, /*max_leverage*/ 2.0,
+                                 /*var_limit*/ 0.25, /*jump_risk_limit*/ 0.05,
+                                 /*max_correlation*/ 0.85,  // literal in its risk.json
+                                 /*max_gross*/ 4.0, /*max_net*/ 2.0,
+                                 /*confidence*/ 0.99, /*lookback*/ 252,
+                                 /*capital*/ 500000.0,
+                                 /*use_optimization*/ true, /*use_risk_management*/ true});
+}
+
+TEST(TrackedTemplateResolvedRiskConfig, Base) {
+    expect_resolved_risk_config({"base", "BASE_PORTFOLIO",
+                                 /*max_drawdown*/ 0.4, /*max_leverage*/ 4.0,
+                                 /*var_limit*/ 0.15, /*jump_risk_limit*/ 0.1,
+                                 /*max_correlation*/ 0.7,  // by ABSENCE: risk_defaults
+                                 /*max_gross*/ 4.0, /*max_net*/ 2.0,
+                                 /*confidence*/ 0.99, /*lookback*/ 252,
+                                 /*capital*/ 500000.0,
+                                 /*use_optimization*/ true, /*use_risk_management*/ true});
+}
+
+// use_optimization resolves true here as on every book; both equity runners
+// then hard-code their PortfolioConfig's use_optimization to false
+// (live_equity_mean_reversion.cpp, bt_equity_mean_reversion.cpp). This pins the
+// RESOLVED value only; moving the key into portfolio.json must not turn the
+// equity optimizer on (T-RISK-ARCH_ADVERSARIAL §C3).
+TEST(TrackedTemplateResolvedRiskConfig, EquityMr) {
+    expect_resolved_risk_config({"equity_mr", "EQUITY_MR_PORTFOLIO",
+                                 /*max_drawdown*/ 0.3, /*max_leverage*/ 1.0,
+                                 /*var_limit*/ 0.25, /*jump_risk_limit*/ 0.08,
+                                 /*max_correlation*/ 0.7,  // by ABSENCE: risk_defaults
+                                 /*max_gross*/ 1.0, /*max_net*/ 1.0,
+                                 /*confidence*/ 0.99, /*lookback*/ 252,
+                                 /*capital*/ 100000.0,
+                                 /*use_optimization*/ true, /*use_risk_management*/ true});
+}
+
+// The max_correlation trap, pinned. BASE and EQUITY_MR resolve 0.7 because
+// defaults.json risk_defaults.max_correlation is applied before risk.json and
+// their risk.json files do not carry the key -- NOT because of RiskConfig's
+// struct default, which happens to be 0.7 too and so hides which path is live.
+// Changing the global alone moves both books and leaves CONSERVATIVE (literal
+// 0.85) where it is. A schema that writes every gating parameter literally per
+// book is expected to flip the 0.9 expectations below in the same commit.
+TEST(TrackedTemplateResolvedRiskConfig, MaxCorrelationOnBaseAndEquityMrComesFromRiskDefaults) {
+    namespace fs = std::filesystem;
+    const auto tmpl = tracked_config_template();
+    ASSERT_FALSE(tmpl.empty()) << "config_template/ not found; this test must not skip";
+
+    for (const char* book : {"base", "equity_mr"}) {
+        std::ifstream in(tmpl / "portfolios" / book / "risk.json");
+        const auto risk = nlohmann::json::parse(in);
+        EXPECT_FALSE(risk.contains("max_correlation"))
+            << book << ": risk.json now carries max_correlation literally; update this pin";
+    }
+    std::ifstream din(tmpl / "defaults.json");
+    auto defaults = nlohmann::json::parse(din);
+    ASSERT_EQ(defaults.at("risk_defaults").at("max_correlation").get<double>(), 0.7)
+        << "defaults.json risk_defaults.max_correlation";
+
+    // A copy of the template with ONLY the global changed to 0.9.
+    const fs::path copy = fs::temp_directory_path() / "trade_ngin_template_maxcorr_provenance";
+    fs::remove_all(copy);
+    fs::copy(tmpl, copy, fs::copy_options::recursive);
+    defaults["risk_defaults"]["max_correlation"] = 0.9;
+    {
+        std::ofstream out(copy / "defaults.json");
+        out << defaults.dump(2);
+    }
+    struct Case { const char* book; double expected; };
+    for (const Case& k : {Case{"base", 0.9}, Case{"equity_mr", 0.9}, Case{"conservative", 0.85}}) {
+        auto loaded = ConfigLoader::load(copy, k.book);
+        ASSERT_TRUE(loaded.is_ok()) << k.book << ": load of the modified copy failed";
+        EXPECT_EQ(loaded.value().risk_config.max_correlation, k.expected)
+            << k.book << ": risk_config.max_correlation with risk_defaults.max_correlation = 0.9";
+    }
+    fs::remove_all(copy);
+}

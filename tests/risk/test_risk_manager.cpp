@@ -463,4 +463,92 @@ TEST_F(RiskManagerExtendedTest, RecommendedScaleIsMinimumOfMultipliers) {
     EXPECT_EQ(res.risk_exceeded, res.recommended_scale < 1.0);
 }
 
+
+// ===== Net-leverage sign (ledger RISK-net-short-ungated) =====
+//
+// calculate_leverage_multiplier compares the SIGNED result.net_leverage with
+// max_net_leverage, so a net-SHORT book is never cut by the net term however
+// large |net| grows; only the gross term can bind it. These two tests pin the
+// behaviour of today's source through the public API. The fix -- std::abs for
+// the comparison and the ratio, result.net_leverage left SIGNED so the stored
+// net_leverage column and the email are unchanged -- lands in T-6b commit 9
+// (the risk-loop set, ARM 1), which must flip the net-short assertion below to
+// leverage_multiplier == max_net / |net|. The net-long mirror must not move.
+//
+// Both books are 2.6x of capital: gross 2.6 < max_gross 4.0, so the gross term
+// never binds and the net term is the only one that can move
+// leverage_multiplier.
+
+namespace {
+
+MarketData two_symbol_market_data(RiskManager& mgr) {
+    auto t0 = std::chrono::system_clock::now();
+    std::vector<Bar> bars;
+    for (int i = 0; i < 30; ++i) {
+        const auto ts = t0 + std::chrono::hours(24 * i);
+        bars.push_back(make_bar("AAPL", 100.0 + std::sin(i * 0.3) * 4.0, ts));
+        bars.push_back(make_bar("MSFT", 200.0 + std::cos(i * 0.2) * 6.0, ts));
+    }
+    return mgr.create_market_data(bars);
+}
+
+std::unordered_map<std::string, Position> two_positions(double aapl_qty, double msft_qty) {
+    // Notional: 15,000 x 104 = 1,560,000 and 5,000 x 208 = 1,040,000, so the
+    // book is 2,600,000 = 2.6 x the 1,000,000 capital of default_config().
+    return {{"AAPL", Position("AAPL", Quantity(aapl_qty), Price(104.0), Decimal(0.0),
+                              Decimal(0.0), Timestamp{})},
+            {"MSFT", Position("MSFT", Quantity(msft_qty), Price(208.0), Decimal(0.0),
+                              Decimal(0.0), Timestamp{})}};
+}
+
+}  // namespace
+
+TEST_F(RiskManagerExtendedTest, NetShortBookOverNetLimitIsNotCutToday) {
+    RiskManager mgr(default_config());  // max_gross 4.0, max_net 2.0, capital 1,000,000
+    const auto md = two_symbol_market_data(mgr);
+    auto r = mgr.process_positions(two_positions(-15000.0, -5000.0), md);
+    ASSERT_TRUE(r.is_ok());
+    const auto& res = r.value();
+
+    // Preconditions: both symbols priced at multiplier 1 (no registry entry), so
+    // gross is 2.6 -- under max_gross 4.0 -- and the gross term cannot bind.
+    ASSERT_DOUBLE_EQ(res.gross_leverage, 2.6);
+    ASSERT_LT(res.gross_leverage, mgr.get_config().max_gross_leverage);
+
+    // The stored net_leverage is SIGNED: negative for a net-short book, and it
+    // must stay signed after the fix (the column and the email read it).
+    EXPECT_LT(res.net_leverage, 0.0);
+    EXPECT_DOUBLE_EQ(res.net_leverage, -2.6);
+    EXPECT_GT(std::abs(res.net_leverage), mgr.get_config().max_net_leverage)
+        << "|net| 2.6 is over max_net_leverage 2.0";
+
+    // TODAY'S BEHAVIOUR (ledger RISK-net-short-ungated): -2.6 > 2.0 is false,
+    // so the net term returns 1.0 and the book is not cut at all. T-6b commit 9
+    // must flip this to EXPECT_DOUBLE_EQ(res.leverage_multiplier, 2.0 / 2.6).
+    EXPECT_EQ(res.leverage_multiplier, 1.0)
+        << "RISK-net-short-ungated: a net-short book over max_net_leverage is not cut "
+           "by today's signed comparison; if this fails, the sign fix has landed and "
+           "this pin must be flipped in the same commit";
+}
+
+TEST_F(RiskManagerExtendedTest, NetLongBookOverNetLimitIsCutToMaxNetOverNet) {
+    RiskManager mgr(default_config());
+    const auto md = two_symbol_market_data(mgr);
+    auto r = mgr.process_positions(two_positions(15000.0, 5000.0), md);
+    ASSERT_TRUE(r.is_ok());
+    const auto& res = r.value();
+
+    ASSERT_DOUBLE_EQ(res.gross_leverage, 2.6);
+    ASSERT_LT(res.gross_leverage, mgr.get_config().max_gross_leverage);
+    EXPECT_DOUBLE_EQ(res.net_leverage, 2.6);
+
+    // The mirror book IS cut, by the net term alone: max_net / net, exactly the
+    // expression calculate_leverage_multiplier evaluates. The sign fix must
+    // leave this value bit-for-bit where it is.
+    EXPECT_EQ(res.leverage_multiplier, mgr.get_config().max_net_leverage / res.net_leverage);
+    EXPECT_DOUBLE_EQ(res.leverage_multiplier, 2.0 / 2.6);
+    EXPECT_LE(res.recommended_scale, res.leverage_multiplier);
+    EXPECT_TRUE(res.risk_exceeded);
+}
+
 }  // namespace risk_manager_extended_detail
