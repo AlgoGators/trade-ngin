@@ -1304,22 +1304,6 @@ Result<void> PortfolioManager::apply_risk_management(const std::vector<Bar>& dat
             return Result<void>();
         }
 
-        // Collect volatility from strategies under lock
-        std::unordered_map<std::string, double> volatilities;
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            for (const auto& [id, info] : strategies_) {
-                auto trend_strategy =
-                    std::dynamic_pointer_cast<TrendFollowingStrategy>(info.strategy);
-                if (trend_strategy) {
-                    const auto& trading_data = trend_strategy->get_all_instrument_data();
-                    for (const auto& [symbol, data] : trading_data) {
-                        volatilities[symbol] = data.current_volatility;
-                    }
-                }
-            }
-        }
-
         // Apply risk management with proper error handling
         try {
             auto result = active_manager->process_positions(portfolio_positions, market_data, {});
