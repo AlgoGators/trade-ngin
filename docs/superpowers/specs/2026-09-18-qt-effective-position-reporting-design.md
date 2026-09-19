@@ -232,6 +232,10 @@ Allowed verified states are `done`, `partial`, `missing`, `blocked`, and `not ve
 
 The audit section will include the UTC audit timestamp, database identity in non-secret form, and exact Trade Ngin and AlgoLens commit identifiers.
 
+### 8.4 Audit evidence checkpoint
+
+The [Task 8 production database audit](../../audits/2026-09-18-qt-platform-production-db-audit.md) records the 2026-09-19T02:32:18Z UTC checkpoint and exact source SHAs. Live evidence is **blocked**: no existing approved production connection was established from the scoped local configuration. No database connection or SQL was attempted, and migration 012 was not applied. Local schema/migration contracts are documented separately from unverified live schema and data. Acceptance criterion 8 remains unmet pending the required read-only production session; this checkpoint does not establish deployment readiness.
+
 ## 9. Testing Strategy
 
 ### 9.1 Trade Ngin
