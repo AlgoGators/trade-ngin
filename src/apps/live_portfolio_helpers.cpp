@@ -15,6 +15,58 @@
 
 namespace trade_ngin {
 
+Result<ReportPositionSnapshot> load_qt_report_position_snapshot(
+    PostgresDatabase& db, const std::string& strategy_id,
+    const std::vector<std::string>& strategy_names, const std::string& portfolio_id,
+    const Timestamp& report_date, const StrategyPositionRows& system_rows) {
+    constexpr double kQuantityEpsilon = 1e-10;
+    ReportPositionSnapshot snapshot;
+
+    for (const auto& strategy_name : strategy_names) {
+        auto qt_result = db.load_report_positions_by_date(
+            strategy_id, strategy_name, portfolio_id, report_date, "qt");
+        if (qt_result.is_error()) {
+            return make_error<ReportPositionSnapshot>(
+                qt_result.error()->code(),
+                "Failed to load QT report positions for portfolio " + portfolio_id +
+                    ", strategy " + strategy_name + ": " + qt_result.error()->what(),
+                "load_qt_report_position_snapshot");
+        }
+
+        const auto& raw_qt_rows = qt_result.value();
+        auto system_it = system_rows.find(strategy_name);
+        if (system_it != system_rows.end()) {
+            for (const auto& [symbol, system_position] : system_it->second) {
+                if (std::abs(system_position.quantity.as_double()) > kQuantityEpsilon &&
+                    raw_qt_rows.find(symbol) == raw_qt_rows.end()) {
+                    return make_error<ReportPositionSnapshot>(
+                        ErrorCode::INVALID_DATA,
+                        "Missing QT report position for portfolio " + portfolio_id +
+                            ", strategy " + strategy_name + ", symbol " + symbol,
+                        "load_qt_report_position_snapshot");
+                }
+            }
+        }
+
+        auto& strategy_positions = snapshot.by_strategy[strategy_name];
+        for (const auto& [symbol, qt_position] : raw_qt_rows) {
+            if (std::abs(qt_position.quantity.as_double()) <= kQuantityEpsilon) {
+                continue;
+            }
+
+            strategy_positions[symbol] = qt_position;
+            auto combined_it = snapshot.combined.find(symbol);
+            if (combined_it == snapshot.combined.end()) {
+                snapshot.combined[symbol] = qt_position;
+            } else {
+                combined_it->second.quantity += qt_position.quantity;
+            }
+        }
+    }
+
+    return Result<ReportPositionSnapshot>(std::move(snapshot));
+}
+
 std::unordered_map<std::string, Bar> latest_bar_by_symbol(const std::vector<Bar>& all_bars) {
     std::unordered_map<std::string, Bar> latest;
     for (const auto& bar : all_bars) {

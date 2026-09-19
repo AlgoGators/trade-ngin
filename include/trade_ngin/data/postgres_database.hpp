@@ -100,6 +100,13 @@ public:
         const std::string& table_name = "trading.positions",
         const std::string& portfolio_type = "system") override;
 
+    // Strict investor-report read. Unlike load_positions_by_date, this never
+    // falls back to an unscoped legacy query when portfolio_type is absent.
+    virtual Result<std::unordered_map<std::string, Position>> load_report_positions_by_date(
+        const std::string& strategy_id, const std::string& strategy_name,
+        const std::string& portfolio_id, const Timestamp& report_date,
+        const std::string& portfolio_type);
+
     /**
      * @brief Store execution reports in the database
      * @param executions List of execution reports

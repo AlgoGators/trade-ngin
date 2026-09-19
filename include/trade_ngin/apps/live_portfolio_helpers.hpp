@@ -25,6 +25,22 @@ namespace trade_ngin {
 class PostgresDatabase;
 class InstrumentRegistry;
 
+using StrategyPositionRows =
+    std::unordered_map<std::string, std::unordered_map<std::string, Position>>;
+
+struct ReportPositionSnapshot {
+    StrategyPositionRows by_strategy;
+    std::unordered_map<std::string, Position> combined;
+};
+
+// Loads the QT execution snapshot for every report strategy, verifies that
+// QT rows account for all non-flat system symbols, and returns open QT
+// positions plus the aggregated report position map.
+Result<ReportPositionSnapshot> load_qt_report_position_snapshot(
+    PostgresDatabase& db, const std::string& strategy_id,
+    const std::vector<std::string>& strategy_names, const std::string& portfolio_id,
+    const Timestamp& report_date, const StrategyPositionRows& system_rows);
+
 // Latest bar per symbol from a flat, chronologically-loaded bar vector
 // (DataConversionUtils::arrow_table_to_bars' real return type). Built once
 // by the caller and reused, rather than each consumer re-scanning the

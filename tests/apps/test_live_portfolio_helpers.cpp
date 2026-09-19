@@ -1,6 +1,11 @@
 #include "trade_ngin/apps/live_portfolio_helpers.hpp"
+#include "trade_ngin/data/postgres_database.hpp"
 
 #include <gtest/gtest.h>
+
+#include <string>
+#include <unordered_map>
+#include <vector>
 
 using namespace trade_ngin;
 
@@ -15,7 +20,135 @@ Position make_position(const std::string& symbol, double qty) {
                      std::chrono::system_clock::now());
 }
 
+Timestamp report_date() {
+    return std::chrono::system_clock::from_time_t(1780368000);  // 2026-06-01T00:00:00Z
+}
+
+struct ReportSnapshotCall {
+    std::string strategy_id;
+    std::string strategy_name;
+    std::string portfolio_id;
+    Timestamp date;
+    std::string portfolio_type;
+};
+
+class ReportSnapshotDatabase : public PostgresDatabase {
+public:
+    ReportSnapshotDatabase() : PostgresDatabase("mock://qt-report-snapshot") {}
+
+    Result<std::unordered_map<std::string, Position>> load_report_positions_by_date(
+        const std::string& strategy_id, const std::string& strategy_name,
+        const std::string& portfolio_id, const Timestamp& date,
+        const std::string& portfolio_type) override {
+        calls.push_back({strategy_id, strategy_name, portfolio_id, date, portfolio_type});
+        if (return_error) {
+            return make_error<std::unordered_map<std::string, Position>>(
+                ErrorCode::DATABASE_ERROR, "simulated QT read failure");
+        }
+        return rows[strategy_name];
+    }
+
+    std::unordered_map<std::string, std::unordered_map<std::string, Position>> rows;
+    std::vector<ReportSnapshotCall> calls;
+    bool return_error{false};
+};
+
 }  // namespace
+
+// --- load_qt_report_position_snapshot ---
+
+TEST(LivePortfolioHelpers, QtReportSnapshotReplacesSystemQuantityAndFiltersClosures) {
+    ReportSnapshotDatabase db;
+    db.rows["TREND"] = {
+        {"ES", make_position("ES", 7.0)},
+        {"NQ", make_position("NQ", 0.0)},
+    };
+    StrategyPositionRows system{{"TREND", {{"ES", make_position("ES", 12.0)}}}};
+
+    auto result = load_qt_report_position_snapshot(
+        db, "LIVE_TREND", {"TREND"}, "INVESTOR_A", report_date(), system);
+
+    ASSERT_TRUE(result.is_ok());
+    EXPECT_DOUBLE_EQ(result.value().by_strategy.at("TREND").at("ES").quantity.as_double(), 7.0);
+    EXPECT_EQ(result.value().by_strategy.at("TREND").count("NQ"), 0u);
+}
+
+TEST(LivePortfolioHelpers, QtReportSnapshotPropagatesScopedDatabaseErrors) {
+    ReportSnapshotDatabase db;
+    db.return_error = true;
+
+    auto result = load_qt_report_position_snapshot(
+        db, "LIVE_TREND", {"TREND"}, "INVESTOR_A", report_date(), {});
+
+    ASSERT_TRUE(result.is_error());
+    EXPECT_EQ(result.error()->code(), ErrorCode::DATABASE_ERROR);
+    EXPECT_NE(std::string(result.error()->what()).find("INVESTOR_A"), std::string::npos);
+    EXPECT_NE(std::string(result.error()->what()).find("TREND"), std::string::npos);
+}
+
+TEST(LivePortfolioHelpers, QtReportSnapshotFailsClosedForMissingSystemSymbolCoverage) {
+    ReportSnapshotDatabase db;
+    db.rows["TREND"] = {{"ES", make_position("ES", 7.0)}};
+    StrategyPositionRows system{{"TREND", {{"ES", make_position("ES", 12.0)},
+                                             {"NQ", make_position("NQ", 3.0)}}}};
+
+    auto result = load_qt_report_position_snapshot(
+        db, "LIVE_TREND", {"TREND"}, "INVESTOR_A", report_date(), system);
+
+    ASSERT_TRUE(result.is_error());
+    EXPECT_NE(std::string(result.error()->what()).find("NQ"), std::string::npos);
+}
+
+TEST(LivePortfolioHelpers, QtReportSnapshotAcceptsAFlatStrategyWithoutRows) {
+    ReportSnapshotDatabase db;
+
+    auto result = load_qt_report_position_snapshot(
+        db, "LIVE_TREND", {"TREND"}, "INVESTOR_A", report_date(), {});
+
+    ASSERT_TRUE(result.is_ok());
+    EXPECT_TRUE(result.value().by_strategy.at("TREND").empty());
+    EXPECT_TRUE(result.value().combined.empty());
+}
+
+TEST(LivePortfolioHelpers, QtReportSnapshotTreatsZeroQtRowsAsCoverageEvidence) {
+    ReportSnapshotDatabase db;
+    db.rows["TREND"] = {{"ES", make_position("ES", 0.0)}};
+    StrategyPositionRows system{{"TREND", {{"ES", make_position("ES", 12.0)}}}};
+
+    auto result = load_qt_report_position_snapshot(
+        db, "LIVE_TREND", {"TREND"}, "INVESTOR_A", report_date(), system);
+
+    ASSERT_TRUE(result.is_ok());
+    EXPECT_TRUE(result.value().by_strategy.at("TREND").empty());
+    EXPECT_TRUE(result.value().combined.empty());
+}
+
+TEST(LivePortfolioHelpers, QtReportSnapshotAggregatesDuplicateOpenSymbolsAcrossStrategies) {
+    ReportSnapshotDatabase db;
+    db.rows["TREND"] = {{"ES", make_position("ES", 2.0)}};
+    db.rows["CARRY"] = {{"ES", make_position("ES", -0.5)}};
+
+    auto result = load_qt_report_position_snapshot(
+        db, "LIVE_TREND_CARRY", {"TREND", "CARRY"}, "INVESTOR_A", report_date(), {});
+
+    ASSERT_TRUE(result.is_ok());
+    EXPECT_DOUBLE_EQ(result.value().combined.at("ES").quantity.as_double(), 1.5);
+}
+
+TEST(LivePortfolioHelpers, QtReportSnapshotUsesExactQtDatabaseScope) {
+    ReportSnapshotDatabase db;
+
+    auto result = load_qt_report_position_snapshot(
+        db, "LIVE_TREND", {"TREND"}, "INVESTOR_A", report_date(), {});
+
+    ASSERT_TRUE(result.is_ok());
+    ASSERT_EQ(db.calls.size(), 1u);
+    EXPECT_EQ(db.calls[0].strategy_id, "LIVE_TREND");
+    EXPECT_EQ(db.calls[0].strategy_name, "TREND");
+    EXPECT_EQ(db.calls[0].portfolio_id, "INVESTOR_A");
+    EXPECT_EQ(db.calls[0].date, report_date());
+    EXPECT_EQ(db.calls[0].portfolio_type, "qt");
+}
 
 // --- latest_bar_by_symbol ---
 

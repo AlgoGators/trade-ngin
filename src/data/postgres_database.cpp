@@ -804,6 +804,75 @@ Result<std::unordered_map<std::string, Position>> PostgresDatabase::load_positio
     }
 }
 
+Result<std::unordered_map<std::string, Position>> PostgresDatabase::load_report_positions_by_date(
+    const std::string& strategy_id, const std::string& strategy_name,
+    const std::string& portfolio_id, const Timestamp& report_date,
+    const std::string& portfolio_type) {
+    auto validation = validate_connection();
+    if (validation.is_error()) {
+        return make_error<std::unordered_map<std::string, Position>>(
+            validation.error()->code(),
+            "Failed to load strict report positions for portfolio " + portfolio_id +
+                ", strategy " + strategy_name + ": " + validation.error()->what(),
+            "PostgresDatabase");
+    }
+
+    try {
+        pqxx::work txn(*connection_);
+        if (!column_exists(txn, "trading.positions", "portfolio_type")) {
+            return make_error<std::unordered_map<std::string, Position>>(
+                ErrorCode::DATABASE_ERROR,
+                "trading.positions.portfolio_type is required for strict report position reads "
+                "for portfolio " + portfolio_id + ", strategy " + strategy_name,
+                "PostgresDatabase");
+        }
+
+        const std::string date_str = format_timestamp(report_date);
+        const std::string query =
+            "SELECT symbol, quantity, average_price, daily_unrealized_pnl, daily_realized_pnl, "
+            "last_update FROM trading.positions "
+            "WHERE strategy_id = $1 AND strategy_name = $2 AND portfolio_id = $3 AND "
+            "date = $4 AND portfolio_type = $5";
+        const auto result = txn.exec(
+            query, pqxx::params{strategy_id, strategy_name, portfolio_id, date_str, portfolio_type});
+        txn.commit();
+
+        std::unordered_map<std::string, Position> positions;
+        for (const auto& row : result) {
+            Timestamp last_update;
+            try {
+                const std::string last_update_str = row[5].as<std::string>();
+                std::tm tm = {};
+                std::istringstream stream(last_update_str);
+                stream >> std::get_time(&tm, "%Y-%m-%d %H:%M:%S");
+                if (stream.fail()) {
+                    WARN("Failed to parse timestamp: " + last_update_str + ", using current time");
+                    last_update = std::chrono::system_clock::now();
+                } else {
+                    last_update = std::chrono::system_clock::from_time_t(std::mktime(&tm));
+                }
+            } catch (const std::exception& e) {
+                WARN("Exception parsing timestamp: " + std::string(e.what()) +
+                     ", using current time");
+                last_update = std::chrono::system_clock::now();
+            }
+
+            const std::string symbol = row[0].as<std::string>();
+            positions[symbol] = Position(symbol, Quantity(row[1].as<double>()),
+                                         Price(row[2].as<double>()), Decimal(row[3].as<double>()),
+                                         Decimal(row[4].as<double>()), last_update);
+        }
+
+        return Result<std::unordered_map<std::string, Position>>(std::move(positions));
+    } catch (const std::exception& e) {
+        return make_error<std::unordered_map<std::string, Position>>(
+            ErrorCode::DATABASE_ERROR,
+            "Failed to load strict report positions for portfolio " + portfolio_id +
+                ", strategy " + strategy_name + ": " + e.what(),
+            "PostgresDatabase");
+    }
+}
+
 Result<std::shared_ptr<arrow::Table>> PostgresDatabase::execute_query(const std::string& query) {
     auto validation = validate_connection();
     if (validation.is_error()) {
