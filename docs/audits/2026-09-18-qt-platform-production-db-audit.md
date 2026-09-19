@@ -1,5 +1,9 @@
 # QT platform production database audit
 
+> Related local build and disposable-PostgreSQL evidence is recorded in
+> [`2026-09-19-qt-platform-verification.md`](2026-09-19-qt-platform-verification.md).
+> That evidence does not replace the blocked production read-only audit.
+
 **Verdict: blocked for live evidence.** Repository contracts were inspected, but an existing approved production connection could not be established from the scoped local configuration. Production schema compatibility, position integrity, and legacy override classifications remain unverified. This report does not satisfy the design's live-audit acceptance criterion or authorize deployment.
 
 ## Evidence scope and provenance
