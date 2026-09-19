@@ -60,6 +60,29 @@ std::shared_ptr<OptionInstrument> make_option(const std::string& symbol) {
     return std::make_shared<OptionInstrument>(symbol, s);
 }
 
+void install_instrument(InstrumentRegistry& registry, const std::shared_ptr<Instrument>& instrument) {
+    const auto& symbol = instrument->get_symbol();
+
+    switch (instrument->get_type()) {
+        case AssetType::FUTURE:
+            registry.futures_[symbol] = std::dynamic_pointer_cast<FuturesInstrument>(instrument);
+            break;
+        case AssetType::EQUITY:
+            registry.equities_[symbol] = std::dynamic_pointer_cast<EquityInstrument>(instrument);
+            break;
+        case AssetType::OPTION:
+            registry.options_[symbol] = std::dynamic_pointer_cast<OptionInstrument>(instrument);
+            break;
+        default:
+            break;
+    }
+
+    if (instrument->get_type() == AssetType::EQUITY ||
+        registry.instruments_.find(symbol) == registry.instruments_.end()) {
+        registry.instruments_[symbol] = instrument;
+    }
+}
+
 }  // namespace
 
 class InstrumentRegistryTest : public TestBase {
@@ -68,12 +91,18 @@ protected:
         TestBase::SetUp();
         auto& r = InstrumentRegistry::instance();
         r.instruments_.clear();
+        r.futures_.clear();
+        r.equities_.clear();
+        r.options_.clear();
         r.initialized_ = false;
         r.db_.reset();
     }
     void TearDown() override {
         auto& r = InstrumentRegistry::instance();
         r.instruments_.clear();
+        r.futures_.clear();
+        r.equities_.clear();
+        r.options_.clear();
         r.initialized_ = false;
         r.db_.reset();
         TestBase::TearDown();
@@ -113,7 +142,7 @@ TEST_F(InstrumentRegistryTest, AFullSizeTickerIsNotSilentlyTheMicroContract) {
     // micro must not make the full-size resolve to it.
     auto& r = InstrumentRegistry::instance();
     auto mes = make_futures("MES");
-    r.instruments_["MES"] = mes;
+    install_instrument(r, mes);
     EXPECT_EQ(r.get_instrument("MES"), mes);
     EXPECT_EQ(r.get_instrument("ES"), nullptr);
     EXPECT_EQ(r.get_instrument("ES.v.0"), nullptr);
@@ -126,9 +155,9 @@ TEST_F(InstrumentRegistryTest, EachEquityIndexTickerResolvesToItsOwnContract) {
     auto nq = make_futures("NQ");
     auto mnq = make_futures("MNQ");
     auto ym = make_futures("YM");
-    r.instruments_["NQ"] = nq;
-    r.instruments_["MNQ"] = mnq;
-    r.instruments_["YM"] = ym;
+    install_instrument(r, nq);
+    install_instrument(r, mnq);
+    install_instrument(r, ym);
     EXPECT_EQ(r.get_instrument("NQ"), nq);
     EXPECT_EQ(r.get_instrument("MNQ"), mnq);
     EXPECT_EQ(r.get_instrument("YM"), ym);
@@ -138,63 +167,88 @@ TEST_F(InstrumentRegistryTest, EachEquityIndexTickerResolvesToItsOwnContract) {
 
 TEST_F(InstrumentRegistryTest, HasInstrumentAnswersForTheSymbolItWasAsked) {
     auto& r = InstrumentRegistry::instance();
-    r.instruments_["MES"] = make_futures("MES");
+    install_instrument(r, make_futures("MES"));
     EXPECT_TRUE(r.has_instrument("MES"));
     EXPECT_FALSE(r.has_instrument("ES"));
     EXPECT_FALSE(r.has_instrument("NQ"));
     EXPECT_FALSE(r.has_instrument("UNKNOWN"));
 }
 
-TEST_F(InstrumentRegistryTest, TheVariantSuffixIsStrippedAndNothingElse) {
-    // A .v. suffix marks a continuous futures series. Stripping it is all that
-    // should happen: it used to also trigger the remap unconditionally, which
-    // is how ES.v.0 -- the spelling trading.positions actually uses -- became
-    // the micro contract.
+TEST_F(InstrumentRegistryTest, EquityWinsGenericLookupWhenInstalledBeforeFuture) {
     auto& r = InstrumentRegistry::instance();
     auto es_equity = make_equity("ES");  // NYSE "ES" = Eversource Energy
     auto es_future = make_futures("ES");
-    r.instruments_["MES"] = make_futures("MES");
 
-    r.instruments_["ES"] = es_equity;
+    install_instrument(r, es_equity);
+    install_instrument(r, es_future);
+
     EXPECT_EQ(r.get_instrument("ES"), es_equity);
-    EXPECT_EQ(r.get_instrument("ES.v.0"), es_equity);
-
-    r.instruments_["ES"] = es_future;
     EXPECT_EQ(r.get_instrument("ES.v.0"), es_future);
-    EXPECT_TRUE(r.has_instrument("ES.v.0"));
+    EXPECT_EQ(r.get_equity_instrument("ES"), es_equity);
+    EXPECT_EQ(r.get_equity_instrument("ES.v.0"), nullptr);
+    EXPECT_EQ(r.get_futures_instrument("ES"), es_future);
+    EXPECT_EQ(r.get_futures_instrument("ES.v.0"), es_future);
+    EXPECT_EQ(r.get_instruments_by_asset_class(AssetClass::EQUITIES).size(), 1u);
+    EXPECT_EQ(r.get_instruments_by_asset_class(AssetClass::FUTURES).size(), 1u);
+
+    auto all = r.get_all_instruments();
+    ASSERT_EQ(all.size(), 1u);
+    EXPECT_EQ(all.at("ES"), es_equity);
+}
+
+TEST_F(InstrumentRegistryTest, EquityWinsGenericLookupWhenInstalledAfterFuture) {
+    auto& r = InstrumentRegistry::instance();
+    auto es_equity = make_equity("ES");  // NYSE "ES" = Eversource Energy
+    auto es_future = make_futures("ES");
+
+    install_instrument(r, es_future);
+    install_instrument(r, es_equity);
+
+    EXPECT_EQ(r.get_instrument("ES"), es_equity);
+    EXPECT_EQ(r.get_instrument("ES.v.0"), es_future);
+    EXPECT_EQ(r.get_equity_instrument("ES"), es_equity);
+    EXPECT_EQ(r.get_equity_instrument("ES.v.0"), nullptr);
+    EXPECT_EQ(r.get_futures_instrument("ES"), es_future);
+    EXPECT_EQ(r.get_futures_instrument("ES.v.0"), es_future);
+    EXPECT_EQ(r.get_instruments_by_asset_class(AssetClass::EQUITIES).size(), 1u);
+    EXPECT_EQ(r.get_instruments_by_asset_class(AssetClass::FUTURES).size(), 1u);
+
+    auto all = r.get_all_instruments();
+    ASSERT_EQ(all.size(), 1u);
+    EXPECT_EQ(all.at("ES"), es_equity);
 }
 
 TEST_F(InstrumentRegistryTest, GetFuturesInstrumentReturnsNullForNonFutures) {
     auto& r = InstrumentRegistry::instance();
-    r.instruments_["AAPL"] = make_equity("AAPL");
-    r.instruments_["MES"] = make_futures("MES");
+    install_instrument(r, make_equity("AAPL"));
+    install_instrument(r, make_futures("MES"));
     EXPECT_EQ(r.get_futures_instrument("AAPL"), nullptr);
     EXPECT_NE(r.get_futures_instrument("MES"), nullptr);
 }
 
 TEST_F(InstrumentRegistryTest, GetEquityInstrumentReturnsNullForNonEquity) {
     auto& r = InstrumentRegistry::instance();
-    r.instruments_["MES"] = make_futures("MES");
-    r.instruments_["AAPL"] = make_equity("AAPL");
+    install_instrument(r, make_futures("MES"));
+    install_instrument(r, make_equity("AAPL"));
     EXPECT_EQ(r.get_equity_instrument("MES"), nullptr);
     EXPECT_NE(r.get_equity_instrument("AAPL"), nullptr);
 }
 
 TEST_F(InstrumentRegistryTest, GetOptionInstrumentReturnsNullForNonOption) {
     auto& r = InstrumentRegistry::instance();
-    r.instruments_["MES"] = make_futures("MES");
-    r.instruments_["AAPL_OPT"] = make_option("AAPL_OPT");
+    install_instrument(r, make_futures("MES"));
+    install_instrument(r, make_option("AAPL_OPT"));
     EXPECT_EQ(r.get_option_instrument("MES"), nullptr);
     EXPECT_NE(r.get_option_instrument("AAPL_OPT"), nullptr);
 }
 
 TEST_F(InstrumentRegistryTest, GetInstrumentsByAssetClassPartitionsCorrectly) {
     auto& r = InstrumentRegistry::instance();
-    r.instruments_["MES"] = make_futures("MES");
-    r.instruments_["MNQ"] = make_futures("MNQ");
-    r.instruments_["AAPL"] = make_equity("AAPL");
-    r.instruments_["MSFT"] = make_equity("MSFT");
-    r.instruments_["AAPL_OPT"] = make_option("AAPL_OPT");
+    install_instrument(r, make_futures("MES"));
+    install_instrument(r, make_futures("MNQ"));
+    install_instrument(r, make_equity("AAPL"));
+    install_instrument(r, make_equity("MSFT"));
+    install_instrument(r, make_option("AAPL_OPT"));
 
     EXPECT_EQ(r.get_instruments_by_asset_class(AssetClass::FUTURES).size(), 2u);
     EXPECT_EQ(r.get_instruments_by_asset_class(AssetClass::EQUITIES).size(), 2u);
@@ -205,8 +259,8 @@ TEST_F(InstrumentRegistryTest, GetInstrumentsByAssetClassPartitionsCorrectly) {
 
 TEST_F(InstrumentRegistryTest, GetAllInstrumentsReturnsCopyOfMap) {
     auto& r = InstrumentRegistry::instance();
-    r.instruments_["MES"] = make_futures("MES");
-    r.instruments_["AAPL"] = make_equity("AAPL");
+    install_instrument(r, make_futures("MES"));
+    install_instrument(r, make_equity("AAPL"));
     auto all = r.get_all_instruments();
     EXPECT_EQ(all.size(), 2u);
     EXPECT_TRUE(all.count("MES"));
