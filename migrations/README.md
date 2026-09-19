@@ -38,6 +38,14 @@ dual-portfolio workflow:
    metrics out of `live_results` rather than recomputing them. Additive and
    idempotent — a no-op on a database that already has them, which a working
    production box does. Apply it BEFORE 010, which UPDATEs `profit_factor`.
+12. `012_position_overrides_portfolio_scope.sql` — adds `portfolio_id` to new
+   manual position-override audit rows, while retaining pre-012 rows unchanged.
+   It records an append-only companion scope only for legacy rows whose
+   `(strategy_id, symbol)` matches exactly one distinct portfolio in
+   `trading.positions`; unmatched and multi-book rows remain unscoped. The
+   `NOT VALID` constraint rejects future unscoped writes without rejecting the
+   retained legacy evidence. Apply it before deploying the portfolio-scoped
+   override-history reader/writer.
 
 The safe release sequence is: merge PR #55 and PR #56; apply 002–004 from PR
 #55, then 005 from PR #56, then 006–007 from PR #55; deploy the combined binary
@@ -63,3 +71,11 @@ refuse operations that would discard populated attribution streams.
 Manual position writes must target only `portfolio_type = 'qt'`, must create a
 `trading.position_overrides` row in the same transaction, and must never mutate
 the `system` or benchmark streams.
+
+`012_position_overrides_portfolio_scope_rollback.sql` intentionally refuses to
+remove the migration when either new scoped audit rows or inferred legacy-scope
+rows exist, because that would discard audit attribution. It is safe and
+idempotent only while both are empty. Run
+`test_012_position_overrides_portfolio_scope.sh` only with local Docker: the
+harness creates and removes its own disposable PostgreSQL container and never
+uses a production connection.
