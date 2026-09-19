@@ -6,6 +6,7 @@
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include <numeric>
+#include <optional>
 #include <unordered_map>
 #include "trade_ngin/core/config_base.hpp"
 #include "trade_ngin/core/error.hpp"
@@ -17,7 +18,9 @@
 #include "trade_ngin/data/postgres_database.hpp"
 #include "trade_ngin/instruments/instrument_registry.hpp"
 #include "trade_ngin/optimization/dynamic_optimizer.hpp"
+#include "trade_ngin/risk/carver_risk_module.hpp"
 #include "trade_ngin/risk/risk_manager.hpp"
+#include "trade_ngin/risk/risk_module.hpp"
 #include "trade_ngin/strategy/strategy_interface.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
 #include "trade_ngin/transaction_cost/transaction_cost_manager.hpp"
@@ -275,12 +278,41 @@ public:
         return config_;
     }
 
+    /**
+     * @brief Replace the portfolio-scope risk modules (by default the Carver module the
+     *        constructor builds from config.risk_config). Call before process_market_data.
+     * @return An error for a null module or a duplicate module id; the modules are unchanged then.
+     */
+    Result<void> set_risk_modules(std::vector<RiskModulePtr> portfolio_modules);
+
+    /**
+     * @brief The last process_market_data call's risk decisions: every module, every lap,
+     *        requested and applied. A copy. Cleared at every rebalance boundary, so after a
+     *        runner's explicit call it holds that call only.
+     */
+    std::vector<RiskDecisionRecord> last_risk_decisions() const;
+
+    /**
+     * @brief build_risk_decisions_json over describe() of every module (annotated with its
+     *        scope) and last_risk_decisions().
+     */
+    nlohmann::json risk_decisions_json() const;
+
+    /**
+     * @brief Mark this manager as driven by a backtest. Read only into RiskContext::is_backtest.
+     */
+    void set_backtest_mode(bool is_backtest) {
+        is_backtest_ = is_backtest;
+    }
+
 private:
     PortfolioConfig config_;
     std::string id_;
 
     std::unique_ptr<DynamicOptimizer> optimizer_;
-    std::unique_ptr<RiskManager> risk_manager_;
+    std::vector<RiskModulePtr> risk_modules_;  // portfolio scope, evaluated in order
+    std::vector<RiskDecisionRecord> risk_decisions_;  // guarded by mutex_
+    bool is_backtest_{false};
     std::shared_ptr<InstrumentRegistry> registry_{nullptr};
 
     struct StrategyInfo {
@@ -365,10 +397,20 @@ private:
     Result<void> optimize_positions();
 
     /**
+     * @brief Build the context a risk module sees for one call
+     */
+    RiskContext make_risk_context(RiskPhase phase, int lap, RiskScope scope,
+                                  const std::string& scope_id, Decimal capital,
+                                  const std::vector<Bar>& data,
+                                  std::optional<Timestamp> as_of, bool is_warmup) const;
+
+    /**
      * @brief Apply risk management to positions
+     * @param data This call's bars
+     * @param lap_ctx The lap's context (phase LAP, portfolio scope)
      * @return Result indicating success or failure
      */
-    Result<void> apply_risk_management(const std::vector<Bar>& data);
+    Result<void> apply_risk_management(const std::vector<Bar>& data, const RiskContext& lap_ctx);
 
     /**
      * @brief Validate allocations sum to 1

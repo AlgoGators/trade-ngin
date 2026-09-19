@@ -192,6 +192,11 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
     backtest_start_date_ = start_date;
     backtest_end_date_ = end_date;
 
+    // The portfolio's risk modules see RiskContext::is_backtest = true (no log, no other effect)
+    if (portfolio) {
+        portfolio->set_backtest_mode(true);
+    }
+
     // Disable MarketDataBus publishing during data loading
     INFO("Disabling MarketDataBus publishing during data loading");
     MarketDataBus::instance().set_publish_enabled(false);

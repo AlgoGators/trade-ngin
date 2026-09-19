@@ -23,20 +23,24 @@ PortfolioManager::PortfolioManager(PortfolioConfig config, std::string id,
         optimizer_ = std::make_unique<DynamicOptimizer>(config_.opt_config);
     }
 
-    // Initialize risk manager if enabled
+    // Initialize risk manager if enabled. The Carver module builds its RiskManager (which
+    // registers "RiskManager") here, at the point the manager was always built, so the
+    // initialized line below keeps its [RiskManager] tag.
     if (config_.use_risk_management) {
         try {
-            risk_manager_ = std::make_unique<RiskManager>(config_.risk_config);
-            if (!risk_manager_) {
+            auto carver = std::make_shared<CarverRiskModule>("carver", config_.risk_config,
+                                                             &risk_history_);
+            if (!carver) {
                 WARN("Failed to create risk manager, risk management will be disabled");
             } else {
                 INFO("Risk manager initialized successfully with capital=" +
                      std::to_string(config_.risk_config.capital));
                 Logger::register_component("PortfolioManager");
+                risk_modules_.push_back(std::move(carver));
             }
         } catch (const std::exception& e) {
             ERROR("Failed to initialize risk manager: " + std::string(e.what()));
-            risk_manager_ = nullptr;  // Explicitly set to nullptr
+            risk_modules_.clear();
         }
     } else {
         INFO("Risk management is disabled in the configuration");
@@ -299,6 +303,12 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
         // Up to 5 iterations for convergence to fully integer positions. The final rounding step
         // can cause minor tracking error/risk profile deviation
 
+        // Rebalance boundary: the risk decisions recorded are this call's only (silent).
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            risk_decisions_.clear();
+        }
+
         // Invalidate covariance cache - will be recomputed once on first iteration and reused
         covariance_cache_valid_ = false;
 
@@ -337,11 +347,14 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
             }
 
             // Risk Management step
-            bool has_risk_manager = (risk_manager_ != nullptr);
+            bool has_risk_manager = !risk_modules_.empty();
             if (config_.use_risk_management && has_risk_manager) {
                 try {
                     Logger::register_component("RiskManager");
-                    auto risk_result = apply_risk_management(data);
+                    auto risk_result = apply_risk_management(
+                        data, make_risk_context(RiskPhase::LAP, iteration, RiskScope::PORTFOLIO,
+                                                id_, config_.total_capital, data,
+                                                current_timestamp, skip_execution_generation));
                     if (risk_result.is_error()) {
                         WARN("Portfolio risk management failed in iteration " +
                              std::to_string(iteration) + ": " +
@@ -1312,16 +1325,93 @@ Result<void> PortfolioManager::optimize_positions() {
     }
 }
 
-Result<void> PortfolioManager::apply_risk_management(const std::vector<Bar>& data) {
-    Logger::register_component("RiskManager");
-    RiskManager* active_manager = risk_manager_.get();
+RiskContext PortfolioManager::make_risk_context(RiskPhase phase, int lap, RiskScope scope,
+                                                const std::string& scope_id, Decimal capital,
+                                                const std::vector<Bar>& data,
+                                                std::optional<Timestamp> as_of,
+                                                bool is_warmup) const {
+    RiskContext ctx;
+    ctx.phase = phase;
+    ctx.lap = lap;
+    ctx.as_of = as_of;
+    ctx.is_backtest = is_backtest_;
+    ctx.is_warmup = is_warmup;
+    ctx.capital = capital;
+    ctx.portfolio_id = id_;
+    ctx.scope = scope;
+    ctx.scope_id = scope_id;
+    ctx.bars = &data;
+    return ctx;
+}
 
-    if (!active_manager) {
+Result<void> PortfolioManager::set_risk_modules(std::vector<RiskModulePtr> portfolio_modules) {
+    std::set<std::string> ids;
+    for (const auto& module : portfolio_modules) {
+        if (!module) {
+            return make_error<void>(ErrorCode::INVALID_ARGUMENT, "Risk module cannot be null",
+                                    "PortfolioManager");
+        }
+        if (!ids.insert(module->id()).second) {
+            return make_error<void>(ErrorCode::INVALID_ARGUMENT,
+                                    "Duplicate risk module id: " + module->id(),
+                                    "PortfolioManager");
+        }
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    risk_modules_ = std::move(portfolio_modules);
+    return Result<void>();
+}
+
+std::vector<RiskDecisionRecord> PortfolioManager::last_risk_decisions() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return risk_decisions_;
+}
+
+nlohmann::json PortfolioManager::risk_decisions_json() const {
+    std::vector<nlohmann::json> modules;
+    std::vector<RiskDecisionRecord> records;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (const auto& module : risk_modules_) {
+            nlohmann::json m = module->describe();
+            m["scope"] = risk_scope_name(RiskScope::PORTFOLIO);
+            m["scope_id"] = id_;
+            modules.push_back(std::move(m));
+        }
+        records = risk_decisions_;
+    }
+    return build_risk_decisions_json(modules, records);
+}
+
+Result<void> PortfolioManager::apply_risk_management(const std::vector<Bar>& data,
+                                                     const RiskContext& lap_ctx) {
+    Logger::register_component("RiskManager");
+
+    if (risk_modules_.empty()) {
         WARN("Risk manager not initialized, skipping risk management");
         return Result<void>();
     } else {
         INFO("Using risk manager");
     }
+
+    // One record per module for this lap, pushed under the lock (silent).
+    auto record = [&](const std::string& module_id, RiskDecision requested,
+                      RiskAction applied_action, Decimal applied_factor, bool empty_book,
+                      std::string error) {
+        RiskDecisionRecord rec;
+        rec.phase = lap_ctx.phase;
+        rec.lap = lap_ctx.lap;
+        rec.scope = lap_ctx.scope;
+        rec.scope_id = lap_ctx.scope_id;
+        rec.module_id = module_id;
+        rec.requested = std::move(requested);
+        rec.applied_action = applied_action;
+        rec.applied_factor = applied_factor;
+        rec.empty_book = empty_book;
+        rec.error = std::move(error);
+        std::lock_guard<std::mutex> lock(mutex_);
+        risk_decisions_.push_back(std::move(rec));
+    };
 
     try {
         for (auto const& bar : data) {
@@ -1334,7 +1424,11 @@ Result<void> PortfolioManager::apply_risk_management(const std::vector<Bar>& dat
                                 risk_history_.end() - static_cast<long>(lookback));
         }
 
-        MarketData market_data = active_manager->create_market_data(risk_history_);
+        // Every module sees this lap's bars before the book is built and before the
+        // empty-book return (the Carver module builds its MarketData from the window here).
+        for (auto& module : risk_modules_) {
+            module->on_bars(data, lap_ctx);
+        }
 
         // Collect aggregated portfolio positions for risk evaluation.
         // Use simple per-strategy sum (Σ qᵢ) instead of get_portfolio_positions(),
@@ -1359,56 +1453,93 @@ Result<void> PortfolioManager::apply_risk_management(const std::vector<Bar>& dat
         // Check if we have positions to process
         if (portfolio_positions.empty()) {
             INFO("No positions to apply risk management to");
+            for (const auto& module : risk_modules_) {
+                RiskDecision none;
+                none.module_id = module->id();
+                record(module->id(), std::move(none), RiskAction::NONE, Decimal(1.0), true, "");
+            }
             return Result<void>();
         }
 
         // Apply risk management with proper error handling
         try {
-            auto result = active_manager->process_positions(portfolio_positions, market_data, {});
-            if (result.is_error()) {
-                ERROR("Risk management calculation failed: " + std::string(result.error()->what()));
-                return Result<void>();  // Don't fail the entire operation
+            std::vector<RiskDecision> decisions;
+            decisions.reserve(risk_modules_.size());
+            for (auto& module : risk_modules_) {
+                auto result = module->evaluate(portfolio_positions, lap_ctx);
+                if (result.is_error()) {
+                    ERROR("Risk management calculation failed: " +
+                          std::string(result.error()->what()));
+                    for (auto& d : decisions) {
+                        std::string id = d.module_id;
+                        record(id, std::move(d), RiskAction::NONE, Decimal(1.0), false, "");
+                    }
+                    RiskDecision none;
+                    none.module_id = module->id();
+                    record(module->id(), std::move(none), RiskAction::NONE, Decimal(1.0), false,
+                           std::string(result.error()->what()));
+                    return Result<void>();  // Don't fail the entire operation
+                }
+                decisions.push_back(result.value());
+                decisions.back().module_id = module->id();
             }
 
-            // Apply risk scaling if necessary
-            const auto& risk_result = result.value();
-            INFO("Risk management result: risk_exceeded=" +
-                 std::to_string(risk_result.risk_exceeded) +
-                 ", scale=" + std::to_string(risk_result.recommended_scale) +
-                 ", portfolio_mult=" + std::to_string(risk_result.portfolio_multiplier) +
-                 ", jump_mult=" + std::to_string(risk_result.jump_multiplier) +
-                 ", correlation_mult=" + std::to_string(risk_result.correlation_multiplier) +
-                 ", leverage_mult=" + std::to_string(risk_result.leverage_multiplier));
+            // Decisions are APPLIED by today's code only for a module that reports a
+            // RiskResult (the Carver module): its risk_exceeded block below is verbatim.
+            // A WARN is logged. Every other module's decision is recorded as requested and
+            // applied NONE (the PM applies decisions by action from commit 6).
+            std::vector<std::pair<RiskAction, Decimal>> applied(decisions.size(),
+                                                                {RiskAction::NONE, Decimal(1.0)});
+            for (size_t k = 0; k < decisions.size(); ++k) {
+                const RiskDecision& decision = decisions[k];
+                if (decision.action == RiskAction::WARN) {
+                    WARN("Risk module " + decision.module_id + " warning on " +
+                         risk_scope_name(lap_ctx.scope) + " " + lap_ctx.scope_id +
+                         " in iteration " + std::to_string(lap_ctx.lap) + ": " + decision.reason);
+                }
+                if (!decision.metrics) {
+                    continue;
+                }
 
-            if (risk_result.risk_exceeded) {
-                WARN("Risk limits exceeded, scaling positions by " +
-                     std::to_string(risk_result.recommended_scale));
+                // Apply risk scaling if necessary
+                const RiskResult& risk_result = *decision.metrics;
+                if (risk_result.risk_exceeded) {
+                    WARN("Risk limits exceeded, scaling positions by " +
+                         std::to_string(risk_result.recommended_scale));
 
-                // DESIGN DECISION: Risk scaling applies to target_positions only (Approach A)
-                // Rationale: Risk management reduces the strategy's desired exposure, not actual
-                // holdings. When current_positions ≈ target_positions (normal case), this behaves
-                // correctly. Edge cases (current ≠ target) result in slightly more aggressive
-                // de-risking, which is acceptable for risk management purposes. Alternative
-                // Approach B (scale both current and target) would provide immediate proportional
-                // de-risking but changes "what we think we hold" which could confuse PnL tracking.
-                // We keep Approach A for consistency and simplicity.
-                //
-                // Example: current=+12, target=+10, scale=0.5
-                //   new_target = 10 × 0.5 = +5
-                //   trade = 5 - 12 = sell 7 contracts
-                //   end position = +5 (50% of desired, not 50% of actual)
+                    // DESIGN DECISION: Risk scaling applies to target_positions only (Approach A)
+                    // Rationale: Risk management reduces the strategy's desired exposure, not actual
+                    // holdings. When current_positions ≈ target_positions (normal case), this behaves
+                    // correctly. Edge cases (current ≠ target) result in slightly more aggressive
+                    // de-risking, which is acceptable for risk management purposes. Alternative
+                    // Approach B (scale both current and target) would provide immediate proportional
+                    // de-risking but changes "what we think we hold" which could confuse PnL tracking.
+                    // We keep Approach A for consistency and simplicity.
+                    //
+                    // Example: current=+12, target=+10, scale=0.5
+                    //   new_target = 10 × 0.5 = +5
+                    //   trade = 5 - 12 = sell 7 contracts
+                    //   end position = +5 (50% of desired, not 50% of actual)
 
-                // Scale positions in all strategies under lock
-                {
-                    std::lock_guard<std::mutex> lock(mutex_);
-                    for (auto& [id, info] : strategies_) {
-                        for (auto& [symbol, pos] : info.target_positions) {
-                            pos.quantity *= risk_result.recommended_scale;
+                    // Scale positions in all strategies under lock
+                    {
+                        std::lock_guard<std::mutex> lock(mutex_);
+                        for (auto& [id, info] : strategies_) {
+                            for (auto& [symbol, pos] : info.target_positions) {
+                                pos.quantity *= risk_result.recommended_scale;
+                            }
                         }
                     }
+                    applied[k] = {RiskAction::SCALE, Decimal(risk_result.recommended_scale)};
+                } else {
+                    INFO("Risk limits not exceeded, no scaling needed");
                 }
-            } else {
-                INFO("Risk limits not exceeded, no scaling needed");
+            }
+
+            for (size_t k = 0; k < decisions.size(); ++k) {
+                std::string id = decisions[k].module_id;
+                record(id, std::move(decisions[k]), applied[k].first, applied[k].second, false,
+                       "");
             }
         } catch (const std::exception& e) {
             ERROR("Exception during risk management: " + std::string(e.what()));

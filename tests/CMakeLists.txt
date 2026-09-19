@@ -43,6 +43,7 @@ set(TEST_SOURCES
     instruments/test_option.cpp
     instruments/test_instrument_registry.cpp
     risk/test_risk_manager.cpp
+    risk/test_risk_modules.cpp
     optimization/test_dynamic_optimizer.cpp
     backtest/test_transaction_cost_analysis.cpp
     transaction_cost/test_transaction_cost_manager.cpp
@@ -104,6 +105,8 @@ set(TEST_SOURCES
     portfolio/test_portfolio_manager_internals.cpp
     portfolio/test_fractional_position_convergence.cpp
     portfolio/test_price_history_ordering.cpp
+    portfolio/test_risk_loop_log_golden.cpp
+    portfolio/test_risk_module_loop.cpp
     storage/test_backtest_results_manager.cpp
     storage/test_live_results_manager.cpp
     storage/test_equity_fallback_stream_db.cpp
