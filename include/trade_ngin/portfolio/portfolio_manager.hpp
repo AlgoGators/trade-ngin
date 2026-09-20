@@ -501,7 +501,7 @@ private:
     void deliver_and_record(const std::vector<RiskModulePtr>& modules,
                             std::vector<RiskDecision>& decisions, const RiskVerdict& verdict,
                             const RiskContext& ctx, bool pinned,
-                            const std::vector<std::string>& errors);
+                            const std::vector<std::string>& errors, size_t scopes_skipped = 0);
 
     /// The sleeve scope: once per rebalance, before the loop, each sleeve's own modules on its
     /// own targets. A no-op when no sleeve has modules.

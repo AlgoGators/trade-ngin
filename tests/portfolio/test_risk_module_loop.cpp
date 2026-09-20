@@ -1041,3 +1041,52 @@ TEST_F(RiskModuleDispatchTest, TheConstructorBuildsTheConfiguredSleeveModulesToo
     EXPECT_EQ(sleeve.at("id").get<std::string>(), "sleeve_cut");
     EXPECT_EQ(sleeve.at("type").get<std::string>(), "constant_scale");
 }
+
+// ===== A-5 (T-6b commit 7d): the applied level must not over-state a partial cut =====
+
+// When a sleeve is pinned by a sleeve-scope REFUSE, the portfolio multiply SKIPS it, so the
+// aggregated book the portfolio modules measured was cut by LESS than the factor they were
+// handed. Before this commit RiskApplied said nothing about that and CarverRiskModule advanced
+// applied_level_ by the whole factor -- a level that claims a cut the book never took. Commit 9
+// divides by that level, so it has to know.
+TEST_F(RiskSleeveTest, APartialMultiplyIsReportedToEveryModuleOfTheScope) {
+    make_two_sleeves(true, false, {{"AAA", make_pos("AAA", 4.0, 100.0)}},
+                     {{"BBB", make_pos("BBB", 4.0, 100.0)}});
+    // SA is refused, so it must have a seeded previous book to be pinned to -- the guard the
+    // previous commit added, doing its job on this test.
+    ASSERT_TRUE(pm_->update_strategy_position("SA", "AAA", make_pos("AAA", 1.0, 100.0)).is_ok());
+    auto watcher = std::make_shared<SpyModule>("watcher", RiskAction::NONE);
+    ASSERT_TRUE(pm_->set_risk_modules(
+                       {std::make_shared<ConstantScaleRiskModule>("cut", 0.5), watcher},
+                       {{"SA",
+                         {std::make_shared<RefuseOnConditionRiskModule>(
+                             "stop_a", RiskCondition{RiskCondition::Kind::ALWAYS, 0.0},
+                             "sleeve refused")}}})
+                    .is_ok());
+    ASSERT_TRUE(pm_->process_market_data(three_days()).is_ok());
+
+    // SA is pinned, so only SB was multiplied.
+    EXPECT_EQ(qty("SB", "BBB"), 2.0);
+    ASSERT_FALSE(watcher->applied.empty());
+    const RiskApplied& lap1 = watcher->applied.front();
+    EXPECT_EQ(lap1.action, RiskAction::SCALE);
+    EXPECT_TRUE(lap1.partial) << "one of the two sleeves was skipped by the multiply";
+    EXPECT_EQ(lap1.scopes_skipped, 1u);
+}
+
+// The ordinary case: nothing is pinned, every strategy is multiplied, and `partial` is false --
+// so the flag marks a real event rather than being permanently on.
+TEST_F(RiskSleeveTest, AWholeMultiplyIsNotReportedAsPartial) {
+    make_two_sleeves(true, false, {{"AAA", make_pos("AAA", 4.0, 100.0)}},
+                     {{"BBB", make_pos("BBB", 4.0, 100.0)}});
+    auto watcher = std::make_shared<SpyModule>("watcher", RiskAction::NONE);
+    ASSERT_TRUE(pm_->set_risk_modules(
+                       {std::make_shared<ConstantScaleRiskModule>("cut", 0.5), watcher})
+                    .is_ok());
+    ASSERT_TRUE(pm_->process_market_data(three_days()).is_ok());
+    EXPECT_EQ(qty("SA", "AAA"), 2.0);
+    EXPECT_EQ(qty("SB", "BBB"), 2.0);
+    ASSERT_FALSE(watcher->applied.empty());
+    EXPECT_FALSE(watcher->applied.front().partial);
+    EXPECT_EQ(watcher->applied.front().scopes_skipped, 0u);
+}

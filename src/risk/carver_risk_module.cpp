@@ -72,6 +72,7 @@ void CarverRiskModule::begin_rebalance(const RiskContext& ctx) {
     (void)ctx;
     appended_this_rebalance_ = false;
     applied_level_ = 1.0;
+    level_partial_ = false;
     last_requested_ = 1.0;
 }
 
@@ -147,6 +148,11 @@ void CarverRiskModule::on_applied(const RiskApplied& applied, const RiskContext&
     (void)ctx;
     if (applied.action == RiskAction::SCALE) {
         applied_level_ *= static_cast<double>(applied.factor);
+        // The multiply skipped a pinned sleeve, so the aggregated book this module measured was
+        // cut by less than `factor` and applied_level_ now OVER-STATES the cut. Recorded rather
+        // than guessed at: a rule that divided by it would under-cut by exactly the pinned
+        // sleeve's share. Zero laps on every shipped book (no sleeve module is assigned).
+        if (applied.partial) level_partial_ = true;
     }
 }
 

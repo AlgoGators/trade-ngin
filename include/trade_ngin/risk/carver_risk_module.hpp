@@ -42,7 +42,10 @@ public:
     Result<RiskDecision> evaluate(const std::unordered_map<std::string, Position>& book,
                                   const RiskContext& ctx) override;
     nlohmann::json describe() const override;  ///< {"id","type","terms","config"}
-    /// Multiplies the applied level by the quantised factor when the scope was scaled.
+    /// Multiplies the applied level by the quantised factor when the scope was scaled, and
+    /// records a PARTIAL apply: on a lap whose multiply skipped a pinned sleeve the level is
+    /// no longer a true statement about the book this module measured, so it is marked and
+    /// commit 9's level rule declines to divide by it.
     /// finalize is the default (NONE): it must NOT re-run process_positions, whose RISK_DEBUG and
     /// VAR_DEBUG lines and second result line would change the run's log.
     void on_applied(const RiskApplied& applied, const RiskContext& ctx) override;
@@ -61,6 +64,9 @@ public:
     const std::vector<Bar>& window() const { return window_; }
     bool appended_this_rebalance() const { return appended_this_rebalance_; }
     double applied_level() const { return applied_level_; }
+    /// True once a partial apply has happened this rebalance: `applied_level_` over-states the
+    /// cut the measured book actually took, and no rule may divide by it.
+    bool level_partial() const { return level_partial_; }
     double last_requested() const { return last_requested_; }
 
 private:
@@ -75,6 +81,7 @@ private:
     // once-per-rebalance append and the level cut that will read these land in T-6b (commit 9).
     bool appended_this_rebalance_{false};  ///< set by on_bars
     double applied_level_{1.0};            ///< product of the factors applied this rebalance
+    bool level_partial_{false};            ///< a multiply skipped a pinned scope: the level lies
     double last_requested_{1.0};           ///< the scale evaluate last requested this rebalance
 };
 

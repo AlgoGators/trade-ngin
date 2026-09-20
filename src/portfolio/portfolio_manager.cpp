@@ -1796,7 +1796,8 @@ bool PortfolioManager::refuse_on_failed_gatekeeper(const std::vector<RiskModuleP
 void PortfolioManager::deliver_and_record(const std::vector<RiskModulePtr>& modules,
                                           std::vector<RiskDecision>& decisions,
                                           const RiskVerdict& verdict, const RiskContext& ctx,
-                                          bool pinned, const std::vector<std::string>& errors) {
+                                          bool pinned, const std::vector<std::string>& errors,
+                                          size_t scopes_skipped) {
     auto failed = [&errors](size_t k) { return k < errors.size() && !errors[k].empty(); };
     for (size_t k = 0; k < decisions.size() && k < modules.size(); ++k) {
         // A module that failed was never evaluated: there is no decision of its own for the PM
@@ -1809,6 +1810,8 @@ void PortfolioManager::deliver_and_record(const std::vector<RiskModulePtr>& modu
         applied.factor = verdict.action == RiskAction::SCALE ? verdict.factor : Decimal(1.0);
         applied.won = verdict.rows[k].first != RiskAction::NONE;
         applied.pinned = pinned;
+        applied.scopes_skipped = scopes_skipped;
+        applied.partial = scopes_skipped > 0 && verdict.action == RiskAction::SCALE;
         modules[k]->on_applied(applied, ctx);
     }
     for (size_t k = 0; k < decisions.size(); ++k) {
@@ -1888,6 +1891,8 @@ Result<void> PortfolioManager::apply_risk_management(const std::vector<Bar>& dat
             const bool refused_by_failure = refuse_on_failed_gatekeeper(
                 risk_modules_, errors, lap_ctx, verdict, failed_gatekeeper);
             bool pinned = false;
+            // Strategies the multiply below skipped because a sleeve module already pinned them.
+            size_t scopes_skipped = 0;
             if (verdict.action == RiskAction::REFUSE || verdict.action == RiskAction::REPLACE) {
                 static const RiskDecision kNoDecision{};
                 const RiskDecision& d =
@@ -1948,11 +1953,16 @@ Result<void> PortfolioManager::apply_risk_management(const std::vector<Bar>& dat
                 // never recomputed as Decimal(double(q) * scale). A strategy pinned by a risk
                 // module keeps its pinned book.
 
-                // Scale positions in all strategies under lock
+                // Scale positions in all strategies under lock. A pinned strategy is
+                // skipped, so the book the modules measured is cut by less than `scale`; the
+                // count travels to on_applied so a module keeping a level can say so (A-5).
                 {
                     std::lock_guard<std::mutex> lock(mutex_);
                     for (auto& [id, info] : strategies_) {
-                        if (pinned_scopes_.count(id)) continue;
+                        if (pinned_scopes_.count(id)) {
+                            ++scopes_skipped;
+                            continue;
+                        }
                         for (auto& [symbol, pos] : info.target_positions) {
                             pos.quantity *= scale;
                         }
@@ -1964,7 +1974,8 @@ Result<void> PortfolioManager::apply_risk_management(const std::vector<Bar>& dat
                 INFO("Risk limits not exceeded, no scaling needed");
             }
 
-            deliver_and_record(risk_modules_, decisions, verdict, lap_ctx, pinned, errors);
+            deliver_and_record(risk_modules_, decisions, verdict, lap_ctx, pinned, errors,
+                               scopes_skipped);
         } catch (const std::exception& e) {
             ERROR("Exception during risk management: " + std::string(e.what()));
             return Result<void>();  // Don't fail the entire operation

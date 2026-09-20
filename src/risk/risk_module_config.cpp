@@ -145,6 +145,18 @@ public:
             }
             out.params = none;
         } else if (type == "carver") {
+            // C-2: make_risk_module hands every module the PORTFOLIO's capital, and the Carver
+            // module ignores RiskContext::capital by design (risk_module.hpp:72) and keeps the
+            // RiskConfig::capital its gate divides by. A carver on a 30 % sleeve would therefore
+            // measure that sleeve's leverage against 100 % of the book's money, so
+            // max_gross_leverage 4.0 would be 13.3x of the sleeve's own. Portfolio scope only
+            // until it honours ctx.capital.
+            if (sleeve_scope_) {
+                return err(path_ +
+                           " is type \"carver\", which is only valid at portfolio scope: the "
+                           "Carver gate divides by the portfolio's capital, so at sleeve scope "
+                           "its leverage limits would be read against the whole book's money");
+            }
             auto r = require_keys(m, std::vector<std::string>(std::begin(kCarverKeys),
                                                               std::end(kCarverKeys)),
                                   type);
@@ -176,6 +188,21 @@ public:
                 return err(path_ + ".lookback_period (" + std::to_string(c.lookback_period) +
                            " dates) is shorter than min_gate_dates (" +
                            std::to_string(c.min_gate_dates) + " dates)");
+            }
+            // R11 (T-6a ADVERSARIAL C-1). R7 just above compares the two only when the unit is
+            // "dates", and A1 below then REFUSES that unit -- so R7 is dead and, with the only
+            // accepted unit "bars", nothing related the window to the gate it feeds.
+            // `lookback_period: 1` passed every rule: a one-bar window yields no returns,
+            // RiskManager::process_positions early-returns its default result with all four
+            // multipliers at 1.0, and the book runs ungated at exit 0 with one WARN a lap. A
+            // floor of two bars per required complete date is the cheapest rule that makes that
+            // a LOAD error; it is far below the 252 every shipped book carries.
+            if (c.lookback_unit == "bars" && c.lookback_period < 2 * c.min_gate_dates) {
+                return err(path_ + ".lookback_period (" + std::to_string(c.lookback_period) +
+                           " bars) is below the floor of 2 x min_gate_dates (" +
+                           std::to_string(2 * c.min_gate_dates) +
+                           " bars): a window this short cannot carry min_gate_dates complete "
+                           "dates, and the gate would read its default result and cut nothing");
             }
 
             // R8
@@ -798,6 +825,72 @@ Result<RiskSchema> parse_risk_schema(const nlohmann::json& risk,
                                             std::to_string(i) + "]");
                     }
                 }
+            }
+        }
+    }
+
+    // R10 (T-6a ADVERSARIAL C-1), the `none` attribution generalised. S3 ties attribution to
+    // the literal type "none", so a book whose only module is a `warn`, or a `constant_scale`
+    // of 1.0, is just as ungated and carries nobody's name -- and the constructor still prints
+    // "Risk manager initialized successfully". A book with no `carver` anywhere in its
+    // portfolio chain therefore states who ruled that and when, at the top of risk.json. The
+    // lone-`none` book is exempt: its own module already carries all three fields.
+    {
+        bool has_carver = false;
+        for (const auto& m : out.portfolio) {
+            if (m.type == "carver") has_carver = true;
+        }
+        for (const auto& [sid, mods] : out.sleeves) {
+            (void)sid;
+            for (const auto& m : mods) {
+                if (m.type == "carver") has_carver = true;
+            }
+        }
+        const bool lone_none = out.portfolio.size() == 1 && out.portfolio.front().type == "none";
+        if (!has_carver && !lone_none) {
+            for (const char* key : {"_ruled_by", "_ruled_on"}) {
+                if (!risk.contains(key) || !risk.at(key).is_string() ||
+                    risk.at(key).get<std::string>().empty()) {
+                    return err(std::string("risk.") + key +
+                               " is required on a book no module of which is a \"carver\": "
+                               "nothing here can cut this book, and that has to be somebody's "
+                               "decision rather than an omission");
+                }
+            }
+            if (!is_ymd(risk.at("_ruled_on").get<std::string>())) {
+                return err("risk._ruled_on must be YYYY-MM-DD, got " + val(risk.at("_ruled_on")));
+            }
+        }
+    }
+
+    // R10's other half: a warn or refuse whose condition is `never` cannot fire, so it is
+    // furniture. Listing it is allowed -- a test book does it -- but it says why.
+    {
+        auto check_never = [&](const RiskModuleConfig& m,
+                               const std::string& path) -> Result<void> {
+            const auto* c = std::get_if<ConditionModuleConfig>(&m.params);
+            if (c == nullptr || c->condition.kind != RiskCondition::Kind::NEVER) {
+                return Result<void>();
+            }
+            const bool has = m.comments.contains("_never_reason") &&
+                             m.comments.at("_never_reason").is_string() &&
+                             !m.comments.at("_never_reason").get<std::string>().empty();
+            if (!has) {
+                return fail(prefix + path +
+                            " has condition kind \"never\", so it can never fire; say why it is "
+                            "listed in a non-empty _never_reason");
+            }
+            return Result<void>();
+        };
+        for (size_t i = 0; i < out.portfolio.size(); ++i) {
+            auto r = check_never(out.portfolio[i], "risk.modules[" + std::to_string(i) + "]");
+            if (r.is_error()) return forward(r);
+        }
+        for (const auto& [sid, mods] : out.sleeves) {
+            for (size_t i = 0; i < mods.size(); ++i) {
+                auto r = check_never(mods[i],
+                                     "sleeve_risk_modules." + sid + "[" + std::to_string(i) + "]");
+                if (r.is_error()) return forward(r);
             }
         }
     }

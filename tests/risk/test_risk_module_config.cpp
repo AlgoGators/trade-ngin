@@ -93,6 +93,15 @@ nlohmann::json risk_with(const std::vector<nlohmann::json>& modules) {
             {"max_leverage", 2.0}};
 }
 
+/// R10 (T-6b commit 7d): a book no module of which is a `carver` cannot cut itself, so it
+/// carries the signature of whoever decided that. Several cases below are deliberately
+/// carver-less in order to test a different rule, and stamp it here rather than restate it.
+nlohmann::json ruled(nlohmann::json risk) {
+    risk["_ruled_by"] = "unit test";
+    risk["_ruled_on"] = "2026-09-20";
+    return risk;
+}
+
 nlohmann::json one_sleeve() {
     return {{"TREND_FOLLOWING", {{"enabled_backtest", true}, {"type", "TrendFollowingStrategy"}}}};
 }
@@ -323,14 +332,20 @@ TEST(RiskSchemaParse, S8TwoCarverModulesAtPortfolioScopeIsAnError) {
 
 TEST(RiskSchemaParse, S8ACarverAtBothScopesIsAnError) {
     nlohmann::json sleeves = {{"TREND_FOLLOWING", nlohmann::json::array({carver("sleeve_carver")})}};
+    // T-6b commit 7d: a carver at SLEEVE scope is now refused while the module is still being
+    // parsed (C-2: it divides by the portfolio's capital), so S8's chain rule never sees this
+    // pair any more. The stricter message wins, and this asserts that ordering rather than
+    // pretending the old one still fires. S8 itself is still exercised by
+    // S8TwoCarverModulesAtPortfolioScopeIsAnError and by the constant_scale pair below.
     EXPECT_EQ(parse_error(risk_with({carver()}), sleeves),
-              msg("composition terms (correlation/VaR/jump) are owned by risk.modules[0] and "
-                  "again by sleeve_risk_modules.TREND_FOLLOWING[0]; a composition term may be "
-                  "active once along a sleeve->portfolio chain"));
+              msg("sleeve_risk_modules.TREND_FOLLOWING[0] is type \"carver\", which is only "
+                  "valid at portfolio scope: the Carver gate divides by the portfolio's capital, "
+                  "so at sleeve scope its leverage limits would be read against the whole book's "
+                  "money"));
     // Magnitude terms compose, so a constant scale at both scopes is fine.
     nlohmann::json ok_sleeves = {
         {"TREND_FOLLOWING", nlohmann::json::array({constant_scale_module("sleeve_cut")})}};
-    EXPECT_EQ(parse_error(risk_with({constant_scale_module()}), ok_sleeves), "");
+    EXPECT_EQ(parse_error(ruled(risk_with({constant_scale_module()})), ok_sleeves), "");
 }
 
 // ===== S9: no REFUSE on a multi-sleeve book before T-BASE =====
@@ -339,12 +354,14 @@ TEST(RiskSchemaParse, S9ARefuseCapableModuleNeedsASingleSleeveBook) {
     EXPECT_EQ(parse_error(risk_with({refuse_module()}), nlohmann::json(), two_sleeves()),
               msg("risk.modules[0] can REFUSE, and a book with 2 sleeves cannot pin every sleeve "
                   "to a stored T-1 until T-BASE (T-RISK-ARCH_ADVERSARIAL B1)"));
-    // One sleeve: accepted.
-    EXPECT_EQ(parse_error(risk_with({refuse_module()}), nlohmann::json(), one_sleeve()), "");
+    // One sleeve: accepted. (Carver-less, so R10's attribution goes with it.)
+    EXPECT_EQ(parse_error(ruled(risk_with({refuse_module()})), nlohmann::json(), one_sleeve()),
+              "");
     // A disabled strategy is not a sleeve (the predicate config_loader.cpp's G-03 uses).
     nlohmann::json one_enabled = two_sleeves();
     one_enabled["TREND_FOLLOWING_FAST"]["enabled_live"] = false;
-    EXPECT_EQ(parse_error(risk_with({refuse_module()}), nlohmann::json(), one_enabled), "");
+    EXPECT_EQ(parse_error(ruled(risk_with({refuse_module()})), nlohmann::json(), one_enabled),
+              "");
 }
 
 // ===== R1-R8: the ranges =====
@@ -719,4 +736,115 @@ TEST(TrackedRiskModuleExamples, EveryExampleLoadsThroughTheParserItDocuments) {
                                portfolio.at("strategies"), "EXAMPLE");
     EXPECT_TRUE(r.is_ok()) << (r.is_error() ? r.error()->what() : "");
     EXPECT_EQ(r.value().sleeves.size(), 1u);
+}
+
+// ===== C-2, R10, R11 (T-6b commit 7d) =====
+
+// A carver module divides by RiskConfig::capital and ignores RiskContext::capital by design,
+// and make_risk_module hands every module the PORTFOLIO's capital. On a 30 % sleeve its
+// max_gross_leverage 4.0 would therefore be 13.3x of the sleeve's own money.
+TEST(RiskSchemaRulesT6b, CarverIsRefusedAtSleeveScope) {
+    const std::string e = parse_error(risk_with({none_module()}),
+                                      {{"TREND_FOLLOWING", {carver("sleeve_carver")}}});
+    EXPECT_EQ(e, msg("sleeve_risk_modules.TREND_FOLLOWING[0] is type \"carver\", which is only "
+                     "valid at portfolio scope: the Carver gate divides by the portfolio's "
+                     "capital, so at sleeve scope its leverage limits would be read against the "
+                     "whole book's money"));
+}
+
+TEST(RiskSchemaRulesT6b, CarverIsAcceptedAtPortfolioScope) {
+    EXPECT_EQ(parse_error(risk_with({carver()})), "");
+}
+
+// R10. S3 ties attribution to the literal type "none", so a book whose only module is a WARN
+// is just as ungated as a `none` book and used to carry nobody's name.
+TEST(RiskSchemaRulesT6b, ABookWithNoCarverNeedsAnAttribution) {
+    EXPECT_EQ(parse_error(risk_with({warn_module()})),
+              msg("risk._ruled_by is required on a book no module of which is a \"carver\": "
+                  "nothing here can cut this book, and that has to be somebody's decision rather "
+                  "than an omission"));
+    // A constant_scale of 1.0 passes every range rule and cuts nothing: same requirement.
+    nlohmann::json one = constant_scale_module();
+    one["scale"] = 1.0;
+    EXPECT_EQ(parse_error(risk_with({one})),
+              msg("risk._ruled_by is required on a book no module of which is a \"carver\": "
+                  "nothing here can cut this book, and that has to be somebody's decision rather "
+                  "than an omission"));
+}
+
+TEST(RiskSchemaRulesT6b, TheAttributionSatisfiesR10AndIsDateChecked) {
+    nlohmann::json r = risk_with({warn_module()});
+    r["_ruled_by"] = "HD";
+    r["_ruled_on"] = "2026-09-18";
+    EXPECT_EQ(parse_error(r), "");
+    r["_ruled_on"] = "18/09/2026";
+    EXPECT_EQ(parse_error(r), msg("risk._ruled_on must be YYYY-MM-DD, got \"18/09/2026\""));
+    r["_ruled_on"] = "2026-09-18";
+    r["_ruled_by"] = "";
+    EXPECT_EQ(parse_error(r),
+              msg("risk._ruled_by is required on a book no module of which is a \"carver\": "
+                  "nothing here can cut this book, and that has to be somebody's decision rather "
+                  "than an omission"));
+}
+
+// A lone `none` already carries all three fields on the module itself, so R10 exempts it --
+// otherwise the same decision would have to be written down twice.
+TEST(RiskSchemaRulesT6b, ALoneNoneIsExemptFromR10) {
+    EXPECT_EQ(parse_error(risk_with({none_module()})), "");
+}
+
+// A carver anywhere in the chain satisfies R10, including one on a sleeve... which is now
+// refused, so the only way to satisfy it is a portfolio carver. Pinned so the interaction of
+// C-2 and R10 is deliberate rather than accidental.
+TEST(RiskSchemaRulesT6b, ACarverAtPortfolioScopeSatisfiesR10ForTheWholeBook) {
+    EXPECT_EQ(parse_error(risk_with({carver(), warn_module()})), "");
+}
+
+// R10's other half: a condition that can never hold is furniture, and says why it is listed.
+TEST(RiskSchemaRulesT6b, ANeverConditionNeedsAReason) {
+    nlohmann::json never = warn_module();
+    // No threshold: a separate rule already refuses one on a "never" condition.
+    never["condition"] = {{"kind", "never"}};
+    nlohmann::json r = risk_with({carver(), never});
+    EXPECT_EQ(parse_error(r),
+              msg("risk.modules[1] has condition kind \"never\", so it can never fire; say why "
+                  "it is listed in a non-empty _never_reason"));
+    never["_never_reason"] = "kept so the shape is exercised by the loop tests";
+    EXPECT_EQ(parse_error(risk_with({carver(), never})), "");
+}
+
+// R11. R7 above relates lookback_period to min_gate_dates only when the unit is "dates", and
+// A1 then refuses that unit -- so R7 is dead code and nothing related a BARS window to the gate
+// it feeds. lookback_period 1 passed every rule: one bar yields no returns, process_positions
+// early-returns its default result with all four multipliers at 1.0, and the book runs ungated
+// at exit 0.
+TEST(RiskSchemaRulesT6b, ABarsWindowBelowTheFloorIsALoadError) {
+    // C1 makes the reporter mirror the gate, so the window has to move on both sides or C1
+    // reports first and R11 is never reached.
+    auto with_window = [](int bars) {
+        nlohmann::json c = carver();
+        c["lookback_period"] = bars;
+        nlohmann::json r = risk_with({c});
+        r["risk_reporting"]["lookback_period"] = bars;
+        return r;
+    };
+    nlohmann::json c = carver();
+    c["lookback_period"] = 1;
+    EXPECT_EQ(parse_error(with_window(1)),
+              msg("risk.modules[0].lookback_period (1 bars) is below the floor of 2 x "
+                  "min_gate_dates (42 bars): a window this short cannot carry min_gate_dates "
+                  "complete dates, and the gate would read its default result and cut nothing"));
+    // The boundary, both sides.
+    EXPECT_NE(parse_error(with_window(41)), "");
+    EXPECT_EQ(parse_error(with_window(42)), "");
+}
+
+// Every shipped book carries 252 bars against min_gate_dates 21, six times the floor: R11 is a
+// rule about configs nobody has written, not a change to the ones that exist.
+TEST(RiskSchemaRulesT6b, TheShippedWindowIsFarAboveTheFloor) {
+    nlohmann::json c = carver();
+    EXPECT_EQ(c.at("lookback_period").get<int>(), 252);
+    EXPECT_EQ(c.at("min_gate_dates").get<int>(), 21);
+    EXPECT_GE(c.at("lookback_period").get<int>(), 2 * c.at("min_gate_dates").get<int>());
+    EXPECT_EQ(parse_error(risk_with({c})), "");
 }
