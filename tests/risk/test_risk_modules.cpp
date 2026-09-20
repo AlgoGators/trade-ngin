@@ -856,3 +856,82 @@ TEST(CarverArm1LevelCutTest, BeginRebalanceClearsThePartialMark) {
     EXPECT_FALSE(carver.level_partial());
     EXPECT_EQ(carver.applied_level(), 1.0);
 }
+
+// ===== T-6b commit 9b: the window's MarketData is built once per rebalance =====
+
+// After commit 9 the window changes only on the APPENDING lap, so F5's scan and
+// create_market_data produced an identical MarketData on laps 2..n. This pins that the result is
+// the same object's contents either way -- the commit is a pure removal of repeated work, and if
+// it ever stopped being one this test says so.
+TEST(CarverArm1WindowTest, TheMarketDataIsIdenticalOnEveryLapOfARebalance) {
+    RiskConfig c = tight_config();
+    c.lookback_period = 400;
+    CarverRiskModule carver("carver", c);
+    RiskContext start;
+    start.phase = RiskPhase::REBALANCE_START;
+    carver.begin_rebalance(start);
+    const std::vector<Bar> w = correlated_window();
+
+    RiskContext lap1 = lap_ctx(1);
+    carver.on_bars(w, lap1);
+    const Book book = {{"TSTA", make_pos("TSTA", 10.0, 100.0)}};
+    auto first = carver.evaluate(book, lap1);
+    ASSERT_TRUE(first.is_ok());
+    const size_t dates1 = carver.window_dates();
+    const size_t dropped1 = carver.dates_dropped();
+    const bool f5_1 = carver.f5_engaged();
+    const std::vector<std::vector<double>> returns1 = carver.market_data().returns;
+    const std::vector<std::vector<double>> cov1 = carver.market_data().covariance;
+
+    // Laps 2..5 hand on_bars the SAME bars, as the loop does.
+    for (int lap = 2; lap <= 5; ++lap) {
+        RiskContext ctx = lap_ctx(lap);
+        carver.on_bars(w, ctx);
+        EXPECT_EQ(carver.window_dates(), dates1) << "lap " << lap;
+        EXPECT_EQ(carver.dates_dropped(), dropped1) << "lap " << lap;
+        EXPECT_EQ(carver.f5_engaged(), f5_1) << "lap " << lap;
+        // Bit for bit, not merely the same shape.
+        EXPECT_EQ(carver.market_data().returns, returns1) << "lap " << lap;
+        EXPECT_EQ(carver.market_data().covariance, cov1) << "lap " << lap;
+        auto again = carver.evaluate(book, ctx);
+        ASSERT_TRUE(again.is_ok()) << "lap " << lap;
+        // The same book against the same window gives the same reading, bit for bit.
+        EXPECT_DOUBLE_EQ(carver.last_invariant(), first.value().metrics
+                             ? std::min({static_cast<double>(first.value().metrics->portfolio_multiplier),
+                                         static_cast<double>(first.value().metrics->jump_multiplier),
+                                         static_cast<double>(first.value().metrics->correlation_multiplier)})
+                             : 1.0)
+            << "lap " << lap;
+    }
+    // The window itself never grew: five laps, one append.
+    EXPECT_EQ(carver.window().size(), w.size());
+}
+
+// A NEW rebalance rebuilds it, so the cache cannot outlive the window it describes.
+TEST(CarverArm1WindowTest, ANewRebalanceRebuildsTheMarketData) {
+    RiskConfig c = tight_config();
+    c.lookback_period = 400;
+    CarverRiskModule carver("carver", c);
+    RiskContext start;
+    start.phase = RiskPhase::REBALANCE_START;
+
+    carver.begin_rebalance(start);
+    RiskContext lap1 = lap_ctx(1);
+    carver.on_bars(correlated_window(), lap1);
+    const size_t dates_after_first = carver.window_dates();
+    const size_t returns_after_first = carver.market_data().returns.size();
+
+    // A second rebalance with a new date must be SEEN by the gate, not masked by the cache.
+    carver.begin_rebalance(start);
+    RiskContext lap1b = lap_ctx(1);
+    carver.on_bars({make_bar("TSTA", 30, 111.0), make_bar("TSTB", 30, 222.0),
+                    make_bar("TSTC", 30, 55.0)},
+                   lap1b);
+    EXPECT_EQ(carver.window_dates(), dates_after_first + 1) << "the new date reached the window";
+    // ...and the MarketData was REBUILT from it. This is the assertion that makes the test
+    // load-bearing: window_dates() reads the window directly, so it would still be right if the
+    // cache had gone stale. returns.size() comes from market_data_, so it is only right if
+    // begin_rebalance cleared the built flag.
+    EXPECT_EQ(carver.market_data().returns.size(), returns_after_first + 1)
+        << "the cached MarketData outlived the rebalance it was built for";
+}

@@ -86,6 +86,9 @@ public:
     const RiskManager& manager() const { return rm_; }
     int min_gate_dates() const { return min_gate_dates_; }
     const std::vector<Bar>& window() const { return window_; }
+    /// The MarketData the gate will read this lap. Exposed so a test can prove the cache was
+    /// REBUILT when the window changed, rather than only that the window changed.
+    const MarketData& market_data() const { return market_data_; }
     bool appended_this_rebalance() const { return appended_this_rebalance_; }
     double applied_level() const { return applied_level_; }
     /// True once a partial apply has happened this rebalance: `applied_level_` over-states the
@@ -109,6 +112,9 @@ private:
     // applied_level_ so the cut is a LEVEL for this rebalance rather than a rate charged again
     // on every lap.
     bool appended_this_rebalance_{false};  ///< set by on_bars
+    /// The MarketData for THIS rebalance's window has been built. The window only changes on the
+    /// appending lap, so laps 2..n reuse it instead of rebuilding an identical one.
+    bool market_data_built_this_rebalance_{false};
     double applied_level_{1.0};            ///< product of the factors applied this rebalance
     bool level_partial_{false};            ///< a multiply skipped a pinned scope: the level lies
     double last_requested_{1.0};           ///< the scale evaluate last requested this rebalance
