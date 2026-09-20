@@ -601,3 +601,258 @@ TEST(CarverBlindTest, TheBlindDecisionLogsNothingBeyondTheUnchangedResultLine) {
     EXPECT_NE(out.find("Risk management result:"), std::string::npos)
         << "the one line the gate has always printed must still be the only one";
 }
+
+// ===== T-6b commit 9: the risk-loop set (T-4f ARM 1) inside the module =====
+
+namespace {
+
+/// A window of `dates` dates x `symbols` symbols, every symbol printing on every date.
+std::vector<Bar> dense_window(int dates, int symbols) {
+    std::vector<Bar> w;
+    for (int d = 0; d < dates; ++d) {
+        for (int s = 0; s < symbols; ++s) {
+            w.push_back(make_bar("SYM" + std::to_string(s), d,
+                                 100.0 + 3.0 * s + 0.7 * d +
+                                     2.0 * std::sin(0.3 * d + 0.5 * s)));
+        }
+    }
+    return w;
+}
+
+}  // namespace
+
+// THE window bug. The loop calls on_bars once per lap with the SAME bars; the old code appended
+// every time and, with a BAR cap, evicted older dates until the window held three dates and
+// |rho| was 1.0 by arithmetic. Now lap 1 appends and laps 2..n do not.
+TEST(CarverArm1WindowTest, TheWindowIsAppendedOncePerRebalanceNotOncePerLap) {
+    CarverRiskModule carver("carver", tight_config());
+    const std::vector<Bar> one_date = {make_bar("TSTA", 0, 100.0), make_bar("TSTB", 0, 200.0)};
+
+    RiskContext start;
+    start.phase = RiskPhase::REBALANCE_START;
+    carver.begin_rebalance(start);
+    for (int lap = 1; lap <= 5; ++lap) {
+        RiskContext ctx = lap_ctx(lap);
+        carver.on_bars(one_date, ctx);
+    }
+    EXPECT_EQ(carver.window().size(), 2u) << "five laps of the same two bars are two bars";
+    EXPECT_EQ(carver.window_dates(), 1u);
+
+    // A NEW rebalance appends again.
+    carver.begin_rebalance(start);
+    RiskContext ctx = lap_ctx(1);
+    carver.on_bars({make_bar("TSTA", 1, 101.0), make_bar("TSTB", 1, 202.0)}, ctx);
+    EXPECT_EQ(carver.window().size(), 4u);
+    EXPECT_EQ(carver.window_dates(), 2u);
+}
+
+// The cap counts DATES. With the old bar cap, `lookback_period` 252 on a 36-symbol book was
+// seven sessions; the same number now means what it says.
+TEST(CarverArm1WindowTest, TheCapCountsDatesNotBars) {
+    RiskConfig c = tight_config();
+    c.lookback_period = 5;  // five DATES
+    CarverRiskModule carver("carver", c);
+    RiskContext start;
+    start.phase = RiskPhase::REBALANCE_START;
+
+    for (int d = 0; d < 8; ++d) {
+        carver.begin_rebalance(start);
+        RiskContext ctx = lap_ctx(1);
+        carver.on_bars({make_bar("TSTA", d, 100.0 + d), make_bar("TSTB", d, 200.0 + d),
+                        make_bar("TSTC", d, 50.0 + d)},
+                       ctx);
+    }
+    EXPECT_EQ(carver.window_dates(), 5u) << "the newest five dates";
+    EXPECT_EQ(carver.window().size(), 15u) << "3 symbols x 5 dates, not 5 bars";
+    // The oldest surviving date is day 3, so day 2 and earlier are gone.
+    for (const auto& bar : carver.window()) {
+        EXPECT_GE(bar.timestamp, day(3));
+    }
+}
+
+// F5 drops a date on which some symbol did not print, but only above the floor: below it the
+// gate reads the unfiltered window rather than a 21-date matrix.
+TEST(CarverArm1WindowTest, F5DoesNotEngageBelowTheFloor) {
+    RiskConfig c = tight_config();
+    c.lookback_period = 400;
+    CarverRiskModule carver("carver", c);
+    std::vector<Bar> w = dense_window(30, 3);
+    w.push_back(make_bar("SYM0", 30, 130.0));  // a sparse date: only SYM0 printed
+    RiskContext start;
+    start.phase = RiskPhase::REBALANCE_START;
+    carver.begin_rebalance(start);
+    RiskContext ctx = lap_ctx(1);
+    carver.on_bars(w, ctx);
+
+    EXPECT_FALSE(carver.f5_engaged()) << "31 dates is below the 120 floor";
+    EXPECT_EQ(carver.dates_dropped(), 0u);
+    EXPECT_EQ(carver.window_dates(), 31u);
+}
+
+TEST(CarverArm1WindowTest, F5DropsSparseDatesAboveTheFloor) {
+    RiskConfig c = tight_config();
+    c.lookback_period = 400;
+    CarverRiskModule carver("carver", c);
+    // 130 complete dates, then three sparse ones.
+    std::vector<Bar> w = dense_window(130, 3);
+    for (int d = 130; d < 133; ++d) w.push_back(make_bar("SYM0", d, 100.0 + d));
+    RiskContext start;
+    start.phase = RiskPhase::REBALANCE_START;
+    carver.begin_rebalance(start);
+    RiskContext ctx = lap_ctx(1);
+    carver.on_bars(w, ctx);
+
+    EXPECT_TRUE(carver.f5_engaged()) << "130 complete dates is at or above the floor of 120";
+    EXPECT_EQ(carver.dates_dropped(), 3u);
+    EXPECT_EQ(carver.window_dates(), 133u) << "the window keeps them; the GATE does not see them";
+    EXPECT_EQ(CarverRiskModule::kF5MinGateDates, 120u);
+}
+
+// THE level cut. The gate is scale-invariant, so the shipped loop charged the same ~0.85 on
+// every lap and five laps shipped 0.4437 of the book. A level charges the head-room only.
+namespace {
+
+/// A config in which an INVARIANT term binds and leverage does not: a tight VaR limit against
+/// leverage caps the book cannot reach. tight_config() binds on LEVERAGE, which is a per-lap
+/// RATE by design, so it cannot test the level rule.
+RiskConfig var_bound_config() {
+    RiskConfig c = tight_config();
+    c.var_limit = 0.10;            // VaR reads ~0.2006 on correlated_window(): binds
+    c.jump_risk_limit = 10.0;      // never binds
+    c.max_correlation = 0.999;     // never binds
+    c.max_gross_leverage = 100.0;  // never binds
+    c.max_net_leverage = 100.0;    // never binds
+    return c;
+}
+
+}  // namespace
+
+// THE level cut. The gate is scale-invariant, so the shipped loop charged the same ~0.85 on
+// every lap and five laps shipped 0.4437 of a book the gate asked to cut by 15 %. With a level,
+// lap 2 asks for the HEAD-ROOM only -- and when the composition has not changed, that is
+// nothing at all.
+TEST(CarverArm1LevelCutTest, AnInvariantRequestIsALevelNotARatePerLap) {
+    CarverRiskModule carver("carver", var_bound_config());
+    RiskContext start;
+    start.phase = RiskPhase::REBALANCE_START;
+    carver.begin_rebalance(start);
+
+    const Book book = {{"TSTA", make_pos("TSTA", 10.0, 100.0)},
+                       {"TSTC", make_pos("TSTC", 10.0, 50.0)}};
+    RiskContext lap1 = lap_ctx(1);
+    carver.on_bars(correlated_window(), lap1);
+    auto d1 = carver.evaluate(book, lap1);
+    ASSERT_TRUE(d1.is_ok());
+    ASSERT_EQ(d1.value().action, RiskAction::SCALE)
+        << "the VaR limit must bind for this test to mean anything";
+    const double first = d1.value().scale;
+    EXPECT_LT(first, 1.0);
+    // The binding term is an INVARIANT one, not leverage: that is what makes it a level.
+    EXPECT_DOUBLE_EQ(carver.last_invariant(), first);
+    EXPECT_DOUBLE_EQ(carver.last_leverage(), 1.0);
+
+    // The PM applies it and reports the QUANTISED factor actually multiplied in.
+    RiskApplied applied;
+    applied.action = RiskAction::SCALE;
+    applied.requested_scale = first;
+    applied.factor = Decimal(first);
+    applied.won = true;
+    carver.on_applied(applied, lap1);
+    EXPECT_DOUBLE_EQ(carver.applied_level(), static_cast<double>(Decimal(first)));
+
+    // Lap 2 reads the SAME invariant term off a book whose composition has not changed (the
+    // gate normalises by the book's own gross, so shrinking it does not move the reading).
+    // The old rule asked for `first` again and compounded it; the level rule asks for nothing.
+    RiskContext lap2 = lap_ctx(2);
+    carver.on_bars(correlated_window(), lap2);
+    auto d2 = carver.evaluate(book, lap2);
+    ASSERT_TRUE(d2.is_ok());
+    EXPECT_DOUBLE_EQ(carver.last_invariant(), first) << "the reading is unchanged";
+    EXPECT_EQ(d2.value().action, RiskAction::NONE)
+        << "already cut to this level; the old rule would have asked for " << first << " again";
+    EXPECT_DOUBLE_EQ(d2.value().scale, 1.0);
+}
+
+// The leverage term is NOT a level: it is a magnitude read off the book as it now stands, so it
+// is charged again on every lap. tight_config() binds on leverage, which is why it cannot be
+// used for the test above.
+TEST(CarverArm1LevelCutTest, TheLeverageTermStaysAPerLapRate) {
+    CarverRiskModule carver("carver", tight_config());
+    RiskContext start;
+    start.phase = RiskPhase::REBALANCE_START;
+    carver.begin_rebalance(start);
+    const Book book = {{"TSTA", make_pos("TSTA", 1000.0, 100.0)}};
+
+    RiskContext lap1 = lap_ctx(1);
+    carver.on_bars(correlated_window(), lap1);
+    auto d1 = carver.evaluate(book, lap1);
+    ASSERT_TRUE(d1.is_ok());
+    ASSERT_EQ(d1.value().action, RiskAction::SCALE);
+    EXPECT_DOUBLE_EQ(carver.last_invariant(), 1.0) << "no invariant term binds here";
+    EXPECT_LT(carver.last_leverage(), 1.0);
+    EXPECT_DOUBLE_EQ(d1.value().scale, carver.last_leverage());
+
+    RiskApplied applied;
+    applied.action = RiskAction::SCALE;
+    applied.factor = Decimal(d1.value().scale);
+    applied.won = true;
+    carver.on_applied(applied, lap1);
+
+    // The same book is handed back (the PM would have shrunk it; here it has not), so leverage
+    // reads the same and is charged again. That is the rate semantics, deliberately kept.
+    RiskContext lap2 = lap_ctx(2);
+    carver.on_bars(correlated_window(), lap2);
+    auto d2 = carver.evaluate(book, lap2);
+    ASSERT_TRUE(d2.is_ok());
+    EXPECT_EQ(d2.value().action, RiskAction::SCALE);
+    EXPECT_DOUBLE_EQ(d2.value().scale, carver.last_leverage());
+}
+
+// A level marked PARTIAL is not a true statement about the book the module measured, so nothing
+// divides by it: that lap honours the leverage RATE alone. (Zero laps on every shipped book.)
+TEST(CarverArm1LevelCutTest, APartialLevelIsNotDividedBy) {
+    CarverRiskModule carver("carver", tight_config());
+    RiskContext start;
+    start.phase = RiskPhase::REBALANCE_START;
+    carver.begin_rebalance(start);
+    const Book book = {{"TSTA", make_pos("TSTA", 1000.0, 100.0)}};
+
+    RiskContext lap1 = lap_ctx(1);
+    carver.on_bars(correlated_window(), lap1);
+    auto d1 = carver.evaluate(book, lap1);
+    ASSERT_TRUE(d1.is_ok());
+    ASSERT_EQ(d1.value().action, RiskAction::SCALE);
+
+    RiskApplied partial;
+    partial.action = RiskAction::SCALE;
+    partial.factor = Decimal(d1.value().scale);
+    partial.won = true;
+    partial.partial = true;  // a pinned sleeve was skipped by the multiply
+    partial.scopes_skipped = 1;
+    carver.on_applied(partial, lap1);
+    EXPECT_TRUE(carver.level_partial());
+
+    RiskContext lap2 = lap_ctx(2);
+    carver.on_bars(correlated_window(), lap2);
+    auto d2 = carver.evaluate(book, lap2);
+    ASSERT_TRUE(d2.is_ok());
+    // The leverage term is the only one that may still bind, and it is read fresh each lap.
+    EXPECT_DOUBLE_EQ(d2.value().scale, std::min(1.0, carver.last_leverage()));
+}
+
+// begin_rebalance clears the partial mark with the rest of the per-rebalance state.
+TEST(CarverArm1LevelCutTest, BeginRebalanceClearsThePartialMark) {
+    CarverRiskModule carver("carver", tight_config());
+    RiskContext lap1 = lap_ctx(1);
+    RiskApplied partial;
+    partial.action = RiskAction::SCALE;
+    partial.factor = Decimal(0.5);
+    partial.partial = true;
+    carver.on_applied(partial, lap1);
+    ASSERT_TRUE(carver.level_partial());
+    RiskContext start;
+    start.phase = RiskPhase::REBALANCE_START;
+    carver.begin_rebalance(start);
+    EXPECT_FALSE(carver.level_partial());
+    EXPECT_EQ(carver.applied_level(), 1.0);
+}

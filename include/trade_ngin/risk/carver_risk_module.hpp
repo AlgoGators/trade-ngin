@@ -36,9 +36,33 @@ public:
     /// Resets the per-rebalance state (the appended flag, the applied level and the last
     /// request). Never clears the window: it spans rebalances.
     void begin_rebalance(const RiskContext& ctx) override;
-    /// Appends this lap's bars to the window, trims it to lookback_period and builds the
-    /// MarketData. Runs on every lap, including a lap whose book is empty.
+    /// Appends this rebalance's bars to the window ONCE (behind the explicit per-rebalance
+    /// flag), trims it to the newest `lookback_period` distinct DATES, applies F5 and builds the
+    /// MarketData. Runs on every lap, including a lap whose book is empty; laps 2..n re-use the
+    /// window lap 1 built rather than appending the same bars again.
     void on_bars(const std::vector<Bar>& bars, const RiskContext& ctx) override;
+
+    /// F5's floor. Below this many COMPLETE dates the sparse-date filter does not engage and the
+    /// gate reads the unfiltered date-capped window, because a 21-date matrix is the
+    /// small-sample regime this change set exists to leave.
+    ///
+    /// LATENT, recorded not fixed (T-4f_DECISION item 11): the strict rule makes the window's
+    /// length a function of the NEWEST symbol's bar count, so a symbol listed k days ago caps
+    /// the complete dates at k -- and this floor moves that cliff from 21 to 120, reachable by
+    /// an ordinary listing. A >= 90 % coverage rule buys only +6 dates on today's universe and
+    /// re-introduces the zero-fill, so it was not taken. The candidate for whenever a listing or
+    /// delisting actually occurs is a STICKY ENGAGE that drops the offending SYMBOL rather than
+    /// the dates; it cannot be measured until then.
+    static constexpr size_t kF5MinGateDates = 120;
+
+    /// Dates the window holds, before F5 drops any.
+    size_t window_dates() const;
+    /// Dates F5 dropped on the last on_bars (0 when it did not engage).
+    size_t dates_dropped() const { return dates_dropped_; }
+    bool f5_engaged() const { return f5_engaged_; }
+    /// min(portfolio, jump, correlation) and the leverage multiplier as evaluate last read them.
+    double last_invariant() const { return last_invariant_; }
+    double last_leverage() const { return last_leverage_; }
     Result<RiskDecision> evaluate(const std::unordered_map<std::string, Position>& book,
                                   const RiskContext& ctx) override;
     nlohmann::json describe() const override;  ///< {"id","type","terms","config"}
@@ -76,9 +100,14 @@ private:
     int min_gate_dates_{21};  ///< read only into RiskDecision::blind
     MarketData market_data_;  ///< built by on_bars, read by evaluate on the same lap
     std::vector<Bar> window_;  ///< was PortfolioManager::risk_history_
-    // Per-rebalance state, reset by begin_rebalance. READ BY NOTHING yet: the risk loop still
-    // appends the same bars on every lap and applies the gate's scale as a per-lap rate. The
-    // once-per-rebalance append and the level cut that will read these land in T-6b (commit 9).
+    size_t dates_dropped_{0};  ///< F5's count on the last on_bars
+    bool f5_engaged_{false};   ///< whether F5 filtered the last window
+    double last_invariant_{1.0};  ///< min(portfolio, jump, correlation), last evaluate
+    double last_leverage_{1.0};   ///< leverage_multiplier, last evaluate
+    // Per-rebalance state, reset by begin_rebalance. Commit 9 reads all three: on_bars appends
+    // only when appended_this_rebalance_ is false, and evaluate divides the invariant request by
+    // applied_level_ so the cut is a LEVEL for this rebalance rather than a rate charged again
+    // on every lap.
     bool appended_this_rebalance_{false};  ///< set by on_bars
     double applied_level_{1.0};            ///< product of the factors applied this rebalance
     bool level_partial_{false};            ///< a multiply skipped a pinned scope: the level lies

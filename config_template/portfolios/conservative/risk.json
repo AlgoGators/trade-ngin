@@ -12,7 +12,7 @@
       "max_net_leverage": 2.0,
       "confidence_level": 0.99,
       "lookback_period": 252,
-      "lookback_unit": "bars",
+      "lookback_unit": "dates",
       "min_gate_dates": 21,
       "missing_symbol_policy": "ignore",
       "_missing_symbol_policy_reason": "Schema-1 behaviour, migrated literally: risk_manager.cpp:55-58 gates the book on the subset of its symbols present in the window (T-4 §10). Changing it is its own measured commit."

@@ -231,13 +231,12 @@ public:
                     m.at("_missing_symbol_policy_reason").get<std::string>();
             }
 
-            // A1 / A2: parsed and validated above, refused here, each with the commit that
-            // will delete the refusal.
-            if (c.lookback_unit == "dates") {
-                return err(path_ +
-                           ".lookback_unit \"dates\" is not implemented before T-6 commit 9 (the "
-                           "date-keyed window)");
-            }
+            // A1 is implemented as of T-6b commit 9: the Carver module's window is keyed on
+            // the bar timestamp and capped at `lookback_period` distinct DATES, so "dates" is
+            // now the unit that describes what the code does. "bars" remains accepted and means
+            // the same cap counted in rows, which on a 36-symbol book is seven sessions rather
+            // than a year -- R11's floor is the guard on that reading.
+            // A2 is still refused, with the commit that will delete the refusal.
             if (c.missing_symbol_policy != "ignore") {
                 return err(path_ + ".missing_symbol_policy \"" + c.missing_symbol_policy +
                            "\" is not implemented yet; only \"ignore\" (with its reason) is "

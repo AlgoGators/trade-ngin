@@ -13,6 +13,7 @@
 #include <chrono>
 #include <cmath>
 #include <memory>
+#include <set>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -470,12 +471,23 @@ TEST_F(CarverWindowTest, MatchesTodaysPushTrimIncludingAnEmptyBookLap) {
     expect_same_bars(carver->window(), all, "after call 3");
 }
 
-TEST_F(CarverWindowTest, TrimsToLookbackBarsAcrossMultipleLaps) {
-    // Whole contracts and a binding leverage cap: 7 lots become 2.9, never whole, so every
-    // call runs five laps and appends its bars five times.
+TEST_F(CarverWindowTest, AppendsOncePerRebalanceAndTrimsToLookbackDates) {
+    // REWRITTEN BY T-6b COMMIT 9, which replaced the behaviour this test pinned. It used to
+    // assert the head's rule -- "every call runs five laps and appends its bars FIVE TIMES",
+    // with the window trimmed to the newest `lookback_period` BARS -- and it passed, because
+    // that is what the code did. That rule is the M-02 defect itself: on a 36-symbol book a
+    // 252-BAR window is seven sessions, and re-appending each lap evicted older dates until the
+    // window held three and |rho| was 1.0 by arithmetic.
+    //
+    // Commit 9 appends ONCE per rebalance and trims to the newest `lookback_period` DATES. The
+    // test is kept, pointed at the new rule, so the change is visible in the diff rather than
+    // looking like a deleted test.
+    //
+    // Whole contracts and a binding leverage cap: 7 lots become 2.9, never whole, so every call
+    // still runs five laps -- the loop is unchanged. Only the appending is.
     make_pm(false, {{{"ZZA", make_pos("ZZA", 7.0, 100.0)}}});
     RiskConfig cfg = risk_config(false).risk_config;
-    cfg.lookback_period = 5;
+    cfg.lookback_period = 5;  // five DATES
     auto carver = std::make_shared<CarverRiskModule>("carver", cfg);
     auto spy = std::make_shared<SpyModule>("spy", RiskAction::NONE);
     ASSERT_TRUE(pm_->set_risk_modules({carver, spy}).is_ok());
@@ -486,18 +498,31 @@ TEST_F(CarverWindowTest, TrimsToLookbackBarsAcrossMultipleLaps) {
         {make_bar("ZZA", 6, 103.0), make_bar("ZZA", 7, 100.0), make_bar("ZZA", 8, 98.0),
          make_bar("ZZA", 9, 104.0)}};
 
-    // The PortfolioManager's append and trim, transcribed.
+    // The module's rule, transcribed: append each call's bars ONCE, then keep every bar at the
+    // newest five DISTINCT timestamps.
     std::vector<Bar> ref;
     for (size_t c = 0; c < calls.size(); ++c) {
         spy->evaluations = 0;
         ASSERT_TRUE(pm_->process_market_data(calls[c]).is_ok());
-        ASSERT_EQ(spy->evaluations, 5) << "call " << c;
-        for (int lap = 0; lap < 5; ++lap) {
-            ref.insert(ref.end(), calls[c].begin(), calls[c].end());
-            if (ref.size() > 5) ref.erase(ref.begin(), ref.end() - 5);
+        ASSERT_EQ(spy->evaluations, 5) << "call " << c << ": the loop still runs five laps";
+        ref.insert(ref.end(), calls[c].begin(), calls[c].end());
+        std::set<Timestamp> dates;
+        for (const auto& b : ref) dates.insert(b.timestamp);
+        if (dates.size() > 5) {
+            const Timestamp cutoff = *std::prev(dates.end(), 5);
+            ref.erase(std::remove_if(ref.begin(), ref.end(),
+                                     [&cutoff](const Bar& b) { return b.timestamp < cutoff; }),
+                      ref.end());
         }
         expect_same_bars(carver->window(), ref, "after call " + std::to_string(c));
     }
+
+    // One bar per date here, so five dates is five bars -- and, crucially, the five laps of the
+    // last call did NOT push its four bars in five times over.
+    EXPECT_EQ(carver->window().size(), 5u);
+    EXPECT_EQ(carver->window_dates(), 5u);
+    EXPECT_EQ(carver->window().front().timestamp, day(5));
+    EXPECT_EQ(carver->window().back().timestamp, day(9));
 }
 
 // ===== Commit 6: the PM applies decisions by action =====

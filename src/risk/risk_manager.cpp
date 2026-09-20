@@ -52,11 +52,37 @@ Result<RiskResult> RiskManager::process_positions(
         std::vector<double> position_values_no_multiplier;
         position_values_no_multiplier.resize(market_data.ordered_symbols.size(), 0.0);
 
+        // The filter below is FAIL-OPEN BY CONSTRUCTION: a holding whose symbol has no bar
+        // anywhere in the gate's window is silently excluded, so the book can be gated on a
+        // STRICT SUBSET of itself with no error, no warning and no stored trace. Only when
+        // EVERY holding is excluded does the check further down return the default with a WARN.
+        // That is the amplifier which turned the dropped-bars bug into a gate measuring ONE name
+        // on 125,107 of 125,107 equity-chain laps, and it stays fail-open once the bars are
+        // fixed: a stale or delisted feed older than the window and younger than the runner's
+        // 730-day pull produces the same silence.
+        //
+        // This guard makes the omission VISIBLE and COUNTABLE. It deliberately does NOT refuse:
+        // refusing would change the shipped book on any day it fires, and that is a second
+        // change set, not this one. missing_symbol_policy carries the decision when it is taken.
+        size_t dropped_holdings = 0;
+        size_t dropped_nonzero = 0;
         for (const auto& [symbol, pos] : positions) {
             // Only include positions with symbols in our market data
             auto it = market_data.symbol_indices.find(symbol);
             if (it != market_data.symbol_indices.end()) {
                 size_t index = it->second;
+                if (index >= position_values.size()) {
+                    // In the window but its index is out of range: the window and the index map
+                    // disagree. Same fail-open shape, so the same guard.
+                    ++dropped_holdings;
+                    if (std::abs(static_cast<double>(pos.quantity)) > 1e-12) {
+                        ++dropped_nonzero;
+                        WARN("POSGUARD_MISS symbol=" + symbol + " qty=" +
+                             std::to_string(static_cast<double>(pos.quantity)) +
+                             " reason=index_out_of_range index=" + std::to_string(index) +
+                             " window_symbols=" + std::to_string(position_values.size()));
+                    }
+                }
                 if (index < position_values.size()) {
                     // Calculate position values for leverage
                     // For backtest: use average price (original logic)
@@ -103,7 +129,28 @@ Result<RiskResult> RiskManager::process_positions(
                     double position_value_no_mult = signed_quantity * price_for_leverage;
                     position_values_no_multiplier[index] = position_value_no_mult;
                 }
+            } else {
+                ++dropped_holdings;
+                if (std::abs(static_cast<double>(pos.quantity)) > 1e-12) {
+                    ++dropped_nonzero;
+                    WARN("POSGUARD_MISS symbol=" + symbol + " qty=" +
+                         std::to_string(static_cast<double>(pos.quantity)) +
+                         " reason=absent_from_window window_symbols=" +
+                         std::to_string(market_data.symbol_indices.size()));
+                }
             }
+        }
+
+        // ONE summary per RUN, not per call, so "no holding was dropped" is a positive statement
+        // in the log without the line becoming a fifth of it. A later call that drops MORE than
+        // the high-water mark prints again, so a regression that starts mid-run is still seen.
+        if (dropped_nonzero > posguard_high_water_ || !posguard_reported_) {
+            posguard_high_water_ = std::max(posguard_high_water_, dropped_nonzero);
+            posguard_reported_ = true;
+            INFO("POSGUARD holdings=" + std::to_string(positions.size()) + " mapped=" +
+                 std::to_string(position_symbols.size()) + " dropped=" +
+                 std::to_string(dropped_holdings) + " dropped_nonzero=" +
+                 std::to_string(dropped_nonzero));
         }
 
         if (position_symbols.empty()) {

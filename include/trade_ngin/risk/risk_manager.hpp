@@ -150,6 +150,13 @@ public:
 private:
     RiskConfig config_;
 
+    // POSGUARD's per-run state. process_positions filters out any holding whose symbol has no
+    // bar in the gate's window, silently; the guard reports that once per run rather than once
+    // per call (it was 19.5 % of the live equity log as a per-call line), and again whenever a
+    // later call drops MORE non-zero holdings than any before it.
+    mutable size_t posguard_high_water_{0};
+    mutable bool posguard_reported_{false};
+
     /**
      * @brief Calculate position weights
      * @param positions Portfolio positions

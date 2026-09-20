@@ -1657,14 +1657,19 @@ namespace {
 // (feedback_measure_definitions_change_meaning), and this is the number a cut is judged by.
 std::string risk_applied_line(int lap, double requested, double applied, double cumulative,
                               RiskAction action, const std::string& module_id, RiskScope scope,
-                              const std::string& scope_id) {
-    char buf[512];
+                              const std::string& scope_id, double invariant, double leverage) {
+    char buf[640];
+    // invariant = min(VaR, jump, correlation), the COMPOSITION reading the level rule treats as
+    // an absolute request; leverage = the MAGNITUDE reading charged as a per-lap rate. They are
+    // the two halves of `requested`, and the pair is what makes a level-cut arm checkable: with
+    // only the combined number there is no way to tell a declined invariant request from a
+    // leverage request that was honoured (T-4f ARM 1; t4_validate.py reads this line).
     std::snprintf(buf, sizeof(buf),
                   "RISK_APPLIED lap=%d requested=%.17g applied=%.17g cumulative=%.17g action=%s"
-                  " module=%s scope=%s scope_id=%s",
+                  " module=%s scope=%s scope_id=%s invariant=%.17g leverage=%.17g",
                   lap, requested, applied, cumulative, risk_action_name(action),
                   module_id.empty() ? "-" : module_id.c_str(), risk_scope_name(scope),
-                  scope_id.c_str());
+                  scope_id.c_str(), invariant, leverage);
     return std::string(buf);
 }
 
@@ -2010,6 +2015,16 @@ Result<void> PortfolioManager::apply_risk_management(const std::vector<Bar>& dat
                     : 1.0;
             const std::string logged_winner =
                 verdict.winner < decisions.size() ? decisions[verdict.winner].module_id : "";
+            double logged_invariant = 1.0;
+            double logged_leverage = 1.0;
+            for (const auto& d : decisions) {
+                if (!d.metrics.has_value()) continue;
+                logged_invariant = std::min({static_cast<double>(d.metrics->portfolio_multiplier),
+                                             static_cast<double>(d.metrics->jump_multiplier),
+                                             static_cast<double>(d.metrics->correlation_multiplier)});
+                logged_leverage = static_cast<double>(d.metrics->leverage_multiplier);
+                break;
+            }
 
             deliver_and_record(risk_modules_, decisions, verdict, lap_ctx, pinned, errors,
                                scopes_skipped);
@@ -2022,7 +2037,7 @@ Result<void> PortfolioManager::apply_risk_management(const std::vector<Bar>& dat
                 const double cumulative = it == rebalance_applied_.end() ? 1.0 : it->second;
                 INFO(risk_applied_line(lap_ctx.lap, logged_requested, applied, cumulative,
                                        verdict.action, logged_winner, lap_ctx.scope,
-                                       lap_ctx.scope_id));
+                                       lap_ctx.scope_id, logged_invariant, logged_leverage));
             }
         } catch (const std::exception& e) {
             ERROR("Exception during risk management: " + std::string(e.what()));
@@ -2163,7 +2178,7 @@ Result<void> PortfolioManager::apply_sleeve_risk(
                 auto it = rebalance_applied_.find(sid);
                 const double cumulative = it == rebalance_applied_.end() ? 1.0 : it->second;
                 INFO(risk_applied_line(ctx.lap, logged_requested, applied, cumulative,
-                                       verdict.action, logged_winner, ctx.scope, sid));
+                                       verdict.action, logged_winner, ctx.scope, sid, 1.0, 1.0));
             }
         } catch (const std::exception& e) {
             ERROR("Exception during sleeve risk management for " + sid + ": " +
