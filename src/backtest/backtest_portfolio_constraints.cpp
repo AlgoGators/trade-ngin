@@ -8,42 +8,19 @@ namespace backtest {
 
 BacktestPortfolioConstraints::BacktestPortfolioConstraints(
     const PortfolioConstraintsConfig& config)
-    : config_(config), risk_manager_(nullptr), optimizer_(nullptr) {}
+    : config_(config), optimizer_(nullptr) {}
 
 BacktestPortfolioConstraints::BacktestPortfolioConstraints(
     const PortfolioConstraintsConfig& config,
-    std::shared_ptr<RiskManager> risk_manager,
     std::shared_ptr<DynamicOptimizer> optimizer)
     : config_(config),
-      risk_manager_(std::move(risk_manager)),
       optimizer_(std::move(optimizer)) {}
 
 Result<void> BacktestPortfolioConstraints::apply_constraints(
-    const std::vector<Bar>& bars,
+    const std::vector<Bar>& /*bars*/,
     std::map<std::string, Position>& current_positions,
-    std::vector<RiskResult>& risk_metrics) {
+    std::vector<RiskResult>& /*risk_metrics*/) {
     try {
-        // Apply risk management if enabled
-        if (is_risk_management_enabled()) {
-            auto risk_result = apply_risk_management(bars, current_positions);
-            if (risk_result.is_error()) {
-                return make_error<void>(risk_result.error()->code(),
-                    risk_result.error()->what(), "BacktestPortfolioConstraints");
-            }
-
-            risk_metrics.push_back(risk_result.value());
-
-            // Scale positions if risk limits exceeded
-            if (risk_result.value().risk_exceeded) {
-                double scale = risk_result.value().recommended_scale;
-                WARN("Risk limits exceeded: scaling positions by " + std::to_string(scale));
-
-                for (auto& [symbol, pos] : current_positions) {
-                    pos.quantity = Quantity(static_cast<double>(pos.quantity) * scale);
-                }
-            }
-        }
-
         // Apply optimization if enabled
         if (is_optimization_enabled() && current_positions.size() > 1) {
             auto opt_result = apply_optimization(current_positions);
@@ -60,29 +37,6 @@ Result<void> BacktestPortfolioConstraints::apply_constraints(
             std::string("Error applying portfolio constraints: ") + e.what(),
             "BacktestPortfolioConstraints");
     }
-}
-
-Result<RiskResult> BacktestPortfolioConstraints::apply_risk_management(
-    const std::vector<Bar>& bars,
-    const std::map<std::string, Position>& positions) {
-    if (!risk_manager_) {
-        return make_error<RiskResult>(ErrorCode::INVALID_DATA,
-            "Risk manager not configured", "BacktestPortfolioConstraints");
-    }
-
-    MarketData market_data = risk_manager_->create_market_data(bars);
-
-    // Convert map to unordered_map for risk manager compatibility
-    std::unordered_map<std::string, Position> positions_for_risk(
-        positions.begin(), positions.end());
-
-    auto risk_result = risk_manager_->process_positions(positions_for_risk, market_data);
-    if (risk_result.is_error()) {
-        return make_error<RiskResult>(risk_result.error()->code(),
-            risk_result.error()->what(), "BacktestPortfolioConstraints");
-    }
-
-    return risk_result;
 }
 
 Result<void> BacktestPortfolioConstraints::apply_optimization(

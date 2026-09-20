@@ -34,5 +34,7 @@
         "allow_fractional_shares": true
       }
     }
-  }
+  },
+  "use_optimization": false,
+  "_use_optimization_note": "false: the equity runners hard-code the optimizer off (live_equity_mean_reversion.cpp, bt_equity_mean_reversion.cpp; HD 2026-09-01) and refuse to start if this says true."
 }

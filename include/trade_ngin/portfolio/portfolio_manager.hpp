@@ -3,10 +3,13 @@
 
 #include <iostream>
 #include <memory>
+#include <map>
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include <numeric>
+#include <optional>
 #include <unordered_map>
+#include <unordered_set>
 #include "trade_ngin/core/config_base.hpp"
 #include "trade_ngin/core/error.hpp"
 #include "trade_ngin/core/logger.hpp"
@@ -17,7 +20,10 @@
 #include "trade_ngin/data/postgres_database.hpp"
 #include "trade_ngin/instruments/instrument_registry.hpp"
 #include "trade_ngin/optimization/dynamic_optimizer.hpp"
+#include "trade_ngin/risk/carver_risk_module.hpp"
 #include "trade_ngin/risk/risk_manager.hpp"
+#include "trade_ngin/risk/risk_module.hpp"
+#include "trade_ngin/risk/risk_module_config.hpp"
 #include "trade_ngin/strategy/strategy_interface.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
 #include "trade_ngin/transaction_cost/transaction_cost_manager.hpp"
@@ -35,7 +41,13 @@ struct PortfolioConfig : public ConfigBase {
     double min_strategy_allocation{
         0.0};  // Minimum allocation to any strategy (keep as double - it's a ratio)
     bool use_optimization{false};     // Whether to use position optimization
-    bool use_risk_management{false};  // Whether to use risk management
+    // The risk modules this book runs, portfolio scope, in evaluation order. There is
+    // no boolean any more: a book that runs no risk layer carries a single `none`
+    // assignment naming who ruled it and when, and an EMPTY list is a configuration
+    // mistake the constructor throws on rather than a book that quietly runs ungated.
+    std::vector<RiskModuleConfig> risk_modules;
+    // Per strategy id, that sleeve's own modules. Empty on every shipped book.
+    std::map<std::string, std::vector<RiskModuleConfig>> sleeve_risk_modules;
     // Whether a fractional target quantity is a legitimate end state for this
     // portfolio. Futures trade whole contracts and leave this false, so the
     // optimizer/risk loop keeps iterating until positions are integral, exactly
@@ -51,13 +63,12 @@ struct PortfolioConfig : public ConfigBase {
     PortfolioConfig() = default;
 
     PortfolioConfig(Decimal total_capital, Decimal reserve_capital, double max_strategy_allocation,
-                    double min_strategy_allocation, bool use_optimization, bool use_risk_management)
+                    double min_strategy_allocation, bool use_optimization)
         : total_capital(total_capital),
           reserve_capital(reserve_capital),
           max_strategy_allocation(max_strategy_allocation),
           min_strategy_allocation(min_strategy_allocation),
-          use_optimization(use_optimization),
-          use_risk_management(use_risk_management) {}
+          use_optimization(use_optimization) {}
 
     // JSON serialization
     nlohmann::json to_json() const override {
@@ -67,7 +78,9 @@ struct PortfolioConfig : public ConfigBase {
         j["max_strategy_allocation"] = max_strategy_allocation;
         j["min_strategy_allocation"] = min_strategy_allocation;
         j["use_optimization"] = use_optimization;
-        j["use_risk_management"] = use_risk_management;
+        // risk_modules is deliberately absent: this object is stored verbatim in
+        // backtest.run_metadata.portfolio_config, and T-6a's declared diff is deletions
+        // only. The module list is recorded there by T-7 item 10, through describe().
         j["allow_fractional_positions"] = allow_fractional_positions;
         j["opt_config"] = opt_config.to_json();
         j["risk_config"] = risk_config.to_json();
@@ -88,9 +101,6 @@ struct PortfolioConfig : public ConfigBase {
         }
         if (j.contains("use_optimization")) {
             use_optimization = j.at("use_optimization").get<bool>();
-        }
-        if (j.contains("use_risk_management")) {
-            use_risk_management = j.at("use_risk_management").get<bool>();
         }
         if (j.contains("allow_fractional_positions")) {
             allow_fractional_positions = j.at("allow_fractional_positions").get<bool>();
@@ -123,12 +133,10 @@ public:
      * @param strategy Strategy to add
      * @param initial_allocation Initial capital allocation
      * @param use_optimization Whether this strategy uses optimization
-     * @param use_risk_management Whether this strategy uses risk management
      * @return Result indicating success or failure
      */
     Result<void> add_strategy(std::shared_ptr<StrategyInterface> strategy,
-                              double initial_allocation, bool use_optimization = false,
-                              bool use_risk_management = false);
+                              double initial_allocation, bool use_optimization = false);
 
     /**
      * @brief Process new market data
@@ -278,16 +286,36 @@ public:
     }
 
     /**
-     * @brief Set external risk manager to use instead of internal one
-     * @param manager Shared pointer to an existing risk manager
+     * @brief Replace the risk modules: the portfolio scope's (by default the Carver module the
+     *        constructor builds from config.risk_config) and, per strategy id, a sleeve's.
+     *        Call after add_strategy and before process_market_data.
+     * @return An error, leaving the modules unchanged, for: a null module; a duplicate module id
+     *         within a scope; a sleeve key that is not a registered strategy; more than one
+     *         REPLACE-capable module in a scope; more than one COMPOSITION-term module along a
+     *         sleeve -> portfolio chain (the scale-invariant terms would be counted twice).
      */
-    void set_risk_manager(std::shared_ptr<RiskManager> manager) {
-        if (manager) {
-            // Store the provided manager
-            external_risk_manager_ = manager;
-            // Disable the internal manager
-            risk_manager_.reset();
-        }
+    Result<void> set_risk_modules(
+        std::vector<RiskModulePtr> portfolio_modules,
+        std::unordered_map<std::string, std::vector<RiskModulePtr>> sleeve_modules = {});
+
+    /**
+     * @brief The last process_market_data call's risk decisions: every module, every lap,
+     *        requested and applied. A copy. Cleared at every rebalance boundary, so after a
+     *        runner's explicit call it holds that call only.
+     */
+    std::vector<RiskDecisionRecord> last_risk_decisions() const;
+
+    /**
+     * @brief build_risk_decisions_json over describe() of every module (annotated with its
+     *        scope) and last_risk_decisions().
+     */
+    nlohmann::json risk_decisions_json() const;
+
+    /**
+     * @brief Mark this manager as driven by a backtest. Read only into RiskContext::is_backtest.
+     */
+    void set_backtest_mode(bool is_backtest) {
+        is_backtest_ = is_backtest;
     }
 
 private:
@@ -295,20 +323,32 @@ private:
     std::string id_;
 
     std::unique_ptr<DynamicOptimizer> optimizer_;
-    std::unique_ptr<RiskManager> risk_manager_;
-    std::shared_ptr<RiskManager> external_risk_manager_{nullptr};
+    std::vector<RiskModulePtr> risk_modules_;  // portfolio scope, evaluated in order
+    std::unordered_map<std::string, std::vector<RiskModulePtr>> sleeve_risk_modules_;  // by strategy id
+    std::vector<RiskDecisionRecord> risk_decisions_;  // guarded by mutex_
+    bool is_backtest_{false};
+    // Per rebalance, cleared at the boundary: strategies pinned by a risk REFUSE / REPLACE (skipped
+    // by the optimiser, later scales, the fraction scan, forced rounding and the final check), and
+    // per scope the product of the quantised factors applied so far (-> RiskContext::applied).
+    std::unordered_set<std::string> pinned_scopes_;
+    std::unordered_map<std::string, double> rebalance_applied_;
     std::shared_ptr<InstrumentRegistry> registry_{nullptr};
 
     struct StrategyInfo {
         std::shared_ptr<StrategyInterface> strategy;
         double allocation;
         bool use_optimization;
-        bool use_risk_management;
         std::unordered_map<std::string, Position> current_positions;
         std::unordered_map<std::string, Position> target_positions;
+        // Position of the add_strategy call that registered this strategy (0 = first).
+        // strategies_ is an unordered_map, so its iteration order is not the registration
+        // order; update_historical_returns reads this to let the first-registered strategy
+        // win when two strategies offer different price series for one symbol.
+        size_t registration_index{0};
     };
 
     std::unordered_map<std::string, StrategyInfo> strategies_;
+    size_t next_registration_index_{0};  // registration_index of the next add_strategy
     std::vector<ExecutionReport> recent_executions_;  // Portfolio-level (aggregated)
     std::unordered_map<std::string, std::vector<ExecutionReport>> strategy_executions_;  // Per-strategy executions
     // Per-strategy filled position (symbol -> net qty) accumulated from the
@@ -324,7 +364,6 @@ private:
 
     std::unordered_map<std::string, std::vector<double>> price_history_;
     std::unordered_map<std::string, std::vector<double>> historical_returns_;
-    std::vector<Bar> risk_history_;
     MarketData current_market_data_;
 
     size_t max_history_length_ = 2520;  // Keep up to 1 year of return data
@@ -376,10 +415,68 @@ private:
     Result<void> optimize_positions();
 
     /**
+     * @brief Build the context a risk module sees for one call
+     */
+    RiskContext make_risk_context(RiskPhase phase, int lap, RiskScope scope,
+                                  const std::string& scope_id, Decimal capital,
+                                  const std::vector<Bar>& data,
+                                  std::optional<Timestamp> as_of, bool is_warmup) const;
+
+    /// What a portfolio-scope REFUSE or REPLACE asks the loop to do after apply_risk_management.
+    struct RiskLapOutcome {
+        bool pin_all{false};
+        RiskAction action{RiskAction::NONE};
+        std::string module_id;
+        std::unordered_map<std::string, Position> replace_book;
+    };
+
+    /// The combination of one scope's decisions (precedence REFUSE > REPLACE > SCALE > WARN >
+    /// NONE; the SCALE applied is the minimum valid one). rows[k] = the applied action and factor
+    /// recorded against decision k.
+    struct RiskVerdict {
+        RiskAction action{RiskAction::NONE};
+        size_t winner{static_cast<size_t>(-1)};
+        double scale{1.0};
+        Decimal factor{Decimal(1.0)};
+        std::vector<std::pair<RiskAction, Decimal>> rows;
+    };
+
+    /**
      * @brief Apply risk management to positions
+     * @param data This call's bars
+     * @param lap_ctx The lap's context (phase LAP, portfolio scope)
+     * @param outcome Set when a REFUSE or REPLACE must pin every strategy and end the loop
      * @return Result indicating success or failure
      */
-    Result<void> apply_risk_management(const std::vector<Bar>& data);
+    Result<void> apply_risk_management(const std::vector<Bar>& data, const RiskContext& lap_ctx,
+                                       RiskLapOutcome& outcome);
+
+    /// Combine one scope's decisions; logs an invalid SCALE (ERROR) and every WARN, in module order.
+    RiskVerdict combine_risk_decisions(const std::vector<RiskDecision>& decisions,
+                                       const RiskContext& ctx) const;
+
+    /// Push one row to risk_decisions_ (takes mutex_).
+    void record_risk_decision(const RiskContext& ctx, const std::string& module_id,
+                              RiskDecision requested, RiskAction applied_action,
+                              Decimal applied_factor, bool empty_book, std::string error);
+
+    /// Tell every module evaluated in a scope what was applied, then record its row.
+    void deliver_and_record(const std::vector<RiskModulePtr>& modules,
+                            std::vector<RiskDecision>& decisions, const RiskVerdict& verdict,
+                            const RiskContext& ctx, bool pinned);
+
+    /// The sleeve scope: once per rebalance, before the loop, each sleeve's own modules on its
+    /// own targets. A no-op when no sleeve has modules.
+    void apply_sleeve_risk(
+        const std::vector<Bar>& data,
+        const std::unordered_map<std::string, std::unordered_map<std::string, Position>>& prev_positions,
+        std::optional<Timestamp> as_of, bool is_warmup);
+
+    /// The post-rounding point: finalize() on the final book, portfolio and sleeves.
+    void apply_post_rounding_risk(
+        const std::vector<Bar>& data, int lap,
+        const std::unordered_map<std::string, std::unordered_map<std::string, Position>>& prev_positions,
+        std::optional<Timestamp> as_of, bool is_warmup);
 
     /**
      * @brief Validate allocations sum to 1

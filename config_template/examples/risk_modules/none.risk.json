@@ -1,0 +1,27 @@
+{
+  "_description": "EXAMPLE, placeholder values. A book that runs no portfolio risk layer. The decision is written down -- an omission and a decision must not share an encoding -- and the loader refuses a `none` that does not carry all three of _reason, _ruled_by and _ruled_on.",
+  "schema": 2,
+  "modules": [
+    {
+      "id": "no_portfolio_risk",
+      "type": "none",
+      "_reason": "PLACEHOLDER: say why this book runs ungated, in a sentence somebody reading a stored run will understand.",
+      "_ruled_by": "PLACEHOLDER: who decided",
+      "_ruled_on": "2026-01-01"
+    }
+  ],
+  "risk_reporting": {
+    "type": "carver",
+    "window": "all_bars",
+    "var_limit": 0.2,
+    "jump_risk_limit": 0.1,
+    "max_correlation": 0.7,
+    "max_gross_leverage": 2.0,
+    "max_net_leverage": 1.0,
+    "confidence_level": 0.99,
+    "lookback_period": 252,
+    "_note": "The reporter stays even when the gate is `none`: the book is still measured, it is just not cut."
+  },
+  "max_drawdown": 0.3,
+  "max_leverage": 2.0
+}

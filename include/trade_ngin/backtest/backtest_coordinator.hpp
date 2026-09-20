@@ -34,7 +34,6 @@ namespace backtest {
  */
 struct BacktestCoordinatorConfig {
     double initial_capital = 1000000.0;
-    bool use_risk_management = false;
     bool use_optimization = false;
     bool store_results = true;
     int warmup_days = 0;
@@ -99,9 +98,6 @@ private:
     /// so a cash-book position row can be written as that bar's realized FLOW -- the same
     /// definition the live equity runner persists -- rather than the running total.
     std::unordered_map<std::string, double> last_cumulative_realized_;
-
-    // Optional components for portfolio backtest
-    std::shared_ptr<RiskManager> risk_manager_;
 
     // Initialization state
     bool is_initialized_ = false;

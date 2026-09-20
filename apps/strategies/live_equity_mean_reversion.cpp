@@ -482,6 +482,16 @@ int main(int argc, char* argv[]) {
         // Phase 2 leverage guardrail (audit §3.3): CASH-mode equities cannot
         // be in a portfolio with max_gross_leverage > 1.0 -- cash accounts
         // can't borrow, so a leverage cap above 1.0 is structurally invalid.
+        // The optimizer is hard-coded off below (HD 2026-09-01). A config that says
+        // otherwise is a contradiction, and silently winning it would leave the operator
+        // believing a setting that does nothing. Silent on today's config, which says false.
+        if (auto optimizer_guard =
+                apps::refuse_if_optimizer_requested(app_config.use_optimization);
+            optimizer_guard.is_error()) {
+            ERROR(std::string(optimizer_guard.error()->what()));
+            return 1;
+        }
+
         if (app_config.risk_config.max_gross_leverage > 1.0) {
             for (const auto& symbol : symbols) {
                 auto inst = registry.get_equity_instrument(symbol);
@@ -558,7 +568,8 @@ int main(int argc, char* argv[]) {
         // single run. bt_equity_mean_reversion.cpp already disables it; this makes live
         // agree rather than optimising on values it made up.
         portfolio_config.use_optimization = false;
-        portfolio_config.use_risk_management = app_config.strategy_defaults.use_risk_management;
+        portfolio_config.risk_modules = app_config.risk_schema.portfolio;
+        portfolio_config.sleeve_risk_modules = app_config.risk_schema.sleeves;
         portfolio_config.opt_config = opt_config;
         portfolio_config.risk_config = risk_config;
 
@@ -634,8 +645,7 @@ int main(int argc, char* argv[]) {
                   : "no"));
         auto portfolio = std::make_shared<trade_ngin::PortfolioManager>(portfolio_config);
         auto add_result =
-            portfolio->add_strategy(mr_strategy, 1.0, portfolio_config.use_optimization,
-                                    portfolio_config.use_risk_management);
+            portfolio->add_strategy(mr_strategy, 1.0, portfolio_config.use_optimization);
         if (add_result.is_error()) {
             std::cerr << "Failed to add strategy to portfolio: " << add_result.error()->what()
                       << std::endl;
@@ -656,7 +666,6 @@ int main(int argc, char* argv[]) {
             portfolio_config_json["reserve_capital"] =
                 static_cast<double>(portfolio_config.reserve_capital);
             portfolio_config_json["use_optimization"] = portfolio_config.use_optimization;
-            portfolio_config_json["use_risk_management"] = portfolio_config.use_risk_management;
             portfolio_config_json["allow_fractional_positions"] =
                 portfolio_config.allow_fractional_positions;
 

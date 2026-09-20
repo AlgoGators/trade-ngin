@@ -1,0 +1,25 @@
+{
+  "_description": "EXAMPLE, placeholder values. A refusal pins every sleeve to its previous positions and leaves the optimisation/risk loop. The loader refuses this module on a book with more than one enabled strategy until T-BASE seeds a stored T-1 per sleeve.",
+  "schema": 2,
+  "modules": [
+    {
+      "id": "stop_on_a_huge_line",
+      "type": "refuse",
+      "condition": { "kind": "max_abs_quantity_above", "threshold": 5000 },
+      "reason": "PLACEHOLDER: a single line this large is a sizing error, not a trade"
+    }
+  ],
+  "risk_reporting": {
+    "type": "carver",
+    "window": "all_bars",
+    "var_limit": 0.2,
+    "jump_risk_limit": 0.1,
+    "max_correlation": 0.7,
+    "max_gross_leverage": 2.0,
+    "max_net_leverage": 1.0,
+    "confidence_level": 0.99,
+    "lookback_period": 252
+  },
+  "max_drawdown": 0.3,
+  "max_leverage": 2.0
+}

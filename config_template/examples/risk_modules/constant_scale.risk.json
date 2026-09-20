@@ -1,0 +1,25 @@
+{
+  "_description": "EXAMPLE, placeholder values. A fixed cut applied once per rebalance (set every_lap true to reproduce the loop's per-lap compounding instead).",
+  "schema": 2,
+  "modules": [
+    {
+      "id": "half_size",
+      "type": "constant_scale",
+      "scale": 0.5,
+      "every_lap": false
+    }
+  ],
+  "risk_reporting": {
+    "type": "carver",
+    "window": "all_bars",
+    "var_limit": 0.2,
+    "jump_risk_limit": 0.1,
+    "max_correlation": 0.7,
+    "max_gross_leverage": 2.0,
+    "max_net_leverage": 1.0,
+    "confidence_level": 0.99,
+    "lookback_period": 252
+  },
+  "max_drawdown": 0.3,
+  "max_leverage": 2.0
+}

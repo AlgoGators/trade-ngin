@@ -21,6 +21,7 @@
 // true case is the equities fix (must keep the fraction).
 
 #include <gtest/gtest.h>
+#include "../risk/risk_module_test_helpers.hpp"
 #include <chrono>
 #include <cmath>
 #include <memory>
@@ -94,10 +95,10 @@ std::vector<Bar> flat_bars(const std::string& symbol, int n,
 }
 
 PortfolioConfig config_with(bool allow_fractional) {
-    PortfolioConfig c{1'000'000.0, 100'000.0, 1.0, 0.0, /*optimization=*/false,
-                      /*risk=*/false};
+    PortfolioConfig c{1'000'000.0, 100'000.0, 1.0, 0.0, /*optimization=*/false};
     c.allow_fractional_positions = allow_fractional;
     c.risk_config.capital = 1'000'000.0;
+    c.risk_modules = {test_none_module()};
     return c;
 }
 
@@ -136,7 +137,7 @@ protected:
         auto strat = std::make_shared<FixedFractionalStrategy>(uid, sc, db_, kFractionalQty);
         EXPECT_TRUE(strat->initialize().is_ok());
         EXPECT_TRUE(strat->start().is_ok());
-        EXPECT_TRUE(manager->add_strategy(strat, 1.0, false, false).is_ok());
+        EXPECT_TRUE(manager->add_strategy(strat, 1.0, false).is_ok());
 
         auto t0 = std::chrono::system_clock::now() - std::chrono::hours(24 * 30);
         EXPECT_TRUE(manager->process_market_data(flat_bars("AAPL", 25, t0)).is_ok());

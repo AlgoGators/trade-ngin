@@ -16,7 +16,6 @@ namespace backtest {
  * @brief Configuration for portfolio constraints
  */
 struct PortfolioConstraintsConfig {
-    bool use_risk_management = false;
     bool use_optimization = false;
     size_t max_history_length = 252;  // Max periods for covariance calculation
     size_t min_periods_for_covariance = 20;  // Minimum periods needed for covariance
@@ -24,20 +23,22 @@ struct PortfolioConstraintsConfig {
 };
 
 /**
- * @brief Apply risk management and portfolio optimization constraints
+ * @brief Apply portfolio optimization constraints
  *
  * This class extracts the apply_portfolio_constraints() method and related
  * helper methods from BacktestEngine (lines 1268-1416, 3164-3300).
  *
  * Key responsibilities:
- * - Apply risk management constraints (scale positions if risk exceeded)
  * - Apply portfolio optimization
  * - Track historical returns for covariance calculation
  * - Calculate covariance matrix for optimization
  *
  * Dependencies:
- * - RiskManager (existing component)
  * - DynamicOptimizer (existing component)
+ *
+ * The risk gate this class used to carry (a RiskManager set only by a test, so it never
+ * scaled a position in any runner) was deleted; the portfolio's risk management runs in
+ * PortfolioManager::apply_risk_management.
  */
 class BacktestPortfolioConstraints {
 public:
@@ -51,7 +52,6 @@ public:
      */
     BacktestPortfolioConstraints(
         const PortfolioConstraintsConfig& config,
-        std::shared_ptr<RiskManager> risk_manager,
         std::shared_ptr<DynamicOptimizer> optimizer);
 
     ~BacktestPortfolioConstraints() = default;
@@ -59,29 +59,20 @@ public:
     /**
      * @brief Apply all portfolio constraints
      *
-     * Applies risk management and optimization in sequence.
-     * Modifies positions in-place.
+     * Applies optimization. Modifies positions in-place.
      *
-     * @param bars Current market data bars
+     * @param bars Not read since the risk gate was deleted
      * @param current_positions Positions to constrain (modified in-place)
-     * @param risk_metrics Output vector for risk metric history
+     * @param risk_metrics Not written since the risk gate was deleted
+     *
+     * bars and risk_metrics stay in the signature so the single-strategy caller
+     * (BacktestCoordinator::process_day) is unchanged.
      * @return Success or error
      */
     Result<void> apply_constraints(
         const std::vector<Bar>& bars,
         std::map<std::string, Position>& current_positions,
         std::vector<RiskResult>& risk_metrics);
-
-    /**
-     * @brief Apply risk management only
-     *
-     * @param bars Current market data bars
-     * @param current_positions Positions to check
-     * @return RiskResult with scaling recommendation
-     */
-    Result<RiskResult> apply_risk_management(
-        const std::vector<Bar>& bars,
-        const std::map<std::string, Position>& positions);
 
     /**
      * @brief Apply optimization only
@@ -112,24 +103,10 @@ public:
         const std::vector<std::string>& symbols) const;
 
     /**
-     * @brief Check if risk management is enabled and available
-     */
-    bool is_risk_management_enabled() const {
-        return config_.use_risk_management && risk_manager_ != nullptr;
-    }
-
-    /**
      * @brief Check if optimization is enabled and available
      */
     bool is_optimization_enabled() const {
         return config_.use_optimization && optimizer_ != nullptr;
-    }
-
-    /**
-     * @brief Set risk manager
-     */
-    void set_risk_manager(std::shared_ptr<RiskManager> risk_manager) {
-        risk_manager_ = std::move(risk_manager);
     }
 
     /**
@@ -151,7 +128,6 @@ public:
 
 private:
     PortfolioConstraintsConfig config_;
-    std::shared_ptr<RiskManager> risk_manager_;
     std::shared_ptr<DynamicOptimizer> optimizer_;
 
     // Historical data for covariance calculation
