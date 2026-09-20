@@ -18,8 +18,10 @@
 #include <string>
 #include <vector>
 
+#include "trade_ngin/portfolio/portfolio_manager.hpp"
 #include "trade_ngin/risk/carver_risk_module.hpp"
 #include "trade_ngin/risk/risk_module_config.hpp"
+#include "risk_module_test_helpers.hpp"
 
 using namespace trade_ngin;
 
@@ -847,4 +849,85 @@ TEST(RiskSchemaRulesT6b, TheShippedWindowIsFarAboveTheFloor) {
     EXPECT_EQ(c.at("min_gate_dates").get<int>(), 21);
     EXPECT_GE(c.at("lookback_period").get<int>(), 2 * c.at("min_gate_dates").get<int>());
     EXPECT_EQ(parse_error(risk_with({c})), "");
+}
+
+// ===== The three tracked books, and what each one is assigned (T-6b commit 8) =====
+
+// HD's ruling of 2026-09-18: "No risk module on the EQUITY_MR portfolio book (assignment is per
+// portfolio; other equity books choose their own)." This reads the TRACKED config_template tree
+// rather than restating its values, so the assignment cannot drift from the file that ships.
+TEST(TrackedPortfolioRiskAssignment, EachBookIsAssignedWhatHDRuled) {
+    namespace fs = std::filesystem;
+    fs::path root = fs::path(__FILE__).parent_path().parent_path().parent_path();
+    if (!fs::exists(root / "config_template" / "portfolios")) {
+        fs::path walk = fs::current_path();
+        for (int i = 0; i < 8 && !walk.empty(); ++i) {
+            if (fs::exists(walk / "config_template" / "portfolios")) {
+                root = walk;
+                break;
+            }
+            walk = walk.parent_path();
+        }
+    }
+    const fs::path dir = root / "config_template" / "portfolios";
+    ASSERT_TRUE(fs::exists(dir)) << "config_template/portfolios not found";
+
+    auto modules_of = [&](const char* book) {
+        std::ifstream in(dir / book / "risk.json");
+        EXPECT_TRUE(in.good()) << book;
+        return nlohmann::json::parse(in);
+    };
+
+    // The two futures books keep the full four-term Carver gate.
+    for (const char* book : {"conservative", "base"}) {
+        const auto risk = modules_of(book);
+        ASSERT_EQ(risk.at("modules").size(), 1u) << book;
+        EXPECT_EQ(risk.at("modules")[0].at("type"), "carver") << book;
+    }
+
+    // EQUITY_MR runs NO risk layer, and says who ruled it and when.
+    const auto eq = modules_of("equity_mr");
+    ASSERT_EQ(eq.at("modules").size(), 1u);
+    EXPECT_EQ(eq.at("modules")[0].at("type"), "none");
+    EXPECT_EQ(eq.at("modules")[0].at("_ruled_by"), "HD");
+    EXPECT_EQ(eq.at("modules")[0].at("_ruled_on"), "2026-09-18");
+    EXPECT_FALSE(eq.at("modules")[0].at("_reason").get<std::string>().empty());
+
+    // ...but it is still MEASURED. The reporter is untouched (HD Q5, RA-01), so every risk
+    // column of live_results and of the email still carries a number. A `none` assignment that
+    // also dropped the reporter would silently blank those columns.
+    ASSERT_TRUE(eq.contains("risk_reporting"));
+    EXPECT_EQ(eq.at("risk_reporting").at("type"), "carver");
+    EXPECT_EQ(eq.at("risk_reporting").at("window"), "all_bars");
+    EXPECT_DOUBLE_EQ(eq.at("risk_reporting").at("var_limit").get<double>(), 0.25);
+    EXPECT_DOUBLE_EQ(eq.at("risk_reporting").at("jump_risk_limit").get<double>(), 0.08);
+    EXPECT_DOUBLE_EQ(eq.at("risk_reporting").at("max_correlation").get<double>(), 0.7);
+    EXPECT_EQ(eq.at("risk_reporting").at("lookback_period").get<int>(), 252);
+
+    // Every one of the three still parses, so `none` is a shape the loader accepts on a real
+    // book and not only in the examples.
+    for (const char* book : {"conservative", "base", "equity_mr"}) {
+        std::ifstream pin(dir / book / "portfolio.json");
+        ASSERT_TRUE(pin.good()) << book;
+        const auto portfolio = nlohmann::json::parse(pin);
+        const auto sleeves = portfolio.contains("sleeve_risk_modules")
+                                 ? portfolio.at("sleeve_risk_modules")
+                                 : nlohmann::json();
+        auto r = parse_risk_schema(modules_of(book), sleeves, portfolio.at("strategies"), book);
+        EXPECT_TRUE(r.is_ok()) << book << ": " << (r.is_error() ? r.error()->what() : "");
+    }
+}
+
+// A `none` book builds a PortfolioManager that runs no gate at all -- rather than one that
+// throws on an empty module list, which is what an OMISSION does.
+TEST(TrackedPortfolioRiskAssignment, ANoneAssignmentBuildsAManagerThatRunsNoGate) {
+    PortfolioConfig pc{100000.0, 0.0, 1.0, 0.0, /*optimization=*/false};
+    pc.risk_config.capital = 100000.0;
+    pc.risk_modules = {trade_ngin::testing::test_none_module("no_portfolio_risk")};
+    PortfolioManager pm(pc, "PM_NONE_ASSIGNMENT");
+    EXPECT_TRUE(pm.last_risk_decisions().empty());
+    // The same config with the list EMPTY is a forgotten line, and throws.
+    PortfolioConfig omitted = pc;
+    omitted.risk_modules.clear();
+    EXPECT_THROW(PortfolioManager(omitted, "PM_OMITTED"), std::invalid_argument);
 }

@@ -4,19 +4,11 @@
   "schema": 2,
   "modules": [
     {
-      "id": "carver",
-      "type": "carver",
-      "var_limit": 0.25,
-      "jump_risk_limit": 0.08,
-      "max_correlation": 0.7,
-      "max_gross_leverage": 1,
-      "max_net_leverage": 1,
-      "confidence_level": 0.99,
-      "lookback_period": 252,
-      "lookback_unit": "bars",
-      "min_gate_dates": 21,
-      "missing_symbol_policy": "ignore",
-      "_missing_symbol_policy_reason": "Schema-1 behaviour, migrated literally: risk_manager.cpp:55-58 gates the book on the subset of its symbols present in the window (T-4 §10). Changing it is its own measured commit."
+      "id": "no_portfolio_risk",
+      "type": "none",
+      "_reason": "Carver's risk system is a futures construction and on this book three quarters of it is furniture: over the measured chain the leverage and jump terms are the sole binding minimum on 0 of 14,632 evaluations and the leverage multiplier never falls below 1.000000 at all, and the correlation term can only fire when the book holds two or more non-zero names, which is 2 of 19 dated rows. What was left was a VaR limit whose 0.25 is a documented equity-specific calibration rather than a Carver parameter. The book is still MEASURED: risk_reporting below is unchanged, so every risk column of live_results and the email still reports.",
+      "_ruled_by": "HD",
+      "_ruled_on": "2026-09-18"
     }
   ],
   "risk_reporting": {
