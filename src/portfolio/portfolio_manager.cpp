@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <climits>
 #include <cmath>
+#include <cstdio>
 #include <map>
 #include <set>
 #include <sstream>
@@ -1641,6 +1642,32 @@ nlohmann::json PortfolioManager::risk_decisions_json() const {
 
 namespace {
 
+// HD's ruling of 2026-09-18: "the applied risk scale is logged per lap beside the reporter's
+// value now" (STAGE3_PLAN line 839; T-6a ADVERSARIAL E-1 found no line did it). One line per
+// scope per lap.
+//
+//   requested   what the winning module ASKED for (1 when nothing asked)
+//   applied     the QUANTISED factor the book was actually multiplied by, double(verdict.factor)
+//               -- 1 when nothing was multiplied, which is the value the WARN above never showed
+//   cumulative  the product of those factors for this scope so far this rebalance
+//
+// The first four fields keep T4_APPLIED's spelling and order on purpose, so t4_parse.py,
+// c6a_gatecheck.py and overlev*.py need a token rename rather than a new regex. %.17g, never
+// to_string: six decimals already nearly published a false finding once
+// (feedback_measure_definitions_change_meaning), and this is the number a cut is judged by.
+std::string risk_applied_line(int lap, double requested, double applied, double cumulative,
+                              RiskAction action, const std::string& module_id, RiskScope scope,
+                              const std::string& scope_id) {
+    char buf[512];
+    std::snprintf(buf, sizeof(buf),
+                  "RISK_APPLIED lap=%d requested=%.17g applied=%.17g cumulative=%.17g action=%s"
+                  " module=%s scope=%s scope_id=%s",
+                  lap, requested, applied, cumulative, risk_action_name(action),
+                  module_id.empty() ? "-" : module_id.c_str(), risk_scope_name(scope),
+                  scope_id.c_str());
+    return std::string(buf);
+}
+
 // Where a risk decision was taken, for the log lines that name it.
 std::string risk_location(const RiskContext& ctx) {
     switch (ctx.phase) {
@@ -1974,8 +2001,29 @@ Result<void> PortfolioManager::apply_risk_management(const std::vector<Bar>& dat
                 INFO("Risk limits not exceeded, no scaling needed");
             }
 
+            // Read BEFORE deliver_and_record: it std::move()s every decision into its record,
+            // so decisions[winner].module_id is an empty moved-from string afterwards.
+            const double logged_requested =
+                verdict.winner < decisions.size() &&
+                        decisions[verdict.winner].action == RiskAction::SCALE
+                    ? decisions[verdict.winner].scale
+                    : 1.0;
+            const std::string logged_winner =
+                verdict.winner < decisions.size() ? decisions[verdict.winner].module_id : "";
+
             deliver_and_record(risk_modules_, decisions, verdict, lap_ctx, pinned, errors,
                                scopes_skipped);
+
+            {
+                const double applied = verdict.action == RiskAction::SCALE
+                                           ? static_cast<double>(verdict.factor)
+                                           : 1.0;
+                auto it = rebalance_applied_.find(lap_ctx.scope_id);
+                const double cumulative = it == rebalance_applied_.end() ? 1.0 : it->second;
+                INFO(risk_applied_line(lap_ctx.lap, logged_requested, applied, cumulative,
+                                       verdict.action, logged_winner, lap_ctx.scope,
+                                       lap_ctx.scope_id));
+            }
         } catch (const std::exception& e) {
             ERROR("Exception during risk management: " + std::string(e.what()));
             return Result<void>();  // Don't fail the entire operation
@@ -2097,7 +2145,26 @@ Result<void> PortfolioManager::apply_sleeve_risk(
                 rebalance_applied_.emplace(sid, 1.0).first->second *=
                     static_cast<double>(verdict.factor);
             }
+            // Read BEFORE deliver_and_record, as at the portfolio scope: it moves the decisions.
+            const double logged_requested =
+                verdict.winner < decisions.size() &&
+                        decisions[verdict.winner].action == RiskAction::SCALE
+                    ? decisions[verdict.winner].scale
+                    : 1.0;
+            const std::string logged_winner =
+                verdict.winner < decisions.size() ? decisions[verdict.winner].module_id : "";
+
             deliver_and_record(modules, decisions, verdict, ctx, pinned, errors);
+
+            {
+                const double applied = verdict.action == RiskAction::SCALE
+                                           ? static_cast<double>(verdict.factor)
+                                           : 1.0;
+                auto it = rebalance_applied_.find(sid);
+                const double cumulative = it == rebalance_applied_.end() ? 1.0 : it->second;
+                INFO(risk_applied_line(ctx.lap, logged_requested, applied, cumulative,
+                                       verdict.action, logged_winner, ctx.scope, sid));
+            }
         } catch (const std::exception& e) {
             ERROR("Exception during sleeve risk management for " + sid + ": " +
                   std::string(e.what()));

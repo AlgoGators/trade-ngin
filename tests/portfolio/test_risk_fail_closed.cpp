@@ -539,3 +539,118 @@ TEST_F(RiskFailClosedTest, ARefuseOnAnUnseededBacktestScopePinsAsBefore) {
                 static_cast<double>(positions.at("ZZA").quantity) == 0.0)
         << "day one's previous book is empty, and that is the honest answer";
 }
+
+// ===== 7e: the applied-scale line HD ruled on 2026-09-18 =====
+
+namespace {
+
+/// The value of `key=` in the first RISK_APPLIED line of `out`, or "" if there is none.
+std::string applied_field(const std::string& out, const std::string& key) {
+    const size_t line = out.find("RISK_APPLIED ");
+    if (line == std::string::npos) return "";
+    const size_t end_of_line = out.find('\n', line);
+    const std::string text = out.substr(line, end_of_line - line);
+    const size_t at = text.find(" " + key + "=");
+    if (at == std::string::npos) return "";
+    const size_t from = at + key.size() + 2;
+    const size_t to = text.find(' ', from);
+    return text.substr(from, to == std::string::npos ? std::string::npos : to - from);
+}
+
+size_t count_lines(const std::string& out, const std::string& needle) {
+    size_t n = 0;
+    for (size_t at = out.find(needle); at != std::string::npos; at = out.find(needle, at + 1)) ++n;
+    return n;
+}
+
+}  // namespace
+
+// One line per lap, naming what was ASKED for and what the book was actually multiplied by.
+// The pre-existing WARN prints only the request, and only on a cutting lap, so until now no
+// line anywhere said what the quantised factor was.
+TEST_F(RiskFailClosedTest, EveryLapLogsWhatWasRequestedAndWhatWasApplied) {
+    PortfolioConfig pc = base_config();
+    pc.allow_fractional_positions = true;
+    make_pm(pc, {{"ZZA", make_pos("ZZA", 4.0, 100.0)}});
+    ASSERT_TRUE(pm_->set_risk_modules({std::make_shared<ConstantScaleRiskModule>("cut", 0.25)})
+                    .is_ok());
+
+    ::testing::internal::CaptureStdout();
+    ASSERT_TRUE(pm_->process_market_data(three_days()).is_ok());
+    const std::string out = ::testing::internal::GetCapturedStdout();
+
+    ASSERT_EQ(count_lines(out, "RISK_APPLIED "), 1u) << out;
+    EXPECT_EQ(applied_field(out, "lap"), "1");
+    EXPECT_EQ(applied_field(out, "requested"), "0.25");
+    EXPECT_EQ(applied_field(out, "applied"), "0.25");
+    EXPECT_EQ(applied_field(out, "cumulative"), "0.25");
+    EXPECT_EQ(applied_field(out, "action"), "SCALE");
+    EXPECT_EQ(applied_field(out, "module"), "cut");
+    EXPECT_EQ(applied_field(out, "scope"), "portfolio");
+    EXPECT_EQ(quantity("ZZA"), 1.0);
+}
+
+// The line is printed on a lap that cuts NOTHING too, so its count is the number of laps that
+// evaluated a book and not the number of cuts. That is what lets the gate declare the expected
+// count in advance: it equals the "Risk management result:" count per unit.
+TEST_F(RiskFailClosedTest, ALapThatCutsNothingStillLogsTheLine) {
+    PortfolioConfig pc = base_config();
+    pc.allow_fractional_positions = true;
+    make_pm(pc, {{"ZZA", make_pos("ZZA", 4.0, 100.0)}});
+    ASSERT_TRUE(pm_->set_risk_modules({std::make_shared<WarnRiskModule>(
+                                          "w", RiskCondition{RiskCondition::Kind::ALWAYS, 0.0},
+                                          "noisy")})
+                    .is_ok());
+
+    ::testing::internal::CaptureStdout();
+    ASSERT_TRUE(pm_->process_market_data(three_days()).is_ok());
+    const std::string out = ::testing::internal::GetCapturedStdout();
+
+    ASSERT_EQ(count_lines(out, "RISK_APPLIED "), 1u) << out;
+    EXPECT_EQ(applied_field(out, "requested"), "1");
+    EXPECT_EQ(applied_field(out, "applied"), "1") << "nothing was multiplied";
+    EXPECT_EQ(applied_field(out, "cumulative"), "1");
+    EXPECT_EQ(applied_field(out, "action"), "WARN");
+    EXPECT_EQ(quantity("ZZA"), 4.0);
+}
+
+// %.17g, not to_string. A six-decimal rendering of the factor below is 0.111111 on BOTH the
+// requested and the applied field, which would hide the quantisation the factor actually took;
+// feedback_measure_definitions_change_meaning records that log precision has already nearly
+// published a false finding once.
+TEST_F(RiskFailClosedTest, TheAppliedFactorIsPrintedAtFullPrecision) {
+    PortfolioConfig pc = base_config();
+    pc.allow_fractional_positions = true;
+    make_pm(pc, {{"ZZA", make_pos("ZZA", 9.0, 100.0)}});
+    const double requested = 1.0 / 9.0;  // 0.1111111111111111
+    ASSERT_TRUE(
+        pm_->set_risk_modules({std::make_shared<ConstantScaleRiskModule>("cut", requested)})
+            .is_ok());
+
+    ::testing::internal::CaptureStdout();
+    ASSERT_TRUE(pm_->process_market_data(three_days()).is_ok());
+    const std::string out = ::testing::internal::GetCapturedStdout();
+
+    // The request keeps all seventeen digits; the applied factor is the QUANTISED Decimal, a
+    // different number, and the line shows both rather than one rounded to look like the other.
+    EXPECT_EQ(applied_field(out, "requested"), "0.1111111111111111");
+    EXPECT_EQ(applied_field(out, "applied"), "0.11111111");
+    EXPECT_NE(applied_field(out, "requested"), applied_field(out, "applied"))
+        << "six decimals would print 0.111111 for both";
+}
+
+// An empty book returns before evaluate, so no line: the count stays equal to the number of
+// gate evaluations rather than the number of laps.
+TEST_F(RiskFailClosedTest, AnEmptyBookLapLogsNoLine) {
+    PortfolioConfig pc = base_config();
+    pc.allow_fractional_positions = true;
+    make_pm(pc, Book{});
+    ASSERT_TRUE(pm_->set_risk_modules({std::make_shared<ConstantScaleRiskModule>("cut", 0.5)})
+                    .is_ok());
+
+    ::testing::internal::CaptureStdout();
+    ASSERT_TRUE(pm_->process_market_data(three_days()).is_ok());
+    const std::string out = ::testing::internal::GetCapturedStdout();
+    EXPECT_EQ(count_lines(out, "RISK_APPLIED "), 0u) << out;
+    EXPECT_NE(out.find("No positions to apply risk management to"), std::string::npos);
+}
