@@ -332,6 +332,16 @@ private:
     // per scope the product of the quantised factors applied so far (-> RiskContext::applied).
     std::unordered_set<std::string> pinned_scopes_;
     std::unordered_map<std::string, double> rebalance_applied_;
+    // Scopes whose previous book was actually SEEDED by the runner (update_strategy_position).
+    // A REFUSE means "ship yesterday's book", and yesterday's book is only in current_positions
+    // if somebody put it there: on a live PM that was never seeded, pinning would ship a FLAT
+    // book and the runner's diff against trading.positions would liquidate (T-6a ADVERSARIAL
+    // A-2). Never cleared: seeding is a fact about the run, not about the rebalance.
+    std::unordered_set<std::string> seeded_scopes_;
+    // process_market_data has run at least once, so the sleeve keys have been checked against the
+    // registered strategies (they cannot be checked in the constructor: strategies are added
+    // afterwards).
+    bool sleeve_keys_validated_{false};
     std::shared_ptr<InstrumentRegistry> registry_{nullptr};
 
     struct StrategyInfo {
@@ -428,6 +438,11 @@ private:
         RiskAction action{RiskAction::NONE};
         std::string module_id;
         std::unordered_map<std::string, Position> replace_book;
+        // A REFUSE on a LIVE scope whose previous book was never seeded. Pinning would ship a
+        // FLAT book, which the runner's diff against trading.positions reads as "liquidate
+        // everything" -- the opposite of the refusal's meaning. process_market_data fails.
+        bool refuse_unseeded{false};
+        std::string unseeded_scope;
     };
 
     /// The combination of one scope's decisions (precedence REFUSE > REPLACE > SCALE > WARN >
@@ -460,23 +475,72 @@ private:
                               RiskDecision requested, RiskAction applied_action,
                               Decimal applied_factor, bool empty_book, std::string error);
 
-    /// Tell every module evaluated in a scope what was applied, then record its row.
+    /// One scope's evaluate (or finalize) pass, fail-CLOSED. Every module is called; one that
+    /// returns an error Result OR THROWS contributes a NONE decision and its message to
+    /// `errors[k]`, and the scope then combines and applies what the HEALTHY modules returned.
+    /// A REFUSE or a SCALE a module already returned is never discarded because a later module
+    /// failed: combine first, then fail closed (T-6a ADVERSARIAL A-1). Returns one decision per
+    /// module, in module order; `errors` is sized to match.
+    std::vector<RiskDecision> evaluate_scope_modules(
+        std::vector<RiskModulePtr>& modules,
+        const std::unordered_map<std::string, Position>& book, const RiskContext& ctx,
+        bool finalize_phase, std::vector<std::string>& errors);
+
+    /// The other half of fail-closed: a module that FAILED and could have REFUSED is treated as
+    /// a refusal of its scope, because its silence cannot be read as consent. Returns true when
+    /// `verdict` was upgraded to REFUSE; names the module in `module_id`. Inert for a module whose
+    /// capabilities() do not contain REFUSE (the Carver module's are {SCALE}).
+    bool refuse_on_failed_gatekeeper(const std::vector<RiskModulePtr>& modules,
+                                     const std::vector<std::string>& errors,
+                                     const RiskContext& ctx, RiskVerdict& verdict,
+                                     std::string& module_id) const;
+
+    /// Tell every module evaluated in a scope what was applied, then record its row. A module
+    /// whose `errors[k]` is non-empty was never evaluated: it is recorded with its error and
+    /// applied_action NONE, and its on_applied is NOT called.
     void deliver_and_record(const std::vector<RiskModulePtr>& modules,
                             std::vector<RiskDecision>& decisions, const RiskVerdict& verdict,
-                            const RiskContext& ctx, bool pinned);
+                            const RiskContext& ctx, bool pinned,
+                            const std::vector<std::string>& errors);
 
     /// The sleeve scope: once per rebalance, before the loop, each sleeve's own modules on its
     /// own targets. A no-op when no sleeve has modules.
-    void apply_sleeve_risk(
+    Result<void> apply_sleeve_risk(
         const std::vector<Bar>& data,
         const std::unordered_map<std::string, std::unordered_map<std::string, Position>>& prev_positions,
         std::optional<Timestamp> as_of, bool is_warmup);
 
     /// The post-rounding point: finalize() on the final book, portfolio and sleeves.
-    void apply_post_rounding_risk(
+    Result<void> apply_post_rounding_risk(
         const std::vector<Bar>& data, int lap,
         const std::unordered_map<std::string, std::unordered_map<std::string, Position>>& prev_positions,
         std::optional<Timestamp> as_of, bool is_warmup);
+
+    /// Can a REFUSE on this scope honestly pin to the previous book? True in a backtest (the
+    /// coordinator seeds every day and day one's empty book IS the previous book) and, live,
+    /// only once update_strategy_position has put the stored book there.
+    bool scope_is_seeded(const std::string& scope_id) const {
+        return is_backtest_ || seeded_scopes_.count(scope_id) > 0;
+    }
+
+    /// The ONE set of module rules, shared by the constructor and set_risk_modules (T-6a
+    /// ADVERSARIAL D-1: the constructor used to validate nothing and the only copy of these
+    /// checks had no production caller). Per scope: no null module, unique ids, at most one
+    /// REPLACE-capable module; and at most one COMPOSITION-term module along any
+    /// sleeve -> portfolio chain. `known_strategy_ids` is checked only when it is engaged: the
+    /// constructor runs before add_strategy, so a sleeve key naming no strategy is caught on the
+    /// first process_market_data instead (see sleeve_keys_validated_).
+    static Result<void> validate_risk_modules(
+        const std::vector<RiskModulePtr>& portfolio_modules,
+        const std::unordered_map<std::string, std::vector<RiskModulePtr>>& sleeve_modules,
+        const std::unordered_set<std::string>* known_strategy_ids);
+
+    /// First process_market_data only: every key of sleeve_risk_modules_ must name a registered
+    /// strategy. The loader checks the JSON key against portfolio.json's `strategies`, which is
+    /// NOT always the id the runner registers (the live equity runner registers
+    /// LIVE_EQUITY_MEAN_REVERSION for the config key MEAN_REVERSION), so a sleeve module could
+    /// silently never fire live while firing in the backtest (T-6a ADVERSARIAL A-3). Refuse.
+    Result<void> validate_sleeve_keys_once();
 
     /**
      * @brief Validate allocations sum to 1
