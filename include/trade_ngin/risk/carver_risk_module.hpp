@@ -11,9 +11,9 @@ namespace trade_ngin {
 /**
  * @brief The Carver risk gate as a RiskModule: wraps the unchanged RiskManager.
  *
- * Owns the risk window (the last lookback_period bars appended; it was the
- * PortfolioManager's risk_history_). On every lap on_bars appends that lap's bars,
- * trims the window and builds the MarketData from it; evaluate then runs
+ * Owns the risk window (the newest lookback_period DISTINCT dates of bars; it was the
+ * PortfolioManager's risk_history_). The first lap of a rebalance appends that rebalance's
+ * bars, trims the window and builds the MarketData from its complete dates; evaluate then runs
  * RiskManager::process_positions on the book, printing the loop's
  * "Risk management result:" line exactly as the PortfolioManager did. It registers
  * no Logger component of its own: its RiskManager registers "RiskManager" in the

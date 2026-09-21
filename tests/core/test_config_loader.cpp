@@ -69,7 +69,7 @@ nlohmann::json carver_module(const char* id = "carver") {
         {"max_net_leverage", 2.0},
         {"confidence_level", 0.99},
         {"lookback_period", 252},
-        {"lookback_unit", "bars"},
+        {"lookback_unit", "dates"},
         {"min_gate_dates", 21},
         {"missing_symbol_policy", "ignore"},
         {"_missing_symbol_policy_reason", "unit test"},
@@ -654,7 +654,7 @@ void expect_resolved_risk_config(const ResolvedRiskExpectation& e) {
     EXPECT_EQ(carver->max_net_leverage, e.max_net_leverage) << b << ": module.max_net_leverage";
     EXPECT_EQ(carver->confidence_level, e.confidence_level) << b << ": module.confidence_level";
     EXPECT_EQ(carver->lookback_period, e.lookback_period) << b << ": module.lookback_period";
-    EXPECT_EQ(carver->lookback_unit, "bars") << b << ": module.lookback_unit";
+    EXPECT_EQ(carver->lookback_unit, "dates") << b << ": module.lookback_unit";
     EXPECT_EQ(carver->min_gate_dates, 21) << b << ": module.min_gate_dates";
     EXPECT_EQ(carver->missing_symbol_policy, "ignore") << b << ": module.missing_symbol_policy";
     EXPECT_FALSE(carver->missing_symbol_policy_reason.empty())

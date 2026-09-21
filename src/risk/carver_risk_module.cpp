@@ -108,7 +108,10 @@ void CarverRiskModule::on_bars(const std::vector<Bar>& bars, const RiskContext& 
             window_.push_back(bar);
         }
 
-        // (2) CAP THE WINDOW AT DATES, NOT BARS. lookback_period is 252 COMPLETE DATES.
+        // (2) CAP THE WINDOW AT DATES, NOT BARS. lookback_period is 252 DISTINCT dates, of which
+        // the sparse-date filter below keeps the complete ones: about 187-200 on the shipped
+        // futures books, because a date on which only some symbols printed counts here and is
+        // dropped there.
         //
         // The bar cap made the window's span a function of how many symbols the book holds: the
         // same 252 is a year for one symbol and seven sessions for thirty-six. The key is the bar
@@ -310,10 +313,10 @@ Result<RiskDecision> CarverRiskModule::evaluate(
         }
     }
     // ... plus the two the schema names (HD, LEAD_RULINGS_C7 item 3): too few complete
-    // dates to estimate anything from, and a book with no capital to divide by. With
-    // lookback_unit "bars" a 252-BAR window is about 7 futures dates, so this flag is
-    // true on most futures laps -- which is the finding T-4 made, stated rather than
-    // hidden. Data only: it is not logged and not stored in T-6a (T-7 item 10 stores it).
+    // dates to estimate anything from, and a book with no capital to divide by. On the old
+    // 252-BAR window (about 7 futures dates) this flag was true on most futures laps, which is
+    // the finding T-4 made; on the date-keyed window it is false on every shipped futures lap.
+    // Data only: it is not logged and not stored in T-6a (T-7 item 10 stores it).
     decision.blind = market_data_.returns.empty() || market_data_.covariance.empty() ||
                      market_data_.symbol_indices.empty() || market_data_.ordered_symbols.empty() ||
                      !mapped || complete_dates_in_window() < min_gate_dates_ ||

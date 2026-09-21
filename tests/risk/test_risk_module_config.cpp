@@ -40,7 +40,7 @@ nlohmann::json carver(const char* id = "carver") {
         {"max_net_leverage", 2.0},
         {"confidence_level", 0.99},
         {"lookback_period", 252},
-        {"lookback_unit", "bars"},
+        {"lookback_unit", "dates"},
         {"min_gate_dates", 21},
         {"missing_symbol_policy", "ignore"},
         {"_missing_symbol_policy_reason", "migrated literally"},
@@ -437,7 +437,7 @@ TEST(RiskSchemaParse, R7TheWindowUnitAndTheGateFloorMustAgreeInTheSameUnit) {
     nlohmann::json weeks = carver();
     weeks["lookback_unit"] = "weeks";
     EXPECT_EQ(parse_error(risk_with({weeks})),
-              msg("risk.modules[0].lookback_unit must be \"bars\" or \"dates\", got \"weeks\""));
+              msg("risk.modules[0].lookback_unit must be \"dates\", got \"weeks\""));
 
     nlohmann::json tiny = carver();
     tiny["min_gate_dates"] = 2;
@@ -445,11 +445,8 @@ TEST(RiskSchemaParse, R7TheWindowUnitAndTheGateFloorMustAgreeInTheSameUnit) {
               msg("risk.modules[0].min_gate_dates must be an integer >= 3 (two dates give a NaN "
                   "covariance), got 2"));
 
-    // The same-unit comparison exists only where BOTH sides are dates: with "bars" the
-    // number of dates a 252-bar window covers depends on the universe, which a load-time
-    // rule cannot see (that is what the module's runtime `blind` flag is for).
+    // Both sides are counted in dates: the window keeps lookback_period distinct dates.
     nlohmann::json short_window = carver();
-    short_window["lookback_unit"] = "dates";
     short_window["lookback_period"] = 20;
     nlohmann::json risk = risk_with({short_window});
     risk["risk_reporting"]["lookback_period"] = 20;
@@ -528,11 +525,8 @@ TEST(RiskSchemaParse, RcsTheTestModulesOwnParameters) {
 // ===== A1, A2: parsed, validated, and not yet implemented =====
 
 TEST(A1AndA2, TheUnimplementedOptionsAreRefusedByNameWithTheCommitThatLandsThem) {
-    nlohmann::json dates = carver();
-    dates["lookback_unit"] = "dates";  // 252 >= 21, so R7 passes and A1 is what fires
-    EXPECT_EQ(parse_error(risk_with({dates})),
-              msg("risk.modules[0].lookback_unit \"dates\" is not implemented before T-6 commit 9 "
-                  "(the date-keyed window)"));
+    // A1 landed with T-6b commit 9: "dates" is the unit and loads (carver() carries it).
+    EXPECT_EQ(parse_error(risk_with({carver()})), "");
 
     for (const char* policy : {"warn", "refuse"}) {
         nlohmann::json m = carver();
@@ -815,39 +809,49 @@ TEST(RiskSchemaRulesT6b, ANeverConditionNeedsAReason) {
     EXPECT_EQ(parse_error(risk_with({carver(), never})), "");
 }
 
-// R11. R7 above relates lookback_period to min_gate_dates only when the unit is "dates", and
-// A1 then refuses that unit -- so R7 is dead code and nothing related a BARS window to the gate
-// it feeds. lookback_period 1 passed every rule: one bar yields no returns, process_positions
-// early-returns its default result with all four multipliers at 1.0, and the book runs ungated
-// at exit 0.
-TEST(RiskSchemaRulesT6b, ABarsWindowBelowTheFloorIsALoadError) {
-    // C1 makes the reporter mirror the gate, so the window has to move on both sides or C1
-    // reports first and R11 is never reached.
-    auto with_window = [](int bars) {
-        nlohmann::json c = carver();
-        c["lookback_period"] = bars;
-        nlohmann::json r = risk_with({c});
-        r["risk_reporting"]["lookback_period"] = bars;
-        return r;
-    };
+// ===== T-6b-fix F2: lookback_unit says what the code does =====
+
+// The Carver window is capped at lookback_period distinct DATES and nothing reads the key. A
+// risk.json migrated before T-6b commit 9 says "bars", which no longer describes the code: it is
+// a load error that names the fix, never a synonym (T-6b INTERIM ADVERSARIAL B-2).
+TEST(RiskSchemaRulesT6bFix, ABarsUnitIsRefusedAndTheErrorNamesTheMigration) {
     nlohmann::json c = carver();
-    c["lookback_period"] = 1;
-    EXPECT_EQ(parse_error(with_window(1)),
-              msg("risk.modules[0].lookback_period (1 bars) is below the floor of 2 x "
-                  "min_gate_dates (42 bars): a window this short cannot carry min_gate_dates "
-                  "complete dates, and the gate would read its default result and cut nothing"));
-    // The boundary, both sides.
-    EXPECT_NE(parse_error(with_window(41)), "");
-    EXPECT_EQ(parse_error(with_window(42)), "");
+    c["lookback_unit"] = "bars";
+    EXPECT_EQ(parse_error(risk_with({c})),
+              msg("risk.modules[0].lookback_unit is \"bars\", but the Carver window is capped at "
+                  "lookback_period distinct DATES and nothing reads a bar count: write \"dates\" "
+                  "(python3 scripts/migrate_risk_json.py <config_dir> --in-place upgrades the "
+                  "file)"));
+    EXPECT_EQ(parse_error(risk_with({carver()})), "") << "\"dates\" loads";
 }
 
-// Every shipped book carries 252 bars against min_gate_dates 21, six times the floor: R11 is a
-// rule about configs nobody has written, not a change to the ones that exist.
-TEST(RiskSchemaRulesT6b, TheShippedWindowIsFarAboveTheFloor) {
+// R12 (B-5): F5 needs kF5MinGateDates COMPLETE dates to engage, and lookback_period counts
+// DISTINCT dates, so a period below the floor could never engage it (the gate would read the
+// zero-filled window for ever). The boundary, both sides; the reporter mirrors the gate (C1).
+TEST(RiskSchemaRulesT6bFix, AWindowBelowTheSparseDateFloorIsALoadError) {
+    auto with_window = [](int dates) {
+        nlohmann::json c = carver();
+        c["lookback_period"] = dates;
+        nlohmann::json r = risk_with({c});
+        r["risk_reporting"]["lookback_period"] = dates;
+        return r;
+    };
+    EXPECT_EQ(parse_error(with_window(119)),
+              msg("risk.modules[0].lookback_period (119 dates) is below the sparse-date filter's "
+                  "floor of 120 complete dates, so the filter could never engage and the gate "
+                  "would always read the zero-filled window"));
+    EXPECT_EQ(parse_error(with_window(120)), "");
+    EXPECT_EQ(CarverRiskModule::kF5MinGateDates, 120u) << "the rule reads the module's floor";
+}
+
+// Every shipped book carries 252 dates: R12 is a rule about configs nobody has written, not a
+// change to the ones that exist.
+TEST(RiskSchemaRulesT6bFix, TheShippedWindowIsAboveTheSparseDateFloor) {
     nlohmann::json c = carver();
     EXPECT_EQ(c.at("lookback_period").get<int>(), 252);
-    EXPECT_EQ(c.at("min_gate_dates").get<int>(), 21);
-    EXPECT_GE(c.at("lookback_period").get<int>(), 2 * c.at("min_gate_dates").get<int>());
+    EXPECT_EQ(c.at("lookback_unit").get<std::string>(), "dates");
+    EXPECT_GE(static_cast<size_t>(c.at("lookback_period").get<int>()),
+              CarverRiskModule::kF5MinGateDates);
     EXPECT_EQ(parse_error(risk_with({c})), "");
 }
 

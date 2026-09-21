@@ -168,12 +168,22 @@ public:
                                               &c.confidence_level, &c.lookback_period);
             if (ranges.is_error()) return forward(ranges);
 
-            // R7
+            // R7. The window is keyed on the bar timestamp and capped at `lookback_period`
+            // distinct DATES (CarverRiskModule::on_bars, since T-6b commit 9); nothing reads this
+            // key to choose anything else. "bars" used to be the unit and still sits in every
+            // production risk.json migrated before that commit, where it now says one thing
+            // while the code does another -- so it is a load error that names the fix, not a
+            // synonym (T-6b INTERIM ADVERSARIAL B-2).
             const auto& unit = m.at("lookback_unit");
-            if (!unit.is_string() ||
-                (unit.get<std::string>() != "bars" && unit.get<std::string>() != "dates")) {
-                return err(path_ + ".lookback_unit must be \"bars\" or \"dates\", got " +
-                           val(unit));
+            if (unit.is_string() && unit.get<std::string>() == "bars") {
+                return err(path_ +
+                           ".lookback_unit is \"bars\", but the Carver window is capped at "
+                           "lookback_period distinct DATES and nothing reads a bar count: write "
+                           "\"dates\" (python3 scripts/migrate_risk_json.py <config_dir> "
+                           "--in-place upgrades the file)");
+            }
+            if (!unit.is_string() || unit.get<std::string>() != "dates") {
+                return err(path_ + ".lookback_unit must be \"dates\", got " + val(unit));
             }
             c.lookback_unit = unit.get<std::string>();
             const auto& gate = m.at("min_gate_dates");
@@ -184,25 +194,24 @@ public:
                            val(gate));
             }
             c.min_gate_dates = gate.get<int>();
-            if (c.lookback_unit == "dates" && c.lookback_period < c.min_gate_dates) {
+            if (c.lookback_period < c.min_gate_dates) {
                 return err(path_ + ".lookback_period (" + std::to_string(c.lookback_period) +
                            " dates) is shorter than min_gate_dates (" +
                            std::to_string(c.min_gate_dates) + " dates)");
             }
-            // R11 (T-6a ADVERSARIAL C-1). R7 just above compares the two only when the unit is
-            // "dates", and A1 below then REFUSES that unit -- so R7 is dead and, with the only
-            // accepted unit "bars", nothing related the window to the gate it feeds.
-            // `lookback_period: 1` passed every rule: a one-bar window yields no returns,
-            // RiskManager::process_positions early-returns its default result with all four
-            // multipliers at 1.0, and the book runs ungated at exit 0 with one WARN a lap. A
-            // floor of two bars per required complete date is the cheapest rule that makes that
-            // a LOAD error; it is far below the 252 every shipped book carries.
-            if (c.lookback_unit == "bars" && c.lookback_period < 2 * c.min_gate_dates) {
+            // R12 (T-6b INTERIM ADVERSARIAL B-5). F5 engages only when the window holds at least
+            // kF5MinGateDates COMPLETE dates; below that the gate reads the unfiltered,
+            // zero-filled window. `lookback_period` counts DISTINCT dates, of which F5 keeps only
+            // the complete ones -- on the shipped futures books 252 distinct dates leave about
+            // 187-200 -- so a period below the floor can NEVER engage F5. Necessary, not
+            // sufficient: a period at or just above the floor can still fall short on complete
+            // dates, which the per-run F5 fallback WARN reports.
+            if (static_cast<size_t>(c.lookback_period) < CarverRiskModule::kF5MinGateDates) {
                 return err(path_ + ".lookback_period (" + std::to_string(c.lookback_period) +
-                           " bars) is below the floor of 2 x min_gate_dates (" +
-                           std::to_string(2 * c.min_gate_dates) +
-                           " bars): a window this short cannot carry min_gate_dates complete "
-                           "dates, and the gate would read its default result and cut nothing");
+                           " dates) is below the sparse-date filter's floor of " +
+                           std::to_string(CarverRiskModule::kF5MinGateDates) +
+                           " complete dates, so the filter could never engage and the gate would "
+                           "always read the zero-filled window");
             }
 
             // R8
@@ -231,12 +240,8 @@ public:
                     m.at("_missing_symbol_policy_reason").get<std::string>();
             }
 
-            // A1 is implemented as of T-6b commit 9: the Carver module's window is keyed on
-            // the bar timestamp and capped at `lookback_period` distinct DATES, so "dates" is
-            // now the unit that describes what the code does. "bars" remains accepted and means
-            // the same cap counted in rows, which on a 36-symbol book is seven sessions rather
-            // than a year -- R11's floor is the guard on that reading.
-            // A2 is still refused, with the commit that will delete the refusal.
+            // A1 is implemented as of T-6b commit 9 (the date-keyed window; R7 above refuses the
+            // old "bars"). A2 is still refused, with the commit that will delete the refusal.
             if (c.missing_symbol_policy != "ignore") {
                 return err(path_ + ".missing_symbol_policy \"" + c.missing_symbol_policy +
                            "\" is not implemented yet; only \"ignore\" (with its reason) is "

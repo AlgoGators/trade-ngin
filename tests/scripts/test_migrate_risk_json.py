@@ -213,7 +213,7 @@ class MigrateRiskJsonTest(unittest.TestCase):
                 self.assertEqual(module[field], value, "%s: modules[0].%s" % (name, field))
                 self.assertEqual(risk["risk_reporting"][field], value,
                                  "%s: risk_reporting.%s must mirror the gate" % (name, field))
-            self.assertEqual(module["lookback_unit"], "bars", name)
+            self.assertEqual(module["lookback_unit"], "dates", name)
             self.assertEqual(module["min_gate_dates"], 21, name)
             self.assertEqual(module["missing_symbol_policy"], "ignore", name)
             self.assertTrue(module["_missing_symbol_policy_reason"],
@@ -326,6 +326,51 @@ class MigrateRiskJsonTest(unittest.TestCase):
         code, out = self.run_script(self.config)
         self.assertEqual(code, 3, out)
         self.assertIn("split the book", out)
+
+    # ----- T-6b-fix F2: a schema-2 file that still says "bars" -----
+
+    def _migrate_then_say_bars(self):
+        """A tree migrated before T-6b commit 9: schema 2, lookback_unit "bars"."""
+        self.assertEqual(self.run_script(self.config, "--in-place")[0], 0)
+        paths = [os.path.join(self.config, "portfolios", n, "risk.json") for n in BOOKS]
+        for path in paths:
+            with open(path, "r", encoding="utf-8") as handle:
+                text = handle.read()
+            self.assertIn('"lookback_unit": "dates"', text)
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(text.replace('"lookback_unit": "dates"', '"lookback_unit": "bars"'))
+        return paths
+
+    def test_a_schema2_bars_file_is_upgraded_to_dates_and_nothing_else(self):
+        paths = self._migrate_then_say_bars()
+        before = {p: open(p, encoding="utf-8").read() for p in paths}
+        code, out = self.run_script(self.config, "--in-place")
+        self.assertEqual(code, 0, out)
+        for path in paths:
+            with open(path, "r", encoding="utf-8") as handle:
+                after = handle.read()
+            # Byte for byte: only the one value changed, every other character is the operator's.
+            self.assertEqual(after, before[path].replace('"lookback_unit": "bars"',
+                                                         '"lookback_unit": "dates"'), path)
+            # Its rollback copy is the "bars" file, and the schema-1 rollback is untouched.
+            with open(path + ".bars.bak", "r", encoding="utf-8") as handle:
+                self.assertEqual(handle.read(), before[path], path)
+            self.assertTrue(os.path.exists(path + ".schema1.bak"), path)
+        self.assertIn('lookback_unit "bars" -> "dates"', out)
+
+    def test_the_bars_upgrade_is_a_dry_run_first_and_idempotent_after(self):
+        self._migrate_then_say_bars()
+        before = snapshot(self.config)
+        code, out = self.run_script(self.config)
+        self.assertEqual(code, 10, out)
+        self.assertEqual(snapshot(self.config), before, "a dry run changes no byte")
+        self.assertIn("(lookback_unit bars)", out)
+        self.assertEqual(self.run_script(self.config, "--in-place")[0], 0)
+        after_first = snapshot(self.config)
+        code, out = self.run_script(self.config, "--in-place")
+        self.assertEqual(code, 0, out)
+        self.assertIn("Nothing to migrate", out)
+        self.assertEqual(snapshot(self.config), after_first)
 
     def test_refuses_a_schema1_book_when_risk_defaults_is_already_gone(self):
         defaults = schema1_defaults()

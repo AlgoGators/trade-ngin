@@ -39,10 +39,12 @@ struct CarverModuleConfig {
     double max_net_leverage{0.0};
     double confidence_level{0.0};
     int lookback_period{0};
-    /// "bars" (today's window: the last lookback_period BARS, however many dates that
-    /// is) or "dates" (the date-keyed window, which lands with T-6b commit 9 and is
-    /// refused at load until then).
-    std::string lookback_unit{"bars"};
+    /// Always "dates": the Carver window keeps the newest lookback_period DISTINCT dates (a
+    /// date on which only some symbols printed still counts), of which the sparse-date filter
+    /// keeps the complete ones -- about 187-200 of 252 on the shipped futures books. The key is
+    /// validated and never read; the loader refuses the old "bars", which no longer describes
+    /// the code.
+    std::string lookback_unit{"dates"};
     /// Fewer complete dates than this in the window and the module reports `blind` on
     /// its decision: it measured, but not on enough dates for the measurement to mean
     /// anything.
