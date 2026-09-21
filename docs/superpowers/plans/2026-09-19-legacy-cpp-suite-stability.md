@@ -86,4 +86,4 @@
 
 ## Scope boundary
 
-This repair does not modify QT reporting, the daily email template/sender, SQL, migrations, or any production database. The separate approved read-only production audit remains blocked until an approved local connection profile or procedure is supplied.
+This repair does not modify QT reporting, the daily email template/sender, SQL, migrations, or any production database. The connection-profile blocker was subsequently resolved: see the [September 21 read-only revalidation](../../audits/2026-09-21-qt-pipeline-revalidation.md). Production evidence collection is complete; missing schema/data still blocks release readiness.

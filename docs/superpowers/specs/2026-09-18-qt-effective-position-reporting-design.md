@@ -238,6 +238,8 @@ The [Task 8 production database audit](../../audits/2026-09-18-qt-platform-produ
 
 ## 9. Testing Strategy
 
+Current verification and production-readiness evidence: [September 21 cross-repository revalidation](../../audits/2026-09-21-qt-pipeline-revalidation.md). This adds actual CSV/email rendering coverage and fresh read-only database findings; production remains blocked, not repaired.
+
 ### 9.1 Trade Ngin
 
 - A manually changed QT quantity replaces the system quantity in the report snapshot.

@@ -1,5 +1,7 @@
 # QT platform production database audit
 
+> A fresh [September 21 read-only revalidation](2026-09-21-qt-pipeline-revalidation.md) confirms the schema/QT gaps and adds data freshness and producer/consumer linkage checks. The observations below are the original September 19 checkpoint.
+
 > Related local build and disposable-PostgreSQL evidence is recorded in
 > [`2026-09-19-qt-platform-verification.md`](2026-09-19-qt-platform-verification.md).
 

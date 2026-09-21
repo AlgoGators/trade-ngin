@@ -1,5 +1,7 @@
 # QT platform verification checkpoint
 
+> Superseded for current readiness by the [September 21 cross-repository revalidation](2026-09-21-qt-pipeline-revalidation.md). The evidence below remains the historical September 19 checkpoint.
+
 **Checkpoint:** 2026-09-19 (America/New_York)
 
 **Release verdict:** local QT reporting gates pass and the production read-only audit is complete, but production is not ready for the reviewed QT reporting release. Migration 012 and QT position evidence are absent. No production migration or write was attempted.

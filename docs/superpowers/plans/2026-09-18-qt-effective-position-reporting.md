@@ -1,5 +1,7 @@
 # QT Effective Position Reporting Implementation Plan
 
+> Current status is recorded in the [September 21 revalidation](../../audits/2026-09-21-qt-pipeline-revalidation.md). Tasks 1-7 have implementations in the reviewed local branches; Task 8's read-only evidence collection is complete but blocks production readiness. Task 9's fresh checks and additional fixes are recorded there. The original step-by-step checkboxes below are planning history, not a current release-status ledger.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make the existing Daily Trading Report and current-positions CSV use the QT team's effective quantities, while fixing all reviewed QT-platform defects and auditing production through read-only queries only.
