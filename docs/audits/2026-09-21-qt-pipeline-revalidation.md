@@ -2,6 +2,8 @@
 
 Checkpoint: **2026-09-21 (UTC)**. This supersedes the September 19 readiness checkpoint, without replacing its historical evidence.
 
+Follow-up: the user explicitly retained production read-only access and requested rollout preparation. The [migration-012 rollout plan](../superpowers/plans/2026-09-21-migration-012-production-rollout.md) records the fresh `2026-09-21T21:32:42.699353Z` preflight, source checksums, and unexecuted production gates. Migration 012 remained absent; overrides/QT rows remained zero. No production rollout was performed.
+
 ## Plain-language verdict
 
 The local implementation has been verified from the QT edit through PostgreSQL into the existing CSV and Daily Trading Report renderer. Additional defects found during this review have been corrected locally. **Production is not ready for this release.** Its database is missing the scoped-audit migration and all QT position evidence, and its newest system positions are dated August 5. No production repair, deployment, seeding, or email delivery was attempted.
