@@ -248,6 +248,40 @@ protected:
     std::shared_ptr<ScriptedStrategy> strategy_;
 };
 
+// T-6b-fix F4 (commit 8's test, made real). A `none` book runs NO gate: the same 0.5x book that
+// the Carver gate (max leverage 0.29) cuts is shipped whole, no decision is recorded, and the
+// ruling is logged once, at construction, by name.
+TEST_F(RiskModuleLoopTest, ANoneBookRunsNoGateAndLogsItsRuling) {
+    PortfolioConfig pc = risk_config(false);
+    pc.risk_modules = {test_none_module("no_portfolio_risk")};
+    ::testing::internal::CaptureStdout();
+    pm_ = std::make_unique<PortfolioManager>(pc, "PM_NONE_BOOK");
+    const std::string built = ::testing::internal::GetCapturedStdout();
+    EXPECT_EQ(count_of(built, "RISK_NONE pm=PM_NONE_BOOK module=no_portfolio_risk ruled_by=tests "
+                              "ruled_on=2026-09-19: this book runs no risk module"),
+              1u)
+        << built;
+    strategy_ = make_strategy("RML_S", {{{"ZZA", make_pos("ZZA", 5.0, 100.0)}}});
+    ASSERT_TRUE(pm_->add_strategy(strategy_, 1.0, false).is_ok());
+
+    ::testing::internal::CaptureStdout();
+    ASSERT_TRUE(pm_->process_market_data(three_days()).is_ok());
+    const std::string out = ::testing::internal::GetCapturedStdout();
+    EXPECT_EQ(quantity("ZZA"), 5.0) << "nothing may cut a none book";
+    EXPECT_TRUE(pm_->last_risk_decisions().empty()) << "no module, so no decision";
+    EXPECT_EQ(count_of(out, "Risk management not enabled, skipping risk checks in iteration 1"), 1u)
+        << out;
+    EXPECT_EQ(count_of(out, "Using risk manager"), 0u) << out;
+    EXPECT_EQ(count_of(out, "RISK_NONE"), 0u) << "once per PortfolioManager, not per lap";
+
+    // The control that makes the test discriminate: the same book under the Carver gate is cut.
+    pm_.reset();
+    make_pm(false, {{{"ZZA", make_pos("ZZA", 5.0, 100.0)}}});
+    ASSERT_TRUE(pm_->process_market_data(three_days()).is_ok());
+    EXPECT_LT(quantity("ZZA"), 5.0) << "the carver book is over max_gross_leverage 0.29 and is cut";
+    EXPECT_FALSE(pm_->last_risk_decisions().empty());
+}
+
 TEST_F(RiskModuleLoopTest, EveryDecisionTypeIsEvaluatedAndRecordedEachLap) {
     // 2.5 lots never become whole, so a lap 2 happens; there the REFUSE beats the SCALE and the
     // REPLACE, pins the strategy to its previous positions and ends the loop.

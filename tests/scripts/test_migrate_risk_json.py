@@ -372,6 +372,41 @@ class MigrateRiskJsonTest(unittest.TestCase):
         self.assertIn("Nothing to migrate", out)
         self.assertEqual(snapshot(self.config), after_first)
 
+    # ----- T-6b-fix F4: a book the template assigns `none` -----
+
+    def test_a_carver_written_for_a_book_the_template_assigns_none_prints_a_note(self):
+        # config_template/portfolios/equity_mr/risk.json is `none` (HD, 2026-09-18); the
+        # script still writes a carver there and must say so, naming the ruling it will not copy.
+        code, out = self.run_script(self.config)
+        self.assertEqual(code, 10, out)
+        notes = [line for line in out.splitlines() if "NOTE:" in line]
+        self.assertEqual(len(notes), 1, out)
+        self.assertIn("equity_mr", notes[0])
+        self.assertIn("_ruled_by HD, _ruled_on 2026-09-18", notes[0])
+        self.assertIn("config_template/README.md", notes[0])
+
+    def test_the_note_is_repeated_on_a_migrated_file_that_still_gates(self):
+        # The production case: a file migrated in T-6a (schema 2, carver, "bars") is upgraded to
+        # "dates" -- and still gates a book HD ruled `none`.
+        self._migrate_then_say_bars()
+        code, out = self.run_script(self.config, "--in-place")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(sum("NOTE: equity_mr" in line for line in out.splitlines()), 1, out)
+        # ...and on every later run that finds it unchanged.
+        code, out = self.run_script(self.config, "--in-place")
+        self.assertEqual(sum("NOTE: equity_mr" in line for line in out.splitlines()), 1, out)
+
+    def test_no_note_once_the_ruling_is_copied(self):
+        self.assertEqual(self.run_script(self.config, "--in-place")[0], 0)
+        path = os.path.join(self.config, "portfolios", "equity_mr", "risk.json")
+        risk = read_json(path)
+        risk["modules"] = [{"id": "no_portfolio_risk", "type": "none", "_reason": "ruled",
+                            "_ruled_by": "HD", "_ruled_on": "2026-09-18"}]
+        write_json(path, risk)
+        code, out = self.run_script(self.config, "--in-place")
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("NOTE:", out)
+
     def test_refuses_a_schema1_book_when_risk_defaults_is_already_gone(self):
         defaults = schema1_defaults()
         del defaults["risk_defaults"]

@@ -84,6 +84,36 @@ BARS_BAK_SUFFIX = ".bars.bak"
 LOOKBACK_BARS = re.compile(r'("lookback_unit"\s*:\s*)"bars"')
 
 
+# The tracked templates beside this script: what each book is ASSIGNED in the repository.
+TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir,
+                            "config_template", "portfolios")
+
+
+def template_none_ruling(name):
+    """(ruled_by, ruled_on) when config_template assigns book `name` a lone `none`, else None."""
+    path = os.path.join(TEMPLATE_DIR, name, "risk.json")
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            modules = json.load(handle).get("modules", [])
+    except (OSError, ValueError):
+        return None
+    if len(modules) == 1 and isinstance(modules[0], dict) and modules[0].get("type") == "none":
+        return modules[0].get("_ruled_by", "?"), modules[0].get("_ruled_on", "?")
+    return None
+
+
+def note_if_template_says_none(name, log):
+    """The script writes a carver for every book and will not invent a ruling. When the tracked
+    template assigns this book `none`, the deployed file and the template now disagree, and only
+    a person can copy the ruling across (T-6b INTERIM ADVERSARIAL D-1)."""
+    ruling = template_none_ruling(name)
+    if ruling:
+        log("  NOTE: %s: this file keeps a carver module, but config_template/portfolios/%s/"
+            "risk.json assigns this book `none` (_ruled_by %s, _ruled_on %s). The script will "
+            "not invent that ruling: copy the none module into modules by hand (the runbook "
+            "step in config_template/README.md)." % (name, name, ruling[0], ruling[1]))
+
+
 class Refused(Exception):
     """Content the script will not migrate without a human deciding something."""
 
@@ -251,8 +281,14 @@ def migrate_portfolio(name, risk_text, risk, portfolio_text, portfolio, defaults
                               "key -- fix it by hand" % name)
             log("  %s: schema 2; lookback_unit \"bars\" -> \"dates\" on %d module(s) (the "
                 "window has been date-keyed since T-6b commit 9)" % (name, count))
+            if any(isinstance(m, dict) and m.get("type") == "carver"
+                   for m in after.get("modules", [])):
+                note_if_template_says_none(name, log)
             return upgraded, portfolio_text
         log("  %s: already schema 2, nothing to do" % name)
+        if any(isinstance(m, dict) and m.get("type") == "carver"
+               for m in json.loads(risk_text).get("modules", [])):
+            note_if_template_says_none(name, log)
         return None, None
 
     # 1. use_risk_management: a false anywhere is a decision the script will not invent
@@ -300,7 +336,8 @@ def migrate_portfolio(name, risk_text, risk, portfolio_text, portfolio, defaults
         log("  %s: portfolio.json has a \"risk\" key, which today's loader discards "
             "(risk.json replaces it wholesale); it is NOT used" % name)
 
-    # 3. The new risk.json.
+    # 3. The new risk.json: always a carver module (the only gate schema 1 had).
+    note_if_template_says_none(name, log)
     new_risk = comments_of(risk)
     new_risk["schema"] = Raw("2")
     module = {"id": "carver", "type": "carver"}

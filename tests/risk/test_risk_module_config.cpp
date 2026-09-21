@@ -922,14 +922,14 @@ TEST(TrackedPortfolioRiskAssignment, EachBookIsAssignedWhatHDRuled) {
     }
 }
 
-// A `none` book builds a PortfolioManager that runs no gate at all -- rather than one that
-// throws on an empty module list, which is what an OMISSION does.
-TEST(TrackedPortfolioRiskAssignment, ANoneAssignmentBuildsAManagerThatRunsNoGate) {
+// A `none` book CONSTRUCTS -- rather than throwing, which is what an OMISSION does. What it then
+// does on a lap (no gate, no decision, the book uncut, the ruling logged) is driven through
+// process_market_data in RiskModuleLoopTest.ANoneBookRunsNoGateAndLogsItsRuling.
+TEST(TrackedPortfolioRiskAssignment, ANoneAssignmentConstructsAndAnEmptyListThrows) {
     PortfolioConfig pc{100000.0, 0.0, 1.0, 0.0, /*optimization=*/false};
     pc.risk_config.capital = 100000.0;
     pc.risk_modules = {trade_ngin::testing::test_none_module("no_portfolio_risk")};
-    PortfolioManager pm(pc, "PM_NONE_ASSIGNMENT");
-    EXPECT_TRUE(pm.last_risk_decisions().empty());
+    EXPECT_NO_THROW(PortfolioManager(pc, "PM_NONE_ASSIGNMENT"));
     // The same config with the list EMPTY is a forgotten line, and throws.
     PortfolioConfig omitted = pc;
     omitted.risk_modules.clear();

@@ -69,6 +69,18 @@ PortfolioManager::PortfolioManager(PortfolioConfig config, std::string id,
         }
     } else {
         INFO("Risk management is disabled in the configuration");
+        // Who ruled that this book runs no risk layer, and when, once per PortfolioManager (one
+        // per run on every runner). The generic line above names neither, while the stored
+        // risk_scale keeps printing the reporter's value beside a book nothing cut (T-6b INTERIM
+        // ADVERSARIAL D-1), so an operator reading the log could not tell a ruling from an
+        // accident. The loader has already required all three fields of a `none` module.
+        const RiskModuleConfig& none = config_.risk_modules.front();
+        const auto* ruling = std::get_if<NoneModuleConfig>(&none.params);
+        INFO("RISK_NONE pm=" + id_ + " module=" + none.id +
+             " ruled_by=" + (ruling ? ruling->ruled_by : std::string("-")) +
+             " ruled_on=" + (ruling ? ruling->ruled_on : std::string("-")) +
+             ": this book runs no risk module; risk_scale in live_results is the reporter's "
+             "reading, not a cut");
     }
 
     // Sleeve-scope modules. The loader checks every key against portfolio.json's `strategies`,
