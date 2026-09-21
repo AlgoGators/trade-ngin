@@ -1573,6 +1573,17 @@ Result<void> PortfolioManager::validate_risk_modules(
         }
         const int composition = check_scope(sleeve_modules.at(sid), "sleeve " + sid, why);
         if (composition < 0) return invalid(why);
+        // C-2, here as well as in the loader (T-6b INTERIM ADVERSARIAL C-2): the Carver module
+        // divides by the PORTFOLIO's capital and ignores RiskContext::capital, so at sleeve scope
+        // its leverage limits would be read against the whole book's money. The loader refuses it
+        // in a risk.json; this refuses it on the constructor and set_risk_modules paths too.
+        for (const auto& module : sleeve_modules.at(sid)) {
+            if (module->type() == "carver") {
+                return invalid("Risk module " + module->id() + " on sleeve " + sid +
+                               " is type \"carver\", which is only valid at portfolio scope: the "
+                               "Carver gate divides by the portfolio's capital");
+            }
+        }
         if (composition + portfolio_composition > 1) {
             return invalid("More than one COMPOSITION-term risk module along the chain of sleeve " +
                            sid + " and the portfolio; the scale-invariant terms would be counted "
@@ -2015,7 +2026,20 @@ Result<void> PortfolioManager::apply_risk_management(const std::vector<Bar>& dat
                 rebalance_applied_.emplace(lap_ctx.scope_id, 1.0).first->second *=
                     static_cast<double>(verdict.factor);
             } else {
-                INFO("Risk limits not exceeded, no scaling needed");
+                // A module whose gate read the book over its limits but asked for nothing more
+                // (the level cut declines a lap already cut to this level or deeper) must not be
+                // reported as "not exceeded" directly under "risk_exceeded=1" (T-6b INTERIM
+                // ADVERSARIAL B-4; T-4 ADVERSARIAL finding 12 was this class of false line).
+                bool gate_exceeded = false;
+                for (const auto& d : decisions) {
+                    if (d.metrics.has_value() && d.metrics->risk_exceeded) gate_exceeded = true;
+                }
+                if (gate_exceeded) {
+                    INFO("Risk cut already applied at this level or deeper; no further scaling "
+                         "this lap");
+                } else {
+                    INFO("Risk limits not exceeded, no scaling needed");
+                }
             }
 
             // Read BEFORE deliver_and_record: it std::move()s every decision into its record,

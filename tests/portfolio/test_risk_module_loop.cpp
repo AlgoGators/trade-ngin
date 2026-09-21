@@ -917,11 +917,32 @@ TEST_F(RiskValidationTest, CompositionTermOnlyOncePerChain) {
                      {{"BBB", make_pos("BBB", 1.0, 100.0)}});
     const RiskConfig rc = risk_config(true).risk_config;
     auto portfolio_carver = std::make_shared<CarverRiskModule>("carver", rc);
-    // A Carver at the portfolio and another on a sleeve: correlation/VaR/jump counted twice.
+    // A COMPOSITION-term module at the portfolio and another on a sleeve: correlation/VaR/jump
+    // counted twice. The sleeve one is not a Carver: since T-6b-fix F6 a sleeve Carver is refused
+    // first, by C-2 (ACarverAtSleeveScopeIsRefusedBySetRiskModules), which would mask this rule.
+    class SleeveComposition final : public RiskModule {
+    public:
+        const std::string& id() const override { return id_; }
+        const std::string& type() const override { return id_; }
+        std::set<RiskTerm> terms() const override { return {RiskTerm::COMPOSITION}; }
+        std::set<RiskAction> capabilities() const override { return {RiskAction::SCALE}; }
+        Result<RiskDecision> evaluate(const Book& book, const RiskContext& ctx) override {
+            (void)book;
+            (void)ctx;
+            RiskDecision d;
+            d.module_id = id_;
+            return Result<RiskDecision>(d);
+        }
+        nlohmann::json describe() const override { return {{"id", id_}}; }
+
+    private:
+        std::string id_{"composition_a"};
+    };
     auto r = pm_->set_risk_modules({portfolio_carver},
-                                   {{"SA", {std::make_shared<CarverRiskModule>("carver_a", rc)}}});
+                                   {{"SA", {std::make_shared<SleeveComposition>()}}});
     ASSERT_TRUE(r.is_error());
-    EXPECT_NE(std::string(r.error()->what()).find("COMPOSITION"), std::string::npos);
+    EXPECT_NE(std::string(r.error()->what()).find("COMPOSITION"), std::string::npos)
+        << r.error()->what();
     // Two at the portfolio scope.
     EXPECT_TRUE(pm_->set_risk_modules({portfolio_carver, std::make_shared<CarverRiskModule>("c2", rc)})
                     .is_error());

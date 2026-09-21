@@ -121,6 +121,7 @@ private:
     std::vector<Bar> window_;  ///< was PortfolioManager::risk_history_
     size_t dates_dropped_{0};  ///< F5's count on the last on_bars
     bool f5_engaged_{false};   ///< whether F5 filtered the last window
+    bool in_f5_fallback_{false};  ///< the last build fell back (the WARN fires on entering it)
     double last_invariant_{1.0};  ///< min(portfolio, jump, correlation), last evaluate
     double last_leverage_{1.0};   ///< leverage_multiplier, last evaluate
     // Per-rebalance state, reset by begin_rebalance. Commit 9 reads all three: on_bars appends

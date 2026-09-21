@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -26,6 +27,7 @@
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
 #include "trade_ngin/risk/basic_risk_modules.hpp"
+#include "trade_ngin/risk/carver_risk_module.hpp"
 #include "trade_ngin/strategy/base_strategy.hpp"
 
 using namespace trade_ngin;
@@ -653,4 +655,156 @@ TEST_F(RiskFailClosedTest, AnEmptyBookLapLogsNoLine) {
     const std::string out = ::testing::internal::GetCapturedStdout();
     EXPECT_EQ(count_lines(out, "RISK_APPLIED "), 0u) << out;
     EXPECT_NE(out.find("No positions to apply risk management to"), std::string::npos);
+}
+
+// ===== T-6b-fix F6: the residues of T-6b's review =====
+
+namespace {
+
+/// Refuses only at the post-rounding point, so the laps run and the refusal meets the final book.
+class FinalizeOnlyRefuse final : public RiskModule {
+public:
+    const std::string& id() const override { return id_; }
+    const std::string& type() const override { return id_; }
+    std::set<RiskTerm> terms() const override { return {RiskTerm::CUSTOM}; }
+    std::set<RiskAction> capabilities() const override { return {RiskAction::REFUSE}; }
+    Result<RiskDecision> evaluate(const Book& book, const RiskContext& ctx) override {
+        (void)book;
+        (void)ctx;
+        RiskDecision d;
+        d.module_id = id_;
+        return Result<RiskDecision>(d);
+    }
+    Result<RiskDecision> finalize(const Book& book, const RiskContext& ctx) override {
+        (void)book;
+        (void)ctx;
+        RiskDecision d;
+        d.module_id = id_;
+        d.action = RiskAction::REFUSE;
+        d.reason = "the rounded book is not acceptable";
+        return Result<RiskDecision>(d);
+    }
+    nlohmann::json describe() const override { return {{"id", id_}}; }
+
+private:
+    std::string id_{"final_stop"};
+};
+
+}  // namespace
+
+// A-1 on the SLEEVE path (apply_sleeve_risk has its own call of evaluate_scope_modules). A
+// refuse-capable module that cannot answer has not said yes: the sleeve is refused and pinned.
+TEST_F(RiskFailClosedTest, AFailedRefuseCapableModuleRefusesTheSleeve) {
+    make_pm(base_config(), {{"ZZA", make_pos("ZZA", 5.0, 100.0)}});
+    ASSERT_TRUE(pm_->update_strategy_position("FC_S", "ZZA", make_pos("ZZA", 2.0, 100.0)).is_ok());
+    ASSERT_TRUE(pm_->set_risk_modules(
+                       {}, {{"FC_S", {std::make_shared<FailingModule>("sleeve_boom",
+                                                                      /*refuse_capable=*/true)}}})
+                    .is_ok());
+    ::testing::internal::CaptureStdout();
+    ASSERT_TRUE(pm_->process_market_data(three_days()).is_ok());
+    const std::string out = ::testing::internal::GetCapturedStdout();
+    EXPECT_EQ(quantity("ZZA"), 2.0) << "the sleeve is pinned to its previous book";
+    EXPECT_NE(out.find("Risk module sleeve_boom failed on sleeve FC_S before the loop and can "
+                       "refuse"),
+              std::string::npos)
+        << out;
+}
+
+// ...and a REFUSE that one sleeve module already returned survives a later module's failure.
+TEST_F(RiskFailClosedTest, ASleeveRefuseSurvivesALaterModulesFailure) {
+    make_pm(base_config(), {{"ZZA", make_pos("ZZA", 5.0, 100.0)}});
+    ASSERT_TRUE(pm_->update_strategy_position("FC_S", "ZZA", make_pos("ZZA", 2.0, 100.0)).is_ok());
+    ASSERT_TRUE(pm_->set_risk_modules(
+                       {}, {{"FC_S",
+                             {std::make_shared<RefuseOnConditionRiskModule>(
+                                  "sleeve_stop", RiskCondition{RiskCondition::Kind::ALWAYS, 0.0},
+                                  "always"),
+                              std::make_shared<FailingModule>("later_boom",
+                                                              /*refuse_capable=*/false)}}})
+                    .is_ok());
+    ASSERT_TRUE(pm_->process_market_data(three_days()).is_ok());
+    EXPECT_EQ(quantity("ZZA"), 2.0);
+}
+
+// A-2 at SLEEVE scope: pinning a never-seeded live sleeve would ship it flat. The run errors.
+TEST_F(RiskFailClosedTest, ARefuseOnANeverSeededLiveSleeveIsAnError) {
+    make_pm(base_config(), {{"ZZA", make_pos("ZZA", 5.0, 100.0)}});
+    ASSERT_TRUE(pm_->set_risk_modules(
+                       {}, {{"FC_S", {std::make_shared<RefuseOnConditionRiskModule>(
+                                         "sleeve_stop",
+                                         RiskCondition{RiskCondition::Kind::ALWAYS, 0.0},
+                                         "always")}}})
+                    .is_ok());
+    ::testing::internal::CaptureStdout();
+    const auto result = pm_->process_market_data(three_days());
+    const std::string out = ::testing::internal::GetCapturedStdout();
+    ASSERT_TRUE(result.is_error()) << "a flat sleeve must not be shipped as a refusal";
+    EXPECT_NE(std::string(result.error()->what()).find("never seeded"), std::string::npos)
+        << result.error()->what();
+    EXPECT_NE(out.find("pinning would ship a FLAT book"), std::string::npos) << out;
+}
+
+// A-2 at the POST-ROUNDING point, which has its own unseeded branch.
+TEST_F(RiskFailClosedTest, APostRoundingRefuseOnANeverSeededLiveScopeIsAnError) {
+    make_pm(base_config(), {{"ZZA", make_pos("ZZA", 5.0, 100.0)}});
+    ASSERT_TRUE(pm_->set_risk_modules({std::make_shared<FinalizeOnlyRefuse>()}).is_ok());
+    ::testing::internal::CaptureStdout();
+    const auto result = pm_->process_market_data(three_days());
+    const std::string out = ::testing::internal::GetCapturedStdout();
+    ASSERT_TRUE(result.is_error()) << out;
+    EXPECT_NE(std::string(result.error()->what()).find("never seeded"), std::string::npos)
+        << result.error()->what();
+    EXPECT_NE(out.find("Risk module final_stop refused portfolio"), std::string::npos) << out;
+    EXPECT_NE(out.find("after rounding"), std::string::npos) << out;
+}
+
+// C-2 in the SHARED validator: the loader refused a carver at sleeve scope, the constructor and
+// set_risk_modules did not. A carver divides by the portfolio's capital, so on a sleeve its
+// leverage limits would be read against the whole book's money.
+TEST_F(RiskFailClosedTest, ACarverAtSleeveScopeIsRefusedOnTheConstructorPath) {
+    PortfolioConfig pc = base_config();
+    pc.risk_modules = {test_none_module("no_portfolio_risk")};
+    pc.sleeve_risk_modules = {{"FC_S", {test_carver_module(pc.risk_config, "sleeve_carver")}}};
+    try {
+        PortfolioManager pm(pc, "PM_FC_SLEEVE_CARVER");
+        FAIL() << "a sleeve-scope carver must not construct";
+    } catch (const std::invalid_argument& e) {
+        EXPECT_EQ(std::string(e.what()),
+                  "Risk module sleeve_carver on sleeve FC_S is type \"carver\", which is only "
+                  "valid at portfolio scope: the Carver gate divides by the portfolio's capital");
+    }
+}
+
+TEST_F(RiskFailClosedTest, ACarverAtSleeveScopeIsRefusedBySetRiskModules) {
+    make_pm(base_config(), {{"ZZA", make_pos("ZZA", 5.0, 100.0)}});
+    auto r = pm_->set_risk_modules(
+        {}, {{"FC_S", {std::make_shared<CarverRiskModule>("sleeve_carver", RiskConfig{})}}});
+    ASSERT_TRUE(r.is_error());
+    EXPECT_NE(std::string(r.error()->what()).find("only valid at portfolio scope"),
+              std::string::npos)
+        << r.error()->what();
+}
+
+// B-4: on a lap the gate reads as over its limits but the level cut declines (already cut to
+// this level or deeper), the log must not say "not exceeded" under "risk_exceeded=1".
+TEST_F(RiskFailClosedTest, ADeclinedLapIsNotReportedAsNotExceeded) {
+    // VaR binds (tight var limit), leverage never does; 2.5 lots never become whole, so lap 2
+    // reads the same invariant term off the same composition and declines.
+    PortfolioConfig pc = base_config();
+    pc.risk_config.var_limit = 1e-6;
+    pc.risk_modules = {test_carver_module(pc.risk_config)};
+    make_pm(pc, {{"ZZA", make_pos("ZZA", 2.5, 100.0)}});
+    std::vector<Bar> bars;
+    for (int d = 1; d <= 30; ++d) bars.push_back(make_bar("ZZA", d, 100.0 + 3.0 * std::sin(d)));
+    ::testing::internal::CaptureStdout();
+    ASSERT_TRUE(pm_->process_market_data(bars).is_ok());
+    const std::string out = ::testing::internal::GetCapturedStdout();
+    ASSERT_NE(out.find("RISK_APPLIED lap=2 "), std::string::npos) << "the precondition: a lap 2\n"
+                                                                   << out;
+    EXPECT_EQ(out.find("Risk limits not exceeded, no scaling needed"), std::string::npos) << out;
+    EXPECT_NE(out.find("Risk cut already applied at this level or deeper; no further scaling this "
+                       "lap"),
+              std::string::npos)
+        << out;
 }

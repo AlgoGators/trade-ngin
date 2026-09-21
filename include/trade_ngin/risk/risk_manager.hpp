@@ -149,8 +149,11 @@ public:
 
     /// Gross and net leverage of a book and the leverage multiplier the gate would give it,
     /// valued exactly as process_positions values it (average price x contract multiplier, over
-    /// the holdings the window maps), with NOTHING logged and no state touched. For reading a
-    /// book the gate did not see -- the one shipped after rounding.
+    /// the holdings the window maps), logging nothing of its own and touching no state. The one
+    /// exception is the registry's: a symbol it does not know makes InstrumentRegistry log its
+    /// own "Instrument not found" ERROR, exactly as it does inside process_positions (0 such
+    /// lines on every futures run of the gate). For reading a book the gate did not see -- the
+    /// one shipped after rounding.
     struct LeverageReading {
         double gross_leverage{0.0};
         double net_leverage{0.0};  ///< signed

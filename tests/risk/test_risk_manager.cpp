@@ -19,6 +19,7 @@
 
 #include "trade_ngin/core/config_base.hpp"
 #include "trade_ngin/core/error.hpp"
+#include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/core/types.hpp"
 
 #define private public
@@ -547,6 +548,50 @@ TEST_F(RiskManagerExtendedTest, NetLongBookOverNetLimitIsCutToMaxNetOverNet) {
     EXPECT_DOUBLE_EQ(res.leverage_multiplier, 2.0 / 2.6);
     EXPECT_LE(res.recommended_scale, res.leverage_multiplier);
     EXPECT_TRUE(res.risk_exceeded);
+}
+
+
+// ===== T-6b-fix F6: the process_positions guard (POSGUARD) had no test =====
+//
+// A holding whose symbol has no bar in the gate's window is excluded from the measurement (the
+// gate stays fail-open by construction); commit 9's guard makes that visible: one POSGUARD_MISS
+// per dropped non-zero holding, and ONE POSGUARD summary per run, repeated only when a later call
+// drops more non-zero holdings than any call before it.
+TEST_F(RiskManagerExtendedTest, PosguardNamesADroppedHoldingAndSummarisesOncePerHighWater) {
+    LoggerConfig lc;
+    lc.destination = LogDestination::CONSOLE;
+    lc.min_level = LogLevel::INFO;
+    lc.include_timestamp = false;
+    Logger::instance().initialize(lc);
+    RiskManager mgr(default_config());
+    const auto md = two_symbol_market_data(mgr);
+    auto book = two_positions(10.0, 10.0);
+    book["ZZZ"] = Position("ZZZ", Quantity(7.0), Price(50.0), Decimal(0.0), Decimal(0.0),
+                           Timestamp{});
+    auto count = [](const std::string& out, const std::string& needle) {
+        size_t n = 0;
+        for (size_t at = out.find(needle); at != std::string::npos; at = out.find(needle, at + 1))
+            ++n;
+        return n;
+    };
+
+    ::testing::internal::CaptureStdout();
+    ASSERT_TRUE(mgr.process_positions(book, md).is_ok());
+    ASSERT_TRUE(mgr.process_positions(book, md).is_ok());  // same drop: no second summary
+    std::string out = ::testing::internal::GetCapturedStdout();
+    EXPECT_EQ(count(out, "POSGUARD_MISS symbol=ZZZ qty=7.000000 reason=absent_from_window "
+                         "window_symbols=2"),
+              2u)
+        << out;
+    EXPECT_EQ(count(out, "POSGUARD holdings=3 mapped=2 dropped=1 dropped_nonzero=1"), 1u) << out;
+
+    book["YYY"] = Position("YYY", Quantity(-3.0), Price(20.0), Decimal(0.0), Decimal(0.0),
+                           Timestamp{});
+    ::testing::internal::CaptureStdout();
+    ASSERT_TRUE(mgr.process_positions(book, md).is_ok());
+    out = ::testing::internal::GetCapturedStdout();
+    EXPECT_EQ(count(out, "POSGUARD holdings=4 mapped=2 dropped=2 dropped_nonzero=2"), 1u)
+        << "a new high-water mark prints again:\n" << out;
 }
 
 }  // namespace risk_manager_extended_detail

@@ -179,6 +179,20 @@ void CarverRiskModule::on_bars(const std::vector<Bar>& bars, const RiskContext& 
     }
     f5_engaged_ = complete.size() >= kF5MinGateDates;
     dates_dropped_ = f5_engaged_ ? by_date.size() - complete.size() : 0;
+    // Say so when the gate falls back to the unfiltered window (T-6b INTERIM ADVERSARIAL B-5:
+    // commit 9 dropped ARM 1's per-lap WARN, and 149 backtest laps then read the zero-filled
+    // window with only f5_engaged=0 inside an INFO line). On ENTERING the fallback -- the first
+    // time in a run and again on any re-entry -- not on every lap: the bus-driven BASE runner
+    // evaluates ~7,000 times a day on a window that warms from empty, and a per-lap line would be
+    // most of its log.
+    if (!f5_engaged_ && !in_f5_fallback_) {
+        WARN("T4_F5_FALLBACK complete_dates=" + std::to_string(complete.size()) +
+             " window_dates=" + std::to_string(by_date.size()) +
+             " floor=" + std::to_string(kF5MinGateDates) +
+             ": the gate reads the UNFILTERED window (sparse dates zero-filled) until it holds "
+             "the floor's complete dates; logged on entering the fallback, not per lap");
+    }
+    in_f5_fallback_ = !f5_engaged_;
 
     if (f5_engaged_) {
         std::vector<Bar> filtered;
