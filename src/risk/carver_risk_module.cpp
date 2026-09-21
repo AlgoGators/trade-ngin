@@ -141,7 +141,9 @@ void CarverRiskModule::on_bars(const std::vector<Bar>& bars, const RiskContext& 
     if (appended_this_rebalance_ && market_data_built_this_rebalance_) {
         return;
     }
-    market_data_built_this_rebalance_ = true;
+    // market_data_built_this_rebalance_ is set only AFTER market_data_ has been assigned below, so
+    // a build that throws on lap 1 is retried on lap 2 instead of leaving laps 2..n reading the
+    // PREVIOUS rebalance's MarketData (T-6b INTERIM ADVERSARIAL E-1).
 
     // (3) F5: DROP SPARSE DATES FROM THE GATE'S WINDOW.
     //
@@ -181,6 +183,7 @@ void CarverRiskModule::on_bars(const std::vector<Bar>& bars, const RiskContext& 
             if (complete.count(bar.timestamp)) filtered.push_back(bar);
         }
         market_data_ = rm_.create_market_data(filtered);
+        market_data_built_this_rebalance_ = true;
     } else {
         // Below the floor F5 does not engage and the gate reads the UNFILTERED date-capped
         // window. The fallback is deliberately the larger, dirtier window: a small-sample matrix
@@ -188,6 +191,7 @@ void CarverRiskModule::on_bars(const std::vector<Bar>& bars, const RiskContext& 
         // create_market_data into its divide-by-(n-1)==0 branch, where the gate goes blind with
         // every multiplier at 1.0.
         market_data_ = rm_.create_market_data(window_);
+        market_data_built_this_rebalance_ = true;
     }
 }
 
@@ -272,8 +276,19 @@ Result<RiskDecision> CarverRiskModule::evaluate(
         // (a sleeve was pinned and skipped by the multiply, T-6a ADVERSARIAL A-5), so nothing
         // divides by it: that lap honours the leverage rate alone, which is measured fresh on
         // the current book and is always valid. Zero laps on every shipped book.
-        const double headroom =
-            (level_partial_ || !(applied_level_ > 0.0)) ? 1.0 : (s_inv / applied_level_);
+        //
+        // The level is the product of the QUANTISED factors the PM actually multiplied in
+        // (Decimal rounds each to 1e-8), while s_inv is the raw reading. When the reading has not
+        // moved since the lap that applied it, the two differ only by that rounding: a factor that
+        // rounded UP leaves s_inv / level = 0.99999999x, which is not a request, and returning it
+        // as a SCALE turned whole contracts into 0.99999999 of one (T-6b INTERIM ADVERSARIAL B-1:
+        // 20 of 380 stored futures-backtest executions). So the invariant terms are satisfied
+        // whenever s_inv is within one Decimal quantum of the level already applied; a lap whose
+        // reading is genuinely deeper than that is charged exactly s_inv / level, as before.
+        double headroom = 1.0;
+        if (!level_partial_ && applied_level_ > 0.0 && s_inv < applied_level_ - kLevelQuantum) {
+            headroom = s_inv / applied_level_;
+        }
         const double factor = std::min({1.0, headroom, s_lev});
         if (factor < 1.0) {
             decision.scale = factor;

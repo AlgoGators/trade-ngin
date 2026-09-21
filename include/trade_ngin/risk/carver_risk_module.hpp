@@ -55,6 +55,12 @@ public:
     /// the dates; it cannot be measured until then.
     static constexpr size_t kF5MinGateDates = 120;
 
+    /// One Decimal quantum (Decimal keeps 8 decimal places, core/types.hpp): the precision at
+    /// which the PM multiplies a book by a factor. The level cut treats an invariant reading
+    /// within one quantum of the level already applied as satisfied, because the level is a
+    /// product of quantised factors and the reading is not.
+    static constexpr double kLevelQuantum = 1e-8;
+
     /// Dates the window holds, before F5 drops any.
     size_t window_dates() const;
     /// Dates F5 dropped on the last on_bars (0 when it did not engage).
@@ -66,7 +72,8 @@ public:
     Result<RiskDecision> evaluate(const std::unordered_map<std::string, Position>& book,
                                   const RiskContext& ctx) override;
     nlohmann::json describe() const override;  ///< {"id","type","terms","config"}
-    /// Multiplies the applied level by the quantised factor when the scope was scaled, and
+    /// Multiplies the applied level by the quantised factor when the scope was scaled (evaluate
+    /// compares the raw reading with it to within kLevelQuantum), and
     /// records a PARTIAL apply: on a lap whose multiply skipped a pinned sleeve the level is
     /// no longer a true statement about the book this module measured, so it is marked and
     /// commit 9's level rule declines to divide by it.

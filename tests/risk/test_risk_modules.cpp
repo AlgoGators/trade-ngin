@@ -773,6 +773,174 @@ TEST(CarverArm1LevelCutTest, AnInvariantRequestIsALevelNotARatePerLap) {
     EXPECT_DOUBLE_EQ(d2.value().scale, 1.0);
 }
 
+// T-6b-fix F1. The PM multiplies the book by Decimal(factor), which rounds to 8 decimals, and the
+// module's level advances by that QUANTISED factor. When lap 1's factor rounds UP, lap 2 reads the
+// same invariant term off an unchanged composition and its head-room is s_inv / Decimal(s_inv) =
+// 0.99999999x: before the fix the module asked for that as a SCALE, the PM applied Decimal(scale) =
+// 0.99999999 to a whole-contract book, and 20 of the futures backtest's 380 executions were stored
+// as 0.99999999 / 1.00000003 contracts. The value AnInvariantRequestIsALevelNotARatePerLap happens
+// to use rounds DOWN, so its head-room is above 1 and it could never see this.
+namespace {
+
+/// A VaR-bound Carver module whose lap-1 factor Decimal() rounds in the requested direction.
+/// portfolio_multiplier is min(1, var_limit / sigma), so the limit steers the factor; the search
+/// walks the limit in 1e-12 steps of sigma until the factor rounds the asked way by at least
+/// 1e-10, so the lap-2 head-room is unambiguously on that side of 1.
+struct SteeredLevel {
+    RiskConfig config;
+    double first = 1.0;
+    bool found = false;
+};
+
+SteeredLevel steer_level(const std::vector<Bar>& window,
+                         const std::unordered_map<std::string, Position>& book, bool round_up) {
+    SteeredLevel out;
+    RiskContext start;
+    start.phase = RiskPhase::REBALANCE_START;
+    // sigma from a probe at the default VaR limit: multiplier = limit / sigma.
+    CarverRiskModule probe("probe", var_bound_config());
+    probe.begin_rebalance(start);
+    RiskContext lap1 = lap_ctx(1);
+    probe.on_bars(window, lap1);
+    auto p = probe.evaluate(book, lap1);
+    if (!p.is_ok() || p.value().action != RiskAction::SCALE) return out;
+    const double sigma = var_bound_config().var_limit / p.value().scale;
+    for (int k = 0; k < 20000 && !out.found; ++k) {
+        RiskConfig c = var_bound_config();
+        c.var_limit = sigma * (0.87458705524211799 + 1e-12 * k);
+        CarverRiskModule m("carver", c);
+        m.begin_rebalance(start);
+        RiskContext l1 = lap_ctx(1);
+        m.on_bars(window, l1);
+        auto d = m.evaluate(book, l1);
+        if (!d.is_ok() || d.value().action != RiskAction::SCALE) continue;
+        const double f = d.value().scale;
+        const double q = static_cast<double>(Decimal(f));
+        if ((round_up && q - f > 1e-10) || (!round_up && f - q > 1e-10)) {
+            out.config = c;
+            out.first = f;
+            out.found = true;
+        }
+    }
+    return out;
+}
+
+}  // namespace
+
+TEST(CarverArm1LevelCutTest, ALevelWhoseFactorRoundedUpIsNotChargedAgain) {
+    const Book book = {{"TSTA", make_pos("TSTA", 10.0, 100.0)},
+                       {"TSTC", make_pos("TSTC", 10.0, 50.0)}};
+    const SteeredLevel s = steer_level(correlated_window(), book, /*round_up=*/true);
+    ASSERT_TRUE(s.found) << "no VaR limit gave a lap-1 factor that rounds UP at 8 decimals";
+    const double q = static_cast<double>(Decimal(s.first));
+    ASSERT_GT(q, s.first) << "the precondition of this test: Decimal() rounded the factor UP";
+    ASSERT_LT(s.first / q, 1.0) << "so the lap-2 head-room of an unchanged reading is below 1";
+
+    CarverRiskModule carver("carver", s.config);
+    RiskContext start;
+    start.phase = RiskPhase::REBALANCE_START;
+    carver.begin_rebalance(start);
+    RiskContext lap1 = lap_ctx(1);
+    carver.on_bars(correlated_window(), lap1);
+    auto d1 = carver.evaluate(book, lap1);
+    ASSERT_TRUE(d1.is_ok());
+    ASSERT_EQ(d1.value().action, RiskAction::SCALE);
+    ASSERT_EQ(d1.value().scale, s.first);
+
+    // The PM multiplies by Decimal(first) and reports that quantised factor back.
+    RiskApplied applied;
+    applied.action = RiskAction::SCALE;
+    applied.requested_scale = s.first;
+    applied.factor = Decimal(s.first);
+    applied.won = true;
+    carver.on_applied(applied, lap1);
+    ASSERT_EQ(carver.applied_level(), q) << "the level is the quantised factor (the contract)";
+
+    // Lap 2: same window, same composition, so the same invariant reading.
+    RiskContext lap2 = lap_ctx(2);
+    carver.on_bars(correlated_window(), lap2);
+    auto d2 = carver.evaluate(book, lap2);
+    ASSERT_TRUE(d2.is_ok());
+    ASSERT_EQ(carver.last_invariant(), s.first) << "the reading did not move";
+    EXPECT_EQ(d2.value().action, RiskAction::NONE)
+        << "a head-room of " << s.first / q << " is the level's own rounding, not a request; "
+        << "it was returned as SCALE " << d2.value().scale;
+    EXPECT_EQ(d2.value().scale, 1.0);
+
+    // What that SCALE did to a whole contract: the PM's `pos.quantity *= scale`.
+    Decimal one_lot(1.0);
+    if (d2.value().action == RiskAction::SCALE) one_lot *= d2.value().scale;
+    EXPECT_EQ(static_cast<double>(one_lot), 1.0) << "a 1-lot must still be exactly 1 contract";
+}
+
+// The mirror: a factor that rounds DOWN leaves a head-room above 1, which was already NONE.
+TEST(CarverArm1LevelCutTest, ALevelWhoseFactorRoundedDownIsNotChargedAgain) {
+    const Book book = {{"TSTA", make_pos("TSTA", 10.0, 100.0)},
+                       {"TSTC", make_pos("TSTC", 10.0, 50.0)}};
+    const SteeredLevel s = steer_level(correlated_window(), book, /*round_up=*/false);
+    ASSERT_TRUE(s.found);
+    const double q = static_cast<double>(Decimal(s.first));
+    ASSERT_LT(q, s.first);
+
+    CarverRiskModule carver("carver", s.config);
+    RiskContext start;
+    start.phase = RiskPhase::REBALANCE_START;
+    carver.begin_rebalance(start);
+    RiskContext lap1 = lap_ctx(1);
+    carver.on_bars(correlated_window(), lap1);
+    ASSERT_TRUE(carver.evaluate(book, lap1).is_ok());
+    RiskApplied applied;
+    applied.action = RiskAction::SCALE;
+    applied.requested_scale = s.first;
+    applied.factor = Decimal(s.first);
+    applied.won = true;
+    carver.on_applied(applied, lap1);
+
+    RiskContext lap2 = lap_ctx(2);
+    carver.on_bars(correlated_window(), lap2);
+    auto d2 = carver.evaluate(book, lap2);
+    ASSERT_TRUE(d2.is_ok());
+    EXPECT_EQ(d2.value().action, RiskAction::NONE);
+    EXPECT_EQ(d2.value().scale, 1.0);
+}
+
+// The guard must not swallow a lap that GENUINELY asks for a deeper cut: lap 2 reads a book of a
+// different composition whose invariant term is well below the level already applied, and is
+// charged exactly the head-room s_inv / level, as before.
+TEST(CarverArm1LevelCutTest, AGenuinelyDeeperInvariantRequestIsStillCharged) {
+    const Book book1 = {{"TSTA", make_pos("TSTA", 10.0, 100.0)},
+                        {"TSTC", make_pos("TSTC", 10.0, 50.0)}};
+    const SteeredLevel s = steer_level(correlated_window(), book1, /*round_up=*/true);
+    ASSERT_TRUE(s.found);
+
+    CarverRiskModule carver("carver", s.config);
+    RiskContext start;
+    start.phase = RiskPhase::REBALANCE_START;
+    carver.begin_rebalance(start);
+    RiskContext lap1 = lap_ctx(1);
+    carver.on_bars(correlated_window(), lap1);
+    ASSERT_TRUE(carver.evaluate(book1, lap1).is_ok());
+    RiskApplied applied;
+    applied.action = RiskAction::SCALE;
+    applied.requested_scale = s.first;
+    applied.factor = Decimal(s.first);
+    applied.won = true;
+    carver.on_applied(applied, lap1);
+    const double level = carver.applied_level();
+
+    // TSTC alone: the more volatile name with no diversification, so more VaR per unit of gross.
+    const Book book2 = {{"TSTC", make_pos("TSTC", 10.0, 50.0)}};
+    RiskContext lap2 = lap_ctx(2);
+    carver.on_bars(correlated_window(), lap2);
+    auto d2 = carver.evaluate(book2, lap2);
+    ASSERT_TRUE(d2.is_ok());
+    const double s_inv2 = carver.last_invariant();
+    ASSERT_LT(s_inv2, level - 1e-4) << "the precondition: lap 2 genuinely asks for a deeper level";
+    ASSERT_EQ(carver.last_leverage(), 1.0);
+    EXPECT_EQ(d2.value().action, RiskAction::SCALE);
+    EXPECT_EQ(d2.value().scale, s_inv2 / level) << "charged exactly the head-room, bit for bit";
+}
+
 // The leverage term is NOT a level: it is a magnitude read off the book as it now stands, so it
 // is charged again on every lap. tight_config() binds on leverage, which is why it cannot be
 // used for the test above.
