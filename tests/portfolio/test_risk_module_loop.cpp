@@ -1204,3 +1204,163 @@ TEST_F(RiskSleeveTest, AWholeMultiplyIsNotReportedAsPartial) {
     EXPECT_FALSE(watcher->applied.front().partial);
     EXPECT_EQ(watcher->applied.front().scopes_skipped, 0u);
 }
+
+// T-6c commit A (R-1 of T-6b-fix_ADVERSARIAL). The loop's 1e-6 integer test is a convergence
+// test: a book it passes as whole may still hold a fraction, and before this commit the converged
+// exit stored it unrounded. A factor in (1 - 1e-6/max|q|, 1 - 0.5e-8) did that, from a MAGNITUDE
+// term (the leverage rate) or from a COMPOSITION term (the Carver level on a later lap's new
+// integer book). The converged exit now stores the whole contract, logged once per rebalance.
+namespace {
+
+// Returns SCALE scales[lap - 1] on each lap (the last one repeated), NONE at every other phase.
+class LapScaleModule : public RiskModule {
+public:
+    LapScaleModule(std::string id, RiskTerm term, std::vector<double> scales)
+        : id_(std::move(id)), term_(term), scales_(std::move(scales)) {}
+    const std::string& id() const override { return id_; }
+    const std::string& type() const override { return id_; }
+    std::set<RiskTerm> terms() const override { return {term_}; }
+    std::set<RiskAction> capabilities() const override { return {RiskAction::SCALE}; }
+    Result<RiskDecision> evaluate(const Book& book, const RiskContext& ctx) override {
+        (void)book;
+        RiskDecision d;
+        d.module_id = id_;
+        if (ctx.phase != RiskPhase::LAP) return Result<RiskDecision>(d);
+        const size_t k = std::min(static_cast<size_t>(std::max(ctx.lap, 1)), scales_.size()) - 1;
+        d.action = RiskAction::SCALE;
+        d.scale = scales_[k];
+        d.reason = "lap scale";
+        return Result<RiskDecision>(d);
+    }
+    nlohmann::json describe() const override { return {{"id", id_}, {"type", id_}}; }
+
+private:
+    std::string id_;
+    RiskTerm term_;
+    std::vector<double> scales_;
+};
+
+}  // namespace
+
+class RiskConvergedSnapTest : public RiskModuleLoopTest {
+protected:
+    // Every quantity stored for RML_S (its positions and every execution) is a whole number.
+    void expect_all_whole() {
+        for (const auto& [symbol, pos] : pm_->get_strategy_positions().at("RML_S")) {
+            EXPECT_EQ(pos.quantity.raw_value() % 100000000LL, 0)
+                << symbol << " stored " << static_cast<double>(pos.quantity);
+        }
+        const auto execs = pm_->get_strategy_executions();
+        ASSERT_TRUE(execs.count("RML_S"));
+        ASSERT_FALSE(execs.at("RML_S").empty());
+        for (const auto& e : execs.at("RML_S")) {
+            EXPECT_EQ(e.filled_quantity.raw_value() % 100000000LL, 0)
+                << e.symbol << " executed " << static_cast<double>(e.filled_quantity);
+        }
+    }
+};
+
+// (1) A 1-lot at an applied factor of 0.9999999 (a leverage rate): the fraction 1e-7 passes the
+// integer test on lap 1, so the loop converges, and the whole contract is stored and logged.
+TEST_F(RiskConvergedSnapTest, AOneLotAtFactor0_9999999StoresOneAndLogsOnce) {
+    make_pm(false, {{{"ZZA", make_pos("ZZA", 1.0, 100.0)}}});
+    ASSERT_TRUE(pm_->set_risk_modules({std::make_shared<LapScaleModule>(
+                                          "lev", RiskTerm::MAGNITUDE, std::vector<double>{0.9999999})})
+                    .is_ok());
+    ::testing::internal::CaptureStdout();
+    ASSERT_TRUE(pm_->process_market_data(three_days()).is_ok());
+    const std::string out = ::testing::internal::GetCapturedStdout();
+    const auto lap = rows_of(pm_->last_risk_decisions(), RiskPhase::LAP);
+    ASSERT_EQ(lap.size(), 1u) << "converged on lap 1";
+    EXPECT_EQ(lap[0].applied_factor.raw_value(), 99999990) << "the precondition: 0.9999999 applied";
+    EXPECT_EQ(count_of(out, "No partial contracts after iteration 1. Converged!"), 1u) << out;
+    EXPECT_EQ(count_of(out, "Max iterations reached"), 0u) << "the converged exit, not forced rounding";
+    EXPECT_EQ(pm_->get_strategy_positions().at("RML_S").at("ZZA").quantity.raw_value(), 100000000LL)
+        << "stored " << quantity("ZZA");
+    expect_all_whole();
+    EXPECT_EQ(count_of(out, "RISK_CONVERGED_SNAP symbols=1 iteration=1: quantities within 1e-6 of "
+                            "a whole contract stored as that whole contract on the converged exit"),
+              1u)
+        << out;
+    EXPECT_EQ(count_of(out, "RISK_CONVERGED_SNAP"), 1u) << "once per rebalance";
+}
+
+// (2) The level term (a COMPOSITION, scale-invariant SCALE) reading 2e-8 below the level: 1 - 2e-8
+// is two Decimal quanta, so it is applied as 0.99999998, not rounded to 1, and a 3-lot becomes
+// 2.99999994, inside the 1e-6 test. It is stored whole.
+TEST_F(RiskConvergedSnapTest, TheLevelTermTwoQuantaBelowOneStoresWhole) {
+    make_pm(false, {{{"ZZA", make_pos("ZZA", 3.0, 100.0)}}});
+    ASSERT_TRUE(pm_->set_risk_modules({std::make_shared<LapScaleModule>(
+                                          "level", RiskTerm::COMPOSITION,
+                                          std::vector<double>{1.0 - 2e-8})})
+                    .is_ok());
+    ::testing::internal::CaptureStdout();
+    ASSERT_TRUE(pm_->process_market_data(three_days()).is_ok());
+    const std::string out = ::testing::internal::GetCapturedStdout();
+    const auto lap = rows_of(pm_->last_risk_decisions(), RiskPhase::LAP);
+    ASSERT_EQ(lap.size(), 1u);
+    EXPECT_EQ(lap[0].applied_factor.raw_value(), 99999998) << "the precondition: two quanta below";
+    EXPECT_EQ(pm_->get_strategy_positions().at("RML_S").at("ZZA").quantity.raw_value(), 300000000LL)
+        << "stored " << quantity("ZZA");
+    expect_all_whole();
+    EXPECT_EQ(count_of(out, "RISK_CONVERGED_SNAP symbols=1 iteration=1:"), 1u) << out;
+}
+
+// (3) Unchanged: a factor of 0.99 leaves a fraction of 0.01, well above 1e-6, so the loop goes
+// round all five laps and forced rounding makes the book whole. The converged exit is never taken
+// and the new line never prints.
+TEST_F(RiskConvergedSnapTest, Factor0_99StillIteratesAndIsForceRounded) {
+    make_pm(false, {{{"ZZA", make_pos("ZZA", 1.0, 100.0)}}});
+    ASSERT_TRUE(pm_->set_risk_modules({std::make_shared<LapScaleModule>(
+                                          "lev", RiskTerm::MAGNITUDE, std::vector<double>{0.99})})
+                    .is_ok());
+    ::testing::internal::CaptureStdout();
+    ASSERT_TRUE(pm_->process_market_data(three_days()).is_ok());
+    const std::string out = ::testing::internal::GetCapturedStdout();
+    EXPECT_EQ(rows_of(pm_->last_risk_decisions(), RiskPhase::LAP).size(), 5u) << "five laps";
+    EXPECT_EQ(count_of(out, "Max iterations reached (5). Forcing final rounding"), 1u) << out;
+    EXPECT_EQ(count_of(out, "Final forced rounding for ZZA: 0.950990 -> 1\n"), 1u) << out;
+    EXPECT_EQ(count_of(out, "Converged!"), 0u) << out;
+    EXPECT_EQ(count_of(out, "RISK_CONVERGED_SNAP"), 0u) << out;
+    EXPECT_EQ(quantity("ZZA"), 1.0);
+    expect_all_whole();
+}
+
+// (4) A loop that converges on lap 2: lap 1 halves a 3-lot to 1.5 (a fraction, so the loop goes
+// round), lap 2 applies 0.66666666 and gives 0.99999999, which passes the 1e-6 test. Nothing
+// fractional is stored.
+TEST_F(RiskConvergedSnapTest, ALoopConvergingOnLapTwoStoresNoFraction) {
+    make_pm(false, {{{"ZZA", make_pos("ZZA", 3.0, 100.0)}}});
+    ASSERT_TRUE(pm_->set_risk_modules({std::make_shared<LapScaleModule>(
+                                          "lev", RiskTerm::MAGNITUDE,
+                                          std::vector<double>{0.5, 0.66666666})})
+                    .is_ok());
+    ::testing::internal::CaptureStdout();
+    ASSERT_TRUE(pm_->process_market_data(three_days()).is_ok());
+    const std::string out = ::testing::internal::GetCapturedStdout();
+    EXPECT_EQ(rows_of(pm_->last_risk_decisions(), RiskPhase::LAP).size(), 2u) << "two laps";
+    EXPECT_EQ(count_of(out, "Fractional contract detected in iteration 1: ZZA, quantity=1.5\n"),
+              1u)
+        << out;
+    EXPECT_EQ(count_of(out, "No partial contracts after iteration 2. Converged!"), 1u) << out;
+    EXPECT_EQ(count_of(out, "Max iterations reached"), 0u) << out;
+    EXPECT_EQ(pm_->get_strategy_positions().at("RML_S").at("ZZA").quantity.raw_value(), 100000000LL)
+        << "stored " << quantity("ZZA");
+    expect_all_whole();
+    EXPECT_EQ(count_of(out, "RISK_CONVERGED_SNAP symbols=1 iteration=2:"), 1u) << out;
+}
+
+// An exactly whole book is left alone: a factor of 0.5 on a 4-lot gives exactly 2, the converged
+// exit changes nothing and prints nothing.
+TEST_F(RiskConvergedSnapTest, AnExactlyWholeBookIsUntouchedAndSilent) {
+    make_pm(false, {{{"ZZA", make_pos("ZZA", 4.0, 100.0)}}});
+    ASSERT_TRUE(pm_->set_risk_modules({std::make_shared<LapScaleModule>(
+                                          "lev", RiskTerm::MAGNITUDE, std::vector<double>{0.5})})
+                    .is_ok());
+    ::testing::internal::CaptureStdout();
+    ASSERT_TRUE(pm_->process_market_data(three_days()).is_ok());
+    const std::string out = ::testing::internal::GetCapturedStdout();
+    EXPECT_EQ(pm_->get_strategy_positions().at("RML_S").at("ZZA").quantity.raw_value(), 200000000LL);
+    EXPECT_EQ(count_of(out, "No partial contracts after iteration 1. Converged!"), 1u) << out;
+    EXPECT_EQ(count_of(out, "RISK_CONVERGED_SNAP"), 0u) << out;
+}

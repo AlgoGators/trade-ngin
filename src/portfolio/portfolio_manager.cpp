@@ -565,6 +565,31 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                 } else {
                     INFO("No partial contracts after iteration " + std::to_string(iteration) +
                          ". Converged!");
+                    // The 1e-6 test above is a convergence test, not a guard: a quantity it
+                    // passed as whole may still hold a fraction (a SCALE of 0.9999999 on a 1-lot
+                    // gives 0.9999999), from either term. Store the whole contract it was judged
+                    // to be, once, here, for every unpinned scope; an exact integer is untouched.
+                    int snapped = 0;
+                    {
+                        std::lock_guard<std::mutex> lock(mutex_);
+                        for (auto& [id, info] : strategies_) {
+                            if (pinned_scopes_.count(id)) continue;  // pinned by a risk module
+                            for (auto& [symbol, pos] : info.target_positions) {
+                                const double q = static_cast<double>(pos.quantity);
+                                const double whole = std::round(q);
+                                if (q != whole) {
+                                    pos.quantity = static_cast<Decimal>(whole);
+                                    ++snapped;
+                                }
+                            }
+                        }
+                    }
+                    if (snapped > 0) {
+                        INFO("RISK_CONVERGED_SNAP symbols=" + std::to_string(snapped) +
+                             " iteration=" + std::to_string(iteration) +
+                             ": quantities within 1e-6 of a whole contract stored as that whole "
+                             "contract on the converged exit");
+                    }
                 }
                 done = true;
             }
