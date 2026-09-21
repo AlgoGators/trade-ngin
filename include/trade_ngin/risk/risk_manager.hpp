@@ -147,6 +147,22 @@ public:
      */
     MarketData create_market_data(const std::vector<Bar>& data);
 
+    /// Gross and net leverage of a book and the leverage multiplier the gate would give it,
+    /// valued exactly as process_positions values it (average price x contract multiplier, over
+    /// the holdings the window maps), with NOTHING logged and no state touched. For reading a
+    /// book the gate did not see -- the one shipped after rounding.
+    struct LeverageReading {
+        double gross_leverage{0.0};
+        double net_leverage{0.0};  ///< signed
+        double multiplier{1.0};    ///< min(1, max_gross / gross, max_net / |net|)
+    };
+    LeverageReading leverage_of(const std::unordered_map<std::string, Position>& positions,
+                                const MarketData& market_data) const;
+
+    /// The InstrumentRegistry's contract multiplier for a symbol (variant suffix stripped), 1.0
+    /// when the registry has none. The one lookup process_positions and leverage_of share.
+    static double contract_multiplier_for(const std::string& symbol);
+
 private:
     RiskConfig config_;
 

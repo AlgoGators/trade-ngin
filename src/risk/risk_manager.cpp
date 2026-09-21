@@ -14,6 +14,63 @@ RiskManager::RiskManager(RiskConfig config) : config_(std::move(config)) {
     Logger::register_component("RiskManager");
 }
 
+double RiskManager::contract_multiplier_for(const std::string& symbol) {
+    double contract_multiplier = 1.0;
+    try {
+        auto& registry = InstrumentRegistry::instance();
+        // Normalize variant-suffixed symbols for lookup (e.g., 6B.v.0 -> 6B)
+        std::string lookup_sym = symbol;
+        auto dotpos = lookup_sym.find(".v.");
+        if (dotpos != std::string::npos) {
+            lookup_sym = lookup_sym.substr(0, dotpos);
+        }
+        dotpos = lookup_sym.find(".c.");
+        if (dotpos != std::string::npos) {
+            lookup_sym = lookup_sym.substr(0, dotpos);
+        }
+        auto instrument = registry.get_instrument(lookup_sym);
+        if (instrument) {
+            contract_multiplier = instrument->get_multiplier();
+        }
+    } catch (...) {
+        // Use default multiplier if exception occurs
+    }
+    return contract_multiplier;
+}
+
+RiskManager::LeverageReading RiskManager::leverage_of(
+    const std::unordered_map<std::string, Position>& positions,
+    const MarketData& market_data) const {
+    // process_positions' own valuation (average price x contract multiplier over the holdings
+    // the window maps; no current prices, as the Carver module never passes any), and
+    // calculate_leverage_multiplier's own limits, with nothing logged and no state touched.
+    LeverageReading r;
+    double gross = 0.0;
+    double net = 0.0;
+    for (const auto& [symbol, pos] : positions) {
+        auto it = market_data.symbol_indices.find(symbol);
+        if (it == market_data.symbol_indices.end() || it->second >= market_data.ordered_symbols.size()) {
+            continue;
+        }
+        const double value = static_cast<double>(pos.quantity) *
+                             static_cast<double>(pos.average_price) * contract_multiplier_for(symbol);
+        gross += std::abs(value);
+        net += value;
+    }
+    const double capital = static_cast<double>(config_.capital);
+    if (!(capital > 0.0)) return r;
+    r.gross_leverage = gross / capital;
+    r.net_leverage = net / capital;
+    const double gross_mult = r.gross_leverage > config_.max_gross_leverage
+                                  ? config_.max_gross_leverage / r.gross_leverage
+                                  : 1.0;
+    const double net_abs = std::abs(r.net_leverage);
+    const double net_mult =
+        net_abs > config_.max_net_leverage ? config_.max_net_leverage / net_abs : 1.0;
+    r.multiplier = std::min({1.0, gross_mult, net_mult});
+    return r;
+}
+
 Result<RiskResult> RiskManager::process_positions(
     const std::unordered_map<std::string, Position>& positions, 
     const MarketData& market_data,
@@ -98,26 +155,7 @@ Result<RiskResult> RiskManager::process_positions(
                     }
 
                     // Get contract multiplier from InstrumentRegistry for proper notional calculation
-                    double contract_multiplier = 1.0;
-                    try {
-                        auto& registry = InstrumentRegistry::instance();
-                        // Normalize variant-suffixed symbols for lookup (e.g., 6B.v.0 -> 6B)
-                        std::string lookup_sym = symbol;
-                        auto dotpos = lookup_sym.find(".v.");
-                        if (dotpos != std::string::npos) {
-                            lookup_sym = lookup_sym.substr(0, dotpos);
-                        }
-                        dotpos = lookup_sym.find(".c.");
-                        if (dotpos != std::string::npos) {
-                            lookup_sym = lookup_sym.substr(0, dotpos);
-                        }
-                        auto instrument = registry.get_instrument(lookup_sym);
-                        if (instrument) {
-                            contract_multiplier = instrument->get_multiplier();
-                        }
-                    } catch (...) {
-                        // Use default multiplier if exception occurs
-                    }
+                    const double contract_multiplier = contract_multiplier_for(symbol);
 
                     double signed_quantity = static_cast<double>(pos.quantity);
                     double position_value = signed_quantity * price_for_leverage * contract_multiplier;

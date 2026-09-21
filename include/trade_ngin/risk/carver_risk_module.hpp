@@ -32,7 +32,7 @@ public:
     const std::string& id() const override { return id_; }
     const std::string& type() const override { return type_; }
     std::set<RiskTerm> terms() const override;           ///< {COMPOSITION, MAGNITUDE}
-    std::set<RiskAction> capabilities() const override;  ///< {SCALE}
+    std::set<RiskAction> capabilities() const override;  ///< {SCALE, WARN}
     /// Resets the per-rebalance state (the appended flag, the applied level and the last
     /// request). Never clears the window: it spans rebalances.
     void begin_rebalance(const RiskContext& ctx) override;
@@ -77,9 +77,18 @@ public:
     /// records a PARTIAL apply: on a lap whose multiply skipped a pinned sleeve the level is
     /// no longer a true statement about the book this module measured, so it is marked and
     /// commit 9's level rule declines to divide by it.
-    /// finalize is the default (NONE): it must NOT re-run process_positions, whose RISK_DEBUG and
-    /// VAR_DEBUG lines and second result line would change the run's log.
+    /// finalize (below) must NOT re-run process_positions, whose RISK_DEBUG and VAR_DEBUG lines
+    /// and second result line would change the run's log; it reads the book with leverage_of.
     void on_applied(const RiskApplied& applied, const RiskContext& ctx) override;
+
+    /// The written leverage policy (HD 2026-09-20): the leverage limit is enforced to within
+    /// whole-contract rounding. At the PM's post-rounding point this reads the SHIPPED book's
+    /// leverage with RiskManager::leverage_of (silent: process_positions is not re-run) and, the
+    /// first time in this module's life -- once per run -- that book is over its limit, returns a
+    /// WARN whose reason carries the excess in contracts. Otherwise NONE.
+    Result<RiskDecision> finalize(const std::unordered_map<std::string, Position>& book,
+                                  const RiskContext& ctx) override;
+    bool leverage_policy_warned() const { return leverage_policy_warned_; }
 
     /// SCALE iff r.risk_exceeded, with scale = r.recommended_scale bit for bit; else NONE with
     /// scale 1.0. metrics = r in both cases. Keyed on risk_exceeded, NOT on `scale != 1.0`: a NaN
@@ -125,6 +134,7 @@ private:
     double applied_level_{1.0};            ///< product of the factors applied this rebalance
     bool level_partial_{false};            ///< a multiply skipped a pinned scope: the level lies
     double last_requested_{1.0};           ///< the scale evaluate last requested this rebalance
+    bool leverage_policy_warned_{false};   ///< finalize's WARN has fired (once per run)
 };
 
 }  // namespace trade_ngin

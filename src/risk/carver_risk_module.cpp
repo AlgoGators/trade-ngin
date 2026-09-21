@@ -2,6 +2,7 @@
 #include "trade_ngin/risk/carver_risk_module.hpp"
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <iterator>
 #include <map>
@@ -68,7 +69,7 @@ std::set<RiskTerm> CarverRiskModule::terms() const {
 }
 
 std::set<RiskAction> CarverRiskModule::capabilities() const {
-    return {RiskAction::SCALE};
+    return {RiskAction::SCALE, RiskAction::WARN};
 }
 
 void CarverRiskModule::begin_rebalance(const RiskContext& ctx) {
@@ -334,6 +335,33 @@ void CarverRiskModule::on_applied(const RiskApplied& applied, const RiskContext&
         // sleeve's share. Zero laps on every shipped book (no sleeve module is assigned).
         if (applied.partial) level_partial_ = true;
     }
+}
+
+Result<RiskDecision> CarverRiskModule::finalize(
+    const std::unordered_map<std::string, Position>& book, const RiskContext& ctx) {
+    (void)ctx;
+    RiskDecision d;
+    d.module_id = id_;
+    if (leverage_policy_warned_ || book.empty() || market_data_.symbol_indices.empty()) {
+        return Result<RiskDecision>(std::move(d));
+    }
+    const RiskManager::LeverageReading r = rm_.leverage_of(book, market_data_);
+    if (!(r.multiplier < 1.0 - 1e-9) || !(r.multiplier > 0.0)) {
+        return Result<RiskDecision>(std::move(d));
+    }
+    leverage_policy_warned_ = true;
+    double gross_contracts = 0.0;
+    for (const auto& [symbol, pos] : book) gross_contracts += std::abs(static_cast<double>(pos.quantity));
+    const double ratio = 1.0 / r.multiplier;
+    d.action = RiskAction::WARN;
+    d.reason = "RISK_LEVERAGE_ROUNDED the book shipped after rounding is over its leverage limit "
+               "by about " + std::to_string(gross_contracts * (ratio - 1.0)) + " contracts (" +
+               std::to_string(ratio) + "x the limit on a " +
+               std::to_string(static_cast<long>(std::llround(gross_contracts))) +
+               "-contract book; gross " + std::to_string(r.gross_leverage) + ", net " +
+               std::to_string(r.net_leverage) + "). The limit is enforced to within "
+               "whole-contract rounding (config_template risk rationale); logged once per run.";
+    return Result<RiskDecision>(std::move(d));
 }
 
 nlohmann::json CarverRiskModule::describe() const {

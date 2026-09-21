@@ -207,7 +207,9 @@ TEST(CarverRiskModuleTest, DescribeCarriesTheConfigAndTerms) {
     EXPECT_EQ(j["type"], "carver");
     EXPECT_EQ(j["terms"], nlohmann::json({"composition", "magnitude"}));
     EXPECT_EQ(j["config"], tight_config().to_json());
-    EXPECT_EQ(carver.capabilities(), std::set<RiskAction>{RiskAction::SCALE});
+    // SCALE on a lap; WARN at the post-rounding point when the shipped book is over its leverage
+    // limit (T-6b-fix F5, the written policy). Never REFUSE: a failing carver is not a gatekeeper.
+    EXPECT_EQ(carver.capabilities(), (std::set<RiskAction>{RiskAction::SCALE, RiskAction::WARN}));
 }
 
 TEST(CarverRiskModuleTest, BeginRebalanceResetsFlagAndLevelNotWindow) {

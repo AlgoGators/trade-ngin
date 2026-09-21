@@ -282,6 +282,40 @@ TEST_F(RiskModuleLoopTest, ANoneBookRunsNoGateAndLogsItsRuling) {
     EXPECT_FALSE(pm_->last_risk_decisions().empty());
 }
 
+// T-6b-fix F5: the written leverage policy. max_gross/net 0.29 on 1,000 of capital is 2.9 lots
+// of ZZA at 100: the gate cuts a 5-lot book toward 2.9, which no whole-contract book can equal, so
+// forced rounding ships 3 lots, over the limit -- a book no gate reading ever saw, which is why the
+// check reads the SHIPPED book at the post-rounding point. That is logged ONCE per
+// PortfolioManager, with the excess in contracts; a book under the limit logs nothing.
+TEST_F(RiskModuleLoopTest, ARoundedBookOverTheLeverageLimitWarnsOncePerRun) {
+    make_pm(false, {{{"ZZA", make_pos("ZZA", 5.0, 100.0)}}});
+    ::testing::internal::CaptureStdout();
+    ASSERT_TRUE(pm_->process_market_data(three_days()).is_ok());
+    ASSERT_TRUE(pm_->process_market_data({make_bar("ZZA", 4, 101.0)}).is_ok());
+    const std::string out = ::testing::internal::GetCapturedStdout();
+    const double shipped = quantity("ZZA");
+    EXPECT_EQ(shipped, std::round(shipped)) << "whole contracts";
+    EXPECT_GT(shipped * 100.0 / 1000.0, 0.29) << "the precondition: the shipped book is over";
+    EXPECT_EQ(count_of(out, "Risk module carver warning on portfolio PM_RML_"), 1u) << out;
+    // 3 lots x 100 on 1,000 is 0.30 against 0.29: 3 x (0.30/0.29 - 1) = 0.1034 contracts over.
+    EXPECT_EQ(count_of(out, " after rounding: RISK_LEVERAGE_ROUNDED the book shipped after "
+                            "rounding is over its leverage limit by about 0.103448 contracts "
+                            "(1.034483x the limit on a 3-contract book; gross 0.300000, net "
+                            "0.300000)"),
+              1u)
+        << "once per run, not once per rebalance:\n" << out;
+    EXPECT_EQ(count_of(out, "logged once per run."), 1u);
+
+    // Under the limit (2 lots = 0.2 of capital): nothing to say.
+    pm_.reset();
+    make_pm(false, {{{"ZZA", make_pos("ZZA", 2.0, 100.0)}}});
+    ::testing::internal::CaptureStdout();
+    ASSERT_TRUE(pm_->process_market_data(three_days()).is_ok());
+    const std::string under = ::testing::internal::GetCapturedStdout();
+    EXPECT_EQ(quantity("ZZA"), 2.0);
+    EXPECT_EQ(count_of(under, "RISK_LEVERAGE_ROUNDED"), 0u) << under;
+}
+
 TEST_F(RiskModuleLoopTest, EveryDecisionTypeIsEvaluatedAndRecordedEachLap) {
     // 2.5 lots never become whole, so a lap 2 happens; there the REFUSE beats the SCALE and the
     // REPLACE, pins the strategy to its previous positions and ends the loop.
