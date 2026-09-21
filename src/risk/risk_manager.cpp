@@ -516,8 +516,14 @@ double RiskManager::calculate_leverage_multiplier(const MarketData& market_data,
     double gross_multiplier = result.gross_leverage > config_.max_gross_leverage
                                   ? config_.max_gross_leverage / result.gross_leverage
                                   : 1.0;
-    double net_multiplier = result.net_leverage > config_.max_net_leverage
-                                ? config_.max_net_leverage / result.net_leverage
+    // The net limit bounds |net| in either direction: a net-SHORT book over max_net_leverage is
+    // cut exactly as the mirror long book is. result.net_leverage stays SIGNED (the stored
+    // net_leverage column and the email read it); only the comparison and the ratio take the
+    // magnitude (ledger RISK-net-short-ungated; inert on every stored futures and equity book,
+    // whose net is never negative -- T-4f_DECISION row 5).
+    const double net_abs = std::abs(result.net_leverage);
+    double net_multiplier = net_abs > config_.max_net_leverage
+                                ? config_.max_net_leverage / net_abs
                                 : 1.0;
 
     return std::min({1.0, gross_multiplier, net_multiplier});

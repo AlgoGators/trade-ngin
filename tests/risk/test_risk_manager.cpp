@@ -466,14 +466,13 @@ TEST_F(RiskManagerExtendedTest, RecommendedScaleIsMinimumOfMultipliers) {
 
 // ===== Net-leverage sign (ledger RISK-net-short-ungated) =====
 //
-// calculate_leverage_multiplier compares the SIGNED result.net_leverage with
-// max_net_leverage, so a net-SHORT book is never cut by the net term however
-// large |net| grows; only the gross term can bind it. These two tests pin the
-// behaviour of today's source through the public API. The fix -- std::abs for
-// the comparison and the ratio, result.net_leverage left SIGNED so the stored
-// net_leverage column and the email are unchanged -- lands in T-6b commit 9
-// (the risk-loop set, ARM 1), which must flip the net-short assertion below to
-// leverage_multiplier == max_net / |net|. The net-long mirror must not move.
+// calculate_leverage_multiplier used to compare the SIGNED result.net_leverage
+// with max_net_leverage, so a net-SHORT book was never cut by the net term
+// however large |net| grew; only the gross term could bind it. The fix (T-6b-fix
+// F3) takes std::abs for the comparison and the ratio and leaves
+// result.net_leverage SIGNED, so the stored net_leverage column and the email are
+// unchanged. The net-short book is now cut to max_net / |net|; the net-long
+// mirror does not move.
 //
 // Both books are 2.6x of capital: gross 2.6 < max_gross 4.0, so the gross term
 // never binds and the net term is the only one that can move
@@ -503,7 +502,7 @@ std::unordered_map<std::string, Position> two_positions(double aapl_qty, double 
 
 }  // namespace
 
-TEST_F(RiskManagerExtendedTest, NetShortBookOverNetLimitIsNotCutToday) {
+TEST_F(RiskManagerExtendedTest, NetShortBookOverNetLimitIsCutToMaxNetOverAbsNet) {
     RiskManager mgr(default_config());  // max_gross 4.0, max_net 2.0, capital 1,000,000
     const auto md = two_symbol_market_data(mgr);
     auto r = mgr.process_positions(two_positions(-15000.0, -5000.0), md);
@@ -516,19 +515,18 @@ TEST_F(RiskManagerExtendedTest, NetShortBookOverNetLimitIsNotCutToday) {
     ASSERT_LT(res.gross_leverage, mgr.get_config().max_gross_leverage);
 
     // The stored net_leverage is SIGNED: negative for a net-short book, and it
-    // must stay signed after the fix (the column and the email read it).
+    // stays signed after the fix (the column and the email read it).
     EXPECT_LT(res.net_leverage, 0.0);
     EXPECT_DOUBLE_EQ(res.net_leverage, -2.6);
     EXPECT_GT(std::abs(res.net_leverage), mgr.get_config().max_net_leverage)
         << "|net| 2.6 is over max_net_leverage 2.0";
 
-    // TODAY'S BEHAVIOUR (ledger RISK-net-short-ungated): -2.6 > 2.0 is false,
-    // so the net term returns 1.0 and the book is not cut at all. T-6b commit 9
-    // must flip this to EXPECT_DOUBLE_EQ(res.leverage_multiplier, 2.0 / 2.6).
-    EXPECT_EQ(res.leverage_multiplier, 1.0)
-        << "RISK-net-short-ungated: a net-short book over max_net_leverage is not cut "
-           "by today's signed comparison; if this fails, the sign fix has landed and "
-           "this pin must be flipped in the same commit";
+    // |net| 2.6 > 2.0, so the net term cuts to 2.0 / 2.6 -- the value the long
+    // mirror below gets -- and the gate says the book is over its limits.
+    EXPECT_DOUBLE_EQ(res.leverage_multiplier, 2.0 / 2.6)
+        << "RISK-net-short-ungated: a net-short book over max_net_leverage must be cut by "
+           "max_net / |net|, as its long mirror is";
+    EXPECT_TRUE(res.risk_exceeded);
 }
 
 TEST_F(RiskManagerExtendedTest, NetLongBookOverNetLimitIsCutToMaxNetOverNet) {
