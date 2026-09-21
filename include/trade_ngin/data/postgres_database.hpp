@@ -1024,6 +1024,17 @@ private:
                                                    pqxx::work& txn) const;
 
     /**
+     * @brief Log what the futures bar query's one-bar-per-(symbol, time) rule dropped
+     * @param bars_returned Rows the bar query returned
+     * @param copies The companion query's rows (market_data_utils::
+     *        build_futures_duplicate_copies_query), kept copy first in each group
+     *
+     * One INFO "FUTURES_BAR_DEDUP ..." line per load, one WARN
+     * "FUTURES_BAR_DEDUP_CONFLICT ..." line per (symbol, date) whose copies disagree.
+     */
+    void log_futures_bar_duplicates(size_t bars_returned, const pqxx::result& copies) const;
+
+    /**
      * @brief Validate table name components to prevent injection
      * @param asset_class Asset class
      * @param data_type Data type
