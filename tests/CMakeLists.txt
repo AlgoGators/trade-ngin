@@ -129,3 +129,9 @@ set_target_properties(trade_ngin_tests
 # Enable test discovery
 include(GoogleTest)
 gtest_discover_tests(trade_ngin_tests)
+
+# Explicitly-built only: the disposable PostgreSQL QT pipeline probe must not
+# join the monolithic unit-test executable or its test discovery.
+add_executable(qt_report_probe EXCLUDE_FROM_ALL integration/qt_report_probe.cpp)
+target_include_directories(qt_report_probe PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(qt_report_probe PRIVATE trade_ngin)

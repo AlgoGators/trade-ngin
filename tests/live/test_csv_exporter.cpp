@@ -20,6 +20,8 @@
 
 #define private public
 #include "trade_ngin/live/csv_exporter.hpp"
+#include "trade_ngin/instruments/instrument_registry.hpp"
+#include "trade_ngin/strategy/trend_following.hpp"
 #undef private
 
 using namespace trade_ngin;
@@ -34,6 +36,28 @@ std::chrono::system_clock::time_point at_local(int year, int month, int day) {
     tm.tm_hour = 12;
     return std::chrono::system_clock::from_time_t(std::mktime(&tm));
 }
+
+class RegistryInstrumentsGuard {
+public:
+    RegistryInstrumentsGuard() : registry_(InstrumentRegistry::instance()) {
+        std::lock_guard<std::mutex> lock(registry_.mutex_);
+        original_ = registry_.instruments_;
+    }
+
+    ~RegistryInstrumentsGuard() {
+        std::lock_guard<std::mutex> lock(registry_.mutex_);
+        registry_.instruments_ = std::move(original_);
+    }
+
+    void install(const std::string& symbol, const FuturesSpec& spec) {
+        std::lock_guard<std::mutex> lock(registry_.mutex_);
+        registry_.instruments_[symbol] = std::make_shared<FuturesInstrument>(symbol, spec);
+    }
+
+private:
+    InstrumentRegistry& registry_;
+    std::unordered_map<std::string, std::shared_ptr<Instrument>> original_;
+};
 
 }  // namespace
 
@@ -146,4 +170,40 @@ TEST_F(CSVExporterTest, WritePortfolioHeaderProducesCommentLines) {
         if (line.find("100000") != std::string::npos) found_value = true;
     }
     EXPECT_TRUE(found_value);
+}
+
+TEST_F(CSVExporterTest, StrictSnapshotRowsDoNotResurrectClosedUniverseSymbols) {
+    // Mutation caught: a QT display map must not grow a zero NG row merely
+    // because the strategy can trade NG.
+    TrendFollowingStrategy strategy("TREND", StrategyConfig{}, TrendFollowingConfig{}, nullptr);
+    strategy.instrument_data_["ES.v.0"] = InstrumentData{};
+    strategy.instrument_data_["NG.v.0"] = InstrumentData{};
+    RegistryInstrumentsGuard registry;
+    const FuturesSpec es{"ES", "CME", "USD", 50.0, 0.25, 0.0, 0.0, 0.0, 1.0,
+                         "", std::nullopt, std::nullopt};
+    const FuturesSpec ng{"NG", "NYMEX", "USD", 10000.0, 0.001, 0.0, 0.0, 0.0, 1.0,
+                         "", std::nullopt, std::nullopt};
+    registry.install("ES", es);
+    registry.install("NG", ng);
+    StrategyPositionsMap snapshot{{"TREND", {{"ES.v.0", Position("ES.v.0", Quantity(2.0),
+        Price(5000.0), Decimal(0.0), Decimal(0.0), at_local(2026, 4, 28))}}}};
+    StrategyInstancesMap instances{{"TREND", &strategy}};
+    CSVExporter exporter(dir_.string());
+
+    const auto default_export = exporter.export_current_positions(
+        at_local(2026, 4, 28), snapshot, {{"ES.v.0", 5000.0}, {"NG.v.0", 3.0}},
+        1000000.0, 1000000.0, 0.0, instances);
+    ASSERT_TRUE(default_export.is_ok());
+    std::ifstream default_file(default_export.value());
+    const std::string default_contents((std::istreambuf_iterator<char>(default_file)), {});
+    EXPECT_NE(default_contents.find("NG.v.0"), std::string::npos);
+
+    const auto strict_export = exporter.export_current_positions(
+        at_local(2026, 4, 28), snapshot, {{"ES.v.0", 5000.0}, {"NG.v.0", 3.0}},
+        1000000.0, 1000000.0, 0.0, instances, true);
+    ASSERT_TRUE(strict_export.is_ok());
+    std::ifstream strict_file(strict_export.value());
+    const std::string strict_contents((std::istreambuf_iterator<char>(strict_file)), {});
+    EXPECT_NE(strict_contents.find("ES.v.0"), std::string::npos);
+    EXPECT_EQ(strict_contents.find("NG.v.0"), std::string::npos);
 }

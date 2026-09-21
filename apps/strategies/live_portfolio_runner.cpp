@@ -3025,7 +3025,8 @@ int trade_ngin::run_live_portfolio(const LivePortfolioConfig& portfolio_cfg, int
             auto current_export_result = csv_exporter->export_current_positions(
                 now, report_strategy_positions,
                 previous_day_close_prices,  // Market prices (Day T-1 close)
-                current_portfolio_value, gross_notional, net_notional, strategy_instances_map);
+                current_portfolio_value, gross_notional, net_notional, strategy_instances_map,
+                true);  // QT snapshot rows only: do not re-add zero closures from strategy universes.
 
             if (current_export_result.is_ok()) {
                 today_filename = current_export_result.value();
