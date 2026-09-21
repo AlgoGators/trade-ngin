@@ -167,7 +167,7 @@ TEST_F(RiskLoopLogGolden, CarverLapsMatchTheCommit3Sequence) {
     // Pinned on 9d65e3fd (C3b) from this test's own capture. Re-pinned in T-6b-fix F6: the pin had
     // failed since T-6b commits 7e and 9 added lines without re-pinning it. Every line is the
     // commit-3 pin in order, plus exactly the lines marked `+`, each with the commit that added it;
-    // no commit-3 line was removed or changed.
+    // no commit-3 line was removed. One commit-3 line was changed, marked `~` with its commit.
     const std::vector<std::string> expected = {
         "[INFO] [RiskManager] Risk manager initialized successfully with capital=1000",
         "[INFO] [PortfolioManager] Added subscription for PORTFOLIO_MANAGER with 2 event types and 0 symbols",
@@ -204,7 +204,10 @@ TEST_F(RiskLoopLogGolden, CarverLapsMatchTheCommit3Sequence) {
         "[INFO] [RiskManager] Filled-position ledger for strategy GOLDEN_S size: 0",
         "[INFO] [RiskManager] Generated execution for strategy GOLDEN_S: ZZA BUY qty=3",
         "[INFO] [RiskManager] Total executions generated for strategy GOLDEN_S: 1",
-        "[INFO] [Scripted Strategy] Total historical data: 0 returns across 0 symbols",
+        // ~ T-6c commit B: the PM keeps its own history from the bars it is fed, so call 3's
+        //   four dates of ZZA (day 0 from calls 1-2, days 1-3) give 3 returns; the scripted
+        //   strategy reports no history, which the commit-3 pin counted as 0
+        "[INFO] [Scripted Strategy] Total historical data: 3 returns across 1 symbols",
         "[INFO] [Scripted Strategy] Iteration 1 of dynamic optimization + risk loop",
         "[INFO] [RiskManager] Using risk manager",
         "[ERROR] [RiskManager] Instrument not found: ZZA. Available symbols: <registry>",

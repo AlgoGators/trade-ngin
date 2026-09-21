@@ -222,6 +222,7 @@ int main() {
         portfolio_config.max_strategy_allocation = app_config.strategy_defaults.max_strategy_allocation;
         portfolio_config.min_strategy_allocation = app_config.strategy_defaults.min_strategy_allocation;
         portfolio_config.use_optimization = app_config.use_optimization;
+        portfolio_config.covariance_history_prices = app_config.covariance_history_prices;
         portfolio_config.risk_modules = app_config.risk_schema.portfolio;
         portfolio_config.sleeve_risk_modules = app_config.risk_schema.sleeves;
         portfolio_config.opt_config = config.portfolio_config.opt_config;

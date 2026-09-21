@@ -198,6 +198,23 @@ Result<AppConfig> ConfigLoader::extract_config(const nlohmann::json& merged) {
         }
         config.use_optimization = merged.at("use_optimization").get<bool>();
 
+        // T-6c commit B: the PortfolioManager's covariance history length, in prices per
+        // symbol. Optional; absent means 756 (the trend sleeve's own history cap). A value
+        // that is not a whole number of at least 2 is refused: one price gives no return.
+        if (merged.contains("covariance_history_prices")) {
+            const auto& v = merged.at("covariance_history_prices");
+            if (!v.is_number_integer() || v.get<int64_t>() < 2) {
+                return make_error<AppConfig>(
+                    ErrorCode::INVALID_DATA,
+                    "config for " + config.portfolio_id +
+                        ": portfolio.json \"covariance_history_prices\" must be a whole number "
+                        "of at least 2 (prices per symbol kept for the optimiser's covariance; "
+                        "absent means 756), got " + v.dump(),
+                    "ConfigLoader");
+            }
+            config.covariance_history_prices = v.get<size_t>();
+        }
+
         if (!merged.contains("risk")) {
             return make_error<AppConfig>(ErrorCode::INVALID_DATA,
                                          "risk config for " + config.portfolio_id +
