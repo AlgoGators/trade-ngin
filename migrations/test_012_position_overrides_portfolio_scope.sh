@@ -12,13 +12,19 @@ PGDATABASE="${PGDATABASE:-trade_ngin_test}"
 PGUSER="${PGUSER:-postgres}"
 PGPASSWORD="${PGPASSWORD:-postgres}"
 IMAGE="${POSTGRES_IMAGE:-postgres:16-alpine}"
-PSQL=(docker exec -i "$CONTAINER_NAME" psql -v ON_ERROR_STOP=1 -q -X -U "$PGUSER" -d "$PGDATABASE")
+CONTAINER_ID=""
+CONTAINER_CANDIDATE=""
+PSQL=()
 pass=0
 fail=0
 
 ok()  { echo "  PASS  $1"; pass=$((pass + 1)); }
 bad() { echo "  FAIL  $1"; fail=$((fail + 1)); }
-cleanup() { docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true; }
+cleanup() {
+    if [ -n "$CONTAINER_ID" ]; then
+        docker rm -f "$CONTAINER_ID" >/dev/null 2>&1 || true
+    fi
+}
 trap cleanup EXIT
 
 if ! command -v docker >/dev/null 2>&1; then
@@ -29,12 +35,18 @@ if ! docker info >/dev/null 2>&1; then
     echo "BLOCKED: Docker daemon is unavailable; no database was started."
     exit 2
 fi
-if ! docker run --rm -d --name "$CONTAINER_NAME" \
+if ! CONTAINER_CANDIDATE="$(docker run --rm -d --name "$CONTAINER_NAME" \
     -e "POSTGRES_DB=$PGDATABASE" -e "POSTGRES_USER=$PGUSER" \
-    -e "POSTGRES_PASSWORD=$PGPASSWORD" "$IMAGE" >/dev/null; then
+    -e "POSTGRES_PASSWORD=$PGPASSWORD" "$IMAGE")"; then
     echo "BLOCKED: could not start disposable PostgreSQL container from $IMAGE."
     exit 2
 fi
+if [ -z "$CONTAINER_CANDIDATE" ]; then
+    echo "BLOCKED: Docker started no identifiable disposable PostgreSQL container."
+    exit 2
+fi
+CONTAINER_ID="$CONTAINER_CANDIDATE"
+PSQL=(docker exec -i "$CONTAINER_ID" psql -v ON_ERROR_STOP=1 -q -X -U "$PGUSER" -d "$PGDATABASE")
 for _ in $(seq 1 30); do
     "${PSQL[@]}" -c 'SELECT 1' >/dev/null 2>&1 && break
     sleep 1
