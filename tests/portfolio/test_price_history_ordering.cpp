@@ -1,10 +1,16 @@
 // PortfolioManager cycle behaviour.
 //
-// PM-price-history (E3, STAGE3_PLAN §25a.2 / §28b.3): process_market_data reads
-// each strategy's price history AFTER the on_data loop, so the history the
-// optimiser covaries includes the bars of this call -- its newest bar is the bar
-// the strategy signals from. The tests below pin that order with a strategy whose
-// history is exactly the bars it has been fed.
+// PM-price-history (E3, STAGE3_PLAN §25a.2 / §28b.3): process_market_data updates the
+// optimiser's price history AFTER the on_data loop, from this call's bars, so the history the
+// optimiser covaries includes the bars of this call -- its newest bar is the bar the strategy
+// signals from. The tests below pin that order.
+//
+// T-6c commit B changed the mechanism, not the intent: the PM used to copy each strategy's
+// get_price_history() after the loop; it now records the closes of the bars it is fed (one per
+// symbol per date) after the loop. The first test used to feed day D-1 to the strategy
+// directly and expect the PM to see it through the strategy's history; the PM no longer reads
+// that history, so the test now feeds D-1 through the manager too, and still pins that after
+// the call for day D the newest return is day D's.
 //
 // The file also holds the on_data-swallowed-futures guard.
 
@@ -129,33 +135,25 @@ protected:
     std::unique_ptr<PortfolioManager> manager_;
 };
 
-// ===== PM-price-history: the history is read after on_data =====
+// ===== PM-price-history: the history is updated after on_data =====
 //
-// The backtest feeds one day's bars per call. A strategy that already holds day
-// D-1 is fed day D by ONE process_market_data call on a fresh manager: the
-// history the manager holds after that call must end at D, and its returns must
-// include day D's return. Read before the on_data loop, the manager copies the
-// history as it stood before D was fed -- one price, no return -- which is the
-// one-bar lag T-4e measured in the futures backtest (covariance through t-2
-// while signalling from t-1).
+// The backtest feeds one day's bars per call. After the call that feeds day D, the returns
+// the manager holds must end with day D's return. Updated before the on_data loop from a
+// strategy's history (the pre-E3 order), the newest return was D-1's -- the one-bar lag T-4e
+// measured in the futures backtest (covariance through t-2 while signalling from t-1).
 TEST_F(PriceHistoryOrderingTest, OneCallOnAFreshManagerReadsTheReturnOfTheDayItFeeds) {
     static int k = 0;
     auto strategy = std::make_shared<HistoryRecordingStrategy>(
         "HIST_D_" + std::to_string(++k), es_config(), db_);
     ASSERT_TRUE(strategy->initialize().is_ok());
     ASSERT_TRUE(strategy->start().is_ok());
-    // Day D-1: the strategy's own accumulated history, before this manager exists.
-    ASSERT_TRUE(strategy->on_data({bar_at("ES", -1, 100.0)}).is_ok());
     ASSERT_TRUE(manager_->add_strategy(strategy, 0.3).is_ok());
 
-    // Day D, one call.
+    // Day D-1, then day D, one call each.
+    ASSERT_TRUE(manager_->process_market_data({bar_at("ES", -1, 100.0)}).is_ok());
     ASSERT_TRUE(manager_->process_market_data({bar_at("ES", 0, 110.0)}).is_ok());
 
-    ASSERT_EQ(strategy->feeds(), 2) << "D-1 directly, D through the manager, nothing else";
-    ASSERT_EQ(manager_->price_history_.count("ES"), 1u);
-    EXPECT_EQ(manager_->price_history_.at("ES"), (std::vector<double>{100.0, 110.0}))
-        << "the manager read the strategy's history before feeding it day D, so its newest "
-           "price is D-1's, not the bar the strategy signals from (PM-price-history)";
+    ASSERT_EQ(strategy->feeds(), 2) << "D-1 and D through the manager, nothing else";
     ASSERT_EQ(manager_->historical_returns_.count("ES"), 1u)
         << "no returns at all for ES: day D's return is missing (PM-price-history)";
     const auto& rets = manager_->historical_returns_.at("ES");
@@ -177,9 +175,6 @@ TEST_F(PriceHistoryOrderingTest, EveryCallsNewestReturnIsThatCallsBar) {
     for (size_t d = 0; d < closes.size(); ++d) {
         ASSERT_TRUE(manager_->process_market_data({bar_at("ES", static_cast<int>(d), closes[d])})
                         .is_ok());
-        ASSERT_EQ(manager_->price_history_.count("ES"), 1u) << "after call " << d;
-        EXPECT_EQ(manager_->price_history_.at("ES").size(), d + 1)
-            << "after call " << d << " the manager holds the history one call late";
         if (d == 0) continue;
         ASSERT_EQ(manager_->historical_returns_.count("ES"), 1u) << "after call " << d;
         const auto& rets = manager_->historical_returns_.at("ES");

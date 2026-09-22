@@ -264,11 +264,9 @@ TEST_F(PortfolioManagerInternalsTest, UpdateHistoricalReturnsHandlesEmptyDataNoO
 }
 
 TEST_F(PortfolioManagerInternalsTest, UpdateHistoricalReturnsRunsThroughProcessWithoutError) {
-    // MockStrategy does not override get_price_history (it relies on
-    // BaseStrategy's default empty map), so update_historical_returns has
-    // no per-symbol price data to seed `historical_returns_`. We exercise the
-    // pathway end-to-end and assert it doesn't error; covariance tests above
-    // hit the calculation logic with synthetic returns directly.
+    // The PM keeps its own history from the bars it is fed (T-6c commit B), so a strategy
+    // that reports no history (MockStrategy relies on BaseStrategy's empty map) still leaves
+    // the PM with returns for every symbol it was fed.
     auto a = make_strategy("UH", {"AAPL"});
     ASSERT_TRUE(manager_->add_strategy(a.strat, 0.3).is_ok());
     auto t0 = std::chrono::system_clock::now() - std::chrono::hours(24 * 300);
@@ -277,183 +275,20 @@ TEST_F(PortfolioManagerInternalsTest, UpdateHistoricalReturnsRunsThroughProcessW
 }
 
 TEST_F(PortfolioManagerInternalsTest, UpdateHistoricalReturnsTrimsToMaxHistoryLength) {
-    // Direct injection: seed price_history_ to bypass MockStrategy's empty
-    // get_price_history() and verify trimming kicks in.
+    // 200 dates fed straight to update_historical_returns; the 2,520-return cap, lowered to
+    // 50 here, keeps the newest 50 returns.
     auto a = make_strategy("UH2", {"AAPL"});
     ASSERT_TRUE(manager_->add_strategy(a.strat, 0.3).is_ok());
     manager_->max_history_length_ = 50;
-    std::vector<double> prices;
-    for (int i = 0; i < 200; ++i) prices.push_back(100.0 + i * 0.1);
-    manager_->price_history_["AAPL"] = prices;
-    // Update historical returns from the synthetic price history.
-    auto t0 = std::chrono::system_clock::now();
-    Bar b;
-    b.symbol = "AAPL";
-    b.timestamp = t0;
-    b.close = Decimal(120.0);
-    b.open = Decimal(120.0);
-    b.high = Decimal(120.0);
-    b.low = Decimal(120.0);
-    b.volume = 1000.0;
-    manager_->update_historical_returns({b});
-    if (manager_->historical_returns_.count("AAPL")) {
-        EXPECT_LE(manager_->historical_returns_.at("AAPL").size(), 50u);
-    }
+    auto t0 = std::chrono::system_clock::now() - std::chrono::hours(24 * 200);
+    manager_->update_historical_returns(bars("AAPL", 200, t0));
+    ASSERT_EQ(manager_->historical_returns_.count("AAPL"), 1u);
+    EXPECT_EQ(manager_->historical_returns_.at("AAPL").size(), 50u);
 }
 
-// ===== update_historical_returns: the history merge (T-6 commit 2d) =====
-//
-// T-BASE_ADVERSARIAL finding 4, as HD ruled it on 2026-09-19. The PM copies each strategy's
-// price history into price_history_. Before the guard the LAST strategy strategies_ iterated
-// won each symbol, and strategies_ is an unordered_map, so which series survived depended on
-// the map's iteration order. The guard lets the FIRST-REGISTERED (add_strategy order)
-// strategy's series win whatever its length and wherever the map iterates it.
-namespace {
-
-class FixedHistoryStrategy : public MockStrategy {
-public:
-    using MockStrategy::MockStrategy;
-    std::unordered_map<std::string, std::vector<double>> history;
-    std::unordered_map<std::string, std::vector<double>> get_price_history() const override {
-        return history;
-    }
-};
-
-Bar merge_bar(const std::string& symbol) {
-    Bar b;
-    b.symbol = symbol;
-    b.timestamp = std::chrono::system_clock::now();
-    b.open = b.high = b.low = b.close = Decimal(100.0);
-    b.volume = 1000.0;
-    return b;
-}
-
-StrategyConfig merge_strategy_config() {
-    StrategyConfig sc;
-    sc.capital_allocation = 1'000'000.0;
-    sc.max_leverage = 2.0;
-    sc.asset_classes = {AssetClass::EQUITIES};
-    sc.frequencies = {DataFrequency::DAILY};
-    return sc;
-}
-
-std::string iteration_order(const PortfolioManager& pm) {
-    std::string order;
-    for (const auto& [id, _] : pm.strategies_) order += (order.empty() ? "" : ",") + id;
-    return order;
-}
-
-}  // namespace
-
-TEST_F(PortfolioManagerInternalsTest, HistoryMergeKeepsTheFirstRegisteredSeriesWhateverItsLength) {
-    // Fixed ids, so both managers hash the same two keys and differ only in insertion order.
-    auto long_s = std::make_shared<FixedHistoryStrategy>("HIST_LONG", merge_strategy_config(), db_);
-    auto short_s = std::make_shared<FixedHistoryStrategy>("HIST_SHORT", merge_strategy_config(), db_);
-    for (auto* s : {long_s.get(), short_s.get()}) {
-        ASSERT_TRUE(s->initialize().is_ok());
-        ASSERT_TRUE(s->start().is_ok());
-    }
-    const std::vector<double> long_series{100.0, 101.0, 103.0, 102.0, 104.0, 106.0};
-    const std::vector<double> short_series{103.0, 104.0, 105.0};
-    long_s->history = {{"X", long_series}};
-    short_s->history = {{"X", short_series}};
-
-    for (bool long_first : {true, false}) {
-        auto pm = std::make_unique<PortfolioManager>(
-            default_config(), manager_id_ + (long_first ? "_LONG_FIRST" : "_SHORT_FIRST"));
-        if (long_first) {
-            ASSERT_TRUE(pm->add_strategy(long_s, 0.3).is_ok());
-            ASSERT_TRUE(pm->add_strategy(short_s, 0.3).is_ok());
-        } else {
-            ASSERT_TRUE(pm->add_strategy(short_s, 0.3).is_ok());
-            ASSERT_TRUE(pm->add_strategy(long_s, 0.3).is_ok());
-        }
-        SCOPED_TRACE("registered " + std::string(long_first ? "long first" : "short first") +
-                     "; strategies_ iterates " + iteration_order(*pm));
-
-        pm->update_historical_returns({merge_bar("X")});
-
-        const auto& expected = long_first ? long_series : short_series;
-        ASSERT_EQ(pm->price_history_.count("X"), 1u);
-        EXPECT_EQ(pm->price_history_.at("X"), expected)
-            << "the first-registered strategy's series was not kept";
-        ASSERT_EQ(pm->historical_returns_.count("X"), 1u);
-        EXPECT_EQ(pm->historical_returns_.at("X").size(), expected.size() - 1);
-    }
-}
-
-TEST_F(PortfolioManagerInternalsTest, HistoryMergeFirstRegisteredWinsWhereverTheMapIteratesIt) {
-    // Six strategies offer six different series for X, registered in six rotations of one id
-    // list. Six, because libc++ iterates the first-inserted key LAST in every map of up to five
-    // string keys (measured: 0 of 20,000 random key sets of each size 2..5 break it), so with
-    // fewer strategies last-writer-wins and first-registered-wins cannot be told apart; from
-    // six keys (the second rehash) the first-registered key can land anywhere.
-    const std::vector<std::string> ids{"HIST_A", "HIST_B", "HIST_C", "HIST_D", "HIST_E", "HIST_F"};
-    std::vector<std::shared_ptr<FixedHistoryStrategy>> strategies;
-    for (size_t k = 0; k < ids.size(); ++k) {
-        auto s = std::make_shared<FixedHistoryStrategy>(ids[k], merge_strategy_config(), db_);
-        ASSERT_TRUE(s->initialize().is_ok());
-        ASSERT_TRUE(s->start().is_ok());
-        // Strategy k offers k + 2 prices, each series distinct, so no two offers are equal.
-        std::vector<double> series;
-        for (size_t i = 0; i < k + 2; ++i) series.push_back(100.0 + 10.0 * k + i);
-        s->history = {{"X", series}};
-        strategies.push_back(s);
-    }
-
-    bool first_registered_not_iterated_last = false;
-    bool first_registered_not_longest = false;
-    for (size_t r = 0; r < ids.size(); ++r) {
-        auto pm = std::make_unique<PortfolioManager>(default_config(),
-                                                     manager_id_ + "_ROT" + std::to_string(r));
-        for (size_t i = 0; i < ids.size(); ++i) {
-            ASSERT_TRUE(pm->add_strategy(strategies[(r + i) % ids.size()], 0.15).is_ok());
-        }
-        const std::string order = iteration_order(*pm);
-        SCOPED_TRACE("registered " + ids[r] + " first; strategies_ iterates " + order);
-        if (order.substr(order.rfind(',') + 1) != ids[r]) first_registered_not_iterated_last = true;
-        if (r + 1 != ids.size()) first_registered_not_longest = true;
-
-        pm->update_historical_returns({merge_bar("X")});
-
-        ASSERT_EQ(pm->price_history_.count("X"), 1u);
-        EXPECT_EQ(pm->price_history_.at("X"), strategies[r]->history.at("X"))
-            << "the first-registered strategy (" << ids[r] << ") did not win";
-        ASSERT_EQ(pm->historical_returns_.count("X"), 1u);
-        EXPECT_EQ(pm->historical_returns_.at("X").size(), r + 1);
-    }
-    // The test only separates the rules if some rotation iterates the first-registered
-    // strategy somewhere other than last (last-writer-wins keeps the wrong series there) and
-    // some rotation's first-registered series is not the longest (keep-longest does).
-    EXPECT_TRUE(first_registered_not_iterated_last)
-        << "every rotation iterates its first-registered strategy last on this standard library";
-    EXPECT_TRUE(first_registered_not_longest);
-}
-
-TEST_F(PortfolioManagerInternalsTest, HistoryMergeClearsReturnsOfASymbolThatDropsBelowTwoPrices) {
-    StrategyConfig sc;
-    sc.capital_allocation = 1'000'000.0;
-    sc.max_leverage = 2.0;
-    sc.asset_classes = {AssetClass::EQUITIES};
-    sc.frequencies = {DataFrequency::DAILY};
-    auto s = std::make_shared<FixedHistoryStrategy>("HIST_DROP", sc, db_);
-    ASSERT_TRUE(s->initialize().is_ok());
-    ASSERT_TRUE(s->start().is_ok());
-    ASSERT_TRUE(manager_->add_strategy(s, 0.3).is_ok());
-
-    s->history = {{"X", {100.0, 102.0, 101.0}}};
-    manager_->update_historical_returns({merge_bar("X")});
-    ASSERT_EQ(manager_->historical_returns_.at("X").size(), 2u);
-
-    // The symbol's history is now a single price: no return can be computed from it,
-    // so the two returns of the older series must not survive.
-    s->history = {{"X", {101.0}}};
-    manager_->update_historical_returns({merge_bar("X")});
-    ASSERT_EQ(manager_->price_history_.at("X").size(), 1u);
-    ASSERT_EQ(manager_->historical_returns_.count("X"), 1u);
-    EXPECT_TRUE(manager_->historical_returns_.at("X").empty())
-        << "stale returns kept: " << manager_->historical_returns_.at("X").size();
-}
+// The history merge tests (first-registered wins, PM_HISTORY_MERGE; T-6 commit 2d) were
+// removed with the merge rule itself in T-6c commit B: the PM no longer reads any strategy's
+// price history. Their replacements are in test_pm_own_price_history.cpp.
 
 // ===== get_positions_internal (private) =====
 

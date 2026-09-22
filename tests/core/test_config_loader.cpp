@@ -852,6 +852,51 @@ TEST_F(ConfigLoaderTest, UseOptimizationResolvesFromPortfolioJson) {
     EXPECT_FALSE(r.value().use_optimization);
 }
 
+// T-6c commit B: portfolio.json "covariance_history_prices", the PortfolioManager's covariance
+// history length in prices per symbol. Read through to_json() so this test compiles against the
+// parent source, where the key has no reader.
+TEST_F(ConfigLoaderTest, CovarianceHistoryPricesAbsentMeans756) {
+    write_full_set("base");  // minimal_portfolio() does not write the key
+    auto r = ConfigLoader::load(base_, "base");
+    ASSERT_TRUE(r.is_ok()) << (r.error() ? r.error()->what() : "");
+    EXPECT_EQ(r.value().to_json().value("covariance_history_prices", -1), 756)
+        << "an absent covariance_history_prices must mean 756";
+
+    write_full_set("base", {}, {{"covariance_history_prices", 500}});
+    auto r2 = ConfigLoader::load(base_, "base");
+    ASSERT_TRUE(r2.is_ok()) << (r2.error() ? r2.error()->what() : "");
+    EXPECT_EQ(r2.value().to_json().value("covariance_history_prices", -1), 500);
+}
+
+TEST_F(ConfigLoaderTest, CovarianceHistoryPricesBelowTwoOrNotAWholeNumberIsRefused) {
+    for (const nlohmann::json& bad :
+         {nlohmann::json(1), nlohmann::json(0), nlohmann::json(-5), nlohmann::json(2.5),
+          nlohmann::json("756"), nlohmann::json(true), nlohmann::json(nullptr)}) {
+        EXPECT_EQ(load_error(minimal_risk(), {{"covariance_history_prices", bad}}),
+                  "config for TEST_PORTFOLIO: portfolio.json \"covariance_history_prices\" must be "
+                  "a whole number of at least 2 (prices per symbol kept for the optimiser's "
+                  "covariance; absent means 756), got " + bad.dump())
+            << "value " << bad.dump();
+    }
+    EXPECT_EQ(load_error(minimal_risk(), {{"covariance_history_prices", 2}}), "")
+        << "2 is the smallest value that gives a return";
+}
+
+TEST(TrackedTemplateCovarianceHistory, EveryBookDeclares756) {
+    const auto tmpl = tracked_config_template();
+    ASSERT_FALSE(tmpl.empty()) << "config_template/ not found; this test must not skip";
+    for (const char* book : {"base", "conservative", "equity_mr"}) {
+        std::ifstream f(tmpl / "portfolios" / book / "portfolio.json");
+        ASSERT_TRUE(f.good()) << book;
+        const auto portfolio = nlohmann::json::parse(f);
+        ASSERT_TRUE(portfolio.contains("covariance_history_prices")) << book;
+        EXPECT_EQ(portfolio.at("covariance_history_prices").get<int>(), 756) << book;
+        auto loaded = ConfigLoader::load(tmpl, book);
+        ASSERT_TRUE(loaded.is_ok()) << book << ": " << (loaded.is_error() ? loaded.error()->what() : "");
+        EXPECT_EQ(loaded.value().to_json().value("covariance_history_prices", -1), 756) << book;
+    }
+}
+
 TEST_F(ConfigLoaderTest, StrategyLimitsAreRequiredInRiskJson) {
     auto risk = minimal_risk();
     risk.erase("max_drawdown");

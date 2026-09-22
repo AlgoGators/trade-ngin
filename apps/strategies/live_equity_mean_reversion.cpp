@@ -568,6 +568,7 @@ int main(int argc, char* argv[]) {
         // single run. bt_equity_mean_reversion.cpp already disables it; this makes live
         // agree rather than optimising on values it made up.
         portfolio_config.use_optimization = false;
+        portfolio_config.covariance_history_prices = app_config.covariance_history_prices;
         portfolio_config.risk_modules = app_config.risk_schema.portfolio;
         portfolio_config.sleeve_risk_modules = app_config.risk_schema.sleeves;
         portfolio_config.opt_config = opt_config;

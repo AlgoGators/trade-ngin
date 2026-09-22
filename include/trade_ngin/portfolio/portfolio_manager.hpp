@@ -55,6 +55,15 @@ struct PortfolioConfig : public ConfigBase {
     // there is nothing to converge to, and re-entering the loop would re-apply
     // the risk scale to an already-scaled book (see E2-F1).
     bool allow_fractional_positions{false};
+    // How many daily closes per symbol the PortfolioManager keeps for the optimiser's
+    // covariance (portfolio.json "covariance_history_prices"; absent means 756). The PM
+    // records one close per symbol per date from the bars it is fed and drops the oldest
+    // date first once a symbol holds more than this. 756 is the trend sleeve's own history
+    // cap (max(vol_lookback_long, 756)), so a single-sleeve trend book covaries the prices
+    // it always did. Fewer than 2 cannot give a return and is refused (loader and
+    // constructor). Not written by to_json(): that object is stored verbatim in
+    // backtest.run_metadata.portfolio_config.
+    size_t covariance_history_prices{756};
     DynamicOptConfig opt_config;      // Optimization configuration
     RiskConfig risk_config;           // Risk management configuration
 
@@ -104,6 +113,9 @@ struct PortfolioConfig : public ConfigBase {
         }
         if (j.contains("allow_fractional_positions")) {
             allow_fractional_positions = j.at("allow_fractional_positions").get<bool>();
+        }
+        if (j.contains("covariance_history_prices")) {
+            covariance_history_prices = j.at("covariance_history_prices").get<size_t>();
         }
         if (j.contains("opt_config"))
             opt_config.from_json(j.at("opt_config"));
@@ -350,15 +362,9 @@ private:
         bool use_optimization;
         std::unordered_map<std::string, Position> current_positions;
         std::unordered_map<std::string, Position> target_positions;
-        // Position of the add_strategy call that registered this strategy (0 = first).
-        // strategies_ is an unordered_map, so its iteration order is not the registration
-        // order; update_historical_returns reads this to let the first-registered strategy
-        // win when two strategies offer different price series for one symbol.
-        size_t registration_index{0};
     };
 
     std::unordered_map<std::string, StrategyInfo> strategies_;
-    size_t next_registration_index_{0};  // registration_index of the next add_strategy
     std::vector<ExecutionReport> recent_executions_;  // Portfolio-level (aggregated)
     std::unordered_map<std::string, std::vector<ExecutionReport>> strategy_executions_;  // Per-strategy executions
     // Per-strategy filled position (symbol -> net qty) accumulated from the
@@ -372,7 +378,12 @@ private:
     mutable std::mutex mutex_;
     const std::string instance_id_;
 
-    std::unordered_map<std::string, std::vector<double>> price_history_;
+    // The optimiser's price history, kept by the PM itself from the bars process_market_data
+    // is fed: symbol -> (UTC day number -> close). One close per symbol per date (a repeated
+    // date overwrites, so duplicate bars cannot lengthen a series), at most
+    // config_.covariance_history_prices dates per symbol, oldest dropped first. A symbol that
+    // leaves the feed keeps its series, which stops growing. No strategy's history is read.
+    std::unordered_map<std::string, std::map<int64_t, double>> closes_by_date_;
     std::unordered_map<std::string, std::vector<double>> historical_returns_;
     MarketData current_market_data_;
 

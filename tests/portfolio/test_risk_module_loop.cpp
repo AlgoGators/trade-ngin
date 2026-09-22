@@ -52,17 +52,10 @@ public:
         if (calls_ == 0) return {};
         return script_[std::min(calls_, script_.size()) - 1];
     }
-    std::unordered_map<std::string, std::vector<double>> get_price_history() const override {
-        return history_;
-    }
-    void set_history(std::unordered_map<std::string, std::vector<double>> h) {
-        history_ = std::move(h);
-    }
 
 private:
     std::vector<Book> script_;
     size_t calls_{0};
-    std::unordered_map<std::string, std::vector<double>> history_;
 };
 
 Timestamp day(int d) {
@@ -844,17 +837,16 @@ TEST_F(RiskRefuseTest, PerScopeApplySkipsPinnedSleeves) {
 }
 
 TEST_F(RiskRefuseTest, PinnedSleeveIsExcludedFromTheOptimiser) {
-    // The optimiser runs only on symbols with >= 20 returns, so both strategies supply a
-    // 40-price history.
+    // The optimiser runs only on symbols with >= 20 returns, so the call carries 40 dates of
+    // AAA and BBB bars. (The PM keeps its own history from the bars it is fed, T-6c commit B;
+    // this test used to hand both strategies the same 40-price history instead.)
     make_two_sleeves(false, true, {{"AAA", make_pos("AAA", 9.0, 100.0)}, {"BBB", make_pos("BBB", 4.0, 100.0)}},
                      {{"AAA", make_pos("AAA", 7.0, 100.0)}, {"BBB", make_pos("BBB", 5.0, 100.0)}});
-    std::unordered_map<std::string, std::vector<double>> history;
+    std::vector<Bar> bars = three_days();
     for (int d = 0; d < 40; ++d) {
-        history["AAA"].push_back(100.0 * (1.0 + 0.03 * std::sin(0.7 * d)));
-        history["BBB"].push_back(100.0 * (1.0 + 0.02 * std::cos(1.3 * d)));
+        bars.push_back(make_bar("AAA", d - 39, 100.0 * (1.0 + 0.03 * std::sin(0.7 * d))));
+        bars.push_back(make_bar("BBB", d - 39, 100.0 * (1.0 + 0.02 * std::cos(1.3 * d))));
     }
-    sa_->set_history(history);
-    sb_->set_history(history);
     ASSERT_TRUE(pm_->update_strategy_position("SA", "AAA", make_pos("AAA", 2.0, 100.0)).is_ok());
     ASSERT_TRUE(pm_->update_strategy_position("SA", "BBB", make_pos("BBB", 1.0, 100.0)).is_ok());
     ASSERT_TRUE(pm_->set_risk_modules(
@@ -864,7 +856,7 @@ TEST_F(RiskRefuseTest, PinnedSleeveIsExcludedFromTheOptimiser) {
                                  "sleeve")}}})
                     .is_ok());
     ::testing::internal::CaptureStdout();
-    ASSERT_TRUE(pm_->process_market_data(three_days()).is_ok());
+    ASSERT_TRUE(pm_->process_market_data(bars).is_ok());
     const std::string out = ::testing::internal::GetCapturedStdout();
     EXPECT_EQ(qty("SA", "AAA"), 2.0) << out;
     EXPECT_EQ(qty("SA", "BBB"), 1.0);

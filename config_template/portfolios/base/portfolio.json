@@ -35,5 +35,7 @@
       }
     }
   },
-  "use_optimization": true
+  "use_optimization": true,
+  "covariance_history_prices": 756,
+  "_covariance_history_prices_note": "daily closes per symbol the PortfolioManager keeps for the optimiser covariance, one per date, oldest dropped first; absent means 756 (the trend sleeve own cap); at least 2"
 }
