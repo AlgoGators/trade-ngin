@@ -25,6 +25,37 @@ namespace trade_ngin {
 class PostgresDatabase;
 class InstrumentRegistry;
 
+bool runtime_control_enabled(const char* value);
+Result<nlohmann::json> build_runtime_trading_snapshot(const AppConfig& config);
+
+using StrategyPositionRows =
+    std::unordered_map<std::string, std::unordered_map<std::string, Position>>;
+
+struct ReportPositionSnapshot {
+    const StrategyPositionRows by_strategy;
+    const std::unordered_map<std::string, Position> combined;
+    const std::string portfolio_id;
+    const std::string strategy_id;
+    const std::vector<std::string> strategy_names;
+    const std::string portfolio_type;
+    const Timestamp date;
+    const std::unordered_map<std::string, size_t> evidence_counts;
+};
+
+// Carry QT state for every enabled strategy, including a now-flat system book.
+Result<void> seed_qt_report_positions(
+    PostgresDatabase& db, const std::string& strategy_id,
+    const std::vector<std::string>& strategy_names, const std::string& portfolio_id,
+    const Timestamp& report_date);
+
+// Loads the QT execution snapshot for every report strategy, verifies that
+// QT rows account for all non-flat system symbols, and returns open QT
+// positions plus the aggregated report position map.
+Result<ReportPositionSnapshot> load_qt_report_position_snapshot(
+    PostgresDatabase& db, const std::string& strategy_id,
+    const std::vector<std::string>& strategy_names, const std::string& portfolio_id,
+    const Timestamp& report_date, const StrategyPositionRows& system_rows);
+
 // Latest bar per symbol from a flat, chronologically-loaded bar vector
 // (DataConversionUtils::arrow_table_to_bars' real return type). Built once
 // by the caller and reused, rather than each consumer re-scanning the
@@ -73,6 +104,9 @@ struct StrategySelection {
     // can reproduce the original "allocations don't sum to 1.0" WARN.
     double allocation_sum_before_normalization{0.0};
 };
+
+// Controlled operation never normalizes a partial allocation into full capital.
+Result<StrategySelection> select_controlled_live_strategies(const nlohmann::json& config);
 
 // Selects strategies with enabled_live=true from a strategies_config JSON
 // object -- either AppConfig::strategies_config (the live path) or the

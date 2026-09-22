@@ -1,6 +1,9 @@
 #include <gtest/gtest.h>
+#include <array>
 #include <atomic>
 #include <cmath>
+#include <cstddef>
+#include <new>
 #include <thread>
 #include "trade_ngin/core/state_manager.hpp"
 #include "trade_ngin/data/database_interface.hpp"
@@ -8,6 +11,33 @@
 #include "trade_ngin/strategy/types.hpp"
 
 using namespace trade_ngin;
+
+TEST(StrategyMetricsTest, DefaultConstructionInitializesEveryField) {
+    alignas(StrategyMetrics) std::array<std::byte, sizeof(StrategyMetrics)> storage;
+    storage.fill(std::byte{0xA5});
+
+    auto* metrics = ::new (static_cast<void*>(storage.data())) StrategyMetrics;
+
+    EXPECT_DOUBLE_EQ(metrics->unrealized_pnl, 0.0);
+    EXPECT_DOUBLE_EQ(metrics->realized_pnl, 0.0);
+    EXPECT_DOUBLE_EQ(metrics->total_pnl, 0.0);
+    EXPECT_DOUBLE_EQ(metrics->sharpe_ratio, 0.0);
+    EXPECT_DOUBLE_EQ(metrics->sortino_ratio, 0.0);
+    EXPECT_DOUBLE_EQ(metrics->max_drawdown, 0.0);
+    EXPECT_DOUBLE_EQ(metrics->win_rate, 0.0);
+    EXPECT_DOUBLE_EQ(metrics->profit_factor, 0.0);
+    EXPECT_EQ(metrics->total_trades, 0);
+    EXPECT_DOUBLE_EQ(metrics->avg_trade, 0.0);
+    EXPECT_DOUBLE_EQ(metrics->avg_winner, 0.0);
+    EXPECT_DOUBLE_EQ(metrics->avg_loser, 0.0);
+    EXPECT_DOUBLE_EQ(metrics->max_winner, 0.0);
+    EXPECT_DOUBLE_EQ(metrics->max_loser, 0.0);
+    EXPECT_DOUBLE_EQ(metrics->avg_holding_period, 0.0);
+    EXPECT_DOUBLE_EQ(metrics->turnover, 0.0);
+    EXPECT_DOUBLE_EQ(metrics->volatility, 0.0);
+
+    metrics->~StrategyMetrics();
+}
 
 // --- Mock Database with Failure Simulation ---
 class MockPostgresDatabase : public PostgresDatabase {
@@ -266,16 +296,17 @@ TEST_F(BaseStrategyTest, CheckRiskLimits_FailsOnMaxDrawdown) {
     auto strategy = createRunningStrategy(config);
 
     // Simulate a large loss
-    strategy->on_execution(createExecution(Side::SELL, "AAPL", 1000, 50.0));  // Short 1000 shares
-    strategy->on_execution(
-        createExecution(Side::BUY, "AAPL", 1000, 200.0));  // Buy back at higher price
+    ASSERT_TRUE(
+        strategy->on_execution(createExecution(Side::SELL, "AAPL", 1000, 50.0)).is_ok());
+    ASSERT_TRUE(
+        strategy->on_execution(createExecution(Side::BUY, "AAPL", 1000, 200.0)).is_ok());
     // Realized PnL: (50 - 200) * 1000 = -150,000 → Drawdown = -150%
 
     RiskLimits limits;
     limits.max_drawdown = 0.5;  // 50% max drawdown
-    strategy->update_risk_limits(limits);
+    ASSERT_TRUE(strategy->update_risk_limits(limits).is_error());
     auto result = strategy->check_risk_limits();
-    EXPECT_TRUE(result.is_error());
+    ASSERT_TRUE(result.is_error());
     EXPECT_EQ(result.error()->code(), ErrorCode::RISK_LIMIT_EXCEEDED);
 }
 

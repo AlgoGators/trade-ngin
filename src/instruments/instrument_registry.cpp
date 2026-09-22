@@ -6,6 +6,28 @@
 
 namespace trade_ngin {
 
+namespace {
+
+std::string futures_root_symbol(const std::string& symbol) {
+    const auto variant_position = symbol.find(".v.");
+    return variant_position == std::string::npos ? symbol : symbol.substr(0, variant_position);
+}
+
+int generic_lookup_priority(AssetType asset_type) {
+    switch (asset_type) {
+        case AssetType::EQUITY:
+            return 3;
+        case AssetType::FUTURE:
+            return 2;
+        case AssetType::OPTION:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+}  // namespace
+
 Result<void> InstrumentRegistry::initialize(std::shared_ptr<PostgresDatabase> db) {
     std::lock_guard<std::mutex> lock(mutex_);
 
@@ -34,35 +56,18 @@ Result<void> InstrumentRegistry::initialize(std::shared_ptr<PostgresDatabase> db
 std::shared_ptr<Instrument> InstrumentRegistry::get_instrument(const std::string& symbol) const {
     std::lock_guard<std::mutex> lock(mutex_);
 
-    std::string cleaned_symbol = symbol;
+    const auto variant_position = symbol.find(".v.");
+    if (variant_position != std::string::npos) {
+        auto future = futures_.find(futures_root_symbol(symbol));
+        if (future != futures_.end()) {
+            return future->second;
+        }
 
-    // Strip variant suffix (e.g., "ZC.v.0" -> "ZC", "ES.v.0" -> "ES") before any lookup or remap
-    auto v_pos = cleaned_symbol.find(".v.");
-    const bool had_variant_suffix = v_pos != std::string::npos;
-    if (had_variant_suffix) {
-        cleaned_symbol = cleaned_symbol.substr(0, v_pos);
+        ERROR("Futures instrument not found: " + futures_root_symbol(symbol));
+        return nullptr;
     }
 
-    // There is no micro-futures remap here any more. This used to rewrite ES to
-    // MES, YM to MYM and NQ to MNQ before every lookup, so a full-size
-    // equity-index contract was priced as the micro -- a tenth of its value.
-    //
-    // Settled against the production database on 2026-09-06, which is the only
-    // place that could settle it. metadata.contract_metadata carries both the
-    // full-size and the micro rows with correct point values (ES 50, MES 5;
-    // NQ 20, MNQ 2; YM 5, MYM 0.5), and the book has held micros directly
-    // since 2025-10-06 -- the strategies emit MES, MNQ, MYM and M2K. So the
-    // remap never once helped a position the fund actually holds. What it did
-    // was value the full-size NQ and YM held between September and November
-    // 2025 at a tenth of what they were worth.
-    //
-    // Removing it therefore changes historical equity-index valuations and
-    // nothing current. The exact-match guard that used to sit in front of it is
-    // gone with it: with no remap to pre-empt, a bare ticker simply resolves to
-    // itself, which is what the NYSE "ES" (Eversource Energy) case wanted all
-    // along.
-
-    auto it = instruments_.find(cleaned_symbol);
+    auto it = instruments_.find(symbol);
     if (it != instruments_.end()) {
         return it->second;
     }
@@ -72,41 +77,47 @@ std::shared_ptr<Instrument> InstrumentRegistry::get_instrument(const std::string
         available_symbols += sym + ", ";
     }
 
-    ERROR("Instrument not found: " + cleaned_symbol + ". Available symbols: " + available_symbols);
+    ERROR("Instrument not found: " + symbol + ". Available symbols: " + available_symbols);
     return nullptr;
 }
 
 std::shared_ptr<FuturesInstrument> InstrumentRegistry::get_futures_instrument(
     const std::string& symbol) const {
-    auto instrument = get_instrument(symbol);
-    if (!instrument || instrument->get_type() != AssetType::FUTURE) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    auto future = futures_.find(futures_root_symbol(symbol));
+    if (future == futures_.end()) {
         WARN("Invalid futures instrument: " + symbol);
         return nullptr;
     }
 
-    return std::dynamic_pointer_cast<FuturesInstrument>(instrument);
+    return future->second;
 }
 
 std::shared_ptr<EquityInstrument> InstrumentRegistry::get_equity_instrument(
     const std::string& symbol) const {
-    auto instrument = get_instrument(symbol);
-    if (!instrument || instrument->get_type() != AssetType::EQUITY) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    auto equity = equities_.find(symbol);
+    if (equity == equities_.end()) {
         WARN("Invalid equity instrument: " + symbol);
         return nullptr;
     }
 
-    return std::dynamic_pointer_cast<EquityInstrument>(instrument);
+    return equity->second;
 }
 
 std::shared_ptr<OptionInstrument> InstrumentRegistry::get_option_instrument(
     const std::string& symbol) const {
-    auto instrument = get_instrument(symbol);
-    if (!instrument || instrument->get_type() != AssetType::OPTION) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    auto option = options_.find(symbol);
+    if (option == options_.end()) {
         WARN("Invalid option instrument: " + symbol);
         return nullptr;
     }
 
-    return std::dynamic_pointer_cast<OptionInstrument>(instrument);
+    return option->second;
 }
 
 Result<void> InstrumentRegistry::load_instruments() {
@@ -160,13 +171,40 @@ Result<void> InstrumentRegistry::load_instruments() {
 
         int rows_loaded = 0;
 
-        // Create a temporary map to hold all the instruments
+        // Create temporary indexes so readers never observe a partially loaded registry.
         std::unordered_map<std::string, std::shared_ptr<Instrument>> temp_instruments;
+        std::unordered_map<std::string, std::shared_ptr<FuturesInstrument>> temp_futures;
+        std::unordered_map<std::string, std::shared_ptr<EquityInstrument>> temp_equities;
+        std::unordered_map<std::string, std::shared_ptr<OptionInstrument>> temp_options;
 
         for (int64_t i = 0; i < table->num_rows(); i++) {
             auto instrument = create_instrument_from_db(table, i);
             if (instrument) {
-                temp_instruments[instrument->get_symbol()] = instrument;
+                std::string generic_symbol = instrument->get_symbol();
+                switch (instrument->get_type()) {
+                    case AssetType::FUTURE:
+                        generic_symbol = futures_root_symbol(generic_symbol);
+                        temp_futures[generic_symbol] =
+                            std::dynamic_pointer_cast<FuturesInstrument>(instrument);
+                        break;
+                    case AssetType::EQUITY:
+                        temp_equities[generic_symbol] =
+                            std::dynamic_pointer_cast<EquityInstrument>(instrument);
+                        break;
+                    case AssetType::OPTION:
+                        temp_options[generic_symbol] =
+                            std::dynamic_pointer_cast<OptionInstrument>(instrument);
+                        break;
+                    default:
+                        break;
+                }
+
+                auto generic = temp_instruments.find(generic_symbol);
+                if (generic == temp_instruments.end() ||
+                    generic_lookup_priority(instrument->get_type()) >
+                        generic_lookup_priority(generic->second->get_type())) {
+                    temp_instruments[generic_symbol] = instrument;
+                }
                 rows_loaded++;
                 DEBUG("Loaded instrument: " + instrument->get_symbol());
             }
@@ -174,7 +212,10 @@ Result<void> InstrumentRegistry::load_instruments() {
 
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            instruments_ = std::move(temp_instruments);  // Swap the temporary map with the main map
+            instruments_ = std::move(temp_instruments);
+            futures_ = std::move(temp_futures);
+            equities_ = std::move(temp_equities);
+            options_ = std::move(temp_options);
         }
 
         INFO("Loaded " + std::to_string(rows_loaded) + " instruments from database");
@@ -201,27 +242,32 @@ std::vector<std::shared_ptr<Instrument>> InstrumentRegistry::get_instruments_by_
 
     std::vector<std::shared_ptr<Instrument>> result;
 
-    AssetType target_type;
     switch (asset_class) {
         case AssetClass::FUTURES:
-            target_type = AssetType::FUTURE;
-            break;
+            for (const auto& [symbol, instrument] : futures_) {
+                result.push_back(instrument);
+            }
+            return result;
         case AssetClass::EQUITIES:
-            target_type = AssetType::EQUITY;
-            break;
+            for (const auto& [symbol, instrument] : equities_) {
+                result.push_back(instrument);
+            }
+            return result;
         case AssetClass::OPTIONS:
-            target_type = AssetType::OPTION;
-            break;
+            for (const auto& [symbol, instrument] : options_) {
+                result.push_back(instrument);
+            }
+            return result;
         case AssetClass::CURRENCIES:
-            target_type = AssetType::FOREX;
             break;
         case AssetClass::CRYPTO:
-            target_type = AssetType::CRYPTO;
             break;
         default:
             return result;
     }
 
+    const AssetType target_type = asset_class == AssetClass::CURRENCIES ? AssetType::FOREX
+                                                                          : AssetType::CRYPTO;
     for (const auto& [symbol, instrument] : instruments_) {
         if (instrument->get_type() == target_type) {
             result.push_back(instrument);
@@ -234,35 +280,11 @@ std::vector<std::shared_ptr<Instrument>> InstrumentRegistry::get_instruments_by_
 bool InstrumentRegistry::has_instrument(const std::string& symbol) const {
     std::lock_guard<std::mutex> lock(mutex_);
 
-    std::string cleaned_symbol = symbol;
-
-    // Strip variant suffix (e.g., "ZC.v.0" -> "ZC", "ES.v.0" -> "ES") before any lookup or remap
-    auto v_pos = cleaned_symbol.find(".v.");
-    const bool had_variant_suffix = v_pos != std::string::npos;
-    if (had_variant_suffix) {
-        cleaned_symbol = cleaned_symbol.substr(0, v_pos);
+    if (symbol.find(".v.") != std::string::npos) {
+        return futures_.find(futures_root_symbol(symbol)) != futures_.end();
     }
 
-    // There is no micro-futures remap here any more. This used to rewrite ES to
-    // MES, YM to MYM and NQ to MNQ before every lookup, so a full-size
-    // equity-index contract was priced as the micro -- a tenth of its value.
-    //
-    // Settled against the production database on 2026-09-06, which is the only
-    // place that could settle it. metadata.contract_metadata carries both the
-    // full-size and the micro rows with correct point values (ES 50, MES 5;
-    // NQ 20, MNQ 2; YM 5, MYM 0.5), and the book has held micros directly
-    // since 2025-10-06 -- the strategies emit MES, MNQ, MYM and M2K. So the
-    // remap never once helped a position the fund actually holds. What it did
-    // was value the full-size NQ and YM held between September and November
-    // 2025 at a tenth of what they were worth.
-    //
-    // Removing it therefore changes historical equity-index valuations and
-    // nothing current. The exact-match guard that used to sit in front of it is
-    // gone with it: with no remap to pre-empt, a bare ticker simply resolves to
-    // itself, which is what the NYSE "ES" (Eversource Energy) case wanted all
-    // along.
-
-    return instruments_.find(cleaned_symbol) != instruments_.end();
+    return instruments_.find(symbol) != instruments_.end();
 }
 
 std::shared_ptr<Instrument> InstrumentRegistry::create_instrument_from_db(

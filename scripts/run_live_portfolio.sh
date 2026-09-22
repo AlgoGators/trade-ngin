@@ -19,6 +19,7 @@ set -uo pipefail  # deliberately NOT -e: we capture the binary's exit code ourse
 # has data through 2026-05-03, while BASE_PORTFOLIO stops in December 2025.
 # Override with -e LIVE_BINARY=... to run a different one.
 BINARY="${LIVE_BINARY:-/app/build/bin/Release/live_portfolio_conservative}"
+APP_ROOT="${APP_ROOT:-/app}"
 
 CRON_ENV="${CRON_ENV:-/app/.cron_env}"
 LOCK_DIR="${LOCK_DIR:-/tmp/live_portfolio.lock}"
@@ -68,13 +69,18 @@ fi
 # relative to the current directory. Without this cd every scheduled run dies
 # on config-not-found -- the same class of silent failure this script exists
 # to eliminate.
-cd /app || { log "FATAL: cannot cd /app"; exit 1; }
+cd "$APP_ROOT" || { log "FATAL: cannot cd $APP_ROOT"; exit 1; }
 
 # --- run ---------------------------------------------------------------------
 DATE="$(date +%Y-%m-%d)"
 log "starting $BINARY for $DATE"
 
-"$BINARY" "$DATE" --send-email
+run_args=("$DATE")
+if [ "${QT_EMAIL_DELIVERY_ENABLED:-}" = "true" ]; then
+    run_args+=(--send-email)
+fi
+
+"$BINARY" "${run_args[@]}"
 rc=$?
 
 if [ "$rc" -eq 0 ]; then

@@ -4,6 +4,7 @@
 
 #include <arrow/api.h>
 #include <memory>
+#include <functional>
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include <optional>
@@ -14,6 +15,7 @@
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/core/types.hpp"
 #include "trade_ngin/data/database_interface.hpp"
+#include "trade_ngin/data/publication_transaction.hpp"
 
 namespace trade_ngin {
 
@@ -22,6 +24,18 @@ namespace trade_ngin {
  */
 class PostgresDatabase : public DatabaseInterface {
 public:
+    // Captures immutable current-day writes without opening a transaction over
+    // compute. A true return means a retired scope's approved stop was recorded.
+    Result<bool> begin_live_publication(const std::string& strategy_id,
+        const std::string& portfolio_id, const Timestamp& date,
+        const nlohmann::json& snapshot, bool controlled, const std::string& version);
+    Result<void> publish_live_publication();
+    void abandon_live_publication(const std::string& failure_code = "computation_failed");
+    Result<void> store_live_run_inputs(const std::string& strategy_id,
+        const std::string& portfolio_id, const Timestamp& date, const nlohmann::json& row);
+    // Scoped SQL is retained only for the existing previous-day finalizer.
+    Result<void> execute_scoped_live_update(const std::string& query,
+        const std::string& strategy_id, const std::string& portfolio_id);
     /**
      * @brief Constructor
      * @param connection_string Connection string for PostgreSQL
@@ -99,6 +113,16 @@ public:
         const std::string& portfolio_id, const Timestamp& date,
         const std::string& table_name = "trading.positions",
         const std::string& portfolio_type = "system") override;
+
+    // Strict investor-report read. Unlike load_positions_by_date, this never
+    // falls back to an unscoped legacy query when portfolio_type is absent.
+    using ReportPositionRows =
+        std::unordered_map<std::string, std::unordered_map<std::string, Position>>;
+    // All requested individual strategies share one SELECT/MVCC snapshot.
+    virtual Result<ReportPositionRows> load_report_positions_by_date(
+        const std::string& strategy_id, const std::vector<std::string>& strategy_names,
+        const std::string& portfolio_id, const Timestamp& report_date,
+        const std::string& portfolio_type);
 
     /**
      * @brief Store execution reports in the database
@@ -327,17 +351,16 @@ public:
     /**
      * @brief Seed the 'qt' position stream from the 'system' stream for one day.
      *
-     * Copies that day's system positions into the qt stream so QT has something
-     * to edit. IDEMPOTENT AND NON-DESTRUCTIVE: if ANY qt row already exists for
-     * this portfolio/strategy/date, nothing is written. QT's edits must survive
-     * a re-run of the engine -- overwriting them would defeat the entire point
-     * of tracking the two streams separately.
+     * Carries the latest QT state (including zeros) into the requested date.
+     * New identities are seeded from that day's system positions. Existing
+     * same-day QT rows are never overwritten; missing identities are filled.
+     * QT closes/replaces a position explicitly, never by deleting its row.
      *
      * No-op (with a warning) if the dual-portfolio migration has not been applied.
      *
      * @return Result containing the number of rows seeded (0 if already seeded)
      */
-    Result<int> seed_qt_positions_from_system(
+    virtual Result<int> seed_qt_positions_from_system(
         const std::string& strategy_id, const std::string& strategy_name,
         const std::string& portfolio_id, const std::string& date,
         const std::string& table_name = "trading.positions");
@@ -591,6 +614,25 @@ public:
                        const std::string& column) const;
 
 private:
+    enum PublicationPart : unsigned {
+        PositionsPart=1, LimitsPart=2, ResultsPart=4, InputsPart=8,
+        QtSeedPart=16, MetadataPart=32, EquityPart=64, CompletePublication=127
+    };
+    struct PendingPublication {
+        std::string registry_id, strategy_id, portfolio_id, date, attempt_id;
+        long long registry_revision = 0, intent_id = 0;
+        nlohmann::json snapshot;
+        std::vector<std::function<Result<void>()>> writes;
+        std::vector<std::string> fresh_system_members;
+        bool invalid_payload = false;
+        unsigned parts = 0;
+    };
+    std::optional<PendingPublication> pending_publication_;
+    pqxx::work* publication_transaction_ = nullptr;
+    bool defer_live_write(const Timestamp& date, std::function<Result<void>()> write, unsigned part=0);
+    bool defer_live_write(std::function<Result<void>()> write, unsigned part=0);
+    void fence_live_write(pqxx::work& txn, const std::string& strategy_id,
+        const std::string& portfolio_id, const std::string& stream = "system");
     std::string connection_string_;
     std::unique_ptr<pqxx::connection> connection_;
     std::mutex mutex_;

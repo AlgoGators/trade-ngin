@@ -36,6 +36,20 @@ size_t read_callback(char* buffer, size_t size, size_t nitems, void* userdata) {
     return copy_size;
 }
 
+namespace {
+
+bool email_delivery_enabled() {
+    const char* setting = std::getenv("QT_EMAIL_DELIVERY_ENABLED");
+    return setting != nullptr && std::string(setting) == "true";
+}
+
+Result<void> email_delivery_disabled() {
+    return make_error<void>(ErrorCode::PERMISSION_ERROR,
+                            "Email delivery is disabled by policy", "EmailSender");
+}
+
+}  // namespace
+
 EmailSender::EmailSender(std::shared_ptr<CredentialStore> credentials)
     : credentials_(std::move(credentials)),
       initialized_(false),
@@ -48,6 +62,10 @@ EmailSender::EmailSender(const EmailSenderConfig& config)
       holiday_checker_("include/trade_ngin/core/holidays.json") {}
 
 Result<void> EmailSender::initialize() {
+    if (!email_delivery_enabled()) {
+        return email_delivery_disabled();
+    }
+
     if (credentials_) {
         auto load_result = load_config();
         if (load_result.is_error()) {
@@ -138,6 +156,16 @@ Result<void> EmailSender::load_config() {
 Result<void> EmailSender::send_email(const std::string& subject, const std::string& body,
                                      bool is_html,
                                      const std::vector<std::string>& attachment_paths) {
+    if (!email_delivery_enabled()) {
+        return email_delivery_disabled();
+    }
+
+    return deliver_email(subject, body, is_html, attachment_paths);
+}
+
+Result<void> EmailSender::deliver_email(const std::string& subject, const std::string& body,
+                                        bool is_html,
+                                        const std::vector<std::string>& attachment_paths) {
     if (!initialized_) {
         return make_error<void>(ErrorCode::NOT_INITIALIZED, "Email sender not initialized",
                                 "EmailSender");

@@ -41,6 +41,7 @@ PostgresDatabase::PostgresDatabase(std::string connection_string)
 
 PostgresDatabase::~PostgresDatabase() {
     try {
+        abandon_live_publication();
         disconnect();
     } catch (const std::exception& e) {
         WARN("Exception in PostgresDatabase destructor: " + std::string(e.what()));
@@ -131,7 +132,7 @@ Result<std::shared_ptr<arrow::Table>> PostgresDatabase::get_market_data(
     }
 
     try {
-        pqxx::work txn(*connection_);
+        PublicationTransaction txn(*connection_, publication_transaction_);
         auto query_result = execute_market_data_query(symbols, start_date, end_date, asset_class,
                                                       freq, data_type, txn);
 
@@ -188,6 +189,10 @@ Result<void> PostgresDatabase::store_executions(const std::vector<ExecutionRepor
                                                 const std::string& strategy_name,
                                                 const std::string& portfolio_id,
                                                 const std::string& table_name) {
+    if (!executions.empty() && defer_live_write(executions.front().fill_time,
+        [this,executions,strategy_id,strategy_name,portfolio_id,table_name]() {
+            return store_executions(executions,strategy_id,strategy_name,portfolio_id,table_name);
+        })) return Result<void>();
     std::cout << "DEBUG: store_executions called with " << executions.size() << " executions"
               << " for strategy_id: " << strategy_id << " strategy_name: " << strategy_name
               << " portfolio_id: " << portfolio_id << std::endl;
@@ -210,28 +215,15 @@ Result<void> PostgresDatabase::store_executions(const std::vector<ExecutionRepor
         }
         std::cout << "DEBUG: Table validation passed" << std::endl;
 
-        // Defensive cleanup BEFORE starting the insert transaction to avoid nested transactions
-        if (!executions.empty()) {
-            std::vector<std::string> order_ids;
-            order_ids.reserve(executions.size());
-            for (const auto& e : executions) {
-                order_ids.push_back(e.order_id);
-            }
-            // Deduplicate order_ids
-            std::sort(order_ids.begin(), order_ids.end());
-            order_ids.erase(std::unique(order_ids.begin(), order_ids.end()), order_ids.end());
-
-            // Use the date from the first execution's fill_time
-            Timestamp date_for_delete = executions.front().fill_time;
-            auto del_result = delete_stale_executions(order_ids, date_for_delete, table_name);
-            if (del_result.is_error()) {
-                std::cout << "DEBUG: Pre-insert delete_stale_executions failed: "
-                          << del_result.error()->what() << std::endl;
-                return del_result;
-            }
+        PublicationTransaction txn(*connection_, publication_transaction_);
+        fence_live_write(txn,strategy_id,portfolio_id);
+        // Cleanup and inserts share both the full scope and transaction.
+        for (const auto& execution : executions) {
+            txn.exec("DELETE FROM " + table_name + " WHERE strategy_id=$1 AND strategy_name=$2 "
+                     "AND portfolio_id=$3 AND DATE(execution_time)=$4::date AND order_id=$5",
+                     pqxx::params{strategy_id,strategy_name,portfolio_id,
+                                  format_timestamp(execution.fill_time).substr(0,10),execution.order_id});
         }
-
-        pqxx::work txn(*connection_);
 
         for (const auto& exec : executions) {
             std::cout << "DEBUG: Processing execution for symbol: " << exec.symbol << std::endl;
@@ -336,12 +328,38 @@ Result<void> PostgresDatabase::store_positions(const std::vector<Position>& posi
                                                const std::string& portfolio_id,
                                                const std::string& table_name,
                                                const std::string& portfolio_type) {
+    if (pending_publication_ && !publication_transaction_ && !positions.empty()) {
+        const auto day = format_timestamp(positions.front().last_update).substr(0,10);
+        bool valid_batch = true;
+        for (const auto& position : positions)
+            valid_batch = valid_batch && format_timestamp(position.last_update).substr(0,10) == day;
+        if (day == pending_publication_->date && portfolio_type == "system") {
+            const auto& configured = pending_publication_->snapshot.at("strategies");
+            valid_batch = valid_batch && strategy_id == pending_publication_->strategy_id &&
+                portfolio_id == pending_publication_->portfolio_id && table_name == "trading.positions" &&
+                configured.contains(strategy_name) && configured.at(strategy_name).value("enabled_live",false);
+            if (valid_batch && std::find(pending_publication_->fresh_system_members.begin(),
+                pending_publication_->fresh_system_members.end(),strategy_name) ==
+                pending_publication_->fresh_system_members.end())
+                pending_publication_->fresh_system_members.push_back(strategy_name);
+        }
+        if (!valid_batch) {
+            pending_publication_->invalid_payload = true;
+            return make_error<void>(ErrorCode::INVALID_ARGUMENT,"runtime_position_batch_invalid");
+        }
+    }
+    if (!positions.empty() && defer_live_write(positions.front().last_update,
+        [this,positions,strategy_id,strategy_name,portfolio_id,table_name,portfolio_type]() {
+            return store_positions(positions,strategy_id,strategy_name,portfolio_id,table_name,portfolio_type);
+        }, portfolio_type == "system" ? static_cast<unsigned>(PositionsPart) : 0u)) return Result<void>();
     auto validation = validate_connection();
     if (validation.is_error())
         return validation;
 
     try {
-        pqxx::work txn(*connection_);
+        PublicationTransaction txn(*connection_, publication_transaction_);
+        fence_live_write(txn,strategy_id,portfolio_id,portfolio_type);
+
 
         // Validate table name
         auto table_validation = validate_table_name(table_name);
@@ -350,7 +368,7 @@ Result<void> PostgresDatabase::store_positions(const std::vector<Position>& posi
         }
 
         // Begin transaction
-        txn.exec("BEGIN");
+        // The transaction owner establishes BEGIN; borrowed publication methods do not.
 
         // Has the dual-portfolio migration been applied? Detecting this at runtime means this
         // code is correct against both an upgraded and a not-yet-upgraded database, so rolling
@@ -513,12 +531,17 @@ Result<void> PostgresDatabase::store_signals(const std::unordered_map<std::strin
                                              const std::string& portfolio_id,
                                              const Timestamp& timestamp,
                                              const std::string& table_name) {
+    if (defer_live_write(timestamp,[this,signals,strategy_id,strategy_name,portfolio_id,timestamp,table_name]() {
+        return store_signals(signals,strategy_id,strategy_name,portfolio_id,timestamp,table_name);
+    })) return Result<void>();
     auto validation = validate_connection();
     if (validation.is_error())
         return validation;
 
     try {
-        pqxx::work txn(*connection_);
+        PublicationTransaction txn(*connection_, publication_transaction_);
+        fence_live_write(txn,strategy_id,portfolio_id);
+
 
         // Validate table name and strategy ID
         auto table_validation = validate_table_name(table_name);
@@ -572,7 +595,7 @@ Result<std::vector<std::string>> PostgresDatabase::get_symbols(AssetClass asset_
 
     try {
         std::string full_table_name = build_table_name(asset_class, data_type, freq);
-        pqxx::work txn(*connection_);
+        PublicationTransaction txn(*connection_, publication_transaction_);
 
         // Validate table name components
         auto table_validation = validate_table_name_components(asset_class, data_type, freq);
@@ -624,7 +647,7 @@ Result<std::unordered_map<std::string, double>> PostgresDatabase::get_latest_pri
 
     try {
         std::string full_table_name = build_table_name(asset_class, data_type, freq);
-        pqxx::work txn(*connection_);
+        PublicationTransaction txn(*connection_, publication_transaction_);
 
         // Validate table name components
         auto table_validation = validate_table_name_components(asset_class, data_type, freq);
@@ -681,7 +704,7 @@ Result<std::unordered_map<std::string, Position>> PostgresDatabase::load_positio
     }
 
     try {
-        pqxx::work txn(*connection_);
+        PublicationTransaction txn(*connection_, publication_transaction_);
 
         // Detected at runtime so this works against both an upgraded and a
         // not-yet-upgraded database -- see store_positions for the rationale.
@@ -804,6 +827,81 @@ Result<std::unordered_map<std::string, Position>> PostgresDatabase::load_positio
     }
 }
 
+Result<PostgresDatabase::ReportPositionRows> PostgresDatabase::load_report_positions_by_date(
+    const std::string& strategy_id, const std::vector<std::string>& strategy_names,
+    const std::string& portfolio_id, const Timestamp& report_date,
+    const std::string& portfolio_type) {
+    auto validation = validate_connection();
+    if (validation.is_error()) {
+        return make_error<ReportPositionRows>(
+            validation.error()->code(),
+            "Failed to load strict report positions for portfolio " + portfolio_id +
+                ", strategy " + strategy_id + ": " + validation.error()->what(),
+            "PostgresDatabase");
+    }
+
+    try {
+        PublicationTransaction txn(*connection_, publication_transaction_);
+        if (!column_exists(txn, "trading.positions", "portfolio_type")) {
+            return make_error<ReportPositionRows>(
+                ErrorCode::DATABASE_ERROR,
+                "trading.positions.portfolio_type is required for strict report position reads "
+                "for portfolio " + portfolio_id + ", strategy " + strategy_id,
+                "PostgresDatabase");
+        }
+
+        const std::string date_str = format_timestamp(report_date);
+        std::string quoted_names;
+        for (const auto& name : strategy_names) {
+            if (!quoted_names.empty()) quoted_names += ",";
+            quoted_names += txn.quote(name);
+        }
+        if (quoted_names.empty()) quoted_names = "NULL";
+        const std::string query =
+            "SELECT symbol, quantity, average_price, daily_unrealized_pnl, daily_realized_pnl, "
+            "last_update, strategy_name FROM trading.positions "
+            "WHERE strategy_id = $1 AND portfolio_id = $2 AND "
+            "date = $3 AND portfolio_type = $4 AND strategy_name IN (" + quoted_names + ")";
+        const auto result = txn.exec(
+            query, pqxx::params{strategy_id, portfolio_id, date_str, portfolio_type});
+        txn.commit();
+
+        ReportPositionRows positions;
+        for (const auto& row : result) {
+            Timestamp last_update;
+            try {
+                const std::string last_update_str = row[5].as<std::string>();
+                std::tm tm = {};
+                std::istringstream stream(last_update_str);
+                stream >> std::get_time(&tm, "%Y-%m-%d %H:%M:%S");
+                if (stream.fail()) {
+                    WARN("Failed to parse timestamp: " + last_update_str + ", using current time");
+                    last_update = std::chrono::system_clock::now();
+                } else {
+                    last_update = std::chrono::system_clock::from_time_t(std::mktime(&tm));
+                }
+            } catch (const std::exception& e) {
+                WARN("Exception parsing timestamp: " + std::string(e.what()) +
+                     ", using current time");
+                last_update = std::chrono::system_clock::now();
+            }
+
+            const std::string symbol = row[0].as<std::string>();
+            positions[row[6].as<std::string>()][symbol] = Position(symbol, Quantity(row[1].as<double>()),
+                                         Price(row[2].as<double>()), Decimal(row[3].as<double>()),
+                                         Decimal(row[4].as<double>()), last_update);
+        }
+
+        return Result<ReportPositionRows>(std::move(positions));
+    } catch (const std::exception& e) {
+        return make_error<ReportPositionRows>(
+            ErrorCode::DATABASE_ERROR,
+            "Failed to load strict report positions for portfolio " + portfolio_id +
+                ", strategy " + strategy_id + ": " + e.what(),
+            "PostgresDatabase");
+    }
+}
+
 Result<std::shared_ptr<arrow::Table>> PostgresDatabase::execute_query(const std::string& query) {
     auto validation = validate_connection();
     if (validation.is_error()) {
@@ -812,7 +910,11 @@ Result<std::shared_ptr<arrow::Table>> PostgresDatabase::execute_query(const std:
     }
 
     try {
-        pqxx::work txn(*connection_);
+        PublicationTransaction txn(*connection_, publication_transaction_);
+        // During compute, generic queries are reads only. Typed current-day
+        // writes join the payload; the previous-day finalizer is explicitly scoped.
+        if (pending_publication_ && !publication_transaction_)
+            txn.exec("SET TRANSACTION READ ONLY");
         auto result = txn.exec(query);
         txn.commit();
 
@@ -827,13 +929,15 @@ Result<std::shared_ptr<arrow::Table>> PostgresDatabase::execute_query(const std:
 }
 
 Result<void> PostgresDatabase::execute_direct_query(const std::string& query) {
+    if (pending_publication_)
+        return make_error<void>(ErrorCode::INVALID_ARGUMENT,"runtime_unscoped_write_refused");
     auto validation = validate_connection();
     if (validation.is_error()) {
         return make_error<void>(validation.error()->code(), validation.error()->what());
     }
 
     try {
-        pqxx::work txn(*connection_);
+        PublicationTransaction txn(*connection_, publication_transaction_);
         txn.exec(query);
         txn.commit();
         return Result<void>();
@@ -857,7 +961,7 @@ Result<std::shared_ptr<arrow::Table>> PostgresDatabase::get_contract_metadata() 
         std::string query = "SELECT * FROM metadata.contract_metadata WHERE 1=1";
 
         // Execute query
-        pqxx::work txn(*connection_);
+        PublicationTransaction txn(*connection_, publication_transaction_);
         auto result = txn.exec(query);
         txn.commit();
 
@@ -1428,7 +1532,7 @@ Result<Timestamp> PostgresDatabase::get_latest_data_time(AssetClass asset_class,
 
     try {
         std::string full_table_name = build_table_name(asset_class, data_type, freq);
-        pqxx::work txn(*connection_);
+        PublicationTransaction txn(*connection_, publication_transaction_);
 
         // Validate table name components
         auto table_validation = validate_table_name_components(asset_class, data_type, freq);
@@ -1472,7 +1576,7 @@ Result<std::pair<Timestamp, Timestamp>> PostgresDatabase::get_data_time_range(
 
     try {
         std::string full_table_name = build_table_name(asset_class, data_type, freq);
-        pqxx::work txn(*connection_);
+        PublicationTransaction txn(*connection_, publication_transaction_);
 
         // Validate table name components
         auto table_validation = validate_table_name_components(asset_class, data_type, freq);
@@ -1523,7 +1627,7 @@ Result<size_t> PostgresDatabase::get_data_count(AssetClass asset_class, DataFreq
 
     try {
         std::string full_table_name = build_table_name(asset_class, data_type, freq);
-        pqxx::work txn(*connection_);
+        PublicationTransaction txn(*connection_, publication_transaction_);
 
         // Validate table name components and symbol
         auto table_validation = validate_table_name_components(asset_class, data_type, freq);
@@ -1771,7 +1875,7 @@ Result<void> PostgresDatabase::store_backtest_executions(
         return validation;
 
     try {
-        pqxx::work txn(*connection_);
+        PublicationTransaction txn(*connection_, publication_transaction_);
 
         // Validate table name
         auto table_validation = validate_table_name(table_name);
@@ -1840,7 +1944,7 @@ Result<void> PostgresDatabase::store_backtest_executions_with_strategy(
         return validation;
 
     try {
-        pqxx::work txn(*connection_);
+        PublicationTransaction txn(*connection_, publication_transaction_);
 
         // Validate table name
         auto table_validation = validate_table_name(table_name);
@@ -1909,7 +2013,7 @@ Result<void> PostgresDatabase::store_backtest_signals(
         return validation;
 
     try {
-        pqxx::work txn(*connection_);
+        PublicationTransaction txn(*connection_, publication_transaction_);
 
         std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
 
@@ -1963,7 +2067,7 @@ Result<void> PostgresDatabase::store_backtest_metadata(
         return validation;
 
     try {
-        pqxx::work txn(*connection_);
+        PublicationTransaction txn(*connection_, publication_transaction_);
 
         std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
 
@@ -2002,7 +2106,7 @@ Result<void> PostgresDatabase::store_backtest_metadata_with_portfolio(
         return validation;
 
     try {
-        pqxx::work txn(*connection_);
+        PublicationTransaction txn(*connection_, publication_transaction_);
 
         std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
 
@@ -2053,7 +2157,7 @@ Result<void> PostgresDatabase::store_trading_results(
         return validation;
 
     try {
-        pqxx::work txn(*connection_);
+        PublicationTransaction txn(*connection_, publication_transaction_);
 
         std::string query =
             "INSERT INTO " + table_name +
@@ -2102,12 +2206,16 @@ Result<void> PostgresDatabase::store_live_results(
     double gross_notional, double net_notional, int active_positions, double total_transaction_costs,
     double margin_posted, double cash_available, const nlohmann::json& config,
     const std::string& table_name) {
+    if (pending_publication_ && !publication_transaction_)
+        return make_error<void>(ErrorCode::INVALID_ARGUMENT,"runtime_generic_summary_refused");
     auto validation = validate_connection();
     if (validation.is_error())
         return validation;
 
     try {
-        pqxx::work txn(*connection_);
+        PublicationTransaction txn(*connection_, publication_transaction_);
+        fence_live_write(txn,strategy_id,"BASE_PORTFOLIO");
+
 
         // Validate table name
         auto table_validation = validate_table_name(table_name);
@@ -2175,7 +2283,7 @@ Result<std::tuple<double, double, double>> PostgresDatabase::get_previous_live_a
     }
 
     try {
-        pqxx::work txn(*connection_);
+        PublicationTransaction txn(*connection_, publication_transaction_);
 
         // Validate table name
         auto table_validation = validate_table_name(table_name);
@@ -2236,13 +2344,21 @@ Result<int> PostgresDatabase::seed_qt_positions_from_system(const std::string& s
                                                            const std::string& portfolio_id,
                                                            const std::string& date,
                                                            const std::string& table_name) {
+    if (pending_publication_ && pending_publication_->date == date &&
+        defer_live_write([this,strategy_id,strategy_name,portfolio_id,date,table_name]() {
+            auto seeded = seed_qt_positions_from_system(strategy_id,strategy_name,portfolio_id,date,table_name);
+            if (seeded.is_error()) return make_error<void>(ErrorCode::DATABASE_ERROR,"runtime_qt_seed_failed");
+            return Result<void>();
+        }, QtSeedPart)) return Result<int>(0);
     auto validation = validate_connection();
     if (validation.is_error()) {
         return make_error<int>(validation.error()->code(), validation.error()->what());
     }
 
     try {
-        pqxx::work txn(*connection_);
+        PublicationTransaction txn(*connection_, publication_transaction_);
+        fence_live_write(txn,strategy_id,portfolio_id,"qt");
+
 
         auto table_validation = validate_table_name(table_name);
         if (table_validation.is_error()) {
@@ -2256,27 +2372,27 @@ Result<int> PostgresDatabase::seed_qt_positions_from_system(const std::string& s
             return Result<int>(0);
         }
 
-        // One statement, so the check and the insert cannot race: the NOT EXISTS
-        // is evaluated as part of the same INSERT ... SELECT. If ANY qt row is
-        // already present for this key and date, zero rows are inserted and the
-        // edits QT has made are left completely untouched. That property is the
-        // whole point -- the engine re-running must never clobber a human
-        // decision.
+        // QT current state wins over system proposals across dates, including
+        // zero closures and symbols the system no longer proposes. New symbols
+        // are seeded from today's system only when no QT state exists. The
+        // unique-key conflict guard preserves same-day/concurrent QT edits.
         std::string query =
+            "WITH candidates AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY symbol "
+            "ORDER BY CASE WHEN portfolio_type = 'qt' THEN 0 ELSE 1 END, date DESC) "
+            "AS qt_rank FROM " + table_name +
+            " WHERE strategy_id = $1 AND strategy_name = $2 AND portfolio_id = $3 "
+            "AND ((portfolio_type = 'qt' AND date <= $4) "
+            "OR (portfolio_type = 'system' AND date = $4))) "
             "INSERT INTO " + table_name +
             " (symbol, quantity, average_price, daily_unrealized_pnl, daily_realized_pnl, "
             " last_update, updated_at, strategy_id, strategy_name, date, portfolio_id, "
             " portfolio_type) "
             "SELECT symbol, quantity, average_price, daily_unrealized_pnl, daily_realized_pnl, "
-            "       last_update, updated_at, strategy_id, strategy_name, date, portfolio_id, "
+            "       last_update, updated_at, strategy_id, strategy_name, $4, portfolio_id, "
             "       'qt' "
-            "FROM " + table_name +
-            " WHERE strategy_id = $1 AND strategy_name = $2 AND portfolio_id = $3 "
-            "  AND date = $4 AND portfolio_type = 'system' "
-            "  AND NOT EXISTS ("
-            "      SELECT 1 FROM " + table_name +
-            "      WHERE strategy_id = $1 AND strategy_name = $2 AND portfolio_id = $3 "
-            "        AND date = $4 AND portfolio_type = 'qt')";
+            "FROM candidates WHERE qt_rank = 1 "
+            "ON CONFLICT (portfolio_id, strategy_id, strategy_name, date, symbol, "
+            "portfolio_type) DO NOTHING";
 
         auto result = txn.exec(query, pqxx::params{strategy_id, strategy_name, portfolio_id, date});
         txn.commit();
@@ -2303,12 +2419,17 @@ Result<void> PostgresDatabase::store_trading_equity_curve(const std::string& str
                                                           const std::string& portfolio_id,
                                                           const std::string& table_name,
                                                           const std::string& portfolio_type) {
+    if (defer_live_write(timestamp,[this,strategy_id,timestamp,equity,portfolio_id,table_name,portfolio_type]() {
+        return store_trading_equity_curve(strategy_id,timestamp,equity,portfolio_id,table_name,portfolio_type);
+    }, portfolio_type == "system" ? static_cast<unsigned>(EquityPart) : 0u)) return Result<void>();
     auto validation = validate_connection();
     if (validation.is_error())
         return validation;
 
     try {
-        pqxx::work txn(*connection_);
+        PublicationTransaction txn(*connection_, publication_transaction_);
+        fence_live_write(txn,strategy_id,portfolio_id,portfolio_type);
+
 
         // Validate table name
         auto table_validation = validate_table_name(table_name);
@@ -2368,7 +2489,7 @@ Result<void> PostgresDatabase::store_trading_equity_curve_batch(
         return validation;
 
     try {
-        pqxx::work txn(*connection_);
+        PublicationTransaction txn(*connection_, publication_transaction_);
 
         // Validate table name
         auto table_validation = validate_table_name(table_name);

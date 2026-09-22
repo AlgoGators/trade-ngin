@@ -12,6 +12,7 @@ set(TEST_SOURCES
     core/test_config_base_extended.cpp
     core/test_run_id_generator.cpp
     core/test_config_loader.cpp
+    core/test_email_delivery_policy.cpp
     apps/test_live_portfolio_helpers.cpp
     core/test_config_manager_extended.cpp
     data/test_db_utils.cpp
@@ -129,3 +130,18 @@ set_target_properties(trade_ngin_tests
 # Enable test discovery
 include(GoogleTest)
 gtest_discover_tests(trade_ngin_tests)
+
+add_test(
+    NAME email_delivery_script_policy
+    COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/scripts/test_email_delivery_policy.sh
+)
+
+# Explicitly-built only: the disposable PostgreSQL QT pipeline probe must not
+# join the monolithic unit-test executable or its test discovery.
+add_executable(qt_report_probe EXCLUDE_FROM_ALL integration/qt_report_probe.cpp)
+target_include_directories(qt_report_probe PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(qt_report_probe PRIVATE trade_ngin)
+
+add_executable(runtime_publication_probe EXCLUDE_FROM_ALL integration/runtime_publication_probe.cpp)
+target_include_directories(runtime_publication_probe PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(runtime_publication_probe PRIVATE trade_ngin)

@@ -81,6 +81,9 @@ public:
      * @param gross_notional Gross notional value
      * @param net_notional Net notional value
      * @param strategy_instances Map of strategy name to strategy instance for forecasts and EMAs
+     * @param strict_snapshot_rows When true, write only symbols present in
+     *        strategy_positions.  Use for the QT report snapshot so an explicit
+     *        zero closure cannot be recreated from a strategy universe.
      * @return Result containing filename on success, or error
      */
     Result<std::string> export_current_positions(
@@ -90,7 +93,8 @@ public:
         double portfolio_value,
         double gross_notional,
         double net_notional,
-        const StrategyInstancesMap& strategy_instances);
+        const StrategyInstancesMap& strategy_instances,
+        bool strict_snapshot_rows = false);
 
     /**
      * @brief Export yesterday's finalized positions to CSV (with PnL)

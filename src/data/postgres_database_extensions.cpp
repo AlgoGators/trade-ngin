@@ -37,6 +37,11 @@ Result<void> PostgresDatabase::delete_stale_executions(const std::vector<std::st
                                                        const Timestamp& date,
                                                        const std::string& strategy_name,
                                                        const std::string& table_name) {
+    if (!pending_publication_)
+        return make_error<void>(ErrorCode::INVALID_ARGUMENT,"runtime_unscoped_execution_cleanup_refused");
+    if (defer_live_write(date,[this,order_ids,date,strategy_name,table_name]() {
+        return delete_stale_executions(order_ids,date,strategy_name,table_name);
+    })) return Result<void>();
     std::lock_guard<std::mutex> lock(mutex_);
 
     // Validate connection
@@ -56,7 +61,8 @@ Result<void> PostgresDatabase::delete_stale_executions(const std::vector<std::st
     }
 
     try {
-        pqxx::work txn(*connection_);
+        PublicationTransaction txn(*connection_, publication_transaction_);
+        fence_live_write(txn,pending_publication_->strategy_id,pending_publication_->portfolio_id);
 
         // Build a safe IN (...) clause for the provided order_ids
         std::string in_list;
@@ -70,11 +76,13 @@ Result<void> PostgresDatabase::delete_stale_executions(const std::vector<std::st
         std::string query = "DELETE FROM " + table_name +
                             " WHERE DATE(execution_time) = $1 "
                             " AND strategy_name = $2 "
+                            " AND strategy_id = $3 AND portfolio_id = $4 "
                             " AND order_id IN (" +
                             in_list + ")";
 
         // Execute delete for the specified date (YYYY-MM-DD)
-        txn.exec(query, pqxx::params{format_timestamp(date).substr(0, 10), strategy_name});
+        txn.exec(query, pqxx::params{format_timestamp(date).substr(0, 10), strategy_name,
+                                    pending_publication_->strategy_id,pending_publication_->portfolio_id});
 
         txn.commit();
 
@@ -108,7 +116,7 @@ Result<void> PostgresDatabase::store_backtest_summary(
     }
 
     try {
-        pqxx::work txn(*connection_);
+        PublicationTransaction txn(*connection_, publication_transaction_);
 
         std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
 
@@ -182,7 +190,7 @@ Result<void> PostgresDatabase::store_backtest_equity_curve_batch(
     }
 
     try {
-        pqxx::work txn(*connection_);
+        PublicationTransaction txn(*connection_, publication_transaction_);
 
         std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
 
@@ -235,7 +243,7 @@ Result<void> PostgresDatabase::store_backtest_positions(const std::vector<Positi
     }
 
     try {
-        pqxx::work txn(*connection_);
+        PublicationTransaction txn(*connection_, publication_transaction_);
 
         // Get the date from the first position (all positions should be from the same date)
         // Extract date from last_update timestamp
@@ -411,7 +419,7 @@ Result<void> PostgresDatabase::store_backtest_positions_with_strategy(
     }
 
     try {
-        pqxx::work txn(*connection_);
+        PublicationTransaction txn(*connection_, publication_transaction_);
 
         std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
 
@@ -478,6 +486,9 @@ Result<void> PostgresDatabase::update_live_results(
     const std::string& strategy_id, const Timestamp& date,
     const std::unordered_map<std::string, double>& updates, const std::string& portfolio_id,
     const std::string& table_name) {
+    if (defer_live_write(date,[this,strategy_id,date,updates,portfolio_id,table_name]() {
+        return update_live_results(strategy_id,date,updates,portfolio_id,table_name);
+    })) return Result<void>();
     std::lock_guard<std::mutex> lock(mutex_);
 
     // Validate connection
@@ -503,7 +514,9 @@ Result<void> PostgresDatabase::update_live_results(
     }
 
     try {
-        pqxx::work txn(*connection_);
+        PublicationTransaction txn(*connection_, publication_transaction_);
+        fence_live_write(txn,strategy_id,portfolio_id);
+
 
         // Use actual portfolio_id or default to BASE_PORTFOLIO for backward compatibility
         std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
@@ -568,6 +581,9 @@ Result<void> PostgresDatabase::update_live_equity_curve(const std::string& strat
                                                         const Timestamp& date, double equity,
                                                         const std::string& portfolio_id,
                                                         const std::string& table_name) {
+    if (defer_live_write(date,[this,strategy_id,date,equity,portfolio_id,table_name]() {
+        return update_live_equity_curve(strategy_id,date,equity,portfolio_id,table_name);
+    })) return Result<void>();
     std::lock_guard<std::mutex> lock(mutex_);
 
     // Validate connection
@@ -589,7 +605,9 @@ Result<void> PostgresDatabase::update_live_equity_curve(const std::string& strat
     }
 
     try {
-        pqxx::work txn(*connection_);
+        PublicationTransaction txn(*connection_, publication_transaction_);
+        fence_live_write(txn,strategy_id,portfolio_id);
+
 
         // Use actual portfolio_id or default to BASE_PORTFOLIO for backward compatibility
         std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
@@ -617,6 +635,9 @@ Result<void> PostgresDatabase::delete_live_results(const std::string& strategy_i
                                                    const Timestamp& date,
                                                    const std::string& portfolio_id,
                                                    const std::string& table_name) {
+    if (defer_live_write(date,[this,strategy_id,date,portfolio_id,table_name]() {
+        return delete_live_results(strategy_id,date,portfolio_id,table_name);
+    })) return Result<void>();
     std::lock_guard<std::mutex> lock(mutex_);
 
     // Validate connection
@@ -638,7 +659,9 @@ Result<void> PostgresDatabase::delete_live_results(const std::string& strategy_i
     }
 
     try {
-        pqxx::work txn(*connection_);
+        PublicationTransaction txn(*connection_, publication_transaction_);
+        fence_live_write(txn,strategy_id,portfolio_id);
+
 
         // Use actual portfolio_id or default to BASE_PORTFOLIO for backward compatibility
         std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
@@ -667,6 +690,9 @@ Result<void> PostgresDatabase::delete_live_equity_curve(const std::string& strat
                                                         const Timestamp& date,
                                                         const std::string& portfolio_id,
                                                         const std::string& table_name) {
+    if (defer_live_write(date,[this,strategy_id,date,portfolio_id,table_name]() {
+        return delete_live_equity_curve(strategy_id,date,portfolio_id,table_name);
+    })) return Result<void>();
     std::lock_guard<std::mutex> lock(mutex_);
 
     // Validate connection
@@ -688,7 +714,9 @@ Result<void> PostgresDatabase::delete_live_equity_curve(const std::string& strat
     }
 
     try {
-        pqxx::work txn(*connection_);
+        PublicationTransaction txn(*connection_, publication_transaction_);
+        fence_live_write(txn,strategy_id,portfolio_id);
+
 
         // Use actual portfolio_id or default to BASE_PORTFOLIO for backward compatibility
         std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
@@ -718,6 +746,9 @@ Result<void> PostgresDatabase::store_live_results_complete(
     const std::unordered_map<std::string, double>& metrics,
     const std::unordered_map<std::string, int>& int_metrics, const nlohmann::json& config,
     const std::string& portfolio_id, const std::string& table_name) {
+    if (defer_live_write(date,[this,strategy_id,date,metrics,int_metrics,config,portfolio_id,table_name]() {
+        return store_live_results_complete(strategy_id,date,metrics,int_metrics,config,portfolio_id,table_name);
+    }, ResultsPart)) return Result<void>();
     std::lock_guard<std::mutex> lock(mutex_);
 
     // Validate connection
@@ -739,7 +770,9 @@ Result<void> PostgresDatabase::store_live_results_complete(
     }
 
     try {
-        pqxx::work txn(*connection_);
+        PublicationTransaction txn(*connection_, publication_transaction_);
+        fence_live_write(txn,strategy_id,portfolio_id);
+
 
         // Use provided portfolio_id or default to BASE_PORTFOLIO
         std::string actual_portfolio_id = portfolio_id.empty() ? "BASE_PORTFOLIO" : portfolio_id;
@@ -814,6 +847,9 @@ Result<void> PostgresDatabase::store_live_run_metadata(
     const Timestamp& date, const std::string& strategy_id, const std::string& portfolio_id,
     const nlohmann::json& strategy_allocations, const nlohmann::json& portfolio_config,
     const nlohmann::json& strategy_configs, const std::string& table_name) {
+    if (defer_live_write(date,[this,date,strategy_id,portfolio_id,strategy_allocations,portfolio_config,strategy_configs,table_name]() {
+        return store_live_run_metadata(date,strategy_id,portfolio_id,strategy_allocations,portfolio_config,strategy_configs,table_name);
+    }, MetadataPart)) return Result<void>();
     std::lock_guard<std::mutex> lock(mutex_);
 
     // Validate connection
@@ -835,7 +871,9 @@ Result<void> PostgresDatabase::store_live_run_metadata(
     }
 
     try {
-        pqxx::work txn(*connection_);
+        PublicationTransaction txn(*connection_, publication_transaction_);
+        fence_live_write(txn,strategy_id,portfolio_id);
+
 
         // Format date as YYYY-MM-DD
         std::string date_str = format_timestamp(date).substr(0, 10);
@@ -876,6 +914,9 @@ Result<void> PostgresDatabase::store_risk_limits(const std::string& strategy_id,
                                                  const std::string& portfolio_id,
                                                  const nlohmann::json& limits,
                                                  const std::string& table_name) {
+    if (defer_live_write([this,strategy_id,portfolio_id,limits,table_name]() {
+        return store_risk_limits(strategy_id,portfolio_id,limits,table_name);
+    }, LimitsPart)) return Result<void>();
     std::lock_guard<std::mutex> lock(mutex_);
 
     // Validate inputs before the connection so bad arguments are rejected the
@@ -896,7 +937,9 @@ Result<void> PostgresDatabase::store_risk_limits(const std::string& strategy_id,
     }
 
     try {
-        pqxx::work txn(*connection_);
+        PublicationTransaction txn(*connection_, publication_transaction_);
+        fence_live_write(txn,strategy_id,portfolio_id);
+
 
         // Append-only insert: risk_limits table is never updated or deleted.
         // A consumer gets the current envelope with: ORDER BY published_at DESC LIMIT 1.

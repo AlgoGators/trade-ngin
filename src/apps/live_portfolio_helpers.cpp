@@ -3,10 +3,12 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <iomanip>
 #include <sstream>
 #include <stdexcept>
 
 #include "trade_ngin/core/logger.hpp"
+#include "trade_ngin/core/time_utils.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
 #include "trade_ngin/instruments/instrument_registry.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
@@ -14,6 +16,95 @@
 #include "trade_ngin/strategy/trend_following_slow.hpp"
 
 namespace trade_ngin {
+
+namespace {
+std::string report_date_string(const Timestamp& date) {
+    const auto time = std::chrono::system_clock::to_time_t(date);
+    std::tm tm{};
+    core::safe_gmtime(&time, &tm);
+    std::ostringstream text;
+    text << std::put_time(&tm, "%Y-%m-%d");
+    return text.str();
+}
+}
+
+Result<void> seed_qt_report_positions(
+    PostgresDatabase& db, const std::string& strategy_id,
+    const std::vector<std::string>& strategy_names, const std::string& portfolio_id,
+    const Timestamp& report_date) {
+    const auto date = report_date_string(report_date);
+    for (const auto& name : strategy_names) {
+        auto result = db.seed_qt_positions_from_system(strategy_id, name, portfolio_id, date);
+        if (result.is_error()) {
+            const auto scope = nlohmann::json{{"portfolio_id", portfolio_id},
+                {"strategy_id", strategy_id}, {"strategy_name", name},
+                {"portfolio_type", "qt"}, {"report_date", date}}.dump();
+            return make_error<void>(result.error()->code(),
+                "Failed to seed QT report positions " + scope + ": " + result.error()->what(),
+                "seed_qt_report_positions");
+        }
+    }
+    return Result<void>();
+}
+
+Result<ReportPositionSnapshot> load_qt_report_position_snapshot(
+    PostgresDatabase& db, const std::string& strategy_id,
+    const std::vector<std::string>& strategy_names, const std::string& portfolio_id,
+    const Timestamp& report_date, const StrategyPositionRows& system_rows) {
+    constexpr double kQuantityEpsilon = 1e-10;
+    StrategyPositionRows by_strategy;
+    std::unordered_map<std::string, Position> combined;
+    std::unordered_map<std::string, size_t> evidence_counts;
+    const auto scope = nlohmann::json{{"portfolio_id", portfolio_id},
+        {"strategy_id", strategy_id}, {"strategy_names", strategy_names},
+        {"portfolio_type", "qt"}, {"report_date", report_date_string(report_date)}}.dump();
+    auto qt_result = db.load_report_positions_by_date(
+        strategy_id, strategy_names, portfolio_id, report_date, "qt");
+    if (qt_result.is_error()) {
+        return make_error<ReportPositionSnapshot>(qt_result.error()->code(),
+            "Failed to load QT report positions " + scope + ": " + qt_result.error()->what(),
+            "load_qt_report_position_snapshot");
+    }
+
+    const std::unordered_map<std::string, Position> empty_rows;
+    for (const auto& strategy_name : strategy_names) {
+        const auto qt_it = qt_result.value().find(strategy_name);
+        const auto& raw_qt_rows = qt_it == qt_result.value().end() ? empty_rows : qt_it->second;
+        evidence_counts[strategy_name] = raw_qt_rows.size();
+        auto system_it = system_rows.find(strategy_name);
+        if (system_it != system_rows.end()) {
+            for (const auto& [symbol, system_position] : system_it->second) {
+                if (std::abs(system_position.quantity.as_double()) > kQuantityEpsilon &&
+                    raw_qt_rows.find(symbol) == raw_qt_rows.end()) {
+                    return make_error<ReportPositionSnapshot>(
+                        ErrorCode::INVALID_DATA,
+                        "Missing QT report position " + scope +
+                            ", strategy " + strategy_name + ", symbol " + symbol,
+                        "load_qt_report_position_snapshot");
+                }
+            }
+        }
+
+        auto& strategy_positions = by_strategy[strategy_name];
+        for (const auto& [symbol, qt_position] : raw_qt_rows) {
+            if (std::abs(qt_position.quantity.as_double()) <= kQuantityEpsilon) {
+                continue;
+            }
+
+            strategy_positions[symbol] = qt_position;
+            auto combined_it = combined.find(symbol);
+            if (combined_it == combined.end()) {
+                combined[symbol] = qt_position;
+            } else {
+                combined_it->second.quantity += qt_position.quantity;
+            }
+        }
+    }
+
+    return Result<ReportPositionSnapshot>(ReportPositionSnapshot{
+        std::move(by_strategy), std::move(combined), portfolio_id, strategy_id,
+        strategy_names, "qt", report_date, std::move(evidence_counts)});
+}
 
 std::unordered_map<std::string, Bar> latest_bar_by_symbol(const std::vector<Bar>& all_bars) {
     std::unordered_map<std::string, Bar> latest;
@@ -84,6 +175,73 @@ nlohmann::json build_run_inputs_row(const std::string& trade_ngin_sha,
     row["engine_flags"] = engine_flags;
 
     return row;
+}
+
+bool runtime_control_enabled(const char* value) {
+    return value != nullptr && std::string(value) == "true";
+}
+
+Result<nlohmann::json> build_runtime_trading_snapshot(const AppConfig& config) {
+    nlohmann::json snapshot = {
+        {"snapshot_version", 1}, {"portfolio_id", config.portfolio_id},
+        {"initial_capital", config.initial_capital},
+        {"reserve_capital_pct", config.reserve_capital_pct},
+        {"benchmark_mode", config.benchmark_mode}, {"execution", config.execution.to_json()},
+        {"optimization", config.opt_config.to_json()}, {"risk", config.risk_config.to_json()},
+        {"max_drawdown", config.max_drawdown}, {"max_leverage", config.max_leverage},
+        {"backtest", config.backtest.to_json()}, {"live", config.live.to_json()},
+        {"strategy_defaults", config.strategy_defaults.to_json()},
+        {"strategies", config.strategies_config}};
+    const auto has_secret_key = [](const auto& self, const nlohmann::json& value) -> bool {
+        if (value.is_object()) {
+            for (auto it = value.begin(); it != value.end(); ++it) {
+                std::string key = it.key();
+                std::transform(key.begin(), key.end(), key.begin(),
+                               [](unsigned char c) { return std::tolower(c); });
+                if (key.find("password") != std::string::npos ||
+                    key.find("secret") != std::string::npos ||
+                    key.find("token") != std::string::npos ||
+                    key.find("credential") != std::string::npos || key.rfind("smtp", 0) == 0 ||
+                    self(self, it.value())) return true;
+            }
+        } else if (value.is_array()) {
+            for (const auto& entry : value) if (self(self, entry)) return true;
+        }
+        return false;
+    };
+    if (has_secret_key(has_secret_key, snapshot))
+        return make_error<nlohmann::json>(ErrorCode::INVALID_ARGUMENT,
+                                         "runtime_snapshot_contains_secret_key");
+    return snapshot;
+}
+
+Result<StrategySelection> select_controlled_live_strategies(const nlohmann::json& config) {
+    try {
+        if (!config.is_object())
+            return make_error<StrategySelection>(ErrorCode::INVALID_ARGUMENT, "runtime_config_invalid");
+        double sum = 0.0;
+        for (const auto& [name, definition] : config.items()) {
+            (void)name;
+            if (!definition.value("enabled_live", false)) continue;
+            double weight = definition.at("default_allocation").get<double>();
+            if (!std::isfinite(weight) || weight <= 0.0 || weight > 1.0)
+                return make_error<StrategySelection>(ErrorCode::INVALID_ARGUMENT, "runtime_allocation_unsupported");
+            sum += weight;
+        }
+        if (std::abs(sum - 1.0) > 1e-9)
+            return make_error<StrategySelection>(ErrorCode::INVALID_ARGUMENT, "runtime_allocation_unsupported");
+        auto result = select_enabled_live_strategies(config);
+        if (result.is_ok()) {
+            auto selection = result.value();
+            // Preserve exact configured weights instead of any floating-point normalization.
+            for (auto& [name, weight] : selection.allocations)
+                weight = config.at(name).at("default_allocation").get<double>();
+            return selection;
+        }
+        return result;
+    } catch (const std::exception&) {
+        return make_error<StrategySelection>(ErrorCode::INVALID_ARGUMENT, "runtime_config_invalid");
+    }
 }
 
 Result<StrategySelection> select_enabled_live_strategies(const nlohmann::json& strategies_config) {

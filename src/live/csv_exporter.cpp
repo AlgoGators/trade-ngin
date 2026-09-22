@@ -457,7 +457,8 @@ Result<std::string> CSVExporter::export_current_positions(
     double portfolio_value,
     double gross_notional,
     double net_notional,
-    const StrategyInstancesMap& strategy_instances) {
+    const StrategyInstancesMap& strategy_instances,
+    bool strict_snapshot_rows) {
     try {
         INFO("CSVExporter: Exporting per-strategy positions...");
 
@@ -498,9 +499,11 @@ Result<std::string> CSVExporter::export_current_positions(
                 strategy = strategy_it->second;
             }
 
-            // Get all tradeable symbols from strategy to include even zero positions
+            // Legacy exports include every tradeable symbol even when it is flat.
+            // A QT report snapshot is already the authoritative display set: adding
+            // the strategy universe there would resurrect explicit QT zero closures.
             std::unordered_set<std::string> all_symbols;
-            if (strategy != nullptr) {
+            if (!strict_snapshot_rows && strategy != nullptr) {
                 auto* tf_strategy = dynamic_cast<TrendFollowingStrategy*>(strategy);
                 auto* tf_slow_strategy = dynamic_cast<TrendFollowingSlowStrategy*>(strategy);
                 if (tf_strategy != nullptr) {

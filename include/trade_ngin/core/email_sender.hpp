@@ -49,6 +49,7 @@ public:
      * @param config Email sender configuration
      */
     explicit EmailSender(const EmailSenderConfig& config);
+    virtual ~EmailSender() = default;
 
     /**
      * @brief Initialize email configuration from credential store
@@ -130,6 +131,17 @@ public:
         std::shared_ptr<DatabaseInterface> db,
         const std::string& strategy_id,
         const std::string& date
+    );
+
+protected:
+    /**
+     * @brief Perform the configured email transport after delivery policy approval
+     */
+    virtual Result<void> deliver_email(
+        const std::string& subject,
+        const std::string& body,
+        bool is_html,
+        const std::vector<std::string>& attachment_paths
     );
 
 private:

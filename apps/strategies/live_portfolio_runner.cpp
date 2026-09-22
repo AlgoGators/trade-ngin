@@ -19,6 +19,7 @@
 #include <set>
 #include <sstream>
 #include "trade_ngin/apps/live_portfolio_helpers.hpp"
+#include "trade_ngin/apps/live_runtime_invocation.hpp"
 #include "trade_ngin/core/config_loader.hpp"
 #include "trade_ngin/core/email_sender.hpp"
 #include "trade_ngin/core/holiday_checker.hpp"
@@ -218,8 +219,20 @@ int trade_ngin::run_live_portfolio(const LivePortfolioConfig& portfolio_cfg, int
         // select_enabled_live_strategies is shared with benchmark_replay
         // (ADR-005) so a replay derives the identical selection from a
         // recorded run_inputs.config_snapshot rather than today's config.
-        auto selection_result =
-            trade_ngin::select_enabled_live_strategies(app_config.strategies_config);
+        // The scheduler normally passes an explicit date. It never bypasses
+        // runtime approval; historical benchmark replay is a separate program.
+        const auto invocation_clock = std::chrono::system_clock::now();
+        auto invocation = trade_ngin::resolve_live_runtime_control(
+            std::getenv("QT_RUNTIME_CONTROL_ENABLED"),
+            use_override_date ? target_date : invocation_clock, invocation_clock);
+        if (invocation.is_error()) {
+            ERROR("Controlled operational historical-date runs are unsupported");
+            return 1;
+        }
+        const bool controlled_runtime = invocation.value();
+        auto selection_result = controlled_runtime
+            ? trade_ngin::select_controlled_live_strategies(app_config.strategies_config)
+            : trade_ngin::select_enabled_live_strategies(app_config.strategies_config);
         if (selection_result.is_error()) {
             ERROR("Failed to select enabled_live strategies: " +
                   std::string(selection_result.error()->what()));
@@ -262,6 +275,24 @@ int trade_ngin::run_live_portfolio(const LivePortfolioConfig& portfolio_cfg, int
              std::to_string(std::chrono::system_clock::to_time_t(now)));
 
         double initial_capital = app_config.initial_capital;
+        auto trading_snapshot = build_runtime_trading_snapshot(app_config);
+        if (trading_snapshot.is_error()) {
+            ERROR("Runtime configuration snapshot refused");
+            return 1;
+        }
+        auto publication_start = db->begin_live_publication(combined_strategy_id, portfolio_id,
+            now, trading_snapshot.value(), controlled_runtime, TRADE_NGIN_GIT_SHA);
+        if (publication_start.is_error()) {
+            ERROR("Runtime scope or approved configuration refused");
+            return 1;
+        }
+        if (publication_start.value()) {
+            INFO("Approved retired-scope stop acknowledged; no positions published");
+            return 0;
+        }
+        // Every early return leaves an honest failed/unacknowledged attempt.
+        auto publication_guard = std::shared_ptr<void>(nullptr,
+            [db](void*) { db->abandon_live_publication(); });
 
         auto symbols_result = db->get_symbols(trade_ngin::AssetClass::FUTURES);
         auto symbols = symbols_result.value();
@@ -1567,14 +1598,7 @@ int trade_ngin::run_live_portfolio(const LivePortfolioConfig& portfolio_cfg, int
                  std::to_string(positions_map.size()) + " positions");
 
             for (const auto& [symbol, pos] : positions_map) {
-                // Only save positions with non-zero quantity
-                // Zero-quantity positions (closed positions) should NOT be stored
-                bool has_quantity = std::abs(pos.quantity.as_double()) > 1e-10;
-
-                if (!has_quantity) {
-                    DEBUG("Skipping zero-quantity position: " + symbol);
-                    continue;
-                }
+                // Explicit zeros are closure evidence and remain part of this snapshot.
 
                 // Create a new position with validated values
                 Position validated_position;
@@ -1657,36 +1681,6 @@ int trade_ngin::run_live_portfolio(const LivePortfolioConfig& portfolio_cfg, int
                     INFO("Successfully stored " + std::to_string(strategy_positions_vec.size()) +
                          " positions for strategy: " + strategy_name);
                     total_positions_saved += strategy_positions_vec.size();
-
-                    // F1 dual portfolio: give QT a starting point to edit.
-                    //
-                    // Copies today's system positions into the qt stream, but ONLY if
-                    // no qt rows exist for this day yet -- so re-running the engine can
-                    // never overwrite a decision QT has already made. That guarantee
-                    // lives in the SQL (a single INSERT ... SELECT ... WHERE NOT EXISTS),
-                    // not in this call site, so it holds even under concurrent runs.
-                    //
-                    // No-op if migration 001 has not been applied.
-                    std::string seed_date_str;
-                    {
-                        auto seed_tt = std::chrono::system_clock::to_time_t(
-                            strategy_positions_vec.front().last_update);
-                        std::tm seed_tm{};
-                        trade_ngin::core::safe_gmtime(&seed_tt, &seed_tm);
-                        std::stringstream seed_ss;
-                        seed_ss << std::put_time(&seed_tm, "%Y-%m-%d");
-                        seed_date_str = seed_ss.str();
-                    }
-
-                    auto seed_result = db->seed_qt_positions_from_system(
-                        combined_strategy_id, strategy_name, portfolio_id, seed_date_str,
-                        "trading.positions");
-                    if (seed_result.is_error()) {
-                        // Non-fatal: the system stream is already safely stored, and the
-                        // qt stream can be seeded on the next run.
-                        WARN("Could not seed qt positions for " + strategy_name + ": " +
-                             std::string(seed_result.error()->what()));
-                    }
                 }
             } else {
                 INFO("No non-zero positions to store for strategy: " + strategy_name);
@@ -1696,56 +1690,21 @@ int trade_ngin::run_live_portfolio(const LivePortfolioConfig& portfolio_cfg, int
         INFO("PHASE 4: Total positions saved across all strategies: " +
              std::to_string(total_positions_saved));
 
-        // Write trading.run_inputs row (replay contract, ADR-005 5.1 D-1) --
-        // unconditional, every day, regardless of benchmark.mode, since it's
-        // what a later `deferred`-mode replay reconstructs from.
-        try {
-            // universe = the resolved symbol list (post .c.0/ES.v.0 filtering), not
-            // strategy_names -- ADR-005 5.2: "contract resolution is date-dependent
-            // (rolls); the replay must use the same instruments the live run saw."
-            // (Fixed here: an earlier version of this call passed strategy_names,
-            // which left every historical run_inputs.universe unusable for replay.)
-            nlohmann::json run_inputs_row = build_run_inputs_row(
-                TRADE_NGIN_GIT_SHA, app_config.to_json(), symbols, all_bars,
-                portfolio_config.benchmark_mode, start_date, end_date);
+        // Carry QT state even when a strategy's system book has become flat.
+        // A failed seed blocks distribution below, including apparently flat reports.
+        auto qt_seed_result = seed_qt_report_positions(
+            *db, combined_strategy_id, strategy_names, portfolio_id, now);
+        if (qt_seed_result.is_error()) {
+            ERROR("INVESTOR_REPORT_BLOCKED: " + std::string(qt_seed_result.error()->what()));
+        }
 
-            auto run_date_t = std::chrono::system_clock::to_time_t(now);
-            std::ostringstream run_date_ss;
-            run_date_ss << std::put_time(std::gmtime(&run_date_t), "%Y-%m-%d");
-
-            // Dollar-quoted JSONB literals: the config/universe/bars content
-            // can legitimately contain single quotes (e.g. a strategy name),
-            // and dollar-quoting sidesteps escaping entirely rather than
-            // risking a malformed or (worse) injectable string built by hand.
-            std::ostringstream insert_sql;
-            insert_sql
-                << "INSERT INTO trading.run_inputs "
-                   "(portfolio_id, strategy_id, date, trade_ngin_sha, config_snapshot, "
-                   "universe, data_window, risk_limits_id, engine_flags) VALUES ('"
-                << coordinator_config.portfolio_id << "', '" << combined_strategy_id << "', '"
-                << run_date_ss.str() << "', '" << TRADE_NGIN_GIT_SHA << "', $rirq$"
-                << run_inputs_row["config_snapshot"].dump() << "$rirq$::jsonb, $rirq$"
-                << run_inputs_row["universe"].dump() << "$rirq$::jsonb, $rirq$"
-                << run_inputs_row["data_window"].dump() << "$rirq$::jsonb, NULL, $rirq$"
-                << run_inputs_row["engine_flags"].dump()
-                << "$rirq$::jsonb) "
-                   "ON CONFLICT (portfolio_id, strategy_id, date) DO UPDATE SET "
-                   "trade_ngin_sha = EXCLUDED.trade_ngin_sha, "
-                   "config_snapshot = EXCLUDED.config_snapshot, "
-                   "universe = EXCLUDED.universe, "
-                   "data_window = EXCLUDED.data_window, "
-                   "engine_flags = EXCLUDED.engine_flags, "
-                   "recorded_at = now()";
-
-            auto insert_result = db->execute_query(insert_sql.str());
-            if (insert_result.is_error()) {
-                WARN("Failed to store run_inputs row: " +
-                     std::string(insert_result.error()->what()));
-            } else {
-                INFO("Stored run_inputs row for replay contract (date=" + run_date_ss.str() + ")");
-            }
-        } catch (const std::exception& e) {
-            WARN("Failed to build/store run_inputs row (non-fatal): " + std::string(e.what()));
+        // Record the non-secret immutable replay snapshot with the final publication.
+        const auto run_inputs_row = build_run_inputs_row(TRADE_NGIN_GIT_SHA,
+            trading_snapshot.value(), symbols, all_bars, portfolio_config.benchmark_mode,
+            start_date, end_date);
+        if (db->store_live_run_inputs(combined_strategy_id, portfolio_id, now, run_inputs_row).is_error()) {
+            ERROR("Replay snapshot publication refused");
+            return 1;
         }
 
         // ========================================
@@ -2233,7 +2192,7 @@ int trade_ngin::run_live_portfolio(const LivePortfolioConfig& portfolio_cfg, int
             INFO("Executing UPDATE query for Day T-1 live_results...");
             INFO("UPDATE will set current_portfolio_value for date: " + yesterday_date_ss.str());
 
-            auto update_result = db->execute_direct_query(update_query);
+            auto update_result = db->execute_scoped_live_update(update_query, combined_strategy_id, coordinator_config.portfolio_id);
             if (update_result.is_error()) {
                 ERROR("Failed to update Day T-1 live_results: " +
                       std::string(update_result.error()->what()));
@@ -3015,6 +2974,7 @@ int trade_ngin::run_live_portfolio(const LivePortfolioConfig& portfolio_cfg, int
             results_manager->set_equity(current_portfolio_value);
         } catch (const std::exception& e) {
             ERROR("Exception while saving trading results: " + std::string(e.what()));
+            return 1;
         }
 
         // Phase 4: Use CSVExporter for position export
@@ -3026,19 +2986,50 @@ int trade_ngin::run_live_portfolio(const LivePortfolioConfig& portfolio_cfg, int
         // All real transaction-cost data flows from cost_manager_->calculate_costs() at
         // execution time and lives on trading.executions / trading.live_results directly.
 
-        // Export current positions with per-strategy breakdown
-        std::string today_filename;
-        auto current_export_result = csv_exporter->export_current_positions(
-            now, strategy_positions_map,
-            previous_day_close_prices,  // Market prices (Day T-1 close)
-            current_portfolio_value, gross_notional, net_notional, strategy_instances_map);
+        // Current-day writes have only been captured by value so far. The publisher
+        // rechecks registry revision and commits positions/limits/results/QT seed
+        // together before any report reader observes the new publication.
+        if (results_manager->save_all_results(combined_strategy_id, now).is_error()) {
+            ERROR("Current-day publication payload could not be completed");
+            return 1;
+        }
+        if (db->publish_live_publication().is_error()) {
+            ERROR("Current-day publication rolled back; investor report blocked");
+            return 1;
+        }
 
-        if (current_export_result.is_ok()) {
-            today_filename = current_export_result.value();
-            INFO("Today's positions saved to " + today_filename);
+        StrategyPositionRows report_strategy_positions;
+        std::unordered_map<std::string, Position> report_positions;
+        bool reporting_blocked = qt_seed_result.is_error();
+        auto report_snapshot = load_qt_report_position_snapshot(
+            *db, combined_strategy_id, strategy_names, portfolio_id, now,
+            strategy_positions_map);
+        if (report_snapshot.is_error()) {
+            reporting_blocked = true;
+            ERROR("INVESTOR_REPORT_BLOCKED: " +
+                  std::string(report_snapshot.error()->what()));
         } else {
-            ERROR("Failed to export current positions: " +
-                  std::string(current_export_result.error()->what()));
+            report_strategy_positions = report_snapshot.value().by_strategy;
+            report_positions = report_snapshot.value().combined;
+        }
+
+        // Export current QT report positions with per-strategy breakdown
+        std::string today_filename;
+        if (!reporting_blocked) {
+            auto current_export_result = csv_exporter->export_current_positions(
+                now, report_strategy_positions,
+                previous_day_close_prices,  // Market prices (Day T-1 close)
+                current_portfolio_value, gross_notional, net_notional, strategy_instances_map,
+                true);  // QT snapshot rows only: do not re-add zero closures from strategy universes.
+
+            if (current_export_result.is_ok()) {
+                today_filename = current_export_result.value();
+                INFO("Today's positions saved to " + today_filename);
+            } else {
+                reporting_blocked = true;
+                ERROR("Failed to export current positions: " +
+                      std::string(current_export_result.error()->what()));
+            }
         }
 
         // Export yesterday's finalized positions with per-strategy breakdown (if not first trading
@@ -3063,17 +3054,6 @@ int trade_ngin::run_live_portfolio(const LivePortfolioConfig& portfolio_cfg, int
                       std::string(finalized_export_result.error()->what()));
             }
         }
-        // Store equity curve and save all results to database
-        // Use the new LiveResultsManager - save all results at once
-        INFO("Saving all live trading results using LiveResultsManager...");
-
-        auto save_result = results_manager->save_all_results(combined_strategy_id, now);
-        if (save_result.is_error()) {
-            ERROR("Failed to save all live results: " + std::string(save_result.error()->what()));
-        } else {
-            INFO("Successfully saved all live trading results to database");
-        }
-
         // Stop the strategy
         INFO("Stopping strategy...");
         auto stop_result = tf_strategy->stop();
@@ -3098,7 +3078,7 @@ int trade_ngin::run_live_portfolio(const LivePortfolioConfig& portfolio_cfg, int
         INFO("Daily trend following position generation completed successfully");
 
         // Send email report with trading results (based on send_email flag)
-        if (send_email) {
+        if (send_email && !reporting_blocked && !today_filename.empty()) {
             INFO("Sending email report...");
             try {
                 EmailSenderConfig email_config;
@@ -3400,11 +3380,11 @@ int trade_ngin::run_live_portfolio(const LivePortfolioConfig& portfolio_cfg, int
                     // above So we don't need to create it here anymore
 
                     // Generate email body with is_daily_strategy flag set to true and current
-                    // prices. Pass strategy_positions_map and all_strategy_executions for
+                    // prices. Pass the QT report snapshot and all_strategy_executions for
                     // per-strategy tables.
                     std::string email_body = email_sender->generate_trading_report_body(
-                        strategy_positions_map,  // Per-strategy positions for grouped tables
-                        positions,
+                        report_strategy_positions,  // Per-strategy QT report positions
+                        report_positions,
                         risk_eval.is_ok() ? std::make_optional(risk_eval.value()) : std::nullopt,
                         strategy_metrics, all_strategy_executions, date_str,
                         portfolio_id,                 // Portfolio name for email header
@@ -3442,8 +3422,10 @@ int trade_ngin::run_live_portfolio(const LivePortfolioConfig& portfolio_cfg, int
             } catch (const std::exception& e) {
                 ERROR("Exception during email sending: " + std::string(e.what()));
             }
-        } else {
+        } else if (!send_email) {
             INFO("Email reporting disabled");
+        } else {
+            INFO("Email reporting blocked because the current-position report was unavailable");
         }
 
         std::cerr << "At end of main: initialized=" << Logger::instance().is_initialized()

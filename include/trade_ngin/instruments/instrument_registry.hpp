@@ -70,7 +70,8 @@ public:
 
     /**
      * @brief Get all loaded instruments
-     * @return Map of symbols to instruments
+     * @return Deterministic preferred map of canonical symbols to instruments.
+     *         Equity is preferred when an equity and future share a symbol.
      */
     std::unordered_map<std::string, std::shared_ptr<Instrument>> get_all_instruments() const;
 
@@ -112,7 +113,11 @@ private:
     AssetType string_to_asset_type(const std::string& asset_type_str) const;
 
     std::shared_ptr<PostgresDatabase> db_;
+    // Canonical-symbol generic view; type-qualified indexes retain collisions.
     std::unordered_map<std::string, std::shared_ptr<Instrument>> instruments_;
+    std::unordered_map<std::string, std::shared_ptr<FuturesInstrument>> futures_;
+    std::unordered_map<std::string, std::shared_ptr<EquityInstrument>> equities_;
+    std::unordered_map<std::string, std::shared_ptr<OptionInstrument>> options_;
     mutable std::mutex mutex_;
     bool initialized_{false};
 };
