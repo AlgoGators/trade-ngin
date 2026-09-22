@@ -88,4 +88,77 @@ struct AdjustmentBar {
 std::vector<double> compute_backward_adjustment_factors(
     const std::vector<AdjustmentBar>& bars);
 
+/**
+ * @brief Which copy of a futures bar is kept when a (symbol, time) is stored more than once
+ *
+ * futures_data.ohlcv_1d has no key, and holds 970 extra rows in 306 symbol-dates (all between
+ * 2025-10-06 and 2026-02-05). The loader keeps ONE row per (symbol, time): the one first in
+ * this order, i.e. the highest volume, then the lowest close, open, high, low. Identical
+ * copies (305 of the 306 groups) make the tie-break irrelevant; it only makes the pick
+ * independent of physical row order. The single disagreeing group (6A.v.0 2025-11-05) keeps
+ * the 76,895-volume front-contract bar over the 196-volume wrong-instrument one.
+ */
+inline constexpr const char* kFuturesBarKeepOrder = "volume DESC, close, open, high, low";
+
+/**
+ * @brief The futures bar query: one row per (symbol, time), returned ORDER BY time, symbol
+ *
+ * DISTINCT ON (symbol, time) with kFuturesBarKeepOrder, wrapped so the rows come back in the
+ * loader's historical order (time, symbol). A series with no repeated (symbol, time) comes
+ * back exactly as the plain query returned it. Timestamps bind as $1/$2; with
+ * with_symbol_filter the symbol list binds as $3.
+ */
+std::string build_futures_bar_query(const std::string& full_table_name, bool with_symbol_filter);
+
+/**
+ * @brief Companion query: every copy of every repeated (symbol, time) in the same window
+ *
+ * Rows ORDER BY time, symbol, then kFuturesBarKeepOrder, so the first row of each group is
+ * the copy build_futures_bar_query() keeps. Same parameters as build_futures_bar_query().
+ */
+std::string build_futures_duplicate_copies_query(const std::string& full_table_name,
+                                                 bool with_symbol_filter);
+
+/**
+ * @brief One stored copy of a futures bar, as read by the companion query
+ */
+struct FuturesBarCopy {
+    std::string symbol;
+    std::string date;  ///< the bar's UTC date, YYYY-MM-DD
+    double open{0.0};
+    double high{0.0};
+    double low{0.0};
+    double close{0.0};
+    double volume{0.0};
+};
+
+/**
+ * @brief What the one-bar-per-symbol-date rule dropped from one load
+ */
+struct FuturesBarDedupReport {
+    size_t rows_dropped{0};              ///< copies beyond the first, summed over groups
+    size_t symbol_dates{0};              ///< (symbol, date) groups with more than one copy
+    std::vector<std::string> conflicts;  ///< one line per group whose copies disagree
+};
+
+/**
+ * @brief Summarise the companion query's rows
+ *
+ * copies must be in the companion query's order: groups adjacent, the kept copy first. A
+ * group whose copies are not all identical in (open, high, low, close, volume) yields one
+ * line: "FUTURES_BAR_DEDUP_CONFLICT symbol=<s> date=<d> copies=<n> kept close=<c> volume=<v>"
+ * followed by " dropped close=<c> volume=<v>" for each distinct dropped copy that differs
+ * from the kept one. Numbers print with 10 significant digits.
+ */
+FuturesBarDedupReport summarise_futures_bar_duplicates(const std::vector<FuturesBarCopy>& copies);
+
+/**
+ * @brief The once-per-load summary line
+ *
+ * "FUTURES_BAR_DEDUP rows_read=<bars_returned + rows_dropped> rows_dropped=<n>
+ * symbol_dates=<k> conflicts=<c>"
+ */
+std::string format_futures_bar_dedup_summary(size_t bars_returned,
+                                             const FuturesBarDedupReport& report);
+
 }  // namespace trade_ngin::market_data_utils
