@@ -61,5 +61,29 @@ no `max_drawdown`/`max_leverage` (schema 1 silently fell back to 0.4 / 4.0) or w
 `use_risk_management` resolves to false anywhere: that second case needs a `none` module
 with a ruling, and the script will not invent one.
 
+**Two hand steps after the script (T-6b-fix).**
+
+1. *`lookback_unit`.* A `risk.json` migrated before T-6b commit 9 says `"lookback_unit":
+   "bars"`. The Carver window keeps `lookback_period` distinct DATES (252 distinct dates, of
+   which the sparse-date filter keeps about 187-200 on the futures books) and the loader now
+   refuses `"bars"`. Re-running the script upgrades such a file to `"dates"` and nothing else,
+   keeping a `.bars.bak` rollback copy.
+2. *A book ruled `none` (today: EQUITY_MR).* The script writes a `carver` module for every
+   book, because that is the only gate schema 1 had, and it will not invent a ruling. When
+   the tracked `config_template/portfolios/<book>/risk.json` assigns the book `none`, the
+   script prints a `NOTE:` naming the book, `_ruled_by` and `_ruled_on`. For EQUITY_MR the
+   operator then replaces the deployed file's `modules` list by hand with the template's:
+
+   ```
+   "modules": [ { "id": "no_portfolio_risk", "type": "none",
+                  "_reason": "<copied verbatim from the template>",
+                  "_ruled_by": "HD", "_ruled_on": "2026-09-18" } ]
+   ```
+
+   leaving `risk_reporting`, `max_drawdown` and `max_leverage` as they are (the reporter still
+   measures the book). Until that is done the deployed book keeps gating with the Carver
+   module while the repository says it runs none. Each run of a `none` book logs one
+   `RISK_NONE ... ruled_by=... ruled_on=...` line, which is how to confirm the step took.
+
 `examples/risk_modules/` holds one worked example per module type. They carry placeholder
 numbers and no runner loads them.

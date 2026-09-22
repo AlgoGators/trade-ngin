@@ -145,6 +145,18 @@ public:
             }
             out.params = none;
         } else if (type == "carver") {
+            // C-2: make_risk_module hands every module the PORTFOLIO's capital, and the Carver
+            // module ignores RiskContext::capital by design (risk_module.hpp:72) and keeps the
+            // RiskConfig::capital its gate divides by. A carver on a 30 % sleeve would therefore
+            // measure that sleeve's leverage against 100 % of the book's money, so
+            // max_gross_leverage 4.0 would be 13.3x of the sleeve's own. Portfolio scope only
+            // until it honours ctx.capital.
+            if (sleeve_scope_) {
+                return err(path_ +
+                           " is type \"carver\", which is only valid at portfolio scope: the "
+                           "Carver gate divides by the portfolio's capital, so at sleeve scope "
+                           "its leverage limits would be read against the whole book's money");
+            }
             auto r = require_keys(m, std::vector<std::string>(std::begin(kCarverKeys),
                                                               std::end(kCarverKeys)),
                                   type);
@@ -156,12 +168,22 @@ public:
                                               &c.confidence_level, &c.lookback_period);
             if (ranges.is_error()) return forward(ranges);
 
-            // R7
+            // R7. The window is keyed on the bar timestamp and capped at `lookback_period`
+            // distinct DATES (CarverRiskModule::on_bars, since T-6b commit 9); nothing reads this
+            // key to choose anything else. "bars" used to be the unit and still sits in every
+            // production risk.json migrated before that commit, where it now says one thing
+            // while the code does another -- so it is a load error that names the fix, not a
+            // synonym (T-6b INTERIM ADVERSARIAL B-2).
             const auto& unit = m.at("lookback_unit");
-            if (!unit.is_string() ||
-                (unit.get<std::string>() != "bars" && unit.get<std::string>() != "dates")) {
-                return err(path_ + ".lookback_unit must be \"bars\" or \"dates\", got " +
-                           val(unit));
+            if (unit.is_string() && unit.get<std::string>() == "bars") {
+                return err(path_ +
+                           ".lookback_unit is \"bars\", but the Carver window is capped at "
+                           "lookback_period distinct DATES and nothing reads a bar count: write "
+                           "\"dates\" (python3 scripts/migrate_risk_json.py <config_dir> "
+                           "--in-place upgrades the file)");
+            }
+            if (!unit.is_string() || unit.get<std::string>() != "dates") {
+                return err(path_ + ".lookback_unit must be \"dates\", got " + val(unit));
             }
             c.lookback_unit = unit.get<std::string>();
             const auto& gate = m.at("min_gate_dates");
@@ -172,10 +194,24 @@ public:
                            val(gate));
             }
             c.min_gate_dates = gate.get<int>();
-            if (c.lookback_unit == "dates" && c.lookback_period < c.min_gate_dates) {
+            if (c.lookback_period < c.min_gate_dates) {
                 return err(path_ + ".lookback_period (" + std::to_string(c.lookback_period) +
                            " dates) is shorter than min_gate_dates (" +
                            std::to_string(c.min_gate_dates) + " dates)");
+            }
+            // R12 (T-6b INTERIM ADVERSARIAL B-5). F5 engages only when the window holds at least
+            // kF5MinGateDates COMPLETE dates; below that the gate reads the unfiltered,
+            // zero-filled window. `lookback_period` counts DISTINCT dates, of which F5 keeps only
+            // the complete ones -- on the shipped futures books 252 distinct dates leave about
+            // 187-200 -- so a period below the floor can NEVER engage F5. Necessary, not
+            // sufficient: a period at or just above the floor can still fall short on complete
+            // dates, which the per-run F5 fallback WARN reports.
+            if (static_cast<size_t>(c.lookback_period) < CarverRiskModule::kF5MinGateDates) {
+                return err(path_ + ".lookback_period (" + std::to_string(c.lookback_period) +
+                           " dates) is below the sparse-date filter's floor of " +
+                           std::to_string(CarverRiskModule::kF5MinGateDates) +
+                           " complete dates, so the filter could never engage and the gate would "
+                           "always read the zero-filled window");
             }
 
             // R8
@@ -204,13 +240,8 @@ public:
                     m.at("_missing_symbol_policy_reason").get<std::string>();
             }
 
-            // A1 / A2: parsed and validated above, refused here, each with the commit that
-            // will delete the refusal.
-            if (c.lookback_unit == "dates") {
-                return err(path_ +
-                           ".lookback_unit \"dates\" is not implemented before T-6 commit 9 (the "
-                           "date-keyed window)");
-            }
+            // A1 is implemented as of T-6b commit 9 (the date-keyed window; R7 above refuses the
+            // old "bars"). A2 is still refused, with the commit that will delete the refusal.
             if (c.missing_symbol_policy != "ignore") {
                 return err(path_ + ".missing_symbol_policy \"" + c.missing_symbol_policy +
                            "\" is not implemented yet; only \"ignore\" (with its reason) is "
@@ -798,6 +829,72 @@ Result<RiskSchema> parse_risk_schema(const nlohmann::json& risk,
                                             std::to_string(i) + "]");
                     }
                 }
+            }
+        }
+    }
+
+    // R10 (T-6a ADVERSARIAL C-1), the `none` attribution generalised. S3 ties attribution to
+    // the literal type "none", so a book whose only module is a `warn`, or a `constant_scale`
+    // of 1.0, is just as ungated and carries nobody's name -- and the constructor still prints
+    // "Risk manager initialized successfully". A book with no `carver` anywhere in its
+    // portfolio chain therefore states who ruled that and when, at the top of risk.json. The
+    // lone-`none` book is exempt: its own module already carries all three fields.
+    {
+        bool has_carver = false;
+        for (const auto& m : out.portfolio) {
+            if (m.type == "carver") has_carver = true;
+        }
+        for (const auto& [sid, mods] : out.sleeves) {
+            (void)sid;
+            for (const auto& m : mods) {
+                if (m.type == "carver") has_carver = true;
+            }
+        }
+        const bool lone_none = out.portfolio.size() == 1 && out.portfolio.front().type == "none";
+        if (!has_carver && !lone_none) {
+            for (const char* key : {"_ruled_by", "_ruled_on"}) {
+                if (!risk.contains(key) || !risk.at(key).is_string() ||
+                    risk.at(key).get<std::string>().empty()) {
+                    return err(std::string("risk.") + key +
+                               " is required on a book no module of which is a \"carver\": "
+                               "nothing here can cut this book, and that has to be somebody's "
+                               "decision rather than an omission");
+                }
+            }
+            if (!is_ymd(risk.at("_ruled_on").get<std::string>())) {
+                return err("risk._ruled_on must be YYYY-MM-DD, got " + val(risk.at("_ruled_on")));
+            }
+        }
+    }
+
+    // R10's other half: a warn or refuse whose condition is `never` cannot fire, so it is
+    // furniture. Listing it is allowed -- a test book does it -- but it says why.
+    {
+        auto check_never = [&](const RiskModuleConfig& m,
+                               const std::string& path) -> Result<void> {
+            const auto* c = std::get_if<ConditionModuleConfig>(&m.params);
+            if (c == nullptr || c->condition.kind != RiskCondition::Kind::NEVER) {
+                return Result<void>();
+            }
+            const bool has = m.comments.contains("_never_reason") &&
+                             m.comments.at("_never_reason").is_string() &&
+                             !m.comments.at("_never_reason").get<std::string>().empty();
+            if (!has) {
+                return fail(prefix + path +
+                            " has condition kind \"never\", so it can never fire; say why it is "
+                            "listed in a non-empty _never_reason");
+            }
+            return Result<void>();
+        };
+        for (size_t i = 0; i < out.portfolio.size(); ++i) {
+            auto r = check_never(out.portfolio[i], "risk.modules[" + std::to_string(i) + "]");
+            if (r.is_error()) return forward(r);
+        }
+        for (const auto& [sid, mods] : out.sleeves) {
+            for (size_t i = 0; i < mods.size(); ++i) {
+                auto r = check_never(mods[i],
+                                     "sleeve_risk_modules." + sid + "[" + std::to_string(i) + "]");
+                if (r.is_error()) return forward(r);
             }
         }
     }

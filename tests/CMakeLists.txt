@@ -108,6 +108,7 @@ set(TEST_SOURCES
     portfolio/test_price_history_ordering.cpp
     portfolio/test_risk_loop_log_golden.cpp
     portfolio/test_risk_module_loop.cpp
+    portfolio/test_risk_fail_closed.cpp
     storage/test_backtest_results_manager.cpp
     storage/test_live_results_manager.cpp
     storage/test_equity_fallback_stream_db.cpp

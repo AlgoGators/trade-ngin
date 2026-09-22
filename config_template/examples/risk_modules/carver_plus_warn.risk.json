@@ -12,7 +12,7 @@
       "max_net_leverage": 1.0,
       "confidence_level": 0.99,
       "lookback_period": 252,
-      "lookback_unit": "bars",
+      "lookback_unit": "dates",
       "min_gate_dates": 21,
       "missing_symbol_policy": "ignore",
       "_missing_symbol_policy_reason": "PLACEHOLDER: say why a configured symbol with no bar in the window may be skipped rather than refused."

@@ -2,6 +2,7 @@
 #include <atomic>
 #include <cmath>
 #include <thread>
+#include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/core/state_manager.hpp"
 #include "trade_ngin/data/database_interface.hpp"
 #include "trade_ngin/strategy/base_strategy.hpp"
@@ -266,7 +267,9 @@ TEST_F(BaseStrategyTest, UpdatePosition_FailsIfExceedsLimit) {
     EXPECT_EQ(result.error()->code(), ErrorCode::POSITION_LIMIT_EXCEEDED);
 }
 
-TEST_F(BaseStrategyTest, CheckRiskLimits_FailsOnMaxDrawdown) {
+// T-6 commit 11 (HD's ruling): a drawdown breach WARNS and does not fail the strategy. It used to
+// return RISK_LIMIT_EXCEEDED, which failed on_data and stopped the strategy's targets updating.
+TEST_F(BaseStrategyTest, CheckRiskLimits_WarnsOnMaxDrawdownAndDoesNotFail) {
     StrategyConfig config;
     config.capital_allocation = 100000;
     auto strategy = createRunningStrategy(config);
@@ -280,9 +283,29 @@ TEST_F(BaseStrategyTest, CheckRiskLimits_FailsOnMaxDrawdown) {
     RiskLimits limits;
     limits.max_drawdown = 0.5;  // 50% max drawdown
     strategy->update_risk_limits(limits);
+    LoggerConfig lc;
+    lc.destination = LogDestination::CONSOLE;
+    lc.min_level = LogLevel::INFO;
+    lc.include_timestamp = false;
+    Logger::instance().initialize(lc);
+    ::testing::internal::CaptureStdout();
     auto result = strategy->check_risk_limits();
-    EXPECT_TRUE(result.is_error());
-    EXPECT_EQ(result.error()->code(), ErrorCode::RISK_LIMIT_EXCEEDED);
+    const std::string out = ::testing::internal::GetCapturedStdout();
+    EXPECT_TRUE(result.is_ok()) << "a breach warns; it must not fail the strategy";
+    EXPECT_NE(out.find("[WARNING]"), std::string::npos) << out;
+    EXPECT_NE(out.find("Drawdown exceeds limit: -1.500000 against max_drawdown 0.500000 (warning "
+                       "only; the strategy keeps running)"),
+              std::string::npos)
+        << out;
+
+    // Inside the limit: silent and OK.
+    RiskLimits loose;
+    loose.max_drawdown = 2.0;
+    strategy->update_risk_limits(loose);
+    ::testing::internal::CaptureStdout();
+    EXPECT_TRUE(strategy->check_risk_limits().is_ok());
+    EXPECT_EQ(::testing::internal::GetCapturedStdout().find("Drawdown exceeds limit"),
+              std::string::npos);
 }
 
 // --- Concurrency ---
