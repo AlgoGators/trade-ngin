@@ -147,7 +147,7 @@ std::vector<Bar> three_days(const std::string& symbol) {
 }
 
 PortfolioConfig small_config() {
-    PortfolioConfig pc{1000.0, 0.0, 1.0, 0.0, /*optimization=*/false};
+    PortfolioConfig pc{1000.0, 1.0, 0.0, /*optimization=*/false};
     pc.allow_fractional_positions = false;
     pc.risk_config.capital = 1000.0;
     pc.risk_config.var_limit = 1e6;
@@ -210,7 +210,6 @@ protected:
 nlohmann::json first_upsert_portfolio_config() {
     nlohmann::json j;
     j["total_capital"] = 500000.0;
-    j["reserve_capital"] = 0.1;
     j["use_optimization"] = true;
     return j;
 }
@@ -536,7 +535,6 @@ TEST_F(RunMetadataDbFixture, TheSecondUpsertMarksTheSameRowWithTheReason) {
     EXPECT_EQ(stored["risk_refusal"]["lap"], 2);
     EXPECT_EQ(stored["risk_decisions"]["outcome"]["refused"], true);
     EXPECT_EQ(stored["total_capital"], 500000.0);
-    EXPECT_EQ(stored["reserve_capital"], 0.1);
     EXPECT_EQ(stored["use_optimization"], true);
     EXPECT_EQ(nlohmann::json::parse(r[0][1].as<std::string>()), allocations);
     EXPECT_EQ(nlohmann::json::parse(r[0][2].as<std::string>()), strategy_configs);

@@ -580,7 +580,6 @@ int main(int argc, char* argv[]) {
         // Setup portfolio configuration
         trade_ngin::PortfolioConfig portfolio_config;
         portfolio_config.total_capital = initial_capital;
-        portfolio_config.reserve_capital = initial_capital * app_config.reserve_capital_pct;
         portfolio_config.max_strategy_allocation =
             app_config.strategy_defaults.max_strategy_allocation;
         portfolio_config.min_strategy_allocation =
@@ -1108,8 +1107,6 @@ int main(int argc, char* argv[]) {
         // this row a second time, from the same values, with the refusal marked.
         nlohmann::json portfolio_config_json;
         portfolio_config_json["total_capital"] = static_cast<double>(portfolio_config.total_capital);
-        portfolio_config_json["reserve_capital"] =
-            static_cast<double>(portfolio_config.reserve_capital);
         portfolio_config_json["use_optimization"] = portfolio_config.use_optimization;
 
         // Convert strategy_allocations to JSON

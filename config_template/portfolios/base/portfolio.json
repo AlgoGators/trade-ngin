@@ -2,7 +2,6 @@
   "_description": "BASE_PORTFOLIO - Higher risk, multiple strategies",
   "portfolio_id": "BASE_PORTFOLIO",
   "initial_capital": 500000,
-  "reserve_capital_pct": 0.1,
   "strategies": {
     "TREND_FOLLOWING": {
       "enabled_backtest": true,

@@ -134,8 +134,7 @@ PortfolioManager::PortfolioManager(PortfolioConfig config, std::string id,
                        id_,  // Use the provided ID
                        "",
                        std::chrono::system_clock::now(),
-                       {{"total_capital", static_cast<double>(config_.total_capital)},
-                        {"reserve_capital", static_cast<double>(config_.reserve_capital)}}};
+                       {{"total_capital", static_cast<double>(config_.total_capital)}}};
 
     auto register_result = StateManager::instance().register_component(info);
     if (register_result.is_error()) {
@@ -2603,7 +2602,7 @@ double PortfolioManager::get_portfolio_value(
     static int call_count = 0;
     call_count++;
 
-    // Start with total capital (reserve is for margin, not excluded from portfolio value)
+    // Start with total capital
     double portfolio_value = static_cast<double>(config_.total_capital);
 
     if (call_count <= 3) {

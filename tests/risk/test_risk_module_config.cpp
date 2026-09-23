@@ -926,7 +926,7 @@ TEST(TrackedPortfolioRiskAssignment, EachBookIsAssignedWhatHDRuled) {
 // does on a lap (no gate, no decision, the book uncut, the ruling logged) is driven through
 // process_market_data in RiskModuleLoopTest.ANoneBookRunsNoGateAndLogsItsRuling.
 TEST(TrackedPortfolioRiskAssignment, ANoneAssignmentConstructsAndAnEmptyListThrows) {
-    PortfolioConfig pc{100000.0, 0.0, 1.0, 0.0, /*optimization=*/false};
+    PortfolioConfig pc{100000.0, 1.0, 0.0, /*optimization=*/false};
     pc.risk_config.capital = 100000.0;
     pc.risk_modules = {trade_ngin::testing::test_none_module("no_portfolio_risk")};
     EXPECT_NO_THROW(PortfolioManager(pc, "PM_NONE_ASSIGNMENT"));

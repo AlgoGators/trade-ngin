@@ -555,7 +555,6 @@ int main(int argc, char* argv[]) {
 
         trade_ngin::PortfolioConfig portfolio_config;
         portfolio_config.total_capital = initial_capital;
-        portfolio_config.reserve_capital = initial_capital * app_config.reserve_capital_pct;
         portfolio_config.max_strategy_allocation = app_config.strategy_defaults.max_strategy_allocation;
         portfolio_config.min_strategy_allocation = app_config.strategy_defaults.min_strategy_allocation;
         // Mean reversion does NOT use dynamic optimization (HD, 2026-09-01). The optimizer
@@ -664,8 +663,6 @@ int main(int argc, char* argv[]) {
             nlohmann::json portfolio_config_json;
             portfolio_config_json["total_capital"] =
                 static_cast<double>(portfolio_config.total_capital);
-            portfolio_config_json["reserve_capital"] =
-                static_cast<double>(portfolio_config.reserve_capital);
             portfolio_config_json["use_optimization"] = portfolio_config.use_optimization;
             portfolio_config_json["allow_fractional_positions"] =
                 portfolio_config.allow_fractional_positions;

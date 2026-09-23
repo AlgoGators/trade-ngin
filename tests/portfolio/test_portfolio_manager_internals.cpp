@@ -27,7 +27,7 @@ using namespace trade_ngin::testing;
 namespace {
 
 PortfolioConfig default_config(bool optimization = false, bool with_carver = false) {
-    PortfolioConfig c{1'000'000.0, 100'000.0, 0.6, 0.05, optimization};
+    PortfolioConfig c{1'000'000.0, 0.6, 0.05, optimization};
     c.opt_config.tau = 1.0;
     c.opt_config.capital = 1'000'000.0;
     c.opt_config.cost_penalty_scalar = 10.0;

@@ -15,6 +15,7 @@ set(TEST_SOURCES
     core/test_email_strategy_tables.cpp
     core/test_run_id_generator.cpp
     core/test_config_loader.cpp
+    core/test_reserve_capital_deleted.cpp
     core/test_backtest_window.cpp
     core/test_static_destruction_order_db.cpp
     core/test_to_json_temporary_hazard.cpp

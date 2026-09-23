@@ -304,7 +304,6 @@ int main() {
         // ========================================
         PortfolioConfig portfolio_config;
         portfolio_config.total_capital = Decimal(initial_capital);
-        portfolio_config.reserve_capital = Decimal(initial_capital * app_config.reserve_capital_pct);
         portfolio_config.use_optimization = false;
         portfolio_config.covariance_history_prices = app_config.covariance_history_prices;
         portfolio_config.risk_modules = app_config.risk_schema.portfolio;

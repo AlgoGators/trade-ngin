@@ -28,7 +28,6 @@ protected:
         // Create portfolio config
         PortfolioConfig config{
             1000000.0,  // total_capital ($1M)
-            100000.0,   // reserve_capital ($100K reserve)
             0.4,        // max_strategy_allocation (40% max per strategy)
             0.1,        // min_strategy_allocation (10% min per strategy)
             false       // use_optimization
@@ -383,7 +382,6 @@ namespace {
 PortfolioConfig default_config(bool use_optimization = false, bool with_carver = false) {
     PortfolioConfig c{
         1'000'000.0,           // total_capital
-        100'000.0,             // reserve_capital
         0.6,                   // max_strategy_allocation
         0.05,                  // min_strategy_allocation
         use_optimization,
@@ -695,7 +693,6 @@ TEST_F(PortfolioManagerExtendedTest, UpdateCostManagerMarketDataDoesNotErrorOrAl
 TEST_F(PortfolioManagerExtendedTest, GetConfigReturnsConstructorConfig) {
     const auto& cfg = manager_->get_config();
     EXPECT_DOUBLE_EQ(cfg.total_capital.as_double(), 1'000'000.0);
-    EXPECT_DOUBLE_EQ(cfg.reserve_capital.as_double(), 100'000.0);
 }
 
 TEST_F(PortfolioManagerExtendedTest, GetPortfolioPositionsEmptyBeforeProcessing) {

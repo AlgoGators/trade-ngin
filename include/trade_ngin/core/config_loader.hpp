@@ -299,7 +299,6 @@ struct AppConfig {
 
     // Capital settings
     double initial_capital{500000.0};
-    double reserve_capital_pct{0.10};
 
     // Database configuration
     DatabaseConfig database;
@@ -357,7 +356,6 @@ struct AppConfig {
         nlohmann::json j;
         j["portfolio_id"] = portfolio_id;
         j["initial_capital"] = initial_capital;
-        j["reserve_capital_pct"] = reserve_capital_pct;
         j["database"] = database.to_json();
         j["execution"] = execution.to_json();
         j["optimization"] = opt_config.to_json();

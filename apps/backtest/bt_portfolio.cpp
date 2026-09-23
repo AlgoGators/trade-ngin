@@ -216,8 +216,6 @@ int main() {
         // ========================================
         trade_ngin::PortfolioConfig portfolio_config;
         portfolio_config.total_capital = config.portfolio_config.initial_capital;
-        portfolio_config.reserve_capital =
-            config.portfolio_config.initial_capital * app_config.reserve_capital_pct;
         portfolio_config.max_strategy_allocation = app_config.strategy_defaults.max_strategy_allocation;
         portfolio_config.min_strategy_allocation = app_config.strategy_defaults.min_strategy_allocation;
         portfolio_config.use_optimization = app_config.use_optimization;

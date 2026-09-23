@@ -148,7 +148,7 @@ private:
 };
 
 PortfolioConfig base_config() {
-    PortfolioConfig pc{1000.0, 0.0, 1.0, 0.0, /*optimization=*/false};
+    PortfolioConfig pc{1000.0, 1.0, 0.0, /*optimization=*/false};
     pc.allow_fractional_positions = false;
     pc.risk_config.capital = 1000.0;
     pc.risk_config.var_limit = 1e6;

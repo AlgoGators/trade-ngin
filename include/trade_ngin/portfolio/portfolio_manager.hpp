@@ -35,7 +35,6 @@ namespace trade_ngin {
  */
 struct PortfolioConfig : public ConfigBase {
     Decimal total_capital{Decimal(0.0)};    // Total portfolio capital
-    Decimal reserve_capital{Decimal(0.0)};  // Capital to keep in reserve
     double max_strategy_allocation{
         1.0};  // Maximum allocation to any strategy (keep as double - it's a ratio)
     double min_strategy_allocation{
@@ -71,10 +70,9 @@ struct PortfolioConfig : public ConfigBase {
 
     PortfolioConfig() = default;
 
-    PortfolioConfig(Decimal total_capital, Decimal reserve_capital, double max_strategy_allocation,
+    PortfolioConfig(Decimal total_capital, double max_strategy_allocation,
                     double min_strategy_allocation, bool use_optimization)
         : total_capital(total_capital),
-          reserve_capital(reserve_capital),
           max_strategy_allocation(max_strategy_allocation),
           min_strategy_allocation(min_strategy_allocation),
           use_optimization(use_optimization) {}
@@ -83,7 +81,6 @@ struct PortfolioConfig : public ConfigBase {
     nlohmann::json to_json() const override {
         nlohmann::json j;
         j["total_capital"] = static_cast<double>(total_capital);
-        j["reserve_capital"] = static_cast<double>(reserve_capital);
         j["max_strategy_allocation"] = max_strategy_allocation;
         j["min_strategy_allocation"] = min_strategy_allocation;
         j["use_optimization"] = use_optimization;
@@ -100,8 +97,6 @@ struct PortfolioConfig : public ConfigBase {
     void from_json(const nlohmann::json& j) override {
         if (j.contains("total_capital"))
             total_capital = Decimal(j.at("total_capital").get<double>());
-        if (j.contains("reserve_capital"))
-            reserve_capital = Decimal(j.at("reserve_capital").get<double>());
         if (j.contains("max_strategy_allocation")) {
             max_strategy_allocation = j.at("max_strategy_allocation").get<double>();
         }
