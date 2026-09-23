@@ -28,6 +28,7 @@
 #include "trade_ngin/live/live_price_manager.hpp"
 #include "trade_ngin/live/live_trading_coordinator.hpp"
 #include "trade_ngin/live/margin_manager.hpp"
+#include "trade_ngin/live/run_metadata_marks.hpp"
 #include "trade_ngin/live/trading_days_anchor.hpp"
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
 #include "trade_ngin/storage/live_results_manager.hpp"
@@ -1059,27 +1060,61 @@ int main(int argc, char* argv[]) {
                 }
             }
         }
+        bool is_yesterday_holiday = holiday_checker.is_holiday(yesterday_date_str_check);
+
+        // Yesterday was non-trading if: today is Sunday (Sat was non-trading) OR yesterday was
+        // holiday
+        bool is_non_trading_day = is_sunday || is_yesterday_holiday;
+
+        // ========================================
+        // DAY-CLASSIFICATION REFUSAL (S-1)
+        // No T-1 close on a day the calendar calls a trading day is a data issue and the run
+        // is refused. The refusal sits HERE, above the live_run_metadata upsert, like the
+        // A3/A2/A1 guards: it used to sit below it, so a refused day (the 2026-05-18 replay,
+        // T-5 C-HEAD) exited 1 leaving a metadata row and no live_results row, which the
+        // watchdog reads as a completed run. Which days are refused is unchanged.
+        // ========================================
+        if (early_previous_day_close_prices.empty() && !is_non_trading_day) {
+            // ========================================
+            // UNEXPECTED: No prices on a trading day
+            // This indicates a data pipeline issue
+            // ========================================
+            ERROR("═══════════════════════════════════════════════════════════════");
+            ERROR("DATA ISSUE DETECTED - ABORTING");
+            ERROR("═══════════════════════════════════════════════════════════════");
+            ERROR("No T-1 close prices available, but today appears to be a trading day!");
+            ERROR("Today: " + std::string(use_override_date ? "HISTORICAL RUN" : "LIVE RUN"));
+            ERROR("Day of week: " + std::to_string(day_of_week) + " (0=Sun, 6=Sat)");
+            ERROR("Yesterday: " + yesterday_date_str_check);
+            ERROR("Is yesterday a holiday? " +
+                  std::string(is_yesterday_holiday ? "YES" : "NO"));
+            ERROR("");
+            ERROR("This indicates missing market data in the database.");
+            ERROR("Please investigate the data pipeline before re-running.");
+            ERROR("═══════════════════════════════════════════════════════════════");
+            return 1;  // Fail fast on data issues
+        }
+
         // ========================================
         // STORE LIVE RUN METADATA
         // Save run metadata (allocations, configs) for this trading day. Written only
-        // now, after the run-gap (A3), feed-freshness (A2) and calendar-coverage (A1)
-        // guards have all passed: a refused run must leave no row, because
-        // scripts/check_live_trading.py reads max(created_at) of this table as proof
-        // that the day's run happened.
+        // now, after the run-gap (A3), feed-freshness (A2), calendar-coverage (A1) and
+        // day-classification (S-1) guards have all passed: a refused run must leave no
+        // row, because scripts/check_live_trading.py reads max(created_at) of this table
+        // as proof that the day's run happened.
         // ========================================
         INFO("Storing live run metadata for this trading day...");
+        // Kept at this scope: a portfolio risk REFUSE found by process_market_data writes
+        // this row a second time, from the same values, with the refusal marked.
+        nlohmann::json portfolio_config_json;
+        portfolio_config_json["total_capital"] = static_cast<double>(portfolio_config.total_capital);
+        portfolio_config_json["reserve_capital"] =
+            static_cast<double>(portfolio_config.reserve_capital);
+        portfolio_config_json["use_optimization"] = portfolio_config.use_optimization;
+
+        // Convert strategy_allocations to JSON
+        nlohmann::json strategy_alloc_json(strategy_allocations);
         {
-            // Build portfolio config JSON
-            nlohmann::json portfolio_config_json;
-            portfolio_config_json["total_capital"] =
-                static_cast<double>(portfolio_config.total_capital);
-            portfolio_config_json["reserve_capital"] =
-                static_cast<double>(portfolio_config.reserve_capital);
-            portfolio_config_json["use_optimization"] = portfolio_config.use_optimization;
-
-            // Convert strategy_allocations to JSON
-            nlohmann::json strategy_alloc_json(strategy_allocations);
-
             // strategy_configs is already nlohmann::json
             auto metadata_result = db->store_live_run_metadata(
                 now, combined_strategy_id, portfolio_id, strategy_alloc_json, portfolio_config_json,
@@ -1093,14 +1128,6 @@ int main(int argc, char* argv[]) {
                 INFO("Successfully stored live run metadata for date");
             }
         }
-
-
-
-        bool is_yesterday_holiday = holiday_checker.is_holiday(yesterday_date_str_check);
-
-        // Yesterday was non-trading if: today is Sunday (Sat was non-trading) OR yesterday was
-        // holiday
-        bool is_non_trading_day = is_sunday || is_yesterday_holiday;
 
         // Flag to track if we should skip strategy processing
         bool skip_strategy_processing = false;
@@ -1160,27 +1187,8 @@ int main(int argc, char* argv[]) {
                 INFO("═══════════════════════════════════════════════════════════════");
 
                 skip_strategy_processing = true;
-
-            } else {
-                // ========================================
-                // UNEXPECTED: No prices on a trading day
-                // This indicates a data pipeline issue
-                // ========================================
-                ERROR("═══════════════════════════════════════════════════════════════");
-                ERROR("DATA ISSUE DETECTED - ABORTING");
-                ERROR("═══════════════════════════════════════════════════════════════");
-                ERROR("No T-1 close prices available, but today appears to be a trading day!");
-                ERROR("Today: " + std::string(use_override_date ? "HISTORICAL RUN" : "LIVE RUN"));
-                ERROR("Day of week: " + std::to_string(day_of_week) + " (0=Sun, 6=Sat)");
-                ERROR("Yesterday: " + yesterday_date_str_check);
-                ERROR("Is yesterday a holiday? " +
-                      std::string(is_yesterday_holiday ? "YES" : "NO"));
-                ERROR("");
-                ERROR("This indicates missing market data in the database.");
-                ERROR("Please investigate the data pipeline before re-running.");
-                ERROR("═══════════════════════════════════════════════════════════════");
-                return 1;  // Fail fast on data issues
             }
+            // Not a non-trading day: refused above the metadata upsert (S-1), never here.
         }
 
         // ========================================
@@ -1289,6 +1297,28 @@ int main(int argc, char* argv[]) {
             // Process data through portfolio pipeline (optimization + risk), mirroring backtest
             INFO("Processing data through portfolio manager (optimization + risk)...");
             auto port_process_result = portfolio->process_market_data(all_bars);
+            // T-RISK-ARCH Q2 (ruled yes): a portfolio-scope risk REFUSE is found here, after
+            // today's live_run_metadata row was written. That row records a run that did
+            // happen, so it is marked, not deleted: the same row is written again with the
+            // refusal and the PM's decision record in its portfolio_config JSON. Placed before
+            // the error check, so a refusal that fails the call (an unseeded scope) is marked.
+            if (auto risk_refusal = portfolio_risk_refusal(portfolio->last_risk_decisions())) {
+                WARN("Portfolio risk REFUSE by module " +
+                     risk_refusal->value("module", std::string()) + ": " +
+                     risk_refusal->value("reason", std::string()) +
+                     "; marking today's live_run_metadata row");
+                auto mark_result = db->store_live_run_metadata(
+                    now, combined_strategy_id, portfolio_id, strategy_alloc_json,
+                    mark_risk_refusal(portfolio_config_json, *risk_refusal,
+                                      portfolio->risk_decisions_json()),
+                    strategy_configs);
+                if (mark_result.is_error()) {
+                    ERROR("Failed to mark today's live_run_metadata row with the risk refusal: " +
+                          std::string(mark_result.error()->what()));
+                } else {
+                    INFO("Marked today's live_run_metadata row with the risk refusal");
+                }
+            }
             if (port_process_result.is_error()) {
                 std::cerr << "Failed to process data in portfolio manager: "
                           << port_process_result.error()->what() << std::endl;
@@ -2460,6 +2490,11 @@ int main(int argc, char* argv[]) {
             if (update_result.is_error()) {
                 ERROR("Failed to update Day T-1 live_results: " +
                       std::string(update_result.error()->what()));
+            } else if (update_result.value() == 0) {
+                // S-4: the statement succeeded and matched no row, so nothing was finalized.
+                WARN("Day T-1 live_results UPDATE matched 0 rows for " + yesterday_date_ss.str() +
+                     ": no live_results row exists for that date, so its finalized PnL and "
+                     "metrics were NOT stored");
             } else {
                 INFO(
                     "Successfully updated Day T-1 live_results with finalized PnL and all metrics");

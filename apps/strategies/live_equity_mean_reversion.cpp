@@ -4969,6 +4969,11 @@ int main(int argc, char* argv[]) {
                 ERROR("Day T-1 aggregates could not be finalized. Refusing to exit 0 with a "
                       "stale mark on " + yesterday_date_str + ".");
                 return 1;
+            } else if (update_result.value() == 0) {
+                // S-4: the statement succeeded and matched no row, so nothing was finalized.
+                WARN("Day T-1 live_results UPDATE matched 0 rows for " + yesterday_date_str +
+                     ": no live_results row exists for that date, so its finalized PnL and "
+                     "metrics were NOT stored");
             } else {
                 INFO("Successfully updated Day T-1 live_results with finalized PnL and all metrics");
 

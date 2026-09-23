@@ -259,9 +259,12 @@ public:
     /**
      * @brief Execute a direct SQL query without Arrow table conversion
      * @param query SQL query to execute
-     * @return Result indicating success or failure
+     * @return The number of rows the statement affected (pqxx::result::affected_rows(): an
+     *         UPDATE or DELETE that matched nothing returns 0, which is NOT an error), or an
+     *         error. S-4 (T-5): it used to return Result<void>, so a Day T-1 UPDATE that
+     *         matched no row was indistinguishable from one that finalized the row.
      */
-    Result<void> execute_direct_query(const std::string& query);
+    Result<size_t> execute_direct_query(const std::string& query);
 
     // ============================================================================
     // BACKTEST DATA STORAGE METHODS

@@ -99,6 +99,7 @@ set(TEST_SOURCES
     live/test_feed_freshness_universe.cpp
     live/test_feed_ingestion_assertion.cpp
     live/test_day_t_write_ordering.cpp
+    live/test_live_run_refusal_arms.cpp
     data/test_current_holding_start_db.cpp
     data/test_current_holding_start_bound_db.cpp
     instruments/test_equity_margin_cash_regt.cpp

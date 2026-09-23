@@ -900,22 +900,24 @@ Result<std::shared_ptr<arrow::Table>> PostgresDatabase::execute_query(const std:
     }
 }
 
-Result<void> PostgresDatabase::execute_direct_query(const std::string& query) {
+Result<size_t> PostgresDatabase::execute_direct_query(const std::string& query) {
     auto validation = validate_connection();
     if (validation.is_error()) {
-        return make_error<void>(validation.error()->code(), validation.error()->what());
+        return make_error<size_t>(validation.error()->code(), validation.error()->what());
     }
 
     try {
         pqxx::work txn(*connection_);
-        txn.exec(query);
+        auto result = txn.exec(query);
         txn.commit();
-        return Result<void>();
+        // S-4: report what the statement touched. Zero is a successful statement that matched
+        // nothing; the caller decides what that means (the runners' Day T-1 UPDATE warns).
+        return Result<size_t>(static_cast<size_t>(result.affected_rows()));
 
     } catch (const std::exception& e) {
-        return make_error<void>(ErrorCode::DATABASE_ERROR,
-                                "Failed to execute direct query: " + std::string(e.what()),
-                                "PostgresDatabase");
+        return make_error<size_t>(ErrorCode::DATABASE_ERROR,
+                                  "Failed to execute direct query: " + std::string(e.what()),
+                                  "PostgresDatabase");
     }
 }
 
