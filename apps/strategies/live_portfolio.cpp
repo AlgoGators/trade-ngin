@@ -15,9 +15,11 @@
 #include "trade_ngin/core/time_utils.hpp"
 #include "trade_ngin/data/conversion_utils.hpp"
 #include "trade_ngin/data/database_pooling.hpp"
+#include "trade_ngin/data/market_data_bus.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
 #include "trade_ngin/instruments/futures.hpp"
 #include "trade_ngin/instruments/instrument_registry.hpp"
+#include "trade_ngin/live/carried_day.hpp"
 #include "trade_ngin/live/csv_exporter.hpp"
 #include "trade_ngin/live/data_freshness.hpp"
 #include "trade_ngin/live/execution_manager.hpp"
@@ -867,9 +869,14 @@ int main(int argc, char* argv[]) {
 
         // Load market data for daily processing
         INFO("Loading market data for daily processing...");
+        // Disable MarketDataBus auto-publish to prevent duplicate processing
+        MarketDataBus::instance().set_publish_enabled(false);
+        INFO("MarketDataBus publishing DISABLED before get_market_data");
         auto market_data_result =
             db->get_market_data(symbols, start_date, end_date, trade_ngin::AssetClass::FUTURES,
                                 trade_ngin::DataFrequency::DAILY, "ohlcv");
+        INFO("MarketDataBus publishing RE-ENABLED after get_market_data");
+        MarketDataBus::instance().set_publish_enabled(true);
 
         if (market_data_result.is_error()) {
             ERROR("Failed to load market data: " + std::string(market_data_result.error()->what()));
@@ -1277,7 +1284,12 @@ int main(int argc, char* argv[]) {
 
             // Process data through portfolio pipeline (optimization + risk), mirroring backtest
             INFO("Processing data through portfolio manager (optimization + risk)...");
+            // Disable MarketDataBus to prevent duplicate processing during explicit data feed
+            MarketDataBus::instance().set_publish_enabled(false);
+            INFO("MarketDataBus publishing DISABLED before process_market_data");
             auto port_process_result = portfolio->process_market_data(all_bars);
+            INFO("MarketDataBus publishing RE-ENABLED after process_market_data");
+            MarketDataBus::instance().set_publish_enabled(true);
             // T-RISK-ARCH Q2 (ruled yes): a portfolio-scope risk REFUSE is found here, after
             // today's live_run_metadata row was written. That row records a run that did
             // happen, so it is marked, not deleted: the same row is written again with the
@@ -3274,10 +3286,51 @@ int main(int argc, char* argv[]) {
 
         // Export current positions with per-strategy breakdown
         std::string today_filename;
-        auto current_export_result = csv_exporter->export_current_positions(
-            now, strategy_positions_map,
-            previous_day_close_prices,  // Market prices (Day T-1 close)
-            current_portfolio_value, gross_notional, net_notional, strategy_instances_map);
+        // T-7a C3 (HD 2026-09-18, the Sunday positions CSV): on a day with no session the
+        // strategies were fed nothing and no rebalance ran (the MarketDataBus is off at the
+        // load), so their forecasts, volatilities and EMAs are empty. The file then carries the
+        // real details instead of empty rows: the held book (strategy_positions_map, loaded by
+        // the non-trading-day branch above), each symbol's last mark (its latest loaded close)
+        // and each sleeve's last computed forecasts (its stored signals of the previous
+        // session), with a note that no session occurred and the values are carried, not
+        // computed.
+        auto export_positions_file = [&]() -> Result<std::string> {
+            if (!skip_strategy_processing) {
+                return csv_exporter->export_current_positions(
+                    now, strategy_positions_map,
+                    previous_day_close_prices,  // Market prices (Day T-1 close)
+                    current_portfolio_value, gross_notional, net_notional,
+                    strategy_instances_map);
+            }
+            std::unordered_map<std::string, CarriedMark> last_marks;
+            for (const auto& [symbol, bar] : latest_bars_per_symbol) {
+                last_marks[symbol] = CarriedMark{static_cast<double>(bar.close),
+                                                 core::format_utc_date(bar.timestamp)};
+            }
+            std::unordered_map<std::string, CarriedForecasts> last_forecasts;
+            for (const auto& strategy_name : strategy_names) {
+                auto carried = data_loader->load_last_signals_before(
+                    combined_strategy_id, strategy_name, portfolio_id, now);
+                if (carried.is_error()) {
+                    WARN("Carried forecasts for " + strategy_name + " could not be read: " +
+                         std::string(carried.error()->what()));
+                    continue;
+                }
+                INFO("Carried forecasts for " + strategy_name + ": " +
+                     std::to_string(carried.value().forecasts.size()) + " from " +
+                     (carried.value().session_date.empty() ? std::string("no stored session")
+                                                           : carried.value().session_date));
+                last_forecasts[strategy_name] = carried.value();
+            }
+            const std::string no_session_reason =
+                is_sunday ? "no session on " + yesterday_date_str_check + " (a Saturday)"
+                          : "no session on " + yesterday_date_str_check + " (" +
+                                holiday_checker.get_holiday_name(yesterday_date_str_check) + ")";
+            return csv_exporter->export_carried_positions(
+                now, strategy_positions_map, last_marks, last_forecasts, current_portfolio_value,
+                gross_notional, net_notional, no_session_reason);
+        };
+        auto current_export_result = export_positions_file();
 
         if (current_export_result.is_ok()) {
             today_filename = current_export_result.value();

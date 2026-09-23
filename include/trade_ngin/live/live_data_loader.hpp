@@ -27,6 +27,7 @@
 #include <unordered_map>
 #include <vector>
 #include "trade_ngin/core/error.hpp"  // Contains Result<T>
+#include "trade_ngin/live/carried_day.hpp"
 #include "trade_ngin/core/types.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
 
@@ -297,6 +298,22 @@ public:
      */
     Result<std::unordered_map<std::string, double>> load_daily_metrics_for_email(
         const std::string& strategy_id, const std::string& portfolio_id, const Timestamp& date);
+
+    // ========== Carried-day Methods ==========
+
+    /**
+     * @brief A sleeve's last computed forecasts: its <schema>.signals rows of the latest stored
+     *        run date strictly before `date`'s UTC calendar date.
+     *
+     * T-7a C3 (HD 2026-09-18): on a day with no session the positions file carries the previous
+     * session's forecasts instead of the unfed strategies' empty ones. Rows are matched on
+     * portfolio_id, strategy_id AND strategy_name, so each sleeve of a multi-sleeve book reads
+     * its own. A sleeve with no stored signals returns an empty result (session_date empty).
+     */
+    Result<CarriedForecasts> load_last_signals_before(const std::string& strategy_id,
+                                                      const std::string& strategy_name,
+                                                      const std::string& portfolio_id,
+                                                      const Timestamp& date);
 
     // ========== Utility Methods ==========
 
