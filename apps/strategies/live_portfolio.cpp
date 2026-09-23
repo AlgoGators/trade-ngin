@@ -29,6 +29,7 @@
 #include "trade_ngin/live/live_trading_coordinator.hpp"
 #include "trade_ngin/live/margin_manager.hpp"
 #include "trade_ngin/live/run_metadata_marks.hpp"
+#include "trade_ngin/live/sleeve_seeding.hpp"
 #include "trade_ngin/live/trading_days_anchor.hpp"
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
 #include "trade_ngin/storage/live_results_manager.hpp"
@@ -1247,49 +1248,31 @@ int main(int argc, char* argv[]) {
         // Only run strategy calculations if NOT a non-trading day
         // ========================================
         if (!skip_strategy_processing) {
-            // FIX: Seed strategy's positions_ from yesterday's DB snapshot BEFORE its feed.
-            // Each live invocation is a fresh process where positions_ defaults to zero.
-            // The Carver position buffer reads positions_ as the comparison anchor; without
-            // seeding it correctly the buffer can't absorb small day-to-day signal jitter
-            // and triggers a phantom trade every day. Backtest doesn't need this because
-            // its state is continuous in-memory across simulated days.
+            // FIX: Seed every sleeve's positions_ and PortfolioManager slot from yesterday's DB
+            // snapshot BEFORE the day's rebalance. Each live invocation is a fresh process where
+            // positions_ and current_positions default to zero. The Carver position buffer reads
+            // positions_ as the comparison anchor, and the optimizer reads current_positions as
+            // its baseline; without seeding both correctly the book trades a phantom difference
+            // every day. Backtest doesn't need this because its state is continuous in-memory
+            // across simulated days.
+            // T-7a C3: EVERY sleeve is seeded from its OWN stored rows (the runner used to seed
+            // strategy_names[0] only, so a second sleeve was anchored at zero or at whatever the
+            // PM held). The mechanism (seed_positions + update_strategy_position per row) is the
+            // held-book seed of eae0d5a7, unchanged; see include/trade_ngin/live/sleeve_seeding.hpp.
+            // NOTE (ledger BASE-opposite-sleeve-anchor): two sleeves holding OPPOSITE signs on one
+            // symbol are each seeded with their own signed row, so the optimizer's anchor is the
+            // net while each sleeve's execution diff is gross. The netted design (gross per sleeve
+            // for attribution, the account and the risk gate on the net, the cross logged at zero
+            // cost; HD 2026-09-19) lands with netting in T-7b, not here.
             {
                 auto seed_previous_date = now - std::chrono::hours(24);
-                std::string seed_strategy_name =
-                    strategy_names.empty() ? std::string() : strategy_names[0];
-                auto seed_result = db->load_positions_by_date(
-                    combined_strategy_id, seed_strategy_name,
-                    coordinator_config.portfolio_id, seed_previous_date, "trading.positions");
-                if (seed_result.is_ok() && !seed_result.value().empty()) {
-                    // Fix #1: seed strategy's positions_ for buffer correctness
-                    auto seeded = tf_strategy->seed_positions(seed_result.value());
-                    if (seeded.is_error()) {
-                        WARN("Failed to seed strategy positions: " +
-                             std::string(seeded.error()->what()));
-                    }
-                    // Fix #7: seed PortfolioManager's info.current_positions for optimizer
-                    // baseline correctness. See live_portfolio_conservative.cpp for rationale.
-                    // PortfolioManager.strategies_ is keyed by the strategy's metadata.id
-                    // (e.g. "TREND_FOLLOWING"), NOT the combined_strategy_id used for DB.
-                    int pm_seeded_count = 0;
-                    for (const auto& [sym, pos] : seed_result.value()) {
-                        auto pm_seed = portfolio->update_strategy_position(
-                            seed_strategy_name, sym, pos);
-                        if (pm_seed.is_error()) {
-                            WARN("Failed to seed PortfolioManager position for " + sym +
-                                 ": " + std::string(pm_seed.error()->what()));
-                        } else {
-                            pm_seeded_count++;
-                        }
-                    }
-                    INFO("Seeded " + std::to_string(pm_seeded_count) +
-                         " positions into PortfolioManager.current_positions for "
-                         "optimizer-baseline correctness (strategy_name=" +
-                         seed_strategy_name + ")");
-                } else {
-                    INFO("No yesterday positions to seed for strategy " +
-                         seed_strategy_name + " (first run or no data)");
-                }
+                seed_every_sleeve(strategies, strategy_names, *portfolio,
+                                  [&](const std::string& seed_strategy_name) {
+                                      return db->load_positions_by_date(
+                                          combined_strategy_id, seed_strategy_name,
+                                          coordinator_config.portfolio_id, seed_previous_date,
+                                          "trading.positions");
+                                  });
             }
 
             // Process data through portfolio pipeline (optimization + risk), mirroring backtest

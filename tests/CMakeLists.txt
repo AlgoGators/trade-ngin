@@ -123,6 +123,7 @@ set(TEST_SOURCES
     live/test_live_trading_coordinator_keying.cpp
     live/test_execution_manager.cpp
     live/test_exec_id_determinism.cpp
+    live/test_sleeve_seeding.cpp
     live/test_cost_model_feed.cpp
     live/test_execution_price_integrity.cpp
     live/test_margin_manager.cpp
