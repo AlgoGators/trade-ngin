@@ -81,7 +81,8 @@ int main(int argc, char* argv[]) {
             //     05:00Z and 00:00Z, with the same equity. Every replay boundary would
             //     double a day.
             //   * positions.last_update and signals.timestamp (130 and 288 rows on that
-            //     chain), and executions.exec_id / execution_time, which embed the instant.
+            //     chain), and executions.execution_time, which embeds the instant
+            //     (exec_id did too until it became EXEC_<symbol>_<YYYYMMDD>).
             //   * live_results.portfolio_var, max_correlation and risk_scale.
             //
             // So it belongs with the class C set, not with the guards: it needs a decision

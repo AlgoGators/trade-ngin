@@ -6,7 +6,7 @@
 // - generate_execution sets side correctly for buy/sell, populates IDs and
 //   transaction-cost fields
 // - generate_date_string formats YYYYMMDD
-// - generate_exec_id encodes symbol/timestamp/sequence
+// - generate_exec_id is EXEC_<symbol>_<YYYYMMDD> (see test_exec_id_determinism.cpp)
 // - update_market_data populates the prev_close map
 
 #include <gtest/gtest.h>
@@ -179,7 +179,7 @@ TEST_F(ExecutionManagerTest, MissingMarketPriceOnCloseOutSkipsRatherThanUsingBas
 TEST_F(ExecutionManagerTest, GenerateExecutionPopulatesAllFields) {
     ExecutionManager em;
     auto ts = at_local_date(2026, 4, 28);
-    auto exec = em.generate_execution("ES", 3.0, 4500.0, ts, 0);
+    auto exec = em.generate_execution("ES", 3.0, 4500.0, ts);
     EXPECT_EQ(exec.symbol, "ES");
     EXPECT_EQ(exec.side, Side::BUY);
     EXPECT_DOUBLE_EQ(exec.filled_quantity.as_double(), 3.0);
@@ -189,12 +189,18 @@ TEST_F(ExecutionManagerTest, GenerateExecutionPopulatesAllFields) {
     EXPECT_NE(exec.order_id.find("DAILY_ES_"), std::string::npos);
 }
 
-TEST_F(ExecutionManagerTest, GenerateExecutionSequenceProducesDistinctIds) {
+TEST_F(ExecutionManagerTest, GenerateExecutionIdsNameSymbolAndDateOnly) {
+    // The exec_id carries no sequence: the same symbol on the same date is the same
+    // id (uniqueness comes from one execution per symbol per call; see
+    // test_exec_id_determinism.cpp). It shares its date string with the order_id.
     ExecutionManager em;
     auto ts = at_local_date(2026, 4, 28);
-    auto e0 = em.generate_execution("ES", 1.0, 4500.0, ts, 0);
-    auto e1 = em.generate_execution("ES", 1.0, 4500.0, ts, 1);
-    EXPECT_NE(e0.exec_id, e1.exec_id);
+    auto e0 = em.generate_execution("ES", 1.0, 4500.0, ts);
+    auto e1 = em.generate_execution("ES", -2.0, 4500.0, ts);
+    const std::string day = ExecutionManager::generate_date_string(ts);
+    EXPECT_EQ(e0.exec_id, "EXEC_ES_" + day);
+    EXPECT_EQ(e0.order_id, "DAILY_ES_" + day);
+    EXPECT_EQ(e0.exec_id, e1.exec_id);
 }
 
 // ===== Static helpers =====
@@ -205,10 +211,10 @@ TEST_F(ExecutionManagerTest, GenerateDateStringHasYYYYMMDDFormat) {
     EXPECT_NE(s.find("20260428"), std::string::npos);
 }
 
-TEST_F(ExecutionManagerTest, GenerateExecIdEncodesSymbolAndSequence) {
-    auto s = ExecutionManager::generate_exec_id("ES", at_local_date(2026, 4, 28), 7);
-    EXPECT_NE(s.find("EXEC_ES_"), std::string::npos);
-    EXPECT_NE(s.find("_7"), std::string::npos);
+TEST_F(ExecutionManagerTest, GenerateExecIdIsSymbolAndDate) {
+    auto ts = at_local_date(2026, 4, 28);
+    auto s = ExecutionManager::generate_exec_id("ES", ts);
+    EXPECT_EQ(s, "EXEC_ES_" + ExecutionManager::generate_date_string(ts));
 }
 
 // ===== update_market_data populates prev_close map =====

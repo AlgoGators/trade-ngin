@@ -113,16 +113,14 @@ public:
      * @param symbol Symbol being traded
      * @param quantity_change Change in position quantity (positive for buy, negative for sell)
      * @param market_price Market price for the symbol
-     * @param timestamp Execution timestamp
-     * @param exec_sequence Sequence number for unique exec_id
+     * @param timestamp Execution timestamp (its UTC date names the ids)
      * @return Single execution report
      */
     ExecutionReport generate_execution(
         const std::string& symbol,
         double quantity_change,
         double market_price,
-        const Timestamp& timestamp,
-        size_t exec_sequence);
+        const Timestamp& timestamp);
 
     /**
      * Update market data for TransactionCostManager (ADV and volatility tracking)
@@ -143,17 +141,21 @@ public:
     static std::string generate_date_string(const Timestamp& timestamp);
 
     /**
-     * Generate unique execution ID
+     * Generate the execution ID: EXEC_<symbol>_<YYYYMMDD>, the date being
+     * generate_date_string(timestamp), the same date the order_id carries.
+     *
+     * Deterministic: a replay of the same date regenerates the same id, and a fill
+     * appearing or disappearing does not renumber another. Unique under
+     * trading.executions' key (portfolio_id, strategy_id, strategy_name, date, exec_id)
+     * because one generate_daily_executions call emits a symbol at most once.
      *
      * @param symbol Trading symbol
      * @param timestamp Execution timestamp
-     * @param sequence Sequence number
-     * @return Unique execution ID
+     * @return Execution ID
      */
     static std::string generate_exec_id(
         const std::string& symbol,
-        const Timestamp& timestamp,
-        size_t sequence);
+        const Timestamp& timestamp);
 
     transaction_cost::TransactionCostManager& get_transaction_cost_manager() {
         return *cost_manager_;
