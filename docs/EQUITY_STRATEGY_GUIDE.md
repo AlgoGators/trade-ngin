@@ -264,7 +264,6 @@ config/
   "_description": "YOUR_PORTFOLIO - Description of your strategy",
   "portfolio_id": "YOUR_PORTFOLIO",
   "initial_capital": 100000,
-  "reserve_capital_pct": 0.1,
   "strategies": {
     "YOUR_STRATEGY": {
       "enabled_backtest": true,
@@ -294,7 +293,6 @@ config/
 |------------------------|-------------|
 | `portfolio_id`         | Unique ID stored in DB with results |
 | `initial_capital`      | Starting capital in USD |
-| `reserve_capital_pct`  | Fraction held as cash reserve (0.1 = 10%) |
 | `symbols`              | Tickers to trade — loaded from config, avoids slow DB scan |
 | `enabled_backtest`     | Whether this strategy runs in backtest mode |
 | `enabled_live`         | Whether this strategy runs in live mode |
@@ -384,7 +382,6 @@ int main() {
     // 10. Create portfolio and run
     PortfolioConfig portfolio_config;
     portfolio_config.total_capital = Decimal(app_config.initial_capital);
-    portfolio_config.reserve_capital = Decimal(app_config.initial_capital * 0.1);
     auto portfolio = std::make_shared<PortfolioManager>(portfolio_config);
     portfolio->add_strategy(strategy, 1.0, false, false);
 

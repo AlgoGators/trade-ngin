@@ -252,7 +252,6 @@ Example `config/portfolios/base/portfolio.json` (strategies):
 {
   "portfolio_id": "BASE_PORTFOLIO",
   "initial_capital": 500000.0,
-  "reserve_capital_pct": 0.10,
   "strategies": {
     "TREND_FOLLOWING": {
       "enabled_backtest": true,
@@ -325,7 +324,6 @@ To run different portfolios, use the built-in `base` and `conservative` configs 
 | **Max Gross Leverage** | 4.0x | Maximum total exposure |
 | **Max Net Leverage** | 2.0x | Maximum directional exposure |
 | **VaR Limit** | 0.15 (15%) | Maximum 99% daily VaR |
-| **Reserve Capital** | 10% | Capital held in reserve |
 
 ---
 
