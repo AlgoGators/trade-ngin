@@ -37,14 +37,11 @@ else
     log "         (is the container running scripts/docker-entrypoint.sh?)"
 fi
 
-# --- weekday guard -----------------------------------------------------------
-# There is no market data for Saturday or Sunday, so a weekend run can only fail
-# or no-op. The cron schedule also restricts to Mon-Fri; this is the second belt.
-DOW="$(date +%u)"  # 1=Monday .. 7=Sunday
-if [ "$DOW" -ge 6 ]; then
-    log "skipping: weekend (day-of-week $DOW)"
-    exit 0
-fi
+# --- no weekday guard -----------------------------------------------------------
+# The futures runner runs every calendar day (HD 2026-09-17). There used to be a weekend exit
+# here, with a comment that there is no market data on Saturday or Sunday: false for futures.
+# Sunday is a Globex session (26 symbols print), and the Saturday run is the one that books and
+# trades the Friday session. The runner itself carries the whole book on a day no symbol printed.
 
 # --- single instance ---------------------------------------------------------
 # mkdir is atomic, so this is a safe lock without extra tooling. A catch-up run

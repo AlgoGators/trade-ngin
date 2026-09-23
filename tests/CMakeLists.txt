@@ -229,3 +229,10 @@ endif()
 add_test(NAME MigrateRiskJson.ScriptSuite
          COMMAND "${MIGRATION_PYTHON}"
                  "${CMAKE_CURRENT_SOURCE_DIR}/scripts/test_migrate_risk_json.py")
+
+# T-7a C4: the seven-day cron, the wrapper without its weekend exit, and the watchdog's write
+# clock / system-book filter / calendar-day threshold. Python, so its own entry, like the one
+# above; its database case runs only with TRADE_NGIN_TEST_DSN and rolls back what it writes.
+add_test(NAME CheckLiveTrading.ScriptSuite
+         COMMAND "${MIGRATION_PYTHON}"
+                 "${CMAKE_CURRENT_SOURCE_DIR}/scripts/test_check_live_trading.py")
