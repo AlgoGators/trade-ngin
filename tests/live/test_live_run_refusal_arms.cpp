@@ -541,8 +541,12 @@ TEST_F(RunMetadataDbFixture, TheSecondUpsertMarksTheSameRowWithTheReason) {
 }
 
 TEST_F(RunMetadataDbFixture, ExecuteDirectQueryReportsTheRowsItTouched) {
+    // A statement whose command tag carries no row count (DDL): succeeds and reports 0. At
+    // ed6c4a6e this threw "Could not convert '' to int" out of execute_direct_query, AFTER the
+    // statement had committed (libpqxx's affected_rows() on an empty tag).
     auto created = db_->execute_direct_query("CREATE TEMP TABLE c1_s4_probe (id integer)");
     ASSERT_FALSE(created.is_error()) << created.error()->what();
+    EXPECT_EQ(rows_reported(created), 0);
 
     auto inserted = db_->execute_direct_query("INSERT INTO c1_s4_probe VALUES (1), (2)");
     ASSERT_FALSE(inserted.is_error());
@@ -556,6 +560,26 @@ TEST_F(RunMetadataDbFixture, ExecuteDirectQueryReportsTheRowsItTouched) {
     auto one = db_->execute_direct_query("UPDATE c1_s4_probe SET id = id WHERE id = 1");
     ASSERT_FALSE(one.is_error());
     EXPECT_EQ(rows_reported(one), 1);
+
+    // The runners' Day T-1 UPDATE opens with a CTE ("WITH day_before AS (...) UPDATE ...").
+    auto with_update = db_->execute_direct_query(
+        "WITH d AS (SELECT 2 AS k) UPDATE c1_s4_probe SET id = id WHERE id = (SELECT k FROM d)");
+    ASSERT_FALSE(with_update.is_error());
+    EXPECT_EQ(rows_reported(with_update), 1);
+
+    auto deleted = db_->execute_direct_query("  -- leading comment\n DELETE FROM c1_s4_probe");
+    ASSERT_FALSE(deleted.is_error());
+    EXPECT_EQ(rows_reported(deleted), 2);
+
+    // More statements with no row count: each succeeds, reports 0, and took effect.
+    auto set = db_->execute_direct_query("/* c1 */ SET LOCAL statement_timeout = 0");
+    ASSERT_FALSE(set.is_error()) << set.error()->what();
+    EXPECT_EQ(rows_reported(set), 0);
+    auto dropped = db_->execute_direct_query("DROP TABLE c1_s4_probe");
+    ASSERT_FALSE(dropped.is_error()) << dropped.error()->what();
+    EXPECT_EQ(rows_reported(dropped), 0);
+    auto gone = db_->execute_direct_query("SELECT 1 FROM c1_s4_probe");
+    EXPECT_TRUE(gone.is_error()) << "the DROP must have committed";
 }
 
 TEST_F(RunMetadataDbFixture, ADayTMinusOneUpdateOnAMissingDateReportsZeroRows) {
@@ -564,7 +588,12 @@ TEST_F(RunMetadataDbFixture, ADayTMinusOneUpdateOnAMissingDateReportsZeroRows) {
     // date with no row: T-5 C-LAST's Monday 2026-05-04 run on a Mon-Fri cron, whose T-1 was
     // the Sunday 2026-05-03 that a cron never writes.
     const std::string update =
-        "UPDATE trading.live_results SET current_portfolio_value = current_portfolio_value "
+        "WITH day_before AS (SELECT COALESCE(current_portfolio_value, 500000.0) AS portfolio "
+        "  FROM trading.live_results WHERE strategy_id = '" + std::string(kProbeStrategy) +
+        "' AND portfolio_id = '" + std::string(kProbePortfolio) +
+        "' AND DATE(date) < '2026-05-03' ORDER BY date DESC LIMIT 1) "
+        "UPDATE trading.live_results SET current_portfolio_value = "
+        "COALESCE((SELECT portfolio FROM day_before), 500000.0) "
         "WHERE strategy_id = '" + std::string(kProbeStrategy) + "' AND portfolio_id = '" +
         std::string(kProbePortfolio) + "' AND DATE(date) = '2026-05-03'";
     auto result = db_->execute_direct_query(update);

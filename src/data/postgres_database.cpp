@@ -2,6 +2,7 @@
 
 #include "trade_ngin/data/postgres_database.hpp"
 #include <algorithm>
+#include <cctype>
 #include <iomanip>
 #include <sstream>
 #include "trade_ngin/core/state_manager.hpp"
@@ -18,6 +19,44 @@ std::string join(const std::vector<std::string>& elements, const std::string& de
         }
     }
     return os.str();
+}
+
+// Whether a statement's command tag carries a row count (PQcmdTuples non-empty): INSERT, UPDATE,
+// DELETE, MERGE, SELECT (also via WITH, VALUES or TABLE), COPY, MOVE and FETCH. Read from the
+// statement's first keyword, after whitespace, comments and opening parentheses.
+//
+// execute_direct_query must not call pqxx::result::affected_rows() on any other statement:
+// libpqxx 7.10 converts the EMPTY tag of a DDL statement ("CREATE TABLE") with from_string and
+// throws "Could not convert '' to int", and because affected_rows() is declared
+// __attribute__((pure)) the compiler may treat the call as non-throwing, so the exception is not
+// caught by the try block around it and escapes to the caller after the statement committed.
+bool statement_reports_row_count(const std::string& query) {
+    size_t i = 0;
+    const size_t n = query.size();
+    while (i < n) {
+        const char c = query[i];
+        if (std::isspace(static_cast<unsigned char>(c)) || c == '(' || c == ';') {
+            ++i;
+        } else if (c == '-' && i + 1 < n && query[i + 1] == '-') {
+            while (i < n && query[i] != '\n') ++i;
+        } else if (c == '/' && i + 1 < n && query[i + 1] == '*') {
+            const size_t end = query.find("*/", i + 2);
+            i = end == std::string::npos ? n : end + 2;
+        } else {
+            break;
+        }
+    }
+    std::string keyword;
+    while (i < n && std::isalpha(static_cast<unsigned char>(query[i]))) {
+        keyword += static_cast<char>(std::toupper(static_cast<unsigned char>(query[i])));
+        ++i;
+    }
+    static const char* const kCounted[] = {"INSERT", "UPDATE", "DELETE", "MERGE", "SELECT", "WITH",
+                                           "VALUES", "TABLE",  "COPY",   "MOVE",  "FETCH"};
+    for (const char* k : kCounted) {
+        if (keyword == k) return true;
+    }
+    return false;
 }
 }  // namespace
 #include "trade_ngin/data/market_data_bus.hpp"
@@ -911,8 +950,13 @@ Result<size_t> PostgresDatabase::execute_direct_query(const std::string& query) 
         auto result = txn.exec(query);
         txn.commit();
         // S-4: report what the statement touched. Zero is a successful statement that matched
-        // nothing; the caller decides what that means (the runners' Day T-1 UPDATE warns).
-        return Result<size_t>(static_cast<size_t>(result.affected_rows()));
+        // nothing; the caller decides what that means (the runners' Day T-1 UPDATE warns). A
+        // statement whose tag carries no count (DDL, SET, ...) reports 0 and is never asked
+        // (statement_reports_row_count above).
+        const size_t rows = statement_reports_row_count(query)
+                                ? static_cast<size_t>(result.affected_rows())
+                                : size_t{0};
+        return Result<size_t>(rows);
 
     } catch (const std::exception& e) {
         return make_error<size_t>(ErrorCode::DATABASE_ERROR,
