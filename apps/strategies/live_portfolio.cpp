@@ -17,6 +17,7 @@
 #include "trade_ngin/data/database_pooling.hpp"
 #include "trade_ngin/data/market_data_bus.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
+#include "trade_ngin/data/session_classifier.hpp"
 #include "trade_ngin/instruments/futures.hpp"
 #include "trade_ngin/instruments/instrument_registry.hpp"
 #include "trade_ngin/live/carried_day.hpp"
@@ -31,6 +32,7 @@
 #include "trade_ngin/live/live_trading_coordinator.hpp"
 #include "trade_ngin/live/margin_manager.hpp"
 #include "trade_ngin/live/run_metadata_marks.hpp"
+#include "trade_ngin/live/session_book_gate.hpp"
 #include "trade_ngin/live/sleeve_seeding.hpp"
 #include "trade_ngin/live/trading_days_anchor.hpp"
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
@@ -1070,46 +1072,74 @@ int main(int argc, char* argv[]) {
         }
         bool is_yesterday_holiday = holiday_checker.is_holiday(yesterday_date_str_check);
 
-        // Yesterday was non-trading if: today is Sunday (Sat was non-trading) OR yesterday was
-        // holiday
-        bool is_non_trading_day = is_sunday || is_yesterday_holiday;
+        // ========================================
+        // T-1 SESSION CLASSIFIER (T-7a C4; HD 2026-09-17 and 2026-09-19)
+        // Every symbol's T-1 is SESSION, JUNK, NO_BAR(closure) or NO_BAR(feed hole), judged
+        // against its own bars in this window (include/trade_ngin/data/session_classifier.hpp).
+        // T-1 is the date the price manager's T-1 test uses, so a symbol has a T-1 price exactly
+        // when its verdict is SESSION or JUNK. The day-classification abort ("DATA ISSUE
+        // DETECTED", return 1) is deleted: when no symbol printed, the whole book is carried
+        // below with the reason logged (a feed hole is an ERROR there, not an abort), so the
+        // dead-Sunday Mondays 2026-05-18 and 05-25 no longer end the chain.
+        // ========================================
+        SessionClassifier session_classifier;
+        session_classifier.add_bars(all_bars);
+        const T1Classification t1_classification =
+            classify_t1(session_classifier, symbols,
+                        SessionClassifier::day_of(now - std::chrono::hours(24)),
+                        holiday_lookup(holiday_checker));
+        log_t1_classification(t1_classification);
 
-        // ========================================
-        // DAY-CLASSIFICATION REFUSAL (S-1)
-        // No T-1 close on a day the calendar calls a trading day is a data issue and the run
-        // is refused. The refusal sits HERE, above the live_run_metadata upsert, like the
-        // A3/A2/A1 guards: it used to sit below it, so a refused day (the 2026-05-18 replay,
-        // T-5 C-HEAD) exited 1 leaving a metadata row and no live_results row, which the
-        // watchdog reads as a completed run. Which days are refused is unchanged.
-        // ========================================
-        if (early_previous_day_close_prices.empty() && !is_non_trading_day) {
-            // ========================================
-            // UNEXPECTED: No prices on a trading day
-            // This indicates a data pipeline issue
-            // ========================================
-            ERROR("═══════════════════════════════════════════════════════════════");
-            ERROR("DATA ISSUE DETECTED - ABORTING");
-            ERROR("═══════════════════════════════════════════════════════════════");
-            ERROR("No T-1 close prices available, but today appears to be a trading day!");
-            ERROR("Today: " + std::string(use_override_date ? "HISTORICAL RUN" : "LIVE RUN"));
-            ERROR("Day of week: " + std::to_string(day_of_week) + " (0=Sun, 6=Sat)");
-            ERROR("Yesterday: " + yesterday_date_str_check);
-            ERROR("Is yesterday a holiday? " +
-                  std::string(is_yesterday_holiday ? "YES" : "NO"));
-            ERROR("");
-            ERROR("This indicates missing market data in the database.");
-            ERROR("Please investigate the data pipeline before re-running.");
-            ERROR("═══════════════════════════════════════════════════════════════");
-            return 1;  // Fail fast on data issues
+        // FEED-HOLE REFUSAL (HD 2026-09-19; T-4c F4, T-5 F7): a HELD symbol with no bar for
+        // longer than live.data_staleness_tolerance_days refuses the run when the run date is
+        // the host's date (true live). A replay of a past date WARNs and runs. It sits above the
+        // live_run_metadata upsert like the other refusals, so a refused run leaves no row.
+        {
+            const int hole_tolerance_days = app_config.live.data_staleness_tolerance_days;
+            std::vector<HeldFeedHole> held_holes;
+            if (t1_classification.max_hole_age_days > hole_tolerance_days) {
+                auto held_book_result = db->load_positions_by_date(
+                    combined_strategy_id, "", coordinator_config.portfolio_id,
+                    now - std::chrono::hours(24), "trading.positions");
+                if (held_book_result.is_ok()) {
+                    held_holes = held_feed_holes_past_tolerance(
+                        t1_classification, held_book_result.value(), hole_tolerance_days);
+                } else {
+                    WARN("FEED_HOLE_REFUSAL could not read the held book to test the feed "
+                         "holes: " +
+                         std::string(held_book_result.error()->what()));
+                }
+            }
+            if (!held_holes.empty()) {
+                const bool true_live =
+                    run_date_is_host_date(now, std::chrono::system_clock::now());
+                for (const auto& hole : held_holes) {
+                    const std::string msg =
+                        "FEED_HOLE_REFUSAL held symbol " + hole.symbol + " (quantity " +
+                        std::to_string(hole.held_quantity) + ") has had no bar for " +
+                        std::to_string(hole.age_days) + " day(s) (last bar " +
+                        hole.last_bar_date + "), past live.data_staleness_tolerance_days=" +
+                        std::to_string(hole_tolerance_days);
+                    if (true_live) {
+                        ERROR(msg + ". Refusing to run live: refresh the OHLCV feed, then run "
+                                    "this date.");
+                    } else {
+                        WARN(msg + ". Replay of a past date: not refused.");
+                    }
+                }
+                if (true_live) {
+                    return 1;
+                }
+            }
         }
 
         // ========================================
         // STORE LIVE RUN METADATA
         // Save run metadata (allocations, configs) for this trading day. Written only
         // now, after the run-gap (A3), feed-freshness (A2), calendar-coverage (A1) and
-        // day-classification (S-1) guards have all passed: a refused run must leave no
-        // row, because scripts/check_live_trading.py reads max(created_at) of this table
-        // as proof that the day's run happened.
+        // held-feed-hole (T-7a C4) guards have all passed: a refused run must leave no
+        // row. (The day-classification refusal, S-1, is gone: a day with no T-1 price is
+        // carried, never refused.)
         // ========================================
         INFO("Storing live run metadata for this trading day...");
         // Kept at this scope: a portfolio risk REFUSE found by process_market_data writes
@@ -1143,58 +1173,58 @@ int main(int argc, char* argv[]) {
             strategy_positions_map;
         std::unordered_map<std::string, Position> positions;
 
+        // The book-level rule (HD 2026-09-17): carry the whole book when NO symbol printed on T-1,
+        // i.e. the T-1 price map is empty. It is a carry on every such day, never an abort; the
+        // classifier names the reason (a closure is INFO, a feed hole an ERROR).
         if (early_previous_day_close_prices.empty()) {
-            if (is_non_trading_day) {
-                // ========================================
-                // EXPECTED: Non-trading day detected
-                // Reuse previous positions, skip strategy processing
-                // ========================================
-                INFO("═══════════════════════════════════════════════════════════════");
-                INFO("NON-TRADING DAY DETECTED - POSITIONS UNCHANGED");
-                INFO("═══════════════════════════════════════════════════════════════");
+            // ========================================
+            // No symbol has a T-1 price: reuse previous positions, skip strategy processing
+            // ========================================
+            INFO("═══════════════════════════════════════════════════════════════");
+            INFO("NON-TRADING DAY DETECTED - POSITIONS UNCHANGED");
+            INFO("═══════════════════════════════════════════════════════════════");
 
-                if (is_sunday) {
-                    INFO("Today is Sunday - Saturday was not a trading day");
-                } else if (is_yesterday_holiday) {
-                    INFO("Yesterday (" + yesterday_date_str_check + ") was a holiday: " +
-                         holiday_checker.get_holiday_name(yesterday_date_str_check));
-                }
-
-                INFO("No new market data available - positions will remain unchanged");
-                INFO("Loading previous trading day positions to carry forward...");
-
-                // Calculate previous date for position loading
-                auto previous_date_nontrade = now - std::chrono::hours(24);
-
-                // Load previous positions for each strategy and use as current
-                for (const auto& [strategy_name, allocation] : strategy_allocations) {
-                    auto prev_result = db->load_positions_by_date(
-                        combined_strategy_id, strategy_name, coordinator_config.portfolio_id,
-                        previous_date_nontrade, "trading.positions");
-
-                    if (prev_result.is_ok() && !prev_result.value().empty()) {
-                        strategy_positions_map[strategy_name] = prev_result.value();
-                        INFO("Loaded " + std::to_string(prev_result.value().size()) +
-                             " positions for strategy: " + strategy_name);
-
-                        // Also add to combined positions map
-                        for (const auto& [symbol, pos] : prev_result.value()) {
-                            positions[symbol] = pos;
-                        }
-                    } else {
-                        INFO("No previous positions found for strategy: " + strategy_name);
-                        strategy_positions_map[strategy_name] = {};
-                    }
-                }
-
-                INFO("Total positions carried forward: " + std::to_string(positions.size()));
-                INFO("═══════════════════════════════════════════════════════════════");
-                INFO("Skipping strategy calculations - proceeding to storage phase");
-                INFO("═══════════════════════════════════════════════════════════════");
-
-                skip_strategy_processing = true;
+            if (is_sunday) {
+                INFO("Today is Sunday - Saturday was not a trading day");
+            } else if (is_yesterday_holiday) {
+                INFO("Yesterday (" + yesterday_date_str_check + ") was a holiday: " +
+                     holiday_checker.get_holiday_name(yesterday_date_str_check));
             }
-            // Not a non-trading day: refused above the metadata upsert (S-1), never here.
+            log_whole_book_carry(t1_classification);
+
+            INFO("No new market data available - positions will remain unchanged");
+            INFO("Loading previous trading day positions to carry forward...");
+
+            // Calculate previous date for position loading
+            auto previous_date_nontrade = now - std::chrono::hours(24);
+
+            // Load previous positions for each strategy and use as current
+            for (const auto& [strategy_name, allocation] : strategy_allocations) {
+                auto prev_result = db->load_positions_by_date(
+                    combined_strategy_id, strategy_name, coordinator_config.portfolio_id,
+                    previous_date_nontrade, "trading.positions");
+
+                if (prev_result.is_ok() && !prev_result.value().empty()) {
+                    strategy_positions_map[strategy_name] = prev_result.value();
+                    INFO("Loaded " + std::to_string(prev_result.value().size()) +
+                         " positions for strategy: " + strategy_name);
+
+                    // Also add to combined positions map
+                    for (const auto& [symbol, pos] : prev_result.value()) {
+                        positions[symbol] = pos;
+                    }
+                } else {
+                    INFO("No previous positions found for strategy: " + strategy_name);
+                    strategy_positions_map[strategy_name] = {};
+                }
+            }
+
+            INFO("Total positions carried forward: " + std::to_string(positions.size()));
+            INFO("═══════════════════════════════════════════════════════════════");
+            INFO("Skipping strategy calculations - proceeding to storage phase");
+            INFO("═══════════════════════════════════════════════════════════════");
+
+            skip_strategy_processing = true;
         }
 
         // ========================================
@@ -1287,7 +1317,25 @@ int main(int argc, char* argv[]) {
             // Disable MarketDataBus to prevent duplicate processing during explicit data feed
             MarketDataBus::instance().set_publish_enabled(false);
             INFO("MarketDataBus publishing DISABLED before process_market_data");
-            auto port_process_result = portfolio->process_market_data(all_bars);
+            // JUNK (T-7a C4): a JUNK symbol's T-1 bar is withheld from the strategy and the
+            // portfolio stage, so its signal is not updated today (it is back in the history as
+            // T-2 on the next run). The price manager already has every bar: the mark uses it.
+            std::vector<std::string> withheld_junk_bars;
+            std::vector<Bar> junk_filtered_bars;
+            if (!t1_classification.junk_symbols.empty()) {
+                junk_filtered_bars =
+                    withhold_junk_t1_bars(all_bars, t1_classification, &withheld_junk_bars);
+                std::string withheld_list;
+                for (const auto& s : withheld_junk_bars) {
+                    withheld_list += (withheld_list.empty() ? "" : ", ") + s;
+                }
+                INFO("BOOK_GATE withheld the JUNK T-1 bar of " +
+                     std::to_string(withheld_junk_bars.size()) + " symbol(s) from the strategy "
+                     "and portfolio feed (signal not updated today): " + withheld_list);
+            }
+            const std::vector<Bar>& strategy_feed_bars =
+                t1_classification.junk_symbols.empty() ? all_bars : junk_filtered_bars;
+            auto port_process_result = portfolio->process_market_data(strategy_feed_bars);
             INFO("MarketDataBus publishing RE-ENABLED after process_market_data");
             MarketDataBus::instance().set_publish_enabled(true);
             // T-RISK-ARCH Q2 (ruled yes): a portfolio-scope risk REFUSE is found here, after
@@ -1454,102 +1502,61 @@ int main(int argc, char* argv[]) {
              std::to_string(two_days_ago_close_prices.size()) + " Day T-2");
 
         // ========================================
-        // MONDAY AGRICULTURAL FUTURES FIX
-        // Agricultural futures don't trade Sunday evening, so on Monday they have
-        // the same rolling window problem as other futures have on Sunday.
-        // For agricultural symbols missing T-1 prices on Monday, reuse previous positions.
+        // PREVIOUS DAY PER-STRATEGY BOOKS (Option A)
+        // Loaded once, here, and used by both the book gate below and the execution step
+        // (T-4c F8: the gate holds against the exact map the executions are diffed against).
         // ========================================
-        bool is_monday = (day_of_week == 1);
+        INFO("DEBUG PHASE 4: Loading previous day positions per-strategy...");
+        std::unordered_map<std::string, std::unordered_map<std::string, Position>>
+            previous_strategy_positions;
 
-        // Agricultural futures that don't trade Sunday evening
-        const std::set<std::string> AGRICULTURAL_FUTURES_BASE = {
-            "ZC", "ZS", "ZW", "ZL", "ZM", "KE", "ZR",  // Grains
-            "LE", "HE", "GF"                           // Livestock
-        };
+        for (const auto& [strategy_name, _] : strategy_positions_map) {
+            // Load previous positions filtering by BOTH combined_strategy_id AND individual
+            // strategy_name to ensure we only get positions from this specific run
+            auto prev_result =
+                db->load_positions_by_date(combined_strategy_id,  // Combined strategy_id
+                                           strategy_name,         // Individual strategy_name
+                                           coordinator_config.portfolio_id,  // Portfolio ID
+                                           previous_date, "trading.positions");
 
-        // Helper lambda to check if a symbol is an agricultural future
-        auto is_agricultural_future =
-            [&AGRICULTURAL_FUTURES_BASE](const std::string& symbol) -> bool {
-            // Extract base symbol (e.g., "ZC.v.0" -> "ZC")
-            std::string base = symbol;
-            auto dot_pos = symbol.find('.');
-            if (dot_pos != std::string::npos) {
-                base = symbol.substr(0, dot_pos);
-            }
-            return AGRICULTURAL_FUTURES_BASE.count(base) > 0;
-        };
+            if (prev_result.is_ok()) {
+                previous_strategy_positions[strategy_name] = prev_result.value();
+                INFO("DEBUG PHASE 4: Loaded " + std::to_string(prev_result.value().size()) +
+                     " previous positions for strategy: " + strategy_name);
 
-        if (is_monday && !skip_strategy_processing) {
-            INFO("═══════════════════════════════════════════════════════════════");
-            INFO("MONDAY AGRICULTURAL FUTURES CHECK");
-            INFO("Agricultural futures don't trade Sunday - checking for missing T-1 prices");
-            INFO("═══════════════════════════════════════════════════════════════");
-
-            int ag_symbols_fixed = 0;
-
-            // For each strategy, check agricultural symbols
-            for (auto& [strategy_name, current_positions_map] : strategy_positions_map) {
-                // Load previous positions for this strategy
-                auto prev_strategy_result = db->load_positions_by_date(
-                    combined_strategy_id, strategy_name, coordinator_config.portfolio_id,
-                    previous_date, "trading.positions");
-
-                std::unordered_map<std::string, Position> prev_strategy_positions;
-                if (prev_strategy_result.is_ok()) {
-                    prev_strategy_positions = prev_strategy_result.value();
+                // Log individual previous positions for debugging
+                for (const auto& [symbol, pos] : prev_result.value()) {
+                    DEBUG("DEBUG PHASE 4: Previous " + strategy_name + " - " + symbol +
+                          " qty=" + std::to_string(pos.quantity.as_double()));
                 }
-
-                // Check each position in the current strategy
-                for (auto& [symbol, current_pos] : current_positions_map) {
-                    if (is_agricultural_future(symbol)) {
-                        // Check if T-1 price is missing for this symbol
-                        bool has_t1_price = previous_day_close_prices.find(symbol) !=
-                                            previous_day_close_prices.end();
-
-                        if (!has_t1_price) {
-                            // This agricultural future has no Sunday data
-                            // Reuse Friday's position to avoid phantom execution
-                            auto prev_it = prev_strategy_positions.find(symbol);
-                            if (prev_it != prev_strategy_positions.end()) {
-                                double prev_qty = prev_it->second.quantity.as_double();
-                                double curr_qty = current_pos.quantity.as_double();
-
-                                if (std::abs(curr_qty - prev_qty) > 1e-10) {
-                                    INFO("Monday fix for " + symbol + " (" + strategy_name +
-                                         "): " + "No Sunday data - reverting position from " +
-                                         std::to_string(curr_qty) + " to " +
-                                         std::to_string(prev_qty) + " (Friday's position)");
-
-                                    // Override with previous position
-                                    current_pos = prev_it->second;
-                                    current_pos.last_update = now;  // Update timestamp
-                                    ag_symbols_fixed++;
-                                }
-                            } else {
-                                // No previous position exists - keep current (likely first time)
-                                INFO("Monday check for " + symbol + " (" + strategy_name + "): " +
-                                     "No Sunday data and no previous position - keeping current");
-                            }
-                        }
-                    }
-                }
-
-                // Also update the combined positions map
-                for (const auto& [symbol, pos] : current_positions_map) {
-                    if (is_agricultural_future(symbol) &&
-                        previous_day_close_prices.find(symbol) == previous_day_close_prices.end()) {
-                        positions[symbol] = pos;
-                    }
-                }
-            }
-
-            if (ag_symbols_fixed > 0) {
-                INFO("Monday agricultural fix: Reverted " + std::to_string(ag_symbols_fixed) +
-                     " positions to Friday's values (no Sunday trading data)");
             } else {
-                INFO("Monday agricultural check complete: No position reversions needed");
+                INFO("No previous positions found for strategy: " + strategy_name +
+                     " (first run or no data): " + std::string(prev_result.error()->what()));
+                previous_strategy_positions[strategy_name] = {};
             }
-            INFO("═══════════════════════════════════════════════════════════════");
+        }
+
+        // ========================================
+        // BOOK GATE (T-7a C4; HD 2026-09-17, STAGE3_PLAN §27; T-4c J1 as re-keyed)
+        // A symbol whose T-1 verdict is not SESSION is held at its stored T-1 quantity on EVERY
+        // per-strategy book: no signal-driven change, no order, marked at its last mark (NO_BAR)
+        // or at its T-1 bar (JUNK). The key is the verdict, never membership of the price map:
+        // a JUNK symbol has a T-1 price and would otherwise be traded at the junk print. A
+        // symbol held yesterday and absent from today's target is re-inserted, so the close-out
+        // loop cannot flatten it at a stale mark. Every other symbol trades normally. This
+        // subsumes the Monday agricultural block, which is retired: it held only a grain or
+        // livestock root with a stored row on a Monday, missed a position opened from flat
+        // (ZC/ZM 2026-03-02) and every weekday grain hole.
+        // ========================================
+        std::vector<BookHold> book_holds;
+        if (!skip_strategy_processing) {
+            book_holds = hold_non_session_symbols(strategy_positions_map,
+                                                  previous_strategy_positions, t1_classification,
+                                                  now);
+            log_book_holds(book_holds);
+            if (!book_holds.empty()) {
+                rebuild_combined_positions(positions, strategy_positions_map);
+            }
         }
 
         // Verify we have prices for all required symbols
@@ -1565,10 +1572,11 @@ int main(int argc, char* argv[]) {
 
         for (const auto& symbol : all_symbols) {
             if (previous_day_close_prices.find(symbol) == previous_day_close_prices.end()) {
-                // On Monday, agricultural futures missing T-1 is expected (handled above)
-                if (is_monday && is_agricultural_future(symbol)) {
-                    INFO("Expected: Missing T-1 price for agricultural future " + symbol +
-                         " on Monday");
+                // A closure is expected; a feed hole was logged as an ERROR by the classifier.
+                const SymbolDayVerdict* t1_verdict = t1_classification.find(symbol);
+                if (t1_verdict && t1_verdict->verdict == SessionVerdict::NO_BAR_CLOSURE) {
+                    INFO("Expected: Missing T-1 price for " + symbol + " (NO_BAR(closure): " +
+                         t1_verdict->reason + ")");
                 } else {
                     WARN("Missing T-1 price for symbol: " + symbol);
                 }
@@ -1740,54 +1748,38 @@ int main(int argc, char* argv[]) {
         // ========================================
         INFO("PHASE 4: Generating per-strategy executions...");
 
-        // Load previous day per-strategy positions
-        INFO("DEBUG PHASE 4: Loading previous day positions per-strategy...");
-        std::unordered_map<std::string, std::unordered_map<std::string, Position>>
-            previous_strategy_positions;
-
-        for (const auto& [strategy_name, _] : strategy_positions_map) {
-            // Load previous positions filtering by BOTH combined_strategy_id AND individual
-            // strategy_name to ensure we only get positions from this specific run
-            auto prev_result =
-                db->load_positions_by_date(combined_strategy_id,  // Combined strategy_id
-                                           strategy_name,         // Individual strategy_name
-                                           coordinator_config.portfolio_id,  // Portfolio ID
-                                           previous_date, "trading.positions");
-
-            if (prev_result.is_ok()) {
-                previous_strategy_positions[strategy_name] = prev_result.value();
-                INFO("DEBUG PHASE 4: Loaded " + std::to_string(prev_result.value().size()) +
-                     " previous positions for strategy: " + strategy_name);
-
-                // Log individual previous positions for debugging
-                for (const auto& [symbol, pos] : prev_result.value()) {
-                    DEBUG("DEBUG PHASE 4: Previous " + strategy_name + " - " + symbol +
-                          " qty=" + std::to_string(pos.quantity.as_double()));
-                }
-            } else {
-                INFO("No previous positions found for strategy: " + strategy_name +
-                     " (first run or no data): " + std::string(prev_result.error()->what()));
-                previous_strategy_positions[strategy_name] = {};
-            }
-        }
+        // The previous day per-strategy books were loaded above, before the book gate.
 
         // Generate executions for each strategy
         std::unordered_map<std::string, std::vector<ExecutionReport>> all_strategy_executions;
         int total_executions = 0;
         // total_daily_transaction_costs already declared earlier at line 881
 
-        for (const auto& [strategy_name, current_positions_map] : strategy_positions_map) {
+        // PricingPolicy::STRICT (T-7a C4): a fill is priced from a real T-1 close or not at
+        // all. With the book gate above every changed symbol has one, so nothing is unpriced
+        // by construction; a symbol that still is gets its stored row back (the rollback of
+        // LiveDailyCycle::execute_day_t), is logged as a tripwire, and the assertion after the
+        // loop fails the run if any book change is left without a price.
+        std::vector<std::string> strict_rolled_back;
+        for (auto& [strategy_name, current_positions_map] : strategy_positions_map) {
             auto prev_positions_map = previous_strategy_positions[strategy_name];
 
             INFO("DEBUG PHASE 4: Generating executions for strategy '" + strategy_name +
                  "' (current=" + std::to_string(current_positions_map.size()) +
                  ", previous=" + std::to_string(prev_positions_map.size()) + ")");
 
-            auto exec_result = execution_manager->generate_daily_executions(
-                current_positions_map, prev_positions_map, previous_day_close_prices, now);
+            auto exec_result =
+                execute_strategy_day_strict(*execution_manager, current_positions_map,
+                                            prev_positions_map, previous_day_close_prices, now);
 
             if (exec_result.is_ok()) {
-                std::vector<ExecutionReport> strategy_executions = exec_result.value();
+                for (const auto& s : exec_result.value().rolled_back) {
+                    ERROR("STRICT_TRIPWIRE " + s + " (" + strategy_name +
+                          ") had a book change and no T-1 price: rolled back to its stored "
+                          "row, not traded. The book gate should have held it.");
+                    strict_rolled_back.push_back(s);
+                }
+                std::vector<ExecutionReport> strategy_executions = exec_result.value().executions;
 
                 INFO("DEBUG PHASE 4: Strategy '" + strategy_name + "' generated " +
                      std::to_string(strategy_executions.size()) + " executions");
@@ -1809,6 +1801,47 @@ int main(int argc, char* argv[]) {
                 ERROR("Failed to generate executions for strategy " + strategy_name + ": " +
                       std::string(exec_result.error()->what()));
                 all_strategy_executions[strategy_name] = {};
+            }
+        }
+
+        if (!strict_rolled_back.empty()) {
+            // The combined rows of the rolled-back symbols, restated as STEP 2 writes them.
+            for (const auto& s : strict_rolled_back) {
+                Position combined;
+                bool any = false;
+                for (const auto& [_, pos_map] : strategy_positions_map) {
+                    auto it = pos_map.find(s);
+                    if (it == pos_map.end()) continue;
+                    if (!any) {
+                        combined = it->second;
+                        any = true;
+                    } else {
+                        combined.quantity += it->second.quantity;
+                    }
+                }
+                if (!any) {
+                    positions.erase(s);
+                    continue;
+                }
+                auto px = previous_day_close_prices.find(s);
+                if (px != previous_day_close_prices.end()) {
+                    combined.average_price = Decimal(px->second);
+                }
+                combined.realized_pnl = Decimal(0.0);
+                combined.unrealized_pnl = Decimal(0.0);
+                combined.last_update = now;
+                positions[s] = combined;
+            }
+        }
+        {
+            const auto unpriced_changes = unpriced_book_changes(
+                strategy_positions_map, previous_strategy_positions, previous_day_close_prices);
+            if (!unpriced_changes.empty()) {
+                std::string list;
+                for (const auto& s : unpriced_changes) list += (list.empty() ? "" : ", ") + s;
+                ERROR("STRICT_ASSERTION failed: book change(s) with no T-1 price and no execution "
+                      "remain after the rollback: " + list + ". Refusing to store this book.");
+                return 1;
             }
         }
 
@@ -3121,6 +3154,9 @@ int main(int argc, char* argv[]) {
             report_config_json["gross_notional"] = gross_notional;
             report_config_json["net_notional"] = net_notional;
             report_config_json["gross_leverage"] = gross_notional / initial_capital;
+            // T-7a C4: the day's T-1 classification (counts, feed holes, held symbols).
+            report_config_json["t1_classification"] =
+                t1_classification.to_json(held_symbols(book_holds));
 
             // Create SQL insert for live_results table with correct schema
             std::stringstream date_ss;

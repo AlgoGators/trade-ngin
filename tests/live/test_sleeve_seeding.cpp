@@ -342,7 +342,7 @@ TEST(SleeveSeedingSource, BothTwinsSeedEverySleeveThroughTheHelperBeforeTheRebal
         EXPECT_EQ(src.find("tf_strategy->seed_positions("), npos)
             << "the runner seeds the first strategy object only";
         const auto call = src.find("seed_every_sleeve(strategies, strategy_names, *portfolio,");
-        const auto process = src.find("portfolio->process_market_data(all_bars);");
+        const auto process = src.find("portfolio->process_market_data(strategy_feed_bars);");
         const auto gate = src.find("if (!skip_strategy_processing) {");
         ASSERT_NE(process, npos);
         ASSERT_NE(gate, npos);
@@ -363,7 +363,7 @@ TEST(SleeveSeedingSource, TheTwinsCarryTheSameSeedBlock) {
         const std::string src = read_source(runner);
         if (src.empty()) GTEST_SKIP() << "runner source not found from the test working directory";
         const auto from = src.find("if (!skip_strategy_processing) {");
-        const auto to = src.find("portfolio->process_market_data(all_bars);");
+        const auto to = src.find("portfolio->process_market_data(strategy_feed_bars);");
         ASSERT_NE(from, npos);
         ASSERT_NE(to, npos);
         ASSERT_LT(from, to);

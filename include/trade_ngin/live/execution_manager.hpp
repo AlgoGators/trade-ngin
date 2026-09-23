@@ -79,11 +79,12 @@ public:
      * @param timestamp Execution timestamp
      * @param pricing How to handle a symbol with no usable price in market_prices.
      *
-     *        MARK_FALLBACK (default) is the long-standing behaviour and is CORRECT for
-     *        futures: TrendFollowingStrategy sets Position::average_price to
-     *        price_history.back() -- the latest mark, by design, matching REALIZED_ONLY
-     *        daily settlement (trend_following.cpp:623). Falling back to it prices the
-     *        fill at a real, one-session-stale close.
+     *        MARK_FALLBACK (default) is the long-standing behaviour: the fill is priced at
+     *        Position::average_price, which for futures is price_history.back(), the latest
+     *        mark (trend_following.cpp). That mark can be several sessions old on a feed hole
+     *        (MYM 2026-04-24 filled at a four-day-old close), so since T-7a C4 the futures
+     *        runners pass STRICT: their book gate holds every symbol without a T-1 SESSION,
+     *        so nothing reaches this step unpriced (session_book_gate.hpp).
      *
      *        STRICT is for callers whose average_price is a weighted COST BASIS rather
      *        than a mark -- equity mean reversion. There, a position opened today has no

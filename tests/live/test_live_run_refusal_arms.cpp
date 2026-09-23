@@ -8,7 +8,10 @@
 //      trading.live_run_metadata upsert, so the refused 2026-05-18 replay (T-5 C-HEAD) exited 1
 //      leaving a metadata row and no live_results row. scripts/check_live_trading.py reads that
 //      table as proof the day's run happened. a117a8d9 moved the A3/A2/A1 guards above the
-//      upsert and left this one below it.
+//      upsert and left this one below it. T-7a C4 then DELETED that refusal (a day with no T-1
+//      price is carried with its reason logged, never refused); the source test below now pins
+//      the deletion and the one refusal C4 adds (a held symbol's feed hole in true live), which
+//      sits above the upsert for the same reason.
 // Q2.  A portfolio-scope risk REFUSE is found inside process_market_data, after the upsert. The
 //      row records a run that did happen, so HD ruled it is marked, not deleted: the runner
 //      writes the same row again with the refusal in its portfolio_config JSON.
@@ -293,30 +296,34 @@ protected:
 }  // namespace
 
 // =============================================================================================
-// S-1: the day-classification refusal precedes the metadata upsert, in both twins.
+// S-1 / T-7a C4: no day-classification abort; the feed-hole refusal precedes the upsert.
 // =============================================================================================
 
-TEST(RunRefusalArmsSource, DayClassificationRefusalIsAboveTheMetadataUpsertInBothTwins) {
+TEST(RunRefusalArmsSource, TheDayClassificationAbortIsDeletedAndTheFeedHoleRefusalPrecedesTheUpsert) {
+    // T-7a C4 supersedes S-1: a day with no T-1 price is carried, never refused (the dead-Sunday
+    // Mondays 2026-05-18 and 05-25 carry forward with the reason logged). The one refusal the
+    // classifier adds -- a held symbol's feed hole past the tolerance, in true live -- sits above
+    // the live_run_metadata upsert, where S-1 put the old one, so a refused run leaves no row.
     for (const char* runner : kFuturesRunners) {
         SCOPED_TRACE(runner);
         const std::string src = read_source(runner);
         if (src.empty()) GTEST_SKIP() << "runner source not found from the test working directory";
 
-        const auto refusal = src.find("ERROR(\"DATA ISSUE DETECTED - ABORTING\");");
+        EXPECT_EQ(src.find("DATA ISSUE DETECTED - ABORTING"), npos)
+            << "the day-classification abort arm is still in the runner";
+        EXPECT_EQ(src.find("return 1;  // Fail fast on data issues"), npos);
+        EXPECT_EQ(src.find("is_non_trading_day"), npos);
+
+        const auto refusal = src.find("FEED_HOLE_REFUSAL held symbol ");
         const auto upsert = src.find("db->store_live_run_metadata(");
-        ASSERT_NE(refusal, npos) << "the day-classification refusal is gone entirely";
+        ASSERT_NE(refusal, npos) << "the held-symbol feed-hole refusal is missing";
         ASSERT_NE(upsert, npos);
-        EXPECT_EQ(count_of(src, "ERROR(\"DATA ISSUE DETECTED - ABORTING\");"), 1u);
-
         EXPECT_LT(refusal, upsert)
-            << "the day-classification refusal runs AFTER the live_run_metadata upsert: a "
-               "refused day (the 2026-05-18 replay) exits 1 leaving a metadata row and no "
-               "live_results row, which the watchdog reads as a completed run (S-1)";
-
-        // The refusal returns before the upsert: its `return 1` lies between the two.
-        const auto ret = src.find("return 1;  // Fail fast on data issues", refusal);
+            << "the feed-hole refusal runs AFTER the live_run_metadata upsert: a refused run "
+               "would leave a metadata row that reads as a completed run (S-1)";
+        const auto ret = src.find("if (true_live) {\n                    return 1;", refusal);
         ASSERT_NE(ret, npos);
-        EXPECT_LT(ret, upsert) << "the refusal must RETURN before the upsert, not fall through";
+        EXPECT_LT(ret, upsert) << "the refusal must RETURN before the upsert";
     }
 }
 
@@ -335,8 +342,9 @@ TEST(RunRefusalArmsSource, TheTwinsCarryTheSameRefusalAndUpsertBlock) {
     EXPECT_EQ(blocks[0], blocks[1])
         << "live_portfolio_conservative.cpp and live_portfolio.cpp are twins: the refusal and "
            "the upsert must be byte-identical in both";
-    EXPECT_NE(blocks[0].find("DATA ISSUE DETECTED - ABORTING"), npos)
-        << "the refusal must sit inside the classification-to-upsert block";
+    EXPECT_NE(blocks[0].find("FEED_HOLE_REFUSAL held symbol "), npos)
+        << "the feed-hole refusal must sit inside the classification-to-upsert block";
+    EXPECT_EQ(blocks[0].find("DATA ISSUE DETECTED - ABORTING"), npos);
     EXPECT_NE(blocks[0].find("db->store_live_run_metadata("), npos);
 }
 
@@ -350,7 +358,7 @@ TEST(RunRefusalArmsSource, BothTwinsMarkTheMetadataRowAfterProcessMarketData) {
         const std::string src = read_source(runner);
         if (src.empty()) GTEST_SKIP() << "runner source not found from the test working directory";
 
-        const auto process = src.find("portfolio->process_market_data(all_bars);");
+        const auto process = src.find("portfolio->process_market_data(strategy_feed_bars);");
         ASSERT_NE(process, npos);
         const auto detect =
             src.find("portfolio_risk_refusal(portfolio->last_risk_decisions())", process);
