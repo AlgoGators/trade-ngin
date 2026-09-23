@@ -1,5 +1,6 @@
 // src/portfolio/portfolio_manager.cpp
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
+#include <unordered_set>
 #include <algorithm>
 #include <climits>
 #include <cmath>
@@ -240,7 +241,9 @@ Result<void> PortfolioManager::add_strategy(std::shared_ptr<StrategyInterface> s
 
 Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                                                    bool skip_execution_generation,
-                                                   std::optional<Timestamp> current_timestamp) {
+                                                   std::optional<Timestamp> current_timestamp,
+                                                   const std::unordered_set<std::string>*
+                                                       session_symbols) {
     std::vector<std::string> processed_strategies;
 
     try {
@@ -739,7 +742,7 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
 
                 // Generate execution reports per strategy (before aggregation)
                 // This allows accurate per-strategy execution tracking
-                for (const auto& [strategy_id, info] : strategies_) {
+                for (auto& [strategy_id, info] : strategies_) {
                     auto& strategy_execs = strategy_executions_[strategy_id];
                     // Start counter from current size to ensure unique IDs across all periods
                     int exec_counter = static_cast<int>(strategy_execs.size());
@@ -778,6 +781,25 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                         // current_qty == 0 and needs no special case.
                         if (std::abs(trade_size) > 1e-6) {
                             Side side = trade_size > 0 ? Side::BUY : Side::SELL;
+
+                            // The backtest predicate (T-7a C4; T-4c J1 re-keyed on the session
+                            // classifier): a symbol whose signal-group bar is not a SESSION (no
+                            // bar, or a JUNK bar) gets no fill and NO BOOK CHANGE. Its book is
+                            // held at what has actually been filled, so it cannot earn P&L on
+                            // contracts it never bought. The change lands on a later cycle whose
+                            // signal group carries a session bar, when the re-anchored target
+                            // still differs from the ledger.
+                            if (session_symbols && !session_symbols->count(symbol)) {
+                                auto book_it = info.current_positions.find(symbol);
+                                if (book_it != info.current_positions.end()) {
+                                    book_it->second.quantity = Decimal(current_qty);
+                                }
+                                INFO("BOOK_GATE backtest " + symbol + " (" + strategy_id +
+                                     "): no SESSION bar in the signal group -- book held at "
+                                     "filled qty=" + std::to_string(current_qty) +
+                                     " instead of target " + std::to_string(new_qty));
+                                continue;
+                            }
 
                             // Find latest price for symbol
                             double latest_price = 0.0;

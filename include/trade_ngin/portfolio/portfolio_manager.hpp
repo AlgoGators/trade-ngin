@@ -150,10 +150,17 @@ public:
      * @param data New market data
      * @param skip_execution_generation If true, skip execution generation (used during warmup)
      * @param current_timestamp Optional current day's timestamp for execution fill_time (if not provided, uses data[0].timestamp)
+     * @param session_symbols Optional (T-7a C4, the backtest predicate): the symbols whose bar in
+     *        `data` is a SESSION. When given, a symbol NOT in it gets no fill AND no book change:
+     *        its current_positions entry is held at the filled-ledger quantity (a symbol with no
+     *        bar, or a JUNK bar, in the signal group). Null (the default, every live caller and the
+     *        equity backtest) keeps the old skip: no fill, the book moves to the target.
      * @return Result indicating success or failure
      */
-    Result<void> process_market_data(const std::vector<Bar>& data, bool skip_execution_generation = false, 
-                                     std::optional<Timestamp> current_timestamp = std::nullopt);
+    Result<void> process_market_data(
+        const std::vector<Bar>& data, bool skip_execution_generation = false,
+        std::optional<Timestamp> current_timestamp = std::nullopt,
+        const std::unordered_set<std::string>* session_symbols = nullptr);
 
     /**
      * @brief Update strategy allocations
