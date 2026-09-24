@@ -472,27 +472,48 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
             // Risk Management step
             bool has_risk_manager = !risk_modules_.empty();
             if (has_risk_manager) {
+                // A portfolio-scope risk step that cannot answer REFUSES the scope (HD 2026-09-21,
+                // option b): every strategy is held at its previous book and no order is sent.
+                // The old WARN that went on WITHOUT risk management is gone. A module whose
+                // evaluate fails is refused inside apply_risk_management
+                // (refuse_on_failed_gatekeeper); what fails the step itself (a module's on_bars
+                // throwing, an exception after evaluate) is refused here, recorded as a REFUSE
+                // row carrying the error, so the runner's metadata mark and exit code see it.
+                const RiskContext lap_ctx =
+                    make_risk_context(RiskPhase::LAP, iteration, RiskScope::PORTFOLIO, id_,
+                                      config_.total_capital, data, current_timestamp,
+                                      skip_execution_generation);
+                std::string step_failure;
                 try {
                     Logger::register_component("RiskManager");
-                    auto risk_result = apply_risk_management(
-                        data,
-                        make_risk_context(RiskPhase::LAP, iteration, RiskScope::PORTFOLIO, id_,
-                                          config_.total_capital, data, current_timestamp,
-                                          skip_execution_generation),
-                        risk_outcome);
+                    auto risk_result = apply_risk_management(data, lap_ctx, risk_outcome);
                     if (risk_result.is_error()) {
-                        WARN("Portfolio risk management failed in iteration " +
-                             std::to_string(iteration) + ": " +
-                             std::string(risk_result.error()->what()) +
-                             ", continuing without risk management");
+                        step_failure = risk_result.error()->what();
                     } else {
                         INFO("Portfolio risk management applied successfully in iteration " +
                              std::to_string(iteration));
                     }
                 } catch (const std::exception& e) {
-                    WARN("Exception during risk management in iteration " +
-                         std::to_string(iteration) + ": " + std::string(e.what()) +
-                         ", continuing without risk management");
+                    step_failure = e.what();
+                }
+                if (!step_failure.empty() && !risk_outcome.pin_all &&
+                    !risk_outcome.refuse_unseeded) {
+                    ERROR("Portfolio risk management failed in iteration " +
+                          std::to_string(iteration) + ": " + step_failure +
+                          "; the portfolio risk step could not answer, so the scope is refused: "
+                          "every strategy is held at its previous book and no orders are sent");
+                    RiskDecision none;
+                    none.module_id = kRiskStepModuleId;
+                    record_risk_decision(lap_ctx, kRiskStepModuleId, std::move(none),
+                                         RiskAction::REFUSE, Decimal(1.0), false, step_failure);
+                    if (!scope_is_seeded(id_)) {
+                        risk_outcome.refuse_unseeded = true;
+                        risk_outcome.unseeded_scope = id_;
+                    } else {
+                        risk_outcome.pin_all = true;
+                        risk_outcome.action = RiskAction::REFUSE;
+                    }
+                    risk_outcome.module_id = kRiskStepModuleId;
                 }
             } else {
                 INFO("Risk management not enabled, skipping risk checks in iteration " +
@@ -1877,18 +1898,33 @@ bool PortfolioManager::refuse_on_failed_gatekeeper(const std::vector<RiskModuleP
                                                    const RiskContext& ctx, RiskVerdict& verdict,
                                                    std::string& module_id) const {
     if (verdict.action == RiskAction::REFUSE) return false;
+    const bool portfolio_scope = ctx.scope == RiskScope::PORTFOLIO;
     for (size_t k = 0; k < modules.size() && k < errors.size(); ++k) {
         if (errors[k].empty()) continue;
-        if (!modules[k]->capabilities().count(RiskAction::REFUSE)) continue;
-        // A module that exists to say "do not trade" and could not answer has not said yes.
-        WARN("Risk module " + modules[k]->id() + " failed on " + risk_scope_name(ctx.scope) + " " +
-             ctx.scope_id + " " + risk_location(ctx) + " and can refuse: " + errors[k] +
-             "; the scope is refused");
+        if (portfolio_scope) {
+            // HD 2026-09-21, option (b): a PORTFOLIO-scope module of ANY capability that cannot
+            // answer refuses the scope. The shipped futures books run one Carver module
+            // ({SCALE, WARN}); its failure used to contribute NONE and ship the book uncut.
+            ERROR("Risk module " + modules[k]->id() + " failed on " + risk_scope_name(ctx.scope) +
+                  " " + ctx.scope_id + " " + risk_location(ctx) + ": " + errors[k] +
+                  "; a portfolio-scope module that cannot answer refuses the scope: every "
+                  "strategy is held at its previous book and no orders are sent");
+        } else {
+            // Sleeve scope, unchanged: only a module that exists to say "do not trade" and
+            // could not answer has not said yes.
+            if (!modules[k]->capabilities().count(RiskAction::REFUSE)) continue;
+            WARN("Risk module " + modules[k]->id() + " failed on " + risk_scope_name(ctx.scope) +
+                 " " + ctx.scope_id + " " + risk_location(ctx) + " and can refuse: " + errors[k] +
+                 "; the scope is refused");
+        }
         verdict.action = RiskAction::REFUSE;
         verdict.winner = static_cast<size_t>(-1);
         verdict.scale = 1.0;
         verdict.factor = Decimal(1.0);
         for (auto& row : verdict.rows) row = {RiskAction::NONE, Decimal(1.0)};
+        // The failed module's row is the refusal: recorded as applied REFUSE with its error, so
+        // risk_decisions_json()'s outcome and the runners' metadata mark see it.
+        if (k < verdict.rows.size()) verdict.rows[k] = {RiskAction::REFUSE, Decimal(1.0)};
         module_id = modules[k]->id();
         return true;
     }
@@ -1919,8 +1955,14 @@ void PortfolioManager::deliver_and_record(const std::vector<RiskModulePtr>& modu
     for (size_t k = 0; k < decisions.size(); ++k) {
         std::string id = decisions[k].module_id;
         const bool bad = failed(k);
+        // A failed module's row is NONE unless its failure refused the scope
+        // (refuse_on_failed_gatekeeper marks that row REFUSE).
+        const RiskAction bad_action =
+            k < verdict.rows.size() && verdict.rows[k].first == RiskAction::REFUSE
+                ? RiskAction::REFUSE
+                : RiskAction::NONE;
         record_risk_decision(ctx, id, std::move(decisions[k]),
-                             bad ? RiskAction::NONE : verdict.rows[k].first,
+                             bad ? bad_action : verdict.rows[k].first,
                              bad ? Decimal(1.0) : verdict.rows[k].second, false,
                              bad ? errors[k] : std::string());
     }
@@ -2123,8 +2165,12 @@ Result<void> PortfolioManager::apply_risk_management(const std::vector<Bar>& dat
                                        lap_ctx.scope_id, logged_invariant, logged_leverage));
             }
         } catch (const std::exception& e) {
+            // Fail closed: the loop refuses the portfolio scope on this error (HD 2026-09-21).
+            // This used to return OK, which shipped whatever the book was at the throw.
             ERROR("Exception during risk management: " + std::string(e.what()));
-            return Result<void>();  // Don't fail the entire operation
+            return make_error<void>(ErrorCode::UNKNOWN_ERROR,
+                                    std::string("Exception during risk management: ") + e.what(),
+                                    "PortfolioManager");
         }
 
         INFO("Risk management applied successfully");

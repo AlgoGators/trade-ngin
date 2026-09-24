@@ -25,13 +25,16 @@ namespace trade_ngin {
  * that sleeve and does not refuse the portfolio. The first such record is returned (the loop
  * leaves on a portfolio REFUSE, so there is at most one per phase).
  *
- * Known gap, not closed here: a module that FAILED and was treated as a refusal
- * (PortfolioManager::refuse_on_failed_gatekeeper) is recorded with applied NONE and its error,
- * so it is not seen by this function, nor by risk_decisions_json()'s "outcome". The module
- * error path is T-7a commit 5's.
+ * A module that FAILED and so refused the scope (PortfolioManager::refuse_on_failed_gatekeeper,
+ * or the portfolio risk step itself failing, module kRiskStepModuleId) is recorded with applied
+ * REFUSE and its error (T-7a commit 5), so it is seen here and in risk_decisions_json()'s
+ * "outcome". Its "reason" is the error, since the module returned no decision, and "error"
+ * carries it too; the runner's exit path reads the same record through
+ * portfolio_risk_module_failure (risk_module_failure.hpp).
  *
  * @param records PortfolioManager::last_risk_decisions() after the runner's explicit call.
- * @return {"action", "module", "scope_id", "phase", "lap", "reason"}, or nullopt.
+ * @return {"action", "module", "scope_id", "phase", "lap", "reason"} plus "error" when the
+ *         refusal came from a failure, or nullopt.
  */
 inline std::optional<nlohmann::json> portfolio_risk_refusal(
     const std::vector<RiskDecisionRecord>& records) {
@@ -45,7 +48,8 @@ inline std::optional<nlohmann::json> portfolio_risk_refusal(
         j["scope_id"] = rec.scope_id;
         j["phase"] = risk_phase_name(rec.phase);
         j["lap"] = rec.lap;
-        j["reason"] = rec.requested.reason;
+        j["reason"] = rec.requested.reason.empty() ? rec.error : rec.requested.reason;
+        if (!rec.error.empty()) j["error"] = rec.error;
         return j;
     }
     return std::nullopt;

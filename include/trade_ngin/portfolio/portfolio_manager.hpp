@@ -499,10 +499,11 @@ private:
         const std::unordered_map<std::string, Position>& book, const RiskContext& ctx,
         bool finalize_phase, std::vector<std::string>& errors);
 
-    /// The other half of fail-closed: a module that FAILED and could have REFUSED is treated as
-    /// a refusal of its scope, because its silence cannot be read as consent. Returns true when
-    /// `verdict` was upgraded to REFUSE; names the module in `module_id`. Inert for a module whose
-    /// capabilities() do not contain REFUSE (the Carver module's are {SCALE}).
+    /// The other half of fail-closed: a module that FAILED is treated as a refusal of its scope,
+    /// because its silence cannot be read as consent. At PORTFOLIO scope that holds for a module
+    /// of any capability (HD 2026-09-21, option b: the lone Carver, {SCALE, WARN}, included); at
+    /// SLEEVE scope only for a module that could have REFUSED. Returns true when `verdict` was
+    /// upgraded to REFUSE, with the failed module's row set to REFUSE; names it in `module_id`.
     bool refuse_on_failed_gatekeeper(const std::vector<RiskModulePtr>& modules,
                                      const std::vector<std::string>& errors,
                                      const RiskContext& ctx, RiskVerdict& verdict,
@@ -510,7 +511,8 @@ private:
 
     /// Tell every module evaluated in a scope what was applied, then record its row. A module
     /// whose `errors[k]` is non-empty was never evaluated: it is recorded with its error and
-    /// applied_action NONE, and its on_applied is NOT called.
+    /// applied_action NONE (REFUSE when its failure refused the scope), and its on_applied is
+    /// NOT called.
     void deliver_and_record(const std::vector<RiskModulePtr>& modules,
                             std::vector<RiskDecision>& decisions, const RiskVerdict& verdict,
                             const RiskContext& ctx, bool pinned,

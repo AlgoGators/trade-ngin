@@ -31,6 +31,7 @@
 #include "trade_ngin/live/live_price_manager.hpp"
 #include "trade_ngin/live/live_trading_coordinator.hpp"
 #include "trade_ngin/live/margin_manager.hpp"
+#include "trade_ngin/live/risk_module_failure.hpp"
 #include "trade_ngin/live/run_metadata_marks.hpp"
 #include "trade_ngin/live/session_book_gate.hpp"
 #include "trade_ngin/live/sleeve_seeding.hpp"
@@ -1279,6 +1280,11 @@ int main(int argc, char* argv[]) {
         INFO("Updated transaction cost manager with market data for " +
              std::to_string(symbols_updated) + " symbols");
 
+        // Set when a portfolio risk module could not answer and the PortfolioManager held the
+        // book (T-7a C5, HD 2026-09-21 option b): the day is stored as a REFUSE day, the email
+        // is flagged and main() exits kRiskModuleFailureExitCode instead of 0.
+        std::optional<nlohmann::json> risk_module_failure;
+
         // ========================================
         // NORMAL TRADING DAY PROCESSING
         // Only run strategy calculations if NOT a non-trading day
@@ -1358,6 +1364,20 @@ int main(int argc, char* argv[]) {
                 } else {
                     INFO("Marked today's live_run_metadata row with the risk refusal");
                 }
+            }
+            // T-7a C5 (HD 2026-09-21, option b): a portfolio risk module that could not evaluate
+            // the book refused the scope, so the PM holds every strategy at its seeded T-1 book
+            // and no order follows. The run goes on to store the day as it stores any REFUSE day
+            // (the row above is marked) and exits non-zero at the end, with the email flagged.
+            risk_module_failure = portfolio_risk_module_failure(portfolio->last_risk_decisions());
+            if (risk_module_failure) {
+                ERROR("RISK_MODULE_FAILURE portfolio risk module " +
+                      risk_module_failure->value("module", std::string()) +
+                      " could not evaluate the book: " +
+                      risk_module_failure->value("error", std::string()) +
+                      "; the book is held at the seeded T-1 positions and no orders are sent; "
+                      "the day is stored as a REFUSE day and the run exits " +
+                      std::to_string(kRiskModuleFailureExitCode));
             }
             if (port_process_result.is_error()) {
                 std::cerr << "Failed to process data in portfolio manager: "
@@ -3780,6 +3800,14 @@ int main(int argc, char* argv[]) {
                         attachments.push_back(yesterday_filename);
                     }
 
+                    // T-7a C5: a day the portfolio risk module could not answer is flagged in
+                    // the subject and at the top of the body.
+                    if (risk_module_failure) {
+                        subject = risk_module_failure_email_subject(subject);
+                        email_body = flag_email_body_for_risk_module_failure(
+                            email_body, *risk_module_failure);
+                    }
+
                     auto send_result =
                         email_sender->send_email(subject, email_body, true, attachments);
                     if (send_result.is_error()) {
@@ -3803,7 +3831,11 @@ int main(int argc, char* argv[]) {
         std::cerr << "At end of main: initialized=" << Logger::instance().is_initialized()
                   << std::endl;
 
-        return 0;
+        if (risk_module_failure) {
+            ERROR("RISK_MODULE_FAILURE the day is stored with the book held; exiting " +
+                  std::to_string(kRiskModuleFailureExitCode));
+        }
+        return live_run_exit_code(risk_module_failure);
 
     } catch (const std::exception& e) {
         std::cerr << "Unexpected error: " << e.what() << std::endl;

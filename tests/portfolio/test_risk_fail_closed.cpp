@@ -297,18 +297,21 @@ TEST_F(RiskFailClosedTest, ARefuseSurvivesALaterModulesThrow) {
         << out;
 }
 
-// A SCALE another module already returned survives too: the magnitude term does not depend on
-// the failed module's reading.
-TEST_F(RiskFailClosedTest, AScaleSurvivesALaterModulesFailure) {
+// T-7a C5 (HD 2026-09-21, option b): a SCALE another module returned does NOT survive a later
+// PORTFOLIO-scope module's failure. The failed module has not measured the book, so the scope is
+// refused and held at its previous book. Before C5 the 0.5 cut was applied (4 -> 2 lots) and the
+// failure ignored.
+TEST_F(RiskFailClosedTest, AScaleDoesNotSurviveALaterPortfolioModulesFailure) {
     PortfolioConfig pc = base_config();
     pc.allow_fractional_positions = true;
     make_pm(pc, {{"ZZA", make_pos("ZZA", 4.0, 100.0)}});
+    ASSERT_TRUE(pm_->update_strategy_position("FC_S", "ZZA", make_pos("ZZA", 3.0, 100.0)).is_ok());
     ASSERT_TRUE(pm_->set_risk_modules(
                        {std::make_shared<ConstantScaleRiskModule>("cut", 0.5),
                         std::make_shared<FailingModule>("boom", /*refuse_capable=*/false)})
                     .is_ok());
     ASSERT_TRUE(pm_->process_market_data(three_days()).is_ok());
-    EXPECT_EQ(quantity("ZZA"), 2.0) << "the 0.5 cut was applied, not thrown away";
+    EXPECT_EQ(quantity("ZZA"), 3.0) << "held at the seeded book: neither 4 (uncut) nor 2 (cut)";
 }
 
 // The other half of "fail closed": a module that could have REFUSED and could not answer has not
@@ -326,11 +329,16 @@ TEST_F(RiskFailClosedTest, AFailedRefuseCapableModuleRefusesTheScope) {
     ASSERT_TRUE(result.is_ok());
     EXPECT_EQ(quantity("ZZA"), 2.0) << "pinned to the seeded book";
     EXPECT_NE(out.find("Risk module gate failed on portfolio"), std::string::npos) << out;
-    EXPECT_NE(out.find("and can refuse"), std::string::npos) << out;
+    // T-7a C5: at portfolio scope the refusal line is the one every capability gets (an ERROR).
+    EXPECT_NE(out.find("a portfolio-scope module that cannot answer refuses the scope"),
+              std::string::npos)
+        << out;
 }
 
-// A module that cannot refuse does not refuse: its failure leaves the book to the others.
-TEST_F(RiskFailClosedTest, AFailedScaleOnlyModuleDoesNotRefuseTheScope) {
+// T-7a C5 (HD 2026-09-21, option b): at PORTFOLIO scope a module that cannot refuse DOES refuse
+// when it fails: its silence is not consent either. Before C5 the strategy's own target (4 lots)
+// shipped ungated.
+TEST_F(RiskFailClosedTest, AFailedScaleOnlyPortfolioModuleRefusesTheScope) {
     PortfolioConfig pc = base_config();
     pc.allow_fractional_positions = true;
     make_pm(pc, {{"ZZA", make_pos("ZZA", 4.0, 100.0)}});
@@ -339,7 +347,27 @@ TEST_F(RiskFailClosedTest, AFailedScaleOnlyModuleDoesNotRefuseTheScope) {
                        {std::make_shared<FailingModule>("cutter", /*refuse_capable=*/false)})
                     .is_ok());
     ASSERT_TRUE(pm_->process_market_data(three_days()).is_ok());
-    EXPECT_EQ(quantity("ZZA"), 4.0) << "the strategy's own target, ungated but not pinned";
+    EXPECT_EQ(quantity("ZZA"), 2.0) << "held at the seeded book, not the ungated target";
+}
+
+// SLEEVE scope is unchanged by C5: a sleeve module that cannot refuse does not refuse when it
+// fails; its failure leaves the sleeve to the others (here, the strategy's own target).
+TEST_F(RiskFailClosedTest, AFailedScaleOnlySleeveModuleDoesNotRefuseTheSleeve) {
+    PortfolioConfig pc = base_config();
+    pc.allow_fractional_positions = true;
+    make_pm(pc, {{"ZZA", make_pos("ZZA", 4.0, 100.0)}});
+    ASSERT_TRUE(pm_->update_strategy_position("FC_S", "ZZA", make_pos("ZZA", 2.0, 100.0)).is_ok());
+    ASSERT_TRUE(pm_->set_risk_modules(
+                       {}, {{"FC_S", {std::make_shared<FailingModule>("sleeve_cutter",
+                                                                      /*refuse_capable=*/false)}}})
+                    .is_ok());
+    ASSERT_TRUE(pm_->process_market_data(three_days()).is_ok());
+    EXPECT_EQ(quantity("ZZA"), 4.0) << "the sleeve's own target, ungated but not pinned";
+    for (const auto& row : pm_->last_risk_decisions()) {
+        if (row.module_id != "sleeve_cutter" || row.phase != RiskPhase::SLEEVE) continue;
+        EXPECT_EQ(row.applied_action, RiskAction::NONE);
+        EXPECT_EQ(row.error, "the module failed: sleeve_cutter");
+    }
 }
 
 // The post-rounding point has the same shape and had the same hole.

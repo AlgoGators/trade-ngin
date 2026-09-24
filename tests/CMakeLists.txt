@@ -102,6 +102,7 @@ set(TEST_SOURCES
     live/test_feed_ingestion_assertion.cpp
     live/test_day_t_write_ordering.cpp
     live/test_live_run_refusal_arms.cpp
+    live/test_risk_module_error_path.cpp
     data/test_current_holding_start_db.cpp
     data/test_current_holding_start_bound_db.cpp
     instruments/test_equity_margin_cash_regt.cpp
