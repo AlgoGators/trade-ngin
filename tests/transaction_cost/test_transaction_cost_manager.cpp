@@ -15,7 +15,9 @@
 #include "../core/test_base.hpp"
 #include "../data/test_db_utils.hpp"
 #include "trade_ngin/core/types.hpp"
+#include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/instruments/equity.hpp"
+#include "trade_ngin/instruments/futures.hpp"
 #include "trade_ngin/instruments/instrument_registry.hpp"
 #include "trade_ngin/transaction_cost/transaction_cost_manager.hpp"
 
@@ -375,6 +377,51 @@ TEST_F(BorrowFeesTest, LongsAndNonEquitiesAreSkipped) {
 
     auto fees = tcm.calculate_overnight_borrow_fees(positions, prices, registry);
     EXPECT_TRUE(fees.empty()) << "Long positions must not accrue borrow fees.";
+}
+
+// A SHORT futures position pays no equity borrow fee and is skipped SILENTLY. The skip used to go
+// through get_equity_instrument, which WARNs "Invalid equity instrument: <sym>" for every
+// non-equity, so a futures backtest holding a short printed that line once per short symbol per
+// day.
+TEST_F(BorrowFeesTest, ShortSignShortFuturesAreSkippedSilently) {
+    TransactionCostManager::Config tcm_config;
+    TransactionCostManager tcm(tcm_config);
+    auto& registry = InstrumentRegistry::instance();
+
+    const std::string sym = "S1R_SHORT_FUT";
+    FuturesSpec spec;
+    spec.root_symbol = sym;
+    spec.exchange = "CME";
+    spec.currency = "USD";
+    spec.multiplier = 5.0;
+    spec.tick_size = 0.25;
+    spec.commission_per_contract = 1.0;
+    spec.initial_margin = 1000.0;
+    spec.maintenance_margin = 900.0;
+    spec.weight = 1.0;
+    registry.register_instrument(sym, std::make_shared<FuturesInstrument>(sym, spec));
+
+    std::unordered_map<std::string, Position> positions;
+    Position p;
+    p.symbol = sym;
+    p.quantity = -2.0;  // Short futures.
+    p.average_price = 100.0;
+    positions[sym] = p;
+    std::unordered_map<std::string, double> prices;
+    prices[sym] = 100.0;
+
+    LoggerConfig lc;
+    lc.destination = LogDestination::CONSOLE;
+    lc.min_level = LogLevel::DEBUG;
+    lc.include_timestamp = false;
+    Logger::instance().initialize(lc);
+    ::testing::internal::CaptureStdout();
+    auto fees = tcm.calculate_overnight_borrow_fees(positions, prices, registry);
+    const std::string out = ::testing::internal::GetCapturedStdout();
+
+    EXPECT_TRUE(fees.empty()) << "A short futures position must not accrue an equity borrow fee.";
+    EXPECT_EQ(out.find("Invalid equity instrument"), std::string::npos) << out;
+    EXPECT_EQ(out.find(sym), std::string::npos) << "the expected skip logs nothing: " << out;
 }
 
 // ──────────────────────────────────────────────────────────────────────────

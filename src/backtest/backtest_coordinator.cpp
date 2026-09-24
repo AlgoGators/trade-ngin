@@ -1039,8 +1039,10 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                 auto price_it = market_prices.find(symbol);
                 double price = (price_it != market_prices.end()) ? price_it->second : 0.0;
                 auto instrument = csv_registry.get_instrument(symbol);
+                // get_notional_value is a magnitude (futures.cpp): carry the position's sign so
+                // a short adds to the net notional with its sign, not as a long.
                 double notional = instrument
-                    ? instrument->get_notional_value(qty, price)
+                    ? std::copysign(instrument->get_notional_value(qty, price), qty)
                     : qty * price;
                 gross_notional += std::abs(notional);
                 net_notional += notional;

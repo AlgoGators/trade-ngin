@@ -311,9 +311,16 @@ TransactionCostManager::calculate_overnight_borrow_fees(
             continue;  // Only shorts accrue borrow fees.
         }
 
-        auto equity = registry.get_equity_instrument(symbol);
+        // Non-equity (e.g., short futures) doesn't pay equity borrow fees. The type is tested
+        // here, silently: get_equity_instrument WARNs "Invalid equity instrument" on every
+        // non-equity, which would print once per short future per backtest day for a skip that
+        // is the expected case.
+        auto instrument = registry.get_instrument(symbol);
+        if (!instrument || instrument->get_type() != AssetType::EQUITY) {
+            continue;
+        }
+        auto equity = std::dynamic_pointer_cast<EquityInstrument>(instrument);
         if (!equity) {
-            // Non-equity (e.g., short futures) doesn't pay equity borrow fees.
             continue;
         }
 
