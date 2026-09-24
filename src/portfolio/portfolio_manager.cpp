@@ -1,5 +1,6 @@
 // src/portfolio/portfolio_manager.cpp
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
+#include "trade_ngin/portfolio/allocation_split.hpp"
 #include <unordered_set>
 #include <algorithm>
 #include <climits>
@@ -1488,6 +1489,32 @@ std::vector<int64_t> split_largest_remainder(const std::vector<SleeveQuota>& sle
 
 }  // namespace
 
+SleeveDistribution distribute_optimizer_contracts(double optimizer_contracts,
+                                                  const std::vector<SleeveContribution>& sleeves) {
+    SleeveDistribution d;
+    double total = 0.0;
+    for (const auto& s : sleeves)
+        total += s.contribution;
+
+    const int rounded_contracts = static_cast<int>(std::round(optimizer_contracts));
+    std::vector<SleeveQuota> quotas;
+    quotas.reserve(sleeves.size());
+    for (const auto& s : sleeves) {
+        const double share = total > 1e-8 ? s.contribution / total : 0.0;
+        // A sleeve with no share has a quota of 0.
+        const double quota = share == 0.0 ? 0.0 : optimizer_contracts * share;
+        quotas.push_back({s.strategy_id, quota});
+        d.quota.push_back(quota);
+        d.per_sleeve_rounding.push_back(
+            static_cast<int64_t>(std::round(share == 0.0 ? 0.0 : rounded_contracts * share)));
+    }
+
+    d.stored = split_largest_remainder(quotas);
+    for (auto q : d.stored)
+        d.book += q;
+    return d;
+}
+
 Result<void> PortfolioManager::optimize_positions() {
     try {
         // Get unique symbols across all strategies and collect data under lock
@@ -1502,9 +1529,8 @@ Result<void> PortfolioManager::optimize_positions() {
         std::unordered_map<std::string, std::map<int64_t, double>> closes_by_symbol;
 
         // Store original contributions per strategy per symbol for proportional distribution
-        // Map: symbol -> strategy_id -> contribution (quantity * allocation * weight_per_contract)
+        // Map: symbol -> strategy_id -> contribution (quantity * weight_per_contract)
         std::unordered_map<std::string, std::unordered_map<std::string, double>> original_contribs;
-        std::unordered_map<std::string, double> total_contribs;
 
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -1611,27 +1637,29 @@ Result<void> PortfolioManager::optimize_positions() {
             for (size_t i = 0; i < symbols.size(); ++i) {
                 const std::string& symbol = symbols[i];
 
-                // Aggregate across strategies
+                // Aggregate across strategies, in account weight (ledger N2): a sleeve sizes its
+                // contracts on its own capital slice (capital x allocation), so each of its
+                // contracts is one contract of the account's book and weighs w; the account
+                // holds the sum of the sleeves' contracts, which is the book apply_risk_management
+                // gates. The allocation is already inside the quantity and is not applied again.
                 for (const auto& [strat_id, info] : strategies_) {
                     if (!info.use_optimization || pinned_scopes_.count(strat_id))
                         continue;
 
-                    double allocation = info.allocation;
                     if (info.current_positions.count(symbol)) {
                         current_weights[i] +=
                             static_cast<double>(info.current_positions.at(symbol).quantity) *
-                            weights_per_contract[i] * allocation;
+                            weights_per_contract[i];
                     }
                     if (info.target_positions.count(symbol)) {
                         double contrib =
                             static_cast<double>(info.target_positions.at(symbol).quantity) *
-                            weights_per_contract[i] * allocation;
+                            weights_per_contract[i];
                         target_weights[i] += contrib;
 
                         // Store original contribution for proportional distribution after
                         // optimization
                         original_contribs[symbol][strat_id] = contrib;
-                        total_contribs[symbol] += contrib;
                     }
                 }
             }
@@ -1688,66 +1716,45 @@ Result<void> PortfolioManager::optimize_positions() {
             for (size_t i = 0; i < symbols.size(); ++i) {
                 const auto& symbol = symbols[i];
 
-                // The optimizer's answer in contracts of the aggregated weight, UNROUNDED. The
-                // aggregate is sum(q x allocation) per contract (ledger N2), not the book.
+                // The optimizer's answer in account contracts, UNROUNDED (ledger N2: the
+                // aggregate is the sum of the sleeves' contracts, the account's book).
                 double raw_contracts = optimized_positions[i] / weights_per_contract[i];
 
-                // Distribute proportionally based on each strategy's original contribution
-                double total_original = total_contribs[symbol];
-
-                // Each sleeve's quota, in ITS OWN contracts: its share of the optimizer's weight
-                // with the allocation undone on the weight, raw x share / allocation, unrounded.
-                // The book is the sum of the sleeves' contracts; it is rounded ONCE and split by
-                // largest remainder (split_largest_remainder), so the stored sleeve integers sum
-                // to the book's integer exactly. Before this the optimizer's answer was rounded
-                // first and every sleeve's part rounded again, and at allocations below 1.0 the
-                // sleeve integers need not sum to anything the optimizer produced (ledger
-                // OPT-N3). One sleeve at allocation 1.0 stores round(raw) as before.
-                std::vector<SleeveQuota> quotas;
-                std::vector<int64_t> per_sleeve_rounding;  // the replaced rule, for the log only
-                const int rounded_contracts = static_cast<int>(std::round(raw_contracts));
-
+                // Each sleeve's quota is its share of the answer, raw x share, unrounded; the
+                // book is rounded ONCE and split by largest remainder, so the stored sleeve
+                // integers sum to round(raw) exactly (distribute_optimizer_contracts). Before
+                // N2 the aggregate weighted each contract by its sleeve's allocation and the
+                // quota divided by it again, so one optimizer step (one w) became 1 / (sum(q x
+                // allocation) / sum(q)) contracts of book: 3.33 on a symbol only a 0.3 sleeve
+                // holds. One sleeve at allocation 1.0 stores round(raw) as before.
+                std::vector<SleeveContribution> contributions;
                 for (auto& [strat_id, info] : strategies_) {
                     if (!info.use_optimization || pinned_scopes_.count(strat_id))
                         continue;
                     if (!info.target_positions.count(symbol))
                         continue;
-
-                    // Calculate this strategy's share of the optimized position
-                    double share = 0.0;
-                    if (total_original > 1e-8 && original_contribs[symbol].count(strat_id) > 0) {
-                        share = original_contribs[symbol][strat_id] / total_original;
-                    }
-
-                    // The allocation is undone on the weight, not on a rounded contract. A sleeve
-                    // with no share has a quota of 0 (and no division by its allocation).
-                    const double quota = share == 0.0 ? 0.0 : raw_contracts * share / info.allocation;
-                    quotas.push_back({strat_id, quota});
-                    per_sleeve_rounding.push_back(static_cast<int64_t>(
-                        std::round(share == 0.0 ? 0.0 : rounded_contracts * share / info.allocation)));
+                    contributions.push_back({strat_id, original_contribs[symbol][strat_id]});
                 }
 
-                const std::vector<int64_t> split = split_largest_remainder(quotas);
+                const SleeveDistribution d =
+                    distribute_optimizer_contracts(raw_contracts, contributions);
                 bool differs = false;
-                for (size_t k = 0; k < quotas.size(); ++k) {
-                    strategies_.at(quotas[k].strategy_id).target_positions[symbol].quantity =
-                        static_cast<Decimal>(static_cast<double>(split[k]));
-                    differs = differs || split[k] != per_sleeve_rounding[k];
+                for (size_t k = 0; k < contributions.size(); ++k) {
+                    strategies_.at(contributions[k].strategy_id).target_positions[symbol].quantity =
+                        static_cast<Decimal>(static_cast<double>(d.stored[k]));
+                    differs = differs || d.stored[k] != d.per_sleeve_rounding[k];
                 }
                 if (differs) {
                     std::ostringstream line;
                     line << "ALLOCATION_SPLIT sym=" << symbol << " optimizer=" << raw_contracts
-                         << " book=";
-                    int64_t book = 0;
-                    for (auto q : split)
-                        book += q;
-                    line << book << " split:";
-                    for (size_t k = 0; k < quotas.size(); ++k)
-                        line << " " << quotas[k].strategy_id << "=" << split[k] << " (quota "
-                             << quotas[k].quota << ")";
+                         << " book=" << d.book << " split:";
+                    for (size_t k = 0; k < contributions.size(); ++k)
+                        line << " " << contributions[k].strategy_id << "=" << d.stored[k]
+                             << " (quota " << d.quota[k] << ")";
                     line << "; rounding each sleeve would store:";
-                    for (size_t k = 0; k < quotas.size(); ++k)
-                        line << " " << quotas[k].strategy_id << "=" << per_sleeve_rounding[k];
+                    for (size_t k = 0; k < contributions.size(); ++k)
+                        line << " " << contributions[k].strategy_id << "="
+                             << d.per_sleeve_rounding[k];
                     INFO(line.str());
                 }
             }
@@ -1759,12 +1766,12 @@ Result<void> PortfolioManager::optimize_positions() {
                 double original_position = 0.0;
                 double optimized_position = 0.0;
 
-                // Sum up positions across all strategies
+                // Sum up positions across all strategies: the account's contracts (ledger N2;
+                // a sleeve's contracts already carry its allocation)
                 for (const auto& [_, info] : strategies_) {
                     if (info.target_positions.count(symbol) > 0) {
                         optimized_position +=
-                            static_cast<double>(info.target_positions.at(symbol).quantity) *
-                            info.allocation;
+                            static_cast<double>(info.target_positions.at(symbol).quantity);
                     }
                 }
 

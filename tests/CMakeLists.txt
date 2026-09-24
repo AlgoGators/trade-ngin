@@ -118,6 +118,8 @@ set(TEST_SOURCES
     portfolio/test_risk_module_loop.cpp
     portfolio/test_risk_fail_closed.cpp
     portfolio/test_optimizer_allocation_split.cpp
+    portfolio/test_optimizer_allocation_once.cpp
+    portfolio/test_allocation_distribution.cpp
     portfolio/test_covariance_date_alignment.cpp
     portfolio/test_pm_session_hold.cpp
     storage/test_backtest_results_manager.cpp
