@@ -387,7 +387,7 @@ TEST(C7bRunnerSource, BothTwinsFeedTheCostManagerTheStrategyFeedWithTheJunkBarWi
         EXPECT_LT(feed_def, cost) << "the strategy feed is built after the cost feed";
         const std::string block =
             between(src, "// UPDATE TRANSACTION COST MANAGER WITH MARKET DATA",
-                    "execution_manager->update_market_data(symbol, volume, close);");
+                    "feed_futures_cost_model(cost_model, strategy_feed_bars);");
         ASSERT_FALSE(block.empty());
         EXPECT_NE(block.find("for (const auto& bar : strategy_feed_bars) {"), npos)
             << "the cost manager is fed the JUNK T-1 bar";

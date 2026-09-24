@@ -139,6 +139,7 @@ set(TEST_SOURCES
     live/test_session_book_gate.cpp
     live/test_live_runner_small_fixes.cpp
     live/test_cost_model_feed.cpp
+    live/test_futures_cost_feed.cpp
     live/test_execution_price_integrity.cpp
     live/test_margin_manager.cpp
     live/test_live_metrics_calculator.cpp

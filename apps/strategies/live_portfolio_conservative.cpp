@@ -24,6 +24,7 @@
 #include "trade_ngin/live/csv_exporter.hpp"
 #include "trade_ngin/live/data_freshness.hpp"
 #include "trade_ngin/live/execution_manager.hpp"
+#include "trade_ngin/live/futures_cost_feed.hpp"
 #include "trade_ngin/live/live_data_loader.hpp"
 #include "trade_ngin/live/live_historical_metrics.hpp"
 #include "trade_ngin/live/live_metrics_calculator.hpp"
@@ -1250,58 +1251,49 @@ int main(int argc, char* argv[]) {
 
         // ========================================
         // UPDATE TRANSACTION COST MANAGER WITH MARKET DATA
-        // Feed rolling ADV and volatility for accurate cost calculations
+        // K2 (T-7b-1 C8a): the fill day's own volume for participation and the impact tier,
+        // the walk of returns ending at T-1 for the volatility term (futures_cost_feed.hpp).
+        // Only the execution manager's cost manager is fed; the PortfolioManager's is not.
         // ========================================
         INFO("Updating execution manager with market data for transaction cost tracking...");
 
-        // Build map of latest bars per symbol (T-1 data), from the strategy feed: a JUNK
-        // symbol's latest bar here is its T-2 bar. On a carried day the feed is every bar, so the
+        // Map of latest bars per symbol (T-1 data), from the strategy feed: a JUNK symbol's
+        // latest bar here is its T-2 bar. On a carried day the feed is every bar, so the
         // carried positions file's last marks (read from this map) are unchanged.
         std::unordered_map<std::string, Bar> latest_bars_per_symbol;
-        std::unordered_map<std::string, Bar> previous_bars_per_symbol;
-
         for (const auto& bar : strategy_feed_bars) {
             auto it = latest_bars_per_symbol.find(bar.symbol);
             if (it == latest_bars_per_symbol.end() || bar.timestamp > it->second.timestamp) {
-                // Save previous latest as "previous" before updating
-                if (it != latest_bars_per_symbol.end()) {
-                    previous_bars_per_symbol[bar.symbol] = it->second;
-                }
                 latest_bars_per_symbol[bar.symbol] = bar;
-            } else if (!previous_bars_per_symbol.count(bar.symbol) &&
-                       bar.timestamp < latest_bars_per_symbol[bar.symbol].timestamp) {
-                // Track the second-most-recent bar as previous
-                auto prev_it = previous_bars_per_symbol.find(bar.symbol);
-                if (prev_it == previous_bars_per_symbol.end() ||
-                    bar.timestamp > prev_it->second.timestamp) {
-                    previous_bars_per_symbol[bar.symbol] = bar;
+            }
+        }
+
+        {
+            auto& cost_model = execution_manager->get_transaction_cost_manager();
+            const auto cost_feed = feed_futures_cost_model(cost_model, strategy_feed_bars);
+            for (const auto& fed : cost_feed.symbols) {
+                INFO("COST_FEED " + fed.symbol + " own_day=" +
+                     core::format_utc_date(fed.own_day_time) +
+                     " own_day_volume=" + std::to_string(fed.own_day_volume) +
+                     " bars=" + std::to_string(fed.bars) +
+                     " returns=" + std::to_string(fed.returns) +
+                     " vol_mult=" + std::to_string(cost_model.get_volatility_multiplier(fed.symbol)));
+            }
+            std::string thin_list;
+            for (const auto& s : cost_feed.thin) thin_list += (thin_list.empty() ? "" : ", ") + s;
+            INFO("Updated transaction cost manager with market data for " +
+                 std::to_string(cost_feed.symbols.size()) + " symbols (" +
+                 std::to_string(cost_feed.returns_fed) + " log returns; fewer than 21 bars: " +
+                 (thin_list.empty() ? std::string("none") : thin_list) + ")");
+            if (!cost_feed.repeated_instants.empty()) {
+                std::string repeated;
+                for (const auto& s : cost_feed.repeated_instants) {
+                    repeated += (repeated.empty() ? "" : ", ") + s;
                 }
+                WARN("COST_FEED two bars at one instant for " + repeated +
+                     " (the loader keeps one bar per symbol-instant; fed as given)");
             }
         }
-
-        // Update execution manager with daily market data for each symbol
-        int symbols_updated = 0;
-        for (const auto& [symbol, latest_bar] : latest_bars_per_symbol) {
-            double close = static_cast<double>(latest_bar.close);
-            double volume = latest_bar.volume;
-            double prev_close = close;  // Default to same if no previous
-
-            auto prev_it = previous_bars_per_symbol.find(symbol);
-            if (prev_it != previous_bars_per_symbol.end()) {
-                prev_close = static_cast<double>(prev_it->second.close);
-            }
-
-            // Update the transaction cost manager with market data
-            execution_manager->update_market_data(symbol, volume, close);
-            symbols_updated++;
-
-            DEBUG("Updated market data for " + symbol + ": volume=" + std::to_string(volume) +
-                  ", close=" + std::to_string(close) +
-                  ", prev_close=" + std::to_string(prev_close));
-        }
-
-        INFO("Updated transaction cost manager with market data for " +
-             std::to_string(symbols_updated) + " symbols");
 
         // Set when a portfolio risk module could not answer and the PortfolioManager held the
         // book (T-7a C5, HD 2026-09-21 option b): the day is stored as a REFUSE day, the email
