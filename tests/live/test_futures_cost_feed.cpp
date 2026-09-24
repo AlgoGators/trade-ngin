@@ -418,7 +418,8 @@ TEST(K2FuturesCostFeedRunnerSource, BothTwinsFeedTheExecutionManagersCostModelTh
             << "the cost model is fed one bar per symbol";
         EXPECT_EQ(block.find("execution_manager->update_market_data("), npos)
             << "the one-bar 3-arg feed is still there";
-        // H-2 is T-7b-1 8d's: the PortfolioManager's cost manager stays unfed in live.
+        // H-2 (T-7b-1 C8d) feeds the PortfolioManager's cost manager through the same two-input
+        // feed (test_optimizer_cost_vector.cpp), never through update_cost_manager_market_data.
         EXPECT_EQ(src.find("update_cost_manager_market_data"), npos);
         blocks.push_back(block);
     }

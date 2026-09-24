@@ -1254,7 +1254,8 @@ int main(int argc, char* argv[]) {
         // UPDATE TRANSACTION COST MANAGER WITH MARKET DATA
         // K2 (T-7b-1 C8a): the fill day's own volume for participation and the impact tier,
         // the walk of returns ending at T-1 for the volatility term (futures_cost_feed.hpp).
-        // Only the execution manager's cost manager is fed; the PortfolioManager's is not.
+        // The execution manager's cost manager is fed here, and (T-7b-1 C8d, H-2) the
+        // PortfolioManager's right after it, from the same feed.
         // ========================================
         INFO("Updating execution manager with market data for transaction cost tracking...");
 
@@ -1294,6 +1295,19 @@ int main(int argc, char* argv[]) {
                 WARN("COST_FEED two bars at one instant for " + repeated +
                      " (the loader keeps one bar per symbol-instant; fed as given)");
             }
+        }
+
+        // H-2 (T-7b-1 C8d): the PortfolioManager's own cost manager prices the optimizer's cost
+        // vector (calculate_trading_costs). Live never fed it, so every entry was priced off its
+        // fallbacks (ADV 100,000, vol_mult 1.0). It is fed the SAME K2 feed as the execution
+        // manager's, here, before process_market_data runs the optimizer below.
+        {
+            auto& optimizer_cost_model = portfolio->get_transaction_cost_manager();
+            const auto optimizer_feed =
+                feed_futures_cost_model(optimizer_cost_model, strategy_feed_bars);
+            INFO("COST_FEED_OPTIMIZER fed the PortfolioManager's cost model (the optimizer's cost "
+                 "vector) for " + std::to_string(optimizer_feed.symbols.size()) + " symbols (" +
+                 std::to_string(optimizer_feed.returns_fed) + " log returns)");
         }
 
         // Set when a portfolio risk module could not answer and the PortfolioManager held the

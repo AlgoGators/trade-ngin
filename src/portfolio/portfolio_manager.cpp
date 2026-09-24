@@ -1021,7 +1021,7 @@ std::vector<double> PortfolioManager::calculate_weights_per_contract(
 }
 
 std::vector<double> PortfolioManager::calculate_trading_costs(
-    const std::vector<std::string>& symbols, double capital) const {
+    const std::vector<std::string>& symbols, [[maybe_unused]] double capital) const {
     std::vector<double> costs(symbols.size(), 0.0);
 
     // Collect all trading data once
@@ -1047,11 +1047,19 @@ std::vector<double> PortfolioManager::calculate_trading_costs(
             double price = data.price_history.empty() ? 1.0 : data.price_history.back();
             double fx_rate = 1.0;  // Default exchange rate
 
-            // Calculate notional per contract
-            [[maybe_unused]] double notional_per_contract = contract_size * price * fx_rate;
+            // F4 (T-7b-1 C8d, ledger M-04): the entry is the cost of ONE contract over that
+            // contract's notional. The optimizer charges |dw| x costs[i] with dw in weight
+            // (notional / capital); n contracts are dw = n x notional / capital and cost
+            // n x cost_per_contract dollars, n x cost_per_contract / capital of capital, which is
+            // |dw| x cost_per_contract / notional. The entry was cost_per_contract / capital,
+            // which understated the penalty by capital / notional (13.8x for MES at 7,252.5 on
+            // $500,000, 4.6x for ZF at 107.85). notional uses the same contract_size and price
+            // as the weights per contract in optimize_positions.
+            double notional_per_contract = contract_size * price * fx_rate;
             auto cost_result = cost_manager_.calculate_costs(symbol, 1.0, price);
             double cost_per_contract = cost_result.total_transaction_costs;
-            costs[i] = (capital > 0.0) ? (cost_per_contract / capital) : 0.0;
+            costs[i] = (notional_per_contract > 0.0) ? (cost_per_contract / notional_per_contract)
+                                                     : 0.0;
         } else {
             WARN("Symbol " + symbol + " not found in trading data, using zero cost");
             costs[i] = 0.0;

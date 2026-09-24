@@ -48,9 +48,10 @@ namespace trade_ngin {
  * is NOT de-duplicated again here: a repeated instant is fed as given and reported, so a loader
  * regression shows in the log instead of being papered over.
  *
- * Only the cost manager passed in is fed (the live runners pass the ExecutionManager's). The
- * PortfolioManager's cost manager, the backtest's two managers and the equity feed
- * (LiveDailyCycle::feed_cost_model) are untouched.
+ * Only the cost manager passed in is fed. The live futures runners pass the ExecutionManager's
+ * (C8a) and, from the same feed, the PortfolioManager's, whose model prices the optimizer's cost
+ * vector (T-7b-1 C8d, H-2). The backtest's two managers and the equity feed
+ * (LiveDailyCycle::feed_cost_model) are untouched; the equity runners' optimizer is off.
  */
 struct FuturesCostFeedSymbol {
     std::string symbol;

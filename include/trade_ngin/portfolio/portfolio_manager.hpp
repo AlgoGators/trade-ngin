@@ -245,6 +245,19 @@ public:
                                          double close_price, double prev_close_price);
 
     /**
+     * @brief This manager's own cost model: it prices the optimizer's cost vector
+     *        (calculate_trading_costs) and the executions this manager generates.
+     *
+     * H-2 (T-7b-1 C8d): the backtest feeds it through update_cost_manager_market_data; the live
+     * futures runners feed it through feed_futures_cost_model (futures_cost_feed.hpp), the same
+     * K2 feed as the execution manager's, before process_market_data. Unfed, every entry of the
+     * cost vector is priced off the fallbacks (ADV 100,000, vol_mult 1.0).
+     */
+    transaction_cost::TransactionCostManager& get_transaction_cost_manager() {
+        return cost_manager_;
+    }
+
+    /**
      * @brief Register ADV-tiered equity cost configs on THIS manager's cost model. E2-C9.
      *
      * PortfolioManager owns its own TransactionCostManager, separate from the one
@@ -418,10 +431,13 @@ private:
                                                        double capital) const;
 
     /**
-     * @brief Calculate trading costs for each symbol
+     * @brief The optimizer's cost vector: per symbol, the cost of one contract over that
+     *        contract's notional (F4, T-7b-1 C8d), so |dw| x costs[i] with dw in weight is the
+     *        trade's dollar cost as a fraction of capital
      * @param symbols List of symbols to calculate costs for
-     * @param capital Total capital available for allocation
-     * @return Vector of trading costs for each symbol
+     * @param capital Unused since F4 (the entry does not depend on capital); kept for the call
+     * @return Vector of cost_per_contract / notional_per_contract, 0 for a symbol no trend
+     *         sleeve holds
      */
     std::vector<double> calculate_trading_costs(const std::vector<std::string>& symbols,
                                                 double capital) const;
