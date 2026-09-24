@@ -9,7 +9,9 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <map>
 #include <memory>
+#include <set>
 #include <thread>
 #include "../core/test_base.hpp"
 #include "../data/test_db_utils.hpp"
@@ -254,6 +256,122 @@ TEST_F(PortfolioManagerInternalsTest, CovarianceGuardsAClearedEmptySeries) {
     const auto ref = manager_->calculate_covariance_matrix(without);
     const auto cov = manager_->calculate_covariance_matrix(with_empty);
     expect_guarded_and_bit_identical(cov, ref);
+}
+
+// ===== date_aligned_returns (private; T-7a INSERT S3) =====
+//
+// The optimizer's covariance input, aligned by DATE: the returns of every symbol are taken between
+// consecutive dates of the INTERSECTION of the symbols' dates, so a date one symbol lacks is
+// dropped for all and the next return spans it for every symbol. The RED/GREEN pair for the
+// optimizer path is tests/portfolio/test_covariance_date_alignment.cpp; these pin the helper.
+namespace {
+
+using DatedCloses = std::unordered_map<std::string, std::map<int64_t, double>>;
+
+double ret(double prev, double curr) { return (curr - prev) / prev; }
+
+std::map<int64_t, double> dated_series(int64_t first_day, size_t n, double amp, double phase,
+                                       const std::set<int64_t>& skip = {}) {
+    std::map<int64_t, double> m;
+    for (size_t t = 0; t < n; ++t) {
+        const int64_t d = first_day + static_cast<int64_t>(t);
+        if (skip.count(d)) continue;
+        m[d] = 100.0 * (1.0 + amp * std::sin(phase * static_cast<double>(t))) + 0.03 * t;
+    }
+    return m;
+}
+
+}  // namespace
+
+// Worked by hand. A prints on days 1, 2, 3 (a Sunday) and 4; B on 1, 2 and 4. The intersection is
+// {1, 2, 4}: day 3 is dropped, and A's return on day 4 runs from day 2 (121 / 110), the same
+// interval as B's (60.5 / 55). Not from A's own previous date (121 / 120).
+TEST_F(PortfolioManagerInternalsTest, DateAlignedReturnsPairByDateAndSpanTheDroppedDay) {
+    const DatedCloses closes{{"A", {{1, 100.0}, {2, 110.0}, {3, 120.0}, {4, 121.0}}},
+                             {"B", {{1, 50.0}, {2, 55.0}, {4, 60.5}}}};
+    const auto r = manager_->date_aligned_returns(closes);
+    ASSERT_EQ(r.size(), 2u);
+    EXPECT_EQ(r.at("A"), (std::vector<double>{ret(100.0, 110.0), ret(110.0, 121.0)}));
+    EXPECT_EQ(r.at("B"), (std::vector<double>{ret(50.0, 55.0), ret(55.0, 60.5)}));
+}
+
+// A close that is not finite or not above zero is not a usable date for its symbol, so that date
+// is dropped for all (the count rule skipped only the return out of a non-positive close).
+TEST_F(PortfolioManagerInternalsTest, DateAlignedReturnsDropADateWithANonPositiveClose) {
+    const DatedCloses closes{{"A", {{1, 100.0}, {2, 0.0}, {3, 102.0}, {4, 104.0}}},
+                             {"B", {{1, 50.0}, {2, 51.0}, {3, 52.0}, {4, 53.0}}}};
+    const auto r = manager_->date_aligned_returns(closes);
+    EXPECT_EQ(r.at("A"), (std::vector<double>{ret(100.0, 102.0), ret(102.0, 104.0)}));
+    EXPECT_EQ(r.at("B"), (std::vector<double>{ret(50.0, 52.0), ret(52.0, 53.0)}));
+}
+
+// The empty-series and C-20 guards still work: a symbol with a single close gets an EMPTY series
+// and does not shrink the intersection, so the others' series are exactly what they are without
+// it, and the covariance built from them guards its column (0.01 variance, zero covariances) and
+// leaves every other entry bit-identical.
+TEST_F(PortfolioManagerInternalsTest, DateAlignedReturnsGiveAOneCloseSymbolAnEmptySeries) {
+    const auto a = dated_series(1000, 40, 0.02, 0.7, {1010, 1011});
+    const auto z = dated_series(1000, 40, -0.015, 0.3, {1025});
+    const DatedCloses with_one{{"A", a}, {"M", {{1020, 7.0}}}, {"Z", z}};
+    const DatedCloses without_m{{"A", a}, {"Z", z}};
+
+    const auto r_with = manager_->date_aligned_returns(with_one);
+    const auto r_without = manager_->date_aligned_returns(without_m);
+    ASSERT_EQ(r_with.count("M"), 1u);
+    EXPECT_TRUE(r_with.at("M").empty());
+    EXPECT_EQ(r_with.at("A"), r_without.at("A"));
+    EXPECT_EQ(r_with.at("Z"), r_without.at("Z"));
+    EXPECT_EQ(r_without.at("A").size(), 36u) << "40 dates less the 3 one side lacks, minus one";
+
+    const auto ref = manager_->calculate_covariance_matrix(r_without);
+    const auto cov = manager_->calculate_covariance_matrix(r_with);
+    expect_guarded_and_bit_identical(cov, ref);
+}
+
+// With one date set for every symbol the aligned series ARE the per-symbol series the count rule
+// used, bit for bit: date alignment changes nothing where nothing is misaligned.
+TEST_F(PortfolioManagerInternalsTest, DateAlignedReturnsEqualTheCountSeriesWhenTheDatesAgree) {
+    auto t0 = std::chrono::system_clock::time_point(std::chrono::hours(24 * 20000));
+    std::vector<Bar> all;
+    for (const auto& [symbol, amp] : std::vector<std::pair<std::string, double>>{
+             {"AAA", 2.0}, {"BBB", -3.0}, {"CCC", 5.0}}) {
+        auto b = bars(symbol, 60, t0, amp);
+        all.insert(all.end(), b.begin(), b.end());
+    }
+    manager_->update_historical_returns(all);
+    const auto aligned = manager_->date_aligned_returns(manager_->closes_by_date_);
+    ASSERT_EQ(aligned.size(), 3u);
+    for (const auto& symbol : {"AAA", "BBB", "CCC"}) {
+        EXPECT_EQ(aligned.at(symbol), manager_->historical_returns_.at(symbol)) << symbol;
+    }
+}
+
+// The cap stays at the configured number of PRICES per symbol, applied when the closes are
+// recorded; the aligned series then run over the intersection of what is kept, and min_periods
+// is the intersection's length less one. AAA prints seven days a week, BBB on weekdays only: at a
+// cap of 25 prices AAA's history reaches back 25 calendar days, BBB's 25 weekdays, so the
+// intersection is BBB's weekdays inside AAA's last 25 days.
+TEST_F(PortfolioManagerInternalsTest, DateAlignedReturnsRunOverTheIntersectionOfTheCappedHistories) {
+    manager_->config_.covariance_history_prices = 25;
+    const auto t0 = std::chrono::system_clock::time_point(std::chrono::hours(24 * 20003));  // a Monday
+    std::vector<Bar> all = bars("AAA", 60, t0);
+    for (const auto& b : bars("BBB", 60, t0)) {
+        const auto day = std::chrono::floor<std::chrono::days>(b.timestamp);
+        const unsigned wd = std::chrono::weekday{day}.c_encoding();  // 0 Sunday .. 6 Saturday
+        if (wd != 0 && wd != 6) all.push_back(b);
+    }
+    manager_->update_historical_returns(all);
+    const auto& a = manager_->closes_by_date_.at("AAA");
+    const auto& b = manager_->closes_by_date_.at("BBB");
+    ASSERT_EQ(a.size(), 25u);
+    ASSERT_EQ(b.size(), 25u);
+    size_t shared = 0;
+    for (const auto& [day, close] : b) shared += a.count(day);
+    ASSERT_GE(shared, 2u);
+
+    const auto aligned = manager_->date_aligned_returns(manager_->closes_by_date_);
+    EXPECT_EQ(aligned.at("AAA").size(), shared - 1);
+    EXPECT_EQ(aligned.at("BBB").size(), shared - 1);
 }
 
 // ===== update_historical_returns (private) =====

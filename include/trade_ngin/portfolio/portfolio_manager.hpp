@@ -424,8 +424,22 @@ private:
     void update_historical_returns(const std::vector<Bar>& data);
 
     /**
+     * @brief The optimizer's return series, aligned by DATE (T-7a INSERT S3)
+     * @param closes_by_symbol The symbols in the matrix, each with its date-keyed closes
+     * @return Per symbol, its returns between consecutive dates of the INTERSECTION of the
+     *         symbols' dates (a date one symbol lacks is dropped for all, and the next return
+     *         spans it for every symbol); all non-empty series have the same length. A symbol
+     *         with fewer than two usable closes gets an empty series and does not shrink the
+     *         intersection. Logs one COVARIANCE_DATE_ALIGNED line.
+     */
+    std::unordered_map<std::string, std::vector<double>> date_aligned_returns(
+        const std::unordered_map<std::string, std::map<int64_t, double>>& closes_by_symbol) const;
+
+    /**
      * @brief Calculate covariance matrix from returns
-     * @param returns_by_symbol Map of symbol to returns
+     * @param returns_by_symbol Map of symbol to returns. The optimizer passes the output of
+     *        date_aligned_returns, whose series are already paired by date and of one length,
+     *        so the tail-by-count alignment here is the identity on them.
      * @return Covariance matrix
      */
     std::vector<std::vector<double>> calculate_covariance_matrix(

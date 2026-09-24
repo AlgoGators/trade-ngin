@@ -1076,10 +1076,11 @@ void PortfolioManager::update_historical_returns(const std::vector<Bar>& data) {
     //  * at most config_.covariance_history_prices dates per symbol, the oldest date dropped
     //    first (756 by default, the trend sleeve's own cap);
     //  * a symbol that leaves the feed keeps its series, which simply stops growing; its
-    //    returns are still computed below, and the covariance's truncation to the shortest
-    //    symbol is unchanged.
-    // The returns below are computed from the kept closes in date order exactly as before
-    // (tail-by-count alignment, the 2,520-return cap).
+    //    returns are still computed below.
+    // The returns below are computed from the kept closes in date order exactly as before (the
+    // 2,520-return cap); they decide which symbols have enough history for the optimizer. The
+    // covariance itself is built from the closes aligned by DATE (date_aligned_returns, T-7a
+    // INSERT S3): a symbol that has left the feed ends the dates every symbol shares.
     const size_t max_prices = config_.covariance_history_prices;
     std::set<std::string> touched;
     std::set<std::pair<std::string, int64_t>> seen_this_call;
@@ -1177,6 +1178,124 @@ void PortfolioManager::update_historical_returns(const std::vector<Bar>& data) {
          std::to_string(historical_returns_.size()) + " symbols");
 }
 
+namespace {
+
+// "YYYY-MM-DD" of a closes_by_date_ key (days since the epoch of the bar's in-process instant).
+std::string covariance_day_label(int64_t day) {
+    const std::chrono::year_month_day ymd{std::chrono::sys_days{std::chrono::days{day}}};
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), "%04d-%02u-%02u", static_cast<int>(ymd.year()),
+                  static_cast<unsigned>(ymd.month()), static_cast<unsigned>(ymd.day()));
+    return buf;
+}
+
+}  // namespace
+
+std::unordered_map<std::string, std::vector<double>> PortfolioManager::date_aligned_returns(
+    const std::unordered_map<std::string, std::map<int64_t, double>>& closes_by_symbol) const {
+    // T-7a INSERT S3 (ledger PM-covariance-count-aligned). The covariance used to pair each
+    // symbol's k-th-last return with every other symbol's k-th-last return: by COUNT. A symbol
+    // whose date set differs (a feed gap, a Sunday-stamped bar, MBT's weekend bars from
+    // 2026-06-13) was then paired with other days. Measured on 2026-05-01: 475 of the 480 MBT/MES
+    // rows paired different dates. The series are now aligned by DATE:
+    //
+    //  * a symbol's usable dates are those whose close is finite and above zero;
+    //  * D is the INTERSECTION of the usable dates of every symbol that has at least two of them
+    //    (a symbol missing a date contributes no return that day, and the day is dropped for all);
+    //  * every such symbol's series is r_t = (c(D[t]) - c(D[t-1])) / c(D[t-1]) for t = 1..|D|-1:
+    //    the return runs from the PREVIOUS DATE OF THE INTERSECTION, not from the symbol's own
+    //    previous date. So a return spans the same interval for every symbol, and a date only
+    //    one symbol has (a weekend bar) leaves that symbol's return across it exactly what it is
+    //    without the extra bar. It is the Carver gate's F5 rule (carver_risk_module.cpp: a date
+    //    survives only if every symbol printed on it, returns between consecutive survivors);
+    //  * a symbol with fewer than two usable closes gets an EMPTY series and does not shrink D;
+    //    calculate_covariance_matrix's empty-series and C-20 guards handle it as before.
+    //
+    // Every returned non-empty series has the same length, |D| - 1, so the count alignment in
+    // calculate_covariance_matrix is the identity on them and its min_periods is |D| - 1. The
+    // 756-price cap is applied when the closes are recorded (update_historical_returns), before
+    // this. When every symbol has the same dates this returns exactly the series the count
+    // alignment used, bit for bit.
+    std::unordered_map<std::string, std::vector<double>> out;
+    std::vector<std::string> participants;
+    size_t shortest_own_returns = SIZE_MAX;
+    for (const auto& [symbol, closes] : closes_by_symbol) {
+        size_t usable = 0;
+        for (const auto& [day, close] : closes) {
+            if (std::isfinite(close) && close > 0.0) ++usable;
+        }
+        out[symbol];  // every symbol is in the result, empty unless it takes part
+        if (usable >= 2) {
+            participants.push_back(symbol);
+            shortest_own_returns = std::min(shortest_own_returns, usable - 1);
+        }
+    }
+    std::sort(participants.begin(), participants.end());
+
+    // The intersection, and the union's dates it leaves out (for the log line).
+    std::vector<int64_t> dates;
+    std::set<int64_t> union_dates;
+    if (!participants.empty()) {
+        std::map<int64_t, size_t> seen;
+        for (const auto& symbol : participants) {
+            for (const auto& [day, close] : closes_by_symbol.at(symbol)) {
+                if (std::isfinite(close) && close > 0.0) {
+                    ++seen[day];
+                    union_dates.insert(day);
+                }
+            }
+        }
+        for (const auto& [day, count] : seen) {
+            if (count == participants.size()) dates.push_back(day);
+        }
+        // The 2,520-return cap (max_history_length_) as before: the newest cap + 1 dates. It
+        // cannot bind at the 756-price cap the closes are recorded under.
+        if (dates.size() > max_history_length_ + 1) {
+            dates.erase(dates.begin(),
+                        dates.end() - static_cast<std::ptrdiff_t>(max_history_length_ + 1));
+        }
+    }
+
+    size_t returns = 0;
+    if (dates.size() >= 2) {
+        for (const auto& symbol : participants) {
+            const auto& closes = closes_by_symbol.at(symbol);
+            auto& series = out[symbol];
+            series.reserve(dates.size() - 1);
+            for (size_t t = 1; t < dates.size(); ++t) {
+                const double prev_price = closes.at(dates[t - 1]);
+                const double curr_price = closes.at(dates[t]);
+                series.push_back((curr_price - prev_price) / prev_price);
+            }
+        }
+        returns = dates.size() - 1;
+    }
+
+    size_t dropped_inside = 0;
+    size_t dropped_after = 0;
+    if (!dates.empty()) {
+        for (int64_t day : union_dates) {
+            if (day > dates.back()) {
+                ++dropped_after;
+            } else if (day >= dates.front() &&
+                       !std::binary_search(dates.begin(), dates.end(), day)) {
+                ++dropped_inside;
+            }
+        }
+    }
+    INFO("COVARIANCE_DATE_ALIGNED symbols=" + std::to_string(participants.size()) + "/" +
+         std::to_string(closes_by_symbol.size()) + " dates=" + std::to_string(dates.size()) +
+         " returns=" + std::to_string(returns) +
+         " first=" + (dates.empty() ? std::string("-") : covariance_day_label(dates.front())) +
+         " last=" + (dates.empty() ? std::string("-") : covariance_day_label(dates.back())) +
+         " dropped_inside=" + std::to_string(dropped_inside) +
+         " dropped_after=" + std::to_string(dropped_after) + " shortest_own_returns=" +
+         (shortest_own_returns == SIZE_MAX ? std::string("-")
+                                           : std::to_string(shortest_own_returns)) +
+         ": the covariance pairs returns by date over the dates every symbol printed");
+    return out;
+}
+
 std::vector<std::vector<double>> PortfolioManager::calculate_covariance_matrix(
     const std::unordered_map<std::string, std::vector<double>>& returns_by_symbol) {
     // Get all symbols in a consistent order
@@ -1244,7 +1363,9 @@ std::vector<std::vector<double>> PortfolioManager::calculate_covariance_matrix(
             continue;
         }
 
-        // Take the most recent min_periods returns
+        // Take the most recent min_periods returns. On the optimizer's input (date_aligned_returns)
+        // every non-empty series already has min_periods returns paired by date, so this is the
+        // identity there.
         size_t start_idx = returns.size() - min_periods;
         for (size_t j = 0; j < min_periods; ++j) {
             aligned_returns[j][i] = returns[start_idx + j];
@@ -1368,7 +1489,9 @@ Result<void> PortfolioManager::optimize_positions() {
         std::vector<double> target_weights;
         std::vector<double> weights_per_contract;
         std::vector<double> costs;
-        std::unordered_map<std::string, std::vector<double>> returns_by_symbol;
+        // The date-keyed closes of the symbols in the matrix (T-7a INSERT S3): the covariance
+        // is built from them aligned by DATE, not from the per-symbol return vectors by count.
+        std::unordered_map<std::string, std::map<int64_t, double>> closes_by_symbol;
 
         // Store original contributions per strategy per symbol for proportional distribution
         // Map: symbol -> strategy_id -> contribution (quantity * allocation * weight_per_contract)
@@ -1407,7 +1530,14 @@ Result<void> PortfolioManager::optimize_positions() {
                 if (it != historical_returns_.end() &&
                     it->second.size() >= static_cast<size_t>(min_history_length)) {
                     symbols.push_back(symbol);
-                    returns_by_symbol[symbol] = it->second;  // Copy the data under lock
+                    // Copy the data under lock. historical_returns_[symbol] is computed from
+                    // closes_by_date_[symbol], so the entry exists whenever the returns do; a
+                    // symbol without one enters with no closes and is handled as an empty
+                    // series (the C-20 guard in calculate_covariance_matrix).
+                    auto closes = closes_by_date_.find(symbol);
+                    closes_by_symbol[symbol] = closes != closes_by_date_.end()
+                                                   ? closes->second
+                                                   : std::map<int64_t, double>{};
                 } else {
                     INFO("Symbol " + symbol +
                          " has insufficient historical data for optimization, skipping symbol");
@@ -1510,7 +1640,7 @@ Result<void> PortfolioManager::optimize_positions() {
             DEBUG("Using cached covariance matrix for convergence iteration");
         } else {
             // Compute covariance matrix (first iteration or symbols changed)
-            covariance = calculate_covariance_matrix(returns_by_symbol);
+            covariance = calculate_covariance_matrix(date_aligned_returns(closes_by_symbol));
             // Cache for subsequent iterations
             cached_symbols_ = symbols;
             cached_covariance_ = covariance;
