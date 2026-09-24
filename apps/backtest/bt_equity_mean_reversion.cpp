@@ -4,10 +4,10 @@
 #include <unordered_set>
 #include <nlohmann/json.hpp>
 #include "trade_ngin/backtest/backtest_coordinator.hpp"
+#include "trade_ngin/backtest/equity_cost_warmup.hpp"
 #include "trade_ngin/core/config_loader.hpp"
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/core/time_utils.hpp"
-#include "trade_ngin/data/conversion_utils.hpp"
 #include "trade_ngin/data/database_pooling.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
 #include "trade_ngin/core/holiday_checker.hpp"
@@ -324,44 +324,25 @@ int main() {
             }
         }
 
-        // Register tier-appropriate equity cost configs before the backtest
-        // runs. Uses a 30-day warmup window starting at start_date so cost
-        // calibration reflects what would have been known at backtest start.
-        // Closes audit §1.1: previously unconfigured equities fell through to
-        // futures defaults ($1.50/share commission, point_value=100).
-        {
-            auto warmup_end = start_date + std::chrono::hours(24 * 30);
-            auto warmup_result = db->get_market_data(
-                symbols, start_date, warmup_end,
-                AssetClass::EQUITIES, DataFrequency::DAILY, "ohlcv");
-            if (warmup_result.is_ok()) {
-                auto warmup_bars_result =
-                    trade_ngin::DataConversionUtils::arrow_table_to_bars(warmup_result.value());
-                if (warmup_bars_result.is_ok()) {
-                    const auto& warmup_bars = warmup_bars_result.value();
-                    std::unordered_map<std::string, std::vector<trade_ngin::Bar>> bars_by_symbol;
-                    for (const auto& bar : warmup_bars) {
-                        bars_by_symbol[bar.symbol].push_back(bar);
-                    }
-                    coordinator->get_execution_manager()
-                        ->get_transaction_cost_manager()
-                        .register_equity_costs_from_bars(symbols, bars_by_symbol);
-                    // E2-C9: PortfolioManager owns a SECOND, independent cost manager, and
-                    // it is the one whose numbers reach backtest.executions and the equity
-                    // curve -- the coordinator's only feeds the reported metrics. Registering
-                    // just one left a single run carrying two different cost bases.
-                    portfolio->register_equity_cost_configs(symbols, bars_by_symbol);
-                } else {
-                    WARN("Failed to convert warmup bars: " +
-                         std::string(warmup_bars_result.error()->what()) +
-                         " -- equity cost configs may use unconfigured-symbol fallback");
-                }
-            } else {
-                WARN("Failed to load equity cost warmup data: " +
-                     std::string(warmup_result.error()->what()) +
-                     " -- equity cost configs may use unconfigured-symbol fallback");
-            }
-        }
+        // Register tier-appropriate equity cost configs before the backtest runs, on both cost
+        // managers that price a fill (the coordinator's execution manager's and the
+        // PortfolioManager's own, E2-C9). Closes audit §1.1: previously unconfigured equities
+        // fell through to futures defaults ($1.50/share commission, point_value=100).
+        //
+        // H-13 (HD 2026-09-21): the window is the 30 calendar days BEFORE start_date, ending
+        // strictly before it, so the tiers are set from bars that existed when the backtest
+        // starts; it used to be the 30 days AFTER start_date (a look-ahead). It is loaded with
+        // MarketDataBus publishing disabled, as the futures runners and run_portfolio load theirs,
+        // so the bars reach only the two cost registrations: with the bus on, every warm-up row
+        // was a BAR event, a full PortfolioManager cycle fed the strategies future bars before the
+        // run, and the PM's history kept them on the warm-up query's adjustment basis.
+        backtest::register_equity_cost_warmup(
+            symbols, start_date,
+            [&](const Timestamp& from, const Timestamp& to) {
+                return db->get_market_data(symbols, from, to, AssetClass::EQUITIES,
+                                           DataFrequency::DAILY, "ohlcv");
+            },
+            coordinator->get_execution_manager()->get_transaction_cost_manager(), *portfolio);
 
         INFO("Running equity mean reversion backtest...");
         auto result = coordinator->run_portfolio(
