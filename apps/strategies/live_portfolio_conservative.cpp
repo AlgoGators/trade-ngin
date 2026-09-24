@@ -37,6 +37,7 @@
 #include "trade_ngin/live/sleeve_seeding.hpp"
 #include "trade_ngin/live/trading_days_anchor.hpp"
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
+#include "trade_ngin/risk/risk_scale_report.hpp"
 #include "trade_ngin/storage/live_results_manager.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
 #include "trade_ngin/strategy/trend_following_fast.hpp"
@@ -2238,6 +2239,14 @@ int main(int argc, char* argv[]) {
             std::cout << "Jump Risk (99th): N/A" << std::endl;
             std::cout << "Risk Scale: N/A" << std::endl;
         }
+        // RA-01 (T-7b-1 C7): beside the stored value, the scale that actually moved the book.
+        // reporter = the double stored as live_results.risk_scale below (the snapshot's
+        // recommended_scale, 1.0 when its evaluation failed); the other four fields are the
+        // PortfolioManager's own record of this run's rebalance, last_risk_decisions(), each
+        // defined in risk_scale_report.hpp. Log only: no stored value reads it.
+        INFO(trade_ngin::format_risk_scale_report(
+            risk_eval.is_ok() ? risk_eval.value().recommended_scale : 1.0,
+            trade_ngin::summarize_applied_risk(portfolio->last_risk_decisions())));
         // ========================================
         // STEP 3: CALCULATE TRANSACTION COSTS AND Day T PnL (ZERO)
         // ========================================

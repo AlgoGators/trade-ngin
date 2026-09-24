@@ -48,6 +48,7 @@ set(TEST_SOURCES
     risk/test_risk_manager.cpp
     risk/test_risk_modules.cpp
     risk/test_risk_module_config.cpp
+    risk/test_risk_scale_report.cpp
     optimization/test_dynamic_optimizer.cpp
     backtest/test_transaction_cost_analysis.cpp
     transaction_cost/test_transaction_cost_manager.cpp

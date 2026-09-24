@@ -8,6 +8,7 @@
 #include "trade_ngin/core/run_id_generator.hpp"
 #include "trade_ngin/core/time_utils.hpp"
 #include "trade_ngin/data/market_data_bus.hpp"
+#include "trade_ngin/risk/risk_scale_report.hpp"
 #include "trade_ngin/storage/backtest_results_manager.hpp"
 #include "trade_ngin/strategy/base_strategy.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
@@ -191,6 +192,7 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
     reset_portfolio_state();
     // The session hold (T-7a C4) is the futures book's; the equity backtest keeps its old path.
     session_hold_enabled_ = (asset_class == AssetClass::FUTURES);
+    risk_scale_report_enabled_ = (asset_class == AssetClass::FUTURES);
 
     // Store backtest dates for later use in save_portfolio_results_to_db
     backtest_start_date_ = start_date;
@@ -710,6 +712,22 @@ Result<void> BacktestCoordinator::process_portfolio_day(
         }
 
         // POST-WARMUP: Normal trading logic
+
+        // RA-01 (T-7b-1 C7): the rebalance's applied risk scale, once per post-warmup cycle, from
+        // the PortfolioManager's own record of the call above (risk_scale_report.hpp defines each
+        // field). reporter=na: the backtest has no snapshot RiskManager and stores no risk figure.
+        // date = this cycle's timestamp (UTC), the date its fills and equity row carry. Log only.
+        // A cycle whose signal group held only JUNK bars never called process_market_data, so the
+        // PM's record is still the previous cycle's: this cycle ran no risk lap and reports an
+        // empty record (laps=0) rather than repeating yesterday's.
+        if (risk_scale_report_enabled_) {
+            const std::vector<RiskDecisionRecord> this_cycle =
+                signal_feed->empty() ? std::vector<RiskDecisionRecord>{}
+                                     : portfolio->last_risk_decisions();
+            INFO(format_risk_scale_report(std::string("na"), summarize_applied_risk(this_cycle),
+                                          core::format_utc_date(timestamp)));
+        }
+
         std::vector<ExecutionReport> period_executions;
 
         if (had_previous_bars) {
@@ -1247,6 +1265,7 @@ void BacktestCoordinator::reset_portfolio_state() {
     session_classifier_ = SessionClassifier();
     session_hold_enabled_ = false;
     withheld_junk_signal_bars_.clear();
+    risk_scale_report_enabled_ = false;
     current_run_id_.clear();
     portfolio_previous_positions_.clear();
     // E2-F54 (c): without this, a second portfolio backtest in the same process opens with
