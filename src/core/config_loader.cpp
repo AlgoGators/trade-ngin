@@ -224,6 +224,24 @@ Result<AppConfig> ConfigLoader::extract_config(const nlohmann::json& merged) {
             config.covariance_history_prices = v.get<size_t>();
         }
 
+        // T-7b-1 7d: how many union dates a covariance participant's last close may trail the
+        // newest before the optimiser leaves it out of the date intersection. Optional; absent
+        // means 5. 0 is allowed (every participant must print on the newest date).
+        if (merged.contains("covariance_stale_dates")) {
+            const auto& v = merged.at("covariance_stale_dates");
+            if (!v.is_number_integer() || v.get<int64_t>() < 0) {
+                return make_error<AppConfig>(
+                    ErrorCode::INVALID_DATA,
+                    "config for " + config.portfolio_id +
+                        ": portfolio.json \"covariance_stale_dates\" must be a whole number of "
+                        "at least 0 (union dates a covariance participant's last date may trail "
+                        "the newest before the optimiser leaves it out of the date intersection; "
+                        "absent means 5), got " + v.dump(),
+                    "ConfigLoader");
+            }
+            config.covariance_stale_dates = v.get<size_t>();
+        }
+
         if (!merged.contains("risk")) {
             return make_error<AppConfig>(ErrorCode::INVALID_DATA,
                                          "risk config for " + config.portfolio_id +

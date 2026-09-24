@@ -593,6 +593,7 @@ int main(int argc, char* argv[]) {
             app_config.strategy_defaults.min_strategy_allocation;
         portfolio_config.use_optimization = app_config.use_optimization;
         portfolio_config.covariance_history_prices = app_config.covariance_history_prices;
+        portfolio_config.covariance_stale_dates = app_config.covariance_stale_dates;
         portfolio_config.risk_modules = app_config.risk_schema.portfolio;
         portfolio_config.sleeve_risk_modules = app_config.risk_schema.sleeves;
         portfolio_config.opt_config = opt_config;

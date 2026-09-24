@@ -37,5 +37,7 @@
   "use_optimization": false,
   "_use_optimization_note": "false: the equity runners hard-code the optimizer off (live_equity_mean_reversion.cpp, bt_equity_mean_reversion.cpp; HD 2026-09-01) and refuse to start if this says true.",
   "covariance_history_prices": 756,
-  "_covariance_history_prices_note": "daily closes per symbol the PortfolioManager keeps for the optimiser covariance, one per date, oldest dropped first; absent means 756 (the trend sleeve own cap); at least 2"
+  "_covariance_history_prices_note": "daily closes per symbol the PortfolioManager keeps for the optimiser covariance, one per date, oldest dropped first; absent means 756 (the trend sleeve own cap); at least 2",
+  "covariance_stale_dates": 5,
+  "_covariance_stale_dates_note": "how many dates of the union of the covariance symbols' dates a symbol's last close may trail the newest before the optimiser leaves it out of the date intersection (its column becomes the guarded 0.01 variance, WARN COVARIANCE_STALE_PARTICIPANT); at exactly this many it stays; absent means 5; a whole number of at least 0, e.g. 3 to leave out a symbol more than three dates stale"
 }

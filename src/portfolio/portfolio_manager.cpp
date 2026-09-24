@@ -1198,6 +1198,41 @@ std::string covariance_day_label(int64_t day) {
     return buf;
 }
 
+// The returns calculate_covariance_matrix needs before it falls back to the 0.01 diagonal; T-7b-1
+// 7d applies the same number to the date intersection (date_aligned_returns' floor).
+constexpr size_t kCovarianceMinReturns = 20;
+
+// max |rho| over the pairs (i < j) of `symbols` in `cov` whose two legs are both in `held` (every
+// pair when `held` is null); the pair as "A/B" in `pair`. A pair with a non-positive variance or a
+// non-finite correlation is skipped and |rho| is clamped to 1, as the Carver gate's
+// calculate_correlation_multiplier does. -1 when there is no pair.
+double covariance_max_abs_rho(const std::vector<std::string>& symbols,
+                              const std::vector<std::vector<double>>& cov,
+                              const std::set<std::string>* held, std::string& pair) {
+    double best = -1.0;
+    pair = "-";
+    if (cov.size() != symbols.size()) return best;
+    for (size_t i = 0; i < symbols.size(); ++i) {
+        if (held && !held->count(symbols[i])) continue;
+        for (size_t j = i + 1; j < symbols.size(); ++j) {
+            if (held && !held->count(symbols[j])) continue;
+            const double vi = cov[i][i];
+            const double vj = cov[j][j];
+            if (!(vi > 0.0) || !(vj > 0.0)) continue;
+            const double r = cov[i][j] / std::sqrt(vi * vj);
+            if (!std::isfinite(r)) continue;
+            const double a = std::min(1.0, std::abs(r));
+            if (a > best) {
+                best = a;
+                pair = symbols[i] + "/" + symbols[j];
+            }
+        }
+    }
+    return best;
+}
+
+std::string covariance_rho_text(double v) { return v < 0.0 ? std::string("-") : std::to_string(v); }
+
 }  // namespace
 
 std::unordered_map<std::string, std::vector<double>> PortfolioManager::date_aligned_returns(
@@ -1225,44 +1260,148 @@ std::unordered_map<std::string, std::vector<double>> PortfolioManager::date_alig
     // 756-price cap is applied when the closes are recorded (update_historical_returns), before
     // this. When every symbol has the same dates this returns exactly the series the count
     // alignment used, bit for bit.
+    //
+    // T-7b-1 7d (the S3 follow-up; T-7a_S1_S3_CODE_REVIEW S3-1, S3-2) narrows the participants in
+    // two steps before the intersection is taken, and says so with a WARN per symbol left out:
+    //
+    //  * STALE: U is the union of the participants' usable dates. A participant whose last usable
+    //    date has more than k dates of U after it (k = config_.covariance_stale_dates, portfolio.json
+    //    "covariance_stale_dates", absent means 5) is left out: one symbol whose feed stopped used to
+    //    end D for every symbol. At exactly k it stays. A calendar gap nobody printed is not a date of
+    //    U; a date only one participant printed is. Decided once, on the union of all participants.
+    //  * FLOOR: while D gives fewer than kCovarianceMinReturns (20) returns, the participant with
+    //    the fewest usable dates is left out (ties: the later first usable date, then the smaller
+    //    symbol name); a participant with as many dates as the most-dated one never is, and if
+    //    leaving out the shorter ones cannot reach 20 returns nobody is left out. Before this, a D
+    //    under 20 returns sent the WHOLE matrix to calculate_covariance_matrix's 0.01 diagonal.
+    //
+    // A participant left out gets an EMPTY series, so calculate_covariance_matrix gives it the
+    // guarded column (the C-20 path: 0.01 variance, zero covariances) and every other entry is what
+    // it is without that symbol. With nobody left out this is S3's rule exactly, and the
+    // COVARIANCE_DATE_ALIGNED line is byte-identical to S3's.
     std::unordered_map<std::string, std::vector<double>> out;
     std::vector<std::string> participants;
-    size_t shortest_own_returns = SIZE_MAX;
+    std::unordered_map<std::string, std::vector<int64_t>> usable_dates;  // ascending
     for (const auto& [symbol, closes] : closes_by_symbol) {
-        size_t usable = 0;
+        std::vector<int64_t> usable;
         for (const auto& [day, close] : closes) {
-            if (std::isfinite(close) && close > 0.0) ++usable;
+            if (std::isfinite(close) && close > 0.0) usable.push_back(day);
         }
         out[symbol];  // every symbol is in the result, empty unless it takes part
-        if (usable >= 2) {
+        if (usable.size() >= 2) {
             participants.push_back(symbol);
-            shortest_own_returns = std::min(shortest_own_returns, usable - 1);
+            usable_dates[symbol] = std::move(usable);
         }
     }
     std::sort(participants.begin(), participants.end());
 
-    // The intersection, and the union's dates it leaves out (for the log line).
-    std::vector<int64_t> dates;
-    std::set<int64_t> union_dates;
+    // STALE: the participants whose last usable date trails the newest date of U by more than k.
     if (!participants.empty()) {
-        std::map<int64_t, size_t> seen;
+        std::set<int64_t> all_dates;
         for (const auto& symbol : participants) {
-            for (const auto& [day, close] : closes_by_symbol.at(symbol)) {
-                if (std::isfinite(close) && close > 0.0) {
-                    ++seen[day];
-                    union_dates.insert(day);
-                }
+            const auto& d = usable_dates.at(symbol);
+            all_dates.insert(d.begin(), d.end());
+        }
+        const std::vector<int64_t> u(all_dates.begin(), all_dates.end());
+        const size_t k = config_.covariance_stale_dates;
+        std::vector<std::string> kept;
+        for (const auto& symbol : participants) {
+            const int64_t last = usable_dates.at(symbol).back();
+            const size_t behind =
+                static_cast<size_t>(u.end() - std::upper_bound(u.begin(), u.end(), last));
+            if (behind > k) {
+                WARN("COVARIANCE_STALE_PARTICIPANT symbol=" + symbol +
+                     " last=" + covariance_day_label(last) +
+                     " newest=" + covariance_day_label(u.back()) +
+                     " dates_behind=" + std::to_string(behind) + " k=" + std::to_string(k) +
+                     ": left out of the optimizer's date intersection; its column is the guarded "
+                     "0.01 variance with zero covariances");
+            } else {
+                kept.push_back(symbol);
             }
         }
+        participants.swap(kept);
+    }
+
+    // The intersection of the participants' usable dates, with the 2,520-return cap
+    // (max_history_length_) as before: the newest cap + 1 dates. The cap cannot bind at the
+    // 756-price cap the closes are recorded under.
+    auto intersect = [&](const std::vector<std::string>& ps) {
+        std::vector<int64_t> d;
+        if (ps.empty()) return d;
+        std::map<int64_t, size_t> seen;
+        for (const auto& symbol : ps) {
+            for (int64_t day : usable_dates.at(symbol)) ++seen[day];
+        }
         for (const auto& [day, count] : seen) {
-            if (count == participants.size()) dates.push_back(day);
+            if (count == ps.size()) d.push_back(day);
         }
-        // The 2,520-return cap (max_history_length_) as before: the newest cap + 1 dates. It
-        // cannot bind at the 756-price cap the closes are recorded under.
-        if (dates.size() > max_history_length_ + 1) {
-            dates.erase(dates.begin(),
-                        dates.end() - static_cast<std::ptrdiff_t>(max_history_length_ + 1));
+        if (d.size() > max_history_length_ + 1) {
+            d.erase(d.begin(), d.end() - static_cast<std::ptrdiff_t>(max_history_length_ + 1));
         }
+        return d;
+    };
+    std::vector<int64_t> dates = intersect(participants);
+
+    // FLOOR: the 20 returns calculate_covariance_matrix needs, applied to the intersection. Only a
+    // participant with FEWER usable dates than the most-dated participant can be left out (the
+    // floor is there to stop a short participant shrinking everyone's window; leaving out a
+    // most-dated one cannot lengthen the others'), and nobody is left out unless that reaches
+    // the floor: when it cannot, every participant stays and the matrix takes the 0.01 diagonal
+    // exactly as under S3, rather than a symbol's data being thrown away for nothing.
+    if (participants.size() > 1 && dates.size() < kCovarianceMinReturns + 1) {
+        size_t most_dates = 0;
+        for (const auto& symbol : participants) {
+            most_dates = std::max(most_dates, usable_dates.at(symbol).size());
+        }
+        std::vector<std::string> left_in = participants;
+        std::vector<int64_t> left_in_dates = dates;
+        std::vector<std::pair<std::string, size_t>> left_out;  // symbol, intersection returns before
+        while (left_in_dates.size() < kCovarianceMinReturns + 1) {
+            auto shortest = left_in.end();
+            for (auto it = left_in.begin(); it != left_in.end(); ++it) {
+                const auto& d = usable_dates.at(*it);
+                if (d.size() >= most_dates) continue;
+                if (shortest == left_in.end()) {
+                    shortest = it;
+                    continue;
+                }
+                const auto& ds = usable_dates.at(*shortest);
+                if (d.size() != ds.size() ? d.size() < ds.size()
+                    : d.front() != ds.front() ? d.front() > ds.front()
+                    : *it < *shortest) {
+                    shortest = it;
+                }
+            }
+            if (shortest == left_in.end()) break;  // only most-dated participants are left
+            left_out.emplace_back(*shortest,
+                                  left_in_dates.empty() ? 0 : left_in_dates.size() - 1);
+            left_in.erase(shortest);
+            left_in_dates = intersect(left_in);
+        }
+        if (left_in_dates.size() >= kCovarianceMinReturns + 1) {
+            for (const auto& [symbol, before] : left_out) {
+                const auto& ds = usable_dates.at(symbol);
+                WARN("COVARIANCE_FLOOR_DROP symbol=" + symbol +
+                     " own_dates=" + std::to_string(ds.size()) +
+                     " first=" + covariance_day_label(ds.front()) +
+                     " intersection_returns=" + std::to_string(before) +
+                     " floor=" + std::to_string(kCovarianceMinReturns) +
+                     ": the intersection is under the floor; the participant with the fewest dates "
+                     "is left out of it, not the whole matrix; its column is the guarded 0.01 "
+                     "variance with zero covariances");
+            }
+            participants.swap(left_in);
+            dates.swap(left_in_dates);
+        }
+    }
+
+    size_t shortest_own_returns = SIZE_MAX;
+    std::set<int64_t> union_dates;  // of the participants left in, for the log line
+    for (const auto& symbol : participants) {
+        const auto& d = usable_dates.at(symbol);
+        shortest_own_returns = std::min(shortest_own_returns, d.size() - 1);
+        union_dates.insert(d.begin(), d.end());
     }
 
     size_t returns = 0;
@@ -2269,6 +2408,50 @@ Result<void> PortfolioManager::apply_risk_management(const std::vector<Bar>& dat
             std::vector<std::string> errors;
             std::vector<RiskDecision> decisions =
                 evaluate_scope_modules(risk_modules_, portfolio_positions, lap_ctx, false, errors);
+
+            // T-7b-1 7d: the optimizer's and the risk gate's max |rho| side by side, once per
+            // rebalance. Lap 1 is the one lap every rebalance with a book has; both numbers are
+            // then read on the same book (the optimizer's answer, before any cut), the optimizer's
+            // matrix is the one it built this rebalance (cached for the later laps), and the gate's
+            // reading is scale-free, so a later lap's cut would not change it unless a position
+            // rounded to zero. optimizer= is over the held pairs (both legs non-zero) that the
+            // optimizer's matrix covers, the pairs the gate's correlation term reads;
+            // optimizer_all= over every pair of the optimizer's matrix. Not printed when the
+            // optimizer built no matrix this rebalance (the optimizer is off, as on the equity
+            // books, or it had no symbols).
+            if (lap_ctx.lap == 1 && covariance_cache_valid_) {
+                std::set<std::string> held;
+                for (const auto& symbol : cached_symbols_) {
+                    auto it = portfolio_positions.find(symbol);
+                    if (it != portfolio_positions.end() &&
+                        std::abs(static_cast<double>(it->second.quantity)) > 1e-12) {
+                        held.insert(symbol);
+                    }
+                }
+                std::string pair_held;
+                std::string pair_all;
+                const double rho_held =
+                    covariance_max_abs_rho(cached_symbols_, cached_covariance_, &held, pair_held);
+                const double rho_all =
+                    covariance_max_abs_rho(cached_symbols_, cached_covariance_, nullptr, pair_all);
+                std::string gate = "-";
+                std::string gate_module = "-";
+                std::string gate_blind = "-";
+                for (const auto& d : decisions) {
+                    if (!d.metrics.has_value()) continue;
+                    gate = std::to_string(static_cast<double>(d.metrics->correlation_risk));
+                    gate_module = d.module_id.empty() ? "-" : d.module_id;
+                    gate_blind = d.blind ? "1" : "0";
+                    break;
+                }
+                INFO("COVARIANCE_MAX_RHO held=" + std::to_string(held.size()) +
+                     " optimizer=" + covariance_rho_text(rho_held) + " optimizer_pair=" + pair_held +
+                     " optimizer_all=" + covariance_rho_text(rho_all) +
+                     " optimizer_all_pair=" + pair_all + " gate=" + gate +
+                     " gate_module=" + gate_module + " gate_blind=" + gate_blind +
+                     ": max |rho| on lap 1's book, the optimizer's date-aligned covariance beside "
+                     "the risk gate's own window; once per rebalance");
+            }
 
             // The decisions are applied by action (precedence REFUSE > REPLACE > SCALE > WARN).
             RiskVerdict verdict = combine_risk_decisions(decisions, lap_ctx);

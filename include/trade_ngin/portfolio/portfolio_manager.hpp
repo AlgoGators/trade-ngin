@@ -63,6 +63,12 @@ struct PortfolioConfig : public ConfigBase {
     // constructor). Not written by to_json(): that object is stored verbatim in
     // backtest.run_metadata.portfolio_config.
     size_t covariance_history_prices{756};
+    // How many dates of the UNION of the covariance participants' dates a participant's last
+    // close may trail the newest such date before the optimiser leaves it out of the date
+    // intersection (portfolio.json "covariance_stale_dates"; absent means 5; T-7b-1 7d). A
+    // participant left out gets the guarded 0.01 variance column. Not written by to_json(), for
+    // the reason covariance_history_prices is not.
+    size_t covariance_stale_dates{5};
     DynamicOptConfig opt_config;      // Optimization configuration
     RiskConfig risk_config;           // Risk management configuration
 
@@ -111,6 +117,9 @@ struct PortfolioConfig : public ConfigBase {
         }
         if (j.contains("covariance_history_prices")) {
             covariance_history_prices = j.at("covariance_history_prices").get<size_t>();
+        }
+        if (j.contains("covariance_stale_dates")) {
+            covariance_stale_dates = j.at("covariance_stale_dates").get<size_t>();
         }
         if (j.contains("opt_config"))
             opt_config.from_json(j.at("opt_config"));
@@ -430,7 +439,13 @@ private:
      *         symbols' dates (a date one symbol lacks is dropped for all, and the next return
      *         spans it for every symbol); all non-empty series have the same length. A symbol
      *         with fewer than two usable closes gets an empty series and does not shrink the
-     *         intersection. Logs one COVARIANCE_DATE_ALIGNED line.
+     *         intersection. T-7b-1 7d: a participant whose last usable date trails the newest
+     *         date of the participants' union by more than config_.covariance_stale_dates dates,
+     *         and (while the intersection gives fewer than 20 returns) the participant with the
+     *         fewest usable dates, is left out with an empty series and a WARN, so
+     *         calculate_covariance_matrix guards its column instead of the window ending at a
+     *         stale date or the whole matrix falling to the 0.01 diagonal. Logs one
+     *         COVARIANCE_DATE_ALIGNED line.
      */
     std::unordered_map<std::string, std::vector<double>> date_aligned_returns(
         const std::unordered_map<std::string, std::map<int64_t, double>>& closes_by_symbol) const;

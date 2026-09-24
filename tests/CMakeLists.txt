@@ -121,6 +121,7 @@ set(TEST_SOURCES
     portfolio/test_optimizer_allocation_once.cpp
     portfolio/test_allocation_distribution.cpp
     portfolio/test_covariance_date_alignment.cpp
+    portfolio/test_covariance_participants.cpp
     portfolio/test_pm_session_hold.cpp
     storage/test_backtest_results_manager.cpp
     storage/test_live_results_manager.cpp

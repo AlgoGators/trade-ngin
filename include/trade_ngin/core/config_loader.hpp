@@ -334,6 +334,12 @@ struct AppConfig {
     // least 2 is a load error.
     size_t covariance_history_prices{756};
 
+    // portfolio.json's top-level covariance_stale_dates: how many dates of the union of the
+    // covariance participants' dates a participant's last close may trail the newest before the
+    // optimiser leaves it out of the date intersection (PortfolioConfig::covariance_stale_dates,
+    // T-7b-1 7d). Absent means 5; a value that is not a whole number of at least 0 is a load error.
+    size_t covariance_stale_dates{5};
+
     // Backtest settings
     BacktestSpecificConfig backtest;
 
@@ -366,6 +372,7 @@ struct AppConfig {
         j["sleeve_risk_modules"] = risk_schema.sleeves_to_json();
         j["use_optimization"] = use_optimization;
         j["covariance_history_prices"] = covariance_history_prices;
+        j["covariance_stale_dates"] = covariance_stale_dates;
         j["max_drawdown"] = max_drawdown;
         j["max_leverage"] = max_leverage;
         j["backtest"] = backtest.to_json();
