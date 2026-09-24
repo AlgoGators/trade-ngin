@@ -239,6 +239,23 @@ Result<void> PortfolioManager::add_strategy(std::shared_ptr<StrategyInterface> s
     return Result<void>();
 }
 
+namespace {
+
+// The close of `symbol`'s latest-dated bar in `data`, 0.0 when it has none. Among bars of the same
+// timestamp the first one wins, which is what the old first-match lookup returned whenever a call
+// carried one date per symbol (every backtest cycle before T-7b-1 7a).
+double latest_close_of(const std::vector<Bar>& data, const std::string& symbol) {
+    const Bar* latest = nullptr;
+    for (const auto& bar : data) {
+        if (bar.symbol == symbol && (latest == nullptr || bar.timestamp > latest->timestamp)) {
+            latest = &bar;
+        }
+    }
+    return latest ? static_cast<double>(latest->close) : 0.0;
+}
+
+}  // namespace
+
 Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                                                    bool skip_execution_generation,
                                                    std::optional<Timestamp> current_timestamp,
@@ -822,14 +839,11 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                                 continue;
                             }
 
-                            // Find latest price for symbol
-                            double latest_price = 0.0;
-                            for (const auto& bar : data) {
-                                if (bar.symbol == symbol) {
-                                    latest_price = static_cast<double>(bar.close);
-                                    break;
-                                }
-                            }
+                            // The symbol's LATEST-dated bar in this call (the signal group's
+                            // close). T-7b-1 7a: on a release cycle the backtest feeds a withheld
+                            // JUNK bar ahead of the symbol's new bar, so the first bar is not the
+                            // latest; the first of equal dates is kept, as before.
+                            const double latest_price = latest_close_of(data, symbol);
 
                             if (latest_price == 0.0) {
                                 continue;  // Skip if price not available
@@ -910,14 +924,8 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                             is_establishment_exec ? new_qty : (new_qty - current_qty);
                         Side side = trade_size > 0 ? Side::BUY : Side::SELL;
 
-                        // Find latest price for symbol
-                        double latest_price = 0.0;
-                        for (const auto& bar : data) {
-                            if (bar.symbol == symbol) {
-                                latest_price = static_cast<double>(bar.close);
-                                break;
-                            }
-                        }
+                        // The symbol's LATEST-dated bar in this call (see above).
+                        const double latest_price = latest_close_of(data, symbol);
 
                         if (latest_price == 0.0) {
                             continue;  // Skip if price not available

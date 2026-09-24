@@ -91,6 +91,7 @@ set(TEST_SOURCES
     backtest/test_backtest_realized_flow.cpp
     backtest/test_backtest_unrealized_accounting.cpp
     backtest/test_equity_cost_warmup.cpp
+    backtest/test_backtest_junk_signal_feed.cpp
     execution/test_execution_engine.cpp
     portfolio/test_portfolio_manager.cpp
     core/test_equity_portfolio_namespace.cpp

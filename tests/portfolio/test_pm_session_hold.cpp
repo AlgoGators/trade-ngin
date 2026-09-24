@@ -240,8 +240,10 @@ TEST(PmSessionHoldSource, TheCoordinatorPassesTheSetForFuturesOnly) {
     EXPECT_NE(src.find("classify_bar_group(session_classifier_, bars_for_signals)"),
               std::string::npos)
         << "the verdict is taken on the SIGNAL group's bars (the previous group)";
-    EXPECT_NE(src.find("portfolio->process_market_data(bars_for_signals, is_warmup, timestamp,\n"
-                       "                                                          session_symbols);"),
+    // T-7b-1 7a: the PM is fed the signal group with its JUNK bars delayed one cycle (as live);
+    // the session set still goes with it.
+    EXPECT_NE(src.find("portfolio->process_market_data(*signal_feed, is_warmup, timestamp,\n"
+                       "                                                              session_symbols);"),
               std::string::npos);
     const auto add = src.find("if (session_hold_enabled_) session_classifier_.add_bars(bars);");
     const auto first_return = src.find("return Result<void>();  // Early return, don't process day 1");
