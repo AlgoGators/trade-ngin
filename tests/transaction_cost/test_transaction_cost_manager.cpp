@@ -388,7 +388,7 @@ TEST_F(BorrowFeesTest, ShortSignShortFuturesAreSkippedSilently) {
     TransactionCostManager tcm(tcm_config);
     auto& registry = InstrumentRegistry::instance();
 
-    const std::string sym = "S1R_SHORT_FUT";
+    const std::string sym = "BORROW_SKIPS_FUTURE";
     FuturesSpec spec;
     spec.root_symbol = sym;
     spec.exchange = "CME";
