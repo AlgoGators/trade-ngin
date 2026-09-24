@@ -47,8 +47,10 @@ using StrategyBooks = std::unordered_map<std::string, std::unordered_map<std::st
 // 1. Logging the day's classification
 // ------------------------------------------------------------------------------------------------
 
-/// One summary line, then JUNK WARN / feed hole ERROR / closure INFO per symbol.
-inline void log_t1_classification(const T1Classification& t1) {
+/// One summary line, then JUNK WARN / feed hole ERROR / closure INFO per symbol. A closure whose
+/// hole is older than `tolerance_days` (when given) is an ERROR too (T-7b-1 C7b R3): a feed that
+/// has been dead for more than eight weeks is no longer "expected" and reads as a closure.
+inline void log_t1_classification(const T1Classification& t1, int tolerance_days = -1) {
     INFO("T1_CLASSIFIER t1=" + t1.t1_date + " session=" + std::to_string(t1.session) +
          " junk=" + std::to_string(t1.junk) + " closure=" + std::to_string(t1.closure) +
          " feed_hole=" + std::to_string(t1.feed_hole) +
@@ -70,8 +72,16 @@ inline void log_t1_classification(const T1Classification& t1) {
                       " day(s)) -- held at its last mark, no order");
                 break;
             case SessionVerdict::NO_BAR_CLOSURE:
-                INFO("T1_CLASSIFIER closure " + v.symbol + " " + v.date + ": " + v.reason +
-                     " -- held at its last mark, no order");
+                if (tolerance_days >= 0 && v.hole_age_days > tolerance_days) {
+                    ERROR("T1_CLASSIFIER closure " + v.symbol + " " + v.date + ": " + v.reason +
+                          "; last bar " + v.last_bar_date + " (" +
+                          std::to_string(v.hole_age_days) +
+                          " day(s)), past live.data_staleness_tolerance_days=" +
+                          std::to_string(tolerance_days) + " -- held at its last mark, no order");
+                } else {
+                    INFO("T1_CLASSIFIER closure " + v.symbol + " " + v.date + ": " + v.reason +
+                         " -- held at its last mark, no order");
+                }
                 break;
         }
     }
@@ -104,18 +114,29 @@ struct HeldFeedHole {
     double held_quantity{0.0};
 };
 
+/// The oldest hole among the no-bar verdicts, feed hole or closure (0 when every symbol printed).
+inline int max_no_bar_age_days(const T1Classification& t1) {
+    int age = 0;
+    for (const auto& v : t1.verdicts) {
+        if (!v.has_bar) age = std::max(age, v.hole_age_days);
+    }
+    return age;
+}
+
 /**
- * @brief The held symbols (a non-zero stored T-1 quantity) whose feed hole is older than the
+ * @brief The held symbols (a non-zero stored T-1 quantity) with no bar for longer than the
  *        tolerance. T-4c F4 / T-5 F7 as ruled 2026-09-19: the per-symbol form of the feed
  *        freshness guard, keyed on a HELD symbol; a hole on a symbol the book does not hold
- *        changes nothing and is only logged.
+ *        changes nothing and is only logged. Keyed on ANY no-bar verdict (T-7b-1 C7b R3): a
+ *        feed dead for more than eight weeks stops being "expected" and is reclassified as a
+ *        closure, and a nine-week-old mark must refuse like a one-week-old one.
  */
 inline std::vector<HeldFeedHole> held_feed_holes_past_tolerance(
     const T1Classification& t1, const std::unordered_map<std::string, Position>& held_book,
     int tolerance_days) {
     std::vector<HeldFeedHole> out;
     for (const auto& v : t1.verdicts) {
-        if (v.verdict != SessionVerdict::NO_BAR_FEED_HOLE) continue;
+        if (v.has_bar) continue;
         if (v.hole_age_days <= tolerance_days) continue;
         auto it = held_book.find(v.symbol);
         if (it == held_book.end()) continue;
@@ -189,6 +210,7 @@ struct BookHold {
     double held_quantity{0.0};
     double target_quantity{0.0};
     bool reinserted{false};  ///< held yesterday, absent from today's target map
+    bool classified{true};   ///< false: outside the classified universe (no T-1 verdict)
 };
 
 /**
@@ -231,7 +253,7 @@ inline std::vector<BookHold> hold_non_session_symbols(StrategyBooks& books,
             pos.quantity = Decimal(prev_qty);
             const auto* v = t1.find(symbol);
             holds.push_back({name, symbol, v ? v->verdict : SessionVerdict::NO_BAR_CLOSURE,
-                             prev_qty, target, false});
+                             prev_qty, target, false, v != nullptr});
         }
 
         std::vector<std::string> prev_symbols;
@@ -245,7 +267,7 @@ inline std::vector<BookHold> hold_non_session_symbols(StrategyBooks& books,
             book[symbol].last_update = now;
             const auto* v = t1.find(symbol);
             holds.push_back({name, symbol, v ? v->verdict : SessionVerdict::NO_BAR_CLOSURE,
-                             row.quantity.as_double(), 0.0, true});
+                             row.quantity.as_double(), 0.0, true, v != nullptr});
         }
     }
     return holds;
@@ -259,7 +281,11 @@ inline void log_book_holds(const std::vector<BookHold>& holds) {
                                      : "book held at " + std::to_string(h.held_quantity) +
                                            " instead of target " +
                                            std::to_string(h.target_quantity) + "; no order today";
-        WARN("BOOK_GATE " + h.symbol + " (" + h.strategy_name + "): T-1 " + to_string(h.verdict) +
+        // T-7b-1 C7b R9: a symbol nobody classified (removed from the universe, or filtered out of
+        // get_symbols) is held because nothing vouched for it, not because T-1 was a closure.
+        WARN("BOOK_GATE " + h.symbol + " (" + h.strategy_name + "): " +
+             (h.classified ? "T-1 " + std::string(to_string(h.verdict))
+                           : std::string("outside the classified universe (no T-1 verdict)")) +
              " -- " + what);
     }
     if (!holds.empty()) {

@@ -51,8 +51,11 @@ struct SessionClassifierConfig {
     /// while a symbol has no norm yet (its first bars) the floor applies on its own.
     double floor_lots{50.0};
     double floor_fraction{0.25};
-    /// norm = median volume of this many trailing WEEKDAY bars of the symbol, strictly before
-    /// the date (weekday-only so the symbol's own weekend prints cannot drag its norm down).
+    /// norm = median volume of this many trailing WEEKDAY bars of the symbol whose own verdict
+    /// was SESSION, strictly before the date (weekday-only so the symbol's own weekend prints
+    /// cannot drag its norm down; SESSION-only so a run of junk or stub bars cannot teach it,
+    /// T-7b-1 C7b R7). Until the symbol has a SESSION weekday bar, all its weekday bars count.
+    /// A median of 0 is no norm: the floor alone decides.
     int norm_window_bars{20};
     /// A missing bar is a feed hole when the symbol printed on at least one of this many
     /// preceding same-weekday dates (MAX-of-8; immune to an outage teaching the window).
@@ -94,18 +97,25 @@ struct SymbolDayVerdict {
  *
  * The rule, in order:
  *
+ *   norm(s, D) = median volume of s's trailing 20 weekday bars strictly before D whose own
+ *                verdict was SESSION (T-7b-1 C7b R7); while s has no SESSION weekday bar yet,
+ *                the median of its trailing 20 weekday bars (T-7a's norm, so a thin contract can
+ *                start); none when s has no weekday bar before D, and none when the median is 0
+ *                (a norm of 0 would disable both volume limbs).
+ *
  *   bar exists for (s, D):
  *     high == low                                       -> JUNK (locked / stub; a volume test can
  *                                                          never see it)
- *     no norm yet (s has no weekday bar before D)
- *       and volume < floor_lots                         -> JUNK (absolute floor, first bars)
+ *     no norm (no SESSION weekday bar before D, or
+ *       their median is 0) and volume < floor_lots     -> JUNK (absolute floor, first bars)
  *     volume < 0.01 x norm AND volume < 1,000 lots      -> JUNK (corrupt print)
  *     volume < 50 AND volume < 0.25 x norm              -> JUNK (absolute floor)
  *     otherwise                                         -> SESSION (thin or not: traded)
  *   no bar for (s, D):
  *     the calendar names D                              -> NO_BAR_CLOSURE
- *     the calendar names D+1 and D+1 is a FIXED-date
- *       holiday (Christmas and New Year's Sundays)      -> NO_BAR_CLOSURE
+ *     D is a Saturday or Sunday, and the calendar names
+ *       D+1 as a FIXED-date holiday (Christmas and New
+ *       Year's Sundays; C7b R8: never a weekday D)      -> NO_BAR_CLOSURE
  *     s printed on >= 1 of the 8 preceding same-weekday
  *       dates                                           -> NO_BAR_FEED_HOLE
  *     otherwise                                         -> NO_BAR_CLOSURE (not expected)
@@ -132,8 +142,12 @@ public:
     SymbolDayVerdict classify_symbol_day(const std::string& symbol, Day date,
                                          const HolidayLookup& holidays) const;
 
-    /// Median volume of the symbol's trailing weekday bars strictly before `date`; empty when it
-    /// has none. `bars_used` receives how many bars it was taken over.
+    /// Median volume of the symbol's trailing weekday SESSION bars strictly before `date` (all its
+    /// weekday bars while it has no SESSION one); empty when it has no weekday bar before `date`
+    /// or when that median is 0. `bars_used` receives how many bars it was taken
+    /// over. Each earlier bar's own verdict is computed forward in date order and cached; adding
+    /// a bar drops the cached verdicts from its date on. Not safe for concurrent calls (the
+    /// runners and the backtest coordinator use one classifier from one thread).
     std::optional<double> norm(const std::string& symbol, Day date, int* bars_used = nullptr) const;
 
     bool knows(const std::string& symbol) const { return bars_.count(symbol) > 0; }
@@ -150,9 +164,20 @@ private:
     };
     /// True when `candidate` is the copy the B0 loader keeps over `held`.
     static bool keeps_over(const DayBar& candidate, const DayBar& held);
+    /// The verdict of a bar against a norm (no norm: the floor alone), with the limb in words.
+    SessionVerdict judge_bar(const DayBar& bar, const std::optional<double>& norm,
+                             std::string* reason) const;
+    /// The median over `flags`' SESSION weekday bars of `series` strictly before `date`.
+    std::optional<double> session_norm(const std::map<Day, DayBar>& series,
+                                       const std::map<Day, bool>& flags, Day date,
+                                       int* bars_used) const;
+    /// The symbol's per-bar SESSION flags, filled forward in date order up to (not including)
+    /// `date`.
+    const std::map<Day, bool>& session_flags(const std::string& symbol, Day date) const;
 
     SessionClassifierConfig config_;
     std::unordered_map<std::string, std::map<Day, DayBar>> bars_;
+    mutable std::unordered_map<std::string, std::map<Day, bool>> session_flags_;
 };
 
 /**

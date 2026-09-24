@@ -26,6 +26,18 @@ What it reads, per book (T-5 W5 / WATCHDOG-frames, fixed in T-7a C4):
      results row says it holds positions (a flat book writes no position rows). A
      run that wrote results but not its positions is a partial failure.
 
+  4. the RUN MARK (T-7b-1 C7b R5): the latest trading.live_run_metadata row for the
+     book that is not in the future, and whether its portfolio_config carries a
+     refusal mark. A day whose portfolio risk step refused the book (a REFUSE, or a
+     risk module that could not answer: the runner exits 3) stores its results and
+     positions, so 1-3 read it as healthy; the mark `risk_refusal` says the book was
+     held, not measured. `strict_assertion` marks a run whose STRICT assertion fired
+     after the row was written (it stored no book). Either mark is reported.
+
+The run clock is compared with `today` in one frame (R12): created_at is a
+timestamp without time zone written in the writer session's zone, so it is read
+through that zone and converted to UTC, the frame of `today`.
+
 Thresholds are CALENDAR days: the futures book runs seven days a week (the cron is
 `30 9 * * *`), so a weekend is not a gap. A signal older than
 MAX_CALENDAR_DAYS_SILENT days (default 1: today's run may still be running when
@@ -73,16 +85,32 @@ def _as_date(value):
     return value
 
 
+# The refusal marks a runner writes into the day's live_run_metadata.portfolio_config, and what
+# each one means for the book (run_metadata_marks.hpp).
+RUN_MARKS = {
+    "risk_refusal": "refused its book: the portfolio risk step held every strategy at the "
+                    "previous day's positions, so the book was not measured",
+    "strict_assertion": "failed its STRICT assertion and stored no book",
+}
+
+
 def evaluate(book, last_run_at, last_book_date, last_position_date, last_active_positions,
-             today, threshold):
+             today, threshold, latest_mark_date=None, latest_marks=()):
     """Pure decision function for one book: returns (is_stale, list_of_reasons).
 
-    last_run_at            max(live_results.created_at) -- the run clock
+    last_run_at            max(live_results.created_at), in UTC -- the run clock
     last_book_date         max(live_results.date) <= today -- the book stamp
     last_position_date     max(positions.date) <= today, portfolio_type 'system'
     last_active_positions  active_positions on the book's latest results row
+    latest_mark_date       the latest live_run_metadata.date <= today
+    latest_marks           the refusal marks that row carries (RUN_MARKS keys)
     """
     reasons = []
+
+    for mark in latest_marks or ():
+        reasons.append(f"{book}: the latest run ({latest_mark_date}) "
+                       f"{RUN_MARKS.get(mark, 'carries a refusal mark')} ({mark} in "
+                       "trading.live_run_metadata)")
 
     if last_run_at is None:
         reasons.append(f"{book}: trading.live_results has no row -- the engine has never "
@@ -112,8 +140,10 @@ def evaluate(book, last_run_at, last_book_date, last_position_date, last_active_
 
 def _fetch(conn, book, today):
     with conn.cursor() as cur:
-        cur.execute("SELECT max(created_at) FROM trading.live_results WHERE portfolio_id = %s",
-                    (book,))
+        # R12: created_at has no time zone; read it through the session's zone (the writer's) and
+        # convert it to UTC, the frame of `today`.
+        cur.execute("SELECT max(created_at)::timestamptz AT TIME ZONE 'UTC' "
+                    "FROM trading.live_results WHERE portfolio_id = %s", (book,))
         last_run = cur.fetchone()[0]
         cur.execute("SELECT date, active_positions FROM trading.live_results "
                     "WHERE portfolio_id = %s AND date <= %s ORDER BY date DESC LIMIT 1",
@@ -124,6 +154,21 @@ def _fetch(conn, book, today):
                     "AND portfolio_type = 'system' AND date <= %s", (book, today))
         last_pos = cur.fetchone()[0]
     return last_run, last_book_date, last_pos, last_active
+
+
+def _fetch_run_marks(conn, book, today):
+    """(date, [marks]) of the book's latest live_run_metadata date <= today; (None, []) if none."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT date, bool_or(portfolio_config ? 'risk_refusal'), "
+                    "bool_or(portfolio_config ? 'strict_assertion') "
+                    "FROM trading.live_run_metadata WHERE portfolio_id = %s AND date <= %s "
+                    "GROUP BY date ORDER BY date DESC LIMIT 1", (book, today))
+        row = cur.fetchone()
+    if not row:
+        return None, []
+    marks = [name for name, flag in (("risk_refusal", row[1]), ("strict_assertion", row[2]))
+             if flag]
+    return row[0], marks
 
 
 def _file_issue(reasons, repo, token):
@@ -230,6 +275,12 @@ def self_test():
                         date(2026, 7, 27), 1)
     check("flat book => healthy", stale, False)
 
+    # A held day (the risk step refused the book) writes everything and is still reported.
+    stale, _ = evaluate(book, at(date(2026, 7, 27)), date(2026, 7, 27), date(2026, 7, 27), 12,
+                        date(2026, 7, 27), 1, latest_mark_date=date(2026, 7, 27),
+                        latest_marks=["risk_refusal"])
+    check("held day => reported", stale, True)
+
     if failures:
         print("SELF-TEST FAILED:")
         for f in failures:
@@ -260,10 +311,13 @@ def main():
     try:
         for book in books:
             last_run, last_book_date, last_pos, last_active = _fetch(conn, book, today)
-            print(f"{book}: last completed run {last_run}; book run through {last_book_date}; "
-                  f"system positions through {last_pos}; active positions {last_active}")
+            mark_date, marks = _fetch_run_marks(conn, book, today)
+            print(f"{book}: last completed run {last_run} UTC; book run through {last_book_date}; "
+                  f"system positions through {last_pos}; active positions {last_active}; "
+                  f"latest run {mark_date} marks {marks or 'none'}")
             _, book_reasons = evaluate(book, last_run, last_book_date, last_pos, last_active,
-                                       today, MAX_CALENDAR_DAYS_SILENT)
+                                       today, MAX_CALENDAR_DAYS_SILENT,
+                                       latest_mark_date=mark_date, latest_marks=marks)
             reasons.extend(book_reasons)
     finally:
         conn.close()

@@ -70,4 +70,22 @@ inline nlohmann::json mark_risk_refusal(nlohmann::json portfolio_config,
     return portfolio_config;
 }
 
+/**
+ * @brief The run's portfolio_config JSON with a failed STRICT assertion written into it (T-7b-1
+ *        C7b R4, T-7a_CODE_REVIEW R4). The assertion runs after the day's live_run_metadata row
+ *        was written and before anything else is stored, so a fired assertion leaves a row for a
+ *        run that stored no book. As with a risk refusal (T-RISK-ARCH Q2) the row records a run
+ *        that did happen, so it is marked, not deleted; the watchdog reads the mark. Every other
+ *        key of the first upsert is kept verbatim.
+ */
+inline nlohmann::json mark_strict_assertion(nlohmann::json portfolio_config,
+                                            const std::vector<std::string>& unpriced_book_changes) {
+    portfolio_config["strict_assertion"] = {
+        {"reason",
+         "book change(s) with no T-1 price and no execution remained after the rollback; the "
+         "run stored no book"},
+        {"unpriced_book_changes", unpriced_book_changes}};
+    return portfolio_config;
+}
+
 }  // namespace trade_ngin
