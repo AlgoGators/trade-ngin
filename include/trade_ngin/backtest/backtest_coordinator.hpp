@@ -21,6 +21,7 @@
 #include "trade_ngin/backtest/backtest_portfolio_constraints.hpp"
 #include "trade_ngin/backtest/backtest_types.hpp"
 #include "trade_ngin/backtest/backtest_csv_exporter.hpp"
+#include "trade_ngin/backtest/equity_cost_retier.hpp"
 #include "trade_ngin/risk/risk_manager.hpp"
 
 namespace trade_ngin {
@@ -104,6 +105,14 @@ private:
     /// last row (PortfolioManager::set_sizing_capital). Futures only (run_portfolio with
     /// AssetClass::FUTURES), like the session hold; the equity backtest sizes as before.
     bool size_on_equity_enabled_ = false;
+    /// T-7b-2 8c, K1: every cycle re-tiers each equity's cost config on both cost managers from
+    /// the 20 bars ending at the signal bar, in the window-end share unit, and the impact model's
+    /// volume is fed in that unit (equity_cost_retier.hpp). Equities only (run_portfolio with
+    /// AssetClass::EQUITIES); the futures backtest is untouched.
+    bool equity_cost_retier_enabled_ = false;
+    EquityCostRetier equity_cost_retier_;
+    size_t equity_cost_retier_cycles_ = 0;
+    size_t equity_cost_retier_changes_ = 0;
     std::string current_run_id_;
     Timestamp backtest_start_date_;
     Timestamp backtest_end_date_;
@@ -305,6 +314,14 @@ private:
      * @brief Reset portfolio-specific state
      */
     void reset_portfolio_state();
+
+    /**
+     * @brief K1: the equity re-tier's first window (the bars of the 30 calendar days before
+     *        start_date, read with MarketDataBus publishing off) and the split events from that
+     *        window's first day to end_date. A failed read WARNs and the run goes on without it.
+     */
+    void load_equity_cost_retier(const std::vector<std::string>& symbols,
+                                 const Timestamp& start_date, const Timestamp& end_date);
 
     /**
      * @brief Save daily positions to database

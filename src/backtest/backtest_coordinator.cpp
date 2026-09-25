@@ -1,12 +1,15 @@
 #include "trade_ngin/backtest/backtest_coordinator.hpp"
+#include "trade_ngin/backtest/equity_cost_warmup.hpp"
 #include "trade_ngin/backtest/junk_signal_feed.hpp"
 #include <unordered_set>
 #include <algorithm>
 #include <iomanip>
+#include <set>
 #include <sstream>
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/core/run_id_generator.hpp"
 #include "trade_ngin/core/time_utils.hpp"
+#include "trade_ngin/data/conversion_utils.hpp"
 #include "trade_ngin/data/market_data_bus.hpp"
 #include "trade_ngin/portfolio/sizing_capital.hpp"
 #include "trade_ngin/risk/risk_scale_report.hpp"
@@ -195,6 +198,9 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
     session_hold_enabled_ = (asset_class == AssetClass::FUTURES);
     risk_scale_report_enabled_ = (asset_class == AssetClass::FUTURES);
     size_on_equity_enabled_ = (asset_class == AssetClass::FUTURES);
+    // K1 (T-7b-2 8c): the per-bar re-tier is the equity book's; futures roots keep their static
+    // per-root cost configs.
+    equity_cost_retier_enabled_ = (asset_class == AssetClass::EQUITIES);
 
     // Store backtest dates for later use in save_portfolio_results_to_db
     backtest_start_date_ = start_date;
@@ -231,6 +237,10 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
 
     auto& all_bars = data_result.value();
     auto grouped_bars = data_loader_->group_bars_by_timestamp(all_bars);
+
+    if (equity_cost_retier_enabled_) {
+        load_equity_cost_retier(symbols, start_date, end_date);
+    }
 
     // Get portfolio config
     const auto& portfolio_config = portfolio->get_config();
@@ -330,6 +340,14 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
         }
 
         day_index++;
+    }
+
+    if (equity_cost_retier_enabled_) {
+        INFO("EQUITY_COST_RETIER_SUMMARY cycles=" + std::to_string(equity_cost_retier_cycles_) +
+             " tier_changes=" + std::to_string(equity_cost_retier_changes_) +
+             " splits=" + std::to_string(equity_cost_retier_.split_count()) +
+             ": every cycle re-tiered both cost managers from the 20 bars ending at its signal "
+             "bar, in window-end share units");
     }
 
     // Sort executions by timestamp
@@ -550,6 +568,27 @@ Result<void> BacktestCoordinator::process_portfolio_day(
         // classified later (as the signal group) against strictly earlier bars only.
         if (session_hold_enabled_) session_classifier_.add_bars(bars);
 
+        // K1 (T-7b-2 8c; T-4b BT-cost-tier-warmup): before this group reaches the cost models or
+        // the PortfolioManager, both cost managers are re-tiered from the 20 bars ending at the
+        // PREVIOUS group, the signal bar whose close prices this cycle's fills (live re-tiers on
+        // every run from the 20 bars ending at T-1), in the window-end share unit
+        // (equity_cost_retier.hpp). Then this group joins the trailing windows.
+        if (equity_cost_retier_enabled_) {
+            const auto pass =
+                equity_cost_retier_.retier(execution_manager_->get_transaction_cost_manager(),
+                                           portfolio->get_transaction_cost_manager());
+            ++equity_cost_retier_cycles_;
+            for (const auto& c : pass.changes) {
+                ++equity_cost_retier_changes_;
+                INFO("EQUITY_COST_RETIER date=" + core::format_utc_date(timestamp) +
+                     " symbol=" + c.symbol + " tier " + c.from + "->" + c.to +
+                     " adv=" + std::to_string(c.adv) + " bars=" + std::to_string(c.bars) +
+                     " window=" + c.first_bar + ".." + c.last_bar +
+                     " (split-consistent shares; both cost managers)");
+            }
+            equity_cost_retier_.append(bars);
+        }
+
         // If this is the first bar set, initialize previous_bars and return early
         // to avoid processing day 1 twice (directly + as "previous bars" on day 2)
         bool had_previous_bars = portfolio_has_previous_bars_;
@@ -564,7 +603,12 @@ Result<void> BacktestCoordinator::process_portfolio_day(
         // Update transaction cost manager with market data for ADV and volatility tracking
         for (const auto& bar : bars) {
             double close = static_cast<double>(bar.close);
-            double volume = static_cast<double>(bar.volume);
+            // K1 (T-7b-2 8c; T-4b ADVERSARIAL A-3): an equity's volume in the window-end share
+            // unit, so the ADV that scales participation is in the unit of the traded quantity and
+            // of the tier's ADV (live's two ADVs are the same twenty observations).
+            double volume = equity_cost_retier_enabled_
+                                ? equity_cost_retier_.split_consistent_volume(bar)
+                                : static_cast<double>(bar.volume);
 
             // Get previous close for log return calculation
             double prev_close = 0.0;
@@ -1296,12 +1340,92 @@ void BacktestCoordinator::reset_portfolio_state() {
     withheld_junk_signal_bars_.clear();
     risk_scale_report_enabled_ = false;
     size_on_equity_enabled_ = false;
+    equity_cost_retier_enabled_ = false;
+    equity_cost_retier_.reset();
+    equity_cost_retier_cycles_ = 0;
+    equity_cost_retier_changes_ = 0;
     current_run_id_.clear();
     portfolio_previous_positions_.clear();
     // E2-F54 (c): without this, a second portfolio backtest in the same process opens with
     // the previous book's cumulative realized and reports its first bar as a difference.
     last_cumulative_realized_.clear();
     csv_exporter_.reset();
+}
+
+void BacktestCoordinator::load_equity_cost_retier(const std::vector<std::string>& symbols,
+                                                  const Timestamp& start_date,
+                                                  const Timestamp& end_date) {
+    equity_cost_retier_.reset();
+    equity_cost_retier_cycles_ = 0;
+    equity_cost_retier_changes_ = 0;
+    // The first window is the cost warm-up's (equity_cost_warmup.hpp, H-13): the 30 calendar
+    // days before start_date, ending strictly before it, so the first cycle's tier is set from
+    // bars that existed when the backtest starts.
+    const auto window = equity_cost_warmup_window(start_date);
+    const std::string from = core::format_utc_date(window.start);
+    const std::string to = core::format_utc_date(end_date);
+
+    // The split events that put a bar's volume in the window-end share unit: every ex-date from
+    // the first window's first day to end_date (the adjusted prices' frame).
+    auto actions = db_->get_per_bar_corporate_actions(symbols, from, to);
+    if (actions.is_error()) {
+        WARN("EQUITY_COST_RETIER the split events " + from + ".." + to +
+             " could not be read (" + std::string(actions.error()->what()) +
+             "): every volume stays in raw shares, so a bar before a split is tiered in its own "
+             "share unit");
+    } else {
+        for (const auto& row : actions.value()) {
+            if (row.action != "split") continue;
+            equity_cost_retier_.add_split(row.ticker, row.date_str, row.value);
+            INFO("EQUITY_COST_RETIER split symbol=" + row.ticker + " ex=" + row.date_str +
+                 " factor=" + std::to_string(row.value) +
+                 ": the volume of every earlier bar is multiplied by it");
+        }
+    }
+
+    // The bars before start_date, read with MarketDataBus publishing off (as run_portfolio reads
+    // its own window), so they reach the trailing windows and nothing else.
+    const bool publishing = MarketDataBus::instance().is_publish_enabled();
+    MarketDataBus::instance().set_publish_enabled(false);
+    Result<std::shared_ptr<arrow::Table>> seed = [&]() {
+        try {
+            return db_->get_market_data(symbols, window.start, window.end, AssetClass::EQUITIES,
+                                        DataFrequency::DAILY, "ohlcv");
+        } catch (...) {
+            MarketDataBus::instance().set_publish_enabled(publishing);
+            throw;
+        }
+    }();
+    MarketDataBus::instance().set_publish_enabled(publishing);
+
+    size_t seed_bars = 0;
+    std::set<std::string> seeded;
+    if (seed.is_error()) {
+        WARN("EQUITY_COST_RETIER the bars before start_date could not be read (" +
+             std::string(seed.error()->what()) +
+             "): the first cycles re-tier from the in-window bars only");
+    } else {
+        auto converted = DataConversionUtils::arrow_table_to_bars(seed.value());
+        if (converted.is_error()) {
+            WARN("EQUITY_COST_RETIER the bars before start_date could not be converted (" +
+                 std::string(converted.error()->what()) +
+                 "): the first cycles re-tier from the in-window bars only");
+        } else {
+            auto bars = converted.value();
+            std::stable_sort(bars.begin(), bars.end(), [](const Bar& a, const Bar& b) {
+                return a.timestamp < b.timestamp;
+            });
+            equity_cost_retier_.append(bars);
+            seed_bars = bars.size();
+            for (const auto& b : bars) seeded.insert(b.symbol);
+        }
+    }
+    INFO("EQUITY_COST_RETIER window=[" + core::format_utc_datetime(window.start) + "Z, " +
+         core::format_utc_datetime(window.end) + "Z] bars=" + std::to_string(seed_bars) +
+         " symbols=" + std::to_string(seeded.size()) + "/" + std::to_string(symbols.size()) +
+         " splits=" + std::to_string(equity_cost_retier_.split_count()) +
+         ": the first tier window; every cycle re-tiers both cost managers from the 20 bars ending "
+         "at its signal bar, in window-end share units, and feeds the impact ADV in that unit");
 }
 
 std::string BacktestCoordinator::generate_portfolio_run_id(
