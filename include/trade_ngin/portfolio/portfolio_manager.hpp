@@ -535,6 +535,15 @@ private:
      */
     Result<void> optimize_positions();
 
+    // T-7b-2 9e, the gate's cut delivered in whole contracts (include/trade_ngin/portfolio/
+    // cut_delivery.hpp): the account book the lap's optimizer produced before the gate, the
+    // factor the gate multiplied the book by on this lap (1 = none), and each symbol's notional
+    // per contract as the optimizer last priced it (weight per contract x sizing capital).
+    std::map<std::string, double> lap_book_before_gate_;
+    double lap_cut_factor_{1.0};
+    std::unordered_map<std::string, double> cut_notional_per_contract_;
+    void deliver_lap_cut(int lap);
+
     /**
      * @brief Build the context a risk module sees for one call
      */

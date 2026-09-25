@@ -1,6 +1,7 @@
 // src/portfolio/portfolio_manager.cpp
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
 #include "trade_ngin/portfolio/allocation_split.hpp"
+#include "trade_ngin/portfolio/cut_delivery.hpp"
 #include <unordered_set>
 #include <algorithm>
 #include <climits>
@@ -470,6 +471,17 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                 try {
                     Logger::register_component("DynamicOptimizer");
                     auto opt_result = optimize_positions();
+                    {
+                        // 9e: the lap's book before the gate, the base of a cut this lap delivers.
+                        std::lock_guard<std::mutex> lock(mutex_);
+                        lap_book_before_gate_.clear();
+                        for (const auto& [sid, sinfo] : strategies_) {
+                            if (!sinfo.use_optimization || pinned_scopes_.count(sid)) continue;
+                            for (const auto& [sym, pos] : sinfo.target_positions) {
+                                lap_book_before_gate_[sym] += static_cast<double>(pos.quantity);
+                            }
+                        }
+                    }
                     if (opt_result.is_error()) {
                         WARN("Portfolio optimization failed in iteration " +
                              std::to_string(iteration) + ": " +
@@ -501,6 +513,7 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
             }
 
             // Risk Management step
+            lap_cut_factor_ = 1.0;
             bool has_risk_manager = !risk_modules_.empty();
             if (has_risk_manager) {
                 // A portfolio-scope risk step that cannot answer REFUSES the scope (HD 2026-09-21,
@@ -592,6 +605,17 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                 break;
             }
 
+            // 9e: a lap the gate cut delivers the cut in whole contracts (cut_delivery.hpp): the
+            // cut book is the next lap's input, so the next lap re-optimises it from the held
+            // anchor and re-reads the gate, and neither its deadband nor forced rounding can undo
+            // the cut.
+            bool cut_delivered = false;
+            if (lap_cut_factor_ < 1.0 && !config_.allow_fractional_positions &&
+                config_.use_optimization && optimizer_) {
+                deliver_lap_cut(iteration);
+                cut_delivered = true;
+            }
+
             // Check for partial contracts in final positions.
             // When the portfolio permits fractional positions there is nothing to
             // converge to, so a fraction is the answer rather than a reason to
@@ -621,7 +645,7 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                 }
             }
 
-            if (!partials_found) {
+            if (!partials_found && !cut_delivered) {
                 if (config_.allow_fractional_positions) {
                     INFO("Fractional positions permitted; accepting iteration " +
                          std::to_string(iteration) +
@@ -1694,6 +1718,192 @@ SleeveDistribution distribute_optimizer_contracts(double optimizer_contracts,
     return d;
 }
 
+CutDelivery deliver_cut_in_whole_contracts(const CutDeliveryInput& in) {
+    CutDelivery out;
+    const double f = in.factor;
+    auto held = [&in](const std::string& sym) {
+        auto it = in.held.find(sym);
+        return it == in.held.end() ? 0.0 : std::round(it->second);
+    };
+    auto notional = [&in](const std::string& sym) {
+        auto it = in.notional_per_contract.find(sym);
+        return it == in.notional_per_contract.end() ? -1.0 : it->second;
+    };
+    std::map<std::string, double>& R = out.book;
+    for (const auto& [sym, q] : in.lap_book) R[sym] = std::round(q);
+    for (const auto& [sym, q] : R) {
+        const double n = notional(sym);
+        if (n <= 0.0) {
+            if (q != 0.0) ++out.unknown_notional;
+            continue;
+        }
+        out.lap_notional += std::abs(q) * n;
+        out.held_notional += std::abs(held(sym)) * n;
+    }
+    out.target_notional = f * out.lap_notional;
+
+    // The covariance's index by symbol (empty without a covariance: best fit only).
+    std::unordered_map<std::string, size_t> cix;
+    if (!in.covariance_symbols.empty() && in.covariance.size() == in.covariance_symbols.size()) {
+        for (size_t i = 0; i < in.covariance_symbols.size(); ++i) cix[in.covariance_symbols[i]] = i;
+    }
+    const double cap = in.capital;
+    // Squared tracking error of the book R against the gate's target f x (the lap's book), in the
+    // optimizer's weight space (contracts x notional / capital).
+    auto te_sq = [&]() {
+        const size_t m = in.covariance_symbols.size();
+        std::vector<double> e(m, 0.0);
+        for (const auto& [sym, idx] : cix) {
+            auto it = R.find(sym);
+            const double n = notional(sym);
+            if (it == R.end() || n <= 0.0) continue;
+            auto bt = in.lap_book.find(sym);
+            const double b = bt == in.lap_book.end() ? 0.0 : bt->second;
+            e[idx] = (f * b - it->second) * n / cap;
+        }
+        double t = 0.0;
+        for (size_t i = 0; i < m; ++i)
+            for (size_t j = 0; j < m; ++j) t += e[i] * in.covariance[i][j] * e[j];
+        return t;
+    };
+    auto gross = [&]() {
+        double g = 0.0;
+        for (const auto& [sym, q] : R) {
+            const double n = notional(sym);
+            if (n > 0.0) g += std::abs(q) * n;
+        }
+        return g;
+    };
+    // A contract beyond the held book on the same side (or the whole position when the held book is
+    // flat or on the other side) is one the day's request added.
+    auto is_new = [&](const std::string& sym, double q) {
+        const double h = held(sym);
+        if (h == 0.0 || (h > 0.0) != (q > 0.0)) return true;
+        return std::abs(q) > std::abs(h);
+    };
+
+    double g = gross();
+    while (g > out.target_notional + 1e-6) {
+        const double excess = g - out.target_notional;
+        std::string pick;
+        bool pick_new = false;
+        for (int pass = 0; pass < 2 && pick.empty(); ++pass) {
+            // pass 0: the contracts the day's request added; pass 1: held contracts.
+            double best_cover = -1.0, best_large = -1.0;
+            std::string cover, large;
+            for (const auto& [sym, q] : R) {
+                const double n = notional(sym);
+                if (q == 0.0 || n <= 0.0) continue;
+                if ((pass == 0) != is_new(sym, q)) continue;
+                if (n >= excess && (best_cover < 0.0 || n < best_cover)) {
+                    best_cover = n;
+                    cover = sym;
+                }
+                if (n > best_large) {
+                    best_large = n;
+                    large = sym;
+                }
+            }
+            pick = !cover.empty() ? cover : large;
+            if (!pick.empty()) {
+                // Inside the class, the removal that leaves the book nearest the target in tracking
+                // error; a symbol outside the covariance is not ranked.
+                double best = -1.0;
+                std::string te_pick;
+                for (auto& [sym, q] : R) {
+                    const double n = notional(sym);
+                    if (q == 0.0 || n <= 0.0 || !cix.count(sym)) continue;
+                    if ((pass == 0) != is_new(sym, q)) continue;
+                    const double step = q > 0.0 ? 1.0 : -1.0;
+                    q -= step;
+                    const double t = te_sq();
+                    q += step;
+                    if (best < 0.0 || t < best - 1e-18) {
+                        best = t;
+                        te_pick = sym;
+                    }
+                }
+                if (!te_pick.empty()) pick = te_pick;
+                pick_new = is_new(pick, R[pick]);
+            }
+        }
+        if (pick.empty()) break;
+        R[pick] -= (R[pick] > 0.0 ? 1.0 : -1.0);
+        (pick_new ? out.removed_new : out.removed_held) += 1;
+        out.removed.emplace_back(pick, pick_new);
+        g = gross();
+    }
+    for (const auto& [sym, q] : R) {
+        const double n = notional(sym);
+        if (n > 0.0) out.cut_notional += std::abs(q) * n;
+    }
+    return out;
+}
+
+// 9e: deliver this lap's cut in whole contracts (deliver_cut_in_whole_contracts), write the cut
+// book into the optimizing sleeves' targets as the next lap's input (split by largest remainder of
+// each sleeve's cut target), and log it as RISK_CUT_BOOK.
+void PortfolioManager::deliver_lap_cut(int lap) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    CutDeliveryInput in;
+    in.lap_book = lap_book_before_gate_;
+    for (const auto& [sid, sinfo] : strategies_) {
+        if (!sinfo.use_optimization || pinned_scopes_.count(sid)) continue;
+        for (const auto& [sym, pos] : sinfo.current_positions) {
+            in.held[sym] += static_cast<double>(pos.quantity);
+        }
+    }
+    in.notional_per_contract = cut_notional_per_contract_;
+    in.factor = lap_cut_factor_;
+    in.capital = static_cast<double>(sizing_capital_);
+    if (covariance_cache_valid_) {
+        in.covariance_symbols = cached_symbols_;
+        in.covariance = cached_covariance_;
+    }
+    const CutDelivery d = deliver_cut_in_whole_contracts(in);
+
+    std::string removed;
+    for (const auto& [sym, added] : d.removed) removed += " " + sym + (added ? "(new)" : "(held)");
+    auto held = [&in](const std::string& sym) {
+        auto it = in.held.find(sym);
+        return it == in.held.end() ? 0.0 : std::round(it->second);
+    };
+    std::string changed;
+    for (const auto& [sym, q] : d.book) {
+        const double b = std::round(in.lap_book.at(sym));
+        if (q != b || q != held(sym)) {
+            std::ostringstream c;
+            c << " " << sym << " held=" << held(sym) << " lap=" << b << " cut=" << q;
+            changed += c.str();
+        }
+    }
+    for (const auto& [sym, q] : d.book) {
+        std::vector<SleeveContribution> contributions;
+        for (auto& [sid, sinfo] : strategies_) {
+            if (!sinfo.use_optimization || pinned_scopes_.count(sid)) continue;
+            if (!sinfo.target_positions.count(sym)) continue;
+            contributions.push_back(
+                {sid, static_cast<double>(sinfo.target_positions.at(sym).quantity)});
+        }
+        if (contributions.empty()) continue;
+        const SleeveDistribution split = distribute_optimizer_contracts(q, contributions);
+        for (size_t k = 0; k < contributions.size(); ++k) {
+            strategies_.at(contributions[k].strategy_id).target_positions[sym].quantity =
+                static_cast<Decimal>(static_cast<double>(split.stored[k]));
+        }
+    }
+    char buf[512];
+    std::snprintf(buf, sizeof(buf),
+                  "RISK_CUT_BOOK lap=%d factor=%.10f notional lap_book=%.2f held=%.2f "
+                  "target=%.2f cut_book=%.2f delivered=%.6f removed_new=%d removed_held=%d "
+                  "unknown_notional=%d",
+                  lap, lap_cut_factor_,
+                  d.lap_notional, d.held_notional, d.target_notional, d.cut_notional,
+                  d.lap_notional > 0.0 ? d.cut_notional / d.lap_notional : 1.0, d.removed_new,
+                  d.removed_held, d.unknown_notional);
+    INFO(std::string(buf) + " removed:" + removed + " |" + changed);
+}
+
 Result<void> PortfolioManager::optimize_positions() {
     try {
         // Get unique symbols across all strategies and collect data under lock
@@ -1895,6 +2105,12 @@ Result<void> PortfolioManager::optimize_positions() {
 
             // Calculate trading costs (inside lock since it accesses strategies_)
             costs = calculate_trading_costs(symbols, static_cast<double>(sizing_capital_));
+
+            // 9e: the notional per contract a delivered cut is measured in, as priced here.
+            for (size_t i = 0; i < symbols.size(); ++i) {
+                cut_notional_per_contract_[symbols[i]] =
+                    weights_per_contract[i] * static_cast<double>(sizing_capital_);
+            }
         }  // End of mutex lock scope
 
         // Use cached covariance if valid, otherwise compute and cache
@@ -2641,6 +2857,7 @@ Result<void> PortfolioManager::apply_risk_management(const std::vector<Bar>& dat
                 pinned = true;
             } else if (verdict.action == RiskAction::SCALE) {
                 const double scale = verdict.scale;
+                lap_cut_factor_ = scale;
                 WARN("Risk limits exceeded, scaling positions by " + std::to_string(scale));
 
                 // DESIGN DECISION: Risk scaling applies to target_positions only (Approach A)

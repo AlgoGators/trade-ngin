@@ -127,6 +127,7 @@ set(TEST_SOURCES
     portfolio/test_pm_session_hold.cpp
     portfolio/test_delivered_cut.cpp
     portfolio/test_sizing_capital.cpp
+    portfolio/test_cut_delivery.cpp
     storage/test_backtest_results_manager.cpp
     storage/test_live_results_manager.cpp
     storage/test_equity_fallback_stream_db.cpp
