@@ -74,6 +74,11 @@ struct RiskContext {
     const std::vector<Bar>* bars{nullptr};  ///< THIS process_market_data call's data; never null from the PM
     std::unordered_map<std::string, double> applied;  ///< scope_id -> product of the QUANTISED factors
                                      ///< applied to that scope so far this rebalance
+    /// The symbols the book can hold this rebalance: those some strategy lists and signals
+    /// (StrategyInterface::is_signalling) and those any strategy targets or holds non-zero. The
+    /// Carver gate intersects its window's dates over these only (T-7b-2 CGW). Null (a caller that
+    /// does not set it) means every symbol of the window, the rule before CGW.
+    const std::set<std::string>* gate_participants{nullptr};
 };
 
 /// What the PM did, delivered to every module it evaluated in that scope and phase/lap.

@@ -39,7 +39,10 @@ public:
     /// Appends this rebalance's bars to the window ONCE (behind the explicit per-rebalance
     /// flag), trims it to the newest `lookback_period` distinct DATES, applies F5 and builds the
     /// MarketData. Runs on every lap, including a lap whose book is empty; laps 2..n re-use the
-    /// window lap 1 built rather than appending the same bars again.
+    /// window lap 1 built rather than appending the same bars again. F5's intersection and the
+    /// MarketData run over ctx.gate_participants' bars when the context carries a non-empty set
+    /// (T-7b-2 CGW: a symbol nobody signals, targets or holds no longer cuts everyone's dates), and
+    /// one GATE_NOT_SIGNALLING line names the window's symbols left out.
     void on_bars(const std::vector<Bar>& bars, const RiskContext& ctx) override;
 
     /// F5's floor. Below this many COMPLETE dates the sparse-date filter does not engage and the

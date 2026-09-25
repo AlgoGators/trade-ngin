@@ -795,3 +795,106 @@ TEST_F(CovarianceParticipants, NoMaxRhoLineWithoutTheOptimizer) {
     set_log_level(LogLevel::WARNING);
     EXPECT_TRUE(lines_with(out, "COVARIANCE_MAX_RHO").empty());
 }
+
+// ===== (4) the Carver gate's window: the E-7 mechanism (T-7b-2 CGW) =====
+//
+// The gate's window keeps the last lookback_period dates of every bar it was fed, and F5 keeps only
+// the dates on which EVERY symbol of that window printed. Before CGW the intersection ran over every
+// symbol with a bar, so a symbol no strategy signals, targets or holds (a contract still warming up)
+// cut every other symbol's window to its own dates, exactly as it did the optimizer's before E-7.
+// Since CGW the intersection (and the gate's MarketData) runs over the gate's participants: a symbol
+// some strategy lists and signals, or one any strategy targets or holds non-zero. 150 weekdays keep
+// F5 engaged (floor 120).
+
+// NEW prints only the last 130 of 150 weekdays; the trend sleeve is one price short of signalling it
+// and its target is 0. It is left out of the gate's window: the gate reads AAA and BBB over all 150
+// dates, and one GATE_NOT_SIGNALLING line names NEW.
+//   parent: the gate reads 3 symbols over NEW's 130 dates (20 dropped) and prints no such line.
+TEST_F(CovarianceParticipants, AGateWindowLeavesOutASymbolNoStrategySignalsTargetsOrHolds) {
+    const auto w = weekdays(150);
+    const auto fresh = last_n(w, 130);
+    set_log_level(LogLevel::INFO);
+    ::testing::internal::CaptureStdout();
+    run_sleeves({{"AAA", w, 1.0}, {"BBB", w, 1.0}, {"NEW", fresh, 0.0}},
+                {{"trend", 1.0, {{"NEW", -1}}}},
+                participants_config(/*optimization=*/true, /*carver=*/true));
+    const std::string out = ::testing::internal::GetCapturedStdout();
+    set_log_level(LogLevel::WARNING);
+
+    const auto win = lines_with(out, "T4_RISK_WINDOW ");
+    ASSERT_FALSE(win.empty()) << out;
+    for (const auto& line : win) {
+        EXPECT_EQ(field(line, "symbols"), "2") << line;
+        EXPECT_EQ(field(line, "dates"), "150") << "every date, NEW's missing 20 kept: " << line;
+        EXPECT_EQ(field(line, "dates_dropped"), "0") << line;
+        EXPECT_EQ(field(line, "f5_engaged"), "1") << line;
+    }
+    const auto left = lines_with(out, "GATE_NOT_SIGNALLING ");
+    ASSERT_EQ(left.size(), 1u) << "one line per rebalance naming the symbols left out:\n" << out;
+    EXPECT_EQ(field(left[0], "count"), "1") << left[0];
+    EXPECT_EQ(field(left[0], "symbols"), "NEW") << left[0];
+}
+
+// A symbol no strategy signals but a strategy TARGETS (the sleeve's target stands while it warms up)
+// stays in the gate's window: the book can hold it, so the gate must measure it. A control: the
+// parent does the same (every symbol is in).
+TEST_F(CovarianceParticipants, AGateWindowKeepsATargetedSymbolNoStrategySignals) {
+    const auto w = weekdays(150);
+    const auto fresh = last_n(w, 130);
+    set_log_level(LogLevel::INFO);
+    ::testing::internal::CaptureStdout();
+    run_sleeves({{"AAA", w, 1.0}, {"BBB", w, 1.0}, {"NEW", fresh, 1.0}},
+                {{"trend", 1.0, {{"NEW", -1}}}},
+                participants_config(/*optimization=*/true, /*carver=*/true));
+    const std::string out = ::testing::internal::GetCapturedStdout();
+    set_log_level(LogLevel::WARNING);
+    const auto win = lines_with(out, "T4_RISK_WINDOW ");
+    ASSERT_FALSE(win.empty()) << out;
+    for (const auto& line : win) {
+        EXPECT_EQ(field(line, "symbols"), "3") << line;
+        EXPECT_EQ(field(line, "dates"), "130") << line;
+    }
+    EXPECT_TRUE(lines_with(out, "GATE_NOT_SIGNALLING ").empty()) << out;
+    EXPECT_TRUE(lines_with(out, "POSGUARD_MISS").empty()) << "every held symbol maps: " << out;
+}
+
+// The residue that stays KNOWN, as for the optimizer (E-7): a newly listed contract the strategies DO
+// signal still sets everyone's window to its own dates, because the book can hold it. A control: the
+// parent does the same.
+TEST_F(CovarianceParticipants, KnownANewSymbolTheStrategiesSignalStillSetsTheGatesWindow) {
+    const auto w = weekdays(150);
+    const auto fresh = last_n(w, 130);
+    set_log_level(LogLevel::INFO);
+    ::testing::internal::CaptureStdout();
+    run_sleeves({{"AAA", w, 1.0}, {"BBB", w, 1.0}, {"NEW", fresh, 0.0}},
+                {{"trend", 1.0, {{"NEW", 0}}}},
+                participants_config(/*optimization=*/true, /*carver=*/true));
+    const std::string out = ::testing::internal::GetCapturedStdout();
+    set_log_level(LogLevel::WARNING);
+    const auto win = lines_with(out, "T4_RISK_WINDOW ");
+    ASSERT_FALSE(win.empty()) << out;
+    for (const auto& line : win) {
+        EXPECT_EQ(field(line, "symbols"), "3") << line;
+        EXPECT_EQ(field(line, "dates"), "130") << "NEW's dates for everyone: " << line;
+        EXPECT_EQ(field(line, "dates_dropped"), "20") << line;
+    }
+    EXPECT_TRUE(lines_with(out, "GATE_NOT_SIGNALLING ").empty()) << out;
+}
+
+// Two sleeves (BASE's shape): NEW stays in the gate's window when ANY sleeve signals it, and is left
+// out only when none does. Here the fast sleeve signals it.
+//   A control for the first half: the parent keeps it too.
+TEST_F(CovarianceParticipants, AGateWindowKeepsASymbolAnySleeveSignals) {
+    const auto w = weekdays(150);
+    const auto fresh = last_n(w, 130);
+    set_log_level(LogLevel::INFO);
+    ::testing::internal::CaptureStdout();
+    run_sleeves({{"AAA", w, 1.0}, {"BBB", w, 1.0}, {"NEW", fresh, 0.0}},
+                {{"trend", 0.7, {{"NEW", -1}}}, {"fast", 0.3, {{"NEW", 0}}}},
+                participants_config(/*optimization=*/true, /*carver=*/true));
+    const std::string out = ::testing::internal::GetCapturedStdout();
+    set_log_level(LogLevel::WARNING);
+    const auto win = lines_with(out, "T4_RISK_WINDOW ");
+    ASSERT_FALSE(win.empty()) << out;
+    for (const auto& line : win) EXPECT_EQ(field(line, "symbols"), "3") << line;
+}

@@ -419,6 +419,33 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
             delivered_cut_ = DeliveredCut{};
             delivered_npc_.clear();
         }
+        // T-7b-2 CGW (the E-7 mechanism in the risk gate): the symbols the book can hold this
+        // rebalance, which the Carver gate's window intersects its dates over. A symbol some strategy
+        // lists and signals (StrategyInterface::is_signalling: a trend sleeve does not while the
+        // symbol's price history is shorter than its longest EMA window), or one any strategy targets
+        // or holds non-zero, so every book a lap can form maps into the window: the optimizer admits
+        // only signalled symbols (E-7) and keeps every other symbol at its strategy's own target. A
+        // symbol outside the set cannot be held today, so its missing dates no longer cut the dates
+        // of every symbol that can.
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            gate_participants_.clear();
+            for (const auto& [sid, info] : strategies_) {
+                for (const auto& [symbol, pos] : info.target_positions) {
+                    if (std::abs(static_cast<double>(pos.quantity)) > 1e-12 ||
+                        (info.strategy && info.strategy->is_signalling(symbol))) {
+                        gate_participants_.insert(symbol);
+                    }
+                }
+                auto prev = prev_positions.find(sid);
+                if (prev == prev_positions.end()) continue;
+                for (const auto& [symbol, pos] : prev->second) {
+                    if (std::abs(static_cast<double>(pos.quantity)) > 1e-12) {
+                        gate_participants_.insert(symbol);
+                    }
+                }
+            }
+        }
         {
             const RiskContext rebalance_ctx = make_risk_context(
                 RiskPhase::REBALANCE_START, 0, RiskScope::PORTFOLIO, id_, sizing_capital_,
@@ -1958,8 +1985,9 @@ Result<void> PortfolioManager::optimize_positions() {
             // themselves); 7d's floor catches that only below 20 returns. A symbol left
             // out keeps the strategy's own target (zero while it warms up) exactly as a symbol
             // with too little history does below; the PM still records its closes, so it enters
-            // with its full history the day it is signalled. The Carver gate's window is not
-            // changed here (it is keyed on the bars fed, not on the optimizer's participants).
+            // with its full history the day it is signalled. The Carver gate's window applies the
+            // same test to its own intersection (T-7b-2 CGW, gate_participants_ in
+            // process_market_data).
             std::vector<std::string> not_signalling;
             size_t not_signalling_nonzero = 0;
             auto signalled = [&](const std::string& symbol) {
@@ -2268,6 +2296,7 @@ RiskContext PortfolioManager::make_risk_context(RiskPhase phase, int lap, RiskSc
     ctx.scope_id = scope_id;
     ctx.bars = &data;
     ctx.applied = rebalance_applied_;
+    ctx.gate_participants = &gate_participants_;
     return ctx;
 }
 

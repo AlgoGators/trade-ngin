@@ -89,7 +89,6 @@ size_t CarverRiskModule::window_dates() const {
 }
 
 void CarverRiskModule::on_bars(const std::vector<Bar>& bars, const RiskContext& ctx) {
-    (void)ctx;
     // (1) APPEND ONCE PER REBALANCE, not once per lap.
     //
     // The window used to be re-filled on every lap of the optimizer/risk loop, which calls this
@@ -168,9 +167,39 @@ void CarverRiskModule::on_bars(const std::vector<Bar>& bars, const RiskContext& 
     // multi-day gap move to one date); a pairwise-overlap correlation (per-pair sample sets can
     // produce a covariance that is not positive semi-definite, and the same matrix feeds
     // w'Sigma w in the VaR gate where a negative quadratic form is swallowed by sqrt(max(0, v))).
+    // (4) THE PARTICIPANTS (T-7b-2 CGW, the E-7 mechanism in the gate). The strict rule is over
+    // the symbols the book can hold this rebalance (RiskContext::gate_participants: signalled by
+    // some strategy, or targeted or held), not over every symbol with a bar in the window: a symbol
+    // nobody signals, targets or holds has zero weight in every term the gate computes, so its
+    // columns add nothing, while its missing dates removed those dates from EVERY symbol's returns
+    // (on the frozen futures backtest the roots with no Sunday bar dropped 50 to 67 dates a day
+    // while they were still warming up). The window itself keeps every bar, so a symbol that starts
+    // to signal enters with its whole history. An empty or absent set leaves the whole window.
+    std::vector<Bar> participant_bars;
+    std::set<std::string> left_out;
+    const bool participants_only = ctx.gate_participants != nullptr && !ctx.gate_participants->empty();
+    if (participants_only) {
+        participant_bars.reserve(window_.size());
+        for (const auto& bar : window_) {
+            if (ctx.gate_participants->count(bar.symbol)) {
+                participant_bars.push_back(bar);
+            } else {
+                left_out.insert(bar.symbol);
+            }
+        }
+    }
+    const std::vector<Bar>& pool =
+        participants_only && !participant_bars.empty() ? participant_bars : window_;
+    if (&pool == &participant_bars && !left_out.empty()) {
+        std::string list;
+        for (const auto& s : left_out) list += (list.empty() ? "" : ",") + s;
+        INFO("GATE_NOT_SIGNALLING count=" + std::to_string(left_out.size()) + " symbols=" + list +
+             ": no strategy signals, targets or holds them; left out of the risk gate's window and "
+             "its date intersection this rebalance");
+    }
     std::set<std::string> symbols;
     std::map<Timestamp, std::set<std::string>> by_date;
-    for (const auto& bar : window_) {
+    for (const auto& bar : pool) {
         symbols.insert(bar.symbol);
         by_date[bar.timestamp].insert(bar.symbol);
     }
@@ -197,8 +226,8 @@ void CarverRiskModule::on_bars(const std::vector<Bar>& bars, const RiskContext& 
 
     if (f5_engaged_) {
         std::vector<Bar> filtered;
-        filtered.reserve(window_.size());
-        for (const auto& bar : window_) {
+        filtered.reserve(pool.size());
+        for (const auto& bar : pool) {
             if (complete.count(bar.timestamp)) filtered.push_back(bar);
         }
         market_data_ = rm_.create_market_data(filtered);
@@ -209,7 +238,7 @@ void CarverRiskModule::on_bars(const std::vector<Bar>& bars, const RiskContext& 
         // is the failure this change set removes, and a 2-date window additionally drives
         // create_market_data into its divide-by-(n-1)==0 branch, where the gate goes blind with
         // every multiplier at 1.0.
-        market_data_ = rm_.create_market_data(window_);
+        market_data_ = rm_.create_market_data(pool);
         market_data_built_this_rebalance_ = true;
     }
 }

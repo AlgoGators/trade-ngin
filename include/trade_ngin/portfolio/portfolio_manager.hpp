@@ -544,6 +544,10 @@ private:
     std::unordered_map<std::string, double> cut_notional_per_contract_;
     void deliver_lap_cut(int lap);
 
+    /// T-7b-2 CGW: the risk gate's participants this rebalance (RiskContext::gate_participants),
+    /// rebuilt before lap 1 by gate_participants_for_rebalance.
+    std::set<std::string> gate_participants_;
+
     /**
      * @brief Build the context a risk module sees for one call
      */
