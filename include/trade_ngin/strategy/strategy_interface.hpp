@@ -57,6 +57,19 @@ public:
     virtual Result<void> check_risk_limits() = 0;
 
     /**
+     * @brief The capital the strategy sizes on from the next on_data (T-7b-2 9c, HD 2026-09-25:
+     *        sizing uses current equity). The PortfolioManager passes the account's equity, marked
+     *        at the close of the newest bar the sizing reads, times this strategy's allocation
+     *        (PortfolioManager::set_sizing_capital). A strategy that does not implement it refuses,
+     *        so a caller that asked for compounding cannot silently keep a constant capital.
+     */
+    virtual Result<void> set_capital_allocation(double capital) {
+        (void)capital;
+        return make_error<void>(ErrorCode::STRATEGY_ERROR,
+                                "this strategy does not accept a sizing capital", "Strategy");
+    }
+
+    /**
      * @brief Set backtest mode for this strategy
      * @param is_backtest True if running in backtest mode (stores daily PnL), false for live (cumulative PnL)
      * @note Default implementation does nothing. Override in BaseStrategy for backtest-specific behavior.

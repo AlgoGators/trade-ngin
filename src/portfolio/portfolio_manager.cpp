@@ -20,6 +20,7 @@ PortfolioManager::PortfolioManager(PortfolioConfig config, std::string id,
       instance_id_(id_),
       cost_manager_() {
     Logger::register_component("PortfolioManager");
+    sizing_capital_ = config_.total_capital;  // T-7b-2 9c: until set_sizing_capital is called
 
     // The covariance history cap (portfolio.json "covariance_history_prices"). The loader
     // refuses a value below 2; a PortfolioConfig built in code is held to the same rule,
@@ -419,7 +420,7 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
         }
         {
             const RiskContext rebalance_ctx = make_risk_context(
-                RiskPhase::REBALANCE_START, 0, RiskScope::PORTFOLIO, id_, config_.total_capital,
+                RiskPhase::REBALANCE_START, 0, RiskScope::PORTFOLIO, id_, sizing_capital_,
                 data, current_timestamp, skip_execution_generation);
             for (auto& module : risk_modules_) {
                 module->begin_rebalance(rebalance_ctx);
@@ -511,7 +512,7 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                 // row carrying the error, so the runner's metadata mark and exit code see it.
                 const RiskContext lap_ctx =
                     make_risk_context(RiskPhase::LAP, iteration, RiskScope::PORTFOLIO, id_,
-                                      config_.total_capital, data, current_timestamp,
+                                      sizing_capital_, data, current_timestamp,
                                       skip_execution_generation);
                 std::string step_failure;
                 try {
@@ -1788,7 +1789,7 @@ Result<void> PortfolioManager::optimize_positions() {
                     // Calculate notional per contract
                     double notional_per_contract = contract_size * price * fx_rate;
                     weights_per_contract.push_back(notional_per_contract /
-                                                   static_cast<double>(config_.total_capital));
+                                                   static_cast<double>(sizing_capital_));
                 } else {
                     WARN("Symbol " + symbol + " not found in trading data, using default weight");
                     weights_per_contract.push_back(0.01);  // Reasonable default
@@ -1843,7 +1844,7 @@ Result<void> PortfolioManager::optimize_positions() {
             }
 
             // Calculate trading costs (inside lock since it accesses strategies_)
-            costs = calculate_trading_costs(symbols, static_cast<double>(config_.total_capital));
+            costs = calculate_trading_costs(symbols, static_cast<double>(sizing_capital_));
         }  // End of mutex lock scope
 
         // Use cached covariance if valid, otherwise compute and cache
@@ -2722,7 +2723,7 @@ Result<void> PortfolioManager::apply_sleeve_risk(
         }
         const RiskContext ctx = make_risk_context(
             RiskPhase::SLEEVE, 0, RiskScope::SLEEVE, sid,
-            Decimal(static_cast<double>(config_.total_capital) * allocation), data, as_of,
+            Decimal(static_cast<double>(sizing_capital_) * allocation), data, as_of,
             is_warmup);
 
         try {
@@ -2919,7 +2920,7 @@ Result<void> PortfolioManager::apply_post_rounding_risk(
             }
             const RiskContext ctx =
                 make_risk_context(RiskPhase::POST_ROUNDING, lap, RiskScope::PORTFOLIO, id_,
-                                  config_.total_capital, data, as_of, is_warmup);
+                                  sizing_capital_, data, as_of, is_warmup);
             if (book.empty()) {
                 record_empty(risk_modules_, ctx);
             } else if (finalize_scope(risk_modules_, book, ctx)) {
@@ -2947,7 +2948,7 @@ Result<void> PortfolioManager::apply_post_rounding_risk(
             }
             const RiskContext ctx = make_risk_context(
                 RiskPhase::POST_ROUNDING, lap, RiskScope::SLEEVE, sid,
-                Decimal(static_cast<double>(config_.total_capital) * allocation), data, as_of,
+                Decimal(static_cast<double>(sizing_capital_) * allocation), data, as_of,
                 is_warmup);
             if (book.empty()) {
                 record_empty(modules, ctx);
@@ -2968,6 +2969,61 @@ Result<void> PortfolioManager::apply_post_rounding_risk(
                                 "PortfolioManager");
     }
     return Result<void>();
+}
+
+Result<void> PortfolioManager::set_sizing_capital(double capital) {
+    if (!std::isfinite(capital) || capital <= 0.0) {
+        return make_error<void>(ErrorCode::INVALID_ARGUMENT,
+                                "Sizing capital " + std::to_string(capital) +
+                                    " is not a finite positive number; the book keeps sizing on " +
+                                    std::to_string(static_cast<double>(sizing_capital_)),
+                                "PortfolioManager");
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    // One quantised figure for every reader (the optimizer and the modules read the Decimal).
+    const Decimal as_decimal(capital);
+    const double sized = static_cast<double>(as_decimal);
+    // Every strategy first, then every module: the first refusal stops the call. A strategy or
+    // module that refuses has kept its old capital, so the caller must treat an error as fatal
+    // for the rebalance (both runners refuse the run; the backtest fails the day), never size on.
+    for (auto& [id, info] : strategies_) {
+        if (!info.strategy) continue;
+        auto r = info.strategy->set_capital_allocation(sized * info.allocation);
+        if (r.is_error()) {
+            return make_error<void>(r.error()->code(),
+                                    "Strategy " + id + " refused the sizing capital: " +
+                                        std::string(r.error()->what()),
+                                    "PortfolioManager");
+        }
+    }
+    for (auto& module : risk_modules_) {
+        auto r = module->set_capital(as_decimal);
+        if (r.is_error()) {
+            return make_error<void>(r.error()->code(),
+                                    "Risk module " + module->id() + " refused the sizing capital: " +
+                                        std::string(r.error()->what()),
+                                    "PortfolioManager");
+        }
+    }
+    for (auto& [sid, modules] : sleeve_risk_modules_) {
+        for (auto& module : modules) {
+            auto r = module->set_capital(as_decimal);
+            if (r.is_error()) {
+                return make_error<void>(r.error()->code(),
+                                        "Sleeve " + sid + " risk module " + module->id() +
+                                            " refused the sizing capital: " +
+                                            std::string(r.error()->what()),
+                                        "PortfolioManager");
+            }
+        }
+    }
+    sizing_capital_ = as_decimal;
+    return Result<void>();
+}
+
+double PortfolioManager::sizing_capital() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return static_cast<double>(sizing_capital_);
 }
 
 Result<void> PortfolioManager::update_allocations(

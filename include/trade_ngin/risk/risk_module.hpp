@@ -116,6 +116,15 @@ public:
                                           const RiskContext& ctx) = 0;
     /// Verbatim enough to reconstruct the module.
     virtual nlohmann::json describe() const = 0;
+    /// T-7b-2 9c: the capital the book is sized on from the next rebalance, pushed by
+    /// PortfolioManager::set_sizing_capital (the account's equity; every module gets the
+    /// PORTFOLIO's figure, as make_risk_module gives it at construction). A module whose reading
+    /// divides by capital keeps it beside the book, so a book sized on equity is not measured
+    /// against a constant. The default reads no capital and accepts silently.
+    virtual Result<void> set_capital(Decimal capital) {
+        (void)capital;
+        return Result<void>();
+    }
     /// After the PM applied the scope's combined decision (every evaluate that returned OK).
     virtual void on_applied(const RiskApplied& applied, const RiskContext& ctx) {
         (void)applied;

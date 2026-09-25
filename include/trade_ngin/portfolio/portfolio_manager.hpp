@@ -174,6 +174,30 @@ public:
         const std::unordered_set<std::string>* session_symbols = nullptr);
 
     /**
+     * @brief The capital the book is sized on from the next process_market_data (T-7b-2 9c,
+     *        HD 2026-09-25: compounding, sizing on current equity).
+     *
+     * Every sizing input moves together (T-4c's W-B rule: a capital change that moves the
+     * strategies but not the gate or the optimizer changes what the leverage limit means):
+     * each strategy's capital becomes capital x its allocation (the position line, the buffer
+     * width's Carver term and the notional concentration cap all read it); the optimizer's
+     * weight per contract is notional / capital; every risk module is handed the capital
+     * (the Carver gate's gross and net leverage divide by it); the RiskContext carries it.
+     * Valuation does not move: the equity curve, P&L, returns and margin are the account's.
+     *
+     * Never called, the PM sizes on PortfolioConfig::total_capital as before (the equity
+     * runner and the equity backtest do not call it). Refuses a capital that is not a finite
+     * positive number (nothing changes), and stops at the first strategy or module that refuses
+     * it (the ones before it already carry the new capital): the caller treats any error as
+     * fatal for the rebalance and never sizes on.
+     */
+    Result<void> set_sizing_capital(double capital);
+
+    /// The capital the next process_market_data sizes on (PortfolioConfig::total_capital until
+    /// set_sizing_capital is called).
+    double sizing_capital() const;
+
+    /**
      * @brief Update strategy allocations
      * @param allocations Map of strategy ID to allocation
      * @return Result indicating success or failure
@@ -377,6 +401,9 @@ public:
 private:
     PortfolioConfig config_;
     std::string id_;
+    // T-7b-2 9c: what the book is sized on (set_sizing_capital); config_.total_capital, the
+    // configured account size, is left as configured. Guarded by mutex_.
+    Decimal sizing_capital_{Decimal(0.0)};
 
     std::unique_ptr<DynamicOptimizer> optimizer_;
     std::vector<RiskModulePtr> risk_modules_;  // portfolio scope, evaluated in order

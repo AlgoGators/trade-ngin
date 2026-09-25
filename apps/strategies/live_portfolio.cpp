@@ -38,6 +38,7 @@
 #include "trade_ngin/live/sleeve_seeding.hpp"
 #include "trade_ngin/live/trading_days_anchor.hpp"
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
+#include "trade_ngin/portfolio/sizing_capital.hpp"
 #include "trade_ngin/risk/risk_scale_report.hpp"
 #include "trade_ngin/storage/live_results_manager.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
@@ -1141,6 +1142,74 @@ int main(int argc, char* argv[]) {
         }
 
         // ========================================
+        // SIZING CAPITAL (T-7b-2 9c; HD 2026-09-25, compounding)
+        // The book is sized on the account's equity at the close of T-1, the bar the strategies
+        // size from, the quantity the futures backtest sizes on (its equity curve's last row).
+        // Day T-1 is finalised only in STEP 4, after the rebalance, so it is rebuilt here from
+        // STEP 4's own parts (portfolio/sizing_capital.hpp): the stored value of the row before
+        // Day T-1, Day T-1's settlement move and Day T-1's stored costs. Day T-1's own stored value
+        // is never read (a replayed date's is already finalised), and STEP 5's reading is logged
+        // beside it. Every sizing input follows it: each sleeve's capital (x its allocation), the
+        // optimizer's weights, the gate's leverage and the snapshot reporter. It sits above the
+        // live_run_metadata upsert like the other refusals, so a run that cannot set it leaves no
+        // row.
+        // ========================================
+        LiveSizingEquity sizing_equity;
+        {
+            const auto sizing_t1 = now - std::chrono::hours(24);
+            auto t1_row = data_loader->load_live_results(combined_strategy_id,
+                                                         coordinator_config.portfolio_id, sizing_t1);
+            const bool t1_row_stored = t1_row.is_ok();
+            // With a Day T-1 row: the latest row before it (STEP 4's day_before). Without one: the
+            // latest row before the run date (what STEP 5 reads when STEP 4 updates nothing).
+            double day_before = initial_capital;
+            std::string day_before_source = "none stored, the initial capital";
+            auto sizing_db = std::dynamic_pointer_cast<PostgresDatabase>(db);
+            if (sizing_db) {
+                auto stored = sizing_db->get_previous_live_aggregates(
+                    combined_strategy_id, coordinator_config.portfolio_id,
+                    t1_row_stored ? sizing_t1 : now, "trading.live_results");
+                if (stored.is_ok()) {
+                    day_before = std::get<0>(stored.value());
+                    day_before_source = t1_row_stored
+                                            ? "the latest stored row before Day T-1"
+                                            : "no Day T-1 row: the latest stored row before the run date";
+                }
+            }
+            std::vector<std::unordered_map<std::string, Position>> t1_books;
+            for (const auto& sleeve : strategy_names) {
+                auto t1_book = db->load_positions_by_date(combined_strategy_id, sleeve,
+                                                          coordinator_config.portfolio_id,
+                                                          now - std::chrono::hours(24),
+                                                          "trading.positions");
+                if (t1_book.is_ok()) {
+                    t1_books.push_back(t1_book.value());
+                }
+            }
+            sizing_equity = live_sizing_equity(
+                t1_row_stored, day_before,
+                t1_row_stored ? t1_row.value().daily_transaction_costs : 0.0, t1_books,
+                price_manager->get_all_previous_day_prices(),
+                price_manager->get_all_two_days_ago_prices(),
+                [&](const std::string& symbol) { return pnl_manager->get_point_value(symbol); });
+            INFO("SIZING_CAPITAL date=" + core::format_utc_date(now) +
+                 " equity=" + std::to_string(sizing_equity.equity) +
+                 " day_before=" + std::to_string(sizing_equity.day_before) + " (" +
+                 day_before_source + ") t1_settlement=" +
+                 std::to_string(sizing_equity.t1_settlement) +
+                 " t1_costs=" + std::to_string(sizing_equity.t1_costs) +
+                 " priced=" + std::to_string(sizing_equity.priced) +
+                 " unpriced=" + std::to_string(sizing_equity.unpriced));
+            auto sized = portfolio->set_sizing_capital(sizing_equity.equity);
+            if (sized.is_error()) {
+                ERROR("SIZING_CAPITAL refused: " + std::string(sized.error()->what()) +
+                      ". Refusing to run: the book cannot be sized on the account's equity.");
+                std::cerr << "SIZING_CAPITAL refused: " << sized.error()->what() << std::endl;
+                return 1;
+            }
+        }
+
+        // ========================================
         // STORE LIVE RUN METADATA
         // Save run metadata (allocations, configs) for this trading day. Written only
         // now, after the run-gap (A3), feed-freshness (A2), calendar-coverage (A1) and
@@ -2221,7 +2290,11 @@ int main(int argc, char* argv[]) {
 
         // Compute portfolio-level snapshot metrics using RiskManager on today's state
         INFO("Retrieving strategy metrics...");
-        trade_ngin::RiskManager snapshot_rm(risk_config);
+        // T-7b-2 9c: the reporter reads the book against the capital it was sized on, as the gate
+        // does (its leverage term divides by it).
+        RiskConfig snapshot_risk_config = risk_config;
+        snapshot_risk_config.capital = Decimal(portfolio->sizing_capital());
+        trade_ngin::RiskManager snapshot_rm(snapshot_risk_config);
         auto market_data_snapshot = snapshot_rm.create_market_data(all_bars);
         auto risk_eval = snapshot_rm.process_positions(positions, market_data_snapshot);
 
@@ -3024,6 +3097,11 @@ int main(int argc, char* argv[]) {
         } catch (const std::exception& e) {
             INFO("Could not load previous day aggregates: " + std::string(e.what()));
         }
+        // T-7b-2 9c: the equity the book was sized on, beside the finalised value it rebuilt.
+        INFO("SIZING_CAPITAL_CHECK date=" + core::format_utc_date(now) +
+             " sized_on=" + std::to_string(sizing_equity.equity) +
+             " previous_portfolio_value=" + std::to_string(previous_portfolio_value) +
+             " difference=" + std::to_string(sizing_equity.equity - previous_portfolio_value));
 
         // Calculate cumulative values for Day T
         double total_pnl = previous_total_pnl + daily_pnl_for_today;

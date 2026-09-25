@@ -8,6 +8,7 @@
 #include "trade_ngin/core/run_id_generator.hpp"
 #include "trade_ngin/core/time_utils.hpp"
 #include "trade_ngin/data/market_data_bus.hpp"
+#include "trade_ngin/portfolio/sizing_capital.hpp"
 #include "trade_ngin/risk/risk_scale_report.hpp"
 #include "trade_ngin/storage/backtest_results_manager.hpp"
 #include "trade_ngin/strategy/base_strategy.hpp"
@@ -193,6 +194,7 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
     // The session hold (T-7a C4) is the futures book's; the equity backtest keeps its old path.
     session_hold_enabled_ = (asset_class == AssetClass::FUTURES);
     risk_scale_report_enabled_ = (asset_class == AssetClass::FUTURES);
+    size_on_equity_enabled_ = (asset_class == AssetClass::FUTURES);
 
     // Store backtest dates for later use in save_portfolio_results_to_db
     backtest_start_date_ = start_date;
@@ -671,6 +673,25 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                 withheld_junk_signal_bars_ = std::move(junk_feed.withheld);
                 junk_adjusted_feed = std::move(junk_feed.feed);
                 signal_feed = &junk_adjusted_feed;
+            }
+        }
+
+        // T-7b-2 9c (HD 2026-09-25, compounding): the book is sized on the account's equity at the
+        // close of the signal group, i.e. the equity curve's LAST row, which is the previous
+        // cycle's (this cycle's row is appended below, after its fills and its marks). Every
+        // sizing input follows it (PortfolioManager::set_sizing_capital). Warm-up rows are flat at
+        // the initial capital, so warm-up sizes as before and is not logged.
+        if (size_on_equity_enabled_) {
+            const double sizing_equity = backtest_sizing_equity(equity_curve, initial_capital);
+            auto sized = portfolio->set_sizing_capital(sizing_equity);
+            if (sized.is_error()) {
+                return sized;
+            }
+            if (!is_warmup) {
+                INFO("SIZING_CAPITAL date=" + core::format_utc_date(timestamp) +
+                     " equity=" + std::to_string(sizing_equity) + " source=equity_curve row=" +
+                     (equity_curve.empty() ? std::string("none")
+                                           : core::format_utc_date(equity_curve.back().first)));
             }
         }
 
@@ -1273,6 +1294,7 @@ void BacktestCoordinator::reset_portfolio_state() {
     session_hold_enabled_ = false;
     withheld_junk_signal_bars_.clear();
     risk_scale_report_enabled_ = false;
+    size_on_equity_enabled_ = false;
     current_run_id_.clear();
     portfolio_previous_positions_.clear();
     // E2-F54 (c): without this, a second portfolio backtest in the same process opens with

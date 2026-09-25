@@ -72,6 +72,11 @@ public:
     Result<RiskDecision> evaluate(const std::unordered_map<std::string, Position>& book,
                                   const RiskContext& ctx) override;
     nlohmann::json describe() const override;  ///< {"id","type","terms","config"}
+    /// T-7b-2 9c: RiskConfig::capital, the denominator of the gate's gross and net leverage
+    /// (the only capital-dependent term: the portfolio, jump and correlation terms read weights
+    /// over the book's own value), follows the sizing capital. Refuses capital <= 0 and keeps
+    /// the old value (RiskManager::update_config's rule).
+    Result<void> set_capital(Decimal capital) override;
     /// Multiplies the applied level by the quantised factor when the scope was scaled (evaluate
     /// compares the raw reading with it to within kLevelQuantum), and
     /// records a PARTIAL apply: on a lap whose multiply skipped a pinned sleeve the level is

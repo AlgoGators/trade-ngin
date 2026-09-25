@@ -100,6 +100,10 @@ private:
     /// (run_portfolio with AssetClass::FUTURES), like the session hold; the equity backtest's log
     /// is untouched.
     bool risk_scale_report_enabled_ = false;
+    /// T-7b-2 9c (HD 2026-09-25, compounding): every cycle sizes the book on the equity curve's
+    /// last row (PortfolioManager::set_sizing_capital). Futures only (run_portfolio with
+    /// AssetClass::FUTURES), like the session hold; the equity backtest sizes as before.
+    bool size_on_equity_enabled_ = false;
     std::string current_run_id_;
     Timestamp backtest_start_date_;
     Timestamp backtest_end_date_;

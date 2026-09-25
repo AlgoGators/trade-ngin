@@ -378,6 +378,12 @@ Result<RiskDecision> CarverRiskModule::finalize(
     return Result<RiskDecision>(std::move(d));
 }
 
+Result<void> CarverRiskModule::set_capital(Decimal capital) {
+    RiskConfig config = rm_.get_config();
+    config.capital = capital;
+    return rm_.update_config(config);
+}
+
 nlohmann::json CarverRiskModule::describe() const {
     nlohmann::json terms_json = nlohmann::json::array();
     for (auto t : terms()) terms_json.push_back(risk_term_name(t));
