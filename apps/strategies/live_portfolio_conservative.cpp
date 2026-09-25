@@ -41,6 +41,7 @@
 #include "trade_ngin/portfolio/sizing_capital.hpp"
 #include "trade_ngin/risk/risk_scale_report.hpp"
 #include "trade_ngin/storage/live_results_manager.hpp"
+#include "trade_ngin/transaction_cost/netting.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
 #include "trade_ngin/strategy/trend_following_fast.hpp"
 #include "trade_ngin/strategy/trend_following_slow.hpp"
@@ -1972,6 +1973,26 @@ int main(int argc, char* argv[]) {
                 }
                 return 1;
             }
+        }
+
+        // K3, the netting adjustment (T-7b-2 8b; HD 2026-09-25 item 23: two credited fills).
+        // Every sleeve row keeps its own cost; for a symbol two or more sleeves trade today the
+        // account sends ONE order, the signed sum Q, so each row's netting_adjustment is its
+        // pro-rata share of sum C(q_i) - C(Q), priced by the same cost manager and state the
+        // fills used (C(0) = 0: no order). Written into the rows before they are stored; the
+        // day's P&L cost above stays the sum of the rows' own costs (the book's P&L is gross).
+        {
+            std::vector<transaction_cost::SleeveExecution> sleeve_rows;
+            for (auto& [netting_sleeve, netting_execs] : all_strategy_executions) {
+                for (auto& e : netting_execs) sleeve_rows.push_back({netting_sleeve, &e});
+            }
+            const auto netting = transaction_cost::apply_netting_adjustments(
+                sleeve_rows, [&](const std::string& s, double q, double px) {
+                    return execution_manager->get_transaction_cost_manager().calculate_costs(
+                        s, q, px).total_transaction_costs;
+                });
+            for (const auto& line : netting.info_lines) INFO(line);
+            for (const auto& line : netting.warn_lines) WARN(line);
         }
 
         INFO("PHASE 4: Total executions across all strategies: " +

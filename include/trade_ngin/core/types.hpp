@@ -432,6 +432,11 @@ struct ExecutionReport {
     Decimal implicit_price_impact;    // Spread + impact in price units
     Decimal slippage_market_impact;   // Implicit costs in dollars
     Decimal total_transaction_costs;  // commissions_fees + slippage_market_impact
+    // K3 (migration 013): the part of total_transaction_costs the ACCOUNT did not pay (negative:
+    // paid on top) because two or more sleeves traded this symbol on the same day; 0 on a
+    // symbol-day with one sleeve row. net cost = total_transaction_costs - netting_adjustment.
+    // transaction_cost/netting.hpp.
+    Decimal netting_adjustment;
 
     bool is_partial{false};
 };

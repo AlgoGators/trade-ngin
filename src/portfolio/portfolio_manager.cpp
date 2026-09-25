@@ -2,6 +2,7 @@
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
 #include "trade_ngin/portfolio/allocation_split.hpp"
 #include "trade_ngin/portfolio/cut_delivery.hpp"
+#include "trade_ngin/transaction_cost/netting.hpp"
 #include <unordered_set>
 #include <algorithm>
 #include <climits>
@@ -843,6 +844,14 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                 bool should_generate_portfolio_establishment_execs =
                     is_first_post_warmup_day_portfolio;
 
+                // K3 (T-7b-2 8b): where each sleeve's reports of THIS bar start, so the netting
+                // below sees this bar's rows only and never re-nets an earlier bar's.
+                std::unordered_map<std::string, size_t> netting_bar_start;
+                for (const auto& [sid, sinfo] : strategies_) {
+                    (void)sinfo;
+                    netting_bar_start[sid] = strategy_executions_[sid].size();
+                }
+
                 // Generate execution reports per strategy (before aggregation)
                 // This allows accurate per-strategy execution tracking
                 for (auto& [strategy_id, info] : strategies_) {
@@ -957,6 +966,28 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                     }
                     INFO("Total executions generated for strategy " + strategy_id + ": " +
                          std::to_string(strategy_execs.size()));
+                }
+
+                // K3, the netting adjustment (T-7b-2 8b; HD 2026-09-25 item 23): this bar's
+                // sleeve reports of one symbol are one account order, the signed sum Q; each
+                // report keeps its own cost and gets its pro-rata share of sum C(q_i) - C(Q),
+                // priced by this manager's cost model at the bar's price (C(0) = 0). A symbol one
+                // sleeve trades gets 0. The equity curve still charges the reports' own costs.
+                {
+                    std::vector<transaction_cost::SleeveExecution> bar_rows;
+                    for (auto& [sid, execs] : strategy_executions_) {
+                        auto from = netting_bar_start.find(sid);
+                        const size_t k0 = from == netting_bar_start.end() ? 0 : from->second;
+                        for (size_t k = k0; k < execs.size(); ++k)
+                            bar_rows.push_back({sid, &execs[k]});
+                    }
+                    const auto netting = transaction_cost::apply_netting_adjustments(
+                        bar_rows, [this](const std::string& sym, double q, double px) {
+                            return cost_manager_.calculate_costs(sym, q, px)
+                                .total_transaction_costs;
+                        });
+                    for (const auto& line : netting.info_lines) INFO(line);
+                    for (const auto& line : netting.warn_lines) WARN(line);
                 }
 
                 // Also generate portfolio-level executions (aggregated) for backward compatibility

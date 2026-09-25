@@ -27,6 +27,7 @@ set(TEST_SOURCES
     data/test_database_pooling.cpp
     data/test_db_transaction_atomicity.cpp
     data/test_delete_stale_executions_scope_db.cpp
+    data/test_executions_netting_column_db.cpp
     data/test_load_positions_identifier_db.cpp
     data/test_equity_curve_stream_db.cpp
     data/test_store_positions_error_db.cpp
@@ -54,6 +55,7 @@ set(TEST_SOURCES
     transaction_cost/test_transaction_cost_manager.cpp
     transaction_cost/test_spread_model.cpp
     transaction_cost/test_impact_model.cpp
+    transaction_cost/test_netting.cpp
     live/corp_actions/test_applier.cpp
     live/corp_actions/test_effect_classes.cpp
     live/corp_actions/test_frame_horizon.cpp
@@ -128,6 +130,7 @@ set(TEST_SOURCES
     portfolio/test_delivered_cut.cpp
     portfolio/test_sizing_capital.cpp
     portfolio/test_cut_delivery.cpp
+    portfolio/test_pm_netting.cpp
     storage/test_backtest_results_manager.cpp
     storage/test_live_results_manager.cpp
     storage/test_equity_fallback_stream_db.cpp

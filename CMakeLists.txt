@@ -193,6 +193,7 @@ set(TRADE_NGIN_SOURCES
     src/transaction_cost/spread_model.cpp
     src/transaction_cost/impact_model.cpp
     src/transaction_cost/transaction_cost_manager.cpp
+    src/transaction_cost/netting.cpp
     src/strategy/base_strategy.cpp
     src/strategy/trend_following.cpp
     src/strategy/trend_following_slow.cpp
