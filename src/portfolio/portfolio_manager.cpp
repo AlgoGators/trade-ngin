@@ -1754,12 +1754,43 @@ SleeveDistribution distribute_optimizer_contracts(double optimizer_contracts,
                                                   const std::vector<SleeveContribution>& sleeves) {
     SleeveDistribution d;
     double total = 0.0;
-    for (const auto& s : sleeves)
+    bool any_long = false, any_short = false;
+    for (const auto& s : sleeves) {
         total += s.contribution;
+        any_long = any_long || s.contribution > 0.0;
+        any_short = any_short || s.contribution < 0.0;
+    }
 
     const int rounded_contracts = static_cast<int>(std::round(optimizer_contracts));
     std::vector<SleeveQuota> quotas;
     quotas.reserve(sleeves.size());
+
+    // T-7b-2 8b: opposed sleeves. Split only the optimizer's deviation from the net target,
+    // weighted by each sleeve's |target|, so nothing is amplified and a cancelling total keeps
+    // both sleeves' books (see allocation_split.hpp).
+    if (any_long && any_short) {
+        std::vector<double> t;
+        t.reserve(sleeves.size());
+        double net = 0.0, gross = 0.0;
+        for (const auto& s : sleeves) {
+            const double c = std::isnan(s.contracts) ? s.contribution : s.contracts;
+            t.push_back(c);
+            net += c;
+            gross += std::fabs(c);
+        }
+        const double deviation = optimizer_contracts - net;
+        for (size_t k = 0; k < sleeves.size(); ++k) {
+            const double quota = t[k] + deviation * std::fabs(t[k]) / gross;
+            quotas.push_back({sleeves[k].strategy_id, quota});
+            d.quota.push_back(quota);
+            d.per_sleeve_rounding.push_back(static_cast<int64_t>(std::llround(quota)));
+        }
+        d.stored = split_largest_remainder(quotas);
+        for (auto q : d.stored)
+            d.book += q;
+        return d;
+    }
+
     for (const auto& s : sleeves) {
         const double share = total > 1e-8 ? s.contribution / total : 0.0;
         // A sleeve with no share has a quota of 0.
@@ -1940,8 +1971,8 @@ void PortfolioManager::deliver_lap_cut(int lap) {
         for (auto& [sid, sinfo] : strategies_) {
             if (!sinfo.use_optimization || pinned_scopes_.count(sid)) continue;
             if (!sinfo.target_positions.count(sym)) continue;
-            contributions.push_back(
-                {sid, static_cast<double>(sinfo.target_positions.at(sym).quantity)});
+            const double target = static_cast<double>(sinfo.target_positions.at(sym).quantity);
+            contributions.push_back({sid, target, target});
         }
         if (contributions.empty()) continue;
         const SleeveDistribution split = distribute_optimizer_contracts(q, contributions);
@@ -2237,7 +2268,9 @@ Result<void> PortfolioManager::optimize_positions() {
                         continue;
                     if (!info.target_positions.count(symbol))
                         continue;
-                    contributions.push_back({strat_id, original_contribs[symbol][strat_id]});
+                    contributions.push_back(
+                        {strat_id, original_contribs[symbol][strat_id],
+                         static_cast<double>(info.target_positions.at(symbol).quantity)});
                 }
 
                 const SleeveDistribution d =

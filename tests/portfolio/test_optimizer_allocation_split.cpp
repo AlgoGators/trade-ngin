@@ -302,3 +302,22 @@ TEST_F(AllocationSplit, WholeQuotasAreStoredAsTheyAre) {
     EXPECT_EQ(stored("TREND_FOLLOWING", "ZNX"), 1.0);
     EXPECT_EQ(stored("TREND_FOLLOWING_FAST", "ZNX"), 1.0);
 }
+
+// T-7b-2 8b commit 2 through a real PortfolioManager (the optimizer's aggregate is in WEIGHT, the
+// opposed branch reads the sleeves' targets in CONTRACTS, so this pins the call site's plumbing).
+// Held TF +1 / FAST -1 (the account is flat), targets TF +1 / FAST -1 (the net target is 0), the
+// deadband keeps the flat account: the optimizer answers 0.
+//   parent: the contributions sum to 0, the guard gives both a share of 0: TF 0, FAST 0, a pair of
+//           crossing fills that flattens both sleeves although neither sleeve asked to trade.
+//   fixed:  no deviation to split: TF +1, FAST -1, the account still flat.
+TEST_F(AllocationSplit, OpposedSleevesThatCancelKeepTheirOwnBooks) {
+    make_pm(/*use_buffering=*/true);
+    add("TREND_FOLLOWING", split_book({{"ZNX", 1.0}}), 0.5);
+    add("TREND_FOLLOWING_FAST", split_book({{"ZNX", -1.0}}), 0.5);
+    hold("TREND_FOLLOWING", "ZNX", 1.0);
+    hold("TREND_FOLLOWING_FAST", "ZNX", -1.0);
+    rebalance({"ZNX"});
+
+    EXPECT_EQ(stored("TREND_FOLLOWING", "ZNX"), 1.0);
+    EXPECT_EQ(stored("TREND_FOLLOWING_FAST", "ZNX"), -1.0);
+}

@@ -9,6 +9,7 @@
 #pragma once
 
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -18,6 +19,9 @@ namespace trade_ngin {
 struct SleeveContribution {
     std::string strategy_id;
     double contribution;
+    /// The sleeve's target in contracts, read only when the sleeves' targets have opposite
+    /// signs (T-7b-2 8b). NaN (not given): `contribution` is taken to be in contracts.
+    double contracts = std::numeric_limits<double>::quiet_NaN();
 };
 
 /// The distribution of one symbol, in the order of the sleeves given.
@@ -34,6 +38,16 @@ struct SleeveDistribution {
 /// sum rounded ONCE, half away from zero; the stored integers are the largest-remainder
 /// (Hamilton) split of the book: the floor of each quota plus one contract for each of the
 /// largest remainders, ties to the smaller strategy_id, so they sum to the book exactly.
+///
+/// Opposed sleeves (T-7b-2 8b, HD 2026-09-25 item 23): when one sleeve's target is long and
+/// another's short, a share is not a fraction of the answer (it exceeds 1 or is negative), so
+/// answer x share amplifies the sleeves (+1.0 / -0.8 with an answer of 1 stored +5 / -4) and a
+/// cancelling total flattens both. On that branch only the optimizer's DEVIATION from the net
+/// target is split, weighted by target size:
+///     quota_i = t_i + (answer - T) x |t_i| / sum |t_j|,   t_i in contracts, T = sum t_j,
+/// so opposite sleeves stay gross per sleeve while the account holds the net, and no sleeve moves
+/// by more than |answer - T|. On same-sign targets this equals answer x share, and that branch
+/// keeps the expression above verbatim. The book and the split are unchanged.
 SleeveDistribution distribute_optimizer_contracts(double optimizer_contracts,
                                                   const std::vector<SleeveContribution>& sleeves);
 
