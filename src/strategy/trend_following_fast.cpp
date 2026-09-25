@@ -602,6 +602,18 @@ Result<void> TrendFollowingFastStrategy::on_data(const std::vector<Bar>& data) {
     }
 }
 
+bool TrendFollowingFastStrategy::is_signalling(const std::string& symbol) const {
+    // on_data's warm-up test, read without a feed (T-OPT E-7): a symbol whose price history holds
+    // fewer prices than the longest EMA window gets no forecast and no target of its own.
+    int max_window = 0;
+    for (const auto& window_pair : trend_config_.ema_windows) {
+        max_window = std::max(max_window, window_pair.second);
+    }
+    auto it = instrument_data_.find(symbol);
+    return it != instrument_data_.end() &&
+           !(it->second.price_history.size() < static_cast<size_t>(max_window));
+}
+
 std::unordered_map<std::string, Position> TrendFollowingFastStrategy::get_target_positions() const {
     std::unordered_map<std::string, Position> target_positions;
 

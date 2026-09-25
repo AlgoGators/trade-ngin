@@ -44,6 +44,9 @@
 
 #define private public
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
+#include "trade_ngin/strategy/trend_following.hpp"
+#include "trade_ngin/strategy/trend_following_fast.hpp"
+#include "trade_ngin/strategy/trend_following_slow.hpp"
 #undef private
 
 #include "trade_ngin/core/logger.hpp"
@@ -172,6 +175,46 @@ private:
     size_t calls_{0};
 };
 
+// A trend sleeve (TrendFollowingStrategy, or its FAST / SLOW twin) that holds a fixed book and a
+// hand-set price history per symbol: on_data only counts the call, so the history is exactly what
+// the test sets. The strategy's own warm-up test (on_data: fewer prices than the longest EMA
+// window means no forecast and no target of its own) reads that history. T-OPT E-7.
+template <class Trend, class TrendConfig>
+class ParticipantsWarmupStrategy : public Trend {
+public:
+    ParticipantsWarmupStrategy(std::string id, StrategyConfig config,
+                               std::shared_ptr<DatabaseInterface> db, Book book)
+        : Trend(std::move(id), std::move(config), TrendConfig{},
+                std::static_pointer_cast<trade_ngin::PostgresDatabase>(db), nullptr),
+          book_(std::move(book)) {}
+    Result<void> on_data(const std::vector<Bar>& data) override {
+        (void)data;
+        ++calls_;
+        return Result<void>();
+    }
+    std::unordered_map<std::string, Position> get_target_positions() const override {
+        return calls_ == 0 ? Book{} : book_;
+    }
+    // `prices` closes of 100.0 in the sleeve's own history of `symbol`.
+    void set_prices(const std::string& symbol, size_t prices) {
+        this->instrument_data_[symbol].price_history.assign(prices, 100.0);
+    }
+    // The longest EMA window: the prices on_data waits for before it signals.
+    size_t warmup_prices() const {
+        int max_window = 0;
+        for (const auto& w : this->trend_config_.ema_windows) max_window = std::max(max_window, w.second);
+        return static_cast<size_t>(max_window);
+    }
+
+private:
+    Book book_;
+    size_t calls_{0};
+};
+
+using TrendWarmup = ParticipantsWarmupStrategy<TrendFollowingStrategy, TrendFollowingConfig>;
+using FastWarmup = ParticipantsWarmupStrategy<TrendFollowingFastStrategy, TrendFollowingFastConfig>;
+using SlowWarmup = ParticipantsWarmupStrategy<TrendFollowingSlowStrategy, TrendFollowingSlowConfig>;
+
 PortfolioConfig participants_config(bool optimization = true, bool carver = false) {
     PortfolioConfig pc{1'000'000.0, 1.0, 0.0, optimization};
     pc.allow_fractional_positions = false;
@@ -271,6 +314,73 @@ protected:
         for (const auto& f : feeds) last = std::max(last, f.days.back());
         EXPECT_TRUE(pm->process_market_data(feed_bars(feeds), false, cal_day(last + 1)).is_ok());
         strategies_.push_back(s);
+        pms_.push_back(std::move(pm));
+        return *pms_.back();
+    }
+
+    // One sleeve spec for run_sleeves: a trend strategy of type S (TrendWarmup, FastWarmup or
+    // SlowWarmup) at `allocation`, and each symbol's price count in ITS OWN history (a symbol not
+    // listed gets the sleeve's full warm-up). The book is every fed symbol at its Feed quantity.
+    struct Sleeve {
+        std::string kind;  // "trend", "fast" or "slow"
+        double allocation{1.0};
+        std::map<std::string, long> prices_vs_warmup;  // symbol -> offset from the warm-up count
+    };
+
+    // One PortfolioManager, one or more trend sleeves (see Sleeve), every bar in one
+    // process_market_data call. The PM's own history is the bars; each sleeve's is hand-set.
+    PortfolioManager& run_sleeves(const std::vector<Feed>& feeds, const std::vector<Sleeve>& sleeves,
+                                  const PortfolioConfig& pc) {
+        static int n = 0;
+        ++n;
+        auto pm = std::make_unique<PortfolioManager>(pc, "PM_WARMUP_" + std::to_string(n));
+        Book book;
+        for (const auto& f : feeds) {
+            Position p;
+            p.symbol = f.symbol;
+            p.quantity = Decimal(f.quantity);
+            p.average_price = Decimal(100.0);
+            p.last_update = cal_day(0);
+            book[f.symbol] = p;
+        }
+        StrategyConfig sc;
+        sc.capital_allocation = 1'000'000.0;
+        sc.max_leverage = 10.0;
+        sc.asset_classes = {AssetClass::FUTURES};
+        sc.frequencies = {DataFrequency::DAILY};
+        size_t k = 0;
+        for (const auto& sl : sleeves) {
+            const std::string id = "TREND_WARMUP_" + std::to_string(n) + "_" + std::to_string(k++);
+            std::shared_ptr<StrategyInterface> s;
+            auto fill = [&](auto& strat) {
+                for (const auto& f : feeds) {
+                    auto it = sl.prices_vs_warmup.find(f.symbol);
+                    const long offset = it == sl.prices_vs_warmup.end() ? 0 : it->second;
+                    strat->set_prices(f.symbol, static_cast<size_t>(
+                                                    static_cast<long>(strat->warmup_prices()) + offset));
+                }
+            };
+            if (sl.kind == "fast") {
+                auto t = std::make_shared<FastWarmup>(id, sc, mock_db_, book);
+                fill(t);
+                s = t;
+            } else if (sl.kind == "slow") {
+                auto t = std::make_shared<SlowWarmup>(id, sc, mock_db_, book);
+                fill(t);
+                s = t;
+            } else {
+                auto t = std::make_shared<TrendWarmup>(id, sc, mock_db_, book);
+                fill(t);
+                s = t;
+            }
+            EXPECT_TRUE(s->initialize().is_ok());
+            EXPECT_TRUE(s->start().is_ok());
+            EXPECT_TRUE(pm->add_strategy(s, sl.allocation, pc.use_optimization).is_ok());
+            strategies_.push_back(s);
+        }
+        int last = 0;
+        for (const auto& f : feeds) last = std::max(last, f.days.back());
+        EXPECT_TRUE(pm->process_market_data(feed_bars(feeds), false, cal_day(last + 1)).is_ok());
         pms_.push_back(std::move(pm));
         return *pms_.back();
     }
@@ -484,21 +594,135 @@ TEST_F(CovarianceParticipants, ANewSymbolBelowTheFloorNoLongerCollapsesTheMatrix
     expect_block(cov, pair, "AAA/BBB without NEW");
 }
 
-// KNOWN, E-7 (ledger OPT-new-symbol-collapses-min-periods) is NOT closed above the floor: a new
-// symbol with 30 weekdays meets the 20-return floor, stays in the intersection, and every other
-// symbol's window is its 30 dates (29 returns). Pinned as today's behaviour on both sides; the fix
-// (exclude a symbol the strategies do not signal from the optimizer's history) is T-OPT's, folded
-// into T-VOL / T-7b-2 (HD 2026-09-24, ruling 19).
-TEST_F(CovarianceParticipants, KnownANewSymbolAboveTheFloorStillSetsEveryonesWindow) {
+// ===== E-7, a symbol no strategy signals (T-OPT, ledger OPT-new-symbol-collapses-min-periods) =====
+//
+// NEW is a contract the trend sleeve does not signal yet: its own history holds one price fewer
+// than the longest EMA window, so on_data skips it ("Waiting for enough data") and it has no
+// target of its own (quantity 0 here). The PM's own history of it is 30 weekdays (29 returns),
+// above the optimizer's 20-return admission and above 7d's floor, so on the parent it enters the
+// optimizer and the intersection over every participant is its 30 dates: AAA's and BBB's window
+// falls from 60 dates (59 returns) to 30 (29). This was the pinned KNOWN case
+// (KnownANewSymbolAboveTheFloorStillSetsEveryonesWindow); it flips here.
+//   parent: the matrix is AAA/BBB/NEW and the AAA/BBB block is the one over NEW's 30 dates.
+//   fix:    NEW is left out of the optimizer; AAA/BBB is the two-symbol matrix over all 60 dates,
+//           the logged window is 59 returns, and NEW keeps its own (zero) target.
+TEST_F(CovarianceParticipants, ANewSymbolNoStrategySignalsNoLongerSetsEveryonesWindow) {
     const auto w = weekdays(60);
     const auto fresh = last_n(w, 30);
-    const Matrix cov = optimizer_covariance(
-        {{"AAA", w, 1.0}, {"BBB", w, 1.0}, {"NEW", fresh, 1.0}});
+    set_log_level(LogLevel::INFO);
+    ::testing::internal::CaptureStdout();
+    auto& pm = run_sleeves({{"AAA", w, 1.0}, {"BBB", w, 1.0}, {"NEW", fresh, 0.0}},
+                           {{"trend", 1.0, {{"NEW", -1}}}}, participants_config());
+    const std::string out = ::testing::internal::GetCapturedStdout();
+    set_log_level(LogLevel::WARNING);
+    const Matrix pair_long = optimizer_covariance({{"AAA", w, 1.0}, {"BBB", w, 1.0}});
+
+    ASSERT_TRUE(pm.covariance_cache_valid_) << "the optimizer did not build a covariance";
+    EXPECT_EQ(pm.cached_symbols_, (std::vector<std::string>{"AAA", "BBB"}))
+        << "a symbol the sleeve does not signal is still in the optimizer's matrix";
+    ASSERT_EQ(pm.cached_covariance_.size(), pair_long.size());
+    expect_block(pm.cached_covariance_, pair_long, "AAA/BBB over all 60 dates");
+
+    const auto cov_lines = lines_with(out, "COVARIANCE_DATE_ALIGNED ");
+    ASSERT_EQ(cov_lines.size(), 1u);
+    EXPECT_EQ(field(cov_lines[0], "symbols"), "2/2") << cov_lines[0];
+    EXPECT_EQ(field(cov_lines[0], "returns"), "59") << "everyone's window: " << cov_lines[0];
+
+    const auto excluded = lines_with(out, "OPTIMIZER_NOT_SIGNALLING ");
+    ASSERT_EQ(excluded.size(), 1u) << "one line per optimizer call naming the symbols left out";
+    EXPECT_EQ(field(excluded[0], "count"), "1") << excluded[0];
+    EXPECT_EQ(field(excluded[0], "symbols"), "NEW") << excluded[0];
+    EXPECT_EQ(field(excluded[0], "nonzero_targets"), "0") << excluded[0];
+
+    const auto positions = pm.get_strategy_positions();
+    ASSERT_EQ(positions.size(), 1u);
+    const auto& sleeve = positions.begin()->second;
+    ASSERT_TRUE(sleeve.count("NEW"));
+    EXPECT_EQ(static_cast<double>(sleeve.at("NEW").quantity), 0.0)
+        << "NEW is not the optimizer's to size: it keeps the sleeve's own target";
+}
+
+// The boundary, and the residue that stays KNOWN: at EXACTLY the longest window's prices the
+// sleeve signals NEW (on_data's test is `size < max_window`), so NEW is admitted and a new symbol
+// the strategies DO signal still sets everyone's window to its 30 dates. Excluding a signalled
+// symbol would drop a real target from the optimizer; shortening everyone's window to a newly
+// listed, signalled contract's history is today's rule on both sides (T-OPT E-7 names only the
+// non-signalling case). A control: the parent does the same.
+TEST_F(CovarianceParticipants, KnownANewSymbolTheStrategiesSignalStillSetsEveryonesWindow) {
+    const auto w = weekdays(60);
+    const auto fresh = last_n(w, 30);
+    auto& pm = run_sleeves({{"AAA", w, 1.0}, {"BBB", w, 1.0}, {"NEW", fresh, 1.0}},
+                           {{"trend", 1.0, {{"NEW", 0}}}}, participants_config());
     const Matrix pair_short = optimizer_covariance({{"AAA", fresh, 1.0}, {"BBB", fresh, 1.0}});
     const Matrix pair_long = optimizer_covariance({{"AAA", w, 1.0}, {"BBB", w, 1.0}});
-    ASSERT_EQ(cov.size(), 3u);
-    expect_block(cov, pair_short, "AAA/BBB over NEW's 30 dates");
-    EXPECT_NE(cov[0][0], pair_long[0][0]) << "the window is not NEW's";
+    ASSERT_TRUE(pm.covariance_cache_valid_);
+    ASSERT_EQ(pm.cached_symbols_, (std::vector<std::string>{"AAA", "BBB", "NEW"}));
+    expect_block(pm.cached_covariance_, pair_short, "AAA/BBB over NEW's 30 dates");
+    EXPECT_NE(pm.cached_covariance_[0][0], pair_long[0][0]) << "the window is not NEW's";
+}
+
+// The FAST sleeve (BASE's 0.3 sleeve, longest EMA window 64) has the same warm-up and the same
+// answer: one price short of it, NEW is left out.
+//   parent: NEW is in the matrix.
+TEST_F(CovarianceParticipants, ANewSymbolTheFastSleeveDoesNotSignalIsLeftOut) {
+    const auto w = weekdays(60);
+    const auto fresh = last_n(w, 30);
+    auto& pm = run_sleeves({{"AAA", w, 1.0}, {"BBB", w, 1.0}, {"NEW", fresh, 0.0}},
+                           {{"fast", 1.0, {{"NEW", -1}}}}, participants_config());
+    ASSERT_TRUE(pm.covariance_cache_valid_);
+    EXPECT_EQ(pm.cached_symbols_, (std::vector<std::string>{"AAA", "BBB"}));
+}
+
+// The SLOW twin, the same.
+//   parent: NEW is in the matrix.
+TEST_F(CovarianceParticipants, ANewSymbolTheSlowSleeveDoesNotSignalIsLeftOut) {
+    const auto w = weekdays(60);
+    const auto fresh = last_n(w, 30);
+    auto& pm = run_sleeves({{"AAA", w, 1.0}, {"BBB", w, 1.0}, {"NEW", fresh, 0.0}},
+                           {{"slow", 1.0, {{"NEW", -1}}}}, participants_config());
+    ASSERT_TRUE(pm.covariance_cache_valid_);
+    EXPECT_EQ(pm.cached_symbols_, (std::vector<std::string>{"AAA", "BBB"}));
+}
+
+// Two optimizing sleeves (BASE's shape, 0.7 trend + 0.3 fast): a symbol enters when ANY of them
+// signals it. The trend sleeve is one price short on NEW, the fast sleeve has its full 64; NEW
+// has the fast sleeve's target, so it stays in the optimizer. A control: the parent does the same.
+TEST_F(CovarianceParticipants, ASymbolAnyOptimizingSleeveSignalsStays) {
+    const auto w = weekdays(60);
+    const auto fresh = last_n(w, 30);
+    auto& pm = run_sleeves({{"AAA", w, 1.0}, {"BBB", w, 1.0}, {"NEW", fresh, 1.0}},
+                           {{"trend", 0.7, {{"NEW", -1}}}, {"fast", 0.3, {{"NEW", 0}}}},
+                           participants_config());
+    ASSERT_TRUE(pm.covariance_cache_valid_);
+    EXPECT_EQ(pm.cached_symbols_, (std::vector<std::string>{"AAA", "BBB", "NEW"}));
+}
+
+// ... and it is left out only when NO optimizing sleeve signals it: both one price short.
+//   parent: NEW is in the matrix.
+TEST_F(CovarianceParticipants, ASymbolNoOptimizingSleeveSignalsIsLeftOut) {
+    const auto w = weekdays(60);
+    const auto fresh = last_n(w, 30);
+    auto& pm = run_sleeves({{"AAA", w, 1.0}, {"BBB", w, 1.0}, {"NEW", fresh, 0.0}},
+                           {{"trend", 0.7, {{"NEW", -1}}}, {"fast", 0.3, {{"NEW", -1}}}},
+                           participants_config());
+    ASSERT_TRUE(pm.covariance_cache_valid_);
+    EXPECT_EQ(pm.cached_symbols_, (std::vector<std::string>{"AAA", "BBB"}));
+}
+
+// While NO symbol is signalled (the backtest's warm-up) the optimizer builds no matrix and every
+// sleeve keeps its own (zero) target.
+//   parent: the optimizer builds the three-symbol matrix from the PM's history.
+TEST_F(CovarianceParticipants, NoMatrixWhileNoSymbolIsSignalled) {
+    const auto w = weekdays(60);
+    auto& pm = run_sleeves({{"AAA", w, 0.0}, {"BBB", w, 0.0}, {"CCC", w, 0.0}},
+                           {{"trend", 1.0, {{"AAA", -1}, {"BBB", -1}, {"CCC", -1}}}},
+                           participants_config());
+    EXPECT_FALSE(pm.covariance_cache_valid_) << "a matrix over symbols nobody signals";
+    for (const auto& [sid, book] : pm.get_strategy_positions()) {
+        for (const auto& [symbol, p] : book) {
+            EXPECT_EQ(static_cast<double>(p.quantity), 0.0) << sid << " " << symbol;
+        }
+    }
 }
 
 // ===== (3) max |rho|, optimizer and gate, one line per rebalance =====

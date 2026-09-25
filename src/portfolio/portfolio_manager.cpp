@@ -1737,8 +1737,45 @@ Result<void> PortfolioManager::optimize_positions() {
 
             int min_history_length = 20;  // Minimum history length for covariance calculation
 
+            // T-OPT E-7 (ledger OPT-new-symbol-collapses-min-periods): a symbol enters the
+            // optimizer only when at least one optimizing strategy that lists it SIGNALS it
+            // (StrategyInterface::is_signalling; a trend sleeve does not while the symbol's price
+            // history is shorter than its longest EMA window, so the target it lists is not a
+            // forecast of its own). Before this a contract still warming up entered on the PM's own
+            // 20 returns and date_aligned_returns' intersection over every participant became ITS
+            // dates for every symbol (on the frozen backtest, the roots without Sunday bars set the
+            // window of the symbols already signalled on every rebalance before they were signalled
+            // themselves); 7d's floor catches that only below 20 returns. A symbol left
+            // out keeps the strategy's own target (zero while it warms up) exactly as a symbol
+            // with too little history does below; the PM still records its closes, so it enters
+            // with its full history the day it is signalled. The Carver gate's window is not
+            // changed here (it is keyed on the bars fed, not on the optimizer's participants).
+            std::vector<std::string> not_signalling;
+            size_t not_signalling_nonzero = 0;
+            auto signalled = [&](const std::string& symbol) {
+                for (const auto& [strat_id, info] : strategies_) {
+                    if (!info.use_optimization || pinned_scopes_.count(strat_id)) continue;
+                    if (!info.target_positions.count(symbol)) continue;
+                    if (info.strategy && info.strategy->is_signalling(symbol)) return true;
+                }
+                return false;
+            };
+
             // Filter symbols to only those with sufficient historical data FIRST
             for (const auto& symbol : all_symbols) {
+                if (!signalled(symbol)) {
+                    not_signalling.push_back(symbol);
+                    for (const auto& [strat_id, info] : strategies_) {
+                        if (!info.use_optimization || pinned_scopes_.count(strat_id)) continue;
+                        auto t = info.target_positions.find(symbol);
+                        if (t != info.target_positions.end() &&
+                            std::abs(static_cast<double>(t->second.quantity)) > 1e-12) {
+                            ++not_signalling_nonzero;
+                            break;
+                        }
+                    }
+                    continue;
+                }
                 auto it = historical_returns_.find(symbol);
                 if (it != historical_returns_.end() &&
                     it->second.size() >= static_cast<size_t>(min_history_length)) {
@@ -1755,6 +1792,19 @@ Result<void> PortfolioManager::optimize_positions() {
                     INFO("Symbol " + symbol +
                          " has insufficient historical data for optimization, skipping symbol");
                 }
+            }
+
+            if (!not_signalling.empty()) {
+                std::string list;
+                for (const auto& symbol : not_signalling) {
+                    list += (list.empty() ? "" : ",") + symbol;
+                }
+                INFO("OPTIMIZER_NOT_SIGNALLING count=" + std::to_string(not_signalling.size()) +
+                     " symbols=" + list +
+                     " nonzero_targets=" + std::to_string(not_signalling_nonzero) +
+                     ": no optimizing strategy signals them yet (warm-up); left out of the "
+                     "optimizer's covariance and its date intersection, each keeps its strategy's "
+                     "own target");
             }
 
             if (symbols.empty()) {

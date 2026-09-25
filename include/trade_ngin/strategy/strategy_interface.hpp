@@ -83,6 +83,19 @@ public:
      * @return True if in backtest mode, false by default
      */
     virtual bool is_backtest_mode() const { return false; }
+
+    /**
+     * @brief Whether the strategy signals `symbol` yet: it has the history it needs to produce a
+     *        forecast, so a target it reports for the symbol is its own (T-OPT E-7, ledger
+     *        OPT-new-symbol-collapses-min-periods).
+     * @return true by default: a strategy without a warm-up signals every symbol it lists. The
+     *         trend strategies return false while the symbol's price history is shorter than the
+     *         longest EMA window, the same test on_data applies before it computes a forecast.
+     * @note The PortfolioManager leaves a symbol that no optimizing strategy signals out of the
+     *       optimizer (its covariance and its date intersection), so a contract still warming up
+     *       cannot shorten every other symbol's covariance window to its own history.
+     */
+    virtual bool is_signalling(const std::string& /*symbol*/) const { return true; }
 };
 
 }  // namespace trade_ngin

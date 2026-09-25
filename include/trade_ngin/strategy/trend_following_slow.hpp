@@ -173,6 +173,12 @@ public:
     std::unordered_map<std::string, Position> get_target_positions() const override;
 
     /**
+     * @brief false while `symbol`'s price history is shorter than the longest EMA window (on_data
+     *        skips it: no forecast and no target of its own); true from then on (T-OPT E-7)
+     */
+    bool is_signalling(const std::string& symbol) const override;
+
+    /**
      * @brief Get the correct point value multiplier for a futures symbol
      * @note Made public for use by live_trend.cpp to calculate PnL consistently
      */
