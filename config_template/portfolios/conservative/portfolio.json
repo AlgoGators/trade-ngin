@@ -11,8 +11,8 @@
       "config": {
         "weight": 0.03,
         "risk_target": 0.20,
-        "idm": 2.4,
-        "_idm_rationale": "Carver Table 16 (Advanced Futures Trading Strategies, p.125)",
+        "idm": 2.5,
+        "_idm_rationale": "Carver Table 16 (Advanced Futures Trading Strategies, p.125): 30+ instruments -> 2.50; the universe is 36 names. The formula 1/sqrt(w'Hw), H the correlation of the instruments' subsystem returns floored at 0, reaches the 2.5 cap on the 36 names. HD 2026-09-25",
         "max_symbol_concentration": 0.25,
         "use_position_buffering": true,
         "ema_windows": [[2, 8], [4, 16], [8, 32], [16, 64], [32, 128], [64, 256]],
