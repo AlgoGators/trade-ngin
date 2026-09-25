@@ -80,6 +80,7 @@ set(TEST_SOURCES
     live/corp_actions/test_spinoff_dividend_double_apply.cpp
     live/test_live_metrics_includes_dividend_income.cpp
     live/test_daily_pnl_identity.cpp
+    live/test_book_exposure.cpp
     live/test_trading_days_anchor.cpp
     backtest/test_slippage_model.cpp
     backtest/test_backtest_execution_manager.cpp

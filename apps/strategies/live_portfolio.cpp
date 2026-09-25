@@ -31,6 +31,7 @@
 #include "trade_ngin/live/live_pnl_manager.hpp"
 #include "trade_ngin/live/live_price_manager.hpp"
 #include "trade_ngin/live/live_trading_coordinator.hpp"
+#include "trade_ngin/live/book_exposure.hpp"
 #include "trade_ngin/live/margin_manager.hpp"
 #include "trade_ngin/live/risk_module_failure.hpp"
 #include "trade_ngin/live/run_metadata_marks.hpp"
@@ -2096,51 +2097,39 @@ int main(int argc, char* argv[]) {
             // both gross_notional and total_posted_margin by ~Σ allocᵢ². Iterating per
             // strategy and accumulating against |q| restores the additive invariant:
             // total_posted_margin = Σ_strategies Σ_symbols |q| × initial_margin.
-            gross_notional = 0.0;
-            net_notional = 0.0;
-            total_posted_margin = 0.0;
-            maintenance_requirement_today = 0.0;
-            int true_active_positions = 0;
-            bool recompute_fallback = false;
-            for (const auto& [strategy_id, pos_map] : strategy_positions_map) {
-                if (recompute_fallback)
-                    break;
-                for (const auto& [symbol, pos] : pos_map) {
-                    double qty = pos.quantity.as_double();
-                    if (std::abs(qty) < 1e-6)
-                        continue;
-                    true_active_positions++;
-
-                    double price = previous_day_close_prices.count(symbol)
-                                       ? previous_day_close_prices.at(symbol)
-                                       : pos.average_price.as_double();
-
-                    auto notional_result =
-                        margin_manager->calculate_position_notional(symbol, qty, price);
-                    auto margin_result_per =
-                        margin_manager->calculate_position_margin(symbol, qty, price);
-
-                    if (notional_result.is_ok() && margin_result_per.is_ok()) {
-                        double signed_notional = notional_result.value();
-                        gross_notional += std::abs(signed_notional);
-                        net_notional += signed_notional;
-                        auto [initial_m, maint_m] = margin_result_per.value();
-                        total_posted_margin += initial_m;
-                        maintenance_requirement_today += maint_m;
-                    } else {
-                        WARN("Failed per-strategy notional/margin for " + symbol +
-                             " in strategy " + strategy_id +
-                             ", falling back to MarginManager combined values");
-                        gross_notional = metrics.gross_notional;
-                        net_notional = metrics.net_notional;
-                        total_posted_margin = metrics.total_posted_margin;
-                        maintenance_requirement_today = metrics.maintenance_requirement;
-                        recompute_fallback = true;
-                        break;
-                    }
-                }
+            // T-7b-2 8b: the account's exposure from the sleeves' books (live/book_exposure.hpp).
+            // A symbol the sleeves hold on the same side is summed per sleeve exactly as before;
+            // a symbol they hold on OPPOSITE sides is taken once, on the net, because the account
+            // holds the net and posts margin on it (HD 2026-09-19 / 2026-09-25 item 23).
+            const BookExposure exposure = account_book_exposure(
+                strategy_positions_map,
+                [&](const std::string& symbol, const Position& pos) {
+                    return previous_day_close_prices.count(symbol)
+                               ? previous_day_close_prices.at(symbol)
+                               : pos.average_price.as_double();
+                },
+                [&](const std::string& symbol, double qty, double price) {
+                    return margin_manager->calculate_position_notional(symbol, qty, price);
+                },
+                [&](const std::string& symbol, double qty, double price) {
+                    return margin_manager->calculate_position_margin(symbol, qty, price);
+                });
+            if (exposure.failed) {
+                WARN("Failed per-strategy notional/margin for " + exposure.failed_symbol +
+                     " in strategy " + exposure.failed_strategy +
+                     ", falling back to MarginManager combined values");
+                gross_notional = metrics.gross_notional;
+                net_notional = metrics.net_notional;
+                total_posted_margin = metrics.total_posted_margin;
+                maintenance_requirement_today = metrics.maintenance_requirement;
+            } else {
+                gross_notional = exposure.gross_notional;
+                net_notional = exposure.net_notional;
+                total_posted_margin = exposure.posted_margin;
+                maintenance_requirement_today = exposure.maintenance_margin;
+                for (const auto& line : exposure.net_lines) INFO(line);
             }
-            active_positions = true_active_positions;
+            active_positions = exposure.active_positions;
 
             INFO("Per-strategy recompute: gross=$" + std::to_string(gross_notional) +
                  ", net=$" + std::to_string(net_notional) +
