@@ -415,6 +415,7 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
             delivered_lap1_book_.clear();
             delivered_has_lap1_ = false;
             delivered_cut_ = DeliveredCut{};
+            delivered_npc_.clear();
         }
         {
             const RiskContext rebalance_ctx = make_risk_context(
@@ -994,9 +995,9 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
             std::set<std::string> symbols;
             for (const auto& [sym, q] : delivered_lap1_book_) symbols.insert(sym);
             for (const auto& [sym, q] : final_book) symbols.insert(sym);
+            delivered_npc_ = delivered_notional_per_contract(symbols);
             delivered_cut_ = measure_delivered_cut(
-                delivered_has_lap1_ ? &delivered_lap1_book_ : nullptr, final_book,
-                delivered_notional_per_contract(symbols));
+                delivered_has_lap1_ ? &delivered_lap1_book_ : nullptr, final_book, delivered_npc_);
         }
         return Result<void>();
 
@@ -2119,6 +2120,22 @@ Result<void> PortfolioManager::set_risk_modules(
 DeliveredCut PortfolioManager::last_delivered_cut() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return delivered_cut_;
+}
+
+DeliveredCut PortfolioManager::delivered_cut_for_book(
+    const std::map<std::string, double>& stored_book) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!delivered_cut_.has_final) return delivered_cut_;
+    std::map<std::string, double> npc = delivered_npc_;
+    std::set<std::string> missing;
+    for (const auto& [symbol, q] : stored_book) {
+        if (q != 0.0 && npc.find(symbol) == npc.end()) missing.insert(symbol);
+    }
+    if (!missing.empty()) {
+        for (const auto& [symbol, v] : delivered_notional_per_contract(missing)) npc[symbol] = v;
+    }
+    return measure_delivered_cut(delivered_has_lap1_ ? &delivered_lap1_book_ : nullptr, stored_book,
+                                 npc);
 }
 
 std::map<std::string, double> PortfolioManager::delivered_notional_per_contract(

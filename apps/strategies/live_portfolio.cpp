@@ -2259,10 +2259,12 @@ int main(int argc, char* argv[]) {
             trade_ngin::summarize_applied_risk(portfolio->last_risk_decisions())));
         // T-7b-2 C9a (T-VOL C4): the delivered cut beside the request: the stored book's gross
         // notional over the lap-1 optimizer book's, the PortfolioManager's measurement of the same
-        // rebalance (risk_scale_report.hpp defines each field). Log only.
+        // rebalance (risk_scale_report.hpp defines each field). Log only. C9a3: final_gross is the
+        // book this runner stores, strategy_positions_map AFTER the BOOK_GATE hold (a held symbol
+        // keeps its stored T-1 quantity), not the PortfolioManager's book before it.
         INFO(trade_ngin::format_risk_delivered(
             trade_ngin::summarize_applied_risk(portfolio->last_risk_decisions()),
-            portfolio->last_delivered_cut()));
+            portfolio->delivered_cut_for_book(trade_ngin::account_book_of(strategy_positions_map))));
         // ========================================
         // STEP 3: CALCULATE TRANSACTION COSTS AND Day T PnL (ZERO)
         // ========================================

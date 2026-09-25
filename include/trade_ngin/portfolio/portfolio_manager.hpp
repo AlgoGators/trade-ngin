@@ -359,6 +359,15 @@ public:
     DeliveredCut last_delivered_cut() const;
 
     /**
+     * @brief T-7b-2 C9a3: the same rebalance's delivered cut with final_gross measured on `stored_book` (the
+     *        account book the runner actually stores, e.g. after a live runner's BOOK_GATE hold), at the notionals
+     *        of the end-of-call measurement; a symbol those did not cover (a position the hold re-inserted) is
+     *        valued by delivered_notional_per_contract now. The lap-1 book is unchanged. Returns
+     *        last_delivered_cut() unchanged (every figure na) when no measurement ran.
+     */
+    DeliveredCut delivered_cut_for_book(const std::map<std::string, double>& stored_book) const;
+
+    /**
      * @brief Mark this manager as driven by a backtest. Read only into RiskContext::is_backtest.
      */
     void set_backtest_mode(bool is_backtest) {
@@ -378,6 +387,7 @@ private:
     std::map<std::string, double> delivered_lap1_book_;
     bool delivered_has_lap1_{false};
     DeliveredCut delivered_cut_;
+    std::map<std::string, double> delivered_npc_;  // the end-of-call measurement's notionals (C9a3)
     bool is_backtest_{false};
     // Per rebalance, cleared at the boundary: strategies pinned by a risk REFUSE / REPLACE (skipped
     // by the optimiser, later scales, the fraction scan, forced rounding and the final check), and

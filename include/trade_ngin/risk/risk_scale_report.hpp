@@ -145,6 +145,19 @@ inline double delivered_gross_notional(const std::map<std::string, double>& book
     return gross;
 }
 
+/// T-7b-2 C9a3: the ACCOUNT book of per-strategy books (strategy -> symbol -> Position): per symbol, the sum of
+/// every sleeve's quantity. The live futures runners pass the per-strategy book they store (after their BOOK_GATE
+/// hold) through this to PortfolioManager::delivered_cut_for_book.
+template <typename Books>
+std::map<std::string, double> account_book_of(const Books& books) {
+    std::map<std::string, double> out;
+    for (const auto& [strategy, book] : books) {
+        (void)strategy;
+        for (const auto& [symbol, pos] : book) out[symbol] += static_cast<double>(pos.quantity);
+    }
+    return out;
+}
+
 /// Both grosses at the same notionals. `lap1_book` is null when no lap-1 book was captured.
 inline DeliveredCut measure_delivered_cut(const std::map<std::string, double>* lap1_book,
                                           const std::map<std::string, double>& final_book,
@@ -166,7 +179,9 @@ inline DeliveredCut measure_delivered_cut(const std::map<std::string, double>* l
 ///   delivered    final_gross / lap1_gross; `na` when there is no lap-1 book, no final book, or the
 ///                lap-1 book's gross is 0 (an EMPTY lap-1 book: no symbol, or every quantity 0 --
 ///                there is nothing to cut, so no ratio; final_gross is still printed).
-///   final_gross  `na` when the measurement did not run: no call this cycle (the backtest's
+///   final_gross  the book the runner stores: the PM's final book in the backtest (its session hold is inside
+///                the PM), the runner's book after its BOOK_GATE hold on the live futures runners (T-7b-2 C9a3,
+///                PortfolioManager::delivered_cut_for_book); `na` when the measurement did not run: no call this cycle (the backtest's
 ///                all-JUNK cycle), or the call returned before its end (an error; the measurement
 ///                runs once, at the end of the call, so neither book is valued then).
 ///   lap1_gross   `na` in the same cases, and when the call ended without a lap-1 book; 0 for an

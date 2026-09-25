@@ -313,3 +313,59 @@ TEST_F(DeliveredCutPmTest, TheNotionalIsTheTrendStrategysOwnElseTheManagersClose
     EXPECT_EQ(npc.at("ZZE"), 3.0) << "trend data without a price falls to the close";
     EXPECT_EQ(npc.count("ZZD"), 0u) << "no price anywhere: unpriced";
 }
+
+// ---- T-7b-2 C9a3: final_gross measures the book the runner STORES (after its BOOK_GATE hold) -------
+//
+// The live futures runners hold a symbol whose T-1 verdict is not SESSION at its stored T-1 quantity AFTER
+// process_market_data returns (hold_non_session_symbols), so the PM's own final book is not what they store on
+// a feed-hole day (futchain 2026-04-24: the PM ships MYM 2, the runner stores MYM 1). The runners now pass the
+// account book they store; the lap-1 book and the notionals stay the PM's measurement of the same rebalance.
+
+// The account book of per-strategy books: per symbol, the sum of every sleeve's contracts.
+TEST(RiskDeliveredFormatTest, TheAccountBookSumsTheSleeves) {
+    std::unordered_map<std::string, std::unordered_map<std::string, Position>> books;
+    books["TREND"]["MYM"] = make_pos("MYM", 2.0, 1.0);
+    books["TREND"]["ZZA"] = make_pos("ZZA", 0.0, 1.0);
+    books["FAST"]["MYM"] = make_pos("MYM", -1.0, 1.0);
+    const auto account = account_book_of(books);
+    ASSERT_EQ(account.size(), 2u);
+    EXPECT_EQ(account.at("MYM"), 1.0);
+    EXPECT_EQ(account.at("ZZA"), 0.0);
+}
+
+// The PM cuts 10 lots to 5 (lap-1 gross 990, its final 495). The runner then holds the symbol at yesterday's 7:
+// the stored book is 7 lots, 693, so delivered is 0.7, not the PM's 0.5. A symbol the hold re-inserted that no
+// PM book carried (ZZB, closes 20 in the manager's history) is priced from the manager's close.
+TEST_F(DeliveredCutPmTest, FinalGrossMeasuresTheStoredBookAfterTheRunnersHold) {
+    make_pm({{{"ZZA", make_pos("ZZA", 10.0, 100.0)}}},
+            {std::make_shared<ConstantScaleRiskModule>("cut", 0.5)});
+    ASSERT_TRUE(pm_->process_market_data({make_bar("ZZA", 1, 100.0), make_bar("ZZA", 2, 102.0),
+                                          make_bar("ZZA", 3, 99.0), make_bar("ZZB", 3, 20.0)})
+                    .is_ok());
+    EXPECT_EQ(pm_->last_delivered_cut().final_gross, 495.0) << "the PM's own final book, before any hold";
+
+    const DeliveredCut held = pm_->delivered_cut_for_book({{"ZZA", 7.0}});
+    EXPECT_EQ(held.lap1_gross, 990.0);
+    EXPECT_EQ(held.final_gross, 693.0) << "the held contracts are in the stored book's gross";
+    EXPECT_EQ(format_risk_delivered(summarize_applied_risk(pm_->last_risk_decisions()), held),
+              "RISK_DELIVERED requested=0.5 delivered=0.69999999999999996 final_gross=693 lap1_gross=990 "
+              "unpriced=0");
+
+    const DeliveredCut reinserted = pm_->delivered_cut_for_book({{"ZZA", 5.0}, {"ZZB", 2.0}});
+    EXPECT_EQ(reinserted.final_gross, 495.0 + 40.0) << "ZZB priced at the manager's close 20 x 1";
+    EXPECT_EQ(reinserted.unpriced, 0);
+
+    // With no hold the stored book is the PM's final book: the same figures as last_delivered_cut().
+    const DeliveredCut same = pm_->delivered_cut_for_book({{"ZZA", 5.0}});
+    EXPECT_EQ(same.final_gross, pm_->last_delivered_cut().final_gross);
+    EXPECT_EQ(same.lap1_gross, pm_->last_delivered_cut().lap1_gross);
+}
+
+// No measurement (no process_market_data call reached its end): the stored book changes nothing, every figure na.
+TEST_F(DeliveredCutPmTest, NoMeasurementStaysNaWhateverTheStoredBook) {
+    make_pm({{{"ZZA", make_pos("ZZA", 10.0, 100.0)}}},
+            {std::make_shared<ConstantScaleRiskModule>("cut", 0.5)});
+    const DeliveredCut d = pm_->delivered_cut_for_book({{"ZZA", 3.0}});
+    EXPECT_EQ(format_risk_delivered(RiskScaleSummary{}, d),
+              "RISK_DELIVERED requested=1 delivered=na final_gross=na lap1_gross=na unpriced=0");
+}
