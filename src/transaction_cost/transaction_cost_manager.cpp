@@ -182,6 +182,11 @@ void TransactionCostManager::record_volume(const std::string& symbol, double vol
     impact_model_.update_volume(symbol, volume);
 }
 
+void TransactionCostManager::set_own_day_volume(const std::string& symbol, double volume) {
+    impact_model_.clear_symbol_data(symbol);
+    impact_model_.update_volume(symbol, volume);
+}
+
 void TransactionCostManager::record_log_return(const std::string& symbol, double close_price,
                                                double prev_close_price) {
     if (prev_close_price > 0.0 && close_price > 0.0) {

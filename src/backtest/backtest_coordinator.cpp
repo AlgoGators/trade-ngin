@@ -201,6 +201,8 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
     // K1 (T-7b-2 8c): the per-bar re-tier is the equity book's; futures roots keep their static
     // per-root cost configs.
     equity_cost_retier_enabled_ = (asset_class == AssetClass::EQUITIES);
+    // COST-H3 (T-7b-2 8c): the futures book's cost managers read live's own-day basis.
+    own_day_cost_feed_enabled_ = (asset_class == AssetClass::FUTURES);
 
     // Store backtest dates for later use in save_portfolio_results_to_db
     backtest_start_date_ = start_date;
@@ -600,8 +602,12 @@ Result<void> BacktestCoordinator::process_portfolio_day(
             return Result<void>();  // Early return, don't process day 1
         }
 
-        // Update transaction cost manager with market data for ADV and volatility tracking
-        for (const auto& bar : bars) {
+        // Update transaction cost manager with market data for ADV and volatility tracking.
+        // COST-H3 (T-7b-2 8c): the equity book's feed, the cycle's own group; the futures book
+        // (own_day_cost_feed_enabled_) is fed below from the signal feed, live's basis.
+        static const std::vector<Bar> kNotFedHere;
+        const std::vector<Bar>& day_t_cost_feed = own_day_cost_feed_enabled_ ? kNotFedHere : bars;
+        for (const auto& bar : day_t_cost_feed) {
             double close = static_cast<double>(bar.close);
             // K1 (T-7b-2 8c; T-4b ADVERSARIAL A-3): an equity's volume in the window-end share
             // unit, so the ADV that scales participation is in the unit of the traded quantity and
@@ -718,6 +724,32 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                 withheld_junk_signal_bars_ = std::move(junk_feed.withheld);
                 junk_adjusted_feed = std::move(junk_feed.feed);
                 signal_feed = &junk_adjusted_feed;
+            }
+        }
+
+        // COST-H3 (T-7b-2 8c; T-VOL §4 proved the parent's order: day T's bar reached both cost
+        // managers before the book was sized on the T-1 group and filled at the T-1 close). The
+        // futures book's two managers are fed the cycle's SIGNAL feed, the bars the strategies and
+        // the PortfolioManager are fed below (a JUNK bar withheld on its cycle, as live's strategy
+        // feed withholds it), on live's basis (futures_cost_feed.hpp): each symbol's own-day volume
+        // (its signal bar's) is the impact model's only observation, and its returns walk ends at
+        // that bar. So the optimizer's cost vector and every fill's cost read what a live run with
+        // this T-1 reads, and nothing of day T.
+        if (own_day_cost_feed_enabled_) {
+            const auto fed = feed_futures_cost_model_step(
+                execution_manager_->get_transaction_cost_manager(), *signal_feed,
+                execution_cost_carry_);
+            feed_futures_cost_model_step(portfolio->get_transaction_cost_manager(), *signal_feed,
+                                         portfolio_cost_carry_);
+            if (!is_warmup) {
+                INFO("BT_COST_FEED date=" + core::format_utc_date(timestamp) + " signal_group=" +
+                     (bars_for_signals.empty()
+                          ? std::string("none")
+                          : core::format_utc_date(bars_for_signals.front().timestamp)) +
+                     " symbols=" + std::to_string(fed.symbols.size()) +
+                     " returns=" + std::to_string(fed.returns_fed) +
+                     ": both cost managers read each symbol's own-day volume and the returns "
+                     "walk ending at its signal bar (live's basis)");
             }
         }
 
@@ -1344,6 +1376,9 @@ void BacktestCoordinator::reset_portfolio_state() {
     equity_cost_retier_.reset();
     equity_cost_retier_cycles_ = 0;
     equity_cost_retier_changes_ = 0;
+    own_day_cost_feed_enabled_ = false;
+    execution_cost_carry_ = FuturesCostFeedCarry{};
+    portfolio_cost_carry_ = FuturesCostFeedCarry{};
     current_run_id_.clear();
     portfolio_previous_positions_.clear();
     // E2-F54 (c): without this, a second portfolio backtest in the same process opens with

@@ -97,6 +97,7 @@ set(TEST_SOURCES
     backtest/test_equity_cost_warmup.cpp
     backtest/test_backtest_junk_signal_feed.cpp
     backtest/test_backtest_equity_cost_retier.cpp
+    backtest/test_backtest_futures_cost_feed.cpp
     execution/test_execution_engine.cpp
     portfolio/test_portfolio_manager.cpp
     core/test_equity_portfolio_namespace.cpp

@@ -147,6 +147,17 @@ public:
     void record_volume(const std::string& symbol, double volume);
 
     /**
+     * @brief The impact model's window becomes exactly this one volume (the symbol's earlier
+     *        volumes are dropped), so the ADV that prices participation and keys the k_bps tier
+     *        is that volume.
+     *
+     * A live futures run feeds a fresh manager one volume per symbol, the fill day's own
+     * (futures_cost_feed.hpp); the backtest's managers live for the whole run, so the backtest
+     * sets the same one-observation window every cycle (T-7b-2 8c, COST-H3).
+     */
+    void set_own_day_volume(const std::string& symbol, double volume);
+
+    /**
      * @brief The return half of update_market_data: append ln(close / prev_close) to the
      *        spread model's volatility window, only when both prices are positive (a zero
      *        prev_close means "no previous close": nothing is recorded, nothing fabricated).

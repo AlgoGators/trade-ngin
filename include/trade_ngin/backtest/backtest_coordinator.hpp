@@ -22,6 +22,7 @@
 #include "trade_ngin/backtest/backtest_types.hpp"
 #include "trade_ngin/backtest/backtest_csv_exporter.hpp"
 #include "trade_ngin/backtest/equity_cost_retier.hpp"
+#include "trade_ngin/live/futures_cost_feed.hpp"
 #include "trade_ngin/risk/risk_manager.hpp"
 
 namespace trade_ngin {
@@ -113,6 +114,13 @@ private:
     EquityCostRetier equity_cost_retier_;
     size_t equity_cost_retier_cycles_ = 0;
     size_t equity_cost_retier_changes_ = 0;
+    /// T-7b-2 8c, COST-H3 (T-VOL §4): both cost managers read live's basis (futures_cost_feed.hpp):
+    /// the signal bar's own volume and the returns walk ending at it, fed from the cycle's signal
+    /// feed before the book is sized, instead of the cycle's own group (day T, a one-bar
+    /// look-ahead). Futures only (run_portfolio with AssetClass::FUTURES); one carry per manager.
+    bool own_day_cost_feed_enabled_ = false;
+    FuturesCostFeedCarry execution_cost_carry_;
+    FuturesCostFeedCarry portfolio_cost_carry_;
     std::string current_run_id_;
     Timestamp backtest_start_date_;
     Timestamp backtest_end_date_;

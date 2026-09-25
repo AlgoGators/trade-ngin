@@ -50,8 +50,9 @@ namespace trade_ngin {
  *
  * Only the cost manager passed in is fed. The live futures runners pass the ExecutionManager's
  * (C8a) and, from the same feed, the PortfolioManager's, whose model prices the optimizer's cost
- * vector (T-7b-1 C8d, H-2). The backtest's two managers and the equity feed
- * (LiveDailyCycle::feed_cost_model) are untouched; the equity runners' optimizer is off.
+ * vector (T-7b-1 C8d, H-2). The futures backtest feeds its two managers the same basis one cycle
+ * at a time (feed_futures_cost_model_step below, T-7b-2 8c); the equity feed
+ * (LiveDailyCycle::feed_cost_model) is untouched; the equity runners' optimizer is off.
  */
 struct FuturesCostFeedSymbol {
     std::string symbol;
@@ -105,6 +106,64 @@ inline FuturesCostFeedResult feed_futures_cost_model(
 
         out.returns_fed += entry.returns;
         if (bars.size() < min_bars) out.thin.push_back(symbol);
+        out.symbols.push_back(entry);
+    }
+    return out;
+}
+
+/**
+ * @brief The same two inputs for the futures backtest (T-7b-2 8c, COST-H3, T-VOL §4), one cycle at
+ *        a time.
+ *
+ * A live run feeds a fresh manager the whole window ending at T-1 once. The backtest's managers
+ * live for the whole run, so each cycle feeds only the bars that are new to them, the cycle's
+ * signal feed (the T-1 group the strategies and the PortfolioManager are fed, a JUNK bar withheld
+ * on its own cycle and fed on the next ahead of the symbol's newer bar): each bar's return against
+ * the symbol's previously fed close (`carry`, one per manager; none on a symbol's first bar), and
+ * the impact model's window SET to the symbol's latest bar's own volume. After every cycle the
+ * manager holds, for every symbol fed so far, exactly what feed_futures_cost_model gives on the
+ * same bars: the returns walk is the same sequence (the spread model keeps the last 20) and the
+ * ADV is the one own-day volume. A symbol with no bar in the cycle keeps its last own-day volume
+ * and returns, as live's window keeps its latest bar.
+ */
+struct FuturesCostFeedCarry {
+    std::map<std::string, double> last_close;  ///< the close of the symbol's last fed bar
+};
+
+inline FuturesCostFeedResult feed_futures_cost_model_step(
+    transaction_cost::TransactionCostManager& tcm, const std::vector<Bar>& new_bars,
+    FuturesCostFeedCarry& carry) {
+    std::map<std::string, std::vector<Bar>> by_symbol;
+    for (const auto& bar : new_bars) by_symbol[bar.symbol].push_back(bar);
+
+    FuturesCostFeedResult out;
+    for (auto& [symbol, bars] : by_symbol) {
+        std::stable_sort(bars.begin(), bars.end(),
+                         [](const Bar& a, const Bar& b) { return a.timestamp < b.timestamp; });
+
+        FuturesCostFeedSymbol entry;
+        entry.symbol = symbol;
+        entry.bars = bars.size();
+
+        auto it = carry.last_close.find(symbol);
+        double prev_close = it == carry.last_close.end() ? 0.0 : it->second;
+        for (size_t i = 0; i < bars.size(); ++i) {
+            if (i > 0 && bars[i].timestamp == bars[i - 1].timestamp &&
+                (out.repeated_instants.empty() || out.repeated_instants.back() != symbol)) {
+                out.repeated_instants.push_back(symbol);
+            }
+            const double close = static_cast<double>(bars[i].close);
+            tcm.record_log_return(symbol, close, prev_close);
+            if (prev_close > 0.0 && close > 0.0) ++entry.returns;
+            prev_close = close;
+        }
+        carry.last_close[symbol] = prev_close;
+
+        entry.own_day_volume = bars.back().volume;
+        entry.own_day_time = bars.back().timestamp;
+        tcm.set_own_day_volume(symbol, entry.own_day_volume);
+
+        out.returns_fed += entry.returns;
         out.symbols.push_back(entry);
     }
     return out;
