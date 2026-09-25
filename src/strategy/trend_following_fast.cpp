@@ -1269,13 +1269,19 @@ double TrendFollowingFastStrategy::apply_position_buffer(const std::string& symb
         }
     }
 
-    double weight = std::max(0.0, trend_config_.weight);
+    // T-7b-2 C9a (T-VOL C2): the Carver term reads the SIZING weight, the per-instrument
+    // InstrumentData::weight that calculate_position reads (sector-equal, from get_weights), not
+    // the flat trend_config_.weight: Carver's band is 10 percent of the instrument's own average
+    // position. A symbol with no instrument data has no sizing weight (calculate_position sizes it
+    // at 0), so its Carver term is 0 and the floor and the position term set the width.
+    double weight = 0.0;
 
     // Get contract size from instrument registry (use cached value if available)
     double contract_size = 1.0;
     auto inst_data_it = instrument_data_.find(symbol);
     if (inst_data_it != instrument_data_.end()) {
         contract_size = inst_data_it->second.contract_size;
+        weight = std::max(0.0, inst_data_it->second.weight);
     } else {
         // Fallback: lookup from registry
         try {
