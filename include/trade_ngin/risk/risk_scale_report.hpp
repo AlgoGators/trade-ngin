@@ -13,7 +13,9 @@
 // Nothing here stores anything or changes a number; it only reads the record.
 #pragma once
 
+#include <cmath>
 #include <cstdio>
+#include <map>
 #include <set>
 #include <string>
 #include <vector>
@@ -91,6 +93,101 @@ inline std::string format_risk_scale_report(double reporter, const RiskScaleSumm
     char buf[64];
     std::snprintf(buf, sizeof(buf), "%.17g", reporter);
     return format_risk_scale_report(std::string(buf), s);
+}
+
+// T-7b-2 C9a (T-VOL C4): the DELIVERED cut beside the requested one. The gate's request
+// (applied_cumulative above) is what the loop multiplied the book by; what reaches the stored book
+// also depends on lap 2's buffer and the rounding (T-VOL section 3.2: 0.747 of the lap-1 book in
+// notional on cut days against a 0.870 request). One line per rebalance, printed right after the
+// RISK_SCALE_REPORT line and only where it is printed:
+//
+//   RISK_DELIVERED requested=<r> delivered=<d> final_gross=<g> lap1_gross=<g1> unpriced=<n>
+//                  [date=<YYYY-MM-DD>]
+//
+// Log only: nothing stores it and no number moves.
+
+/// The PortfolioManager's measurement of one rebalance (PortfolioManager::last_delivered_cut()).
+/// Books are the ACCOUNT book: per symbol the sum of every strategy's contracts, the book the
+/// portfolio risk gate reads. Both books are valued at ONE notional per contract per symbol, taken
+/// once at the end of the call, so the ratio compares quantities, not two sets of prices.
+struct DeliveredCut {
+    /// A lap-1 book was captured: the account book right after lap 1's optimizer step (the book
+    /// lap 1's portfolio risk step reads; with the optimizer off, the strategies' targets).
+    bool has_lap1{false};
+    /// The call reached its end, so the final book exists: the account book of the positions the
+    /// runner stores (get_strategy_positions(), after the backtest's session hold).
+    bool has_final{false};
+    /// sum over symbols of |contracts| x notional per contract, lap-1 book.
+    double lap1_gross{0.0};
+    /// The same over the final book.
+    double final_gross{0.0};
+    /// Symbols holding a non-zero quantity in either book with no notional per contract (left
+    /// out of both grosses).
+    int unpriced{0};
+};
+
+/// sum over the book of |q| x notional_per_contract[symbol], symbols in name order. A symbol with
+/// q == 0 adds nothing; a symbol with q != 0 and no positive notional is added to `unpriced` and
+/// left out.
+inline double delivered_gross_notional(const std::map<std::string, double>& book,
+                                       const std::map<std::string, double>& notional_per_contract,
+                                       std::set<std::string>& unpriced) {
+    double gross = 0.0;
+    for (const auto& [symbol, q] : book) {
+        if (q == 0.0) continue;
+        auto it = notional_per_contract.find(symbol);
+        if (it == notional_per_contract.end() || !(it->second > 0.0)) {
+            unpriced.insert(symbol);
+            continue;
+        }
+        gross += std::fabs(q) * it->second;
+    }
+    return gross;
+}
+
+/// Both grosses at the same notionals. `lap1_book` is null when no lap-1 book was captured.
+inline DeliveredCut measure_delivered_cut(const std::map<std::string, double>* lap1_book,
+                                          const std::map<std::string, double>& final_book,
+                                          const std::map<std::string, double>& notional_per_contract) {
+    DeliveredCut d;
+    std::set<std::string> unpriced;
+    if (lap1_book != nullptr) {
+        d.has_lap1 = true;
+        d.lap1_gross = delivered_gross_notional(*lap1_book, notional_per_contract, unpriced);
+    }
+    d.has_final = true;
+    d.final_gross = delivered_gross_notional(final_book, notional_per_contract, unpriced);
+    d.unpriced = static_cast<int>(unpriced.size());
+    return d;
+}
+
+/// The line. Every number is printed %.17g (it reads back as the same double).
+///   requested    RiskScaleSummary::applied_cumulative, the same double RISK_SCALE_REPORT prints.
+///   delivered    final_gross / lap1_gross; `na` when there is no lap-1 book, no final book, or the
+///                lap-1 book's gross is 0 (an EMPTY lap-1 book: no symbol, or every quantity 0 --
+///                there is nothing to cut, so no ratio; final_gross is still printed).
+///   final_gross  `na` when the measurement did not run: no call this cycle (the backtest's
+///                all-JUNK cycle), or the call returned before its end (an error; the measurement
+///                runs once, at the end of the call, so neither book is valued then).
+///   lap1_gross   `na` in the same cases, and when the call ended without a lap-1 book; 0 for an
+///                empty lap-1 book.
+///   unpriced     DeliveredCut::unpriced.
+/// A non-empty `date` appends " date=<date>" (the backtest's form).
+inline std::string format_risk_delivered(const RiskScaleSummary& s, const DeliveredCut& d,
+                                         const std::string& date = std::string()) {
+    auto num = [](double v) {
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), "%.17g", v);
+        return std::string(buf);
+    };
+    const bool ratio = d.has_lap1 && d.has_final && d.lap1_gross > 0.0;
+    std::string line = "RISK_DELIVERED requested=" + num(s.applied_cumulative) +
+                       " delivered=" + (ratio ? num(d.final_gross / d.lap1_gross) : "na") +
+                       " final_gross=" + (d.has_final ? num(d.final_gross) : "na") +
+                       " lap1_gross=" + (d.has_lap1 ? num(d.lap1_gross) : "na") +
+                       " unpriced=" + std::to_string(d.unpriced);
+    if (!date.empty()) line += " date=" + date;
+    return line;
 }
 
 }  // namespace trade_ngin

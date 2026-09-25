@@ -412,6 +412,9 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
             risk_decisions_.clear();
             pinned_scopes_.clear();
             rebalance_applied_.clear();
+            delivered_lap1_book_.clear();
+            delivered_has_lap1_ = false;
+            delivered_cut_ = DeliveredCut{};
         }
         {
             const RiskContext rebalance_ctx = make_risk_context(
@@ -485,6 +488,14 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                         attr_post_qp[id][sym] = static_cast<double>(pos.quantity);
                     }
                 }
+                // T-7b-2 C9a: the same book summed into the account's contracts per symbol, the
+                // book lap 1's portfolio risk step reads (the delivered cut's denominator).
+                for (const auto& [id, info] : strategies_) {
+                    for (const auto& [sym, pos] : info.target_positions) {
+                        delivered_lap1_book_[sym] += static_cast<double>(pos.quantity);
+                    }
+                }
+                delivered_has_lap1_ = true;
             }
 
             // Risk Management step
@@ -967,6 +978,25 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                     }
                 }
             }  // End of if (!skip_execution_generation) block
+        }
+
+        // T-7b-2 C9a (T-VOL C4): the delivered cut, measured once the book the runner stores is
+        // final (current_positions, after the backtest's session hold above). Both books are
+        // valued here, at one notional per contract per symbol. Log only: the runners print it.
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            std::map<std::string, double> final_book;
+            for (const auto& [id, info] : strategies_) {
+                for (const auto& [sym, pos] : info.current_positions) {
+                    final_book[sym] += static_cast<double>(pos.quantity);
+                }
+            }
+            std::set<std::string> symbols;
+            for (const auto& [sym, q] : delivered_lap1_book_) symbols.insert(sym);
+            for (const auto& [sym, q] : final_book) symbols.insert(sym);
+            delivered_cut_ = measure_delivered_cut(
+                delivered_has_lap1_ ? &delivered_lap1_book_ : nullptr, final_book,
+                delivered_notional_per_contract(symbols));
         }
         return Result<void>();
 
@@ -2084,6 +2114,40 @@ Result<void> PortfolioManager::set_risk_modules(
     // The keys were just checked against the registered strategies.
     sleeve_keys_validated_ = true;
     return Result<void>();
+}
+
+DeliveredCut PortfolioManager::last_delivered_cut() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return delivered_cut_;
+}
+
+std::map<std::string, double> PortfolioManager::delivered_notional_per_contract(
+    const std::set<std::string>& symbols) const {
+    std::map<std::string, double> out;
+    std::unordered_map<std::string, const InstrumentData*> trend_data;
+    for (const auto& [id, info] : strategies_) {
+        auto trend_strategy = std::dynamic_pointer_cast<TrendFollowingStrategy>(info.strategy);
+        if (!trend_strategy) continue;
+        for (const auto& [symbol, data] : trend_strategy->get_all_instrument_data()) {
+            trend_data[symbol] = &data;
+        }
+    }
+    for (const auto& symbol : symbols) {
+        auto t = trend_data.find(symbol);
+        if (t != trend_data.end() && !t->second->price_history.empty()) {
+            out[symbol] = t->second->contract_size * t->second->price_history.back();
+            continue;
+        }
+        auto c = closes_by_date_.find(symbol);
+        if (c == closes_by_date_.end() || c->second.empty()) continue;
+        double multiplier = 1.0;
+        if (registry_ && registry_->has_instrument(symbol)) {
+            auto instrument = registry_->get_instrument(symbol);
+            if (instrument) multiplier = instrument->get_multiplier();
+        }
+        out[symbol] = c->second.rbegin()->second * multiplier;
+    }
+    return out;
 }
 
 std::vector<RiskDecisionRecord> PortfolioManager::last_risk_decisions() const {

@@ -2253,6 +2253,12 @@ int main(int argc, char* argv[]) {
         INFO(trade_ngin::format_risk_scale_report(
             risk_eval.is_ok() ? risk_eval.value().recommended_scale : 1.0,
             trade_ngin::summarize_applied_risk(portfolio->last_risk_decisions())));
+        // T-7b-2 C9a (T-VOL C4): the delivered cut beside the request: the stored book's gross
+        // notional over the lap-1 optimizer book's, the PortfolioManager's measurement of the same
+        // rebalance (risk_scale_report.hpp defines each field). Log only.
+        INFO(trade_ngin::format_risk_delivered(
+            trade_ngin::summarize_applied_risk(portfolio->last_risk_decisions()),
+            portfolio->last_delivered_cut()));
         // ========================================
         // STEP 3: CALCULATE TRANSACTION COSTS AND Day T PnL (ZERO)
         // ========================================

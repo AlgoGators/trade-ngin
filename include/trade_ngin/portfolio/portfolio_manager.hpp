@@ -8,6 +8,7 @@
 #include <nlohmann/json.hpp>
 #include <numeric>
 #include <optional>
+#include <set>
 #include <unordered_map>
 #include <unordered_set>
 #include "trade_ngin/core/config_base.hpp"
@@ -24,6 +25,7 @@
 #include "trade_ngin/risk/risk_manager.hpp"
 #include "trade_ngin/risk/risk_module.hpp"
 #include "trade_ngin/risk/risk_module_config.hpp"
+#include "trade_ngin/risk/risk_scale_report.hpp"
 #include "trade_ngin/strategy/strategy_interface.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
 #include "trade_ngin/transaction_cost/transaction_cost_manager.hpp"
@@ -348,6 +350,15 @@ public:
     nlohmann::json risk_decisions_json() const;
 
     /**
+     * @brief The last process_market_data call's delivered cut (T-7b-2 C9a, T-VOL C4): the
+     *        account book's gross notional after lap 1's optimizer step and at the end of the
+     *        call, both at one notional per contract per symbol. A copy. Reset at the same
+     *        rebalance boundary as last_risk_decisions(). Log only; nothing reads it back.
+     *        Each field: DeliveredCut in risk_scale_report.hpp.
+     */
+    DeliveredCut last_delivered_cut() const;
+
+    /**
      * @brief Mark this manager as driven by a backtest. Read only into RiskContext::is_backtest.
      */
     void set_backtest_mode(bool is_backtest) {
@@ -362,6 +373,11 @@ private:
     std::vector<RiskModulePtr> risk_modules_;  // portfolio scope, evaluated in order
     std::unordered_map<std::string, std::vector<RiskModulePtr>> sleeve_risk_modules_;  // by strategy id
     std::vector<RiskDecisionRecord> risk_decisions_;  // guarded by mutex_
+    // T-7b-2 C9a: the account book after lap 1's optimizer step (contracts per symbol) and the
+    // rebalance's delivered cut; both reset at the rebalance boundary. guarded by mutex_
+    std::map<std::string, double> delivered_lap1_book_;
+    bool delivered_has_lap1_{false};
+    DeliveredCut delivered_cut_;
     bool is_backtest_{false};
     // Per rebalance, cleared at the boundary: strategies pinned by a risk REFUSE / REPLACE (skipped
     // by the optimiser, later scales, the fraction scan, forced rounding and the final check), and
@@ -616,6 +632,17 @@ private:
      *        Σᵢ qᵢ × allocᵢ, NOT broker truth. See get_portfolio_positions().
      */
     std::unordered_map<std::string, Position> get_positions_internal() const;
+
+    /**
+     * @brief T-7b-2 C9a: one notional per contract for each symbol, for the delivered cut. The
+     *        optimizer's own figure (contract_size x the latest price of the TrendFollowingStrategy
+     *        that carries the symbol, the later strategy winning as in optimize_positions);
+     *        otherwise this manager's latest close for it (closes_by_date_) x the registry's
+     *        multiplier (1 without a registry entry); a symbol with neither is left out
+     *        (DeliveredCut::unpriced). Called with mutex_ held; logs nothing.
+     */
+    std::map<std::string, double> delivered_notional_per_contract(
+        const std::set<std::string>& symbols) const;
 };
 
 }  // namespace trade_ngin

@@ -125,6 +125,7 @@ set(TEST_SOURCES
     portfolio/test_covariance_date_alignment.cpp
     portfolio/test_covariance_participants.cpp
     portfolio/test_pm_session_hold.cpp
+    portfolio/test_delivered_cut.cpp
     storage/test_backtest_results_manager.cpp
     storage/test_live_results_manager.cpp
     storage/test_equity_fallback_stream_db.cpp

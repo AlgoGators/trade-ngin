@@ -26,7 +26,10 @@ struct TrendFollowingConfig {
     // sub-tick and a no-op for integer positions. 0.5 is the smallest value that can absorb a
     // breach for typical 0-3 contract holdings; set to 0.0 to disable.
     double carver_buffer_floor{0.5};
-    // Position-proportional buffer: buffer_width = max(floor, factor × |raw_position|).
+    // Position-proportional buffer term: buffer_width = max(floor, carver, factor × |current|),
+    // where current is the HELD position (the strategy's positions_), not the raw target: a
+    // larger held position gets a wider tolerance for raw drift (T-4e 7.5, a deliberate choice
+    // for inertia). With current = 0 the term is 0 and the floor sets the entry threshold.
     // Targets high-magnitude positions (MBT/M2K/MYM) where day-over-day raw can move
     // > 0.5 contracts, breaching the floor. Set to 0.0 to disable (floor-only).
     double carver_buffer_position_factor{0.0};

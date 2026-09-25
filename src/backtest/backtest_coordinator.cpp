@@ -726,6 +726,13 @@ Result<void> BacktestCoordinator::process_portfolio_day(
                                      : portfolio->last_risk_decisions();
             INFO(format_risk_scale_report(std::string("na"), summarize_applied_risk(this_cycle),
                                           core::format_utc_date(timestamp)));
+            // T-7b-2 C9a (T-VOL C4): the delivered cut beside the request, from the same call's
+            // measurement (risk_scale_report.hpp defines each field); an all-JUNK cycle ran no
+            // rebalance and reports the empty measurement (every figure na). Log only.
+            INFO(format_risk_delivered(
+                summarize_applied_risk(this_cycle),
+                signal_feed->empty() ? DeliveredCut{} : portfolio->last_delivered_cut(),
+                core::format_utc_date(timestamp)));
         }
 
         std::vector<ExecutionReport> period_executions;
