@@ -1499,6 +1499,42 @@ int main(int argc, char* argv[]) {
                       "the day is stored as a REFUSE day and the run exits " +
                       std::to_string(kRiskModuleFailureExitCode));
             }
+            // T-7b-2 C10b (HD 2026-09-24 ruling 18): a SLEEVE-scope risk module that could not
+            // answer refused its sleeve, as the portfolio rule does for the book: the PM held that
+            // sleeve at its seeded T-1 book (no order for it) and the other sleeves traded. The day
+            // is flagged as a portfolio failure is (the same exit code and email flag, which the
+            // cron wrapper and the operator already read) and, unless a portfolio refusal marked it
+            // above, today's live_run_metadata row carries the sleeve's risk_refusal mark.
+            if (!risk_module_failure) {
+                risk_module_failure =
+                    sleeve_risk_module_failure(portfolio->last_risk_decisions());
+                if (risk_module_failure) {
+                    ERROR("RISK_MODULE_FAILURE sleeve risk module " +
+                          risk_module_failure->value("module", std::string()) +
+                          " could not evaluate sleeve " +
+                          risk_module_failure->value("scope_id", std::string()) + ": " +
+                          risk_module_failure->value("error", std::string()) +
+                          "; that sleeve is held at its seeded T-1 book and sends no orders, the "
+                          "other sleeves trade; the run exits " +
+                          std::to_string(kRiskModuleFailureExitCode));
+                    if (!portfolio_risk_refusal(portfolio->last_risk_decisions())) {
+                        auto sleeve_mark = db->store_live_run_metadata(
+                            now, combined_strategy_id, portfolio_id, strategy_alloc_json,
+                            portfolio_config_json =
+                                mark_risk_refusal(portfolio_config_json, *risk_module_failure,
+                                                  portfolio->risk_decisions_json()),
+                            strategy_configs);
+                        if (sleeve_mark.is_error()) {
+                            ERROR("Failed to mark today's live_run_metadata row with the sleeve "
+                                  "risk refusal: " +
+                                  std::string(sleeve_mark.error()->what()));
+                        } else {
+                            INFO("Marked today's live_run_metadata row with the sleeve risk "
+                                 "refusal");
+                        }
+                    }
+                }
+            }
             if (port_process_result.is_error()) {
                 std::cerr << "Failed to process data in portfolio manager: "
                           << port_process_result.error()->what() << std::endl;

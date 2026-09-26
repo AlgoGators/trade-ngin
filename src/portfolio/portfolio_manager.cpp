@@ -2816,12 +2816,15 @@ bool PortfolioManager::refuse_on_failed_gatekeeper(const std::vector<RiskModuleP
                   "; a portfolio-scope module that cannot answer refuses the scope: every "
                   "strategy is held at its previous book and no orders are sent");
         } else {
-            // Sleeve scope, unchanged: only a module that exists to say "do not trade" and
-            // could not answer has not said yes.
-            if (!modules[k]->capabilities().count(RiskAction::REFUSE)) continue;
-            WARN("Risk module " + modules[k]->id() + " failed on " + risk_scope_name(ctx.scope) +
-                 " " + ctx.scope_id + " " + risk_location(ctx) + " and can refuse: " + errors[k] +
-                 "; the scope is refused");
+            // T-7b-2 C10b (HD 2026-09-24 ruling 18): a SLEEVE-scope module of ANY capability that
+            // cannot answer refuses its sleeve, as the portfolio rule does for the book: the
+            // sleeve is held at its previous (seeded) book and sends no orders, the other sleeves
+            // go on. Until C10b only a REFUSE-capable module refused here, and a failed
+            // SCALE-only sleeve module left its sleeve uncut.
+            ERROR("Risk module " + modules[k]->id() + " failed on " + risk_scope_name(ctx.scope) +
+                  " " + ctx.scope_id + " " + risk_location(ctx) + ": " + errors[k] +
+                  "; a sleeve-scope module that cannot answer refuses its sleeve: the sleeve is "
+                  "held at its previous book and sends no orders, the other sleeves go on");
         }
         verdict.action = RiskAction::REFUSE;
         verdict.winner = static_cast<size_t>(-1);
@@ -3261,8 +3264,35 @@ Result<void> PortfolioManager::apply_sleeve_risk(
                                        verdict.action, logged_winner, ctx.scope, sid, 1.0, 1.0));
             }
         } catch (const std::exception& e) {
-            ERROR("Exception during sleeve risk management for " + sid + ": " +
-                  std::string(e.what()));
+            // T-7b-2 C10b: the sleeve's risk step could not answer (a module's on_bars threw, or
+            // an exception after evaluate), so the sleeve is refused as a failed module refuses
+            // it, recorded as a REFUSE row of kRiskStepModuleId carrying the error (the runners'
+            // flag reads it). It used to log this line and leave the sleeve uncut.
+            const std::string failure = e.what();
+            ERROR("Exception during sleeve risk management for " + sid + ": " + failure +
+                  "; the sleeve risk step could not answer, so the sleeve is refused: it is held "
+                  "at its previous book and sends no orders, the other sleeves go on");
+            RiskDecision none;
+            none.module_id = kRiskStepModuleId;
+            record_risk_decision(ctx, kRiskStepModuleId, std::move(none), RiskAction::REFUSE,
+                                 Decimal(1.0), false, failure);
+            if (!scope_is_seeded(sid)) {
+                ERROR("The sleeve risk step refused sleeve " + sid + " " + risk_location(ctx) +
+                      ", but this sleeve's previous book was never seeded: pinning would ship a "
+                      "FLAT book, not yesterday's. Seed it with update_strategy_position before "
+                      "process_market_data.");
+                return make_error<void>(ErrorCode::RISK_LIMIT_EXCEEDED,
+                                        "The sleeve risk step refused sleeve " + sid +
+                                            ", whose previous book was never seeded; refusing "
+                                            "the run rather than shipping a flat book",
+                                        "PortfolioManager");
+            }
+            std::lock_guard<std::mutex> lock(mutex_);
+            auto prev = prev_positions.find(sid);
+            strategies_.at(sid).target_positions =
+                prev != prev_positions.end() ? prev->second
+                                             : std::unordered_map<std::string, Position>{};
+            pinned_scopes_.insert(sid);
         }
     }
     return Result<void>();

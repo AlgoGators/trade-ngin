@@ -21,8 +21,12 @@ namespace trade_ngin {
  * held positions, no executions, live_results), logs an ERROR, flags the email, and exits
  * NON-ZERO so the cron wrapper and the operator see a day the gate did not measure.
  *
- * Sleeve scope is not covered: a sleeve module's failure refuses only that sleeve and only when
- * the module is REFUSE-capable (unchanged), so it is not a run failure.
+ * T-7b-2 C10b (HD 2026-09-24 ruling 18): a SLEEVE-scope module that cannot answer (any
+ * capability, or the sleeve's risk step throwing) refuses its sleeve the same way: that sleeve is
+ * held at its seeded T-1 book and sends no orders while the other sleeves trade. The runner flags
+ * it with the SAME exit code and email flag as a portfolio failure (a book the gate did not
+ * measure was stored; the cron wrapper and the operator already read code 3 and the flag) and
+ * marks the metadata row (risk_refusal, scope "sleeve") when no portfolio refusal marked it.
  */
 
 /// The runner's exit code on a day a portfolio risk module failed and the book was held. Not 1,
@@ -50,8 +54,36 @@ inline std::optional<nlohmann::json> portfolio_risk_module_failure(
     return std::nullopt;
 }
 
+/// T-7b-2 C10b: the first SLEEVE-scope record of the last process_market_data call whose module
+/// (or the sleeve's risk step, kRiskStepModuleId) failed AND whose sleeve was refused for it, or
+/// nullopt. The same keys as portfolio_risk_module_failure plus "scope" ("sleeve"), "action"
+/// ("REFUSE") and "reason" (the error), so the object is also the metadata row's risk_refusal
+/// mark.
+inline std::optional<nlohmann::json> sleeve_risk_module_failure(
+    const std::vector<RiskDecisionRecord>& records) {
+    for (const auto& rec : records) {
+        if (rec.scope != RiskScope::SLEEVE || rec.error.empty() ||
+            rec.applied_action != RiskAction::REFUSE) {
+            continue;
+        }
+        nlohmann::json j;
+        j["scope"] = "sleeve";
+        j["action"] = risk_action_name(rec.applied_action);
+        j["module"] = rec.module_id;
+        j["error"] = rec.error;
+        j["reason"] = rec.error;
+        j["scope_id"] = rec.scope_id;
+        j["phase"] = risk_phase_name(rec.phase);
+        j["lap"] = rec.lap;
+        j["applied"] = risk_action_name(rec.applied_action);
+        return j;
+    }
+    return std::nullopt;
+}
+
 /// What main() returns after the day is stored: 0, or kRiskModuleFailureExitCode when a
-/// portfolio risk module failed and the book was held.
+/// portfolio risk module failed and the book was held, or (T-7b-2 C10b) a sleeve risk module
+/// failed and its sleeve was held.
 inline int live_run_exit_code(const std::optional<nlohmann::json>& module_failure) {
     return module_failure.has_value() ? kRiskModuleFailureExitCode : 0;
 }
@@ -87,6 +119,17 @@ inline std::string risk_module_failure_email_banner(const nlohmann::json& failur
     const std::string error = failure.value("error", std::string());
     std::string html;
     html += "<div class=\"alert-note\" id=\"risk-module-failure\">\n";
+    if (failure.value("scope", std::string()) == "sleeve") {
+        const std::string sleeve = failure.value("scope_id", std::string());
+        html += "<strong>RISK MODULE FAILED - BOOK HELD:</strong> the sleeve risk module " +
+                detail::html_escape(module) + " could not evaluate sleeve " +
+                detail::html_escape(sleeve) + "'s book (" + detail::html_escape(error) +
+                "). That sleeve is held at the previous day's positions and sent no orders; the "
+                "other sleeves traded. The run exited with code " +
+                std::to_string(kRiskModuleFailureExitCode) + ".\n";
+        html += "</div>\n";
+        return html;
+    }
     html += "<strong>RISK MODULE FAILED - BOOK HELD:</strong> the portfolio risk module " +
             detail::html_escape(module) + " could not evaluate today's book (" +
             detail::html_escape(error) +
