@@ -7,6 +7,7 @@
 #include <memory>
 #include "../core/test_base.hpp"
 #include "../data/test_db_utils.hpp"
+#include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/instruments/equity.hpp"
 #include "trade_ngin/instruments/futures.hpp"
 #include "trade_ngin/instruments/option.hpp"
@@ -385,6 +386,66 @@ TEST_F(InstrumentRegistryTest, CreateInstrumentFromDbDefaultsContractSizeWhenZer
     auto instr = r.create_instrument_from_db(table, 0);
     ASSERT_NE(instr, nullptr);
     EXPECT_DOUBLE_EQ(instr->get_multiplier(), 1.0);  // defaulted from 0.0
+}
+
+// CM1: a metadata row carries the tick twice. "Tick Size" is one tick in price units (the stored
+// text may carry a trailing space, as 6N and HG do); "Minimum Price Fluctuation" is the same
+// tick in dollars per contract. The futures instrument's tick_size is the price increment
+// (round_price divides by it; get_point_value is tick_size x multiplier, the dollars of one
+// tick), so it must be filled from "Tick Size", not from the dollar column.
+TEST_F(InstrumentRegistryTest, CreateInstrumentFromDbPutsTheTickInPriceUnits) {
+    auto& r = InstrumentRegistry::instance();
+    auto table = build_contract_table({
+        {"6E", "6E", "FUTURE", "CME", 125000.0, 6.25, "0.00005 ", 2500.0, 2500.0,
+         "18:00-17:00", "FX"},
+        {"ZT", "ZT", "FUTURE", "CBOT", 2000.0, 7.8125, "0.00390625", 1100.0, 1000.0,
+         "18:00-17:00", "Rates"},
+    });
+    auto euro = r.create_instrument_from_db(table, 0);
+    ASSERT_NE(euro, nullptr);
+    EXPECT_DOUBLE_EQ(euro->get_multiplier(), 125000.0);
+    EXPECT_DOUBLE_EQ(euro->get_tick_size(), 0.00005) << "the tick in price units, not dollars";
+    EXPECT_NEAR(euro->get_point_value(), 6.25, 1e-9) << "one tick is $6.25 at 125,000";
+    EXPECT_NEAR(euro->round_price(1.08503), 1.08505, 1e-12);
+
+    auto two_year = r.create_instrument_from_db(table, 1);
+    ASSERT_NE(two_year, nullptr);
+    EXPECT_DOUBLE_EQ(two_year->get_tick_size(), 0.00390625) << "1/8 of 1/32";
+    EXPECT_NEAR(two_year->get_point_value(), 7.8125, 1e-12);
+}
+
+// The dollar tick ("Minimum Price Fluctuation") is kept in the field named for it.
+TEST_F(InstrumentRegistryTest, CreateInstrumentFromDbKeepsTheTickValueInItsOwnField) {
+    auto& r = InstrumentRegistry::instance();
+    auto table = build_contract_table({
+        {"6E", "6E", "FUTURE", "CME", 125000.0, 6.25, "0.00005", 2500.0, 2500.0,
+         "18:00-17:00", "FX"},
+    });
+    auto fut = std::dynamic_pointer_cast<FuturesInstrument>(r.create_instrument_from_db(table, 0));
+    ASSERT_NE(fut, nullptr);
+    EXPECT_DOUBLE_EQ(fut->get_tick_value(), 6.25);
+    EXPECT_DOUBLE_EQ(fut->get_tick_size(), 0.00005);
+}
+
+// A row whose contract size changed without its tick ("Tick Size" x "Contract Size" no longer the
+// "Minimum Price Fluctuation") is reported by name; the row still loads with what it says.
+TEST_F(InstrumentRegistryTest, CreateInstrumentFromDbReportsAnInconsistentTickRow) {
+    auto& r = InstrumentRegistry::instance();
+    auto table = build_contract_table({
+        {"6E", "M6E", "FUTURE", "CME", 12500.0, 6.25, "0.00005", 2500.0, 2500.0, "18:00-17:00",
+         "FX"},
+    });
+    LoggerConfig lc;
+    lc.destination = LogDestination::CONSOLE;
+    lc.min_level = LogLevel::DEBUG;
+    lc.include_timestamp = false;
+    Logger::instance().initialize(lc);
+    ::testing::internal::CaptureStdout();
+    auto instr = r.create_instrument_from_db(table, 0);
+    const std::string out = ::testing::internal::GetCapturedStdout();
+    ASSERT_NE(instr, nullptr);
+    EXPECT_DOUBLE_EQ(instr->get_multiplier(), 12500.0);
+    EXPECT_NE(out.find("Metadata row 6E is inconsistent"), std::string::npos) << out;
 }
 
 // ===== folded in from tests/instruments/test_exchange_json_wireup.cpp =====

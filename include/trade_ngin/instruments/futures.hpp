@@ -16,7 +16,7 @@ struct FuturesSpec {
     std::string exchange;                   // Exchange code
     std::string currency;                   // Trading currency
     double multiplier;                      // Contract multiplier
-    double tick_size;                       // Minimum price increment
+    double tick_size;                       // One tick in PRICE units (metadata "Tick Size")
     double commission_per_contract;         // Commission per contract
     double initial_margin;                  // Initial margin requirement
     double maintenance_margin;              // Maintenance margin requirement
@@ -24,6 +24,9 @@ struct FuturesSpec {
     std::string trading_hours;              // Trading hours specification
     std::optional<Timestamp> expiry;        // Contract expiration
     std::optional<std::string> underlying;  // Underlying instrument
+    // One tick in DOLLARS per contract (metadata "Minimum Price Fluctuation", the tick value):
+    // tick_size x multiplier on a consistent metadata row. 0 = not given.
+    double tick_value{0.0};
 };
 
 /**
@@ -62,6 +65,13 @@ public:
     }
     double get_point_value() const override {
         return spec_.tick_size * spec_.multiplier;
+    }
+    /**
+     * @brief One tick in dollars per contract as the metadata states it ("Minimum Price
+     *        Fluctuation"); 0 when not given
+     */
+    double get_tick_value() const {
+        return spec_.tick_value;
     }
 
     bool is_tradeable() const override;
