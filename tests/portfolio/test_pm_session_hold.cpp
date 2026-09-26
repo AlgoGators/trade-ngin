@@ -167,6 +167,28 @@ protected:
         return static_cast<double>(pm_->get_strategy_positions().at("SH_S").at(symbol).quantity);
     }
 
+    /// The book's quantity of `symbol`, 0 when the book carries no row for it (a flat symbol).
+    double book_quantity(const std::string& symbol) {
+        const auto books = pm_->get_strategy_positions();
+        const auto& book = books.at("SH_S");
+        auto it = book.find(symbol);
+        return it == book.end() ? 0.0 : static_cast<double>(it->second.quantity);
+    }
+
+    /// The n-th (0-based) execution of `symbol`, in the order the manager generated them.
+    ExecutionReport execution_of(const std::string& symbol, size_t n) {
+        size_t seen = 0;
+        for (const auto& [sid, reports] : pm_->get_strategy_executions()) {
+            (void)sid;
+            for (const auto& r : reports) {
+                if (r.symbol != symbol) continue;
+                if (seen++ == n) return r;
+            }
+        }
+        ADD_FAILURE() << "no execution #" << n << " of " << symbol;
+        return {};
+    }
+
     std::shared_ptr<MockPostgresDatabase> db_;
     std::unique_ptr<PortfolioManager> pm_;
     std::shared_ptr<ScriptedStrategy> strategy_;
@@ -230,6 +252,121 @@ TEST_F(PmSessionHoldTest, WithoutASetTheOldSkipStillMovesTheBookWithoutAFill) {
     ASSERT_TRUE(pm_->process_market_data({make_bar("ZZA", 2, 101)}, false, day(3)).is_ok());
     EXPECT_DOUBLE_EQ(quantity("ZZB"), 4.0) << "no set: the book moves to the target";
     EXPECT_EQ(executions_of("ZZB"), 1u) << "and no fill";
+}
+
+// T-7b-2 9 (J1; T-4c section 8 condition 3(a), T-4c ADVERSARIAL J1-E): the PM's gate walked the
+// target map only, so a symbol the ledger holds but the target map no longer carries was never
+// visited, and `current_positions = target_positions` dropped it from the BOOK with no fill. Live
+// re-inserts such a symbol from its stored row when its T-1 is not a session
+// (hold_non_session_symbols' second loop) and closes it out at its T-1 close when it is (the
+// execution step's close-out loop). With a session set the backtest now does the same.
+TEST_F(PmSessionHoldTest, AHeldSymbolAbsentFromTheTargetIsHeldWhenItsSignalBarIsNotASession) {
+    make_pm({{{"ZZA", make_pos("ZZA", 2, 100)}, {"ZZB", make_pos("ZZB", 3, 50)}},
+             {{"ZZA", make_pos("ZZA", 2, 100)}},
+             {{"ZZA", make_pos("ZZA", 2, 100)}}});
+    const std::unordered_set<std::string> both{"ZZA", "ZZB"};
+    ASSERT_TRUE(pm_->process_market_data({make_bar("ZZA", 1, 100), make_bar("ZZB", 1, 50)}, false,
+                                         day(2), &both)
+                    .is_ok());
+    ASSERT_EQ(executions_of("ZZB"), 1u);
+    ASSERT_DOUBLE_EQ(book_quantity("ZZB"), 3.0);
+
+    // ZZB has no bar in the signal group (a feed hole or a closure) and has left the target map.
+    const std::unordered_set<std::string> zza_only{"ZZA"};
+    ::testing::internal::CaptureStdout();
+    ASSERT_TRUE(
+        pm_->process_market_data({make_bar("ZZA", 2, 101)}, false, day(3), &zza_only).is_ok());
+    const std::string out = ::testing::internal::GetCapturedStdout();
+    EXPECT_DOUBLE_EQ(book_quantity("ZZB"), 3.0)
+        << "held at the filled ledger: the book does not drop a contract it never sold";
+    EXPECT_EQ(executions_of("ZZB"), 1u) << "and no fill";
+    EXPECT_NE(out.find("BOOK_GATE backtest ZZB (SH_S): no SESSION bar in the signal group -- "
+                       "absent from the target, book held at filled qty=3.000000; no close-out"),
+              std::string::npos)
+        << out;
+}
+
+TEST_F(PmSessionHoldTest, AHeldSymbolAbsentFromTheTargetIsClosedOutWithAFillOnASession) {
+    make_pm({{{"ZZA", make_pos("ZZA", 2, 100)}, {"ZZB", make_pos("ZZB", 3, 50)}},
+             {{"ZZA", make_pos("ZZA", 2, 100)}},
+             {{"ZZA", make_pos("ZZA", 2, 100)}}});
+    const std::unordered_set<std::string> both{"ZZA", "ZZB"};
+    ASSERT_TRUE(pm_->process_market_data({make_bar("ZZA", 1, 100), make_bar("ZZB", 1, 50)}, false,
+                                         day(2), &both)
+                    .is_ok());
+    ASSERT_EQ(executions_of("ZZB"), 1u);
+
+    // ZZB prints a session bar and has left the target map: live's close-out loop sells it to
+    // flat at the T-1 close; the backtest fills the close-out at the signal group's close.
+    ASSERT_TRUE(pm_->process_market_data({make_bar("ZZA", 2, 101), make_bar("ZZB", 2, 51)}, false,
+                                         day(3), &both)
+                    .is_ok());
+    ASSERT_EQ(executions_of("ZZB"), 2u) << "the close-out is a fill";
+    const ExecutionReport close_out = execution_of("ZZB", 1);
+    EXPECT_EQ(close_out.side, Side::SELL);
+    EXPECT_DOUBLE_EQ(static_cast<double>(close_out.filled_quantity), 3.0);
+    EXPECT_DOUBLE_EQ(static_cast<double>(close_out.fill_price), 51.0);
+    EXPECT_EQ(close_out.fill_time, day(3));
+    EXPECT_DOUBLE_EQ(book_quantity("ZZB"), 0.0);
+
+    // The ledger is flat: a later session cycle with ZZB still absent trades nothing more.
+    ASSERT_TRUE(pm_->process_market_data({make_bar("ZZA", 3, 102), make_bar("ZZB", 3, 52)}, false,
+                                         day(4), &both)
+                    .is_ok());
+    EXPECT_EQ(executions_of("ZZB"), 2u);
+    EXPECT_DOUBLE_EQ(book_quantity("ZZB"), 0.0);
+}
+
+// Live's STRICT rollback (execute_strategy_day_strict): a change that could not be priced is
+// rolled back to the stored row. With a session set the backtest's unpriced skip holds the book
+// at the filled ledger too, instead of moving it to the target with no fill.
+TEST_F(PmSessionHoldTest, AnUnpricedChangeIsHeldAtTheLedgerWhenTheSetIsGiven) {
+    make_pm({{{"ZZA", make_pos("ZZA", 2, 100)}, {"ZZB", make_pos("ZZB", 3, 50)}},
+             {{"ZZA", make_pos("ZZA", 2, 100)}, {"ZZB", make_pos("ZZB", 5, 50)}}});
+    const std::unordered_set<std::string> both{"ZZA", "ZZB"};
+    ASSERT_TRUE(pm_->process_market_data({make_bar("ZZA", 1, 100), make_bar("ZZB", 1, 50)}, false,
+                                         day(2), &both)
+                    .is_ok());
+    // ZZB is in the set but its signal-group bar carries no usable close.
+    ::testing::internal::CaptureStdout();
+    ASSERT_TRUE(pm_->process_market_data({make_bar("ZZA", 2, 101), make_bar("ZZB", 2, 0.0)}, false,
+                                         day(3), &both)
+                    .is_ok());
+    const std::string out = ::testing::internal::GetCapturedStdout();
+    EXPECT_EQ(executions_of("ZZB"), 1u) << "no fill without a price";
+    EXPECT_DOUBLE_EQ(book_quantity("ZZB"), 3.0) << "and no book change without a fill";
+    EXPECT_NE(out.find("BOOK_GATE backtest ZZB (SH_S): no usable close in the signal group -- "
+                       "book held at filled qty=3.000000 instead of target 5.000000"),
+              std::string::npos)
+        << out;
+}
+
+// Controls: without a set (every live caller, the equity backtest) both paths keep the parent's
+// behaviour byte for byte.
+TEST_F(PmSessionHoldTest, WithoutASetASymbolAbsentFromTheTargetLeavesTheBookWithNoFill) {
+    make_pm({{{"ZZA", make_pos("ZZA", 2, 100)}, {"ZZB", make_pos("ZZB", 3, 50)}},
+             {{"ZZA", make_pos("ZZA", 2, 100)}}});
+    ASSERT_TRUE(
+        pm_->process_market_data({make_bar("ZZA", 1, 100), make_bar("ZZB", 1, 50)}, false, day(2))
+            .is_ok());
+    ASSERT_TRUE(
+        pm_->process_market_data({make_bar("ZZA", 2, 101), make_bar("ZZB", 2, 51)}, false, day(3))
+            .is_ok());
+    EXPECT_DOUBLE_EQ(book_quantity("ZZB"), 0.0) << "no set: the parent's drop";
+    EXPECT_EQ(executions_of("ZZB"), 1u) << "and no fill";
+}
+
+TEST_F(PmSessionHoldTest, WithoutASetAnUnpricedChangeStillMovesTheBook) {
+    make_pm({{{"ZZA", make_pos("ZZA", 2, 100)}, {"ZZB", make_pos("ZZB", 3, 50)}},
+             {{"ZZA", make_pos("ZZA", 2, 100)}, {"ZZB", make_pos("ZZB", 5, 50)}}});
+    ASSERT_TRUE(
+        pm_->process_market_data({make_bar("ZZA", 1, 100), make_bar("ZZB", 1, 50)}, false, day(2))
+            .is_ok());
+    ASSERT_TRUE(pm_->process_market_data({make_bar("ZZA", 2, 101), make_bar("ZZB", 2, 0.0)}, false,
+                                         day(3))
+                    .is_ok());
+    EXPECT_DOUBLE_EQ(book_quantity("ZZB"), 5.0) << "no set: the parent's skip";
+    EXPECT_EQ(executions_of("ZZB"), 1u);
 }
 
 TEST(PmSessionHoldSource, TheCoordinatorPassesTheSetForFuturesOnly) {

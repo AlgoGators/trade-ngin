@@ -880,6 +880,52 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                     INFO("Filled-position ledger for strategy " + strategy_id +
                          " size: " + std::to_string(strategy_filled.size()));
 
+                    // One fill of `symbol` from the ledger's `current_qty` to `new_qty` at
+                    // `latest_price` (the signal group's close). The target loop and, with a
+                    // session set, the close-out of a symbol absent from the target share it.
+                    auto generate_fill = [&](const std::string& symbol, double current_qty,
+                                             double new_qty, double latest_price) {
+                        const double trade_size = new_qty - current_qty;
+                        const Side side = trade_size > 0 ? Side::BUY : Side::SELL;
+
+                        // Create execution report for this strategy
+                        ExecutionReport exec;
+                        exec.order_id = "PM-" + strategy_id + "-" + std::to_string(exec_counter);
+                        exec.exec_id = "EX-" + strategy_id + "-" + std::to_string(exec_counter);
+                        exec.symbol = symbol;
+                        exec.side = side;
+                        exec.filled_quantity = std::abs(trade_size);
+                        exec.fill_price = latest_price;
+                        // CRITICAL FIX: Execution fill_time should use the CURRENT day's
+                        // timestamp, not the previous day's bars timestamp. The 'data' parameter
+                        // contains previous day's bars (for signal generation), but executions
+                        // happen on the current day. Use current_timestamp if provided, otherwise
+                        // fall back to data timestamp.
+                        exec.fill_time = current_timestamp.has_value()
+                                             ? current_timestamp.value()
+                                             : (data.empty() ? std::chrono::system_clock::now()
+                                                             : data[0].timestamp);
+                        // Calculate transaction costs using TransactionCostManager.
+                        // E2-F29: pass the SIGNED trade so the sell-side-only SEC/TAF gate
+                        // (`quantity < 0`) is reachable; every other term takes |qty|.
+                        auto cost_result =
+                            cost_manager_.calculate_costs(symbol, trade_size, latest_price);
+                        exec.commissions_fees = Decimal(cost_result.commissions_fees);
+                        exec.implicit_price_impact = Decimal(cost_result.implicit_price_impact);
+                        exec.slippage_market_impact = Decimal(cost_result.slippage_market_impact);
+                        exec.total_transaction_costs = Decimal(cost_result.total_transaction_costs);
+                        exec.is_partial = false;
+
+                        // Add to strategy-specific executions
+                        strategy_execs.push_back(exec);
+                        exec_counter++;
+                        // Ledger now reflects the position we just traded into.
+                        strategy_filled[symbol] = new_qty;
+                        INFO("Generated execution for strategy " + strategy_id + ": " + symbol +
+                             " " + (side == Side::BUY ? "BUY" : "SELL") +
+                             " qty=" + std::to_string(exec.filled_quantity));
+                    };
+
                     // Generate executions based on individual strategy position changes
                     for (const auto& [symbol, new_pos] : info.target_positions) {
                         double current_qty = 0.0;
@@ -895,15 +941,14 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                         // been filled. Establishing a position from flat is simply
                         // current_qty == 0 and needs no special case.
                         if (std::abs(trade_size) > 1e-6) {
-                            Side side = trade_size > 0 ? Side::BUY : Side::SELL;
-
                             // The backtest predicate (T-7a C4; T-4c J1 re-keyed on the session
                             // classifier): a symbol whose signal-group bar is not a SESSION (no
                             // bar, or a JUNK bar) gets no fill and NO BOOK CHANGE. Its book is
                             // held at what has actually been filled, so it cannot earn P&L on
-                            // contracts it never bought. The change lands on a later cycle whose
-                            // signal group carries a session bar, when the re-anchored target
-                            // still differs from the ledger.
+                            // contracts it never bought. The hold does not queue the change: a
+                            // later cycle trades only if its own re-anchored target, computed on
+                            // that cycle's bars, still differs from the ledger, so a hold can
+                            // outlast the gap or never trade at all (T-4c E13 / ADVERSARIAL F5).
                             if (session_symbols && !session_symbols->count(symbol)) {
                                 auto book_it = info.current_positions.find(symbol);
                                 if (book_it != info.current_positions.end()) {
@@ -923,48 +968,72 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                             const double latest_price = latest_close_of(data, symbol);
 
                             if (latest_price == 0.0) {
+                                // T-7b-2 9 (J1): with a session set, no fill means no book
+                                // change, as live's STRICT rollback puts an unpriced change back
+                                // to its stored row (execute_strategy_day_strict). Without a set
+                                // (live callers, the equity backtest) the old skip is kept.
+                                if (session_symbols) {
+                                    auto book_it = info.current_positions.find(symbol);
+                                    if (book_it != info.current_positions.end()) {
+                                        book_it->second.quantity = Decimal(current_qty);
+                                    }
+                                    WARN("BOOK_GATE backtest " + symbol + " (" + strategy_id +
+                                         "): no usable close in the signal group -- book held "
+                                         "at filled qty=" + std::to_string(current_qty) +
+                                         " instead of target " + std::to_string(new_qty));
+                                }
                                 continue;  // Skip if price not available
                             }
 
-                            // Create execution report for this strategy
-                            ExecutionReport exec;
-                            exec.order_id =
-                                "PM-" + strategy_id + "-" + std::to_string(exec_counter);
-                            exec.exec_id = "EX-" + strategy_id + "-" + std::to_string(exec_counter);
-                            exec.symbol = symbol;
-                            exec.side = side;
-                            exec.filled_quantity = std::abs(trade_size);
-                            exec.fill_price = latest_price;
-                            // CRITICAL FIX: Execution fill_time should use the CURRENT day's
-                            // timestamp, not the previous day's bars timestamp. The 'data'
-                            // parameter contains previous day's bars (for signal generation), but
-                            // executions happen on the current day. Use current_timestamp if
-                            // provided, otherwise fall back to data timestamp.
-                            exec.fill_time = current_timestamp.has_value()
-                                                 ? current_timestamp.value()
-                                                 : (data.empty() ? std::chrono::system_clock::now()
-                                                                 : data[0].timestamp);
-                            // Calculate transaction costs using TransactionCostManager.
-                            // E2-F29: pass the SIGNED trade so the sell-side-only SEC/TAF gate
-                            // (`quantity < 0`) is reachable; every other term takes |qty|.
-                            auto cost_result =
-                                cost_manager_.calculate_costs(symbol, trade_size, latest_price);
-                            exec.commissions_fees = Decimal(cost_result.commissions_fees);
-                            exec.implicit_price_impact = Decimal(cost_result.implicit_price_impact);
-                            exec.slippage_market_impact =
-                                Decimal(cost_result.slippage_market_impact);
-                            exec.total_transaction_costs =
-                                Decimal(cost_result.total_transaction_costs);
-                            exec.is_partial = false;
+                            generate_fill(symbol, current_qty, new_qty, latest_price);
+                        }
+                    }
 
-                            // Add to strategy-specific executions
-                            strategy_execs.push_back(exec);
-                            exec_counter++;
-                            // Ledger now reflects the position we just traded into.
-                            strategy_filled[symbol] = new_qty;
-                            INFO("Generated execution for strategy " + strategy_id + ": " + symbol +
-                                 " " + (side == Side::BUY ? "BUY" : "SELL") +
-                                 " qty=" + std::to_string(exec.filled_quantity));
+                    // T-7b-2 9 (J1; T-4c section 8 condition 3(a), ADVERSARIAL J1-E): a symbol the
+                    // ledger holds that the target map no longer carries is never visited by the
+                    // loop above, and `current_positions = target_positions` has already dropped
+                    // it from the book with no fill. With a session set it is treated as live
+                    // treats it: not a SESSION -> re-inserted at the filled quantity from the
+                    // previous book (hold_non_session_symbols' second loop, no close-out); a
+                    // SESSION -> closed out to flat at the signal group's close (the execution
+                    // step's close-out loop). Sorted, after the target loop, so the target loop's
+                    // fills keep their order and ids. Without a set the parent's drop is kept.
+                    if (session_symbols) {
+                        std::vector<std::string> absent;
+                        for (const auto& [symbol, filled_qty] : strategy_filled) {
+                            if (std::abs(filled_qty) <= 1e-6) continue;
+                            if (info.target_positions.count(symbol)) continue;
+                            absent.push_back(symbol);
+                        }
+                        std::sort(absent.begin(), absent.end());
+                        for (const auto& symbol : absent) {
+                            const double current_qty = strategy_filled.at(symbol);
+                            const double latest_price = session_symbols->count(symbol)
+                                                            ? latest_close_of(data, symbol)
+                                                            : 0.0;
+                            if (latest_price != 0.0) {
+                                INFO("BOOK_GATE backtest " + symbol + " (" + strategy_id +
+                                     "): absent from the target on a SESSION bar -- closed out "
+                                     "from filled qty=" + std::to_string(current_qty) +
+                                     " at the signal group's close");
+                                generate_fill(symbol, current_qty, 0.0, latest_price);
+                                continue;
+                            }
+                            Position held;
+                            auto prev_strategy = prev_positions.find(strategy_id);
+                            if (prev_strategy != prev_positions.end()) {
+                                auto prev_row = prev_strategy->second.find(symbol);
+                                if (prev_row != prev_strategy->second.end()) held = prev_row->second;
+                            }
+                            held.symbol = symbol;
+                            held.quantity = Decimal(current_qty);
+                            info.current_positions[symbol] = held;
+                            INFO("BOOK_GATE backtest " + symbol + " (" + strategy_id + "): " +
+                                 (session_symbols->count(symbol)
+                                      ? std::string("no usable close in the signal group")
+                                      : std::string("no SESSION bar in the signal group")) +
+                                 " -- absent from the target, book held at filled qty=" +
+                                 std::to_string(current_qty) + "; no close-out");
                         }
                     }
                     INFO("Total executions generated for strategy " + strategy_id + ": " +
