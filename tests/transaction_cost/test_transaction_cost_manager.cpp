@@ -716,6 +716,18 @@ TEST(CostContractSpecSource, SpreadFollowsTheSourceTick) {
     EXPECT_DOUBLE_EQ(table_only.spread_price_impact, 0.25 * 1.0 * 0.0078125);
 }
 
+// The fee per contract is the metadata's when it carries one, else the configured 1.50.
+TEST(CostContractSpecSource, FeeFollowsTheSourceFee) {
+    TransactionCostManager tcm;
+    tcm.set_contract_spec_source(only("6E", {125000.0, 0.00005, 0.62}));
+    EXPECT_DOUBLE_EQ(tcm.calculate_costs("6E.v.0", -3.0, 1.10, 1.0e6, 1.0).commissions_fees,
+                     3.0 * 0.62);
+
+    tcm.set_contract_spec_source(only("6E", {125000.0, 0.00005, std::nullopt}));
+    EXPECT_DOUBLE_EQ(tcm.calculate_costs("6E.v.0", -3.0, 1.10, 1.0e6, 1.0).commissions_fees,
+                     3.0 * 1.50);
+}
+
 // A spec whose tick is 0 (the metadata gave none) keeps the table's tick but still takes the
 // metadata's point value.
 TEST(CostContractSpecSource, MissingTickKeepsTheTableTick) {

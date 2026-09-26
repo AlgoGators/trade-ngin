@@ -53,6 +53,7 @@ struct TransactionCostResult {
 struct ContractCostSpec {
     double point_value = 0.0;  // "Contract Size": dollars per one price unit
     double tick_size = 0.0;    // "Tick Size": one tick in price units (0 = none given)
+    std::optional<double> fee_per_contract;  // "Fee Per Contract", when the metadata has it
 };
 
 /**
@@ -289,9 +290,11 @@ public:
 private:
     /**
      * @brief The symbol's cost config; a futures config takes its point value and tick from the
-     *        contract spec source (the metadata)
+     *        contract spec source (the metadata); fee_out receives the metadata's
+     *        per-contract fee when the source gives one
      */
-    AssetCostConfig resolve_asset_config(const std::string& symbol, AssetType asset_type) const;
+    AssetCostConfig resolve_asset_config(const std::string& symbol, AssetType asset_type,
+                                         std::optional<double>* fee_out = nullptr) const;
 
     Config config_;
     AssetCostConfigRegistry asset_configs_;

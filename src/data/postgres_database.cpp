@@ -1660,6 +1660,38 @@ Result<std::shared_ptr<arrow::Table>> PostgresDatabase::convert_metadata_to_arro
          intraday_initial_margin_array, intraday_maintenance_margin_array, units_array,
          data_provider_array, dataset_array, contract_months_array});
 
+    // The per-contract fee the transaction cost model charges (migration 014), when the table
+    // has it. Looked up by NAME (the positional indices above predate it) and appended only when
+    // the column exists, so a table without it loads exactly as before.
+    for (pqxx::row::size_type c = 0; c < result.columns(); ++c) {
+        if (std::string(result.column_name(c)) != "Fee Per Contract") {
+            continue;
+        }
+        arrow::DoubleBuilder fee_builder(pool);
+        for (const auto& row : result) {
+            (void)append_double(fee_builder, row, static_cast<int>(c));
+        }
+        std::shared_ptr<arrow::Array> fee_array;
+        status = fee_builder.Finish(&fee_array);
+        if (!status.ok()) {
+            return make_error<std::shared_ptr<arrow::Table>>(
+                ErrorCode::CONVERSION_ERROR,
+                "Failed to finish 'Fee Per Contract' array: " + status.ToString(),
+                "PostgresDatabase");
+        }
+        auto with_fee = table->AddColumn(table->num_columns(),
+                                         arrow::field("Fee Per Contract", arrow::float64()),
+                                         std::make_shared<arrow::ChunkedArray>(fee_array));
+        if (!with_fee.ok()) {
+            return make_error<std::shared_ptr<arrow::Table>>(
+                ErrorCode::CONVERSION_ERROR,
+                "Failed to add 'Fee Per Contract' column: " + with_fee.status().ToString(),
+                "PostgresDatabase");
+        }
+        table = *with_fee;
+        break;
+    }
+
     return Result<std::shared_ptr<arrow::Table>>(table);
 }
 

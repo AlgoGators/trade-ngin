@@ -11,6 +11,7 @@
 #include "trade_ngin/instruments/equity.hpp"
 #include "trade_ngin/instruments/futures.hpp"
 #include "trade_ngin/instruments/option.hpp"
+#include "trade_ngin/transaction_cost/transaction_cost_manager.hpp"
 
 // Reach into private state to populate the singleton without DB access.
 #define private public
@@ -446,6 +447,66 @@ TEST_F(InstrumentRegistryTest, CreateInstrumentFromDbReportsAnInconsistentTickRo
     ASSERT_NE(instr, nullptr);
     EXPECT_DOUBLE_EQ(instr->get_multiplier(), 12500.0);
     EXPECT_NE(out.find("Metadata row 6E is inconsistent"), std::string::npos) << out;
+}
+
+// Migration 014: with a "Fee Per Contract" column the row's fee is the contract's commission and
+// the fee the cost model charges per contract; without the column the cost model charges its
+// configured 1.50.
+namespace {
+std::shared_ptr<arrow::Table> with_fee_column(const std::shared_ptr<arrow::Table>& table,
+                                              double fee) {
+    arrow::DoubleBuilder fee_b(arrow::default_memory_pool());
+    for (int64_t i = 0; i < table->num_rows(); ++i) {
+        ARROW_CHECK_OK(fee_b.Append(fee));
+    }
+    std::shared_ptr<arrow::Array> arr;
+    ARROW_CHECK_OK(fee_b.Finish(&arr));
+    auto t = table->AddColumn(table->num_columns(),
+                              arrow::field("Fee Per Contract", arrow::float64()),
+                              std::make_shared<arrow::ChunkedArray>(arr));
+    ARROW_CHECK_OK(t.status());
+    return *t;
+}
+}  // namespace
+
+TEST_F(InstrumentRegistryTest, CreateInstrumentFromDbChargesTheFeeColumnWhenPresent) {
+    auto& r = InstrumentRegistry::instance();
+    auto table = build_contract_table({
+        {"6E", "6E", "FUTURE", "CME", 125000.0, 6.25, "0.00005", 2500.0, 2500.0,
+         "18:00-17:00", "FX"},
+    });
+    transaction_cost::TransactionCostManager tcm;
+
+    auto with_fee = r.create_instrument_from_db(with_fee_column(table, 0.62), 0);
+    ASSERT_NE(with_fee, nullptr);
+    EXPECT_DOUBLE_EQ(with_fee->get_commission_per_contract(), 0.62);
+    r.register_instrument("6E", with_fee);
+    EXPECT_DOUBLE_EQ(tcm.calculate_costs("6E.v.0", -3.0, 1.10, 1.0e6, 1.0).commissions_fees,
+                     3.0 * 0.62);
+
+    auto without = r.create_instrument_from_db(table, 0);
+    ASSERT_NE(without, nullptr);
+    r.register_instrument("6E", without);
+    EXPECT_DOUBLE_EQ(tcm.calculate_costs("6E.v.0", -3.0, 1.10, 1.0e6, 1.0).commissions_fees,
+                     3.0 * 1.50)
+        << "no column: the configured fee";
+}
+
+TEST_F(InstrumentRegistryTest, CreateInstrumentFromDbReadsTheFeeColumnWhenPresent) {
+    auto& r = InstrumentRegistry::instance();
+    auto table = build_contract_table({
+        {"6E", "6E", "FUTURE", "CME", 125000.0, 6.25, "0.00005", 2500.0, 2500.0,
+         "18:00-17:00", "FX"},
+    });
+    auto fut = std::dynamic_pointer_cast<FuturesInstrument>(
+        r.create_instrument_from_db(with_fee_column(table, 1.5), 0));
+    ASSERT_NE(fut, nullptr);
+    ASSERT_TRUE(fut->get_fee_per_contract().has_value());
+    EXPECT_DOUBLE_EQ(*fut->get_fee_per_contract(), 1.5);
+
+    auto bare = std::dynamic_pointer_cast<FuturesInstrument>(r.create_instrument_from_db(table, 0));
+    ASSERT_NE(bare, nullptr);
+    EXPECT_FALSE(bare->get_fee_per_contract().has_value());
 }
 
 // ===== folded in from tests/instruments/test_exchange_json_wireup.cpp =====

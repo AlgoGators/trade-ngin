@@ -36,6 +36,7 @@ std::optional<ContractCostSpec> registry_contract_cost_spec(const std::string& s
     ContractCostSpec spec;
     spec.point_value = futures->get_multiplier();
     spec.tick_size = futures->get_tick_size();
+    spec.fee_per_contract = futures->get_fee_per_contract();
     return spec;
 }
 
@@ -50,8 +51,8 @@ void TransactionCostManager::set_contract_spec_source(ContractCostSpecSource sou
     contract_spec_source_ = std::move(source);
 }
 
-AssetCostConfig TransactionCostManager::resolve_asset_config(const std::string& symbol,
-                                                             AssetType asset_type) const {
+AssetCostConfig TransactionCostManager::resolve_asset_config(
+    const std::string& symbol, AssetType asset_type, std::optional<double>* fee_out) const {
     AssetCostConfig asset_config = asset_configs_.get_config(symbol, asset_type);
 
     // CM1: a futures cost config prices with the metadata's contract specs, the ones the
@@ -85,6 +86,9 @@ AssetCostConfig TransactionCostManager::resolve_asset_config(const std::string& 
     asset_config.point_value = spec->point_value;
     if (spec->tick_size > 0.0) {
         asset_config.tick_size = spec->tick_size;
+    }
+    if (fee_out) {
+        *fee_out = spec->fee_per_contract;
     }
     return asset_config;
 }
@@ -131,8 +135,9 @@ TransactionCostResult TransactionCostManager::calculate_costs(
     // default ($0.005/share, $1 min) instead of the futures default
     // ($1.50/share, point_value=100). Closes audit §1.1 dispatch dead-end.
     //
-    // CM1: a future's point value and tick come from the metadata (resolve_asset_config).
-    AssetCostConfig asset_config = resolve_asset_config(symbol, asset_type);
+    // CM1: a future's point value, tick and fee come from the metadata (resolve_asset_config).
+    std::optional<double> metadata_fee;
+    AssetCostConfig asset_config = resolve_asset_config(symbol, asset_type, &metadata_fee);
 
     // 1. Calculate explicit costs (commissions)
     if (asset_config.commission_per_unit >= 0.0) {
@@ -168,8 +173,10 @@ TransactionCostResult TransactionCostManager::calculate_costs(
         result.commissions_fees = std::min(
             effective_max, std::max(asset_config.min_commission_per_order, raw_commission));
     } else {
-        // Global fee per contract (futures default)
-        result.commissions_fees = abs_qty * config_.explicit_fee_per_contract;
+        // Fee per contract: the metadata's "Fee Per Contract" when it carries one (migration
+        // 014), else the configured default
+        const double fee = metadata_fee ? *metadata_fee : config_.explicit_fee_per_contract;
+        result.commissions_fees = abs_qty * fee;
     }
 
     // 1b. Regulatory fees (equity sell-side only)

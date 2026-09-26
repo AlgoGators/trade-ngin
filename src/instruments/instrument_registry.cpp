@@ -151,6 +151,11 @@ Result<void> InstrumentRegistry::load_instruments() {
             }
         }
 
+        if (!table->GetColumnByName("Fee Per Contract")) {
+            WARN("metadata.contract_metadata has no \"Fee Per Contract\" column (migration "
+                 "014); the cost model charges its configured fee on every future");
+        }
+
         int rows_loaded = 0;
 
         // Create a temporary map to hold all the instruments
@@ -404,6 +409,19 @@ std::shared_ptr<Instrument> InstrumentRegistry::create_instrument_from_db(
                              std::to_string(spec.tick_size) + " x \"Contract Size\" " +
                              std::to_string(contract_size) + " = " + std::to_string(implied) +
                              " but \"Minimum Price Fluctuation\" is " + std::to_string(min_tick));
+                    }
+                }
+                // The fee the cost model charges per contract, when the table has the column
+                // (migration 014). It is also the instrument's own commission.
+                if (auto fee_col = table->GetColumnByName("Fee Per Contract")) {
+                    auto fee = DataConversionUtils::safe_get_double(fee_col, row,
+                                                                    "Fee Per Contract");
+                    if (fee.is_ok() && fee.value() >= 0.0) {
+                        spec.fee_per_contract = fee.value();
+                        spec.commission_per_contract = fee.value();
+                    } else {
+                        WARN("Metadata row " + symbol + " has no usable \"Fee Per Contract\"; "
+                             "the cost model charges its configured fee for it");
                     }
                 }
 

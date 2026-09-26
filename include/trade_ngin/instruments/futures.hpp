@@ -3,6 +3,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <optional>
 #include <string>
 #include "trade_ngin/instruments/instrument.hpp"
 
@@ -27,6 +28,10 @@ struct FuturesSpec {
     // One tick in DOLLARS per contract (metadata "Minimum Price Fluctuation", the tick value):
     // tick_size x multiplier on a consistent metadata row. 0 = not given.
     double tick_value{0.0};
+    // The metadata's "Fee Per Contract" (dollars per contract per side, all-in), when the table
+    // has that column (migration 014); empty when it does not, and the cost model then charges
+    // its configured fee.
+    std::optional<double> fee_per_contract;
 };
 
 /**
@@ -72,6 +77,12 @@ public:
      */
     double get_tick_value() const {
         return spec_.tick_value;
+    }
+    /**
+     * @brief The metadata's per-contract fee, when the metadata carries one
+     */
+    const std::optional<double>& get_fee_per_contract() const {
+        return spec_.fee_per_contract;
     }
 
     bool is_tradeable() const override;
