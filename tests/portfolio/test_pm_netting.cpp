@@ -5,7 +5,10 @@
 // report's netting_adjustment; a symbol only one sleeve trades gets 0, and an earlier bar's
 // reports are never re-netted. Live: both futures runners call the same function on the day's
 // per-sleeve executions after the STRICT assertion and before storing them (source check; the
-// function itself is pinned in tests/transaction_cost/test_netting.cpp).
+// function itself is pinned in tests/transaction_cost/test_netting.cpp). A live runner's
+// PortfolioManager (not marked backtest) does NOT net its own reports: in a fresh live process
+// its filled ledger is empty, so those reports are each sleeve's whole held book, never an order
+// and never stored (T-7b-2 C8b4).
 
 #include <gtest/gtest.h>
 #include "../risk/risk_module_test_helpers.hpp"
@@ -132,9 +135,10 @@ protected:
         TestBase::TearDown();
     }
 
-    void make_pm(std::vector<Book> a, std::vector<Book> b) {
+    void make_pm(std::vector<Book> a, std::vector<Book> b, bool backtest = true) {
         static int n = 0;
         pm_ = std::make_unique<PortfolioManager>(base_config(), "PM_NET_" + std::to_string(++n));
+        if (backtest) pm_->set_backtest_mode(true);  // as BacktestCoordinator::run_portfolio does
         StrategyConfig sc;
         sc.capital_allocation = 1000000.0;
         sc.max_leverage = 10.0;
@@ -172,9 +176,14 @@ TEST_F(PmNettingTest, TheBacktestNetsEachBarsSleeveRowsAndLeavesSingleRowsAtZero
              {{"ZZA", make_pos("ZZA", 0, 100)}, {"ZZB", make_pos("ZZB", 2, 50)}}},
             {{{"ZZA", make_pos("ZZA", 1, 100)}},
              {{"ZZA", make_pos("ZZA", 2, 100)}}});
+    ::testing::internal::CaptureStdout();
     ASSERT_TRUE(pm_->process_market_data({make_bar("ZZA", 1, 100), make_bar("ZZB", 1, 50)}, false,
                                          day(2))
                     .is_ok());
+    const std::string bar1_log = ::testing::internal::GetCapturedStdout();
+    EXPECT_NE(bar1_log.find("NETTING sym=ZZA"), std::string::npos)
+        << "the backtest prints its NETTING line for the two-sleeve symbol";
+    EXPECT_EQ(bar1_log.find("NETTING sym=ZZB"), std::string::npos);
     auto a1 = execs("NET_A", "ZZA"), b1 = execs("NET_B", "ZZA"), z1 = execs("NET_A", "ZZB");
     ASSERT_EQ(a1.size(), 1u);
     ASSERT_EQ(b1.size(), 1u);
@@ -202,6 +211,40 @@ TEST_F(PmNettingTest, TheBacktestNetsEachBarsSleeveRowsAndLeavesSingleRowsAtZero
     EXPECT_GT(a2[1].total_transaction_costs, Decimal()) << "the row keeps its own cost";
     EXPECT_EQ(a2[0].netting_adjustment, bar1_a) << "an earlier bar's rows are never re-netted";
     EXPECT_EQ(b2[0].netting_adjustment, bar1_b);
+}
+
+// A live runner's PM pass (a fresh process: empty filled ledger, not marked backtest). Both sleeves
+// hold 1 ZZA, so the PM's reports are the whole held book (A +1, B +1), not an order: nothing is
+// netted, no NETTING line is printed, every report keeps netting_adjustment 0. RED on ac26b230,
+// where the PM netted them (a debit on each report) and printed a NETTING line for ZZA.
+TEST_F(PmNettingTest, ALiveRunnersPmPassDoesNotNetItsWholeBookReports) {
+    make_pm({{{"ZZA", make_pos("ZZA", 1, 100)}, {"ZZB", make_pos("ZZB", 2, 50)}}},
+            {{{"ZZA", make_pos("ZZA", 1, 100)}}}, /*backtest=*/false);
+    ::testing::internal::CaptureStdout();
+    ASSERT_TRUE(pm_->process_market_data({make_bar("ZZA", 1, 100), make_bar("ZZB", 1, 50)}, false,
+                                         day(2))
+                    .is_ok());
+    const std::string log = ::testing::internal::GetCapturedStdout();
+    auto a1 = execs("NET_A", "ZZA"), b1 = execs("NET_B", "ZZA"), z1 = execs("NET_A", "ZZB");
+    ASSERT_EQ(a1.size(), 1u) << "the PM still generates its per-sleeve reports";
+    ASSERT_EQ(b1.size(), 1u);
+    ASSERT_EQ(z1.size(), 1u);
+    EXPECT_GT(a1[0].total_transaction_costs, Decimal()) << "each report keeps its own cost";
+    EXPECT_EQ(a1[0].netting_adjustment, Decimal()) << "a live PM pass nets nothing";
+    EXPECT_EQ(b1[0].netting_adjustment, Decimal());
+    EXPECT_EQ(z1[0].netting_adjustment, Decimal());
+    EXPECT_EQ(log.find(" NETTING"), std::string::npos)
+        << "no NETTING line for reports that are the whole held book";
+}
+
+TEST(PmNettingSource, TheBacktestCoordinatorMarksItsPortfolioAsBacktest) {
+    const std::string src = read_source("src/backtest/backtest_coordinator.cpp");
+    if (src.empty()) GTEST_SKIP() << "backtest_coordinator.cpp not found";
+    const auto run = src.find("BacktestCoordinator::run_portfolio(");
+    const auto mark = src.find("portfolio->set_backtest_mode(true);", run);
+    ASSERT_NE(run, std::string::npos);
+    ASSERT_NE(mark, std::string::npos)
+        << "run_portfolio must mark its PortfolioManager, or the backtest stops netting";
 }
 
 TEST(PmNettingSource, BothFuturesRunnersNetTheDaysSleeveRowsBeforeStoringThem) {

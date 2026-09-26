@@ -392,7 +392,9 @@ public:
     DeliveredCut delivered_cut_for_book(const std::map<std::string, double>& stored_book) const;
 
     /**
-     * @brief Mark this manager as driven by a backtest. Read only into RiskContext::is_backtest.
+     * @brief Mark this manager as driven by a backtest (BacktestCoordinator::run_portfolio). Read into
+     *        RiskContext::is_backtest and scope_is_seeded, and it switches on the per-bar netting of the
+     *        sleeves' execution reports (K3), which are the stored fills only in a backtest (T-7b-2 C8b4).
      */
     void set_backtest_mode(bool is_backtest) {
         is_backtest_ = is_backtest;

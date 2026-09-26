@@ -200,7 +200,8 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
     backtest_start_date_ = start_date;
     backtest_end_date_ = end_date;
 
-    // The portfolio's risk modules see RiskContext::is_backtest = true (no log, no other effect)
+    // The portfolio's risk modules see RiskContext::is_backtest = true, and the PortfolioManager nets
+    // each bar's sleeve reports (K3), which here are the fills the backtest stores (T-7b-2 C8b4)
     if (portfolio) {
         portfolio->set_backtest_mode(true);
     }

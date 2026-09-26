@@ -845,11 +845,14 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                     is_first_post_warmup_day_portfolio;
 
                 // K3 (T-7b-2 8b): where each sleeve's reports of THIS bar start, so the netting
-                // below sees this bar's rows only and never re-nets an earlier bar's.
+                // below sees this bar's rows only and never re-nets an earlier bar's (backtest only,
+                // see below).
                 std::unordered_map<std::string, size_t> netting_bar_start;
-                for (const auto& [sid, sinfo] : strategies_) {
-                    (void)sinfo;
-                    netting_bar_start[sid] = strategy_executions_[sid].size();
+                if (is_backtest_) {
+                    for (const auto& [sid, sinfo] : strategies_) {
+                        (void)sinfo;
+                        netting_bar_start[sid] = strategy_executions_[sid].size();
+                    }
                 }
 
                 // Generate execution reports per strategy (before aggregation)
@@ -973,7 +976,12 @@ Result<void> PortfolioManager::process_market_data(const std::vector<Bar>& data,
                 // report keeps its own cost and gets its pro-rata share of sum C(q_i) - C(Q),
                 // priced by this manager's cost model at the bar's price (C(0) = 0). A symbol one
                 // sleeve trades gets 0. The equity curve still charges the reports' own costs.
-                {
+                // Only in a backtest (set_backtest_mode, set by BacktestCoordinator::run_portfolio),
+                // where these reports are the fills that get stored (T-7b-2 C8b4). A live runner's
+                // pass is a fresh process whose filled ledger is empty, so its reports are each
+                // sleeve's whole held book: no order, never stored; the runners net the rows they
+                // store themselves, after PHASE 4.
+                if (is_backtest_) {
                     std::vector<transaction_cost::SleeveExecution> bar_rows;
                     for (auto& [sid, execs] : strategy_executions_) {
                         auto from = netting_bar_start.find(sid);
