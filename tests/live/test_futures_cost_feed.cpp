@@ -36,6 +36,7 @@
 #include "trade_ngin/live/futures_cost_feed.hpp"
 #include "trade_ngin/live/live_daily_cycle.hpp"
 #include "trade_ngin/transaction_cost/transaction_cost_manager.hpp"
+#include "../transaction_cost/session_metadata_rows.hpp"
 
 using namespace trade_ngin;
 using trade_ngin::transaction_cost::TransactionCostManager;
@@ -154,6 +155,7 @@ const char* const kFuturesRunners[] = {"apps/strategies/live_portfolio_conservat
 // -----------------------------------------------------------------------------------------------
 
 TEST(K2FuturesCostFeed, ParticipationAndTheTierArePricedOnTheFillDaysOwnVolume) {
+    trade_ngin::testing::register_session_metadata_futures();  // CM1: specs come from the metadata
     // Twenty sessions at 1.2M lots (the 10 bps tier), then a thin T-1 session of 30,000 lots
     // (the 60 bps tier). The fill is priced off the thin session alone. first_day 1: the T-1 bar is
     // a Tuesday (2023-12-05), so no weekend bar is merged into it (C8c3; with first_day 0 it was a
@@ -178,6 +180,7 @@ TEST(K2FuturesCostFeed, ParticipationAndTheTierArePricedOnTheFillDaysOwnVolume) 
 }
 
 TEST(K2FuturesCostFeed, AThinOwnDayBarIsChargedMoreThanANormalOneAndMoreThanTheTwentyBarMean) {
+    trade_ngin::testing::register_session_metadata_futures();  // CM1: specs come from the metadata
     auto normal = zigzag(kNg, 21, 3.0, 0.01, 1'200'000.0, /*first_day=*/1);  // T-1 a Tuesday (C8c3)
     auto thin = normal;
     thin.back().volume = 30'000.0;
@@ -201,6 +204,7 @@ TEST(K2FuturesCostFeed, AThinOwnDayBarIsChargedMoreThanANormalOneAndMoreThanTheT
 }
 
 TEST(K2FuturesCostFeed, TheImpactTermAndTheCommissionAreTheParentsToTheBit) {
+    trade_ngin::testing::register_session_metadata_futures();  // CM1: specs come from the metadata
     // The parent priced participation and the tier on the same own-day volume; only vol_mult
     // (the spread) may move. A 2 % zigzag is far above the 1 % baseline, so vol_mult is 1.3.
     const auto bars = zigzag(kNg, 30, 3.0, 0.02, 90'000.0);
@@ -231,6 +235,7 @@ TEST(K2FuturesCostFeed, TheImpactTermAndTheCommissionAreTheParentsToTheBit) {
 // -----------------------------------------------------------------------------------------------
 
 TEST(K2FuturesCostFeed, TheVolatilityTermIsTheLastTwentyReturnsEndingAtTheT1Bar) {
+    trade_ngin::testing::register_session_metadata_futures();  // CM1: specs come from the metadata
     // 40 bars: a calm first half (0.2 %) and a wild second half (2 %), so any window reaching
     // back past the last 20 returns lands on a different multiplier.
     auto bars = zigzag(kNg, 20, 3.0, 0.002, 90'000.0);
@@ -391,6 +396,7 @@ TEST(K2FuturesCostFeed, UpdateMarketDataIsRecordVolumeThenRecordLogReturn) {
 // -----------------------------------------------------------------------------------------------
 
 TEST(K2FuturesCostFeed, ALiveFillIsPricedOffOwnDayVolumeAndTheWalkedVolatility) {
+    trade_ngin::testing::register_session_metadata_futures();  // CM1: specs come from the metadata
     auto bars = zigzag(kNg, 26, 3.0, 0.018, 80'000.0);
     bars.back().volume = 12'000.0;  // a thin T-1 session: the 80 bps tier
     const double price = static_cast<double>(bars.back().close);

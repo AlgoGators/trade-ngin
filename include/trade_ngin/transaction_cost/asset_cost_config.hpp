@@ -34,7 +34,9 @@ struct AssetCostConfig {
     // Impact parameters
     double max_impact_bps = 100.0;  // Cap for market impact in basis points
 
-    // Instrument metadata
+    // Instrument specs. For a future these are its metadata row's "Tick Size" and "Contract
+    // Size", filled in by TransactionCostManager from the instrument registry (CM1); the
+    // per-symbol futures entries carry no specs of their own. The defaults serve equities.
     double tick_size = 0.01;     // Minimum price increment
     double point_value = 1.0;    // Dollar value per point (contract multiplier)
     bool tick_constrained = false;  // Nov 2025 Rule 612: half-penny tick for TWAQS <= $0.015

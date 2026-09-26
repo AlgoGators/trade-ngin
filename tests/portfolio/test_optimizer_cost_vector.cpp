@@ -62,6 +62,7 @@
 #include "trade_ngin/optimization/dynamic_optimizer.hpp"
 #include "trade_ngin/strategy/trend_following.hpp"
 #include "trade_ngin/transaction_cost/transaction_cost_manager.hpp"
+#include "../transaction_cost/session_metadata_rows.hpp"
 
 using namespace trade_ngin;
 using namespace trade_ngin::testing;
@@ -166,6 +167,8 @@ class OptimizerCostVector : public TestBase {
 protected:
     void SetUp() override {
         TestBase::SetUp();
+        // CM1: the cost model prices MES and ZF with their metadata rows.
+        trade_ngin::testing::register_session_metadata_futures();
         StateManager::reset_instance();
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
         mock_db_ = std::make_shared<MockPostgresDatabase>("mock://testdb");

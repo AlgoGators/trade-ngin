@@ -58,35 +58,42 @@ AssetCostConfig TransactionCostManager::resolve_asset_config(
     // CM1: a futures cost config prices with the metadata's contract specs, the ones the
     // strategy sizes with. An equity config (asset_type EQUITY, or a per-unit commission) never
     // reads them: an equity ticker can collide with a futures root (CL, ES).
-    if (asset_config.asset_type != AssetType::FUTURE || asset_config.commission_per_unit >= 0.0 ||
-        !contract_spec_source_) {
+    if (asset_config.asset_type != AssetType::FUTURE || asset_config.commission_per_unit >= 0.0) {
         return asset_config;
     }
-    auto spec = contract_spec_source_(symbol);
-    if (!spec || spec->point_value <= 0.0) {
-        // Only a future the cost table names is reported: an unknown symbol on the table's
-        // default stays silent as before.
-        const std::string base = symbol.substr(0, symbol.find('.'));
-        if (!asset_configs_.has_config(symbol) && !asset_configs_.has_config(base)) {
+    const std::optional<ContractCostSpec> spec =
+        contract_spec_source_ ? contract_spec_source_(symbol) : std::nullopt;
+    const std::string base = symbol.substr(0, symbol.find('.'));
+    const bool named_future = asset_configs_.has_config(symbol) || asset_configs_.has_config(base);
+    if (!spec || spec->point_value <= 0.0 || spec->tick_size <= 0.0) {
+        // An unknown symbol (neither the cost table nor the metadata names it) keeps the table's
+        // generic default as before: it may be an equity passed without its asset type.
+        if (!named_future && !spec) {
             return asset_config;
         }
+        // A future without a usable metadata row (no row, or no positive "Contract Size" or
+        // "Tick Size") is an error, never priced on a guessed constant: its spread and impact are
+        // not priced (point value and tick 0), the fee still is, and the ERROR names it once per
+        // manager.
         bool first = false;
         {
             std::lock_guard<std::mutex> lock(spec_warn_->mutex);
             first = spec_warn_->warned.insert(symbol).second;
         }
         if (first) {
-            WARN("Cost model: no metadata contract spec for " + symbol +
-                 "; pricing it with the cost table's own point value " +
-                 std::to_string(asset_config.point_value) + " and tick " +
-                 std::to_string(asset_config.tick_size));
+            ERROR("Cost model: no usable metadata contract spec (\"Contract Size\" and \"Tick "
+                  "Size\") for " + symbol +
+                  "; its spread and impact are NOT priced until its metadata row exists");
+        }
+        asset_config.point_value = 0.0;
+        asset_config.tick_size = 0.0;
+        if (fee_out && spec) {
+            *fee_out = spec->fee_per_contract;
         }
         return asset_config;
     }
     asset_config.point_value = spec->point_value;
-    if (spec->tick_size > 0.0) {
-        asset_config.tick_size = spec->tick_size;
-    }
+    asset_config.tick_size = spec->tick_size;
     if (fee_out) {
         *fee_out = spec->fee_per_contract;
     }
@@ -198,6 +205,14 @@ TransactionCostResult TransactionCostManager::calculate_costs(
         double taf = std::min(abs_qty * asset_config.finra_taf_per_share,
                               asset_config.finra_taf_cap_per_trade);
         result.commissions_fees += sec_fee + taf;
+    }
+
+    // A future without a usable metadata row (resolve_asset_config zeroes its point value and
+    // reported it): no spread or impact is priced, the fee above is.
+    if (asset_config.asset_type == AssetType::FUTURE && asset_config.commission_per_unit < 0.0 &&
+        asset_config.point_value <= 0.0) {
+        result.total_transaction_costs = result.commissions_fees;
+        return result;
     }
 
     // 2. Calculate spread cost (in price units per contract)

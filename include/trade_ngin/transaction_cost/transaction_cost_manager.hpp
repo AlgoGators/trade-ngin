@@ -218,7 +218,7 @@ public:
 
     /**
      * @brief Replace the contract spec source (tests; the default reads the InstrumentRegistry).
-     *        An empty function turns the metadata lookup off.
+     *        An empty function answers nothing: every future is then unpriced (ERROR).
      */
     void set_contract_spec_source(ContractCostSpecSource source);
 
@@ -301,8 +301,8 @@ private:
     SpreadModel spread_model_;
     ImpactModel impact_model_;
     ContractCostSpecSource contract_spec_source_;
-    // Symbols already reported as missing from the spec source (once each per manager). Held by
-    // pointer so the manager stays copyable.
+    // Futures already reported (ERROR) as missing a usable metadata spec, once each per manager.
+    // Held by pointer so the manager stays copyable.
     struct SpecWarnState {
         std::mutex mutex;
         std::unordered_set<std::string> warned;

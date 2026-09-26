@@ -1,8 +1,22 @@
 #include "trade_ngin/live/live_pnl_manager.hpp"
 #include "trade_ngin/core/logger.hpp"
 #include <cmath>
+#include <mutex>
+#include <unordered_set>
 
 namespace trade_ngin {
+
+namespace {
+
+// Once per symbol per process: get_point_value runs for every held symbol on every pass.
+bool first_missing_point_value_report(const std::string& symbol) {
+    static std::mutex mutex;
+    static std::unordered_set<std::string> reported;
+    std::lock_guard<std::mutex> lock(mutex);
+    return reported.insert(symbol).second;
+}
+
+}  // namespace
 
 Result<LivePnLManager::FinalizationResult> LivePnLManager::finalize_previous_day(
     const std::vector<Position>& previous_positions,
@@ -326,109 +340,21 @@ double LivePnLManager::get_point_value(const std::string& symbol) const {
         }
     }
 
-    // E2-F38 / BA-7: the fallback table below is a SUBSTRING match over futures
-    // contract codes, so it must only be consulted for futures. Real equity
-    // tickers collide with it: AAPL contains "PL" (platinum, 50), LEN contains
-    // "LE" (live cattle, 40000), ZM is soybean meal (100), UBER contains "UB"
-    // (ultra T-bond, 1000), HES contains "ES" (5). Every one of those is a P&L
-    // report wrong by orders of magnitude on a position that merely failed to
-    // register.
-    //
-    // A share is a share: one unit, point value 1.0. There is nothing to guess.
+    // E2-F38 / BA-7: a share is a share: one unit, point value 1.0. There is nothing to guess.
     if (asset_type_ != AssetType::FUTURE) {
         WARN("No registry entry for " + symbol + "; it is not a futures symbol, so its "
-             "point value is 1.0. The futures fallback table is a substring match and "
-             "would have guessed a contract multiplier for it.");
+             "point value is 1.0.");
         return 1.0;
     }
 
-    // Fall back to known values if registry lookup fails
-    double fallback = get_fallback_multiplier(base_symbol);
-    if (fallback > 0) {
-        DEBUG("Using fallback multiplier for " + symbol + ": " + std::to_string(fallback));
-        return fallback;
+    // A future the registry does not hold: its contract size is the metadata's alone (CM1), so
+    // there is nothing to price the move with. The position books no P&L (point value 0) and an
+    // ERROR names the symbol once, instead of a guessed multiplier.
+    if (first_missing_point_value_report(symbol)) {
+        ERROR("No registry entry for futures symbol " + symbol + " (metadata.contract_metadata); "
+              "its P&L is NOT booked (point value 0) until its metadata row exists");
     }
-
-    // Last resort - warn and use 1.0
-    WARN("No multiplier found for " + symbol + " in registry or fallback, using 1.0");
-    return 1.0;
-}
-
-double LivePnLManager::get_fallback_multiplier(const std::string& symbol) const {
-    // Fallback multipliers calculated as: minimum_price_fluctuation / tick_size
-    // Source: Contract specifications as of 2025
-    
-    // Equity Index Futures
-    if (symbol.find("MNQ") != std::string::npos || symbol.find("NQ") != std::string::npos) 
-        return 2.0;      // Micro/Mini E-mini Nasdaq-100: 0.5 / 0.25
-    if (symbol.find("MES") != std::string::npos || symbol.find("ES") != std::string::npos) 
-        return 5.0;      // Micro/Mini E-mini S&P 500: 1.25 / 0.25
-    if (symbol.find("MYM") != std::string::npos || symbol.find("YM") != std::string::npos) 
-        return 0.5;      // Micro/Mini E-mini Dow: 0.5 / 1
-    if (symbol.find("RTY") != std::string::npos) 
-        return 5.0;      // E-mini Russell 2000: 0.5 / 0.1
-    
-    // Energy Futures
-    if (symbol.find("CL") != std::string::npos) 
-        return 1000.0;   // Crude Oil: 10 / 0.01
-    if (symbol.find("RB") != std::string::npos) 
-        return 42000.0;  // RBOB Gasoline: 4.2 / 0.0001
-    
-    // Metals Futures
-    if (symbol.find("GC") != std::string::npos) 
-        return 1000.0;   // Gold: 10 / 0.01
-    if (symbol.find("SI") != std::string::npos) 
-        return 5000.0;   // Silver: 25 / 0.005
-    if (symbol.find("HG") != std::string::npos) 
-        return 25000.0;  // Copper: 12.5 / 0.0005
-    if (symbol.find("PL") != std::string::npos) 
-        return 50.0;     // Platinum: 5 / 0.1
-    
-    // Currency Futures
-    if (symbol.find("6C") != std::string::npos) 
-        return 100000.0;  // CAD: 5 / 0.00005
-    if (symbol.find("6E") != std::string::npos || symbol.find("M6E") != std::string::npos) 
-        return 125000.0;  // EUR: 6.25 / 0.00005
-    if (symbol.find("6J") != std::string::npos) 
-        return 12500000.0; // JPY: 6.25 / 0.0000005
-    if (symbol.find("6M") != std::string::npos) 
-        return 500000.0;  // MXN: 5 / 0.00001
-    if (symbol.find("6N") != std::string::npos) 
-        return 100000.0;  // NZD: 5 / 0.00005
-    if (symbol.find("6S") != std::string::npos || symbol.find("MSF") != std::string::npos) 
-        return 125000.0;  // CHF: 6.25 / 0.00005
-    if (symbol.find("6B") != std::string::npos || symbol.find("M6B") != std::string::npos) 
-        return 62500.0;   // GBP: 6.25 / 0.0001
-    
-    // Agricultural Futures
-    if (symbol.find("ZC") != std::string::npos) 
-        return 5000.0;   // Corn: 12.5 / 0.0025
-    if (symbol.find("ZS") != std::string::npos || symbol.find("YK") != std::string::npos) 
-        return 5000.0;   // Soybeans: 12.5 / 0.0025
-    if (symbol.find("ZW") != std::string::npos || symbol.find("YW") != std::string::npos) 
-        return 5000.0;   // Wheat: 12.5 / 0.0025
-    if (symbol.find("ZM") != std::string::npos) 
-        return 100.0;    // Soybean Meal: 10 / 0.1
-    if (symbol.find("ZL") != std::string::npos) 
-        return 60000.0;  // Soybean Oil: 6 / 0.0001
-    if (symbol.find("ZR") != std::string::npos) 
-        return 2000.0;   // Rough Rice: 10 / 0.005
-    if (symbol.find("KE") != std::string::npos) 
-        return 5000.0;   // KC Wheat: 12.5 / 0.0025
-    if (symbol.find("GF") != std::string::npos) 
-        return 40000.0;  // Feeder Cattle: 10 / 0.00025
-    if (symbol.find("HE") != std::string::npos) 
-        return 40000.0;  // Lean Hogs: 10 / 0.00025
-    if (symbol.find("LE") != std::string::npos) 
-        return 40000.0;  // Live Cattle: 10 / 0.00025
-    
-    // Interest Rate Futures
-    if (symbol.find("ZN") != std::string::npos) 
-        return 1000.0;   // 10-Year T-Note: 15.625 / 0.015625
-    if (symbol.find("UB") != std::string::npos) 
-        return 1000.0;   // Ultra T-Bond: 31.25 / 0.03125
-    
-    // Unknown symbol
     return 0.0;
 }
+
 } // namespace trade_ngin

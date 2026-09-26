@@ -101,9 +101,21 @@ class FinalizeRealizedPolicyTest : public ::testing::Test {
 protected:
     void SetUp() override {
         InstrumentRegistry::instance().instruments_["MNQ.v.0"] = make_mnq_futures();
+        // The P&L manager looks the contract up by its metadata key, the symbol without the
+        // ".v.0" suffix; with no fallback table any more (CM1) the row must be there.
+        InstrumentRegistry::instance().instruments_["MNQ"] = make_mnq_futures();
+        // The equity row is registered as the equity runner registers every equity it holds;
+        // a futures manager no longer guesses 1.0 for a symbol the registry does not hold.
+        EquitySpec eq;
+        eq.exchange = "NASDAQ";
+        eq.currency = "USD";
+        InstrumentRegistry::instance().instruments_[kEq] =
+            std::make_shared<EquityInstrument>(kEq, eq);
     }
     void TearDown() override {
         InstrumentRegistry::instance().instruments_.erase("MNQ.v.0");
+        InstrumentRegistry::instance().instruments_.erase("MNQ");
+        InstrumentRegistry::instance().instruments_.erase(kEq);
     }
 
     LivePnLManager::FinalizationResult finalize(const Book& loaded, const Closes& t1,

@@ -15,6 +15,7 @@
 #include "trade_ngin/core/types.hpp"
 #include "trade_ngin/transaction_cost/netting.hpp"
 #include "trade_ngin/transaction_cost/transaction_cost_manager.hpp"
+#include "session_metadata_rows.hpp"
 
 using namespace trade_ngin;
 using namespace trade_ngin::transaction_cost;
@@ -84,6 +85,7 @@ TEST(Netting, AThreeSleeveFullCrossOfUnequalSizesIsStillExact) {
 // 6C.v.0 2026-04-29: both sleeves SELL 1, the account sells 2. One order of 2 costs more than
 // two orders of 1 (impact ~ |q|^1.5), so the adjustment is NEGATIVE (T-4b sign option (i)).
 TEST(Netting, SameDirectionIsADebitPricedByTheRealCostModel) {
+    trade_ngin::testing::register_session_metadata_futures();  // CM1: specs come from the metadata
     TransactionCostManager tcm;
     const double adv = 57392.0, vol_mult = 0.8, px = 0.7324;
     const Decimal c1(
@@ -114,6 +116,7 @@ TEST(Netting, SameDirectionIsADebitPricedByTheRealCostModel) {
 }
 
 TEST(Netting, TheTieGoesToTheSmallerSleeveNameWhateverTheInputOrder) {
+    trade_ngin::testing::register_session_metadata_futures();  // CM1: specs come from the metadata
     TransactionCostManager tcm;
     const double adv = 57392.0, vol_mult = 0.8, px = 0.7324;
     const Decimal c1(
