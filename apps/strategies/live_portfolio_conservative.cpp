@@ -1090,6 +1090,19 @@ int main(int argc, char* argv[]) {
         // ========================================
         SessionClassifier session_classifier;
         session_classifier.add_bars(all_bars);
+        // T-7b-2 C10a (HD 2026-09-24 ruling 16): the instrument-id continuity limb reads each kept
+        // bar's vendor id over the window the bars were loaded for (the backtest reads the same
+        // query). T-1's verdict reads no later bar: an id change on T-1 is held today and T's bar
+        // confirms it a roll or a one-day flip on the next run.
+        {
+            const auto id_feed = feed_instrument_ids(
+                session_classifier, db->get_futures_instrument_ids(symbols, start_date, end_date));
+            if (id_feed.fed) {
+                INFO(id_feed.line);
+            } else {
+                WARN(id_feed.line);
+            }
+        }
         const T1Classification t1_classification =
             classify_t1(session_classifier, symbols,
                         SessionClassifier::day_of(now - std::chrono::hours(24)),

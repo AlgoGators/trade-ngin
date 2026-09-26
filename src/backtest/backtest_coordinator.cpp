@@ -244,6 +244,25 @@ Result<BacktestResults> BacktestCoordinator::run_portfolio(
         load_equity_cost_retier(symbols, start_date, end_date);
     }
 
+    // T-7b-2 C10a (HD 2026-09-24 ruling 16): the session classifier's instrument-id continuity
+    // limb reads each kept bar's vendor id, over the window the bars were loaded for (the query
+    // the live runners read). The verdict of a bar reads no later bar, although this classifier
+    // holds the cycle's group before it classifies the signal group.
+    if (session_hold_enabled_) {
+        auto pg = std::dynamic_pointer_cast<PostgresDatabase>(db_);
+        const auto feed = feed_instrument_ids(
+            session_classifier_,
+            pg ? pg->get_futures_instrument_ids(symbols, start_date, end_date)
+               : make_error<std::vector<market_data_utils::FuturesInstrumentId>>(
+                     ErrorCode::NOT_INITIALIZED, "the backtest's database is not a PostgresDatabase",
+                     "BacktestCoordinator"));
+        if (feed.fed) {
+            INFO(feed.line);
+        } else {
+            WARN(feed.line);
+        }
+    }
+
     // Get portfolio config
     const auto& portfolio_config = portfolio->get_config();
     double initial_capital = static_cast<double>(portfolio_config.total_capital);
@@ -691,6 +710,10 @@ Result<void> BacktestCoordinator::process_portfolio_day(
         if (session_hold_enabled_ && had_previous_bars) {
             std::set<std::string> junk_symbols;
             for (const auto& v : classify_bar_group(session_classifier_, bars_for_signals)) {
+                if (!is_warmup && !v.id_note.empty()) {
+                    INFO("BT_SESSION_CLASSIFIER INSTRUMENT_ID " + v.symbol + " " + v.date + ": " +
+                         v.id_note);
+                }
                 if (v.is_session()) {
                     signal_group_sessions.insert(v.symbol);
                 } else {

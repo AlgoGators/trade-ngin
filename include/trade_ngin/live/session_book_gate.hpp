@@ -56,6 +56,10 @@ inline void log_t1_classification(const T1Classification& t1, int tolerance_days
          " feed_hole=" + std::to_string(t1.feed_hole) +
          " max_hole_age_days=" + std::to_string(t1.max_hole_age_days));
     for (const auto& v : t1.verdicts) {
+        // T-7b-2 C10a: T-1 answers the previous session's unconfirmed instrument id change.
+        if (!v.id_note.empty()) {
+            INFO("T1_CLASSIFIER INSTRUMENT_ID " + v.symbol + " " + v.date + ": " + v.id_note);
+        }
         switch (v.verdict) {
             case SessionVerdict::SESSION:
                 break;

@@ -31,6 +31,7 @@
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/core/types.hpp"
 #include "trade_ngin/data/database_interface.hpp"
+#include "trade_ngin/data/market_data_utils.hpp"
 
 namespace trade_ngin {
 
@@ -148,6 +149,19 @@ public:
         const std::vector<std::string>& symbols, const Timestamp& start_date,
         const Timestamp& end_date, AssetClass asset_class,
         DataFrequency freq = DataFrequency::DAILY, const std::string& data_type = "ohlcv") override;
+
+    /**
+     * @brief The vendor instrument id of each futures bar the loader keeps (T-7b-2 C10a)
+     *
+     * For the session classifier's instrument-id continuity limb. The window and the symbol
+     * filter are get_market_data's (FUTURES, daily); a bar whose futures_data.ohlcv_1d_raw row
+     * is not the same print as the kept copy gets no row
+     * (market_data_utils::build_futures_instrument_id_query). Read only.
+     * @return one row per kept bar with an id, ORDER BY symbol, date
+     */
+    virtual Result<std::vector<market_data_utils::FuturesInstrumentId>> get_futures_instrument_ids(
+        const std::vector<std::string>& symbols, const Timestamp& start_date,
+        const Timestamp& end_date);
 
     /**
      * @brief Get latest market prices for symbols

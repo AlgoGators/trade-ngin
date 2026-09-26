@@ -120,6 +120,38 @@ std::string build_futures_duplicate_copies_query(const std::string& full_table_n
                                                  bool with_symbol_filter);
 
 /**
+ * @brief The vendor's raw futures table: one row per (symbol, ts_event), with instrument_id
+ *
+ * futures_data.ohlcv_1d (the loader's table) has no instrument_id column. The raw table holds
+ * one row per (symbol, day) and is the same print as the loader's kept copy on all but three
+ * rows of the stage-3 clone (6A.v.0 2025-11-05, where it holds the 196-lot copy the loader
+ * drops, and ZM.v.0 / ZR.v.0 2025-10-10, where it holds a traded bar the loader's table does
+ * not); build_futures_instrument_id_query() therefore reads an id only for the same print.
+ */
+inline constexpr const char* kFuturesRawBarTable = "futures_data.ohlcv_1d_raw";
+
+/**
+ * @brief The instrument id of each kept futures bar (T-7b-2 C10a, the classifier's instrument-id
+ *        continuity limb): rows (symbol, time, instrument_id) ORDER BY symbol, time
+ *
+ * The kept copy is build_futures_bar_query()'s (DISTINCT ON (symbol, time) with
+ * kFuturesBarKeepOrder, same window predicate); it is joined to kFuturesRawBarTable on
+ * (symbol, time = ts_event) AND all five of volume, open, high, low, close, so a bar gets the id
+ * of its own print or none. Same parameters as build_futures_bar_query().
+ */
+std::string build_futures_instrument_id_query(const std::string& full_table_name,
+                                              bool with_symbol_filter);
+
+/**
+ * @brief One kept futures bar's vendor instrument id (build_futures_instrument_id_query)
+ */
+struct FuturesInstrumentId {
+    std::string symbol;
+    std::string date;  ///< the bar's UTC date, YYYY-MM-DD
+    std::string instrument_id;
+};
+
+/**
  * @brief One stored copy of a futures bar, as read by the companion query
  */
 struct FuturesBarCopy {

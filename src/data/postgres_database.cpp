@@ -737,6 +737,60 @@ Result<std::vector<std::string>> PostgresDatabase::get_symbols(AssetClass asset_
     }
 }
 
+Result<std::vector<market_data_utils::FuturesInstrumentId>>
+PostgresDatabase::get_futures_instrument_ids(const std::vector<std::string>& symbols,
+                                             const Timestamp& start_date,
+                                             const Timestamp& end_date) {
+    using Rows = std::vector<market_data_utils::FuturesInstrumentId>;
+    if (start_date > end_date) {
+        return make_error<Rows>(ErrorCode::INVALID_ARGUMENT, "Start date must be before end date");
+    }
+    auto validation = validate_connection();
+    if (validation.is_error()) {
+        return make_error<Rows>(validation.error()->code(), validation.error()->what());
+    }
+    const std::string full_table_name =
+        build_table_name(AssetClass::FUTURES, "ohlcv", DataFrequency::DAILY);
+    const std::string start_ts = format_timestamp(start_date);
+    const std::string end_ts = format_timestamp(end_date);
+    try {
+        pqxx::work txn(*connection_);
+        pqxx::result result;
+        if (symbols.empty()) {
+            result = txn.exec(market_data_utils::build_futures_instrument_id_query(full_table_name,
+                                                                                    false),
+                              pqxx::params{start_ts, end_ts});
+        } else {
+            auto symbol_validation = validate_symbols(symbols);
+            if (symbol_validation.is_error()) {
+                return make_error<Rows>(symbol_validation.error()->code(),
+                                        symbol_validation.error()->what());
+            }
+            result = txn.exec(market_data_utils::build_futures_instrument_id_query(full_table_name,
+                                                                                    true),
+                              pqxx::params{start_ts, end_ts, symbols});
+        }
+        txn.commit();
+        Rows rows;
+        rows.reserve(result.size());
+        for (const auto& row : result) {
+            market_data_utils::FuturesInstrumentId r;
+            r.symbol = row[0].as<std::string>();
+            // Every futures bar is stamped 00:00:00 UTC and the session runs in UTC, so the
+            // text's first ten characters are the bar's UTC date (log_futures_bar_duplicates).
+            r.date = row[1].as<std::string>().substr(0, 10);
+            r.instrument_id = row[2].as<std::string>();
+            rows.push_back(std::move(r));
+        }
+        return Result<Rows>(std::move(rows));
+    } catch (const std::exception& e) {
+        return make_error<Rows>(ErrorCode::DATABASE_ERROR,
+                                "Failed to read the futures instrument ids: " +
+                                    std::string(e.what()),
+                                "PostgresDatabase");
+    }
+}
+
 Result<std::unordered_map<std::string, double>> PostgresDatabase::get_latest_prices(
     const std::vector<std::string>& symbols, AssetClass asset_class, DataFrequency freq,
     const std::string& data_type) {
