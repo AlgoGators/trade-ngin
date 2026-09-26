@@ -736,11 +736,41 @@ Result<void> BacktestCoordinator::process_portfolio_day(
         // that bar. So the optimizer's cost vector and every fill's cost read what a live run with
         // this T-1 reads, and nothing of day T.
         if (own_day_cost_feed_enabled_) {
+            // C8c3 (HD 2026-09-25 rulings 25 and 28): the participation volume is the weekend
+            // merge's on this cycle's fill day (futures_cost_feed.hpp, rules 1-3): a weekday
+            // signal bar takes the weekend stub(s) right before it; a weekend signal bar on a
+            // weekday cycle is priced on the last session before the stub(s) plus the stub(s).
             const auto fed = feed_futures_cost_model_step(
-                execution_manager_->get_transaction_cost_manager(), *signal_feed,
+                execution_manager_->get_transaction_cost_manager(), *signal_feed, timestamp,
                 execution_cost_carry_);
             feed_futures_cost_model_step(portfolio->get_transaction_cost_manager(), *signal_feed,
-                                         portfolio_cost_carry_);
+                                         timestamp, portfolio_cost_carry_);
+            size_t merged_symbols = 0;
+            size_t stub_signal_symbols = 0;
+            double merged_volume = 0.0;
+            double previous_session_volume = 0.0;
+            auto count_merge = [&](const FuturesCostFeedSymbol& s) {
+                if (s.merged_weekend_bars == 0) return;
+                ++merged_symbols;
+                merged_volume += s.merged_weekend_volume;
+                if (futures_cost_feed_detail::is_weekend_day(s.own_day_time)) {
+                    ++stub_signal_symbols;
+                    previous_session_volume += s.previous_session_volume;
+                }
+            };
+            for (const auto& s : fed.symbols) count_merge(s);
+            for (const auto& s : fed.reevaluated) count_merge(s);
+            if (!is_warmup && (merged_symbols > 0 || !fed.reevaluated.empty())) {
+                INFO("BT_COST_FEED_WEEKEND_MERGE date=" + core::format_utc_date(timestamp) +
+                     " symbols=" + std::to_string(merged_symbols) +
+                     " weekend_volume=" + std::to_string(merged_volume) +
+                     " stub_signal_symbols=" + std::to_string(stub_signal_symbols) +
+                     " previous_session_volume=" + std::to_string(previous_session_volume) +
+                     " reevaluated=" + std::to_string(fed.reevaluated.size()) +
+                     ": a weekday signal bar's participation volume includes its symbol's "
+                     "weekend stub; a stub signal bar on a weekday cycle is priced on the last "
+                     "session plus the stub");
+            }
             if (!is_warmup) {
                 INFO("BT_COST_FEED date=" + core::format_utc_date(timestamp) + " signal_group=" +
                      (bars_for_signals.empty()

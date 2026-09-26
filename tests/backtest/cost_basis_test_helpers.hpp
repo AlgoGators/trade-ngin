@@ -52,7 +52,13 @@ struct Row {
     double close;
     double volume;
     bool locked = false;  ///< high == low: the session classifier's JUNK
+    int weekend_before = 0;  ///< 0: the bar is trading day `day`; 1 / 2: the Sunday / Saturday before it
 };
+
+/// A row's instant: trading day `day`, or the Sunday (1) or Saturday (2) before it.
+inline Timestamp row_time(const Row& r) {
+    return trading_day(r.day) - std::chrono::hours(24 * r.weekend_before);
+}
 
 inline std::shared_ptr<arrow::Table> to_table(const std::vector<Row>& rows) {
     auto* pool = arrow::default_memory_pool();
@@ -66,7 +72,7 @@ inline std::shared_ptr<arrow::Table> to_table(const std::vector<Row>& rows) {
     arrow::DoubleBuilder o(pool), h(pool), l(pool), c(pool), v(pool);
     for (const auto& r : rows) {
         const auto secs = std::chrono::duration_cast<std::chrono::seconds>(
-                              trading_day(r.day).time_since_epoch())
+                              row_time(r).time_since_epoch())
                               .count();
         ARROW_CHECK_OK(t.Append(secs));
         ARROW_CHECK_OK(s.Append(r.symbol));
@@ -118,13 +124,13 @@ public:
         market_calls.push_back({start_date, end_date, asset_class});
         std::vector<Row> out;
         for (const auto& r : rows) {
-            const auto ts = trading_day(r.day);
+            const auto ts = row_time(r);
             if (ts < start_date || ts > end_date) continue;
             if (std::find(symbols.begin(), symbols.end(), r.symbol) == symbols.end()) continue;
             out.push_back(r);
         }
         std::stable_sort(out.begin(), out.end(), [](const Row& a, const Row& b) {
-            return std::tie(a.day, a.symbol) < std::tie(b.day, b.symbol);
+            return std::make_tuple(row_time(a), a.symbol) < std::make_tuple(row_time(b), b.symbol);
         });
         return Result<std::shared_ptr<arrow::Table>>(to_table(out));
     }
@@ -160,6 +166,8 @@ public:
     }
 
     std::map<std::string, std::map<int, double>> targets;
+    /// the same by instant (a weekend bar's), applied after `targets` (T-7b-2 C8c3)
+    std::map<std::string, std::map<Timestamp, double>> targets_at;
 
     Result<void> on_data(const std::vector<Bar>& data) override {
         for (const auto& b : data) {
@@ -174,6 +182,11 @@ public:
             double qty = 0.0;
             for (const auto& [day, q] : by_day) {
                 if (trading_day(day) <= last_signal_) qty = q;
+            }
+            if (auto at = targets_at.find(symbol); at != targets_at.end()) {
+                for (const auto& [ts, q] : at->second) {
+                    if (ts <= last_signal_) qty = q;
+                }
             }
             Position p;
             p.symbol = symbol;

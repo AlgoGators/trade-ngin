@@ -1343,14 +1343,24 @@ int main(int argc, char* argv[]) {
 
         {
             auto& cost_model = execution_manager->get_transaction_cost_manager();
-            const auto cost_feed = feed_futures_cost_model(cost_model, strategy_feed_bars);
+            // C8c3 (HD 2026-09-25 rulings 25 and 28): the run date decides the weekend merge's
+            // rule for a symbol whose T-1 bar is a weekend stub (futures_cost_feed.hpp).
+            const auto cost_feed = feed_futures_cost_model(cost_model, strategy_feed_bars, now);
             for (const auto& fed : cost_feed.symbols) {
                 INFO("COST_FEED " + fed.symbol + " own_day=" +
                      core::format_utc_date(fed.own_day_time) +
                      " own_day_volume=" + std::to_string(fed.own_day_volume) +
                      " bars=" + std::to_string(fed.bars) +
                      " returns=" + std::to_string(fed.returns) +
-                     " vol_mult=" + std::to_string(cost_model.get_volatility_multiplier(fed.symbol)));
+                     " vol_mult=" + std::to_string(cost_model.get_volatility_multiplier(fed.symbol)) +
+                     // C8c3 (HD 2026-09-25 rulings 25 and 28): the weekend merge, when it applied
+                     (fed.merged_weekend_bars > 0
+                          ? " weekend_merged_volume=" + std::to_string(fed.merged_weekend_volume) +
+                                " weekend_bars=" + std::to_string(fed.merged_weekend_bars) +
+                                " previous_session_volume=" +
+                                std::to_string(fed.previous_session_volume) +
+                                " participation_volume=" + std::to_string(fed.participation_volume)
+                          : std::string()));
             }
             std::string thin_list;
             for (const auto& s : cost_feed.thin) thin_list += (thin_list.empty() ? "" : ", ") + s;
@@ -1375,7 +1385,7 @@ int main(int argc, char* argv[]) {
         {
             auto& optimizer_cost_model = portfolio->get_transaction_cost_manager();
             const auto optimizer_feed =
-                feed_futures_cost_model(optimizer_cost_model, strategy_feed_bars);
+                feed_futures_cost_model(optimizer_cost_model, strategy_feed_bars, now);
             INFO("COST_FEED_OPTIMIZER fed the PortfolioManager's cost model (the optimizer's cost "
                  "vector) for " + std::to_string(optimizer_feed.symbols.size()) + " symbols (" +
                  std::to_string(optimizer_feed.returns_fed) + " log returns)");

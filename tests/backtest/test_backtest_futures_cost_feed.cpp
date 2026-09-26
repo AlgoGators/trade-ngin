@@ -99,7 +99,10 @@ std::vector<Bar> bars_through(const std::string& symbol, int last_day, int skip_
 // same bars (`skip_day`: a JUNK T-1 bar the strategy feed withholds).
 TransactionCostManager live_feed(const std::string& symbol, int signal_day, int skip_day = -1) {
     TransactionCostManager tcm;
-    feed_futures_cost_model(tcm, bars_through(symbol, signal_day, skip_day));
+    // The run dated the next trading day; the signal bar is a weekday, so rules (1) and (3) of the
+    // weekend merge (C8c3) do not read the fill day.
+    feed_futures_cost_model(tcm, bars_through(symbol, signal_day, skip_day),
+                            trading_day(signal_day + 1));
     return tcm;
 }
 
@@ -137,7 +140,7 @@ protected:
              const std::map<std::string, std::map<int, double>>& targets) {
         static int n = 0;
         ++n;
-        db_->rows = rows(last_day, junk);
+        db_->rows = db_rows_override_.empty() ? rows(last_day, junk) : db_rows_override_;
 
         BacktestCoordinatorConfig cc;
         cc.initial_capital = 1'000'000.0;
@@ -165,6 +168,7 @@ protected:
         }
         strat_ = std::make_shared<ScheduledStrategy>("COSTH3_S", sc, db_);
         strat_->targets = targets;
+        strat_->targets_at = targets_at_;
         ASSERT_TRUE(strat_->initialize().is_ok());
         ASSERT_TRUE(strat_->start().is_ok());
         ASSERT_TRUE(pm_->add_strategy(strat_, 1.0, false).is_ok());
@@ -218,6 +222,8 @@ protected:
         return portfolio[0];
     }
 
+    std::vector<Row> db_rows_override_;  ///< the rows to serve instead of rows(last_day, junk)
+    std::map<std::string, std::map<Timestamp, double>> targets_at_;  ///< by instant (C8c3)
     std::shared_ptr<ServingDb> db_;
     std::unique_ptr<BacktestCoordinator> coord_;
     std::shared_ptr<PortfolioManager> pm_;
@@ -289,4 +295,142 @@ TEST_F(FuturesCostFeedBacktest, TheEquityBacktestKeepsItsFeed) {
     EXPECT_DOUBLE_EQ(pm_->get_transaction_cost_manager().get_adv(kA), day_t.get_adv(kA));
     EXPECT_DOUBLE_EQ(execution_costs().get_volatility_multiplier(kA),
                      day_t.get_volatility_multiplier(kA));
+}
+
+// ------------------------------------------------------------------------------------------------
+// T-7b-2 C8c3, the weekend merge (HD 2026-09-25 rulings 25 and 28; futures_cost_feed.hpp rules 1-3).
+// XA prints a 4,000-lot Sunday stub before Monday, trading day 25. The cycle stamped Monday has the
+// stub as XA's signal bar: a weekday fill, priced on Friday's (day 24) volume plus the stub's. The
+// cycle stamped Tuesday has Monday as its signal bar: Monday's volume plus the stub's.
+// ------------------------------------------------------------------------------------------------
+
+namespace {
+
+constexpr int kStubMonday = 25;
+constexpr double kStubVolume = 4000.0;
+constexpr double kSaturdayVolume = 1500.0;
+
+double stub_close() { return close_of(kA, kStubMonday - 1) * 1.003; }
+double saturday_close() { return close_of(kA, kStubMonday - 1) * 0.998; }
+Timestamp sunday_before(int d) { return trading_day(d) - std::chrono::hours(24); }
+Timestamp saturday_before(int d) { return trading_day(d) - std::chrono::hours(48); }
+
+Bar weekend_bar(const std::string& symbol, Timestamp ts, double close, double volume) {
+    Bar b;
+    b.symbol = symbol;
+    b.timestamp = ts;
+    b.open = b.close = Decimal(close);
+    b.high = Decimal(close * 1.01);
+    b.low = Decimal(close * 0.99);
+    b.volume = volume;
+    return b;
+}
+
+std::vector<Row> rows_with_stub(int last_day) {
+    auto out = rows(last_day, /*junk=*/false);
+    Row stub{kA, kStubMonday, stub_close(), kStubVolume};
+    stub.weekend_before = 1;  // the Sunday before Monday, trading day 25
+    out.push_back(stub);
+    return out;
+}
+
+// XA's bars through `last_day`, the Sunday stub included, as live loads them.
+std::vector<Bar> xa_bars_with_stub(int last_day) {
+    auto bars = bars_through(kA, last_day);
+    if (last_day >= kStubMonday - 1) {
+        bars.push_back(weekend_bar(kA, sunday_before(kStubMonday), stub_close(), kStubVolume));
+        std::stable_sort(bars.begin(), bars.end(),
+                         [](const Bar& x, const Bar& y) { return x.timestamp < y.timestamp; });
+    }
+    return bars;
+}
+
+}  // namespace
+
+// (1) The last cycle is stamped Tuesday (day 26); its signal bar is Monday (day 25): both managers'
+// participation volume is Monday's plus the Sunday stub's, the volatility walk is live's.
+TEST_F(FuturesCostFeedBacktest, AMondaySessionsParticipationVolumeIncludesTheSundayStub) {
+    db_rows_override_ = rows_with_stub(26);
+    run(AssetClass::FUTURES, 26, /*junk=*/false, {});
+
+    const double merged = volume_of(kA, kStubMonday) + kStubVolume;
+    EXPECT_DOUBLE_EQ(execution_costs().get_adv(kA), merged)
+        << "the stub's volume is merged into the next session's (Monday's) participation volume";
+    EXPECT_DOUBLE_EQ(pm_->get_transaction_cost_manager().get_adv(kA), merged);
+    TransactionCostManager live;
+    feed_futures_cost_model(live, xa_bars_with_stub(kStubMonday), trading_day(kStubMonday + 1));
+    expect_managers_equal(kA, live, "XA, live's Tuesday-dated feed of the same bars");
+}
+
+// (2) The last cycle is stamped Monday (day 25); XA's signal bar is the Sunday stub: the fill is in
+// Monday's session, priced on Friday's (day 24) volume plus the stub's, as live's Monday-dated run.
+TEST_F(FuturesCostFeedBacktest, AMondayCyclesStubSignalBarIsPricedOnFridayPlusTheStub) {
+    db_rows_override_ = rows_with_stub(25);
+    run(AssetClass::FUTURES, 25, /*junk=*/false, {});
+
+    const double friday_plus_stub = volume_of(kA, kStubMonday - 1) + kStubVolume;
+    EXPECT_DOUBLE_EQ(execution_costs().get_adv(kA), friday_plus_stub);
+    EXPECT_DOUBLE_EQ(pm_->get_transaction_cost_manager().get_adv(kA), friday_plus_stub);
+    TransactionCostManager live;
+    feed_futures_cost_model(live, xa_bars_with_stub(kStubMonday - 1), trading_day(kStubMonday));
+    expect_managers_equal(kA, live, "XA, live's Monday-dated feed of the same bars");
+}
+
+// The stored fill priced at Monday's close (stamped Tuesday) is priced on Monday + stub volume.
+TEST_F(FuturesCostFeedBacktest, AFillAtMondaysCloseIsPricedOnMondayPlusTheStub) {
+    db_rows_override_ = rows_with_stub(30);
+    run(AssetClass::FUTURES, 30, /*junk=*/false, {{kA, {{kStubMonday, 1.0}}}});
+
+    TransactionCostManager live;
+    feed_futures_cost_model(live, xa_bars_with_stub(kStubMonday), trading_day(kStubMonday + 1));
+    ASSERT_DOUBLE_EQ(live.get_adv(kA), volume_of(kA, kStubMonday) + kStubVolume);
+    const double expected =
+        live.calculate_costs(kA, 1.0, close_of(kA, kStubMonday)).total_transaction_costs;
+    EXPECT_NEAR(stored_cost(kA, kStubMonday + 1), expected, kStoredTol);
+}
+
+// The stored fill priced at the stub's close (stamped Monday) is priced on Friday + stub volume.
+TEST_F(FuturesCostFeedBacktest, AFillAtTheStubsCloseStampedMondayIsPricedOnFridayPlusTheStub) {
+    db_rows_override_ = rows_with_stub(30);
+    targets_at_ = {{kA, {{sunday_before(kStubMonday), 1.0}}}};
+    run(AssetClass::FUTURES, 30, /*junk=*/false, {{kA, {}}});
+
+    TransactionCostManager live;
+    feed_futures_cost_model(live, xa_bars_with_stub(kStubMonday - 1), trading_day(kStubMonday));
+    ASSERT_DOUBLE_EQ(live.get_adv(kA), volume_of(kA, kStubMonday - 1) + kStubVolume);
+    TransactionCostManager stub_only;  // C8c2's basis: the stub's own volume
+    feed_futures_cost_model(stub_only, xa_bars_with_stub(kStubMonday - 1),
+                            sunday_before(kStubMonday));
+    ASSERT_DOUBLE_EQ(stub_only.get_adv(kA), kStubVolume);
+    const double expected = live.calculate_costs(kA, 1.0, stub_close()).total_transaction_costs;
+    ASSERT_GT(stub_only.calculate_costs(kA, 1.0, stub_close()).total_transaction_costs - expected,
+              1e-3)
+        << "the scenario must tell the two bases apart";
+    EXPECT_NEAR(stored_cost(kA, kStubMonday), expected, kStoredTol);
+}
+
+// MBT's case: XA prints a Saturday bar and no Sunday bar; XB prints a Sunday stub, so the backtest
+// has a Sunday cycle (signal group Saturday: XA) and a Monday cycle (signal group Sunday: XB only).
+// After the Sunday cycle (a weekend fill) XA holds the Saturday bar's own volume; after the Monday
+// cycle, where XA has no bar, it holds Friday + Saturday, as live's Monday-dated run.
+TEST_F(FuturesCostFeedBacktest, ASaturdayOnlySymbolIsRepricedOnTheMondayCycle) {
+    auto served = rows(kStubMonday, /*junk=*/false);
+    Row saturday{kA, kStubMonday, saturday_close(), kSaturdayVolume};
+    saturday.weekend_before = 2;
+    Row xb_stub{kB, kStubMonday, close_of(kB, kStubMonday - 1), 900.0};
+    xb_stub.weekend_before = 1;
+    served.push_back(saturday);
+    served.push_back(xb_stub);
+    db_rows_override_ = served;
+    run(AssetClass::FUTURES, kStubMonday, /*junk=*/false, {});
+
+    // Monday is day 25; XA's day-25 bar is Monday's, so the last cycle's managers (stamped Monday)
+    // were fed XB's stub and re-priced XA's Saturday bar as a weekday fill's B.
+    auto xa_to_saturday = bars_through(kA, kStubMonday - 1);
+    xa_to_saturday.push_back(
+        weekend_bar(kA, saturday_before(kStubMonday), saturday_close(), kSaturdayVolume));
+    TransactionCostManager monday_run;
+    feed_futures_cost_model(monday_run, xa_to_saturday, trading_day(kStubMonday));
+    ASSERT_DOUBLE_EQ(monday_run.get_adv(kA), volume_of(kA, kStubMonday - 1) + kSaturdayVolume);
+    expect_managers_equal(kA, monday_run, "XA, live's Monday-dated feed");
 }
