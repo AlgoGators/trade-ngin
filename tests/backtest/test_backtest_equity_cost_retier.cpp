@@ -77,7 +77,8 @@ double split_multiplier(const std::string& symbol, int d) {
 
 // The cost of a fill stamped `fill_day` of `qty` shares at the day-(fill_day - 1) close, priced as
 // the coordinator prices an equity fill: the impact ADV and the volatility term from the bars fed
-// before the fill (every in-window bar from day 1 to fill_day: the first group is never fed), and
+// before the fill (C8c4: every in-window bar from day 0 to the signal bar fill_day - 1, as live's
+// feed ends at T-1; the first bar has no return), and
 // the tier either from the 20 bars ending at fill_day - 1 (`per_bar_tier`) or from the 20 bars
 // before start_date (the parent's one registration). `split_unit` puts every volume (tier and
 // impact) in the window-end share unit; otherwise raw.
@@ -101,10 +102,11 @@ double priced(const std::string& symbol, int fill_day, double qty, bool per_bar_
     }
     TransactionCostManager tcm;
     tcm.register_equity_costs_from_bars({symbol}, {{symbol, tier_window}}, 20);
-    for (int d = 1; d <= fill_day; ++d) {
+    for (int d = 0; d <= fill_day - 1; ++d) {
         for (const auto& r : all) {
             if (r.symbol == symbol && r.day == d) {
-                tcm.update_market_data(symbol, volume(r), r.close, close_of(symbol, d - 1));
+                tcm.update_market_data(symbol, volume(r), r.close,
+                                       d > 0 ? close_of(symbol, d - 1) : 0.0);
             }
         }
     }
@@ -312,10 +314,10 @@ TEST_F(EquityCostRetierBacktest, TheImpactAdvIsFedInTheSameShareUnitAsTheTier) {
         }
         TransactionCostManager tcm;
         tcm.register_equity_costs_from_bars({"SS"}, {{"SS", tier_window}}, 20);
-        for (int d = 1; d <= 20; ++d) {
+        for (int d = 0; d <= 19; ++d) {  // C8c4: the feed ends at the signal bar, day 19
             const double raw = d < kSplitDay ? 400000.0 : 1600000.0;
             tcm.update_market_data("SS", raw * (split_impact_feed ? split_multiplier("SS", d) : 1.0),
-                                   close_of("SS", d), close_of("SS", d - 1));
+                                   close_of("SS", d), d > 0 ? close_of("SS", d - 1) : 0.0);
         }
         return tcm.calculate_costs("SS", 10.0, close_of("SS", 19)).total_transaction_costs;
     };

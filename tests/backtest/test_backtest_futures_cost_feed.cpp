@@ -33,6 +33,7 @@
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/data/market_data_bus.hpp"
 #include "trade_ngin/live/futures_cost_feed.hpp"
+#include "trade_ngin/live/live_daily_cycle.hpp"
 #include "trade_ngin/portfolio/portfolio_manager.hpp"
 #include "trade_ngin/transaction_cost/transaction_cost_manager.hpp"
 
@@ -280,21 +281,23 @@ TEST_F(FuturesCostFeedBacktest, AJunkSignalBarIsWithheldFromTheCostFeedOnItsCycl
     expect_managers_equal(kB, live_feed(kB, kJunkDay), "XB");
 }
 
-// Control (passes on the parent too): the equity backtest keeps its own feed, the cycle's group
-// fed before the fill (a 20-bar mean ending at the last group).
-TEST_F(FuturesCostFeedBacktest, TheEquityBacktestKeepsItsFeed) {
+// T-7b-2 C8c4 (HD 2026-09-25 ruling 26): the equity backtest's impact and volatility windows end at
+// T-1 like live's. After the last cycle (stamped day 40, signal group day 39) both managers hold what
+// the live equity runner's feed of the same bars through day 39 holds (LiveDailyCycle::feed_cost_model:
+// a 20-bar mean ending at T-1, the returns ending at T-1). The parent fed each cycle's own group,
+// day T.
+TEST_F(FuturesCostFeedBacktest, TheEquityBacktestsCostWindowsEndAtTheSignalBarLikeLive) {
     run(AssetClass::EQUITIES, 40, /*junk=*/false, {});
 
-    // The closes as the backtest holds them (a Bar's close is a Decimal).
-    auto held = [](int d) { return static_cast<double>(Decimal(close_of(kA, d))); };
-    TransactionCostManager day_t;
-    for (int d = 1; d <= 40; ++d) {
-        day_t.update_market_data(kA, volume_of(kA, d), held(d), held(d - 1));
-    }
-    EXPECT_DOUBLE_EQ(execution_costs().get_adv(kA), day_t.get_adv(kA));
-    EXPECT_DOUBLE_EQ(pm_->get_transaction_cost_manager().get_adv(kA), day_t.get_adv(kA));
+    TransactionCostManager live;
+    const auto fed = LiveDailyCycle::feed_cost_model(live, {kA}, {{kA, bars_through(kA, 39)}});
+    ASSERT_EQ(fed.symbols_fed, 1u);
+    EXPECT_DOUBLE_EQ(execution_costs().get_adv(kA), live.get_adv(kA));
+    EXPECT_DOUBLE_EQ(pm_->get_transaction_cost_manager().get_adv(kA), live.get_adv(kA));
     EXPECT_DOUBLE_EQ(execution_costs().get_volatility_multiplier(kA),
-                     day_t.get_volatility_multiplier(kA));
+                     live.get_volatility_multiplier(kA));
+    EXPECT_DOUBLE_EQ(pm_->get_transaction_cost_manager().get_volatility_multiplier(kA),
+                     live.get_volatility_multiplier(kA));
 }
 
 // ------------------------------------------------------------------------------------------------

@@ -603,11 +603,16 @@ Result<void> BacktestCoordinator::process_portfolio_day(
         }
 
         // Update transaction cost manager with market data for ADV and volatility tracking.
-        // COST-H3 (T-7b-2 8c): the equity book's feed, the cycle's own group; the futures book
-        // (own_day_cost_feed_enabled_) is fed below from the signal feed, live's basis.
+        // COST-H3 (T-7b-2 8c): the futures book (own_day_cost_feed_enabled_) is fed below from the
+        // signal feed, live's basis. C8c4 (HD 2026-09-25 ruling 26): the equity book is fed its
+        // SIGNAL group (T-1, the bar whose close prices this cycle's fills), with each bar's return
+        // against the group fed on the previous cycle, so its 20-bar ADV and its volatility window
+        // end at T-1 as the live equity runner's do (LiveDailyCycle::feed_cost_model); it used to be
+        // fed this cycle's own group, day T, before its fills were priced (a one-bar look-ahead).
         static const std::vector<Bar> kNotFedHere;
-        const std::vector<Bar>& day_t_cost_feed = own_day_cost_feed_enabled_ ? kNotFedHere : bars;
-        for (const auto& bar : day_t_cost_feed) {
+        const std::vector<Bar>& signal_group_cost_feed =
+            own_day_cost_feed_enabled_ ? kNotFedHere : portfolio_previous_bars_;
+        for (const auto& bar : signal_group_cost_feed) {
             double close = static_cast<double>(bar.close);
             // K1 (T-7b-2 8c; T-4b ADVERSARIAL A-3): an equity's volume in the window-end share
             // unit, so the ADV that scales participation is in the unit of the traded quantity and
@@ -619,7 +624,7 @@ Result<void> BacktestCoordinator::process_portfolio_day(
             // Get previous close for log return calculation
             double prev_close = 0.0;
             bool found_prev = false;
-            for (const auto& prev_bar : portfolio_previous_bars_) {
+            for (const auto& prev_bar : cost_feed_previous_group_) {
                 if (prev_bar.symbol == bar.symbol) {
                     prev_close = static_cast<double>(prev_bar.close);
                     found_prev = true;
@@ -655,6 +660,7 @@ Result<void> BacktestCoordinator::process_portfolio_day(
             // Also update portfolio's cost manager for execution cost calculation
             portfolio->update_cost_manager_market_data(bar.symbol, volume, close, prev_close);
         }
+        if (!own_day_cost_feed_enabled_) cost_feed_previous_group_ = portfolio_previous_bars_;
 
         // Track strategy execution counts BEFORE processing (for commission calculation)
         std::unordered_map<std::string, size_t> strategy_exec_counts_before;
@@ -1409,6 +1415,7 @@ void BacktestCoordinator::reset_portfolio_state() {
     own_day_cost_feed_enabled_ = false;
     execution_cost_carry_ = FuturesCostFeedCarry{};
     portfolio_cost_carry_ = FuturesCostFeedCarry{};
+    cost_feed_previous_group_.clear();
     current_run_id_.clear();
     portfolio_previous_positions_.clear();
     // E2-F54 (c): without this, a second portfolio backtest in the same process opens with

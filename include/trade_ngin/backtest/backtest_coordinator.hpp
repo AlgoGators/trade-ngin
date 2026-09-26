@@ -121,6 +121,9 @@ private:
     bool own_day_cost_feed_enabled_ = false;
     FuturesCostFeedCarry execution_cost_carry_;
     FuturesCostFeedCarry portfolio_cost_carry_;
+    /// T-7b-2 C8c4 (HD 2026-09-25 ruling 26): the group the equity cost feed fed on the previous
+    /// cycle (the day before this cycle's signal group), whose closes give the fed bars' returns.
+    std::vector<Bar> cost_feed_previous_group_;
     std::string current_run_id_;
     Timestamp backtest_start_date_;
     Timestamp backtest_end_date_;
