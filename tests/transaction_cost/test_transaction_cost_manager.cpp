@@ -8,6 +8,7 @@
 #include <cmath>
 #include <gtest/gtest.h>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -684,4 +685,76 @@ TEST(RegulatoryFeesTest, NegativeQuantityIsTheSellSideAndCarriesSecAndTaf) {
     auto fsell = tcm.calculate_costs("FIXED", -qty, px, 1e6, 1.0, AssetType::EQUITY);
     EXPECT_DOUBLE_EQ(fsell.commissions_fees, fbuy.commissions_fees)
         << "IBKR Fixed is all-inclusive: no separate regulatory fee on either side";
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// CM1: a future's contract specs come from the metadata (one source of truth with sizing). The
+// spec source is injected here so each test controls it; the default source is the
+// InstrumentRegistry singleton (tests/transaction_cost/test_cost_metadata_specs.cpp).
+// ──────────────────────────────────────────────────────────────────────────
+
+namespace {
+
+ContractCostSpecSource only(const std::string& sym, ContractCostSpec spec) {
+    return [sym, spec](const std::string& s) -> std::optional<ContractCostSpec> {
+        if (s.substr(0, s.find('.')) == sym) return spec;
+        return std::nullopt;
+    };
+}
+
+}  // namespace
+
+// ZT's spread term with the metadata's tick (1/256) and with the source turned off.
+TEST(CostContractSpecSource, SpreadFollowsTheSourceTick) {
+    TransactionCostManager tcm;
+    tcm.set_contract_spec_source(only("ZT", {2000.0, 0.00390625}));
+    const auto with_metadata = tcm.calculate_costs("ZT.v.0", 1.0, 104.0, 1.0e6, 1.0);
+    EXPECT_DOUBLE_EQ(with_metadata.spread_price_impact, 0.25 * 1.0 * 0.00390625);
+
+    tcm.set_contract_spec_source({});
+    const auto table_only = tcm.calculate_costs("ZT.v.0", 1.0, 104.0, 1.0e6, 1.0);
+    EXPECT_DOUBLE_EQ(table_only.spread_price_impact, 0.25 * 1.0 * 0.0078125);
+}
+
+// A spec whose tick is 0 (the metadata gave none) keeps the table's tick but still takes the
+// metadata's point value.
+TEST(CostContractSpecSource, MissingTickKeepsTheTableTick) {
+    TransactionCostManager tcm;
+    tcm.set_contract_spec_source(only("6E", {12500.0, 0.0}));
+    const auto cfg = tcm.get_asset_config("6E.v.0");
+    EXPECT_DOUBLE_EQ(cfg.point_value, 12500.0);
+    EXPECT_DOUBLE_EQ(cfg.tick_size, 0.00005);
+}
+
+// A future the metadata does not carry is priced off the table, as before CM1.
+TEST(CostContractSpecSource, FutureMissingFromTheMetadataKeepsTheTable) {
+    TransactionCostManager tcm;
+    tcm.set_contract_spec_source([](const std::string&) { return std::nullopt; });
+    const auto cfg = tcm.get_asset_config("6E.v.0");
+    EXPECT_DOUBLE_EQ(cfg.point_value, 125000.0);
+    EXPECT_DOUBLE_EQ(cfg.tick_size, 0.00005);
+}
+
+// A future the table does not name but the metadata does (a micro row, say) takes its point
+// value and tick from the metadata.
+TEST(CostContractSpecSource, FutureOnlyInTheMetadataTakesItsSpecs) {
+    TransactionCostManager tcm;
+    tcm.set_contract_spec_source(only("M6E", {12500.0, 0.0001}));
+    const auto cfg = tcm.get_asset_config("M6E.v.0");
+    EXPECT_DOUBLE_EQ(cfg.point_value, 12500.0);
+    EXPECT_DOUBLE_EQ(cfg.tick_size, 0.0001);
+}
+
+// An equity cost config never reads a futures spec, even when the source answers for its ticker
+// (equity tickers collide with futures roots: CL, ES).
+TEST(CostContractSpecSource, EquityConfigNeverReadsAFuturesSpec) {
+    TransactionCostManager tcm;
+    const auto before = tcm.calculate_costs("AAPL", 100.0, 200.0, 5.0e7, 1.0);
+    tcm.set_contract_spec_source(
+        [](const std::string&) -> std::optional<ContractCostSpec> {
+            return ContractCostSpec{50.0, 0.25};
+        });
+    const auto after = tcm.calculate_costs("AAPL", 100.0, 200.0, 5.0e7, 1.0);
+    EXPECT_DOUBLE_EQ(after.total_transaction_costs, before.total_transaction_costs);
+    EXPECT_DOUBLE_EQ(tcm.get_asset_config("AAPL").point_value, 1.0);
 }

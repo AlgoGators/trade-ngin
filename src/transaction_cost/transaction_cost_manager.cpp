@@ -5,16 +5,89 @@
 
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/instruments/equity.hpp"
+#include "trade_ngin/instruments/futures.hpp"
 #include "trade_ngin/instruments/instrument_registry.hpp"
 
 namespace trade_ngin {
 namespace transaction_cost {
 
+std::optional<ContractCostSpec> registry_contract_cost_spec(const std::string& symbol) {
+    // The key the strategies and the P&L managers use: the symbol without its continuous-contract
+    // suffix ("ZT.v.0" -> "ZT"), so an exact metadata row wins before any micro remap and the
+    // cost model prices the contract the book was sized on.
+    std::string base = symbol;
+    auto pos = base.find(".v.");
+    if (pos != std::string::npos) {
+        base = base.substr(0, pos);
+    }
+    pos = base.find(".c.");
+    if (pos != std::string::npos) {
+        base = base.substr(0, pos);
+    }
+    const auto& registry = InstrumentRegistry::instance();
+    // has_instrument first: get_instrument logs an ERROR for a symbol it does not hold.
+    if (!registry.has_instrument(base)) {
+        return std::nullopt;
+    }
+    auto futures = std::dynamic_pointer_cast<FuturesInstrument>(registry.get_instrument(base));
+    if (!futures || futures->get_multiplier() <= 0.0) {
+        return std::nullopt;
+    }
+    ContractCostSpec spec;
+    spec.point_value = futures->get_multiplier();
+    spec.tick_size = futures->get_tick_size();
+    return spec;
+}
+
 TransactionCostManager::TransactionCostManager(const Config& config)
     : config_(config),
       asset_configs_(),
       spread_model_(config.spread_config),
-      impact_model_(config.impact_config) {}
+      impact_model_(config.impact_config),
+      contract_spec_source_(registry_contract_cost_spec) {}
+
+void TransactionCostManager::set_contract_spec_source(ContractCostSpecSource source) {
+    contract_spec_source_ = std::move(source);
+}
+
+AssetCostConfig TransactionCostManager::resolve_asset_config(const std::string& symbol,
+                                                             AssetType asset_type) const {
+    AssetCostConfig asset_config = asset_configs_.get_config(symbol, asset_type);
+
+    // CM1: a futures cost config prices with the metadata's contract specs, the ones the
+    // strategy sizes with. An equity config (asset_type EQUITY, or a per-unit commission) never
+    // reads them: an equity ticker can collide with a futures root (CL, ES).
+    if (asset_config.asset_type != AssetType::FUTURE || asset_config.commission_per_unit >= 0.0 ||
+        !contract_spec_source_) {
+        return asset_config;
+    }
+    auto spec = contract_spec_source_(symbol);
+    if (!spec || spec->point_value <= 0.0) {
+        // Only a future the cost table names is reported: an unknown symbol on the table's
+        // default stays silent as before.
+        const std::string base = symbol.substr(0, symbol.find('.'));
+        if (!asset_configs_.has_config(symbol) && !asset_configs_.has_config(base)) {
+            return asset_config;
+        }
+        bool first = false;
+        {
+            std::lock_guard<std::mutex> lock(spec_warn_->mutex);
+            first = spec_warn_->warned.insert(symbol).second;
+        }
+        if (first) {
+            WARN("Cost model: no metadata contract spec for " + symbol +
+                 "; pricing it with the cost table's own point value " +
+                 std::to_string(asset_config.point_value) + " and tick " +
+                 std::to_string(asset_config.tick_size));
+        }
+        return asset_config;
+    }
+    asset_config.point_value = spec->point_value;
+    if (spec->tick_size > 0.0) {
+        asset_config.tick_size = spec->tick_size;
+    }
+    return asset_config;
+}
 
 TransactionCostResult TransactionCostManager::calculate_costs(
     const std::string& symbol,
@@ -57,7 +130,9 @@ TransactionCostResult TransactionCostManager::calculate_costs(
     // has no registered config -- it routes the fallback to the equity
     // default ($0.005/share, $1 min) instead of the futures default
     // ($1.50/share, point_value=100). Closes audit §1.1 dispatch dead-end.
-    AssetCostConfig asset_config = asset_configs_.get_config(symbol, asset_type);
+    //
+    // CM1: a future's point value and tick come from the metadata (resolve_asset_config).
+    AssetCostConfig asset_config = resolve_asset_config(symbol, asset_type);
 
     // 1. Calculate explicit costs (commissions)
     if (asset_config.commission_per_unit >= 0.0) {
@@ -208,7 +283,7 @@ double TransactionCostManager::get_annual_volatility(const std::string& symbol) 
 }
 
 AssetCostConfig TransactionCostManager::get_asset_config(const std::string& symbol) const {
-    return asset_configs_.get_config(symbol);
+    return resolve_asset_config(symbol, AssetType::NONE);
 }
 
 void TransactionCostManager::register_asset_config(const AssetCostConfig& config) {

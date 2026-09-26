@@ -1,8 +1,12 @@
 #pragma once
 
+#include <functional>
 #include <memory>
+#include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "trade_ngin/core/types.hpp"
@@ -38,6 +42,30 @@ struct TransactionCostResult {
     // Total cost (dollars)
     double total_transaction_costs = 0.0;  // commissions_fees + slippage_market_impact
 };
+
+/**
+ * @brief A futures contract's specs as the metadata gives them (CM1)
+ *
+ * The cost model prices a futures trade with the SAME contract the strategy sizes with:
+ * metadata.contract_metadata through the InstrumentRegistry, looked up by the symbol without its
+ * continuous-contract suffix, as the strategies and the P&L managers look it up.
+ */
+struct ContractCostSpec {
+    double point_value = 0.0;  // "Contract Size": dollars per one price unit
+    double tick_size = 0.0;    // "Tick Size": one tick in price units (0 = none given)
+};
+
+/**
+ * @brief Where the cost model reads contract specs from: symbol -> spec, or empty when the source
+ *        has no futures contract for the symbol. The default reads InstrumentRegistry::instance().
+ */
+using ContractCostSpecSource =
+    std::function<std::optional<ContractCostSpec>(const std::string& symbol)>;
+
+/**
+ * @brief The default spec source: the InstrumentRegistry singleton (the metadata table)
+ */
+std::optional<ContractCostSpec> registry_contract_cost_spec(const std::string& symbol);
 
 /**
  * @brief Central orchestrator for transaction cost calculation
@@ -182,9 +210,16 @@ public:
     double get_annual_volatility(const std::string& symbol) const;
 
     /**
-     * @brief Get asset configuration for a symbol
+     * @brief Get asset configuration for a symbol, a future's point_value and tick_size taken
+     *        from the contract spec source (the metadata) as calculate_costs prices it
      */
     AssetCostConfig get_asset_config(const std::string& symbol) const;
+
+    /**
+     * @brief Replace the contract spec source (tests; the default reads the InstrumentRegistry).
+     *        An empty function turns the metadata lookup off.
+     */
+    void set_contract_spec_source(ContractCostSpecSource source);
 
     /**
      * @brief Register custom asset configuration
@@ -252,10 +287,24 @@ public:
     double get_explicit_fee_per_contract() const { return config_.explicit_fee_per_contract; }
 
 private:
+    /**
+     * @brief The symbol's cost config; a futures config takes its point value and tick from the
+     *        contract spec source (the metadata)
+     */
+    AssetCostConfig resolve_asset_config(const std::string& symbol, AssetType asset_type) const;
+
     Config config_;
     AssetCostConfigRegistry asset_configs_;
     SpreadModel spread_model_;
     ImpactModel impact_model_;
+    ContractCostSpecSource contract_spec_source_;
+    // Symbols already reported as missing from the spec source (once each per manager). Held by
+    // pointer so the manager stays copyable.
+    struct SpecWarnState {
+        std::mutex mutex;
+        std::unordered_set<std::string> warned;
+    };
+    std::shared_ptr<SpecWarnState> spec_warn_ = std::make_shared<SpecWarnState>();
 };
 
 }  // namespace transaction_cost

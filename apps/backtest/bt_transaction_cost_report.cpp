@@ -25,6 +25,7 @@
 #include "trade_ngin/core/logger.hpp"
 #include "trade_ngin/data/database_pooling.hpp"
 #include "trade_ngin/data/postgres_database.hpp"
+#include "trade_ngin/instruments/instrument_registry.hpp"
 #include "trade_ngin/transaction_cost/transaction_cost_manager.hpp"
 
 using namespace trade_ngin;
@@ -67,6 +68,22 @@ int main() {
         auto db = db_guard.get();
         if (!db || !db->is_connected()) {
             std::cerr << "Failed to acquire DB connection" << std::endl;
+            return 1;
+        }
+
+        // The cost model prices a future with the metadata's contract specs (the instrument
+        // registry), as the runners do, so the registry is loaded before any cost.
+        auto& registry = InstrumentRegistry::instance();
+        auto registry_init = registry.initialize(db);
+        if (registry_init.is_error()) {
+            std::cerr << "Failed to initialize instrument registry: "
+                      << registry_init.error()->what() << std::endl;
+            return 1;
+        }
+        auto registry_load = registry.load_instruments();
+        if (registry_load.is_error()) {
+            std::cerr << "Failed to load contract metadata: " << registry_load.error()->what()
+                      << std::endl;
             return 1;
         }
 

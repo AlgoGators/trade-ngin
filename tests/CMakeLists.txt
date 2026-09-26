@@ -54,6 +54,7 @@ set(TEST_SOURCES
     optimization/test_dynamic_optimizer.cpp
     backtest/test_transaction_cost_analysis.cpp
     transaction_cost/test_transaction_cost_manager.cpp
+    transaction_cost/test_cost_metadata_specs.cpp
     transaction_cost/test_spread_model.cpp
     transaction_cost/test_impact_model.cpp
     transaction_cost/test_netting.cpp
