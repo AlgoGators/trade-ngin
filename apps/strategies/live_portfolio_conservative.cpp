@@ -1458,6 +1458,16 @@ int main(int argc, char* argv[]) {
                      std::to_string(withheld_junk_bars.size()) + " symbol(s) from the strategy "
                      "and portfolio feed (signal not updated today): " + withheld_list);
             }
+            // T-7b-3 D-1b (HD 2026-09-27): a symbol whose T-1 verdict is not SESSION is held at
+            // its stored T-1 quantity after the rebalance (hold_non_session_symbols, the same
+            // key), so a lap the risk gate cuts fixes it at its held quantity and never cuts it.
+            {
+                std::unordered_set<std::string> book_gate_holds;
+                for (const auto& symbol : symbols) {
+                    if (!t1_classification.is_session(symbol)) book_gate_holds.insert(symbol);
+                }
+                portfolio->set_book_gate_holds(std::move(book_gate_holds));
+            }
             auto port_process_result = portfolio->process_market_data(strategy_feed_bars);
             INFO("MarketDataBus publishing RE-ENABLED after process_market_data");
             MarketDataBus::instance().set_publish_enabled(true);
@@ -1533,6 +1543,25 @@ int main(int argc, char* argv[]) {
                                  "refusal");
                         }
                     }
+                }
+            }
+            // T-7b-3 ruling 7 (HD 2026-09-27): the risk gate's cut, delivered once with the
+            // BOOK_GATE holds fixed, left the book above the gate's level because the held
+            // contracts alone keep it there. The day is stored as it is and today's
+            // live_run_metadata row carries the over_limit_by_hold mark; the run goes on.
+            if (const auto hold_limit = portfolio->last_over_limit_by_hold();
+                hold_limit.over_limit_by_hold) {
+                auto hold_mark = db->store_live_run_metadata(
+                    now, combined_strategy_id, portfolio_id, strategy_alloc_json,
+                    portfolio_config_json = mark_over_limit_by_hold(
+                        portfolio_config_json, hold_limit.symbols, hold_limit.target,
+                        hold_limit.cut_book, hold_limit.lap),
+                    strategy_configs);
+                if (hold_mark.is_error()) {
+                    ERROR("Failed to mark today's live_run_metadata row over the limit by hold: " +
+                          std::string(hold_mark.error()->what()));
+                } else {
+                    INFO("Marked today's live_run_metadata row over the limit by hold");
                 }
             }
             if (port_process_result.is_error()) {
